@@ -66,6 +66,26 @@
     return out
   })
 
+  /**
+   * How high a label over column `i` has to sit to clear every column it
+   * spans, as a percentage of the plot.
+   *
+   * A label is wider than its column, so sat on its own column's top it
+   * runs into a taller neighbour. Centred, it covers a couple either side;
+   * held to an end of the chart (see the `start`/`end` classes), it reads
+   * inwards across the last fifth or so. Lifting it over the lot is a guess
+   * at its width rather than a measurement, and an over-guess only floats a
+   * label a little higher than it needed to.
+   */
+  function lift(i: number): number {
+    const n = points.length
+    const reach = Math.max(2, Math.ceil(n * 0.2))
+    const at = n > 1 ? i / (n - 1) : 0.5
+    const [from, to] = at < 0.15 ? [0, reach] : at > 0.85 ? [n - 1 - reach, n - 1] : [i - 2, i + 2]
+    const covered = points.slice(Math.max(0, from), Math.min(n, to + 1))
+    return (Math.max(...covered.map((p) => p.value)) / ceiling) * 100
+  }
+
   /** Every date under the plot would be a smear; the two ends are enough. */
   const first = $derived(points[0])
 
@@ -102,11 +122,17 @@
 {:else}
   <div class="chart" style="--c: {color}; --h: {height}px; --gap: {gap}px">
     <div class="plot" role="img" aria-label="{points.length} days, up to {last?.label}">
-      {#each points as point (point.date)}
+      {#each points as point, i (point.date)}
         {@const pct = (point.value / ceiling) * 100}
+        {@const at = points.length > 1 ? i / (points.length - 1) : 0.5}
         <div class="slot" title="{shortDate(point.date)} — {point.label}">
           {#if labelled.has(point.date)}
-            <span class="tip" style="bottom: calc({pct}% + 4px)">{point.label}</span>
+            <span
+              class="tip"
+              class:start={at < 0.15}
+              class:end={at > 0.85}
+              style="bottom: calc({lift(i)}% + 4px)">{point.label}</span
+            >
           {/if}
           {#if point.value > 0}
             <span class="col" style="height: max(3px, {pct}%)"></span>
@@ -174,6 +200,18 @@
     color: var(--fg-muted);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Near either end a centred label hangs past the card's edge, so it is
+     held to the column's outer side instead and reads inwards. */
+  .tip.start {
+    left: 0;
+    translate: 0 0;
+  }
+  .tip.end {
+    left: auto;
+    right: 0;
+    translate: 0 0;
   }
 
   .axis {

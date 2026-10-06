@@ -566,6 +566,30 @@ impl MailStore for SqlStore {
             .collect()
     }
 
+    // ---- the Overview's mail widgets ------------------------------------------
+
+    fn messages_between(
+        &self,
+        account: AccountId,
+        from: Timestamp,
+        to: Timestamp,
+    ) -> Result<Vec<Message>> {
+        // Spam is decided by the folder, which is a clear column, so it is
+        // filtered here rather than decrypted and thrown away.
+        let rows = self.read().records(
+            "SELECT m.id, m.data FROM mail_messages m
+             WHERE m.account_id = ?1 AND m.date_us >= ?2 AND m.date_us < ?3
+               AND NOT EXISTS (
+                   SELECT 1 FROM message_mailboxes mm
+                   JOIN mailboxes mb ON mb.id = mm.mailbox_id
+                   WHERE mm.message_id = m.id AND mb.role = 'spam'
+               )
+             ORDER BY m.date_us, m.id",
+            &vals![account.to_string(), to_us(from), to_us(to)],
+        )?;
+        self.collect(rows, message_aad)
+    }
+
     // ---- garbage collection --------------------------------------------------
 
     fn attachment_blob_refs(&self) -> Result<Vec<BlobId>> {

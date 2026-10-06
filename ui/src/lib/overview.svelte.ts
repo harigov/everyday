@@ -27,6 +27,7 @@ import { api } from './api'
 import { byRole, neglected, type RoleTotals } from './balance'
 import { calendar } from './calendar.svelte'
 import {
+  activityWindows,
   addWidget,
   defaultLayout,
   moveWidget,
@@ -54,8 +55,11 @@ import { tracking } from './tracking.svelte'
 import { VaultError } from './types'
 import type {
   BalanceReport,
+  CalendarInfo,
   EntrySummary,
   LibraryStats,
+  MailActivity,
+  MeetingActivity,
   NoteSummary,
   Task,
   TaskStats,
@@ -131,6 +135,18 @@ class OverviewState {
   /** Minutes recorded and planned for today, from the blocks alone. */
   bookedToday = $state<{ logged: number; planned: number }>({ logged: 0, planned: 0 })
   loading = $state(false)
+
+  /**
+   * Mail and meetings, counted, keyed by the window in days each was counted
+   * over. A record of windows rather than one answer because two cards can
+   * ask for two -- see `activityWindows` for why the longer cannot stand in
+   * for the shorter. Replaced whole on every load, never patched, so a
+   * window nobody asks for any more does not linger.
+   */
+  mail = $state<Record<number, MailActivity>>({})
+  meetings = $state<Record<number, MeetingActivity>>({})
+  /** The calendars, for a meeting row's colour and the name under it. */
+  calendars = $state<CalendarInfo[]>([])
 
   /** The forecast where you live, for the Weather widget. `null` until a
    *  read lands, or while the card is showing one of the two states below
@@ -360,6 +376,9 @@ class OverviewState {
     this.libraryStats = null
     this.entries = []
     this.notes = []
+    this.mail = {}
+    this.meetings = {}
+    this.calendars = []
     this.bookedToday = { logged: 0, planned: 0 }
     this.weather = null
     this.weatherNoLocation = false
@@ -426,10 +445,37 @@ class OverviewState {
     if (needs.has('weather')) this.#startWeatherPoll()
     else this.#stopWeatherPoll()
 
+    // One read per distinct window, each ending today. Asked only where the
+    // backend carries the domain: a vault without mail has nothing to count,
+    // and asking anyway would put an "unsupported" banner over the page.
+    const today = todayIso()
+    const counted = <T>(
+      need: 'mail' | 'meetings',
+      supported: boolean,
+      read: (from: string, to: string) => Promise<T>,
+    ): Promise<Record<number, T>> =>
+      Promise.all(
+        (needs.has(need) && supported ? activityWindows(this.widgets, need) : []).map(
+          async (days) =>
+            [
+              days,
+              await ask<T | null>(true, () => read(addDays(today, -(days - 1)), today), null),
+            ] as const,
+        ),
+      ).then((rows) => {
+        const out: Record<number, T> = {}
+        for (const [days, value] of rows) if (value !== null) out[days] = value
+        return out
+      })
+
     try {
-      const today = todayIso()
-      const [report, days, taskStats, weekTasks, libraryStats, entries, notes, blocks, weather] =
-        await Promise.all([
+      const [
+        [report, days, taskStats, weekTasks, libraryStats, entries, notes, blocks, weather],
+        mail,
+        meetings,
+        calendars,
+      ] = await Promise.all([
+        Promise.all([
           ask(needs.has('balance'), () => api.balance(this.weekStart, this.weekEnd), null),
           ask(
             needs.has('trackerDays'),
@@ -451,7 +497,11 @@ class OverviewState {
           ask(needs.has('notes'), () => api.notes({ limit: 6 }), []),
           ask(needs.has('today'), () => api.blocks({ from: today, to: today }), []),
           ask(needs.has('weather'), () => this.fetchWeather(), NO_WEATHER),
-        ])
+        ]),
+        counted('mail', app.supportsMail, api.mailActivity),
+        counted('meetings', app.supportsCalendar, api.meetingActivity),
+        ask(needs.has('meetings') && app.supportsCalendar, () => api.calendars(), []),
+      ])
       if (!this.#generation.isCurrent(mine)) return
 
       this.report = report
@@ -461,6 +511,9 @@ class OverviewState {
       this.libraryStats = libraryStats
       this.entries = entries
       this.notes = notes
+      this.mail = mail
+      this.meetings = meetings
+      this.calendars = calendars
       this.bookedToday = blocks.reduce(
         (sum, b) => {
           if (b.localDate !== today) return sum

@@ -89,6 +89,7 @@ pub mod error;
 pub mod fsutil;
 pub mod ics;
 pub mod id;
+pub mod insights;
 pub mod library;
 pub mod lockfile;
 pub mod mail;

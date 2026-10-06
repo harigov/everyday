@@ -1144,6 +1144,46 @@ means reading the journal, the todo app, the calendar and the shelf, and no
 single app sees all four. It is a card of its own — *Gone quiet* — said
 plainly, and never as a notification.
 
+### Mail, meetings and people
+
+Eight cards count the inbox and the calendar over a window of 7, 30 or 90
+days. **Mail**: who sends you the most, how much arrives a day or a week, and
+what kind it is. **Meetings**: what takes your calendar time, ranked by the
+hours each event took, and how many hours a day or week are spent in meetings.
+**People**: who you meet with most, who you write to most, and the two joined
+into one list of who you are most in touch with. A ranked card is a table
+with a thin bar in it, because every row is a name worth reading and carries
+two or three figures. A sender or a person opens the mail app on a search
+for them.
+
+The counting is in Rust (`everyday_core::insights`) and not a query, because
+everything it hangs on is sealed: who a message is from, what a meeting is
+called, who was invited. The window's records are decrypted and walked once.
+The window keeps that bounded, and each distinct window on the page is one
+read. Two mail cards at a month cost one read, not two. A ranked list cannot
+be cut out of a longer one the way a day-by-day series can.
+
+The rules are where these cards would otherwise lie:
+
+- **Spam is left out. Trash is not.** Mail deleted unread was still sent to
+  you, and the sender who fills the bin is the one most worth knowing about.
+- **Only busy, timed events count.** An all-day event is a label on a day, a
+  cancelled one did not happen, and a "free" one was put there so it would
+  block nothing. The same meeting on two calendars counts once. Two meetings
+  at the same hour are one hour of your day. Hidden calendars are left out,
+  as they are in the calendar view.
+- **A newsletter is not a person.** A sender whose mail is mostly newsletters
+  or notifications is left out of the people lists, unless you wrote back.
+- **An all-hands is not time with anybody.** Meetings with more than eight
+  other people still count as time on the calendar. They do not count as time
+  with each of the forty colleagues in them.
+- **You are left out.** "You" means every account's addresses, the names your
+  identities send as, and the profile's name. Calendar feeds usually name an
+  attendee rather than give an address, so you are matched by name as well.
+- **A name joins its address only when there is one.** If "Ana Lima" appears
+  beside exactly one address, she is that address. If a name appears beside
+  two addresses, it is two people, and no join is guessed.
+
 ### What is refused, and what is not
 
 Deleting a **role** is refused while any goal still points at it. That is the

@@ -306,6 +306,11 @@ export const ICONS = {
   // is the tray a thing lands in rather than the thing itself.
   mail: '<rect width="18" height="14" x="3" y="5" rx="2.5"/>' + '<path d="m4 7 8 6 8-6"/>',
 
+  /** Lucide's "users": the Overview's people widgets. */
+  people:
+    '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>' +
+    '<path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+
   // ── Meeting notes ──────────────────────────────────────────────────────
 
   // A microphone: the capsule, and the stand it is never drawn without --

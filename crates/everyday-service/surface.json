@@ -2132,6 +2132,33 @@
     {
       "args": [
         {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "mail_activity",
+      "orScope": null,
+      "returns": "MailActivity",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "ids",
           "required": false,
           "type": "ProposalId[]"
@@ -2206,6 +2233,33 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "meeting_activity",
+      "orScope": null,
+      "returns": "MeetingActivity",
+      "scope": "calendars",
       "sensitive": false,
       "streams": false
     },

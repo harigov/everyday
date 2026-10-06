@@ -26,6 +26,15 @@
   import { todo } from '../lib/todo.svelte'
   import { tracking } from '../lib/tracking.svelte'
   import { notes as noteStore } from '../lib/notes.svelte'
+  import { mail as mailStore } from '../lib/mail.svelte'
+  import {
+    MAIL_KINDS,
+    columnUnit,
+    columns,
+    inTouch,
+    machineTag,
+    touchpoints,
+  } from '../lib/insights'
   import { byRole, type RoleTotals } from '../lib/balance'
   import { describeStreak, streakTarget } from '../lib/habits'
   import { addDays, localeWeekStart, startOfDay, startOfWeek, todayIso } from '../lib/time'
@@ -36,6 +45,7 @@
   import BalanceBars from './BalanceBars.svelte'
   import ColumnChart from './ColumnChart.svelte'
   import HabitHeatmap from './HabitHeatmap.svelte'
+  import RankTable from './RankTable.svelte'
   import Meter from './Meter.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
   import ShareBar from './ShareBar.svelte'
@@ -274,6 +284,165 @@
 
   $effect(() => {
     if (tomorrowProposals.length > 0) void proposals.markSeen(tomorrowProposals)
+  })
+
+  // ── Mail, meetings and people ────────────────────────────────────────
+  //
+  // Counted in Rust, one read per distinct window on the page; each card
+  // picks out its own window's answer. Null until it lands, or where the
+  // vault has no mail or no calendar to count.
+
+  const mailNow = $derived(widget.days !== null ? (overview.mail[widget.days] ?? null) : null)
+  const meetNow = $derived(widget.days !== null ? (overview.meetings[widget.days] ?? null) : null)
+  /** Rows a ranked card draws: a short list half-width, a longer one across. */
+  const rankRows = $derived(widget.size === 'large' ? 10 : 6)
+  const inWindow = $derived(`in these ${widget.days ?? 30} days`)
+
+  /** What a mail card says while it has nothing to draw. */
+  const mailWaiting = $derived(
+    !app.supportsMail
+      ? 'This vault does not keep mail.'
+      : overview.loading
+        ? 'Counting the mail…'
+        : 'No mail counted yet.',
+  )
+  const meetWaiting = $derived(
+    !app.supportsCalendar
+      ? 'This vault does not keep a calendar.'
+      : overview.loading
+        ? 'Counting the calendar…'
+        : 'No meetings counted yet.',
+  )
+
+  /** Open the mail app on a search. Where a sender's row leads. */
+  async function searchMail(query: string) {
+    if (!(await app.goTo('mail'))) return
+    mailStore.setSearchQuery(query)
+  }
+
+  function calendarOf(id: string) {
+    return overview.calendars.find((c) => c.id === id) ?? null
+  }
+
+  const senderRows = $derived(
+    (mailNow?.senders ?? []).map((s) => ({
+      id: s.email,
+      name: s.name || s.email,
+      detail: s.name ? s.email : undefined,
+      tag: machineTag(s.category),
+      value: s.messages,
+      cells: [s.messages.toLocaleString(), s.unread > 0 ? s.unread.toLocaleString() : '—'],
+      onpick: () => void searchMail(`from:${s.email}`),
+      pickLabel: `Show mail from ${s.name || s.email}`,
+    })),
+  )
+
+  const writeToRows = $derived(
+    (mailNow?.correspondents ?? [])
+      .filter((c) => c.sent > 0)
+      .sort((a, b) => b.sent - a.sent || b.received - a.received)
+      .map((c) => ({
+        id: c.email,
+        name: c.name || c.email,
+        detail: `Last mail ${relativeTime(c.last)}`,
+        value: c.sent,
+        cells: [c.sent.toLocaleString(), c.received > 0 ? c.received.toLocaleString() : '—'],
+        onpick: () => void searchMail(`to:${c.email}`),
+        pickLabel: `Show mail to ${c.name || c.email}`,
+      })),
+  )
+
+  const eventRows = $derived(
+    (meetNow?.titles ?? []).map((t, i) => {
+      const cal = calendarOf(t.calendarId)
+      return {
+        id: `${i}:${t.title}`,
+        name: t.title || 'Untitled event',
+        detail:
+          t.events > 1
+            ? `${formatMinutes(t.minutes / t.events)} each${cal ? ` · ${cal.name}` : ''}`
+            : cal?.name,
+        dot: cal?.color,
+        value: t.minutes,
+        cells: [formatMinutes(t.minutes), t.events.toLocaleString()],
+      }
+    }),
+  )
+
+  const meetWithRows = $derived(
+    (meetNow?.people ?? []).map((p) => ({
+      id: p.email ?? `name:${p.name}`,
+      name: p.name,
+      detail: p.email && p.email !== p.name ? p.email : undefined,
+      value: p.minutes,
+      cells: [formatMinutes(p.minutes), p.meetings.toLocaleString()],
+      onpick: p.email ? () => void searchMail(`from:${p.email} OR to:${p.email}`) : undefined,
+      pickLabel: `Show mail with ${p.name}`,
+    })),
+  )
+
+  const inTouchRows = $derived(
+    inTouch(mailNow, meetNow).map((p) => ({
+      id: p.key,
+      name: p.name,
+      detail:
+        p.received + p.sent > 0
+          ? `${p.received.toLocaleString()} from them · ${p.sent.toLocaleString()} from you`
+          : (p.email ?? undefined),
+      value: touchpoints(p),
+      cells: [
+        p.received + p.sent > 0 ? (p.received + p.sent).toLocaleString() : '—',
+        p.meetings > 0 ? p.meetings.toLocaleString() : '—',
+        p.minutes > 0 ? formatMinutes(p.minutes) : '—',
+      ],
+      onpick: p.email ? () => void searchMail(`from:${p.email} OR to:${p.email}`) : undefined,
+      pickLabel: `Show mail with ${p.name}`,
+    })),
+  )
+
+  const kindSlices = $derived(
+    MAIL_KINDS.map((k) => {
+      const messages = mailNow?.categories.find((c) => c.category === k.key)?.messages ?? 0
+      return {
+        id: k.key ?? 'unsorted',
+        name: k.label,
+        color: k.color,
+        value: messages,
+        label: plural(messages, 'message'),
+      }
+    }),
+  )
+
+  const mailColumns = $derived(
+    columns(mailNow?.days ?? [], (d) => d.received, weekStart).map((c) => ({
+      ...c,
+      label: plural(c.value, 'message'),
+    })),
+  )
+
+  /**
+   * Hours on the chart, so its scale reads "6.25 hours at most" rather than
+   * 375. Two places, so the scale and the "6h 15m" over the column agree.
+   */
+  const meetingColumns = $derived(
+    columns(meetNow?.days ?? [], (d) => d.minutes, weekStart).map((c) => ({
+      date: c.date,
+      value: Math.round((c.value / 60) * 100) / 100,
+      label: formatMinutes(c.value),
+    })),
+  )
+
+  /** "about 6h a week", or for a single week, the day that held the most. */
+  const meetingNote = $derived.by(() => {
+    if (!meetNow || meetNow.events === 0) return `No meetings ${inWindow}.`
+    const days = widget.days ?? 30
+    const count = plural(meetNow.events, 'event')
+    if (days <= 7) {
+      const busiest = meetNow.days.reduce((a, b) => (b.minutes > a.minutes ? b : a))
+      const weekday = startOfDay(busiest.date).toLocaleDateString(undefined, { weekday: 'long' })
+      return `${count} · ${weekday} held the most, ${formatMinutes(busiest.minutes)}`
+    }
+    return `${count} · about ${formatMinutes((meetNow.minutes / days) * 7)} a week`
   })
 
   /** "16 km/h W, gusts 27": one string, so the template cannot space it wrongly. */
@@ -620,6 +789,127 @@
     value={plural(overview.libraryStats?.active ?? 0, 'thing')}
     note="under way · {overview.libraryStats?.finishedThisYear ?? 0} finished this year"
   />
+
+  <!-- ── What takes your calendar time ─────────────────────────────── -->
+{:else if widget.type === 'topEvents'}
+  {#if !meetNow}
+    <p class="dim">{meetWaiting}</p>
+  {:else}
+    <RankTable
+      head="Event"
+      columns={['Time', 'Count']}
+      rows={eventRows}
+      limit={rankRows}
+      empty="No meetings {inWindow}."
+    />
+  {/if}
+
+  <!-- ── Time in meetings ──────────────────────────────────────────── -->
+{:else if widget.type === 'meetingLoad'}
+  {#if !meetNow}
+    <p class="dim">{meetWaiting}</p>
+  {:else}
+    <StatTile value={formatMinutes(meetNow.minutes)} note={meetingNote} />
+    {#if meetNow.events > 0 && widget.size !== 'small'}
+      <ColumnChart points={meetingColumns} height={64} unit="hours" />
+      <p class="footnote">
+        A column a {columnUnit(widget.days ?? 30)}. Busy, timed events on the calendars you show;
+        two at once count as one hour.
+      </p>
+    {/if}
+  {/if}
+
+  <!-- ── Who sends you the most ────────────────────────────────────── -->
+{:else if widget.type === 'topSenders'}
+  {#if !mailNow}
+    <p class="dim">{mailWaiting}</p>
+  {:else}
+    <RankTable
+      head="Sender"
+      columns={['Messages', 'Unread']}
+      rows={senderRows}
+      limit={rankRows}
+      empty="Nothing arrived {inWindow}."
+    />
+  {/if}
+
+  <!-- ── Mail coming in ────────────────────────────────────────────── -->
+{:else if widget.type === 'mailVolume'}
+  {#if !mailNow}
+    <p class="dim">{mailWaiting}</p>
+  {:else}
+    <StatTile
+      value={plural(mailNow.received, 'message')}
+      note="received · {mailNow.sent.toLocaleString()} sent · {mailNow.unread.toLocaleString()} still unread"
+    />
+    {#if mailNow.received > 0 && widget.size !== 'small'}
+      <ColumnChart points={mailColumns} height={64} />
+      <p class="footnote">A column a {columnUnit(widget.days ?? 30)}. Spam is left out.</p>
+    {/if}
+  {/if}
+
+  <!-- ── What kind of mail ─────────────────────────────────────────── -->
+{:else if widget.type === 'mailKinds'}
+  {#if !mailNow}
+    <p class="dim">{mailWaiting}</p>
+  {:else}
+    <ShareBar slices={kindSlices} empty="Nothing arrived {inWindow}." />
+  {/if}
+
+  <!-- ── Who you are most in touch with ────────────────────────────── -->
+{:else if widget.type === 'inTouch'}
+  {#if !mailNow && !meetNow}
+    <p class="dim">{app.supportsMail ? mailWaiting : meetWaiting}</p>
+  {:else}
+    <RankTable
+      head="Person"
+      columns={['Mail', 'Meetings', 'Time']}
+      rows={inTouchRows}
+      limit={rankRows}
+      empty="Nobody {inWindow} — no mail exchanged, no meetings shared."
+      lead={-1}
+    />
+    {#if inTouchRows.length > 0}
+      <p class="footnote">
+        Ranked by messages exchanged plus meetings shared. Newsletters and notifications are left
+        out, and so are meetings of more than eight people.
+      </p>
+    {/if}
+  {/if}
+
+  <!-- ── Who you meet with most ────────────────────────────────────── -->
+{:else if widget.type === 'meetWith'}
+  {#if !meetNow}
+    <p class="dim">{meetWaiting}</p>
+  {:else}
+    <RankTable
+      head="Person"
+      columns={['Time', 'Meetings']}
+      rows={meetWithRows}
+      limit={rankRows}
+      empty="No meetings with anybody else {inWindow}."
+    />
+    {#if meetNow.crowded > 0}
+      <p class="footnote">
+        {plural(meetNow.crowded, 'meeting')} of more than eight people
+        {meetNow.crowded === 1 ? 'is' : 'are'} left out.
+      </p>
+    {/if}
+  {/if}
+
+  <!-- ── Who you write to most ─────────────────────────────────────── -->
+{:else if widget.type === 'writeTo'}
+  {#if !mailNow}
+    <p class="dim">{mailWaiting}</p>
+  {:else}
+    <RankTable
+      head="Person"
+      columns={['To them', 'From them']}
+      rows={writeToRows}
+      limit={rankRows}
+      empty="You sent nothing {inWindow}."
+    />
+  {/if}
 
   <!-- ── What you have written ─────────────────────────────────────── -->
 {:else if widget.type === 'writing'}

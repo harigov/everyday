@@ -406,6 +406,17 @@ impl Vault {
         self.with_mail(|m| m.unread_counts(account))
     }
 
+    /// `account`'s messages dated in `[from, to)`, spam left out -- see
+    /// [`MailStore::messages_between`].
+    pub fn mail_between(
+        &self,
+        account: AccountId,
+        from: Timestamp,
+        to: Timestamp,
+    ) -> Result<Vec<Message>> {
+        self.with_mail(|m| m.messages_between(account, from, to))
+    }
+
     // ---- remote-image permissions --------------------------------------------
 
     pub fn remote_image_settings(&self) -> Result<RemoteImageSettings> {

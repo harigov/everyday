@@ -63,6 +63,7 @@ import type {
   LogId,
   LogQuery,
   MailActionByOrigin,
+  MailActivity,
   MailAddress,
   MailAttachment,
   MailCategory,
@@ -71,6 +72,7 @@ import type {
   MailSyncProgress,
   Mailbox,
   MailboxId,
+  MeetingActivity,
   MeetingSettings,
   MeetingSettingsView,
   Memory,
@@ -340,10 +342,12 @@ export interface Commands {
     args: { kind: string; limit?: number | null; cursor?: string | null }
     result: MailActionByOrigin[]
   }
+  mailActivity: { args: { from: string; to: string; tz?: string }; result: MailActivity }
   markProposalsSeen: { args: { ids?: ProposalId[] }; result: void }
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   markUnread: { args: { threads: ThreadId[] }; result: Op[] }
+  meetingActivity: { args: { from: string; to: string; tz?: string }; result: MeetingActivity }
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
@@ -659,10 +663,12 @@ export const COMMAND_NAMES = {
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
   mailActionsByOrigin: 'mail_actions_by_origin',
+  mailActivity: 'mail_activity',
   markProposalsSeen: 'mark_proposals_seen',
   markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
   markUnread: 'mark_unread',
+  meetingActivity: 'meeting_activity',
   meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
   moveToMailbox: 'move_to_mailbox',
@@ -927,10 +933,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'log_reading',
   'lookup_metadata',
   'mail_actions_by_origin',
+  'mail_activity',
   'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
   'mark_unread',
+  'meeting_activity',
   'meeting_settings',
   'merge_trackers',
   'move_to_mailbox',

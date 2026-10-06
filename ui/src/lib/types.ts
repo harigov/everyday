@@ -200,6 +200,104 @@ export interface GoalActivity {
   lastTouched?: string | null
 }
 
+// ── Mail and meetings, counted ───────────────────────────────────────────
+//
+// What the Overview's mail, meeting and people widgets draw: a window of
+// each, counted in Rust because who a message is from and what an event is
+// called are sealed. See `everyday_core::insights` for the rules.
+
+/** A window of mail. `received` is from somebody else; `sent` is yours. */
+export interface MailActivity {
+  received: number
+  sent: number
+  /** Of `received`, how many are still unread. */
+  unread: number
+  /** One row per day of the window, oldest first, empty days included. */
+  days: MailDay[]
+  /** `received` by category: the four, then the uncategorised. */
+  categories: MailCategoryCount[]
+  /** Whoever sent the most, people and machines alike. */
+  senders: MailSender[]
+  /** People you exchanged mail with -- newsletters and notifications left out. */
+  correspondents: MailCorrespondent[]
+}
+
+export interface MailDay {
+  date: string
+  received: number
+  sent: number
+}
+
+export interface MailCategoryCount {
+  /** `null` is mail nothing has sorted yet. */
+  category: MailCategory | null
+  messages: number
+}
+
+export interface MailSender {
+  /** Lower-cased. */
+  email: string
+  /** The display name on their latest message, or empty. */
+  name: string
+  messages: number
+  unread: number
+  /** What most of their mail was sorted as. */
+  category: MailCategory | null
+}
+
+export interface MailCorrespondent {
+  email: string
+  name: string
+  /** Messages from them. */
+  received: number
+  /** Messages you sent them. */
+  sent: number
+  /** The latest message either way, as an instant. */
+  last: string
+}
+
+/**
+ * A window of the calendar: busy, timed events on visible calendars, the same
+ * meeting on two calendars counted once.
+ */
+export interface MeetingActivity {
+  events: number
+  /** Minutes under an event, overlaps counted once. */
+  minutes: number
+  days: MeetingDay[]
+  /** Events grouped by name, most time first. */
+  titles: EventTitle[]
+  /** The people in your meetings, most time first, crowded meetings left out. */
+  people: MeetingPerson[]
+  /** Meetings left out of `people` for having more than eight other people in them. */
+  crowded: number
+}
+
+export interface MeetingDay {
+  date: string
+  /** Events starting on this day. */
+  events: number
+  minutes: number
+}
+
+export interface EventTitle {
+  /** Empty for events with no name. */
+  title: string
+  /** The calendar the latest of them is on, for its colour. */
+  calendarId: CalendarId
+  events: number
+  minutes: number
+}
+
+export interface MeetingPerson {
+  /** A name where an invitation gave one, else the address. */
+  name: string
+  /** Lower-cased, where an invitation gave one. */
+  email?: string
+  meetings: number
+  minutes: number
+}
+
 // ── Tracking ─────────────────────────────────────────────────────────────
 //
 // Four kinds of thing, one stored shape: a reading is a tracker, an instant
@@ -1152,6 +1250,8 @@ export interface CalendarEvent {
   allDay: boolean
   status: EventStatus
   organizer: string
+  /** Everybody else invited, as the feed gives them: a name, or an address. */
+  attendees?: string[]
   url: string
   /** False for a "free" or cancelled event, which should not read as a clash. */
   busy: boolean

@@ -103,6 +103,15 @@ export const NEEDS = [
    * every other widget's need asks for its own read.
    */
   'proposals',
+  /**
+   * A window of mail, counted: who wrote, who you wrote to, how much
+   * arrived. One read per distinct window on the page -- see
+   * `activityWindows` -- because a ranked list cannot be re-cut to a
+   * shorter window after the fact the way a day-by-day series can.
+   */
+  'mail',
+  /** A window of calendar events, counted -- the same arrangement as `mail`. */
+  'meetings',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -110,7 +119,17 @@ export type Need = (typeof NEEDS)[number]
 export type Subject = 'tracker'
 
 /** The headings the catalogue is filed under, in the order it draws them. */
-export const GROUPS = ['Today', 'Your time', 'Goals', 'Habits', 'Tasks', 'Everything else'] as const
+export const GROUPS = [
+  'Today',
+  'Your time',
+  'Goals',
+  'Habits',
+  'Tasks',
+  'Meetings',
+  'Mail',
+  'People',
+  'Everything else',
+] as const
 export type Group = (typeof GROUPS)[number]
 
 export interface WidgetSpec {
@@ -129,6 +148,12 @@ export interface WidgetSpec {
   subject?: Subject
   /** Day windows it can be set to, longest last. Absent means it has none. */
   windows?: number[]
+  /**
+   * The window it arrives at, when that is not the longest. The mail and
+   * meeting cards decrypt every record in their window, so they arrive at a
+   * month and leave the quarter to somebody who asks for it.
+   */
+  window?: number
 }
 
 /**
@@ -304,6 +329,104 @@ export const WIDGETS = {
     needs: ['taskStats'],
   },
 
+  // ── Meetings ───────────────────────────────────────────────────────
+  //
+  // Busy, timed events on the calendars you have left visible -- all-day,
+  // cancelled and "free" events are not time spent, and the same meeting on
+  // two calendars is counted once. See `everyday_core::insights`.
+  topEvents: {
+    label: 'What takes your calendar time',
+    note: 'Events grouped by name, ranked by the hours they took.',
+    group: 'Meetings',
+    icon: 'calendar',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['meetings'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+  meetingLoad: {
+    label: 'Time in meetings',
+    note: 'Hours under a calendar event, a day or a week at a time, overlaps counted once.',
+    group: 'Meetings',
+    icon: 'clock',
+    size: 'medium',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['meetings'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+
+  // ── Mail ───────────────────────────────────────────────────────────
+  topSenders: {
+    label: 'Who sends you the most',
+    note: 'Senders ranked by messages, with how many are still unread.',
+    group: 'Mail',
+    icon: 'inbox',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['mail'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+  mailVolume: {
+    label: 'Mail coming in',
+    note: 'Messages received a day or a week at a time, beside how many you sent.',
+    group: 'Mail',
+    icon: 'mail',
+    size: 'medium',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['mail'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+  mailKinds: {
+    label: 'What kind of mail',
+    note: 'What arrived, as one bar: important, other, newsletters and notifications.',
+    group: 'Mail',
+    icon: 'tag',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['mail'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+
+  // ── People ─────────────────────────────────────────────────────────
+  inTouch: {
+    label: 'Who you are most in touch with',
+    note: 'Mail and meetings together, person by person.',
+    group: 'People',
+    icon: 'people',
+    size: 'large',
+    sizes: ['medium', 'large'],
+    needs: ['mail', 'meetings'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+  meetWith: {
+    label: 'Who you meet with most',
+    note: 'Hours in meetings with each person. An all-hands is not time with anybody.',
+    group: 'People',
+    icon: 'people',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['meetings'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+  writeTo: {
+    label: 'Who you write to most',
+    note: 'People you sent mail to, and how much they sent back.',
+    group: 'People',
+    icon: 'mail',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['mail'],
+    windows: [7, 30, 90],
+    window: 30,
+  },
+
   // ── Everything else ────────────────────────────────────────────────
   shelves: {
     label: 'On the shelves',
@@ -407,7 +530,7 @@ export function widget(type: WidgetType, subject: string | null = null, id?: str
     type,
     size: spec.size,
     subject,
-    days: spec.windows ? (spec.windows[spec.windows.length - 1] ?? null) : null,
+    days: spec.windows ? (spec.window ?? spec.windows[spec.windows.length - 1] ?? null) : null,
   }
 }
 
@@ -574,6 +697,24 @@ export function trackerWindow(list: Widget[], floor = 120): number {
       specOf(w.type).needs.includes('trackerDays') ? Math.max(most, w.days ?? 0) : most,
     floor,
   )
+}
+
+/**
+ * Every window the cards reading `need` ask for, shortest first, once each.
+ *
+ * Not the longest alone, the way `trackerWindow` and the writing card's
+ * window are. Those draw a series a day at a time, and a shorter card can
+ * cut its days out of a longer read. A ranked list cannot: the top senders of
+ * a quarter are not the top senders of its last week. So each distinct window
+ * is its own read -- and on a page where every mail card is left at the month
+ * it arrives at, that is still one.
+ */
+export function activityWindows(list: Widget[], need: 'mail' | 'meetings'): number[] {
+  const out = new Set<number>()
+  for (const w of list) {
+    if (w.days !== null && specOf(w.type).needs.includes(need)) out.add(w.days)
+  }
+  return [...out].sort((a, b) => a - b)
 }
 
 /**

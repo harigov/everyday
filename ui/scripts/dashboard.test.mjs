@@ -28,6 +28,7 @@ import { load, makeCheck } from './harness.mjs'
 
 const { module: dashboard, close } = await load('/src/lib/dashboard.ts')
 const {
+  activityWindows,
   addWidget,
   aqiTier,
   byTimeOrLast,
@@ -267,11 +268,50 @@ check(
 )
 // The whole catalogue at once is still a handful of queries, not one per card.
 // Twelve since the weather card, whose one need is a forecast rather than
-// another read of the vault.
+// another read of the vault; fourteen since the mail and meeting cards, which
+// share two reads between eight of them.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 12,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 14,
 )
+
+// ── mail and meeting windows ───────────────────────────────────────────
+//
+// Each distinct window is a read that decrypts every message or event in it,
+// so these are the rules that decide how many of those a page costs.
+{
+  const page = ['topSenders', 'mailVolume', 'writeTo'].reduce((l, t) => addWidget(l, t), [])
+  check('mail cards arrive at a month, not the longest window', page[0].days, 30)
+  check('three mail cards at one window are one read', activityWindows(page, 'mail'), [30])
+  check(
+    'a card set to a quarter adds a second read, shortest first',
+    activityWindows(setDays(page, 'mailVolume:1', 90), 'mail'),
+    [30, 90],
+  )
+  check('a mail card asks nothing of the calendar', activityWindows(page, 'meetings'), [])
+  const both = addWidget(addWidget([], 'inTouch'), 'meetingLoad')
+  check(
+    'the people card reads both, at its own window',
+    [activityWindows(both, 'mail'), activityWindows(both, 'meetings')],
+    [[30], [30]],
+  )
+  check(
+    '...and a window over entries is not a mail window',
+    activityWindows(addWidget([], 'writing'), 'mail'),
+    [],
+  )
+  check(
+    'a stored mail card with a window nobody offers falls back to the month',
+    parseLayout(JSON.stringify([{ type: 'topSenders', days: 365 }]))[0].days,
+    30,
+  )
+  for (const type of WIDGET_TYPES) {
+    const spec = WIDGETS[type]
+    if (spec.window !== undefined) {
+      ok(`${type} arrives at a window it offers`, spec.windows?.includes(spec.window) === true)
+    }
+  }
+}
 
 // The readings window is the longest any *tracker* card asks for, never
 // shorter than the floor a heatmap needs.

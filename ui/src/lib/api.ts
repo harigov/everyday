@@ -386,6 +386,15 @@ export function newRequestId(): string {
 export const isMock = MOCK
 
 /**
+ * The zone this window reckons days in, for a command that buckets instants
+ * into them. Undefined where the runtime cannot name it, which leaves the
+ * service to use the machine's -- the same machine, for the desktop app.
+ */
+function localZone(): string | undefined {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined
+}
+
+/**
  * Call a command from the generated surface, typed against it.
  *
  * `gen-api.mjs` exists so that renaming an argument in Rust is a type error
@@ -1042,6 +1051,15 @@ export const api = {
   balance: (from: string, to: string) => call('timeByPurpose', { from, to }),
 
   goalActivity: (id: GoalId) => call('goalActivity', { id }),
+
+  /**
+   * A window of mail and of meetings, counted, for the Overview. Each is a
+   * decrypt of every record in the window, so a window is a quarter at most
+   * from the interface. `tz` is ours, so a day here is the day on screen.
+   */
+  mailActivity: (from: string, to: string) => call('mailActivity', { from, to, tz: localZone() }),
+  meetingActivity: (from: string, to: string) =>
+    call('meetingActivity', { from, to, tz: localZone() }),
 
   // ── The tracking domain ────────────────────────────────────────────
   //

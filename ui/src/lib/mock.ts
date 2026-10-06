@@ -27,6 +27,7 @@ import type {
   CalendarEvent,
   CalendarInfo,
   BalanceReport,
+  MeetingActivity,
   MailAgentOriginKind,
   MailProviderInfo,
   MailSyncProgress,
@@ -120,6 +121,7 @@ import {
   mockListMailboxes,
   mockListThreads,
   mockMailActionsByOrigin,
+  mockMailActivity,
   mockMarkRead,
   mockMarkUnread,
   mockMoveToMailbox,
@@ -2054,6 +2056,198 @@ const events: CalendarEvent[] = [
     } satisfies CalendarEvent
   })(),
 ]
+
+// Six weeks of past meetings, so the Overview's meeting and people cards have
+// a history to count. Weekdays only, in the shapes a working calendar has: a
+// daily stand-up, a weekly one-to-one, a fortnightly review, a lunch, and an
+// all-hands too large to be time with anybody in particular.
+{
+  const team = [
+    'Priya Raman <priya@example.com>',
+    'Marcus Webb <marcus.webb@example.com>',
+    'Nadia Osei <nadia@example.com>',
+  ]
+  const everybody = [
+    ...team,
+    'Sofia Alonso <sofia@example.com>',
+    'Tom Fenwick <tom.fenwick@example.com>',
+    'Ben Carrow <ben@example.com>',
+    'Yuki Tanaka <yuki.tanaka@example.com>',
+    'Jordan Lee <jordan@example.com>',
+    'Ines Duarte <ines@example.com>',
+    'Omar Haddad <omar@example.com>',
+    'me@gmail.com',
+  ]
+  for (let back = 1; back <= 42; back++) {
+    const at = new Date()
+    at.setDate(at.getDate() - back)
+    const weekday = at.getDay()
+    if (weekday === 0 || weekday === 6) continue
+    const id = (what: string) => `ev-past-${back}-${what}`
+    events.push(
+      eventAt(id('standup'), 'c-work', -back, 9, 15, 'Stand-up', {
+        location: 'Meeting room 4',
+        attendees: [...team, 'me@gmail.com'],
+      }),
+    )
+    if (weekday === 2) {
+      events.push(
+        eventAt(id('1on1'), 'c-work', -back, 14, 30, 'One-to-one', {
+          organizer: 'Priya Raman',
+          attendees: ['Priya Raman <priya@example.com>', 'Sam Weatherby <me@gmail.com>'],
+        }),
+      )
+    }
+    if (weekday === 4 && Math.floor(back / 7) % 2 === 0) {
+      events.push(
+        eventAt(id('review'), 'c-work', -back, 11, 60, 'Design review', {
+          organizer: 'Priya Raman',
+          attendees: [...team, 'Jordan Lee <jordan@example.com>'],
+        }),
+      )
+    }
+    if (weekday === 3 && back % 2 === 1) {
+      events.push(
+        eventAt(id('lunch'), 'c-work', -back, 12, 60, 'Lunch with Ana', {
+          attendees: ['Ana Ferreira'],
+        }),
+      )
+    }
+    if (weekday === 5) {
+      events.push(
+        eventAt(id('allhands'), 'c-work', -back, 16, 45, 'All hands', {
+          attendees: everybody,
+        }),
+      )
+      // Overlapping the all-hands on purpose: two at once are one hour of a
+      // day, and the "Time in meetings" card should say so.
+      events.push(eventAt(id('focus'), 'c-work', -back, 16, 90, 'Focus time'))
+    }
+  }
+}
+
+/**
+ * `meeting_activity`, over the mock calendar: the rules
+ * `everyday_core::insights` counts by -- busy, timed events on visible
+ * calendars, duplicates once, overlaps once, you left out of the people, a
+ * meeting of more than eight other people left out of them too.
+ */
+function mockMeetingActivity(from: string, to: string): MeetingActivity {
+  const start = new Date(`${from}T00:00:00`).getTime()
+  const endDay = new Date(`${to}T00:00:00`)
+  endDay.setDate(endDay.getDate() + 1)
+  const end = endDay.getTime()
+  const visible = new Set(calendars.filter((c) => c.visible).map((c) => c.id))
+  const me = new Set(['me@gmail.com', 'me@fastmail.com', 'me', 'sam weatherby'])
+  const seen = new Set<string>()
+  const slots = events
+    .filter((e) => !e.allDay && e.busy && e.status !== 'cancelled' && visible.has(e.calendarId))
+    .map((e) => ({
+      e,
+      from: Math.max(start, Date.parse(e.start)),
+      to: Math.min(end, Date.parse(e.end)),
+    }))
+    .filter((s) => s.from < s.to)
+    .sort((a, b) => a.from - b.from)
+    .filter((s) => {
+      const key = `${s.e.title.trim().toLowerCase()}|${s.e.start}|${s.e.end}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+
+  const days = new Map<string, { events: number; spans: [number, number][] }>()
+  for (let d = from; d <= to; d = addDays(d, 1)) days.set(d, { events: 0, spans: [] })
+  for (const s of slots) {
+    const d = days.get(isoDate(new Date(s.from)))
+    if (!d) continue
+    d.events += 1
+    d.spans.push([s.from, s.to])
+  }
+  let total = 0
+  const dayRows = [...days].map(([date, d]) => {
+    let ms = 0
+    let open: [number, number] | null = null
+    for (const [a, b] of d.spans.sort((x, y) => x[0] - y[0])) {
+      if (open && a <= open[1]) open[1] = Math.max(open[1], b)
+      else {
+        if (open) ms += open[1] - open[0]
+        open = [a, b]
+      }
+    }
+    if (open) ms += open[1] - open[0]
+    total += ms
+    return { date, events: d.events, minutes: Math.floor(ms / 60_000) }
+  })
+
+  // A name seen beside exactly one address is that address -- the organizer
+  // the feed named only by name is the same Priya as the attendee with one.
+  const parse = (raw: string) => {
+    const m = /^\s*"?([^"<]*?)"?\s*<([^>]+)>\s*$/.exec(raw)
+    return {
+      name: (m ? m[1]! : raw.includes('@') ? '' : raw).trim(),
+      email: (m ? m[2]! : raw.includes('@') ? raw : '').trim().toLowerCase(),
+    }
+  }
+  const addressesOf = new Map<string, Set<string>>()
+  for (const s of slots) {
+    for (const raw of [s.e.organizer, ...(s.e.attendees ?? [])]) {
+      const { name, email } = parse(raw)
+      if (!name || !email) continue
+      const set = addressesOf.get(name.toLowerCase()) ?? new Set()
+      set.add(email)
+      addressesOf.set(name.toLowerCase(), set)
+    }
+  }
+
+  const titles = new Map<string, MeetingActivity['titles'][number]>()
+  const people = new Map<string, MeetingActivity['people'][number]>()
+  let crowded = 0
+  for (const s of slots) {
+    const minutes = Math.floor((s.to - s.from) / 60_000)
+    const key = s.e.title.trim().toLowerCase()
+    const t = titles.get(key) ?? { title: '', calendarId: s.e.calendarId, events: 0, minutes: 0 }
+    t.title = s.e.title.trim()
+    t.events += 1
+    t.minutes += minutes
+    titles.set(key, t)
+
+    const here = new Map<string, { name: string; email?: string }>()
+    for (const raw of [s.e.organizer, ...(s.e.attendees ?? [])]) {
+      const { name } = parse(raw)
+      let { email } = parse(raw)
+      if (!name && !email) continue
+      if (me.has(email) || me.has(name.toLowerCase())) continue
+      const known = addressesOf.get(name.toLowerCase())
+      if (!email && known?.size === 1) email = [...known][0]!
+      const key = email || name.toLowerCase()
+      here.set(key, {
+        name: name || here.get(key)?.name || email,
+        email: email || undefined,
+      })
+    }
+    if (here.size === 0) continue
+    if (here.size > 8) {
+      crowded += 1
+      continue
+    }
+    for (const [k, p] of here) {
+      const row = people.get(k) ?? { ...p, meetings: 0, minutes: 0 }
+      row.meetings += 1
+      row.minutes += minutes
+      people.set(k, row)
+    }
+  }
+
+  return {
+    events: slots.length,
+    minutes: Math.floor(total / 60_000),
+    days: dayRows,
+    titles: [...titles.values()].sort((a, b) => b.minutes - a.minutes || b.events - a.events),
+    people: [...people.values()].sort((a, b) => b.minutes - a.minutes || b.meetings - a.meetings),
+    crowded,
+  }
+}
 
 /** Open tasks grouped by project; `null` is the inbox. Mirrors the SQL. */
 function openPerProject(): Map<string | null, number> {
@@ -4098,6 +4292,14 @@ export const mockInvoke = async <T>(
         .sort((a, b) => Number(b.allDay) - Number(a.allDay) || a.start.localeCompare(b.start))
         .slice(0, q.limit ?? undefined) as T
     }
+
+    case 'meeting_activity':
+      requireUnlocked()
+      return mockMeetingActivity(str(args.from), str(args.to)) as T
+
+    case 'mail_activity':
+      requireUnlocked()
+      return mockMailActivity(str(args.from), str(args.to)) as T
 
     case 'get_event': {
       requireUnlocked()

@@ -55,12 +55,6 @@
   },
   {
     "type": "CalendarEvent",
-    "field": "attendees",
-    "kind": "field-only-in-rust",
-    "reason": "Sealed with the event but never selected into the read path the UI gets; worth wiring up, since it is the field that makes \"who is coming\" answerable."
-  },
-  {
-    "type": "CalendarEvent",
     "field": "busy",
     "kind": "optionality",
     "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."

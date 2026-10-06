@@ -24,8 +24,11 @@ import type {
   MailAddress,
   MailAgentOriginKind,
   MailAttachment,
+  MailActivity,
   MailCategory,
+  MailCorrespondent,
   MailInvite,
+  MailSender,
   Mailbox,
   MailboxId,
   MailboxRole,
@@ -357,7 +360,8 @@ function buildSeed(): Seeded {
     for (let m = 0; m < messageCount; m++) {
       hoursAgo += 2 + (i % 5)
       const msgId: MailMessageId = nextId('msg')
-      const sender = m === 0 ? from : m % 2 === 0 ? from : ME
+      // Nobody writes back to a newsletter: an automated thread is all theirs.
+      const sender = automated || m === 0 ? from : m % 2 === 0 ? from : ME
       if (!participants.some((p) => p.email === sender.email)) participants.push(sender)
       const flagged = automated ? false : i % 11 === 0
       const message: MailMessage = {
@@ -367,7 +371,12 @@ function buildSeed(): Seeded {
         messageIdHeader: `${msgId}@example.com`,
         date: iso(hoursAgo),
         from: sender,
-        to: [ME],
+        // What you sent went to the other side of the thread -- or, in a
+        // thread you started, to somebody -- so the Overview's "who you
+        // write to" has somebody to count.
+        to: [
+          sender.email === ME.email ? (from.email === ME.email ? pick(PEOPLE, i + 3) : from) : ME,
+        ],
         cc: [],
         bcc: [],
         replyTo: [],
@@ -462,6 +471,129 @@ function buildSeed(): Seeded {
 }
 
 const seed = buildSeed()
+
+// ── The Overview's mail cards ────────────────────────────────────────
+
+/** Every address the mock's accounts send as. */
+const OWN = new Set(['me@gmail.com', 'me@fastmail.com'])
+
+/**
+ * `mail_activity`, over the seed: the rules `everyday_core::insights`
+ * counts by, close enough for a page to be looked at -- received and sent
+ * told apart by address, spam and drafts left out, days in local time.
+ */
+export function mockMailActivity(from: string, to: string): MailActivity {
+  const local = (iso: string) => {
+    const d = new Date(iso)
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  }
+  const days = new Map<string, { received: number; sent: number }>()
+  for (
+    const d = new Date(`${from}T00:00:00`);
+    local(d.toISOString()) <= to;
+    d.setDate(d.getDate() + 1)
+  ) {
+    days.set(local(d.toISOString()), { received: 0, sent: 0 })
+  }
+  const spam = new Set(mailboxes.filter((m) => m.role === 'spam').map((m) => m.id))
+  const kinds = new Map<MailCategory | null, number>()
+  const people = new Map<
+    string,
+    {
+      name: string
+      received: number
+      unread: number
+      sent: number
+      last: string
+      kinds: Map<MailCategory | null, number>
+    }
+  >()
+  const tally = (email: string, name: string, at: string) => {
+    const key = email.toLowerCase()
+    const p = people.get(key) ?? {
+      name: '',
+      received: 0,
+      unread: 0,
+      sent: 0,
+      last: at,
+      kinds: new Map(),
+    }
+    // The latest name wins, the way the Rust side keeps it.
+    if (name && (at >= p.last || !p.name)) p.name = name
+    if (at > p.last) p.last = at
+    people.set(key, p)
+    return p
+  }
+
+  let received = 0
+  let sent = 0
+  let unread = 0
+  for (const m of seed.messages.values()) {
+    const day = days.get(local(m.date))
+    if (!day || m.flags.draft) continue
+    if ((seed.threadMailboxes.get(m.threadId) ?? []).some((id) => spam.has(id))) continue
+    if (OWN.has(m.from.email.toLowerCase())) {
+      sent += 1
+      day.sent += 1
+      for (const r of [...m.to, ...m.cc, ...m.bcc]) {
+        if (!OWN.has(r.email.toLowerCase())) tally(r.email, r.name, m.date).sent += 1
+      }
+      continue
+    }
+    received += 1
+    day.received += 1
+    const category = m.category ?? null
+    kinds.set(category, (kinds.get(category) ?? 0) + 1)
+    const p = tally(m.from.email, m.from.name, m.date)
+    p.received += 1
+    p.kinds.set(category, (p.kinds.get(category) ?? 0) + 1)
+    if (!m.flags.seen) {
+      unread += 1
+      p.unread += 1
+    }
+  }
+
+  const order: (MailCategory | null)[] = ['important', 'other', 'newsletter', 'notification', null]
+  const mostly = (k: Map<MailCategory | null, number>) =>
+    order.reduce((best, c) => ((k.get(c) ?? 0) > (k.get(best) ?? 0) ? c : best), order[0]!)
+  const senders: MailSender[] = [...people]
+    .filter(([, p]) => p.received > 0)
+    .map(([email, p]) => ({
+      email,
+      name: p.name,
+      messages: p.received,
+      unread: p.unread,
+      category: mostly(p.kinds),
+    }))
+    .sort(
+      (a, b) => b.messages - a.messages || b.unread - a.unread || a.email.localeCompare(b.email),
+    )
+    .slice(0, 30)
+  const correspondents: MailCorrespondent[] = [...people]
+    .filter(
+      ([, p]) => p.sent > 0 || !['newsletter', 'notification'].includes(mostly(p.kinds) ?? ''),
+    )
+    .map(([email, p]) => ({
+      email,
+      name: p.name,
+      received: p.received,
+      sent: p.sent,
+      last: p.last,
+    }))
+    .sort((a, b) => b.received + b.sent - (a.received + a.sent) || b.sent - a.sent)
+    .slice(0, 100)
+
+  return {
+    received,
+    sent,
+    unread,
+    days: [...days].map(([date, d]) => ({ date, ...d })),
+    categories: order.map((category) => ({ category, messages: kinds.get(category) ?? 0 })),
+    senders,
+    correspondents,
+  }
+}
 
 /** Every message in `threadId`, oldest first -- the shape `mockGetThread`
  *  already builds; pulled out because several write handlers below need it

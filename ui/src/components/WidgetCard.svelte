@@ -39,6 +39,25 @@
 
   const spec = $derived(specOf(widget.type))
 
+  function windowLabel(days: number): string {
+    return days >= 365 ? 'A year' : `${days} days`
+  }
+
+  /** The window choices, for the card menu and the chip in the header alike. */
+  function windowItems(): MenuItem[] {
+    return (spec.windows ?? []).map((days) => ({
+      label: windowLabel(days),
+      checked: widget.days === days,
+      run: () => overview.rewindow(widget.id, days),
+    }))
+  }
+
+  /** Open the window choices under the chip, rather than at the pointer. */
+  function pickWindow(e: MouseEvent) {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    menu.showAt(box.left, box.bottom + 4, windowItems())
+  }
+
   function cardMenu(): MenuItem[] {
     return tidyMenu([
       {
@@ -76,11 +95,7 @@
       spec.windows && {
         label: 'Window',
         icon: 'calendar',
-        items: spec.windows.map((days) => ({
-          label: days >= 365 ? 'A year' : `${days} days`,
-          checked: widget.days === days,
-          run: () => overview.rewindow(widget.id, days),
-        })),
+        items: windowItems(),
       },
       SEP,
       {
@@ -116,6 +131,14 @@
     <h2>{spec.label}</h2>
     <span class="spacer"></span>
     {#if tools}<div class="tools">{@render tools()}</div>{/if}
+    {#if spec.windows && widget.days !== null}
+      <!-- The window on show, always: "who sends you the most" means
+           nothing without "over what". The same choices as the card menu. -->
+      <button class="window" title="Change the window" aria-haspopup="menu" onclick={pickWindow}>
+        {windowLabel(widget.days)}
+        <span class="down"><Icon name="chevron" size={10} /></span>
+      </button>
+    {/if}
     {#if overview.editing}
       <div class="handles">
         <button
@@ -222,6 +245,29 @@
     place-items: center;
     color: var(--fg-faint);
     cursor: grab;
+  }
+
+  .window {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 3px;
+    height: 20px;
+    padding: 0 var(--sp-1) 0 var(--sp-2);
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+  .window:hover {
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+  }
+  /* The icon set's one chevron points right; a menu opens downwards. */
+  .down {
+    display: grid;
+    place-items: center;
+    rotate: 90deg;
   }
 
   .tools,

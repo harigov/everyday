@@ -50,6 +50,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     star_then_unstar_updates_the_thread(store);
     an_attachment_flags_the_thread(store);
     removing_the_only_starred_message_clears_starred(store);
+    messages_between_keeps_to_its_window_and_leaves_out_spam(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -611,6 +612,61 @@ fn pending_bodies_finds_only_unfetched_messages_newest_first(store: &dyn Journal
     assert_eq!(capped[0].0.id, newer_pending.id, "limit keeps the newest, not an arbitrary one");
 
     cleanup_account(store, account);
+}
+
+fn messages_between_keeps_to_its_window_and_leaves_out_spam(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let other_account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let trash = Mailbox::new(account, "Trash", MailboxRole::Trash);
+    let spam = Mailbox::new(account, "Junk", MailboxRole::Spam);
+    let elsewhere = Mailbox::new(other_account, "INBOX", MailboxRole::Inbox);
+    for mailbox in [&inbox, &trash, &spam, &elsewhere] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+
+    let from = Timestamp::from_second(1_790_000_000).unwrap();
+    let to = from + SignedDuration::from_hours(24);
+    let at = |hours: i64| from + SignedDuration::from_hours(hours);
+
+    let first = message(account, ThreadId::new(), "first", "a@example.com", from);
+    let later = message(account, ThreadId::new(), "later", "b@example.com", at(20));
+    let binned = message(account, ThreadId::new(), "binned", "c@example.com", at(2));
+    let junk = message(account, ThreadId::new(), "junk", "d@example.com", at(3));
+    let before = message(account, ThreadId::new(), "before", "a@example.com", at(-1));
+    let on_the_end = message(account, ThreadId::new(), "on the end", "a@example.com", to);
+    let not_mine = message(other_account, ThreadId::new(), "not mine", "a@example.com", at(4));
+
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: later.clone(), mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: first.clone(), mailbox: inbox.id, uid: 2 },
+            IngestMessage { message: binned.clone(), mailbox: trash.id, uid: 1 },
+            IngestMessage { message: junk.clone(), mailbox: spam.id, uid: 1 },
+            IngestMessage { message: before, mailbox: inbox.id, uid: 3 },
+            IngestMessage { message: on_the_end, mailbox: inbox.id, uid: 4 },
+        ],
+    )
+    .unwrap();
+    m.ingest(
+        other_account,
+        vec![IngestMessage { message: not_mine, mailbox: elsewhere.id, uid: 1 }],
+    )
+    .unwrap();
+
+    let found: Vec<_> =
+        m.messages_between(account, from, to).unwrap().into_iter().map(|msg| msg.id).collect();
+    assert_eq!(
+        found,
+        vec![first.id, binned.id, later.id],
+        "oldest first, `from` included and `to` not, trash kept, spam and the other account's \
+         mail left out"
+    );
+
+    cleanup_account(store, account);
+    cleanup_account(store, other_account);
 }
 
 fn account_delete_cascades_every_mail_row(store: &dyn JournalStore) {

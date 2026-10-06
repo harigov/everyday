@@ -509,6 +509,28 @@ pub trait MailStore: Send + Sync {
     /// mailbox list's counts both read.
     fn unread_counts(&self, account: AccountId) -> Result<Vec<(MailboxId, u64)>>;
 
+    // ---- the Overview's mail widgets ----------------------------------------
+
+    /// Every message of `account`'s dated in `[from, to)`, oldest first,
+    /// leaving out any a spam folder holds -- what the Overview's "who sends
+    /// you the most" and "mail coming in" are counted from.
+    ///
+    /// A decrypt of every row in the window rather than a clear-column
+    /// aggregate, and it has to be: who a message is from and who it went to
+    /// are sealed, and those are the whole question. The window is what keeps
+    /// it bounded -- the interface asks for at most a quarter at a time.
+    ///
+    /// Spam is left out here rather than by the caller because only the store
+    /// can see which folders a message is filed in. Trash is not: mail
+    /// somebody deleted unread is still mail they were sent, and the sender
+    /// who fills the bin is the one most worth knowing about.
+    fn messages_between(
+        &self,
+        account: AccountId,
+        from: Timestamp,
+        to: Timestamp,
+    ) -> Result<Vec<Message>>;
+
     // ---- garbage collection --------------------------------------------------
 
     /// Every attachment or inline-image blob a synced message's [`Body`]
