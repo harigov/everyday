@@ -19,8 +19,8 @@ use everyday_core::id::{
     AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, PackId, ThreadId,
 };
 use everyday_core::mail::{
-    Body, Category, CategoryMatch, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message,
-    MessageFlags, Op, OpTarget, RemoteImageSettings, Thread,
+    Body, Category, CategoryMatch, CategoryRules, CategorySource, ContactBook, Draft, Invite,
+    Mailbox, Message, MessageFlags, Op, OpTarget, RemoteImageSettings, Thread,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
@@ -505,6 +505,15 @@ impl MailStore for SqlStore {
         write::set_message_category(self, id, category)
     }
 
+    fn set_message_category_with_source(
+        &self,
+        id: MailMessageId,
+        category: Category,
+        source: CategorySource,
+    ) -> Result<()> {
+        write::set_message_category_with_source(self, id, category, source)
+    }
+
     fn hide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()> {
         write::hide_thread_from_mailbox(self, thread, mailbox)
     }
@@ -523,6 +532,10 @@ impl MailStore for SqlStore {
 
     fn set_thread_ai_auto_draft_asked(&self, thread: ThreadId, message_count: u32) -> Result<()> {
         write::set_thread_ai_auto_draft_asked(self, thread, message_count)
+    }
+
+    fn set_thread_ai_priority_asked(&self, thread: ThreadId, message_count: u32) -> Result<()> {
+        write::set_thread_ai_priority_asked(self, thread, message_count)
     }
 
     fn due_snoozed_threads(&self, now: Timestamp, limit: u32) -> Result<Vec<ThreadId>> {

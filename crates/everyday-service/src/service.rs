@@ -218,6 +218,54 @@ impl Service {
         self.mail.set_autodraft_cursor(account, cursor);
     }
 
+    /// As [`Service::mail_categorize_cursor`], for the priority pass.
+    pub fn mail_priority_cursor(&self, account: AccountId) -> Option<String> {
+        self.mail.priority_cursor(account)
+    }
+
+    /// As [`Service::set_mail_categorize_cursor`], for the priority pass.
+    pub fn set_mail_priority_cursor(&self, account: AccountId, cursor: Option<String>) {
+        self.mail.set_priority_cursor(account, cursor);
+    }
+
+    /// `account`'s cached [`VoiceProfile`](everyday_core::mail::voice::VoiceProfile),
+    /// if one was read no longer than `max_age` ago -- see
+    /// `everyday_service::mailvoice`.
+    pub fn mail_voice_cached(
+        &self,
+        account: AccountId,
+        max_age: jiff::SignedDuration,
+    ) -> Option<Arc<everyday_core::mail::voice::VoiceProfile>> {
+        self.mail.voice_cached(account, self.now(), max_age)
+    }
+
+    pub fn mail_voice_cache_put(
+        &self,
+        account: AccountId,
+        profile: Arc<everyday_core::mail::voice::VoiceProfile>,
+    ) {
+        self.mail.voice_cache_put(account, self.now(), profile);
+    }
+
+    /// `thread`'s cached reply suggestions, if `message_count` still matches
+    /// what they were written against.
+    pub fn mail_replies_cached(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+    ) -> Option<Vec<crate::mailwrite::ReplySuggestion>> {
+        self.mail.replies_cached(thread, message_count)
+    }
+
+    pub fn mail_replies_cache_put(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+        replies: Vec<crate::mailwrite::ReplySuggestion>,
+    ) {
+        self.mail.replies_cache_put(thread, message_count, replies);
+    }
+
     /// `thread`'s cached summary, if one exists and `message_count` still
     /// matches what it was written against -- see
     /// [`crate::runtime::mail::MailRuntime`]'s own docs on the field this

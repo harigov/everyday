@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use everyday_core::id::{AccountId, DraftId, ThreadId};
 use everyday_core::mail::rate_limit::RateLimitRefusal;
+use everyday_core::mail::voice::VoiceProfile;
 use everyday_core::mail::{RateLimitState, TokenBucket};
 use jiff::{SignedDuration, Timestamp};
 
@@ -73,6 +74,18 @@ pub(crate) struct MailRuntime {
     /// As [`MailRuntime::categorize_cursor`], for the auto-draft pass over
     /// `Important` threads.
     autodraft_cursor: Mutex<HashMap<AccountId, String>>,
+    /// As [`MailRuntime::categorize_cursor`], for the priority pass over
+    /// `Important` threads -- `everyday_service::mailai`'s question of
+    /// which of them need the person soon.
+    priority_cursor: Mutex<HashMap<AccountId, String>>,
+    /// Each account's [`VoiceProfile`], and when it was read -- reading one
+    /// decrypts dozens of sent messages, so `everyday_service::mailvoice`
+    /// keeps it for a while rather than paying that on every suggestion.
+    voice_cache: Mutex<HashMap<AccountId, (Timestamp, Arc<VoiceProfile>)>>,
+    /// `suggest_replies`' cache, on the same terms as `summary_cache`: a
+    /// thread's three suggestions, keyed by how many messages it had when
+    /// they were written, so reopening a thread does not ask again.
+    reply_cache: Mutex<HashMap<ThreadId, (u32, Vec<crate::mailwrite::ReplySuggestion>)>>,
 }
 
 impl MailRuntime {
@@ -113,6 +126,9 @@ impl MailRuntime {
             summary_cache: Mutex::new(HashMap::new()),
             categorize_cursor: Mutex::new(HashMap::new()),
             autodraft_cursor: Mutex::new(HashMap::new()),
+            priority_cursor: Mutex::new(HashMap::new()),
+            voice_cache: Mutex::new(HashMap::new()),
+            reply_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -222,6 +238,56 @@ impl MailRuntime {
         set_cursor(&self.autodraft_cursor, account, cursor);
     }
 
+    pub(crate) fn priority_cursor(&self, account: AccountId) -> Option<String> {
+        self.priority_cursor.lock().unwrap().get(&account).cloned()
+    }
+
+    pub(crate) fn set_priority_cursor(&self, account: AccountId, cursor: Option<String>) {
+        set_cursor(&self.priority_cursor, account, cursor);
+    }
+
+    /// `account`'s cached profile, if one was read no longer than `max_age`
+    /// before `now`.
+    pub(crate) fn voice_cached(
+        &self,
+        account: AccountId,
+        now: Timestamp,
+        max_age: SignedDuration,
+    ) -> Option<Arc<VoiceProfile>> {
+        let cache = self.voice_cache.lock().unwrap();
+        cache
+            .get(&account)
+            .filter(|(at, _)| now.duration_since(*at) <= max_age)
+            .map(|(_, p)| p.clone())
+    }
+
+    pub(crate) fn voice_cache_put(
+        &self,
+        account: AccountId,
+        now: Timestamp,
+        profile: Arc<VoiceProfile>,
+    ) {
+        self.voice_cache.lock().unwrap().insert(account, (now, profile));
+    }
+
+    pub(crate) fn replies_cached(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+    ) -> Option<Vec<crate::mailwrite::ReplySuggestion>> {
+        let cache = self.reply_cache.lock().unwrap();
+        cache.get(&thread).filter(|(n, _)| *n == message_count).map(|(_, r)| r.clone())
+    }
+
+    pub(crate) fn replies_cache_put(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+        replies: Vec<crate::mailwrite::ReplySuggestion>,
+    ) {
+        self.reply_cache.lock().unwrap().insert(thread, (message_count, replies));
+    }
+
     pub(crate) fn summary_cached(&self, thread: ThreadId, message_count: u32) -> Option<String> {
         let cache = self.summary_cache.lock().unwrap();
         cache.get(&thread).filter(|(n, _)| *n == message_count).map(|(_, s)| s.clone())
@@ -233,7 +299,7 @@ impl MailRuntime {
 
     // ---- the extra clearing a full vault close does ---------------------
     //
-    // `on_lock` bundles these six, called in this order, right after
+    // `on_lock` bundles these, called in this order, right after
     // `Service::close` closes mail's pack store and index -- unlike
     // `locked()` (a lock screen; the same vault is still the one to
     // reopen), which calls `on_lock` at all. Deliberately not
@@ -266,8 +332,19 @@ impl MailRuntime {
         self.autodraft_cursor.lock().unwrap().clear();
     }
 
+    fn forget_priority_cursor(&self) {
+        self.priority_cursor.lock().unwrap().clear();
+    }
+
+    /// A profile and suggestions are both read from this vault's mail, so
+    /// neither may outlive it being open.
+    fn forget_writing_caches(&self) {
+        self.voice_cache.lock().unwrap().clear();
+        self.reply_cache.lock().unwrap().clear();
+    }
+
     /// Called once, by [`Service::close`](crate::service::Service::close),
-    /// in place of the six `forget_*` calls above written out by hand.
+    /// in place of the `forget_*` calls above written out by hand.
     /// **Not** called by `Service::locked` -- see this module's own doc for
     /// why that gap is deliberate, and `tests/runtime_lifecycle.rs` for the
     /// test that pins it.
@@ -278,6 +355,8 @@ impl MailRuntime {
         self.forget_summary_cache();
         self.forget_categorize_cursor();
         self.forget_autodraft_cursor();
+        self.forget_priority_cursor();
+        self.forget_writing_caches();
     }
 }
 

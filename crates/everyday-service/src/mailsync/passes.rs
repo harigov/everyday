@@ -463,16 +463,19 @@ pub async fn sync_headers<S: MailSession>(
             // The Gmail folder rule: All Mail carries every physical
             // message, and its own `X-GM-LABELS` is where `\Inbox` and
             // every user label come from -- see `crate::mailsync::discovery`.
+            // Not every label resolves to a row -- see
+            // `LabelMailboxes::resolve`'s own docs for which, and why.
             if mailbox.row.role == MailboxRole::All
                 && let Some(gmail) = &header.gmail
             {
                 for label in &gmail.labels {
-                    let label_row = labels.resolve(ctx.vault, label);
-                    ingest_batch.push(IngestMessage {
-                        message: resolved.message.clone(),
-                        mailbox: label_row.id,
-                        uid: header.uid,
-                    });
+                    if let Some(label_row) = labels.resolve(ctx.vault, label) {
+                        ingest_batch.push(IngestMessage {
+                            message: resolved.message.clone(),
+                            mailbox: label_row.id,
+                            uid: header.uid,
+                        });
+                    }
                 }
             }
         }
@@ -696,22 +699,28 @@ async fn refresh_gmail_labels<S: MailSession>(
         let mut current = current;
         current.labels = gmail.labels.clone();
 
+        // Not every label resolves to a row -- see
+        // `LabelMailboxes::resolve`'s own docs for which, and why.
+        // `Message::labels`, updated above, has already recorded the
+        // change regardless.
         for removed_label in &removed_labels {
-            let label_row = labels.resolve(ctx.vault, removed_label);
-            if let Ok(removed) = ctx.vault.remove_mail_uids(label_row.id, &[header.uid]) {
+            if let Some(label_row) = labels.resolve(ctx.vault, removed_label)
+                && let Ok(removed) = ctx.vault.remove_mail_uids(label_row.id, &[header.uid])
+            {
                 reap_dead_messages(ctx, &removed);
             }
         }
         for added_label in &added_labels {
-            let label_row = labels.resolve(ctx.vault, added_label);
-            let _ = ctx.vault.ingest_mail(
-                ctx.account_id,
-                vec![IngestMessage {
-                    message: current.clone(),
-                    mailbox: label_row.id,
-                    uid: header.uid,
-                }],
-            );
+            if let Some(label_row) = labels.resolve(ctx.vault, added_label) {
+                let _ = ctx.vault.ingest_mail(
+                    ctx.account_id,
+                    vec![IngestMessage {
+                        message: current.clone(),
+                        mailbox: label_row.id,
+                        uid: header.uid,
+                    }],
+                );
+            }
         }
     }
     Ok(changed_anything)

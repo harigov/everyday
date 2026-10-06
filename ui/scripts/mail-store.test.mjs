@@ -106,6 +106,78 @@ assert.equal(
   assert.equal(typeof now.unreadCount, typeof before, 'the row was replaced with a fresh fetch')
 }
 
+// ── Priority ─────────────────────────────────────────────────────────
+
+{
+  const row = mail.threads[0]
+  await mail.setPriority(row.id, true)
+  assert.equal(mail.threads.find((t) => t.id === row.id).category, 'priority')
+  await mail.setPriority(row.id, false)
+  assert.equal(
+    mail.threads.find((t) => t.id === row.id).category,
+    'important',
+    'unflagging always lands on important, the same simplification the mock makes',
+  )
+}
+
+// ── Snoozed: the pseudo-mailbox the mock seeds for the selected account ──
+
+{
+  const snoozedBox = mail.mailboxes.find((m) => m.pseudo === 'snoozed')
+  assert.ok(snoozedBox, 'the mock seeds a Snoozed pseudo-mailbox for every account')
+  await mail.selectMailbox(snoozedBox.id)
+  assert.equal(mail.loading, false)
+  assert.ok(mail.threads.length > 0, 'the seed has at least a handful of snoozed threads')
+  assert.ok(
+    mail.threads.every((t) => t.snoozedUntil),
+    "every row is actually snoozed -- `listTarget` left the mock's own pseudo-mailbox id alone",
+  )
+  // Back to an ordinary mailbox for what follows.
+  const inbox = mail.mailboxes.find((m) => m.role === 'inbox')
+  await mail.selectMailbox(inbox.id)
+}
+
+// ── Scheduled sends ──────────────────────────────────────────────────
+
+await mail.refreshScheduled()
+assert.ok(mail.scheduled.length > 0, 'the mock seeds at least one scheduled send')
+assert.ok(
+  mail.scheduled.every((s) => s.draft.state.type === 'queued'),
+  'only still-queued drafts are scheduled sends',
+)
+
+{
+  const before = mail.viewingScheduledFor
+  const accountId = mail.scheduled[0].draft.accountId
+  mail.selectScheduled(accountId)
+  assert.equal(mail.viewingScheduledFor, accountId)
+  assert.equal(mail.selectedThread, null, 'selecting Scheduled drops the open thread')
+  await mail.selectMailbox(mail.mailboxes.find((m) => m.role === 'inbox').id)
+  assert.equal(
+    mail.viewingScheduledFor,
+    null,
+    'selecting an ordinary mailbox leaves Scheduled behind',
+  )
+  void before
+}
+
+// ── Inline replies vs. the compose dialog ───────────────────────────
+
+{
+  const id = mail.threads[0].id
+  await mail.openThreadById(id)
+  await mail.reply(mail.openThread.messages.at(-1).id, false)
+  assert.ok(mail.composing, 'reply() opens a draft')
+  assert.equal(mail.composeInline, true, 'a reply into the open thread is always inline')
+  mail.closeCompose()
+  assert.equal(mail.composing, null)
+  assert.equal(mail.composeInline, false, 'closeCompose always drops composeInline back to false')
+
+  await mail.compose()
+  assert.equal(mail.composeInline, false, 'a brand-new message is always the dialog')
+  mail.closeCompose()
+}
+
 await close()
 console.log('mail-store: all checks passed')
 

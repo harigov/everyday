@@ -37,6 +37,7 @@ pub mod contacts;
 pub mod outbox;
 pub mod rate_limit;
 pub mod records;
+pub mod voice;
 
 pub use ai_gate::{MailAiFeature, MailAiRefusal, mail_ai_allowed};
 pub use categorize::{CategorizeInput, CategoryMatch, CategoryRule, CategoryRules, categorize};

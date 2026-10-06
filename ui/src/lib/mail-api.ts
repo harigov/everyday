@@ -36,6 +36,10 @@ import type {
   ThreadFilter,
   ThreadId,
   ThreadPage,
+  ImproveMode,
+  ReplySuggestions,
+  ScheduledSend,
+  WrittenText,
 } from './types'
 
 // ── Read: mailboxes, threads, accounts ─────────────────────────────────
@@ -164,3 +168,51 @@ export const setThreadCategory = (threads: ThreadId[], category: MailCategory): 
 
 export const summarizeThread = (id: ThreadId): Promise<{ summary: string }> =>
   callCommand<{ summary: string }>('summarize_thread', { id })
+
+// ── Priority, scheduled sends, and writing help ─────────────────────
+//
+// Called by name until `gen-api.mjs` gives them a typed home in `api.ts`.
+
+/** Mark threads as priority, or take them out of it -- this thread only,
+ *  never a standing rule for its sender (that is `setThreadCategory`'s
+ *  `'priority'`). */
+export const setThreadPriority = (threads: ThreadId[], priority: boolean): Promise<void> =>
+  callCommand<void>('set_thread_priority', { threads, priority })
+
+/** Every draft queued to send later, soonest first; one account's, or
+ *  every account's when `account` is omitted. */
+export const scheduledSends = (account?: AccountId | null): Promise<ScheduledSend[]> =>
+  callCommand<ScheduledSend[]>('scheduled_sends', { account: account ?? null })
+
+/** Up to three replies to the thread's newest message, in the person's
+ *  own voice; empty when the thread does not want one. */
+export const suggestReplies = (id: ThreadId): Promise<ReplySuggestions> =>
+  callCommand<ReplySuggestions>('suggest_replies', { id })
+
+/** A draft body written from a few words of `instruction`. */
+export const draftWithAi = (opts: {
+  account: AccountId
+  inReplyTo?: MailMessageId | null
+  instruction: string
+  currentText?: string | null
+}): Promise<WrittenText> =>
+  callCommand<WrittenText>('draft_with_ai', {
+    account: opts.account,
+    inReplyTo: opts.inReplyTo ?? null,
+    instruction: opts.instruction,
+    currentText: opts.currentText ?? null,
+  })
+
+/** `text` rewritten per `mode`, or per `instruction` when given. */
+export const improveWriting = (opts: {
+  account: AccountId
+  text: string
+  mode: ImproveMode
+  instruction?: string | null
+}): Promise<WrittenText> =>
+  callCommand<WrittenText>('improve_writing', {
+    account: opts.account,
+    text: opts.text,
+    mode: opts.mode,
+    instruction: opts.instruction ?? null,
+  })

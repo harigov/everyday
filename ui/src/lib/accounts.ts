@@ -59,15 +59,20 @@ export const NO_AGENT_ACCESS: AgentMailAccess = {
  * (every account this build has not saved one for) reads as. See
  * `types.ts`'s own TODO(p) on `MailAi` for the contract this defaults for.
  */
-export const DEFAULT_MAIL_AI: MailAi = { categorize: false, autoDraft: false, summaries: false }
+export const DEFAULT_MAIL_AI: MailAi = {
+  categorize: false,
+  autoDraft: false,
+  summaries: false,
+  writing: false,
+}
 
-/** The three Superhuman-layer switches, in the order the settings section
+/** The four Superhuman-layer switches, in the order the settings section
  *  draws them. */
 export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string }[] = [
   {
     key: 'categorize',
     label: 'Categorise',
-    hint: 'Sort new mail into Important, Other, Newsletters and Notifications.',
+    hint: 'Sort new mail into Priority, Important, Other, Newsletters and Notifications.',
   },
   {
     key: 'autoDraft',
@@ -78,6 +83,11 @@ export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string 
     key: 'summaries',
     label: 'Summarise',
     hint: 'Offer a short summary of a long thread, on request.',
+  },
+  {
+    key: 'writing',
+    label: 'Writing help',
+    hint: 'Suggest three replies when you open a thread, write a draft from a few words, and polish what you wrote, all in your own voice.',
   },
 ]
 

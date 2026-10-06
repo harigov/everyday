@@ -25,15 +25,19 @@ import {
   applyInviteResponse,
   applyRowPatch,
   isSnoozedMailbox,
+  listTarget,
   mailboxHasTabs,
   mergeSearchPage,
+  needsSyntheticSnoozedMailbox,
   neighbourThread,
+  promoteGmailInbox,
   refreshLimit,
   removeRow,
   restoreRow,
   revertRow,
   snoozeChoices,
   stepCategoryTab,
+  syntheticSnoozedMailboxId,
   visibleThreadList,
 } from './mail'
 import { app, handle, quietly } from './state.svelte'
@@ -42,11 +46,13 @@ import { guardedRefresh } from './store/refresh'
 import type {
   AccountId,
   Draft,
+  DraftId,
   Mailbox,
   MailboxId,
   MailCategory,
   MailMessageId,
   MailSyncProgress,
+  ScheduledSend,
   Thread,
   ThreadDetail,
   ThreadFilter,
@@ -81,6 +87,14 @@ class MailState {
   /** Which messages in the open thread are expanded, newest first by default. */
   expanded = $state<Set<string>>(new Set())
   composing = $state<Draft | null>(null)
+  /** Is `composing` an inline reply drawn under the open thread's own
+   *  messages, rather than the dialog `MailCompose.svelte` otherwise draws
+   *  over the window. A brand-new message (`compose()`) is always a
+   *  dialog; a reply or forward (`reply()`/`forward()`, and a suggested
+   *  reply's own "send" through `openInlineDraft`) is always inline.
+   *  `closeCompose` always drops this back to `false`, so a stale `true`
+   *  can never make the *next* draft this store opens inline by accident. */
+  composeInline = $state(false)
   /** The thread the snooze picker is open for, or `null`. A store field
    *  rather than component state -- the same reason `overview.wantsLog` is
    *  -- so the `h` shortcut can open it from `shortcuts.svelte.ts`, which
@@ -89,6 +103,15 @@ class MailState {
   /** The thread the label picker is open for -- the proper picker `l` opens
    *  in place of a `window.prompt`. */
   wantsLabel = $state<ThreadId | null>(null)
+  /**
+   * The account whose Scheduled list `MailView`'s list column is showing in
+   * place of a mailbox's threads, or `null` -- a view state alongside
+   * `selectedMailbox` rather than a third thing layered over it, since
+   * exactly one of the two is ever on screen. Cleared by `selectMailbox`, so
+   * picking any ordinary mailbox -- by click, or by a `g i`/`g d`/`g s`
+   * shortcut -- always leaves it behind.
+   */
+  viewingScheduledFor = $state<AccountId | null>(null)
   searchQuery = $state('')
   searchResults = $state<Thread[]>([])
   searchCursor = $state<string | null>(null)
@@ -113,6 +136,11 @@ class MailState {
    *  worth of mock data. */
   unreadCounts = $state<Map<MailboxId, number>>(new Map())
   syncStatus = $state<MailSyncProgress[]>([])
+  /** Every account's drafts still queued to send later, soonest first --
+   *  what `MailNav`'s own Scheduled row counts and `MailScheduled.svelte`
+   *  lists. Unscoped by `selectedAccount`: the nav draws one row per
+   *  account regardless of which account the mailbox list is filtered to. */
+  scheduled = $state<ScheduledSend[]>([])
 
   /**
    * Which load is current, so a slow one cannot land after a newer one.
@@ -152,8 +180,10 @@ class MailState {
     this.selectedThread = null
     this.expanded = new Set()
     this.composing = null
+    this.composeInline = false
     this.wantsSnooze = null
     this.wantsLabel = null
+    this.viewingScheduledFor = null
     this.summary = null
     if (this.#undoTimer) clearInterval(this.#undoTimer)
     this.#undoTimer = null
@@ -168,6 +198,7 @@ class MailState {
     this.openThread = null
     this.unreadCounts = new Map()
     this.syncStatus = []
+    this.scheduled = []
     this.clearSearch()
     this.#loaded = false
   }
@@ -186,12 +217,40 @@ class MailState {
     try {
       const accountIds = await this.#accountIds()
       const lists = await Promise.all(accountIds.map((id) => mailApi.listMailboxes(id)))
-      this.mailboxes = lists.flat()
+      const fetched = lists.flat()
+      // `promoteGmailInbox` first, per account: a Gmail account synced
+      // before the backend fix that resolves `\Inbox` to `role: 'inbox'`
+      // directly has that label sitting at `role: 'other'` instead, and
+      // everything below -- `needsSyntheticSnoozedMailbox`'s own search for
+      // an Inbox, `mailboxHasTabs`, `listTarget`'s Inbox lookup -- reads
+      // `role` alone, never a name, so this is the one place that gap has
+      // to be closed.
+      const real = accountIds.flatMap((id) =>
+        promoteGmailInbox(fetched.filter((m) => m.accountId === id)),
+      )
+      // No real backend sends a Snoozed mailbox of its own yet -- only the
+      // mock does, for its own two accounts -- so every other account gets
+      // a stand-in here, the only place this needs to be known at all:
+      // `listTarget` is where every read of it already goes through.
+      const synthetic: Mailbox[] = accountIds
+        .filter((id) => needsSyntheticSnoozedMailbox(real.filter((m) => m.accountId === id)))
+        .map((accountId): Mailbox => ({
+          id: syntheticSnoozedMailboxId(accountId),
+          accountId,
+          remoteName: 'Snoozed',
+          role: 'other',
+          pseudo: 'snoozed',
+          uidvalidity: 0,
+          uidnext: 0,
+          highestModseq: 0,
+        }))
+      this.mailboxes = [...real, ...synthetic]
       if (!this.selectedMailbox) {
         const inbox = this.mailboxes.find((m) => m.role === 'inbox')
         if (inbox) await this.selectMailbox(inbox.id)
       }
       void this.refreshUnreadCounts()
+      void this.refreshScheduled()
     } catch (e) {
       await handle(e)
     }
@@ -215,8 +274,10 @@ class MailState {
       const counts = new Map<MailboxId, number>()
       await Promise.all(
         this.mailboxes.map(async (mailbox) => {
-          const filter: ThreadFilter = { snoozed: isSnoozedMailbox(mailbox) }
-          const page = await mailApi.listThreads(mailbox.id, filter, null, 200)
+          const target = listTarget(mailbox, this.mailboxes)
+          if (!target) return
+          const filter: ThreadFilter = { snoozed: target.snoozed }
+          const page = await mailApi.listThreads(target.mailboxId, filter, null, 200)
           counts.set(
             mailbox.id,
             page.threads.reduce((sum, t) => sum + t.unreadCount, 0),
@@ -264,6 +325,9 @@ class MailState {
 
   /** The account and mailbox picked in the nav. */
   async selectMailbox(id: MailboxId) {
+    // Leaves the Scheduled list behind, the way picking a thread leaves a
+    // search: exactly one of the two is ever the list column's content.
+    this.viewingScheduledFor = null
     this.selectedMailbox = id
     this.selectedThread = null
     this.openThread = null
@@ -272,6 +336,13 @@ class MailState {
     // strip to clear it from.
     if (!mailboxHasTabs(this.mailboxes.find((m) => m.id === id))) this.category = null
     await this.refresh()
+  }
+
+  /** The Scheduled row picked in the nav -- see `viewingScheduledFor`. */
+  selectScheduled(accountId: AccountId) {
+    this.viewingScheduledFor = accountId
+    this.selectedThread = null
+    this.openThread = null
   }
 
   setCategory(category: MailCategory | null) {
@@ -305,8 +376,12 @@ class MailState {
    * page-one-only check was mistaking it for.
    */
   async refresh() {
-    const mailboxId = this.selectedMailbox
-    if (!mailboxId) return
+    // `listTarget` is where a mailbox id actually meant for `list_threads`
+    // comes from -- itself, ordinarily, except for the synthetic Snoozed row
+    // `refreshMailboxes` stands in for an account whose own Inbox is what
+    // must be asked instead. `null` here is exactly the old `!mailboxId`.
+    const target = listTarget(this.mailbox, this.mailboxes)
+    if (!target) return
     await guardedRefresh(
       this.#refreshGeneration,
       async (isCurrent) => {
@@ -317,11 +392,11 @@ class MailState {
         // Bug 3: `snoozed` was never sent at all, so a snoozed thread --
         // still a member of whatever mailbox it was snoozed from -- came
         // straight back on the very next refresh. `false` everywhere except
-        // the Snoozed pseudo-mailbox itself, which wants nothing else.
-        const filter: ThreadFilter = { snoozed: isSnoozedMailbox(this.mailbox) }
+        // the Snoozed view, which wants nothing else.
+        const filter: ThreadFilter = { snoozed: target.snoozed }
         if (category) filter.category = category
         const page = await mailApi.listThreads(
-          mailboxId,
+          target.mailboxId,
           filter,
           null,
           refreshLimit(this.threads.length, PAGE),
@@ -340,16 +415,17 @@ class MailState {
 
   /** `VirtualList`'s `onEndReached`: the next keyset page. */
   async loadMore() {
-    if (!this.selectedMailbox || !this.nextCursor || this.loadingMore) return
+    const target = listTarget(this.mailbox, this.mailboxes)
+    if (!target || !this.nextCursor || this.loadingMore) return
     this.loadingMore = true
     const cursor = this.nextCursor
     try {
       const generation = this.#generation
       // Bug 3, the same as `refresh` above -- must agree with it, or
       // scrolling to a second page would bring snoozed threads back.
-      const filter: ThreadFilter = { snoozed: isSnoozedMailbox(this.mailbox) }
+      const filter: ThreadFilter = { snoozed: target.snoozed }
       if (this.category) filter.category = this.category
-      const page = await mailApi.listThreads(this.selectedMailbox, filter, cursor, PAGE)
+      const page = await mailApi.listThreads(target.mailboxId, filter, cursor, PAGE)
       // A mailbox or category change while this page was on its way bumps
       // the generation; its rows belong to a list no longer showing.
       if (generation !== this.#generation || cursor !== this.nextCursor) return
@@ -365,6 +441,12 @@ class MailState {
   // ── the open thread ────────────────────────────────────────────────
 
   async openThreadById(id: ThreadId) {
+    // Switching to a different thread leaves an inline reply behind -- the
+    // draft already autosaves itself, so closing the sheet is all this
+    // needs to do; see `composeInline`'s own doc. Not gated when `id` is
+    // the thread already open: reopening the same one must not drop a
+    // reply somebody is still writing.
+    if (this.composeInline && this.selectedThread !== id) this.closeCompose()
     this.selectedThread = id
     this.summary = null
     try {
@@ -422,7 +504,9 @@ class MailState {
           d.inReplyTo &&
           ids.has(d.inReplyTo),
       )
-      if (auto && this.selectedThread === detail.thread.id) this.composing = auto
+      // A reply into the thread that is still open -- the same inline
+      // treatment `reply()`/`forward()` give one started by hand.
+      if (auto && this.selectedThread === detail.thread.id) this.openInlineDraft(auto)
     } catch (e) {
       await quietly(e)
     }
@@ -436,6 +520,7 @@ class MailState {
   }
 
   closeThread() {
+    if (this.composeInline) this.closeCompose()
     this.selectedThread = null
     this.openThread = null
     this.summary = null
@@ -492,6 +577,10 @@ class MailState {
    */
   #advanceIfOpen(id: ThreadId): void {
     if (this.selectedThread !== id) return
+    // The thread this reply was inline under is about to disappear from
+    // under it -- archived, trashed, snoozed, moved, or deleted by another
+    // window. Same as `closeThread`'s own guard; see `composeInline`.
+    if (this.composeInline) this.closeCompose()
     this.selectedThread = (this.#neighbour(1) ?? this.#neighbour(-1))?.id ?? null
     this.openThread = null
     this.summary = null
@@ -593,7 +682,17 @@ class MailState {
   snooze(id: ThreadId, until: Date) {
     return this.#remove(id, (t) => mailApi.snooze(t, until.toISOString()))
   }
+  /**
+   * Unsnooze. In the Snoozed view itself this must also drop the row --
+   * `snoozedUntil: null` no longer matches the `filter.snoozed: true` that
+   * view is asking for, and leaving it patched in place rather than removed
+   * would be the one row in the list whose own content disagrees with why
+   * it is still there. Everywhere else -- a menu reachable from any mailbox,
+   * since an ordinary list never shows a currently-snoozed row at all -- the
+   * patch alone is right, the same as it always was.
+   */
   unsnooze(id: ThreadId) {
+    if (isSnoozedMailbox(this.mailbox)) return this.#remove(id, mailApi.unsnooze)
     return this.#act(id, { snoozedUntil: null }, mailApi.unsnooze)
   }
 
@@ -601,6 +700,18 @@ class MailState {
    *  TODO(p) for `set_thread_category`'s contract. */
   setCategoryFor(id: ThreadId, category: MailCategory) {
     return this.#act(id, { category }, (t) => mailApi.setThreadCategory([t], category))
+  }
+
+  /**
+   * `!`: flag or unflag this one thread as priority -- never the standing
+   * per-sender rule `setCategoryFor(id, 'priority')` is. Patches the same
+   * `category` field `setCategoryFor` does, and so leaves a row on screen
+   * exactly the way that one already does -- see its own TODO(p) above.
+   */
+  setPriority(id: ThreadId, on: boolean) {
+    return this.#act(id, { category: on ? 'priority' : 'important' }, (t) =>
+      mailApi.setThreadPriority([t], on),
+    )
   }
 
   /** The snooze picker's fixed choices, for the component to draw. Named
@@ -664,11 +775,22 @@ class MailState {
 
   // ── compose ──────────────────────────────────────────────────────
 
+  /** A brand-new message is always the dialog -- there is no thread under
+   *  it for an inline reply to sit beneath. */
   async compose(account?: AccountId) {
     const accountId = account ?? this.selectedAccount ?? this.mailboxes[0]?.accountId
     if (!accountId) return
     const draft = await mailApi.newDraft({ account: accountId })
     this.composing = draft
+    this.composeInline = false
+  }
+
+  /** Opens `draft` inline, under the open thread's own messages -- what
+   *  `reply`/`forward` below use, and what a suggested reply's own "send"
+   *  reaches for directly (`mailwrite.ts`'s agent). */
+  openInlineDraft(draft: Draft): void {
+    this.composing = draft
+    this.composeInline = true
   }
 
   async reply(messageId: string, all: boolean) {
@@ -679,18 +801,19 @@ class MailState {
       inReplyTo: messageId,
       replyAll: all,
     })
-    this.composing = draft
+    this.openInlineDraft(draft)
   }
 
   async forward(messageId: string) {
     const accountId = this.openThread?.thread.accountId
     if (!accountId) return
     const draft = await mailApi.newDraft({ account: accountId, forwardOf: messageId })
-    this.composing = draft
+    this.openInlineDraft(draft)
   }
 
   closeCompose() {
     this.composing = null
+    this.composeInline = false
   }
 
   /**
@@ -737,6 +860,10 @@ class MailState {
     if (this.#undoTimer) clearInterval(this.#undoTimer)
     const at = sendAt ? new Date(sendAt).getTime() : Date.now() + (delaySeconds ?? 0) * 1000
     const scheduled = Boolean(sendAt)
+    // A "send later" is now one more row `scheduled_sends` answers with --
+    // the Scheduled nav row and `MailScheduled.svelte` want to know the
+    // moment it is queued, not only once something later reloads mailboxes.
+    if (scheduled) void this.refreshScheduled()
     // Recomputed from `at` on every tick rather than decremented, so the
     // toast never drifts from what was actually asked for even if a tick is
     // late -- and so a "send later" toast, `at` hours out, counts down to
@@ -769,11 +896,88 @@ class MailState {
       // it was before `send()` ran, is what makes a second edit made after
       // `sendDraft`'s own local write (there is none today, but nothing rules
       // one out) show up when Undo reopens the sheet.
-      this.composing = await mailApi.undoSend(pending.draft.id)
+      const reverted = await mailApi.undoSend(pending.draft.id)
+      this.composing = reverted
+      // Inline again if it is a reply into the thread still open -- the
+      // same thing that was true the moment before it was sent -- a dialog
+      // otherwise: a reply into a thread no longer open, or a brand-new
+      // message, has no reading pane left under it to sit inside.
+      this.composeInline =
+        reverted.inReplyTo != null &&
+        (this.openThread?.messages.some((m) => m.id === reverted.inReplyTo) ?? false)
+      // Only a scheduled send was ever in `scheduled` to begin with -- see
+      // `send`'s own note -- but asking unconditionally costs one cheap,
+      // already-debounced-by-nothing-else read rather than a second flag
+      // to keep in step with `sendingUndo.scheduled`.
+      void this.refreshScheduled()
     } catch (e) {
       // The undo window can close a beat before the click lands -- the
       // server then refuses, and the toast above is already down; all that
       // is left is to say why the click did nothing.
+      await handle(e)
+    }
+  }
+
+  // ── scheduled sends ──────────────────────────────────────────────
+
+  /** Every account's queued-to-send-later drafts, soonest first -- what
+   *  `MailNav`'s Scheduled row counts and `MailScheduled.svelte` lists.
+   *  Refreshed on `start`, after a "send later" (`send`'s own call), after
+   *  undo/cancel/reschedule, and whenever mailboxes refresh. */
+  async refreshScheduled() {
+    try {
+      this.scheduled = await mailApi.scheduledSends()
+    } catch (e) {
+      await quietly(e)
+    }
+  }
+
+  /** Edit: reopens a queued send in the compose sheet, by id -- for a row
+   *  read from `scheduled` rather than from this window's own `sendingUndo`,
+   *  which only ever remembers the one send this window itself just made. */
+  async editScheduled(draftId: DraftId) {
+    try {
+      this.composing = await mailApi.undoSend(draftId)
+      // Always the dialog: reached from the Scheduled list, which has no
+      // open thread under it for an inline reply to sit inside -- unlike
+      // `undoSend`'s own reopening, this has nothing to decide.
+      this.composeInline = false
+      void this.refreshScheduled()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /** Cancel: the same undo, with the draft left in Drafts rather than
+   *  reopened. */
+  async cancelScheduled(draftId: DraftId) {
+    try {
+      await mailApi.undoSend(draftId)
+      void this.refreshScheduled()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /** Reschedule: undo, then queue again at the new instant. */
+  async rescheduleScheduled(draftId: DraftId, at: Date) {
+    try {
+      const draft = await mailApi.undoSend(draftId)
+      await mailApi.sendDraft(draft.id, null, at.toISOString())
+      void this.refreshScheduled()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /** Send now: undo the queued send, then send it through the ordinary
+   *  short undo window -- `send`'s own toast, same as composing fresh. */
+  async sendScheduledNow(draftId: DraftId) {
+    try {
+      const draft = await mailApi.undoSend(draftId)
+      void this.refreshScheduled()
+      await this.send(draft, 8)
+    } catch (e) {
       await handle(e)
     }
   }

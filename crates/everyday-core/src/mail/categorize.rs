@@ -23,7 +23,12 @@
 //! # Precedence
 //!
 //! 1. A sealed [`CategoryRules`] correction — a person said so, once, and
-//!    that outranks every heuristic below it for as long as it stands.
+//!    that outranks every heuristic below it for as long as it stands. This
+//!    is the *only* door in this module through which [`Category::Priority`]
+//!    is ever reached: nothing below ever answers it on its own, on
+//!    purpose -- see that variant's own docs for the other two doors
+//!    ([`crate::vault::Vault::set_thread_priority`] and the model-assisted
+//!    pass) that are not this module's.
 //! 2. Gmail's own label, when the server already did this classification
 //!    itself: `\Important` wins outright, `CATEGORY_PROMOTIONS` reads as a
 //!    newsletter, `CATEGORY_UPDATES` reads as a notification.
@@ -396,6 +401,35 @@ mod tests {
         corrections.set_sender("noreply@example.com", Category::Important);
         let input = bare("noreply@example.com");
         assert_eq!(categorize(&input, &corrections), Category::Important);
+    }
+
+    /// [`Category::Priority`] is reachable only through a correction -- the
+    /// one door its own docs name. A VIP's address, even one carrying every
+    /// signal that would otherwise read as automated, still resolves to it.
+    #[test]
+    fn a_correction_is_the_only_door_to_priority() {
+        let mut corrections = CategoryRules::default();
+        corrections.set_sender("vip@example.com", Category::Priority);
+        let input = CategorizeInput { precedence: Some("bulk"), ..bare("vip@example.com") };
+        assert_eq!(categorize(&input, &corrections), Category::Priority);
+    }
+
+    /// The flip side of the test above: with no correction naming it, not
+    /// one heuristic in the table ever answers `Priority` on its own,
+    /// however `ever_written_to`, the Gmail labels or the headers are set.
+    #[test]
+    fn bare_rules_never_produce_priority_on_their_own() {
+        let corrections = CategoryRules::default();
+        let cases: &[CategorizeInput<'_>] = &[
+            bare("stranger@example.com"),
+            CategorizeInput { ever_written_to: true, ..bare("dana@example.com") },
+            CategorizeInput { gmail_labels: &[r"\Important".to_string()], ..bare("x@example.com") },
+            CategorizeInput { list_id: Some("<list>"), ..bare("list@example.com") },
+            CategorizeInput { precedence: Some("bulk"), ..bare("system@example.com") },
+        ];
+        for input in cases {
+            assert_ne!(categorize(input, &corrections), Category::Priority, "{input:?}");
+        }
     }
 
     #[test]

@@ -11,6 +11,9 @@ const { module: mailLib, close } = await load('/src/lib/mail.ts')
 const {
   formatSenders,
   threadListDate,
+  weekdayAndTime,
+  snoozedUntilLabel,
+  scheduledSendLabel,
   applyRowPatch,
   revertRow,
   removeRow,
@@ -29,6 +32,13 @@ const {
   recentActionLine,
   mailboxHasTabs,
   isSnoozedMailbox,
+  needsSyntheticSnoozedMailbox,
+  listTarget,
+  gmailSystemLabel,
+  mailboxDisplayName,
+  promoteGmailInbox,
+  dateSection,
+  withDateSections,
   refreshLimit,
   visibleThreadList,
   neighbourThread,
@@ -80,6 +90,17 @@ const yesterday = new Date()
 yesterday.setDate(yesterday.getDate() - 1)
 assert.equal(threadListDate(yesterday.toISOString()), 'Yesterday')
 
+// `weekdayAndTime` and the two labels built from it -- always a weekday and
+// a time together, unlike `threadListDate`'s either/or, because neither a
+// snooze nor a send-later is ever due back within today's own 24 hours.
+assert.match(
+  weekdayAndTime('2026-09-15T08:00:00'),
+  /^\w{3} \d/,
+  'a short weekday, then a time -- "Tue 8:00" or similar, locale aside',
+)
+assert.match(snoozedUntilLabel('2026-09-15T08:00:00'), /^Until /)
+assert.match(scheduledSendLabel(new Date(Date.now() + 3 * 3_600_000).toISOString()), /^Sends .*\(/)
+
 // ── Optimistic apply and revert of row state ──────────────────────────
 
 const rows = [
@@ -105,40 +126,93 @@ assert.deepEqual(
 )
 
 // ── The snooze picker's times ─────────────────────────────────────────
-
-const morning = new Date('2026-09-14T09:00:00')
-const choices = snoozeChoices(morning)
-assert.deepEqual(
-  choices.map((c) => c.key),
-  ['laterToday', 'tomorrow', 'nextWeek'],
-)
-assert.equal(choices[0].at.getHours(), 12, '"later today" is a few hours from now')
-assert.equal(choices[1].at.getDate(), morning.getDate() + 1)
-assert.equal(choices[1].at.getHours(), 8, '"tomorrow" lands at a sane morning hour')
-assert.equal(Math.round((choices[2].at - morning) / 86_400_000), 7, '"next week" is seven days out')
-
-// Late in the evening, "later today" would run past a sane hour and drops out.
-const evening = new Date('2026-09-14T20:00:00')
-const eveningChoices = snoozeChoices(evening)
-assert.deepEqual(
-  eveningChoices.map((c) => c.key),
-  ['tomorrow', 'nextWeek'],
-  'no "later today" once it would fall after 9pm',
-)
-
-// ── The custom snooze date, parsed as local rather than UTC ────────────
 //
-// `new Date('2026-09-20')` is UTC midnight; `.setHours(8, ...)` on that
-// then reads back in local time, which west of Greenwich lands on the 19th,
-// not the 20th. `customSnoozeInstant` must land on the day the field shows
+// 2026-09-14 is a Monday (Zeller's congruence, not the clock this test runs
+// on) -- the fixed point every weekday-dependent assertion below works from.
+// 2026-09-18 is the Friday of that week, 2026-09-19 its Saturday, and
+// 2026-09-21 the following Monday.
+
+const monday = new Date('2026-09-14T09:00:00')
+const mondayChoices = snoozeChoices(monday)
+assert.deepEqual(
+  mondayChoices.map((c) => c.key),
+  ['laterToday', 'thisEvening', 'tomorrow', 'thisWeekend', 'nextWeek'],
+  'every choice applies on a Monday morning',
+)
+assert.equal(mondayChoices[0].at.getHours(), 12, '"later today" is three hours out')
+assert.equal(mondayChoices[1].at.getHours(), 18, '"this evening" is a fixed 6pm')
+assert.equal(mondayChoices[2].at.getDate(), monday.getDate() + 1, '"tomorrow" is the next day')
+assert.equal(mondayChoices[2].at.getHours(), 8)
+assert.equal(mondayChoices[3].at.getDate(), 19, '"this weekend" is Saturday the 19th')
+assert.equal(mondayChoices[3].at.getHours(), 9)
+assert.equal(
+  mondayChoices[4].at.getDate(),
+  21,
+  '"next week" is Monday the 21st, not "+7 days" blindly',
+)
+assert.equal(mondayChoices[4].at.getHours(), 8)
+
+// Past 6pm, "later today" (+3h) would spill into tomorrow -- gone. Past 5pm,
+// "this evening" (a fixed 6pm) is too close to "later today" to be worth
+// offering twice -- also gone, an hour before "later today" itself is.
+assert.deepEqual(
+  snoozeChoices(new Date('2026-09-14T20:00:00')).map((c) => c.key),
+  ['tomorrow', 'thisWeekend', 'nextWeek'],
+  'past 6pm, neither "later today" nor "this evening" still applies',
+)
+assert.deepEqual(
+  snoozeChoices(new Date('2026-09-14T17:00:00')).map((c) => c.key),
+  ['laterToday', 'tomorrow', 'thisWeekend', 'nextWeek'],
+  '"this evening" drops right at 5pm; "later today" still has an hour left',
+)
+
+// Friday and Saturday: the weekend is already here, so "this weekend" stops
+// being offered -- "Next week" is still the following Monday either way,
+// not "whichever Monday is seven days out".
+const friday = new Date('2026-09-18T10:00:00')
+assert.deepEqual(
+  snoozeChoices(friday).map((c) => c.key),
+  ['laterToday', 'thisEvening', 'tomorrow', 'nextWeek'],
+  'no "this weekend" on a Friday',
+)
+assert.equal(
+  snoozeChoices(friday)
+    .find((c) => c.key === 'nextWeek')
+    .at.getDate(),
+  21,
+)
+
+const saturday = new Date('2026-09-19T10:00:00')
+assert.deepEqual(
+  snoozeChoices(saturday).map((c) => c.key),
+  ['laterToday', 'thisEvening', 'tomorrow', 'nextWeek'],
+  'no "this weekend" on a Saturday either',
+)
+assert.equal(
+  snoozeChoices(saturday)
+    .find((c) => c.key === 'nextWeek')
+    .at.getDate(),
+  21,
+)
+
+// ── The custom snooze date (and now time), parsed as local rather than UTC ─
+//
+// `new Date('2026-09-20')` is UTC midnight; `.setHours(...)` on that then
+// reads back in local time, which west of Greenwich lands on the 19th, not
+// the 20th. `customSnoozeInstant` must land on the day the field shows
 // regardless of which side of Greenwich this test runs on.
 
 const picked = customSnoozeInstant('2026-09-20')
 assert.equal(picked.getFullYear(), 2026)
 assert.equal(picked.getMonth(), 8, 'September, zero-indexed')
 assert.equal(picked.getDate(), 20, 'the calendar day the field showed, not one either side of it')
-assert.equal(picked.getHours(), 8)
+assert.equal(picked.getHours(), 8, 'defaults to 8am when no time is given')
 assert.equal(picked.getMinutes(), 0)
+
+const pickedWithTime = customSnoozeInstant('2026-09-20', '14:30')
+assert.equal(pickedWithTime.getDate(), 20, 'the time field never moves the day')
+assert.equal(pickedWithTime.getHours(), 14)
+assert.equal(pickedWithTime.getMinutes(), 30)
 
 // `earliestSnoozeDate` never offers today: today's 8am may already be
 // behind `now`, and `snoozeChoices`'s own "Later today" already covers that
@@ -154,17 +228,18 @@ assert.equal(
 
 assert.deepEqual(
   CATEGORY_TABS.map((t) => t.key),
-  ['important', 'other', 'newsletter', 'notification'],
-  'mirrors Category::ALL in everyday_core::mail',
+  ['priority', 'important', 'other', 'newsletter', 'notification'],
+  'Priority leads, ahead of Important -- mirrors Category::ALL in everyday_core::mail',
 )
 
-assert.equal(stepCategoryTab(null, 1), 'important', 'All -> the first named tab')
+assert.equal(stepCategoryTab(null, 1), 'priority', 'All -> the first named tab')
 assert.equal(
   stepCategoryTab('notification', 1),
   null,
   'stepping past the last tab wraps back to All',
 )
 assert.equal(stepCategoryTab(null, -1), 'notification', 'stepping back from All wraps to the last')
+assert.equal(stepCategoryTab('important', -1), 'priority')
 assert.equal(stepCategoryTab('other', -1), 'important')
 
 // ── (i) Invitations: response state ─────────────────────────────────────
@@ -307,6 +382,104 @@ assert.equal(isSnoozedMailbox({ remoteName: 'Snoozed' }), false, 'a real folder 
 assert.equal(isSnoozedMailbox(null), false, 'no mailbox selected yet')
 assert.equal(isSnoozedMailbox(undefined), false)
 
+// ── The Snoozed view, for an account with no Snoozed mailbox of its own ──
+
+assert.equal(
+  needsSyntheticSnoozedMailbox([
+    { role: 'inbox', pseudo: undefined },
+    { role: 'sent', pseudo: undefined },
+  ]),
+  true,
+  'an Inbox and no Snoozed of its own -- a real backend, today',
+)
+assert.equal(
+  needsSyntheticSnoozedMailbox([
+    { role: 'inbox', pseudo: undefined },
+    { role: 'other', pseudo: 'snoozed' },
+  ]),
+  false,
+  'already has one -- the mock, for its own two accounts',
+)
+assert.equal(
+  needsSyntheticSnoozedMailbox([{ role: 'sent', pseudo: undefined }]),
+  false,
+  'no Inbox at all yet -- nothing to stand the Snoozed view in for',
+)
+
+const INBOX = { id: 'mb-inbox', accountId: 'a1', role: 'inbox' }
+const SENT = { id: 'mb-sent', accountId: 'a1', role: 'sent' }
+const REAL_SNOOZED = { id: 'mb-snoozed', accountId: 'a1', pseudo: 'snoozed' }
+const accountMailboxes = [INBOX, SENT, REAL_SNOOZED]
+
+assert.deepEqual(
+  listTarget(INBOX, accountMailboxes),
+  { mailboxId: 'mb-inbox', snoozed: false },
+  'an ordinary mailbox lists under its own id',
+)
+assert.deepEqual(
+  listTarget(REAL_SNOOZED, accountMailboxes),
+  { mailboxId: 'mb-snoozed', snoozed: true },
+  "a real Snoozed pseudo-mailbox -- the mock's own -- lists under its own id too",
+)
+assert.deepEqual(
+  listTarget({ id: 'synthetic-snoozed:a1', accountId: 'a1', pseudo: 'snoozed' }, accountMailboxes),
+  { mailboxId: 'mb-inbox', snoozed: true },
+  "the synthetic stand-in redirects to the account's own Inbox, filtered",
+)
+assert.equal(listTarget(null, accountMailboxes), null, 'nothing selected: nothing to list')
+assert.equal(listTarget(undefined, accountMailboxes), null)
+
+// ── Gmail's own system labels, still IMAP-escaped on some rows ──────────
+
+assert.equal(gmailSystemLabel('\\Inbox'), 'inbox')
+assert.equal(gmailSystemLabel('\\\\Inbox'), 'inbox', 'doubled escaping reads the same')
+assert.equal(gmailSystemLabel('INBOX'), 'inbox', 'no escaping at all, case-insensitive')
+assert.equal(gmailSystemLabel('\\Sent'), 'sent')
+assert.equal(gmailSystemLabel('\\Draft'), 'drafts')
+assert.equal(gmailSystemLabel('\\Drafts'), 'drafts')
+assert.equal(gmailSystemLabel('\\Starred'), 'starred')
+assert.equal(gmailSystemLabel('\\Important'), 'important')
+assert.equal(gmailSystemLabel('\\Spam'), 'spam')
+assert.equal(gmailSystemLabel('\\Trash'), 'trash')
+assert.equal(gmailSystemLabel('\\All'), 'all')
+assert.equal(gmailSystemLabel('Boat club'), null, "a person's own folder")
+assert.equal(gmailSystemLabel('\\Boat club'), null, 'escaping alone does not make a system label')
+
+assert.equal(mailboxDisplayName({ remoteName: '\\Inbox' }), 'Inbox')
+assert.equal(mailboxDisplayName({ remoteName: 'INBOX' }), 'Inbox')
+assert.equal(mailboxDisplayName({ remoteName: 'Sent Mail' }), 'Sent')
+assert.equal(mailboxDisplayName({ remoteName: '\\Draft' }), 'Drafts')
+assert.equal(mailboxDisplayName({ remoteName: 'Junk' }), 'Spam')
+assert.equal(mailboxDisplayName({ remoteName: 'Bin' }), 'Trash')
+assert.equal(mailboxDisplayName({ remoteName: '[Gmail]/All Mail' }), 'All Mail')
+assert.equal(mailboxDisplayName({ remoteName: '[Google Mail]/Sent Mail' }), 'Sent')
+assert.equal(
+  mailboxDisplayName({ remoteName: 'Boat club' }),
+  'Boat club',
+  "a person's own folder is shown exactly as sent",
+)
+
+const oldGmailInbox = { id: 'mb-1', accountId: 'a1', role: 'other', remoteName: '\\Inbox' }
+const promoted = promoteGmailInbox([oldGmailInbox, SENT])
+assert.equal(promoted[0].role, 'inbox', 'the old row is promoted once nothing else claims the role')
+assert.notEqual(promoted[0], oldGmailInbox, 'a fresh object -- the original is never mutated')
+assert.equal(oldGmailInbox.role, 'other', 'the original is untouched')
+
+const alreadyHasInbox = promoteGmailInbox([INBOX, oldGmailInbox])
+assert.equal(
+  alreadyHasInbox[1].role,
+  'other',
+  'a real role: "inbox" already claims it -- the label is left as a duplicate for MailNav to hide',
+)
+
+const oldGmailSent = { id: 'mb-2', accountId: 'a1', role: 'other', remoteName: '\\Sent' }
+const noInboxLabelAtAll = promoteGmailInbox([oldGmailSent])
+assert.equal(
+  noInboxLabelAtAll[0],
+  oldGmailSent,
+  'no `\\Inbox` label and no real inbox either -- nothing to promote',
+)
+
 // ── Finding 2: refresh covers what is already loaded ────────────────────
 
 assert.equal(refreshLimit(0, 50), 50, 'never less than one page')
@@ -385,6 +558,69 @@ assert.equal(
   'the last row falls back to the one above it',
 )
 assert.equal(advanceTo([thread('th-1')], 'th-1'), null, 'the only row leaves no neighbour at all')
+
+// ── Date sections over the thread list ──────────────────────────────────
+//
+// 2026-09-14 is a Monday (see the snooze tests above for the same fact
+// checked against Zeller's congruence) -- the fixed "now" most of these
+// assertions are read against. A second "now", the Thursday three days
+// later, is the one that can actually see "Earlier this week": nothing
+// before today is left in the current week when "now" is itself a Monday.
+
+const mondayNow = new Date('2026-09-14T10:00:00')
+assert.deepEqual(dateSection('2026-09-14T06:00:00', mondayNow), { key: 'today', label: 'Today' })
+assert.deepEqual(dateSection('2026-09-13T12:00:00', mondayNow), {
+  key: 'yesterday',
+  label: 'Yesterday',
+})
+assert.deepEqual(
+  dateSection('2026-09-10T12:00:00', mondayNow),
+  { key: 'lastWeek', label: 'Last week' },
+  'Thursday the 10th is in the week before this one (Mon 7th - Sun 13th)',
+)
+assert.deepEqual(
+  dateSection('2026-09-05T12:00:00', mondayNow),
+  { key: 'thisMonth', label: 'Earlier this month' },
+  'before last week, but still September',
+)
+assert.deepEqual(dateSection('2026-08-25T12:00:00', mondayNow), {
+  key: 'lastMonth',
+  label: 'Last month',
+})
+assert.deepEqual(
+  dateSection('2026-07-15T12:00:00', mondayNow),
+  { key: '2026-6', label: 'July' },
+  'still this year: the month alone, no year printed',
+)
+assert.deepEqual(
+  dateSection('2025-12-20T12:00:00', mondayNow),
+  { key: '2025-11', label: 'December 2025' },
+  'a previous year: month and year both',
+)
+
+const thursdayNow = new Date('2026-09-17T10:00:00')
+assert.deepEqual(
+  dateSection('2026-09-15T12:00:00', thursdayNow),
+  { key: 'thisWeek', label: 'Earlier this week' },
+  'Tuesday the 15th, in the week (Mon 14th -) "now" itself is in',
+)
+
+// `withDateSections` interleaves one heading per run, not one per row --
+// reusing `thread()` from the keyset-paging tests above for its rows.
+const grouped = withDateSections(
+  [
+    thread('a', '2026-09-14T08:00:00'),
+    thread('b', '2026-09-14T09:00:00'),
+    thread('c', '2026-09-13T08:00:00'),
+  ],
+  (t) => t.lastDate,
+  mondayNow,
+)
+assert.deepEqual(
+  grouped.map((r) => (r.type === 'header' ? `#${r.key}` : r.thread.id)),
+  ['#today', 'a', 'b', '#yesterday', 'c'],
+  'one heading ahead of each run, never one per row under it',
+)
 
 // ── Compose: a blank draft is discarded, not autosaved ──────────────────
 //

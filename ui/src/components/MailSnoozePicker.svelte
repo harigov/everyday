@@ -1,9 +1,12 @@
 <script lang="ts">
-  // "Later today, tomorrow, next week, or pick a date" -- the small picker
-  // `h` opens. The three fixed choices come from `mail.ts`'s `snoozeChoices`,
-  // pure and tested; this component only draws them and reads a date.
+  // "Later today, this evening, tomorrow, this weekend, next week, or pick
+  // a date and time" -- the small picker `h` opens. The fixed choices come
+  // from `mail.ts`'s `snoozeChoices`, pure and tested; this component only
+  // draws them (and lets 1-5 pick one without the mouse) and reads a date
+  // and time for the custom choice.
 
   import { focusOnMount, trapFocus } from '../lib/focus'
+  import { isTyping } from '../lib/keys'
   import { mail } from '../lib/mail.svelte'
   import { customSnoozeInstant, earliestSnoozeDate } from '../lib/mail'
   import { toLocalInputValue } from '../lib/format'
@@ -17,14 +20,33 @@
   // dropped "Later today", a stale "in 3 hours") the longer it stayed open.
 
   let customDate = $state('')
+  let customTime = $state('08:00')
 
   function pickCustom() {
     if (!customDate) return
-    onchoose(customSnoozeInstant(customDate))
+    onchoose(customSnoozeInstant(customDate, customTime))
+  }
+
+  /** 1-5 picks a preset while the picker is open -- the digit matching
+   *  whichever row that number is, top to bottom, same as the row order
+   *  `mail.snoozeOptions()` already draws. Guarded by `isTyping` the same
+   *  way `MailQuickReplies.svelte` guards its own digit shortcut: the date
+   *  and time fields below are typed into with digits too, and a global
+   *  `keydown` would otherwise steal every one of them. */
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') {
+      oncancel()
+      return
+    }
+    if (isTyping(e.target)) return
+    const n = Number(e.key)
+    if (!Number.isInteger(n) || n < 1 || n > 5) return
+    const choice = mail.snoozeOptions()[n - 1]
+    if (choice) onchoose(choice.at)
   }
 </script>
 
-<svelte:window onkeydown={(e: KeyboardEvent) => e.key === 'Escape' && oncancel()} />
+<svelte:window onkeydown={onKeydown} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={oncancel}></div>
@@ -49,6 +71,7 @@
          release the thread almost immediately -- `snoozeChoices`'s own
          "Later today" is what picking "later, today" means instead. -->
     <input type="date" bind:value={customDate} min={earliestSnoozeDate()} />
+    <input type="time" bind:value={customTime} aria-label="Time" />
     <button class="btn" disabled={!customDate} onclick={pickCustom}>Snooze</button>
   </div>
   <div class="sheet-row">
@@ -98,5 +121,9 @@
     padding: 6px var(--sp-2);
     background: var(--bg-raised);
     color: var(--fg);
+  }
+  .custom input[type='time'] {
+    flex: none;
+    width: 6.5em;
   }
 </style>

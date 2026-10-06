@@ -170,7 +170,7 @@ pub struct MailActivity {
     pub unread: u32,
     /// One row per day of the window, oldest first, the empty ones included.
     pub days: Vec<MailDay>,
-    /// What `received` was, by category: each of the four, then the
+    /// What `received` was, by category: each of the five, then the
     /// uncategorised, in that order, empty ones included.
     pub categories: Vec<CategoryCount>,
     /// Whoever sent the most, people and machines alike, most first.
@@ -234,7 +234,7 @@ struct Tally {
     sent: u32,
     last: Option<Timestamp>,
     /// Received mail per category, indexed by [`category_slot`].
-    kinds: [u32; 5],
+    kinds: [u32; 6],
 }
 
 impl Tally {
@@ -268,7 +268,8 @@ impl Tally {
     }
 }
 
-const CATEGORY_SLOTS: [Option<Category>; 5] = [
+const CATEGORY_SLOTS: [Option<Category>; 6] = [
+    Some(Category::Priority),
     Some(Category::Important),
     Some(Category::Other),
     Some(Category::Newsletter),
@@ -287,7 +288,7 @@ pub fn mail_activity(messages: &[Message], me: &Me, window: &Window) -> MailActi
     let mut out = MailActivity::default();
     let mut days: BTreeMap<Date, (u32, u32)> =
         window.days().into_iter().map(|d| (d, (0, 0))).collect();
-    let mut kinds = [0u32; 5];
+    let mut kinds = [0u32; 6];
     let mut people: HashMap<String, Tally> = HashMap::new();
 
     for message in messages {
@@ -782,6 +783,7 @@ mod tests {
         assert_eq!(
             counts,
             vec![
+                (Some(Category::Priority), 0),
                 (Some(Category::Important), 1),
                 (Some(Category::Other), 0),
                 (Some(Category::Newsletter), 5),

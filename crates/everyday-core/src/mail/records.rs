@@ -226,10 +226,24 @@ pub struct GmailMeta {
 /// phase 7's to add, alongside the model rules that assign one. What exists
 /// now is the fixed set phase 7's own preview names, so `Option<Category>`
 /// has somewhere to live before the rules that fill it do.
+///
+/// [`Category::Priority`] is the odd one out: first among
+/// [`Category::ALL`] and the split inbox's first tab, ahead of `Important`,
+/// but nothing [`crate::mail::categorize::categorize`] ever answers on its
+/// own -- see that function's own precedence list. A message only ever
+/// reaches it through a sealed [`CategoryRules`] correction (a sender
+/// marked a standing "VIP", through the existing `set_thread_category`
+/// command), through [`crate::vault::Vault::set_thread_priority`] (one
+/// thread marked by hand, no sender rule), or through the model-assisted
+/// pass that promotes an `Important` thread whose newest message needs the
+/// person soon. The first two write [`CategorySource::Person`] alongside
+/// it; the third writes [`CategorySource::Model`] — see that type's own
+/// docs for what each source is allowed to overwrite later.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum Category {
+    Priority,
     Important,
     Other,
     Newsletter,
@@ -237,11 +251,17 @@ pub enum Category {
 }
 
 impl Category {
-    pub const ALL: [Category; 4] =
-        [Category::Important, Category::Other, Category::Newsletter, Category::Notification];
+    pub const ALL: [Category; 5] = [
+        Category::Priority,
+        Category::Important,
+        Category::Other,
+        Category::Newsletter,
+        Category::Notification,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
+            Category::Priority => "priority",
             Category::Important => "important",
             Category::Other => "other",
             Category::Newsletter => "newsletter",
@@ -684,6 +704,22 @@ pub struct Thread {
     /// remove that coupling entirely.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_auto_draft_asked_at_count: Option<u32>,
+    /// As [`Thread::ai_categorize_asked_at_count`], for the model-assisted
+    /// pass that promotes an `Important` thread to [`Category::Priority`]
+    /// -- "needs the person soon" is its own answer, on the same terms
+    /// "still other" is categorisation's and "reply: false" is
+    /// auto-draft's, and gets the same treatment: recorded once asked,
+    /// re-asked only once a new message moves `message_count` past it.
+    ///
+    /// Kept apart from `ai_categorize_asked_at_count` and
+    /// `ai_auto_draft_asked_at_count` for the same reason those two are
+    /// kept apart from each other: this pass reads `Important` threads,
+    /// the other two read `Other` and `Important` ones respectively for a
+    /// different question each, and a shared marker written by one would
+    /// make another believe it had already asked about a thread it has
+    /// never actually seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_priority_asked_at_count: Option<u32>,
 }
 
 // ---- drafts ---------------------------------------------------------------

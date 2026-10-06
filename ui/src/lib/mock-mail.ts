@@ -44,6 +44,7 @@ import type {
   ThreadFilter,
   ThreadId,
   ThreadPage,
+  ScheduledSend,
 } from './types'
 import { VaultError } from './types'
 
@@ -472,6 +473,52 @@ function buildSeed(): Seeded {
 
 const seed = buildSeed()
 
+// ── Priority: a VIP-flagged handful ────────────────────────────────────
+//
+// Picked after the generator runs rather than folded into its loop: a
+// handful of ordinary inbox threads from a person -- never an automated
+// sender, which `category === 'important'` already rules out -- each
+// rewritten to ask the reader something concrete. That is the shape a real
+// "priority" thread actually has, rather than a random subject promoted
+// into the tab with nothing in it worth the promotion.
+function seedPriorityThreads(s: Seeded): void {
+  const asks: [string, string][] = [
+    [
+      'Can you confirm the Saturday booking by tonight?',
+      'Just need a yes or no so I can tell the venue —',
+    ],
+    [
+      'Need your sign-off on the renewal before Friday',
+      'Legal are waiting on this one, sorry to chase —',
+    ],
+    [
+      'Are you free to look at this before the call?',
+      "Won't take long, but I'd rather not wing it —",
+    ],
+  ]
+  let n = 0
+  for (const t of s.threads) {
+    if (n >= asks.length) break
+    if (t.category !== 'important') continue
+    if (!(s.threadMailboxes.get(t.id) ?? []).some((id) => id.endsWith('-inbox'))) continue
+    const [subject, snippet] = asks[n]!
+    n += 1
+    t.category = 'priority'
+    t.subject = subject
+    t.snippet = snippet
+    const last = [...s.messages.values()]
+      .filter((m) => m.threadId === t.id)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .at(-1)
+    if (last) {
+      last.subject = subject
+      last.snippet = snippet
+      s.bodies.set(last.id, bodyHtmlFor(last.from, subject, n))
+    }
+  }
+}
+seedPriorityThreads(seed)
+
 // ── The Overview's mail cards ────────────────────────────────────────
 
 /** Every address the mock's accounts send as. */
@@ -831,6 +878,31 @@ export function mockSetThreadCategory(ids: ThreadId[], category: MailCategory): 
   for (const id of ids) thread(id).category = category
 }
 
+/** `set_thread_priority` -- this thread only, never the standing per-sender
+ *  rule `mockSetThreadCategory(ids, 'priority')` already is. Unflagging
+ *  always lands on `important` rather than whatever it was before: the same
+ *  simplification `mail.setPriority`'s own optimistic patch makes, so the
+ *  mock and the store never disagree about what the toggle's other side is. */
+export function mockSetThreadPriority(ids: ThreadId[], priority: boolean): void {
+  for (const id of ids) thread(id).category = priority ? 'priority' : 'important'
+}
+
+/** `scheduled_sends` -- every draft `mockSendDraft` queued far enough out
+ *  to be a "send later" rather than an ordinary send's own brief undo
+ *  window (`QueuedSend.scheduled`), and that has not since been undone,
+ *  sent or discarded -- soonest first, filtered by account when given. */
+export function mockScheduledSends(account?: AccountId | null): ScheduledSend[] {
+  const out: ScheduledSend[] = []
+  for (const [draftId, queued] of sendTimers) {
+    if (!queued.scheduled) continue
+    const d = drafts.find((x) => x.id === draftId)
+    if (!d || d.state.type !== 'queued') continue
+    if (account && d.accountId !== account) continue
+    out.push({ draft: d, sendAt: queued.at })
+  }
+  return out.sort((a, b) => a.sendAt.localeCompare(b.sendAt))
+}
+
 export function mockRecategorizeMail(account?: AccountId | null): { changed: number } {
   let changed = 0
   for (const t of seed.threads) {
@@ -950,8 +1022,11 @@ export function mockNewDraft(opts: {
     cc,
     bcc: [],
     subject: original ? `${subjectPrefix}${original.subject.replace(/^(Re|Fwd): /, '')}` : '',
+    // The shape `quote_html` in `everyday-mail/src/compose.rs` writes, so
+    // `mailwrite.ts`'s `splitQuoted` finds the quote here as it does there.
     bodyHtml: original
-      ? `<p></p><blockquote>${mockMessageBodyHtml(original.id)}</blockquote>`
+      ? `<p></p><p>On ${new Date(original.date).toDateString()}, ${original.from.name || original.from.email} wrote:</p>` +
+        `<blockquote type="cite">${mockMessageBodyHtml(original.id)}</blockquote>`
       : '<p></p>',
     attachments: [],
     origin: { type: 'person' },
@@ -975,31 +1050,96 @@ export function mockDiscardDraft(id: DraftId): void {
   if (d) d.state = { type: 'discarded' }
 }
 
-const sendTimers = new Map<string, ReturnType<typeof setTimeout>>()
+/**
+ * One draft `mockSendDraft` is waiting to actually send.
+ *
+ * `at` is reconstructed from `delaySeconds` rather than carried over from
+ * whatever `sendAt` the caller first had in mind: `mock.ts`'s own
+ * `send_draft` case already collapses the two into one delay before calling
+ * this, the same precedence the real `send_draft` gives them, so there is no
+ * `sendAt` left here to read back out. Computed at (almost) the same instant
+ * the caller's own delay was, so `at` lands within the same rounded second
+ * `delaySeconds` already did -- accurate enough for a list that only ever
+ * shows a moment to the nearest minute.
+ *
+ * `scheduled` is what tells `mockScheduledSends` apart from the ordinary
+ * few-second undo window every send -- "now" or "later" alike -- opens: a
+ * delay past the backend's own 30s undo-window clamp (`undo_send_delay`
+ * in `mail.rs`) is a "send later", never merely the pause before an
+ * ordinary send goes out.
+ */
+interface QueuedSend {
+  /** `undefined` for the one seeded at load -- see `seedScheduledSend`. */
+  timer: ReturnType<typeof setTimeout> | undefined
+  at: string
+  scheduled: boolean
+}
 
-export function mockSendDraft(id: DraftId, delaySeconds: number): Draft {
+/** Past this many seconds, a queued send is a "send later", not the
+ *  ordinary undo window -- see `QueuedSend.scheduled`. */
+const UNDO_WINDOW_MAX_S = 30
+
+const sendTimers = new Map<DraftId, QueuedSend>()
+
+/** `sendAt`, when given, is kept verbatim as the send's moment, the way
+ *  `send_draft` in Rust uses it -- not re-derived from `delaySeconds`,
+ *  which the mock's own latency would otherwise shift by a second. */
+export function mockSendDraft(id: DraftId, delaySeconds: number, sendAt?: string): Draft {
   const d = drafts.find((x) => x.id === id)
   if (!d) throw new VaultError('notFound', 'no such draft')
   const op = nextId('op')
   d.state = { type: 'queued', op }
+  const at = sendAt ?? new Date(Date.now() + delaySeconds * 1000).toISOString()
   const timer = setTimeout(() => {
     sendTimers.delete(id)
     if (d.state.type === 'queued') d.state = { type: 'sent' }
   }, delaySeconds * 1000)
-  sendTimers.set(id, timer)
+  sendTimers.set(id, { timer, at, scheduled: delaySeconds > UNDO_WINDOW_MAX_S })
   return d
 }
 
 export function mockUndoSend(draftId: DraftId): Draft {
-  const timer = sendTimers.get(draftId)
-  if (!timer) throw new VaultError('invalid', 'too late to undo this send')
-  clearTimeout(timer)
+  const queued = sendTimers.get(draftId)
+  if (!queued) throw new VaultError('invalid', 'too late to undo this send')
+  clearTimeout(queued.timer)
   sendTimers.delete(draftId)
   const d = drafts.find((x) => x.id === draftId)
   if (!d) throw new VaultError('notFound', 'no such draft')
   d.state = { type: 'editing' }
   return d
 }
+
+// Seeds one scheduled send -- a draft queued for tomorrow morning -- so
+// `scheduled_sends` and the Scheduled nav row have something real to show
+// the moment the mock starts, the same reason `drafts` above seeds two
+// editing drafts rather than none. No timer: one started at module load
+// keeps Node's event loop alive, and every `ui/scripts` test that imports
+// this file then never exits. A send due tomorrow morning would not fire
+// during a session anyway.
+function seedScheduledSend(): void {
+  const draft: Draft = {
+    id: nextId('draft'),
+    accountId: GOOGLE,
+    identity: 'me@gmail.com',
+    inReplyTo: null,
+    to: [addr('Marcus Webb', 'marcus.webb@example.com')],
+    cc: [],
+    bcc: [],
+    subject: 'Notes from the client call',
+    bodyHtml: '<p>Sending this over first thing — a few follow-ups inside.</p>',
+    attachments: [],
+    origin: { type: 'person' },
+    state: { type: 'queued', op: nextId('op') },
+    createdAt: iso(2),
+    updatedAt: iso(2),
+  }
+  drafts.push(draft)
+  const at = new Date()
+  at.setDate(at.getDate() + 1)
+  at.setHours(8, 0, 0, 0)
+  sendTimers.set(draft.id, { timer: undefined, at: at.toISOString(), scheduled: true })
+}
+seedScheduledSend()
 
 // ── Sync status ──────────────────────────────────────────────────────
 

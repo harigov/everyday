@@ -54,6 +54,8 @@ pub mod llm;
 pub mod mailai;
 pub mod mailsync;
 pub mod mailview;
+pub mod mailvoice;
+pub mod mailwrite;
 pub mod meeting;
 pub mod outbox;
 pub mod quick;

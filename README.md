@@ -698,10 +698,29 @@ seconds — and **send later** is the identical op with whatever delay you
 chose; cancelling either just cancels the op. Both survive a restart,
 because the outbox is a table, not a timer in a window.
 
+**Send later** offers the moments people actually pick — later today, this
+evening, tomorrow morning or afternoon, Monday morning — or any date and
+time. Everything waiting to go out is listed under **Scheduled**, beside
+Drafts, where a send can be moved, sent now, cancelled back into Drafts, or
+reopened to edit; each of those is the same cancel-and-queue the outbox
+already does for undo, so none of them can race the send itself.
+
 **Snooze** (`H`) takes a thread out of the inbox and brings it back at the
 time you asked for, entirely on this computer — the server is never told a
 thread was snoozed, so there is nothing to undo on it if you change your
-mind before it returns.
+mind before it returns. **Snoozed** lists what is away and when each comes
+back; unsnoozing from there returns it at once.
+
+### Finding your way around
+
+Mail is three panes — folders, threads, the open thread — and both edges
+between them drag; the widths are remembered. Threads are grouped under
+Today, Yesterday, Earlier this week, Last week, Earlier this month, Last
+month, and then by month. Reply, Reply all and Forward open the draft
+right under the thread it answers, not in a box over it; only a new
+message opens on its own. Gmail's own labels show by the names Gmail
+shows them under — Inbox, not `\Inbox` — and the ones that only repeat a
+folder or a star (Sent, Drafts, Starred, Important) are not listed twice.
 
 ### Search
 
@@ -739,15 +758,47 @@ the first one missed something.
 
 ### The split inbox
 
-Threads sort into categories — important, other, newsletters,
+Threads sort into categories — priority, important, other, newsletters,
 notifications, and ones you name — decided by rules that run on this
 device and are always on: mailing-list headers, known newsletter senders,
 and corrections you have made before. A model finishes what the rules
 cannot place with confidence, and summarising a long thread and drafting a
-reply ahead of you both go through that same model — but all three stay off
-until mail's assistant features are turned on for that account and the
+reply ahead of you both go through that same model — but all of them stay
+off until mail's assistant features are turned on for that account and the
 sentence naming which provider they go to is ticked, exactly as the chat
 assistant's own mail tools require.
+
+**Priority** is the first tab: the mail that is waiting on you. A thread
+gets there three ways. Mark it yourself (`!`), and that thread alone moves.
+Say "always priority from this sender", and everything they send lands
+there, the same standing correction any other category move makes. Or,
+with categorising on, the model reads what reached Important and promotes
+what plainly needs you soon — a direct question, a deadline, someone
+waiting — and says no more often than yes. Your own mark always outranks
+the model's: a thread you took out of Priority stays out.
+
+### Writing in your own voice
+
+With **Writing help** on for an account, opening a thread offers three
+short replies beside Reply, Reply all and Forward, each taking a different
+line — yes, not this time, a question back. Pick one (or press `1`, `2`,
+`3`) and it opens as a reply, ready to change and send; nothing is ever
+sent for you. While writing, **Write** (`Mod G`) turns a few words ("yes to
+Thursday, ask for the agenda") into the message, and **Improve** polishes,
+shortens, lengthens, warms up, formalises or just corrects what you wrote,
+or the part of it you selected — either one only ever rewrites what is
+above the quoted message, and Undo puts back exactly what was there.
+
+Every one of these, and the drafts written ahead of you, is written to
+sound like you rather than like a model. Your sent mail is read on this
+computer into a profile of how you write — how you open, how you sign off,
+how long you run, whether you write in lowercase, use exclamation marks,
+em dashes or emoji — and the request carries that profile and a few of
+your real messages, ones to the same person first. The phrases that give
+model writing away ("I hope this email finds you well", "please don't
+hesitate to reach out") are forbidden in the request and removed again
+from what comes back, and nothing a model writes is let into a draft as
+HTML: it answers in plain text, which is escaped here.
 
 ### Invitations
 
@@ -2555,9 +2606,9 @@ todo app: `X` for finished work, `B` for the board. In the calendar: `D`,
 remove the selected block. In the library: `V` for covers or a list, `S` to
 favourite. In mail: `J`/`K` for the thread below and above, `Enter` or `O` to
 open one, `Escape` back to the list, `E` to archive, `#` to trash, `S` to
-star, `U`/`I` to mark unread or read, `H` to snooze, `L` to label, `V` to
-move, `R`/`W`/`F` to reply, reply all or forward, `Tab`/`Shift Tab` to change
-category, and `G` then `I`/`S`/`D`/`U` for Inbox, Starred, Drafts and Sent —
+star, `U`/`I` to mark unread or read, `H` to snooze, `!` to mark priority,
+`L` to label, `V` to move, `R`/`W`/`F` to reply, reply all or forward, `1`,
+`2`, `3` to take a suggested reply, `Tab`/`Shift Tab` to change category, and `G` then `I`/`S`/`D`/`U` for Inbox, Starred, Drafts and Sent —
 `W` rather than the plan's `A` for reply all, because `A` already opens the
 assistant, and `G` `U` rather than `G` `T` for Sent, because `G` `T` is
 already Todo.

@@ -484,6 +484,13 @@ async fn every_offline_write_announces_what_was_written_down() {
         json!({ "threads": [thread_id.to_string()], "category": "important" }),
     )
     .await;
+    run(
+        &svc,
+        &h,
+        "set_thread_priority",
+        json!({ "threads": [thread_id.to_string()], "priority": true }),
+    )
+    .await;
     let until = (Timestamp::now() + SignedDuration::from_hours(2)).to_string();
     run(&svc, &h, "snooze", json!({ "threads": [thread_id.to_string()], "until": until })).await;
     run(&svc, &h, "unsnooze", json!({ "threads": [thread_id.to_string()] })).await;

@@ -5,23 +5,71 @@
   // folded into one component the way the library and the todo app do.
 
   import { accounts } from '../lib/accounts.svelte'
-  import { CATEGORY_TABS, formatSenders, recentActionLine, threadListDate } from '../lib/mail'
+  import {
+    CATEGORY_TABS,
+    formatSenders,
+    isSnoozedMailbox,
+    mailboxDisplayName,
+    recentActionLine,
+    snoozedUntilLabel,
+    threadListDate,
+    weekdayAndTime,
+    withDateSections,
+    type ListRow,
+  } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { plural, relativeTime } from '../lib/format'
-  import type { Mailbox, Thread } from '../lib/types'
+  import type { Mailbox, MailAddress, Thread } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import MailCompose from './MailCompose.svelte'
   import MailLabelPicker from './MailLabelPicker.svelte'
+  import MailScheduled from './MailScheduled.svelte'
   import MailSnoozePicker from './MailSnoozePicker.svelte'
   import MailThread from './MailThread.svelte'
+  import PaneResizer from './PaneResizer.svelte'
   import VirtualList from './VirtualList.svelte'
 
   void mail.start()
 
-  const heading = $derived(mail.mailbox?.remoteName ?? 'Mail')
+  const heading = $derived(
+    mail.viewingScheduledFor
+      ? 'Scheduled'
+      : mail.mailbox
+        ? mailboxDisplayName(mail.mailbox)
+        : 'Mail',
+  )
+
+  /** Is the list column currently the Snoozed view -- the one place a row's
+   *  own date column means "comes back" rather than "last arrived", and the
+   *  one place "Unsnooze" belongs in a row's own menu (an ordinary mailbox
+   *  never lists a currently-snoozed thread at all, per `mail.refresh`'s own
+   *  `snoozed` filter). */
+  const inSnoozedView = $derived(isSnoozedMailbox(mail.mailbox))
+
+  /** The list column's own rows, headings interleaved -- never grouped in
+   *  the Snoozed view, whose rows already read "comes back", not "arrived",
+   *  which `dateSection`'s own headings have nothing to say about. */
+  const listRows = $derived<ListRow[]>(
+    inSnoozedView
+      ? mail.threads.map((thread) => ({ type: 'thread', thread }))
+      : withDateSections(mail.threads, (t) => t.lastDate),
+  )
+  const searchRows = $derived<ListRow[]>(withDateSections(mail.searchResults, (t) => t.lastDate))
+
+  function rowKey(row: ListRow): string {
+    return row.type === 'header' ? `header:${row.key}` : row.thread.id
+  }
+
+  /** A thread row's thread. Spelled out rather than read as `row.thread`
+   *  under the template's `{:else}`: the type-aware lint cannot carry the
+   *  `row.type === 'header'` narrowing into an `{:else}` branch, and reads
+   *  every field of an un-narrowed `row.thread` as an unsafe `any`. */
+  function threadOf(row: Extract<ListRow, { type: 'thread' }>): Thread {
+    return row.thread
+  }
 
   /** (p) TODO: only the inbox has a split to tab through -- see
    *  `docs/plans/mail.md`'s "Split inbox". Every other mailbox (Sent,
@@ -55,10 +103,36 @@
   function moveMailboxItems(t: Thread): MenuItem[] {
     return mail.mailboxes
       .filter((m) => m.accountId === t.accountId && m.role !== 'other')
-      .map((box: Mailbox) => ({ label: box.remoteName, run: () => void mail.moveTo(t.id, box.id) }))
+      .map((box: Mailbox) => ({
+        label: mailboxDisplayName(box),
+        run: () => void mail.moveTo(t.id, box.id),
+      }))
+  }
+
+  /**
+   * Who "Always priority from …" would mean, for this row's own menu: the
+   * last participant who is not one of the account's own addresses --
+   * `Thread.participants` carries no per-message order the way
+   * `set_thread_category`'s own "the thread's last message's sender" reads,
+   * but a thread grows this array in the order a new voice first joins it,
+   * so the last one standing once this account's own addresses are read out
+   * is, in the ordinary two-person case, exactly that sender. `null` when
+   * every participant is this account's own -- a thread with nobody else in
+   * it, which the VIP rule has nothing to point at.
+   */
+  function vipSenderFor(t: Thread): MailAddress | null {
+    const account = accounts.account(t.accountId)
+    const mine = new Set(
+      [account?.address, ...(account?.identities.map((i) => i.address) ?? [])]
+        .filter((a): a is string => !!a)
+        .map((a) => a.toLowerCase()),
+    )
+    const other = [...t.participants].reverse().find((p) => !mine.has(p.email.toLowerCase()))
+    return other ?? t.participants.at(-1) ?? null
   }
 
   function rowMenu(t: Thread): MenuItem[] {
+    const vip = vipSenderFor(t)
     return tidyMenu([
       { label: 'Open', icon: 'inbox', run: () => void mail.openThreadById(t.id) },
       {
@@ -67,7 +141,19 @@
         run: () => void (t.unreadCount > 0 ? mail.markRead(t.id) : mail.markUnread(t.id)),
       },
       { label: t.starred ? 'Unstar' : 'Star', icon: 'star', run: () => void mail.toggleStar(t.id) },
-      { label: 'Snooze…', icon: 'clock', run: () => (mail.wantsSnooze = t.id) },
+      {
+        label: t.category === 'priority' ? 'Remove from priority' : 'Mark as priority',
+        icon: 'flag',
+        run: () => void mail.setPriority(t.id, t.category !== 'priority'),
+      },
+      vip && {
+        label: `Always priority from ${vip.name || vip.email}`,
+        icon: 'flag',
+        run: () => void mail.setCategoryFor(t.id, 'priority'),
+      },
+      inSnoozedView
+        ? { label: 'Unsnooze', icon: 'clock', run: () => void mail.unsnooze(t.id) }
+        : { label: 'Snooze…', icon: 'clock', run: () => (mail.wantsSnooze = t.id) },
       { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = t.id) },
       { label: 'Move to…', icon: 'layers', items: moveMailboxItems(t) },
       { label: 'Move to category', icon: 'inbox', items: categoryMoveItems(t) },
@@ -75,6 +161,17 @@
       { label: 'Archive', icon: 'layers', run: () => void mail.archive(t.id) },
       { label: 'Trash', icon: 'trash', danger: true, run: () => void mail.trash(t.id) },
     ])
+  }
+
+  /** Scrolls an inline reply into view the moment it mounts -- it draws
+   *  itself right after the thread's own messages, which may already be
+   *  scrolled well past the fold by the time a reply opens under them.
+   *  Paired with `{#key mail.composing.id}` in the template, so opening a
+   *  *second* reply into the same thread (send, then reply again) remounts
+   *  the element and this runs again, rather than firing only once per
+   *  thread. */
+  function scrollIntoViewOnMount(el: HTMLElement) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   }
 
   function snooze(at: Date) {
@@ -103,136 +200,232 @@
     </button>
   </div>
 
-  {#if showTabs && !mail.searchQuery.trim()}
-    <!-- (p) TODO: `Tab`/`Shift+Tab` move between these -- see
-         `shortcuts.svelte.ts`'s own note on why that key was free to take. -->
-    <div class="tabs" role="tablist" aria-label="Mail categories">
-      <button
-        class="tab"
-        role="tab"
-        aria-selected={mail.category === null}
-        class:sel={mail.category === null}
-        onclick={() => mail.setCategory(null)}
-      >
-        All
-      </button>
-      {#each CATEGORY_TABS as tab (tab.key)}
+  {#if mail.viewingScheduledFor}
+    <MailScheduled accountId={mail.viewingScheduledFor} />
+  {:else}
+    {#if showTabs && !mail.searchQuery.trim()}
+      <!-- (p) TODO: `Tab`/`Shift+Tab` move between these -- see
+           `shortcuts.svelte.ts`'s own note on why that key was free to take. -->
+      <div class="tabs" role="tablist" aria-label="Mail categories">
         <button
           class="tab"
           role="tab"
-          aria-selected={mail.category === tab.key}
-          class:sel={mail.category === tab.key}
-          onclick={() => mail.setCategory(tab.key)}
+          aria-selected={mail.category === null}
+          class:sel={mail.category === null}
+          onclick={() => mail.setCategory(null)}
         >
-          {tab.label}
+          All
         </button>
-      {/each}
-    </div>
-  {/if}
-
-  {#if mail.searchQuery.trim()}
-    <p class="hint operator-hint">
-      Try <code>from:</code>, <code>to:</code>, <code>subject:</code>, <code>has:attachment</code>,
-      <code>before:</code>, <code>after:</code>, <code>in:</code> or <code>is:unread</code>.
-    </p>
-    {#if mail.searching && mail.searchResults.length === 0}
-      <p class="hint">Searching…</p>
-    {:else if mail.searchResults.length === 0}
-      <p class="hint">Nothing matched “{mail.searchQuery}”.</p>
-    {:else}
-      <!-- `SearchMailResult.threads` is the same `Thread` shape every other
-           row already draws from -- see `types.ts`'s own doc on why a
-           search hit is not a narrower type of its own. -->
-      {#each mail.searchResults as t (t.id)}
-        <button class="row" onclick={() => void mail.openThreadById(t.id)}>
-          <span class="dot" aria-hidden="true"></span>
-          <div class="body">
-            <div class="line1">
-              <span class="from">{formatSenders(t.participants)}</span>
-              {#if t.starred}
-                <Icon name="star" size={12} />
-              {/if}
-              {#if t.hasAttachments}
-                <Icon name="tag" size={12} />
-              {/if}
-              <span class="date">{threadListDate(t.lastDate)}</span>
-            </div>
-            <div class="line2">
-              <span class="subject">{t.subject || '(no subject)'}</span>
-              {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
-            </div>
-          </div>
-        </button>
-      {/each}
-      {#if mail.searchCursor}
-        <button
-          class="load-more"
-          disabled={mail.searching}
-          onclick={() => void mail.loadMoreSearchResults()}
-        >
-          {mail.searching ? 'Loading…' : 'Load more'}
-        </button>
-      {/if}
-    {/if}
-  {:else if mail.loading && mail.threads.length === 0}
-    <p class="hint">Loading…</p>
-  {:else if mail.threads.length === 0}
-    <EmptyState lead="Nothing here.">
-      {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
-    </EmptyState>
-  {:else}
-    <!-- The scrolling parent `VirtualList` needs: `virtua` watches its
-         container's parent for scroll, and `section.list` itself never
-         scrolls, so without this the rows past the first screen were
-         unreachable and `onEndReached` never fired. -->
-    <div class="scroll thread-rows">
-      <VirtualList
-        items={mail.threads}
-        selectedId={mail.selectedThread}
-        onEndReached={() => void mail.loadMore()}
-      >
-        {#snippet children(t: Thread)}
+        {#each CATEGORY_TABS as tab (tab.key)}
           <button
-            class="row"
-            class:sel={mail.selectedThread === t.id}
-            class:unread={t.unreadCount > 0}
-            onclick={() => void mail.openThreadById(t.id)}
-            oncontextmenu={(e) => menu.show(e, rowMenu(t))}
+            class="tab"
+            role="tab"
+            aria-selected={mail.category === tab.key}
+            class:sel={mail.category === tab.key}
+            onclick={() => mail.setCategory(tab.key)}
           >
-            <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
-            <div class="body">
-              <div class="line1">
-                <span class="from">{formatSenders(t.participants)}</span>
-                {#if t.starred}
-                  <Icon name="star" size={12} />
-                {/if}
-                {#if t.hasAttachments}
-                  <Icon name="tag" size={12} />
-                {/if}
-                <span class="date">{threadListDate(t.lastDate)}</span>
-              </div>
-              <div class="line2">
-                <span class="subject">{t.subject || '(no subject)'}</span>
-                {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
-                {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
-              </div>
-            </div>
+            {tab.label}
           </button>
-        {/snippet}
-      </VirtualList>
-    </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#if mail.searchQuery.trim()}
+      <p class="hint operator-hint">
+        Try <code>from:</code>, <code>to:</code>, <code>subject:</code>,
+        <code>has:attachment</code>, <code>before:</code>, <code>after:</code>, <code>in:</code>
+        or <code>is:unread</code>.
+      </p>
+      {#if mail.searching && mail.searchResults.length === 0}
+        <p class="hint">Searching…</p>
+      {:else if mail.searchResults.length === 0}
+        <p class="hint">Nothing matched “{mail.searchQuery}”.</p>
+      {:else}
+        <!-- `SearchMailResult.threads` is the same `Thread` shape every other
+             row already draws from -- see `types.ts`'s own doc on why a
+             search hit is not a narrower type of its own. -->
+        {#each searchRows as row (rowKey(row))}
+          {#if row.type === 'header'}
+            <div class="date-section" aria-hidden="true">{row.label}</div>
+          {:else}
+            {@const t = threadOf(row)}
+            <button class="row" onclick={() => void mail.openThreadById(t.id)}>
+              <span class="dot" aria-hidden="true"></span>
+              <div class="body">
+                <div class="line1">
+                  <span class="from">{formatSenders(t.participants)}</span>
+                  {#if t.category === 'priority'}
+                    <span class="priority-mark" title="Priority"
+                      ><Icon name="flag" size={12} /></span
+                    >
+                  {/if}
+                  {#if t.starred}
+                    <Icon name="star" size={12} />
+                  {/if}
+                  {#if t.hasAttachments}
+                    <Icon name="tag" size={12} />
+                  {/if}
+                  <span class="date">{threadListDate(t.lastDate)}</span>
+                </div>
+                <div class="line2">
+                  <span class="subject">{t.subject || '(no subject)'}</span>
+                  {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
+                </div>
+              </div>
+            </button>
+          {/if}
+        {/each}
+        {#if mail.searchCursor}
+          <button
+            class="load-more"
+            disabled={mail.searching}
+            onclick={() => void mail.loadMoreSearchResults()}
+          >
+            {mail.searching ? 'Loading…' : 'Load more'}
+          </button>
+        {/if}
+      {/if}
+    {:else if mail.loading && mail.threads.length === 0}
+      <p class="hint">Loading…</p>
+    {:else if mail.threads.length === 0}
+      <EmptyState lead="Nothing here.">
+        {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
+      </EmptyState>
+    {:else}
+      <!-- The scrolling parent `VirtualList` needs: `virtua` watches its
+           container's parent for scroll, and `section.list` itself never
+           scrolls, so without this the rows past the first screen were
+           unreachable and `onEndReached` never fired. -->
+      <div class="scroll thread-rows">
+        <VirtualList
+          items={listRows}
+          getKey={rowKey}
+          selectedId={mail.selectedThread}
+          onEndReached={() => void mail.loadMore()}
+        >
+          {#snippet children(row: ListRow)}
+            {#if row.type === 'header'}
+              <div class="date-section" aria-hidden="true">{row.label}</div>
+            {:else}
+              {@const t = threadOf(row)}
+              <button
+                class="row"
+                class:sel={mail.selectedThread === t.id}
+                class:unread={t.unreadCount > 0}
+                onclick={() => void mail.openThreadById(t.id)}
+                oncontextmenu={(e) => menu.show(e, rowMenu(t))}
+              >
+                <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
+                <div class="body">
+                  <div class="line1">
+                    <span class="from">{formatSenders(t.participants)}</span>
+                    {#if t.category === 'priority'}
+                      <span class="priority-mark" title="Priority"
+                        ><Icon name="flag" size={12} /></span
+                      >
+                    {/if}
+                    {#if t.starred}
+                      <Icon name="star" size={12} />
+                    {/if}
+                    {#if t.hasAttachments}
+                      <Icon name="tag" size={12} />
+                    {/if}
+                    <span class="date">
+                      {inSnoozedView && t.snoozedUntil
+                        ? snoozedUntilLabel(t.snoozedUntil)
+                        : threadListDate(t.lastDate)}
+                    </span>
+                  </div>
+                  <div class="line2">
+                    <span class="subject">{t.subject || '(no subject)'}</span>
+                    {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
+                    {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
+                  </div>
+                </div>
+              </button>
+            {/if}
+          {/snippet}
+        </VirtualList>
+      </div>
+    {/if}
   {/if}
+  <PaneResizer
+    cssVar="--mail-list-w"
+    storageKey="pane-w:mail-list"
+    defaultWidth={366}
+    min={260}
+    max={640}
+  />
 </section>
 
 <main class="main">
   {#if mail.openThread}
+    <!-- Captured once, rather than re-read as `mail.openThread.thread.id`
+         inside every button below: a closure does not inherit the
+         narrowing this `{#if}` gives the expression directly above it, so
+         without this each one would have to re-assert past `| null` by
+         hand. `open` is itself never reassigned for the life of the block,
+         so every closure below closes over the same non-null value. -->
+    {@const open = mail.openThread}
     <div class="thread-head">
       <div class="thread-head-row">
         <button class="back" onclick={() => mail.closeThread()} title="Back to the list (Escape)">
           <Icon name="chevron" size={14} />
         </button>
-        <h1>{mail.openThread.thread.subject || '(no subject)'}</h1>
-        <span class="count">{plural(mail.openThread.messages.length, 'message')}</span>
+        <h1>{open.thread.subject || '(no subject)'}</h1>
+        {#if open.thread.category === 'priority'}
+          <span class="priority-mark" title="Priority">
+            <Icon name="flag" size={12} />
+            Priority
+          </span>
+        {/if}
+        <span class="count">{plural(open.messages.length, 'message')}</span>
+        <div class="thread-actions">
+          <button
+            class="icon-btn"
+            title="Archive (E)"
+            aria-label="Archive"
+            onclick={() => void mail.archive(open.thread.id)}
+          >
+            <Icon name="layers" size={14} />
+          </button>
+          <button
+            class="icon-btn"
+            title="Snooze… (H)"
+            aria-label="Snooze"
+            onclick={() => (mail.wantsSnooze = open.thread.id)}
+          >
+            <Icon name="clock" size={14} />
+          </button>
+          <button
+            class="icon-btn"
+            class:on={open.thread.category === 'priority'}
+            title={open.thread.category === 'priority'
+              ? 'Remove from priority (!)'
+              : 'Mark as priority (!)'}
+            aria-label="Toggle priority"
+            onclick={() =>
+              void mail.setPriority(open.thread.id, open.thread.category !== 'priority')}
+          >
+            <Icon name="flag" size={14} />
+          </button>
+          <button
+            class="icon-btn"
+            title="Mark unread (U)"
+            aria-label="Mark unread"
+            onclick={() => void mail.markUnread(open.thread.id)}
+          >
+            <Icon name="check" size={14} />
+          </button>
+          <button
+            class="icon-btn"
+            title="Trash (#)"
+            aria-label="Trash"
+            onclick={() => void mail.trash(open.thread.id)}
+          >
+            <Icon name="trash" size={14} />
+          </button>
+        </div>
         {#if canSummarize}
           <button
             class="summarize"
@@ -245,6 +438,13 @@
           </button>
         {/if}
       </div>
+      {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
+        <p class="snoozed-banner">
+          <Icon name="clock" size={13} />
+          <span>Snoozed until {weekdayAndTime(open.thread.snoozedUntil)}</span>
+          <button class="link" onclick={() => void mail.unsnooze(open.thread.id)}>Unsnooze</button>
+        </p>
+      {/if}
       {#if recentActionLines.length > 0}
         <p class="recent-actions">
           {#each recentActionLines as line, i (i)}
@@ -253,7 +453,7 @@
         </p>
       {/if}
     </div>
-    {#if mail.summary && mail.summary.threadId === mail.openThread.thread.id}
+    {#if mail.summary && mail.summary.threadId === open.thread.id}
       <div class="summary-panel">
         <Icon name="sparkle" size={14} />
         <p>{mail.summary.text}</p>
@@ -263,16 +463,27 @@
       </div>
     {/if}
     <div class="scroll">
-      <MailThread messages={mail.openThread.messages} expanded={mail.expanded} />
+      <MailThread messages={open.messages} expanded={mail.expanded} />
+      {#if mail.composing && mail.composeInline}
+        {#key mail.composing.id}
+          <div class="inline-reply" use:scrollIntoViewOnMount>
+            <MailCompose draft={mail.composing} inline onclose={() => mail.closeCompose()} />
+          </div>
+        {/key}
+      {/if}
     </div>
   {:else}
-    <EmptyState lead="Select a thread">
-      {#snippet note()}j and k move, Enter opens.{/snippet}
+    <EmptyState lead={mail.viewingScheduledFor ? 'Nothing open' : 'Select a thread'}>
+      {#snippet note()}
+        {mail.viewingScheduledFor
+          ? 'Edit, reschedule, send now or cancel a message from the list.'
+          : 'j and k move, Enter opens.'}
+      {/snippet}
     </EmptyState>
   {/if}
 </main>
 
-{#if mail.composing}
+{#if mail.composing && !mail.composeInline}
   <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
 {/if}
 
@@ -303,7 +514,10 @@
 
 <style>
   .list {
-    width: var(--list-w);
+    position: relative;
+    /* Mail's own variable -- `--list-w` is shared with the journal's and
+       the calendar's lists, which a drag here must leave alone. */
+    width: var(--mail-list-w);
     flex: none;
     display: flex;
     flex-direction: column;
@@ -369,6 +583,19 @@
     background: var(--bg-hover);
   }
 
+  /* A grouping heading over a run of rows -- never a button, never
+     focusable: `j`/`k` and a row's own context menu read `mail.threads`
+     directly, which never contains one of these, so there is nothing here
+     for either to skip over by accident. */
+  .date-section {
+    padding: var(--sp-2) var(--sp-3) 4px;
+    font-size: var(--text-xs);
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+  }
+
   .row {
     display: flex;
     align-items: flex-start;
@@ -412,6 +639,22 @@
   .line2 :global(svg) {
     flex: none;
     color: var(--fg-faint);
+  }
+  /* Accent-coloured, against the rule above that would otherwise read every
+     icon in these two lines as `--fg-faint` -- equal specificity to that
+     rule, so this one wins only by being declared after it; moving it
+     ahead of `.line1 :global(svg)` would silently lose the colour again. */
+  .priority-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+    color: var(--journal-accent, var(--accent));
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+  .priority-mark :global(svg) {
+    color: var(--journal-accent, var(--accent));
   }
   .snippet {
     flex: 1;
@@ -462,8 +705,8 @@
     padding: var(--sp-1) var(--sp-3);
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
-    /* Five tabs run a few pixels past the `--list-w` column at the app's
-       narrower widths -- real overflow, so it stays scrollable, but a
+    /* Six tabs run a few pixels past the `--mail-list-w` column at the
+       app's narrower widths -- real overflow, so it stays scrollable, but a
        track under a *tab strip* (as opposed to a list) reads as a stray
        scrollbar rather than "there's more here"; the global thin bar in
        `app.css` is still a bar. Hidden on both engines, same as a carousel
@@ -492,7 +735,11 @@
 
   .main {
     flex: 1;
-    min-width: 0;
+    /* Never crushed to nothing by the list column beside it growing --
+       `PaneResizer`'s own `max` on `.list` already stops short of most
+       window widths, but a narrow window plus a list dragged wide should
+       still leave a reading pane rather than squeeze it to a sliver. */
+    min-width: 360px;
     display: flex;
     flex-direction: column;
   }
@@ -546,6 +793,53 @@
     font-size: var(--text-xs);
     color: var(--fg-faint);
   }
+  /* The reading pane's own compact action bar -- archive, snooze, priority,
+     mark unread, trash -- ahead of Summarise, which keeps its own larger,
+     labelled button rather than joining this row: it is the one action
+     here that is not also on `h`/`e`/`u`/`!`/`#`'s own list, so it reads as
+     a distinct offer rather than a sixth icon indistinguishable from the
+     rest. */
+  .thread-actions {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+  .icon-btn {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+  }
+  .icon-btn:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  /* The priority toggle's pressed state, in colour alone: `Icon`'s
+     `filled` swaps stroke for fill, and the flag's pole is a bare line with
+     no area to fill, so the filled flag drew as a floating orange block. */
+  .icon-btn.on {
+    color: var(--journal-accent, var(--accent));
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+  .snoozed-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: 0;
+    padding-bottom: var(--sp-2);
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+  }
+  .snoozed-banner span {
+    flex: 1;
+  }
+  .snoozed-banner .link {
+    color: var(--journal-accent, var(--accent));
+    font-weight: 600;
+  }
   .summarize {
     flex: none;
     display: inline-flex;
@@ -590,6 +884,12 @@
   .scroll {
     flex: 1;
     overflow-y: auto;
+  }
+
+  /* Inset the way `MailThread`'s own messages are, so the reply lines up
+     under the message it answers rather than running edge to edge. */
+  .inline-reply {
+    padding: 0 var(--sp-4) var(--sp-4);
   }
 
   .thread-rows {

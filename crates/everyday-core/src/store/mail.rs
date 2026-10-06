@@ -43,8 +43,8 @@
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, CategoryRules, ContactBook, Draft, Invite, Mailbox, Message, MessageFlags, Op,
-    RemoteImageSettings, Thread,
+    Body, Category, CategoryRules, CategorySource, ContactBook, Draft, Invite, Mailbox, Message,
+    MessageFlags, Op, RemoteImageSettings, Thread,
 };
 use crate::packstore::PackRef;
 use jiff::Timestamp;
@@ -470,7 +470,38 @@ pub trait MailStore: Send + Sync {
     /// than [`MailStore::recategorize`]: this never touches
     /// [`crate::mail::CategoryRules`], because a model's one-off answer is
     /// not a standing correction the way a person's own is.
+    ///
+    /// A no-op -- the category it is handed is dropped, not written -- when
+    /// the message it is asked to recategorise already carries
+    /// [`crate::mail::CategorySource::Person`]. A person's own mark (a VIP
+    /// correction, or one thread set through
+    /// [`crate::vault::Vault::set_thread_priority`]) was made on
+    /// purpose, and the model-assisted pass re-reading the same thread a
+    /// minute later must not quietly talk them out of it; only another
+    /// person's own action -- through this same door, or through
+    /// [`MailStore::set_message_category_with_source`] -- may ever replace
+    /// it. This is the one asymmetry in an otherwise optimistic write: every
+    /// other case behaves exactly as before.
     fn set_message_category(&self, id: MailMessageId, category: Category) -> Result<()>;
+
+    /// As [`MailStore::set_message_category`], but letting the caller name
+    /// which [`CategorySource`] to stamp, rather than always
+    /// [`CategorySource::Model`] -- what
+    /// [`crate::vault::Vault::set_thread_priority`] calls so that one
+    /// thread marked by hand records [`CategorySource::Person`], the same
+    /// source a VIP correction writes, and for the same reason: so that
+    /// neither [`MailStore::recategorize`]'s backfill nor
+    /// [`MailStore::set_message_category`]'s own model-pass writer -- see
+    /// its guard above -- ever overwrites it. Recomputes the thread it
+    /// belongs to, on the same terms `set_message_category` does. A message
+    /// id this store has never ingested is a no-op, on the same terms
+    /// `set_message_category` already is.
+    fn set_message_category_with_source(
+        &self,
+        id: MailMessageId,
+        category: Category,
+        source: CategorySource,
+    ) -> Result<()>;
 
     /// Set (or clear, with `None`) `thread`'s own `snoozed_until` -- the
     /// optimistic write behind [`crate::mail::OpKind::Snooze`], and also
@@ -493,6 +524,12 @@ pub trait MailStore: Send + Sync {
     /// pass -- see
     /// [`crate::mail::Thread::ai_auto_draft_asked_at_count`].
     fn set_thread_ai_auto_draft_asked(&self, thread: ThreadId, message_count: u32) -> Result<()>;
+
+    /// As [`MailStore::set_thread_ai_categorize_asked`], for the
+    /// model-assisted pass that promotes an `Important` thread to
+    /// [`Category::Priority`] -- see
+    /// [`crate::mail::Thread::ai_priority_asked_at_count`].
+    fn set_thread_ai_priority_asked(&self, thread: ThreadId, message_count: u32) -> Result<()>;
 
     /// Every thread, across every account, whose `snoozed_until` is set and
     /// has passed `now` -- what the minute scheduler reads to decide which

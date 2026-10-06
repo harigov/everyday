@@ -21,13 +21,16 @@
 
 use crate::account::Account;
 
-/// One of the three service-side features `docs/plans/mail.md`'s phase 7
+/// One of the service-side features `docs/plans/mail.md`'s phase 7
 /// adds, each gated by its own switch on [`crate::account::MailAi`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MailAiFeature {
     Categorize,
     Summaries,
     AutoDraft,
+    /// `everyday_service::mailwrite`'s three: suggested replies, a draft
+    /// from a few words, and improving what was written.
+    Writing,
 }
 
 impl MailAiFeature {
@@ -36,6 +39,7 @@ impl MailAiFeature {
             MailAiFeature::Categorize => account.mail_ai.categorize,
             MailAiFeature::Summaries => account.mail_ai.summaries,
             MailAiFeature::AutoDraft => account.mail_ai.auto_draft,
+            MailAiFeature::Writing => account.mail_ai.writing,
         }
     }
 
@@ -44,6 +48,7 @@ impl MailAiFeature {
             MailAiFeature::Categorize => "AI categorisation",
             MailAiFeature::Summaries => "AI summaries",
             MailAiFeature::AutoDraft => "auto-drafts",
+            MailAiFeature::Writing => "writing help",
         }
     }
 }
@@ -121,13 +126,17 @@ mod tests {
     /// whether a mail feature may reach a model") is checked against.
     #[test]
     fn every_combination_of_feature_flag_and_acknowledgement() {
-        for feature in
-            [MailAiFeature::Categorize, MailAiFeature::Summaries, MailAiFeature::AutoDraft]
-        {
+        for feature in [
+            MailAiFeature::Categorize,
+            MailAiFeature::Summaries,
+            MailAiFeature::AutoDraft,
+            MailAiFeature::Writing,
+        ] {
             let on = |mail_ai: &mut MailAi| match feature {
                 MailAiFeature::Categorize => mail_ai.categorize = true,
                 MailAiFeature::Summaries => mail_ai.summaries = true,
                 MailAiFeature::AutoDraft => mail_ai.auto_draft = true,
+                MailAiFeature::Writing => mail_ai.writing = true,
             };
 
             // Off, not acknowledged: refused for the flag, not the

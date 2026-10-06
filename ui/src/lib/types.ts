@@ -1407,6 +1407,10 @@ export interface MailAi {
   categorize: boolean
   autoDraft: boolean
   summaries: boolean
+  /** Suggested replies under an open thread, a draft from a few words, and
+   *  improving what was written -- `everyday_service::mailwrite`. Optional
+   *  because an account saved before it existed answers without it. */
+  writing?: boolean
 }
 
 export type AccountStatus =
@@ -1509,7 +1513,34 @@ export interface Mailbox {
 
 /** A closed, small set -- see `crate::mail::Category` for why a user-named
  * category (phase 7) cannot be one of these without leaking its name. */
-export type MailCategory = 'important' | 'other' | 'newsletter' | 'notification'
+export type MailCategory = 'priority' | 'important' | 'other' | 'newsletter' | 'notification'
+
+/** One reply `suggest_replies` offers under an open thread -- `label` for
+ *  the chip, the body in both forms. */
+export interface ReplySuggestion {
+  label: string
+  bodyText: string
+  bodyHtml: string
+}
+
+export interface ReplySuggestions {
+  suggestions: ReplySuggestion[]
+}
+
+/** What `draft_with_ai` and `improve_writing` answer. */
+export interface WrittenText {
+  bodyText: string
+  bodyHtml: string
+}
+
+/** What `improve_writing` is asked to do. */
+export type ImproveMode = 'polish' | 'shorter' | 'longer' | 'friendlier' | 'formal' | 'fix'
+
+/** A draft queued to send at a later moment -- `scheduled_sends`. */
+export interface ScheduledSend {
+  draft: Draft
+  sendAt: string
+}
 
 export interface MailAddress {
   name: string

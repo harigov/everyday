@@ -19,9 +19,9 @@ use super::session::{Domain, pick_domain};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, CategoryMatch, CategoryRules, ContactBook, Draft, DraftState, Mailbox,
-    MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin, RemoteImageSettings,
-    Thread, apply_optimistic,
+    Body, Category, CategoryMatch, CategoryRules, CategorySource, ContactBook, Draft, DraftState,
+    Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin,
+    RemoteImageSettings, Thread, apply_optimistic,
 };
 use crate::packstore::{PackRef, PackStore};
 use crate::record::RecordKind;
@@ -491,6 +491,60 @@ impl Vault {
         Ok(())
     }
 
+    /// Mark one thread [`Category::Priority`] -- or, with `priority: false`,
+    /// back to [`Category::Important`] -- never a sender rule. That is
+    /// [`Vault::correct_mail_category`]'s job, through the existing
+    /// `set_thread_category` command; this is the other door the plan asks
+    /// for, "the person marks one thread... this thread only, no sender
+    /// rule."
+    ///
+    /// Sets the category of [`thread_priority_target`]'s answer --
+    /// ordinarily the thread's newest message that is not from one of the
+    /// account's own addresses (`account.address` plus every
+    /// [`crate::account::Identity::address`] in
+    /// [`crate::account::Account::identities`], compared
+    /// case-insensitively), falling back to the overall newest message when
+    /// every message in the thread is the account's own -- through
+    /// [`crate::store::mail::MailStore::set_message_category_with_source`]
+    /// naming [`CategorySource::Person`], so neither a rules backfill
+    /// ([`Vault::recategorize_mail`]) nor the model-assisted pass (through
+    /// [`Vault::set_mail_message_category`], whose underlying
+    /// [`crate::store::mail::MailStore::set_message_category`] carries the
+    /// guard) ever overwrites a person's own mark. See
+    /// `everyday_store_sql::mail::write::recompute_thread`'s
+    /// own docs for exactly how that one message's category becomes what
+    /// the thread shows, including the two things that already fall out of
+    /// it for free -- a thread whose newest *inbound* message is the one
+    /// just marked shows `Priority` the moment this call lands, and a
+    /// thread stops showing `Priority` on its own once the person's own
+    /// reply becomes the newest message -- and the one case that does not:
+    /// marking priority on a thread whose newest message is *already* the
+    /// person's own reply cannot make the thread show it, since that
+    /// already-sent reply, not the earlier inbound message this call
+    /// marks, is what a thread's category always mirrors.
+    pub fn set_thread_priority(&self, thread: ThreadId, priority: bool) -> Result<()> {
+        self.writable()?;
+        let target = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let (thread_row, messages) = mail.thread(thread)?;
+            let accounts = pick_domain(u.store.as_ref(), Domain::Accounts, |s| s.accounts())?;
+            let account = accounts.get_account(thread_row.account_id)?;
+            let own: std::collections::HashSet<String> =
+                std::iter::once(account.address.trim().to_lowercase())
+                    .chain(account.identities.iter().map(|i| i.address.trim().to_lowercase()))
+                    .collect();
+            let target = thread_priority_target(&messages, &own).ok_or_else(|| {
+                Error::Invalid("a thread with no messages has nothing to mark".into())
+            })?;
+            let category = if priority { Category::Priority } else { Category::Important };
+            mail.set_message_category_with_source(target, category, CategorySource::Person)?;
+            Ok(target)
+        })?;
+        self.wrote(RecordKind::MailMessage, target);
+        self.wrote(RecordKind::Thread, thread);
+        Ok(())
+    }
+
     /// See
     /// [`crate::store::mail::MailStore::set_thread_ai_categorize_asked`].
     pub fn set_thread_ai_categorize_asked(
@@ -511,6 +565,13 @@ impl Vault {
     ) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.set_thread_ai_auto_draft_asked(thread, message_count))
+    }
+
+    /// See
+    /// [`crate::store::mail::MailStore::set_thread_ai_priority_asked`].
+    pub fn set_thread_ai_priority_asked(&self, thread: ThreadId, message_count: u32) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_priority_asked(thread, message_count))
     }
 
     // ---- releasing a snooze -----------------------------------------------
@@ -947,4 +1008,105 @@ fn inbox_mailbox(mail: &dyn MailStore, account: AccountId) -> Result<Option<Mail
         .into_iter()
         .find(|m| m.role == MailboxRole::Inbox)
         .map(|m| m.id))
+}
+
+/// Which message [`Vault::set_thread_priority`] marks: the newest in
+/// `messages` whose sender's address (trimmed, lower-cased) is not one of
+/// `own` -- the message the person is plausibly still waiting to answer --
+/// falling back to the overall newest message when every one in the thread
+/// is the account's own. `messages` is assumed oldest-first, the order
+/// [`crate::store::mail::MailStore::thread`] already returns it in, so
+/// "newest" is simply the last match scanning from the end. `None` only
+/// when `messages` itself is empty -- a thread with nothing in it has
+/// nothing to mark.
+fn thread_priority_target(
+    messages: &[Message],
+    own: &std::collections::HashSet<String>,
+) -> Option<MailMessageId> {
+    messages
+        .iter()
+        .rev()
+        .find(|m| !own.contains(&m.from.email.trim().to_lowercase()))
+        .or_else(|| messages.last())
+        .map(|m| m.id)
+}
+
+#[cfg(test)]
+mod priority_target_tests {
+    //! [`thread_priority_target`] on its own, with no vault or store in
+    //! sight -- the message-selection half of [`Vault::set_thread_priority`]
+    //! is pure, so it is tested that way; the write itself (that a person's
+    //! mark lands as [`CategorySource::Person`] and survives a model write
+    //! or a backfill) is the store conformance suite's job, proven there
+    //! against every backend alike -- see
+    //! `a_persons_own_mark_outranks_the_model_and_the_backfill` in
+    //! `crate::store::conformance::mail`.
+    use super::*;
+    use crate::id::PackId;
+    use crate::mail::Address;
+
+    fn message_from(thread: ThreadId, from: &str) -> Message {
+        let account = AccountId::new();
+        Message {
+            id: MailMessageId::new(),
+            account_id: account,
+            thread_id: thread,
+            message_id_header: String::new(),
+            date: Timestamp::now(),
+            from: Address::bare(from),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            reply_to: Vec::new(),
+            subject: String::new(),
+            snippet: String::new(),
+            flags: MessageFlags::default(),
+            labels: Vec::new(),
+            has_attachments: false,
+            size: 0,
+            category: None,
+            category_source: CategorySource::Rules,
+            pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+            gmail: None,
+            invite: None,
+        }
+    }
+
+    fn own_addresses(addresses: &[&str]) -> std::collections::HashSet<String> {
+        addresses.iter().map(|a| a.to_lowercase()).collect()
+    }
+
+    #[test]
+    fn targets_the_newest_message_not_from_the_account_itself() {
+        let thread = ThreadId::new();
+        let them = message_from(thread, "them@example.com");
+        let my_reply = message_from(thread, "Me@Example.com");
+        let own = own_addresses(&["me@example.com"]);
+
+        assert_eq!(thread_priority_target(std::slice::from_ref(&them), &own), Some(them.id));
+        assert_eq!(
+            thread_priority_target(&[them.clone(), my_reply], &own),
+            Some(them.id),
+            "the person's own newest reply is skipped in favour of the message it answers"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_newest_message_when_every_one_is_the_accounts_own() {
+        let thread = ThreadId::new();
+        let first = message_from(thread, "me@example.com");
+        let second = message_from(thread, "me@example.com");
+        let own = own_addresses(&["me@example.com"]);
+
+        assert_eq!(
+            thread_priority_target(&[first, second.clone()], &own),
+            Some(second.id),
+            "nothing inbound to wait on, so the overall newest message is the fallback"
+        );
+    }
+
+    #[test]
+    fn an_empty_thread_has_nothing_to_mark() {
+        assert_eq!(thread_priority_target(&[], &own_addresses(&[])), None);
+    }
 }

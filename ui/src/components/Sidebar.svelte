@@ -14,6 +14,7 @@
   import MailNav from './MailNav.svelte'
   import AssistantNav from './AssistantNav.svelte'
   import NotesNav from './NotesNav.svelte'
+  import PaneResizer from './PaneResizer.svelte'
   import type { Journal } from '../lib/types'
 
   // The apps themselves are `AppBar`, outside this: they are not one app's
@@ -196,6 +197,13 @@
       {/if}
     </nav>
   {/if}
+  <PaneResizer
+    cssVar="--sidebar-w"
+    storageKey="pane-w:sidebar"
+    defaultWidth={248}
+    min={180}
+    max={420}
+  />
 </aside>
 
 {#if settingsJournal}
@@ -204,6 +212,7 @@
 
 <style>
   .sidebar {
+    position: relative;
     width: var(--sidebar-w);
     flex: none;
     display: flex;

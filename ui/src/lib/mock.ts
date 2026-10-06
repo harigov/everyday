@@ -109,7 +109,8 @@ import type {
 import { DEFAULT_COLORS } from './colors'
 import { addDays, isoDate } from './time'
 import { DIGEST_MARKER, ordinal } from './dream'
-import type { Draft, MailCategory } from './types'
+import type { Draft, ImproveMode, MailCategory } from './types'
+import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
@@ -136,6 +137,8 @@ import {
   mockStar,
   mockSuggestAddresses,
   mockSummarizeThread,
+  mockSetThreadPriority,
+  mockScheduledSends,
   mockTrash,
   mockUndoSend,
   mockUnlabel,
@@ -1832,8 +1835,9 @@ const accounts: AccountView[] = [
     // own TODO(p). Categorising and summaries on, auto-draft off, so both
     // halves of the split-inbox walkthrough (tabs with real categories, a
     // Summarise button) have something to show without every thread
-    // opening straight into a drafted reply.
-    mailAi: { categorize: true, autoDraft: false, summaries: true },
+    // opening straight into a drafted reply. Writing help on, so an open
+    // thread offers its three suggested replies beside Reply.
+    mailAi: { categorize: true, autoDraft: false, summaries: true, writing: true },
   },
   {
     id: 'acct-fastmail',
@@ -5740,6 +5744,35 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       return mockSummarizeThread(str(args.id)) as T
 
+    // ── Priority, scheduled sends, and writing help ───────────────────────
+
+    case 'set_thread_priority':
+      requireUnlocked()
+      mockSetThreadPriority(strArray(args.threads), Boolean(args.priority))
+      return undefined as T
+    case 'scheduled_sends':
+      requireUnlocked()
+      return mockScheduledSends(args.account as string | null | undefined) as T
+    case 'suggest_replies':
+      requireUnlocked()
+      return (await mockSuggestReplies(str(args.id))) as T
+    case 'draft_with_ai':
+      requireUnlocked()
+      return (await mockDraftWithAi({
+        account: str(args.account),
+        inReplyTo: args.inReplyTo as string | null | undefined,
+        instruction: str(args.instruction),
+        currentText: args.currentText as string | null | undefined,
+      })) as T
+    case 'improve_writing':
+      requireUnlocked()
+      return (await mockImproveWriting({
+        account: str(args.account),
+        text: str(args.text),
+        mode: str(args.mode) as ImproveMode,
+        instruction: args.instruction as string | null | undefined,
+      })) as T
+
     // ── Invitations -- `docs/plans/mail.md` phase 6 ───────────────────────
 
     case 'respond_to_invite':
@@ -5791,7 +5824,7 @@ export const mockInvoke = async <T>(
       const delaySeconds = sendAt
         ? Math.max(1, Math.round((sendAt.getTime() - Date.now()) / 1000))
         : Number(args.delaySeconds ?? 8)
-      return mockSendDraft(str(args.id), delaySeconds) as T
+      return mockSendDraft(str(args.id), delaySeconds, sendAt?.toISOString()) as T
     }
     case 'undo_send':
       requireUnlocked()

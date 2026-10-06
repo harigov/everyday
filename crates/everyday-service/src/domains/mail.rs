@@ -33,8 +33,8 @@ use crate::service::{Service, blocking};
 use everyday_core::Vault;
 use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    AttendeeResponse, Category, Draft, DraftCalendarPart, InviteMethod, Mailbox, Message, Op,
-    OpKind, OpTarget, Origin, Thread, undo_send_delay,
+    AttendeeResponse, Category, Draft, DraftCalendarPart, DraftState, InviteMethod, Mailbox,
+    Message, Op, OpKind, OpState, OpTarget, Origin, Thread, UNDO_SEND_MAX_SECONDS, undo_send_delay,
 };
 use everyday_core::store::mail::{ThreadFilter, ThreadPage};
 use everyday_mail::{compose, invite, mime};
@@ -622,6 +622,64 @@ async fn list_drafts(svc: Arc<Service>, _ctx: Ctx, args: DraftsQuery) -> Command
     blocking(move || Ok(vault.drafts(args.account)?)).await
 }
 
+/// One draft still waiting on its send-later moment -- what
+/// [`scheduled_sends`] lists.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledSend {
+    pub draft: Draft,
+    pub send_at: Timestamp,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduledSendsQuery {
+    /// One account, or every mail-enabled account when omitted.
+    #[serde(default)]
+    pub account: Option<AccountId>,
+}
+
+/// Every draft still queued for a send-later moment, soonest first -- what
+/// the UI reads to show a scheduled send, and to let a person cancel it
+/// (the existing [`undo_send`]) or reschedule it (discard and queue again).
+///
+/// A draft counts once its op is still [`OpState::Pending`] *and* its
+/// `not_before` sits more than [`UNDO_SEND_MAX_SECONDS`] beyond now --
+/// which is what keeps an ordinary send's five-to-thirty-second undo-send
+/// grace period, queued by [`queue_send`] on every plain "send", from ever
+/// showing up here as "scheduled". A `Queued` draft whose op has moved past
+/// `Pending` (in flight, done, failed, cancelled) is not listed either: it
+/// is no longer something a person could still cancel or reschedule, which
+/// is the only reason this list exists.
+async fn scheduled_sends(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ScheduledSendsQuery,
+) -> CommandResult<Vec<ScheduledSend>> {
+    let vault = svc.require()?;
+    let now = svc.now();
+    blocking(move || {
+        let accounts = match args.account {
+            Some(id) => vec![vault.account(id)?],
+            None => vault.accounts()?,
+        };
+        let cutoff = now + jiff::SignedDuration::from_secs(i64::from(UNDO_SEND_MAX_SECONDS));
+        let mut out = Vec::new();
+        for account in accounts.into_iter().filter(|a| a.services.mail) {
+            for draft in vault.drafts(account.id)? {
+                let DraftState::Queued { op } = draft.state else { continue };
+                let op = vault.op(op)?;
+                if op.state == OpState::Pending && op.not_before > cutoff {
+                    out.push(ScheduledSend { send_at: op.not_before, draft });
+                }
+            }
+        }
+        out.sort_by_key(|s| s.send_at);
+        Ok(out)
+    })
+    .await
+}
+
 // ---- responding to a calendar invitation ----------------------------------
 
 /// The three RSVPs `respond_to_invite`'s own client can ask for. A smaller
@@ -1129,6 +1187,36 @@ async fn set_thread_category(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SetThreadPriority {
+    pub threads: Vec<ThreadId>,
+    pub priority: bool,
+}
+
+/// Mark (or, with `priority: false`, unmark) a batch of threads
+/// [`everyday_core::mail::Category::Priority`] by hand -- one thread at a
+/// time, never a sender rule. [`SetThreadCategory`] naming
+/// `category: "priority"`, just above, is the other door into the same
+/// category -- a standing VIP correction on the sender -- and the two are
+/// deliberately kept apart: see
+/// [`everyday_core::Vault::set_thread_priority`]'s own docs for what "one
+/// thread, no sender rule" buys that a correction cannot.
+async fn set_thread_priority(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SetThreadPriority,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    blocking(move || {
+        for &thread_id in &args.threads {
+            vault.set_thread_priority(thread_id, args.priority)?;
+        }
+        Ok(())
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RecategorizeMail {
     /// One account, or every mail-enabled account when omitted.
     #[serde(default)]
@@ -1493,6 +1581,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         signature: &[("account", "AccountId", true)],
         run: list_drafts,
     },
+    command! {
+        name: "scheduled_sends", scope: Mail, effect: Read,
+        args: ScheduledSendsQuery, returns: "ScheduledSend[]",
+        signature: &[("account", "AccountId | null", false)],
+        run: scheduled_sends,
+    },
     // ---- calendar invitations ---------------------------------------------
     command! {
         name: "respond_to_invite", scope: Mail, effect: Write,
@@ -1520,6 +1614,14 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SetThreadCategory, returns: "void",
         signature: &[("threads", "ThreadId[]", true), ("category", "MailCategory", true)],
         run: set_thread_category,
+    },
+    command! {
+        name: "set_thread_priority", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &SetThreadPriority| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: SetThreadPriority, returns: "void",
+        signature: &[("threads", "ThreadId[]", true), ("priority", "boolean", true)],
+        run: set_thread_priority,
     },
     command! {
         name: "recategorize_mail", scope: Mail, effect: Write,

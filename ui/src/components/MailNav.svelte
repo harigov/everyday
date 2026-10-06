@@ -9,6 +9,7 @@
   // sorted by name so the list does not reshuffle as new mail arrives.
 
   import { accounts } from '../lib/accounts.svelte'
+  import { gmailSystemLabel, mailboxDisplayName } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { panels } from '../lib/panels.svelte'
   import { proposals } from '../lib/proposals.svelte'
@@ -83,7 +84,8 @@
   }
 
   /** One account's rows: the eight fixed ones (skipping any role the
-   *  provider does not send), then its labels and folders. */
+   *  provider does not send), then Scheduled if it has one, then its
+   *  labels and folders. */
   function rowsFor(accountId: string): Row[] {
     const boxes = mail.mailboxes.filter((m) => m.accountId === accountId)
     const fixed: Row[] = []
@@ -91,6 +93,12 @@
       const box = boxes.find((b) => b.role === role)
       if (!box) continue
       fixed.push(rowFor(box, ROLE_ICON[role] ?? 'inbox'))
+      // Right after Drafts, and only once there is at least one -- see
+      // `mail.scheduled`.
+      if (role === 'drafts') {
+        const count = scheduledCountFor(accountId)
+        if (count > 0) fixed.push(scheduledRow(accountId, count))
+      }
     }
     // Starred and Snoozed are drawn from the pseudo-mailboxes the mock seeds
     // -- see `mock-mail.ts`'s own note on why there is no server-side
@@ -102,9 +110,15 @@
     if (starred) pseudo.push(rowFor(starred, 'star', true))
     if (snoozed) pseudo.push(rowFor(snoozed, 'clock', true))
 
+    // A Gmail label that is really one of Gmail's own system mailboxes --
+    // `\Sent`, `\Draft(s)`, `\Starred`, `\Important`, `\Spam`, `\Trash`,
+    // `\All` -- duplicates a row already drawn above by `role` or `pseudo`;
+    // `\Inbox` is not in this list because `promoteGmailInbox` has already
+    // turned it into the Inbox's own `role: 'other'` row, before this ever
+    // sees it, wherever nothing else already was.
     const folders = boxes
-      .filter((b) => b.role === 'other' && !b.pseudo)
-      .sort((a, b) => a.remoteName.localeCompare(b.remoteName))
+      .filter((b) => b.role === 'other' && !b.pseudo && gmailSystemLabel(b.remoteName) === null)
+      .sort((a, b) => mailboxDisplayName(a).localeCompare(mailboxDisplayName(b)))
       .map((b) => rowFor(b, 'tag'))
 
     // Inbox, Starred, Snoozed, then the rest -- fixed[0] is always Inbox
@@ -113,13 +127,30 @@
     return [...(inboxRow ? [inboxRow] : []), ...pseudo, ...restFixed, ...folders]
   }
 
+  function scheduledCountFor(accountId: string): number {
+    return mail.scheduled.filter((s) => s.draft.accountId === accountId).length
+  }
+
+  function scheduledRow(accountId: string, count: number): Row {
+    return {
+      id: `scheduled:${accountId}`,
+      label: 'Scheduled',
+      icon: 'clock',
+      onclick: () => mail.selectScheduled(accountId),
+      sel: mail.viewingScheduledFor === accountId,
+      count,
+    }
+  }
+
   function rowFor(box: Mailbox, icon: IconName, pseudo = false): Row {
     return {
       id: box.id,
-      label: box.remoteName,
+      label: mailboxDisplayName(box),
       icon,
       onclick: () => void mail.selectMailbox(box.id),
-      sel: mail.selectedMailbox === box.id,
+      // Never shown selected at the same time as the Scheduled row: exactly
+      // one of the two is ever the list column's content.
+      sel: mail.viewingScheduledFor === null && mail.selectedMailbox === box.id,
       count: mail.unreadCounts.get(box.id) ?? 0,
       pseudo,
       role: box.role,
