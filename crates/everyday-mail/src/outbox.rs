@@ -136,6 +136,16 @@ pub trait Lookups {
     /// freshly sent or appended message — see that function's own docs for
     /// why this crate never trusts a hostname for it.
     fn message_id_domain(&self) -> String;
+
+    /// The address a proxied remote image in a stored body originally
+    /// pointed at -- `token` from that message's own `everyday://mail/img/`
+    /// address. What [`compose::externalize_local_refs`] puts back into a
+    /// quoted reply on its way out. `None` when it is not known, which
+    /// drops the image; the default answers that, so a lookup with no store
+    /// behind it sends a quote with its images left out rather than broken.
+    fn remote_image_url(&self, _message: MailMessageId, _token: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// A place to send built mail, behind a trait for exactly the reason
@@ -451,7 +461,12 @@ async fn outgoing<S: MailSession, T: Sender, L: Lookups>(
         bcc: draft.bcc.iter().map(address).collect(),
         reply_to: Vec::new(),
         subject: draft.subject.clone(),
-        html: draft.body_html.clone(),
+        // A quoted parent's images point at this app until here -- see
+        // `externalize_local_refs`.
+        html: compose::externalize_local_refs(&draft.body_html, |message, token| {
+            let message = message.parse().ok()?;
+            ctx.lookups.remote_image_url(message, token).ok().flatten()
+        }),
         text: None,
         attachments,
         in_reply_to,

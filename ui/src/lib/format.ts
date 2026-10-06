@@ -208,6 +208,14 @@ export function humanBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`
 }
 
+/** A count short enough for a badge: `999`, `1.2k`, `12k`, `1.2M`. */
+export function compactCount(n: number): string {
+  if (n < 1000) return String(n)
+  const [scaled, unit] = n < 1_000_000 ? [n / 1000, 'k'] : [n / 1_000_000, 'M']
+  const shown = scaled < 10 ? Math.floor(scaled * 10) / 10 : Math.floor(scaled)
+  return `${shown}${unit}`
+}
+
 export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString(locale())} ${pluralWord(n, one, many)}`
 }

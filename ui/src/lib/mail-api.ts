@@ -4,9 +4,9 @@
 // draft call, sync, remote images and search all landed in `surface.json`
 // while this app was being built against stand-in names. This file is what
 // is left of that plan once the rewrite is done: singular, per-thread
-// convenience over the real `threads: ThreadId[]` batch commands (nothing
-// in the interface multi-selects yet), and two contracts that have not
-// landed in Rust at all --
+// convenience over the real `threads: ThreadId[]` batch commands (and the
+// batch shape itself, for the list's own multi-selection), and two
+// contracts that have not landed in Rust at all --
 //
 //   (i) invitations       -- `respond_to_invite`
 //   (p) the Superhuman layer -- `set_thread_category`, `summarize_thread`
@@ -21,6 +21,7 @@
 import { api, callCommand } from './api'
 import type {
   AccountId,
+  CategoryCount,
   Draft,
   DraftId,
   MailAddress,
@@ -53,6 +54,10 @@ export const listThreads = (
   limit?: number | null,
 ): Promise<ThreadPage> => api.threads(mailbox, filter, cursor, limit)
 export const getThread = (id: ThreadId): Promise<ThreadDetail> => api.thread(id)
+/** How many of `mailbox`'s threads carry each category -- what the inbox's
+ *  tabs show beside their names. */
+export const categoryCounts = (mailbox: MailboxId): Promise<CategoryCount[]> =>
+  api.categoryCounts(mailbox)
 
 /** Fetch one part left `available: false` on a `MailMessageDetail` -- over
  *  the account's attachment cap, with no blob yet. Returns the same shape,
@@ -83,6 +88,22 @@ export const unlabel = (id: ThreadId, labelName: string): Promise<Op[]> =>
 /** `until` is an ISO instant -- when the thread reappears. */
 export const snooze = (id: ThreadId, until: string): Promise<Op[]> => api.snooze([id], until)
 export const unsnooze = (id: ThreadId): Promise<void> => api.unsnooze([id])
+
+// The same commands for several threads at once -- what a multi-thread
+// selection (Shift/Ctrl+click in the list) sends: one call, one op per
+// thread, exactly as each singular wrapper above already is underneath.
+export const markReadMany = (ids: ThreadId[]): Promise<Op[]> => api.markRead(ids)
+export const markUnreadMany = (ids: ThreadId[]): Promise<Op[]> => api.markUnread(ids)
+export const starMany = (ids: ThreadId[]): Promise<Op[]> => api.star(ids)
+export const unstarMany = (ids: ThreadId[]): Promise<Op[]> => api.unstar(ids)
+export const archiveMany = (ids: ThreadId[]): Promise<Op[]> => api.archive(ids)
+export const trashMany = (ids: ThreadId[]): Promise<Op[]> => api.trash(ids)
+export const moveManyToMailbox = (ids: ThreadId[], mailbox: MailboxId): Promise<Op[]> =>
+  api.moveToMailbox(ids, mailbox)
+export const labelMany = (ids: ThreadId[], labelName: string): Promise<Op[]> =>
+  api.label(ids, labelName)
+export const snoozeMany = (ids: ThreadId[], until: string): Promise<Op[]> => api.snooze(ids, until)
+export const unsnoozeMany = (ids: ThreadId[]): Promise<void> => api.unsnooze(ids)
 
 // ── Drafts and sending ───────────────────────────────────────────────
 

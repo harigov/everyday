@@ -45,6 +45,14 @@ pub struct MailContact {
 pub struct ContactBook {
     #[serde(default)]
     pub contacts: Vec<MailContact>,
+    /// Set once every message already stored has been counted in, by
+    /// `everyday-service::mailsync::contacts`' backfill. Until then the book
+    /// only knows what arrived while a sync pass happened to persist it --
+    /// and a first sync interrupted before its pass finished (a crash, a
+    /// quit, a laptop lid) used to leave it empty for good, since the
+    /// messages it missed are never "new" again.
+    #[serde(default)]
+    pub backfilled: bool,
 }
 
 impl ContactBook {
@@ -70,6 +78,26 @@ impl ContactBook {
     pub fn has_sent_to(&self, address: &str) -> bool {
         let key = address.trim().to_ascii_lowercase();
         self.contacts.iter().any(|c| c.address == key && c.sent_to > 0)
+    }
+
+    /// Fold `other` in, keeping the larger count on each side of every
+    /// contact the two share rather than adding them: `other` is a recount
+    /// of messages this book may already have counted as they arrived, and
+    /// summing the two would count those twice. A name this book lacks is
+    /// taken from `other`.
+    pub fn merge_max(&mut self, other: ContactBook) {
+        for theirs in other.contacts {
+            match self.contacts.iter_mut().find(|c| c.address == theirs.address) {
+                Some(ours) => {
+                    ours.sent_to = ours.sent_to.max(theirs.sent_to);
+                    ours.received_from = ours.received_from.max(theirs.received_from);
+                    if ours.name.is_empty() {
+                        ours.name = theirs.name;
+                    }
+                }
+                None => self.contacts.push(theirs),
+            }
+        }
     }
 
     fn bump(&mut self, address: &str, name: &str, sent: bool) {
@@ -109,6 +137,26 @@ mod tests {
         assert_eq!(book.contacts[0].sent_to, 1);
         assert_eq!(book.contacts[0].received_from, 1);
         assert_eq!(book.contacts[0].name, "Alice", "the first name seen is kept");
+    }
+
+    #[test]
+    fn merge_max_keeps_the_larger_count_and_adds_new_contacts() {
+        let mut live = ContactBook::default();
+        live.record_sent_to("alice@example.com", "");
+        live.record_received_from("alice@example.com", "");
+        live.record_received_from("alice@example.com", "");
+        let mut recount = ContactBook::default();
+        recount.record_sent_to("alice@example.com", "Alice");
+        recount.record_sent_to("alice@example.com", "Alice");
+        recount.record_received_from("alice@example.com", "Alice");
+        recount.record_received_from("bob@example.com", "Bob");
+
+        live.merge_max(recount);
+        assert_eq!(live.contacts.len(), 2);
+        let alice = live.contacts.iter().find(|c| c.address == "alice@example.com").unwrap();
+        assert_eq!((alice.sent_to, alice.received_from), (2, 2), "the larger count, not the sum");
+        assert_eq!(alice.name, "Alice", "a missing name is filled in");
+        assert!(live.contacts.iter().any(|c| c.address == "bob@example.com"));
     }
 
     #[test]

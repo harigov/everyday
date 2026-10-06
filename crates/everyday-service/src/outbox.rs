@@ -885,6 +885,18 @@ impl Lookups for VaultLookups {
             .map(|a| a.address.rsplit('@').next().unwrap_or("localhost").to_string())
             .unwrap_or_else(|| "localhost".to_string())
     }
+
+    fn remote_image_url(
+        &self,
+        message: MailMessageId,
+        token: &str,
+    ) -> everyday_mail::session::Result<Option<String>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        // A quoted message deleted since the draft was written is not worth
+        // failing a send over: its images are simply left out.
+        let Ok(body) = vault.body(message) else { return Ok(None) };
+        Ok(body.remote_images.into_iter().find(|r| r.token == token).map(|r| r.original_url))
+    }
 }
 
 /// Is `code` -- one of [`everyday_service::error::codes`](crate::error::codes)

@@ -7,6 +7,7 @@
   import { accounts } from '../lib/accounts.svelte'
   import {
     CATEGORY_TABS,
+    categoryTabCount,
     formatSenders,
     isSnoozedMailbox,
     mailboxDisplayName,
@@ -20,8 +21,8 @@
   import { mail } from '../lib/mail.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { plural, relativeTime } from '../lib/format'
-  import type { Mailbox, MailAddress, Thread } from '../lib/types'
+  import { compactCount, plural, relativeTime } from '../lib/format'
+  import type { Mailbox, MailAddress, MailCategory, Thread, ThreadId } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import MailCompose from './MailCompose.svelte'
@@ -92,20 +93,20 @@
    *  own `mailAi.summaries` switch is on -- see `mail-api.ts`'s TODO(p). */
   const canSummarize = $derived(openAccount?.mailAi?.summaries === true)
 
-  function categoryMoveItems(t: Thread): MenuItem[] {
+  function categoryMoveItems(ids: ThreadId[], current: MailCategory | null): MenuItem[] {
     return CATEGORY_TABS.map((tab) => ({
       label: tab.label,
-      checked: t.category === tab.key,
-      run: () => void mail.setCategoryFor(t.id, tab.key),
+      checked: current === tab.key,
+      run: () => void mail.setCategoryForMany(ids, tab.key),
     }))
   }
 
-  function moveMailboxItems(t: Thread): MenuItem[] {
+  function moveMailboxItems(ids: ThreadId[], accountId: string): MenuItem[] {
     return mail.mailboxes
-      .filter((m) => m.accountId === t.accountId && m.role !== 'other')
+      .filter((m) => m.accountId === accountId && m.role !== 'other')
       .map((box: Mailbox) => ({
         label: mailboxDisplayName(box),
-        run: () => void mail.moveTo(t.id, box.id),
+        run: () => void mail.moveManyTo(ids, box.id),
       }))
   }
 
@@ -153,14 +154,83 @@
       },
       inSnoozedView
         ? { label: 'Unsnooze', icon: 'clock', run: () => void mail.unsnooze(t.id) }
-        : { label: 'Snooze…', icon: 'clock', run: () => (mail.wantsSnooze = t.id) },
-      { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = t.id) },
-      { label: 'Move to…', icon: 'layers', items: moveMailboxItems(t) },
-      { label: 'Move to category', icon: 'inbox', items: categoryMoveItems(t) },
+        : { label: 'Snooze…', icon: 'clock', run: () => (mail.wantsSnooze = [t.id]) },
+      { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = [t.id]) },
+      { label: 'Move to…', icon: 'layers', items: moveMailboxItems([t.id], t.accountId) },
+      {
+        label: 'Move to category',
+        icon: 'inbox',
+        items: categoryMoveItems([t.id], t.category ?? null),
+      },
       SEP,
       { label: 'Archive', icon: 'layers', run: () => void mail.archive(t.id) },
       { label: 'Trash', icon: 'trash', danger: true, run: () => void mail.trash(t.id) },
     ])
+  }
+
+  /** The picked threads, in list order -- see `mail.checked`. */
+  const pickedThreads = $derived(
+    (mail.searchQuery.trim() ? mail.searchResults : mail.threads).filter((t) =>
+      mail.checked.has(t.id),
+    ),
+  )
+
+  /** Everything the bulk pane and a picked row's own menu offer, for every
+   *  picked thread at once. Move to… only lists one account's folders, so
+   *  it is left out when the picked threads span two accounts. */
+  function bulkMenu(): MenuItem[] {
+    const ids = mail.targets
+    const accounts = new Set(pickedThreads.map((t) => t.accountId))
+    const anyUnread = pickedThreads.some((t) => t.unreadCount > 0)
+    const allStarred = pickedThreads.every((t) => t.starred)
+    const allPriority = pickedThreads.every((t) => t.category === 'priority')
+    return tidyMenu([
+      {
+        label: anyUnread ? 'Mark read' : 'Mark unread',
+        icon: 'check',
+        run: () => void (anyUnread ? mail.markReadMany(ids) : mail.markUnreadMany(ids)),
+      },
+      {
+        label: allStarred ? 'Unstar' : 'Star',
+        icon: 'star',
+        run: () => void mail.toggleStarMany(ids),
+      },
+      {
+        label: allPriority ? 'Remove from priority' : 'Mark as priority',
+        icon: 'flag',
+        run: () => void mail.setPriorityMany(ids, !allPriority),
+      },
+      inSnoozedView
+        ? { label: 'Unsnooze', icon: 'clock', run: () => void mail.unsnoozeMany(ids) }
+        : { label: 'Snooze…', icon: 'clock', run: () => (mail.wantsSnooze = ids) },
+      { label: 'Label…', icon: 'tag', run: () => (mail.wantsLabel = ids) },
+      accounts.size === 1 && {
+        label: 'Move to…',
+        icon: 'layers',
+        items: moveMailboxItems(ids, [...accounts][0]!),
+      },
+      { label: 'Move to category', icon: 'inbox', items: categoryMoveItems(ids, null) },
+      SEP,
+      { label: 'Archive', icon: 'layers', run: () => void mail.archiveMany(ids) },
+      { label: 'Trash', icon: 'trash', danger: true, run: () => void mail.trashMany(ids) },
+    ])
+  }
+
+  /** A row's own menu -- the bulk one when it is one of several picked. */
+  function menuFor(t: Thread): MenuItem[] {
+    return mail.checked.has(t.id) && mail.checked.size > 1 ? bulkMenu() : rowMenu(t)
+  }
+
+  /** A row clicked: Shift and Ctrl/Cmd pick, a plain click opens -- see
+   *  `mail.clickThread`. */
+  function clickRow(e: MouseEvent, id: ThreadId) {
+    mail.clickThread(id, { shift: e.shiftKey, toggle: e.ctrlKey || e.metaKey })
+  }
+
+  /** Shift+click would otherwise also select the text of every row between
+   *  the two -- the browser's own range selection, not ours. */
+  function noTextRange(e: MouseEvent) {
+    if (e.shiftKey) e.preventDefault()
   }
 
   /** Scrolls an inline reply into view the moment it mounts -- it draws
@@ -175,15 +245,15 @@
   }
 
   function snooze(at: Date) {
-    const id = mail.wantsSnooze
+    const ids = mail.wantsSnooze
     mail.wantsSnooze = null
-    if (id) void mail.snooze(id, at)
+    if (ids) void mail.snoozeMany(ids, at)
   }
 
   function applyLabel(labelName: string) {
-    const id = mail.wantsLabel
+    const ids = mail.wantsLabel
     mail.wantsLabel = null
-    if (id) void mail.label(id, labelName)
+    if (ids) void mail.labelMany(ids, labelName)
   }
 </script>
 
@@ -207,24 +277,24 @@
       <!-- (p) TODO: `Tab`/`Shift+Tab` move between these -- see
            `shortcuts.svelte.ts`'s own note on why that key was free to take. -->
       <div class="tabs" role="tablist" aria-label="Mail categories">
-        <button
-          class="tab"
-          role="tab"
-          aria-selected={mail.category === null}
-          class:sel={mail.category === null}
-          onclick={() => mail.setCategory(null)}
-        >
-          All
-        </button>
-        {#each CATEGORY_TABS as tab (tab.key)}
+        {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
+          {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
           <button
             class="tab"
             role="tab"
             aria-selected={mail.category === tab.key}
             class:sel={mail.category === tab.key}
+            title={count.threads > 0
+              ? `${plural(count.threads, 'conversation')}, ${count.unread.toLocaleString()} unread`
+              : undefined}
             onclick={() => mail.setCategory(tab.key)}
           >
             {tab.label}
+            {#if count.threads > 0}
+              <span class="tab-count" class:has-unread={count.unread > 0}
+                >{compactCount(count.threads)}</span
+              >
+            {/if}
           </button>
         {/each}
       </div>
@@ -249,8 +319,18 @@
             <div class="date-section" aria-hidden="true">{row.label}</div>
           {:else}
             {@const t = threadOf(row)}
-            <button class="row" onclick={() => void mail.openThreadById(t.id)}>
-              <span class="dot" aria-hidden="true"></span>
+            <button
+              class="row"
+              class:checked={mail.checked.has(t.id)}
+              onmousedown={noTextRange}
+              onclick={(e) => clickRow(e, t.id)}
+              oncontextmenu={(e) => menu.show(e, menuFor(t))}
+            >
+              {#if mail.checked.has(t.id)}
+                <span class="tick" aria-hidden="true"><Icon name="tick" size={10} /></span>
+              {:else}
+                <span class="dot" aria-hidden="true"></span>
+              {/if}
               <div class="body">
                 <div class="line1">
                   <span class="from">{formatSenders(t.participants)}</span>
@@ -263,7 +343,7 @@
                     <Icon name="star" size={12} />
                   {/if}
                   {#if t.hasAttachments}
-                    <Icon name="tag" size={12} />
+                    <Icon name="paperclip" size={12} />
                   {/if}
                   <span class="date">{threadListDate(t.lastDate)}</span>
                 </div>
@@ -311,11 +391,17 @@
               <button
                 class="row"
                 class:sel={mail.selectedThread === t.id}
+                class:checked={mail.checked.has(t.id)}
                 class:unread={t.unreadCount > 0}
-                onclick={() => void mail.openThreadById(t.id)}
-                oncontextmenu={(e) => menu.show(e, rowMenu(t))}
+                onmousedown={noTextRange}
+                onclick={(e) => clickRow(e, t.id)}
+                oncontextmenu={(e) => menu.show(e, menuFor(t))}
               >
-                <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
+                {#if mail.checked.has(t.id)}
+                  <span class="tick" aria-hidden="true"><Icon name="tick" size={10} /></span>
+                {:else}
+                  <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
+                {/if}
                 <div class="body">
                   <div class="line1">
                     <span class="from">{formatSenders(t.participants)}</span>
@@ -328,7 +414,7 @@
                       <Icon name="star" size={12} />
                     {/if}
                     {#if t.hasAttachments}
-                      <Icon name="tag" size={12} />
+                      <Icon name="paperclip" size={12} />
                     {/if}
                     <span class="date">
                       {inSnoozedView && t.snoozedUntil
@@ -359,7 +445,48 @@
 </section>
 
 <main class="main">
-  {#if mail.openThread}
+  {#if mail.composing && !mail.composeInline}
+    <!-- A new message, or a draft reopened, where a thread is read rather
+         than in a dialog over everything: the list stays in reach beside
+         it. Keyed, so a second draft opened over the first is a fresh sheet
+         rather than the first one's working copy under another name. -->
+    {#key mail.composing.id}
+      <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
+    {/key}
+  {:else if mail.checked.size > 0}
+    <div class="bulk">
+      <h2>{plural(mail.checked.size, 'conversation')} selected</h2>
+      <div class="bulk-actions">
+        <button class="bulk-btn" onclick={() => void mail.archiveMany(mail.targets)}>
+          <Icon name="layers" size={14} /> Archive <kbd>E</kbd>
+        </button>
+        <button class="bulk-btn" onclick={() => void mail.trashMany(mail.targets)}>
+          <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
+        </button>
+        {#if pickedThreads.some((t) => t.unreadCount > 0)}
+          <button class="bulk-btn" onclick={() => void mail.markReadMany(mail.targets)}>
+            <Icon name="check" size={14} /> Mark read <kbd>I</kbd>
+          </button>
+        {:else}
+          <button class="bulk-btn" onclick={() => void mail.markUnreadMany(mail.targets)}>
+            <Icon name="check" size={14} /> Mark unread <kbd>U</kbd>
+          </button>
+        {/if}
+        {#if !inSnoozedView}
+          <button class="bulk-btn" onclick={() => (mail.wantsSnooze = mail.targets)}>
+            <Icon name="clock" size={14} /> Snooze… <kbd>H</kbd>
+          </button>
+        {/if}
+        <button class="bulk-btn" onclick={(e) => menu.show(e, bulkMenu())}> More… </button>
+      </div>
+      <p class="bulk-hint">
+        Shift-click picks a run of threads, {navigator.userAgent.includes('Mac')
+          ? '⌘'
+          : 'Ctrl'}-click adds or removes one, and <kbd>X</kbd> picks the one under the cursor.
+      </p>
+      <button class="link" onclick={() => mail.clearChecked()}>Clear selection (Esc)</button>
+    </div>
+  {:else if mail.openThread}
     <!-- Captured once, rather than re-read as `mail.openThread.thread.id`
          inside every button below: a closure does not inherit the
          narrowing this `{#if}` gives the expression directly above it, so
@@ -393,7 +520,7 @@
             class="icon-btn"
             title="Snooze… (H)"
             aria-label="Snooze"
-            onclick={() => (mail.wantsSnooze = open.thread.id)}
+            onclick={() => (mail.wantsSnooze = [open.thread.id])}
           >
             <Icon name="clock" size={14} />
           </button>
@@ -467,7 +594,11 @@
       {#if mail.composing && mail.composeInline}
         {#key mail.composing.id}
           <div class="inline-reply" use:scrollIntoViewOnMount>
-            <MailCompose draft={mail.composing} inline onclose={() => mail.closeCompose()} />
+            <MailCompose
+              draft={mail.composing}
+              placement="thread"
+              onclose={() => mail.closeCompose()}
+            />
           </div>
         {/key}
       {/if}
@@ -482,10 +613,6 @@
     </EmptyState>
   {/if}
 </main>
-
-{#if mail.composing && !mail.composeInline}
-  <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
-{/if}
 
 {#if mail.wantsSnooze}
   <MailSnoozePicker onchoose={snooze} oncancel={() => (mail.wantsSnooze = null)} />
@@ -611,6 +738,25 @@
   .row.sel {
     background: var(--bg-active);
   }
+  /* Picked, one of several -- tinted with the accent rather than the plain
+     selection grey, so a picked row and the cursor row read apart. */
+  .row.checked {
+    background: color-mix(in oklab, var(--accent) 13%, transparent);
+  }
+  .row.checked:hover {
+    background: color-mix(in oklab, var(--accent) 18%, transparent);
+  }
+  .tick {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 13px;
+    height: 13px;
+    margin: 3px -3px 0;
+    border-radius: 4px;
+    background: var(--accent);
+    color: var(--bg);
+  }
   .dot {
     flex: none;
     width: 7px;
@@ -699,22 +845,16 @@
     color: var(--fg-faint);
   }
 
+  /* Six tabs and their counts are wider than the list column at its
+     default width. They wrap to a second row rather than scroll: a strip
+     scrolled sideways, with its bar hidden, kept the last two tabs -- and
+     their counts -- out of sight with nothing to say they were there. */
   .tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 2px;
     padding: var(--sp-1) var(--sp-3);
     border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-    /* Six tabs run a few pixels past the `--mail-list-w` column at the
-       app's narrower widths -- real overflow, so it stays scrollable, but a
-       track under a *tab strip* (as opposed to a list) reads as a stray
-       scrollbar rather than "there's more here"; the global thin bar in
-       `app.css` is still a bar. Hidden on both engines, same as a carousel
-       would. */
-    scrollbar-width: none;
-  }
-  .tabs::-webkit-scrollbar {
-    display: none;
   }
   .tab {
     flex: none;
@@ -731,6 +871,25 @@
     background: var(--bg-active);
     color: var(--fg);
     font-weight: 550;
+  }
+  .tab-count {
+    margin-left: 4px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-faint);
+  }
+  .tab.sel .tab-count {
+    background: var(--bg-panel);
+    color: var(--fg-muted);
+  }
+  /* Something unread under this tab: the accent, the way the unread dot on
+     a row is. */
+  .tab-count.has-unread {
+    color: var(--journal-accent, var(--accent));
   }
 
   .main {
@@ -895,6 +1054,60 @@
   .thread-rows {
     flex: 1;
     min-height: 0;
+  }
+
+  .bulk {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-3);
+    margin: auto;
+    padding: var(--sp-6);
+    max-width: 520px;
+    text-align: center;
+  }
+  .bulk h2 {
+    font-size: var(--text-lg);
+    font-weight: 620;
+  }
+  .bulk-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: var(--sp-2);
+  }
+  .bulk-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    font-size: var(--text-sm);
+    color: var(--fg);
+  }
+  .bulk-btn:hover {
+    background: var(--bg-hover);
+  }
+  .bulk kbd {
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--bg-hover);
+    font-family: inherit;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
+  .bulk-hint {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    line-height: var(--leading-normal);
+  }
+  .bulk .link {
+    font-size: var(--text-sm);
+    color: var(--journal-accent, var(--accent));
+    font-weight: 600;
   }
 
   .undo-toast {

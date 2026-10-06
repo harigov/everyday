@@ -1815,6 +1815,7 @@ mod tests {
                 contact("sarah@example.com", "Sarah Lee", 3, 1),
                 contact("other@example.com", "Someone Else", 0, 0),
             ],
+            ..Default::default()
         };
         let found = suggest_contacts(&book, "sarah", 10);
         assert_eq!(found.len(), 1);
@@ -1831,6 +1832,7 @@ mod tests {
                 contact("alan@example.com", "Alan", 1, 0),
                 contact("alice@example.com", "Alice", 5, 0),
             ],
+            ..Default::default()
         };
         let found = suggest_contacts(&book, "al", 10);
         assert_eq!(found[0].email, "alice@example.com", "written to more often, ranks first");
@@ -1840,13 +1842,17 @@ mod tests {
     fn suggest_contacts_respects_the_limit() {
         let book = ContactBook {
             contacts: (0..5).map(|i| contact(&format!("a{i}@example.com"), "A", 0, 0)).collect(),
+            ..Default::default()
         };
         assert_eq!(suggest_contacts(&book, "a", 2).len(), 2);
     }
 
     #[test]
     fn suggest_contacts_answers_with_nothing_for_an_unknown_name() {
-        let book = ContactBook { contacts: vec![contact("sarah@example.com", "Sarah Lee", 3, 1)] };
+        let book = ContactBook {
+            contacts: vec![contact("sarah@example.com", "Sarah Lee", 3, 1)],
+            ..Default::default()
+        };
         assert!(suggest_contacts(&book, "zephyr", 10).is_empty());
     }
 

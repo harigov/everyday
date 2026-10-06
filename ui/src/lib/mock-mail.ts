@@ -18,6 +18,7 @@
 
 import type {
   AccountId,
+  CategoryCount,
   Draft,
   DraftId,
   MailActionByOrigin,
@@ -739,6 +740,21 @@ export function mockListThreads(
   const page = rows.slice(start, start + take)
   const nextCursor = start + take < rows.length ? String(start + take) : null
   return { threads: page, nextCursor }
+}
+
+/** `category_counts`: `mailbox`'s threads by category, snoozed ones left
+ *  out -- the same rows `mockListThreads` would list with `snoozed: false`. */
+export function mockCategoryCounts(mailbox: MailboxId): CategoryCount[] {
+  const rows = mockListThreads(mailbox, { snoozed: false }, null, Number.MAX_SAFE_INTEGER).threads
+  const counts = new Map<MailCategory | null, CategoryCount>()
+  for (const t of rows) {
+    const key = t.category ?? null
+    const row = counts.get(key) ?? { category: key, threads: 0, unread: 0 }
+    row.threads += 1
+    if (t.unreadCount > 0) row.unread += 1
+    counts.set(key, row)
+  }
+  return [...counts.values()]
 }
 
 export function mockGetThread(id: ThreadId): ThreadDetail {

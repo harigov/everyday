@@ -43,6 +43,9 @@ const {
   visibleThreadList,
   neighbourThread,
   isBlankDraft,
+  threadRange,
+  categoryTabCount,
+  parseTypedAddress,
 } = mailLib
 
 function person(name, email) {
@@ -651,6 +654,53 @@ assert.equal(
   false,
   'a recipient alone is worth keeping',
 )
+
+// ── Shift+click's range ─────────────────────────────────────────────
+
+{
+  const list = ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id }))
+  assert.deepEqual(threadRange(list, 'b', 'd'), ['b', 'c', 'd'], 'downwards, both ends in')
+  assert.deepEqual(threadRange(list, 'd', 'b'), ['b', 'c', 'd'], 'upwards reads in list order')
+  assert.deepEqual(threadRange(list, 'c', 'c'), ['c'], 'one row is a range of one')
+  assert.deepEqual(threadRange(list, null, 'c'), ['c'], 'no anchor yet: just the row clicked')
+  assert.deepEqual(threadRange(list, 'gone', 'c'), ['c'], 'an anchor off this list: the same')
+  assert.deepEqual(threadRange(list, 'a', 'gone'), [], 'a target off the list: nothing')
+}
+
+// ── The category tabs' badges ───────────────────────────────────────
+
+{
+  const counts = [
+    { category: 'important', threads: 12, unread: 3 },
+    { category: 'newsletter', threads: 40, unread: 0 },
+    { category: null, threads: 5, unread: 1 },
+  ]
+  assert.deepEqual(categoryTabCount(counts, 'important'), { threads: 12, unread: 3 })
+  assert.deepEqual(
+    categoryTabCount(counts, 'priority'),
+    { threads: 0, unread: 0 },
+    'a category with no row counts nothing',
+  )
+  assert.deepEqual(
+    categoryTabCount(counts, null),
+    { threads: 57, unread: 4 },
+    'All counts every row, the uncategorised included',
+  )
+}
+
+// ── An address typed rather than picked ─────────────────────────────
+
+assert.deepEqual(parseTypedAddress('  ann@example.com, '), { name: '', email: 'ann@example.com' })
+assert.deepEqual(parseTypedAddress('Ann Lee <ann@example.com>'), {
+  name: 'Ann Lee',
+  email: 'ann@example.com',
+})
+assert.deepEqual(
+  parseTypedAddress('"Lee, Ann" <ann@example.com>;'),
+  { name: 'Lee, Ann', email: 'ann@example.com' },
+  'quotes round the name are dropped, and a trailing separator is not part of it',
+)
+assert.equal(parseTypedAddress(' , '), null, 'nothing typed is no address')
 
 await close()
 console.log('mail: all checks passed')

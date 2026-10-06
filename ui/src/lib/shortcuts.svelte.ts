@@ -659,6 +659,15 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
     run: () => void mail.openThreadById(mail.selectedThread!),
   },
+  // Ahead of "Back to the list": with threads picked, Escape lets go of
+  // them first, and only a second press leaves the thread.
+  {
+    keys: 'Escape',
+    label: 'Clear the selection',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && mail.checked.size > 0,
+    run: () => mail.clearChecked(),
+  },
   {
     keys: 'Escape',
     label: 'Back to the list',
@@ -666,26 +675,44 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     when: () => anywhere() && inApp('mail')() && !!mail.openThread,
     run: () => mail.closeThread(),
   },
+  // Gmail's own key for "select this one". `x` is Todo's too, but each is
+  // gated to its own app, so the two never meet.
+  {
+    keys: 'x',
+    label: 'Select the thread',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    run: () => mail.toggleChecked(mail.selectedThread!),
+  },
+  {
+    keys: 'mod+a',
+    label: 'Select every thread',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && mailListShowing(),
+    run: () => mail.checkAll(),
+  },
+  // From here to `v`, each acts on every picked thread when there are
+  // some, and on the selected one otherwise -- see `mail.targets`.
   {
     keys: 'e',
     label: 'Archive',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => void mail.archive(mail.selectedThread!),
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
+    run: () => void mail.archiveMany(mail.targets),
   },
   {
     keys: '#',
     label: 'Trash',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => void mail.trash(mail.selectedThread!),
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
+    run: () => void mail.trashMany(mail.targets),
   },
   {
     keys: 's',
     label: 'Star',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => void mail.toggleStar(mail.selectedThread!),
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
+    run: () => void mail.toggleStarMany(mail.targets),
   },
   // `!` (Shift+1): free in this table, the same way `#` (Shift+3, Trash)
   // already is -- `chordOf` in `keys.ts` records the character a layout
@@ -695,42 +722,42 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     keys: '!',
     label: 'Toggle priority',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => void togglePriority(mail.selectedThread!),
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
+    run: () => void togglePriority(mail.targets),
   },
   {
     keys: 'u',
     label: 'Mark unread',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => void mail.markUnread(mail.selectedThread!),
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
+    run: () => void mail.markUnreadMany(mail.targets),
   },
   {
     keys: 'i',
     label: 'Mark read',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => void mail.markRead(mail.selectedThread!),
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
+    run: () => void mail.markReadMany(mail.targets),
   },
   {
     keys: 'h',
     label: 'Snooze…',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
-    run: () => (mail.wantsSnooze = mail.selectedThread),
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
+    run: () => (mail.wantsSnooze = mail.targets),
   },
   {
     keys: 'l',
     label: 'Label…',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
     run: () => openLabelPicker(),
   },
   {
     keys: 'v',
     label: 'Move to…',
     group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && !!mail.selectedThread,
+    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
     run: () => moveMenu(),
   },
   {
@@ -1239,8 +1266,8 @@ function selectPseudoMailbox(pseudo: 'starred' | 'snoozed') {
  * still a text field rather than a list of existing labels.
  */
 function openLabelPicker() {
-  const id = mail.selectedThread
-  if (id) mail.wantsLabel = id
+  const ids = mail.targets
+  if (ids.length > 0) mail.wantsLabel = ids
 }
 
 /**
@@ -1251,16 +1278,26 @@ function openLabelPicker() {
  * to give `menu.show` something to read a position out of.
  */
 function moveMenu() {
-  const id = mail.selectedThread
+  const ids = mail.targets
+  const id = ids[0]
   if (!id) return
   const accountId =
     mail.threads.find((t) => t.id === id)?.accountId ?? mail.openThread?.thread.accountId
   const boxes = mail.mailboxes.filter((m) => m.accountId === accountId && m.role !== 'other')
   const items = boxes.map((box) => ({
     label: mailboxDisplayName(box),
-    run: () => void mail.moveTo(id, box.id),
+    run: () => void mail.moveManyTo(ids, box.id),
   }))
   menu.showAt(window.innerWidth / 2, window.innerHeight / 2, items)
+}
+
+/** Is a thread list on screen for Mod+A to select from -- a mailbox's, or a
+ *  search's -- rather than the Scheduled list, which has no threads. */
+function mailListShowing(): boolean {
+  return (
+    !mail.viewingScheduledFor &&
+    (mail.searchQuery.trim() ? mail.searchResults : mail.threads).length > 0
+  )
 }
 
 /** Is suggested reply `n` (1-3) offered right now, with nothing else the
@@ -1277,17 +1314,20 @@ function suggestedReplyKey(n: number): boolean {
 }
 
 /**
- * `!`: flip the selected thread's priority on or off. Reads whichever of
- * `mail.threads`/`mail.searchResults`/the open thread's own copy actually
- * has the row -- the selected thread is not always in the first of those,
- * the same reason `mail.toggleStar` falls back the same way.
+ * `!`: flip priority on or off -- on for all of `ids` unless every one is
+ * already priority, the way Star treats a mixed selection. Reads whichever
+ * of `mail.threads`/`mail.searchResults`/the open thread's own copy
+ * actually has each row -- the selected thread is not always in the first
+ * of those, the same reason `mail.toggleStar` falls back the same way.
  */
-function togglePriority(id: string) {
-  const row =
-    mail.threads.find((t) => t.id === id) ??
-    mail.searchResults.find((t) => t.id === id) ??
-    (mail.openThread?.thread.id === id ? mail.openThread.thread : undefined)
-  void mail.setPriority(id, row?.category !== 'priority')
+function togglePriority(ids: string[]) {
+  const isPriority = (id: string) =>
+    (
+      mail.threads.find((t) => t.id === id) ??
+      mail.searchResults.find((t) => t.id === id) ??
+      (mail.openThread?.thread.id === id ? mail.openThread.thread : undefined)
+    )?.category === 'priority'
+  void mail.setPriorityMany(ids, !ids.every(isPriority))
 }
 
 /**

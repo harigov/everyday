@@ -36,7 +36,7 @@ use everyday_core::mail::{
     AttendeeResponse, Category, Draft, DraftCalendarPart, DraftState, InviteMethod, Mailbox,
     Message, Op, OpKind, OpState, OpTarget, Origin, Thread, UNDO_SEND_MAX_SECONDS, undo_send_delay,
 };
-use everyday_core::store::mail::{ThreadFilter, ThreadPage};
+use everyday_core::store::mail::{CategoryCount, ThreadFilter, ThreadPage};
 use everyday_mail::{compose, invite, mime};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -1307,6 +1307,23 @@ async fn list_threads(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CategoryCountsQuery {
+    pub mailbox: MailboxId,
+}
+
+/// `mailbox`'s threads counted by category -- the numbers the inbox's tabs
+/// show beside each name. See [`everyday_core::Vault::mail_category_counts`].
+async fn category_counts(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: CategoryCountsQuery,
+) -> CommandResult<Vec<CategoryCount>> {
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.mail_category_counts(args.mailbox)?)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FetchAttachment {
     pub message_id: MailMessageId,
     pub index: usize,
@@ -1424,6 +1441,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("limit", "number | null", false),
         ],
         run: list_threads,
+    },
+    command! {
+        name: "category_counts", scope: Mail, effect: Read,
+        args: CategoryCountsQuery, returns: "CategoryCount[]",
+        signature: &[("mailbox", "MailboxId", true)],
+        run: category_counts,
     },
     command! {
         name: "get_thread", scope: Mail, effect: Read,

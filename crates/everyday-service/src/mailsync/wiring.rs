@@ -116,18 +116,20 @@ pub(crate) fn open(svc: &Arc<Service>, vault: &Arc<Vault>) -> Option<tokio::task
     // pass.
     let healed_on_open = index.healed_on_open();
     let index: Arc<dyn everyday_core::MailSearch> = Arc::new(index);
+    // One small sealed row, read once here -- see `ContactIndex`'s own docs
+    // on why this is not a scan of every message on unlock.
+    let contacts = Arc::new(crate::mailsync::contacts::ContactIndex::load(vault));
     svc.set_mail_state(Some(MailState {
         packs,
         index: index.clone(),
         statuses: StatusRegistry::new(),
         unread_cache: Arc::new(crate::mailsync::unread_cache::UnreadCache::new()),
-        // One small sealed row, read once here -- see `ContactIndex`'s own
-        // docs on why this is not a scan of every message on unlock.
-        contacts: Arc::new(crate::mailsync::contacts::ContactIndex::load(vault)),
+        contacts: contacts.clone(),
     }));
 
     if vault.is_writable() {
         register_account_tasks(svc, vault);
+        backfill_contacts(vault, contacts);
         // Only when writable: reindexing writes nothing to the vault
         // itself, only to `index`, but it is real disk-bound work (a full
         // walk of every account's threads and bodies), and gating it the
@@ -222,6 +224,27 @@ fn reindex_after_self_heal(
             );
         }
     })
+}
+
+/// Run [`crate::mailsync::contacts::ContactIndex::backfill`] off the
+/// calling thread, the way [`reindex_after_self_heal`] runs its walk: a
+/// recount decrypts every message the vault holds, once, and [`open`] runs
+/// on the unlock command's own task. A no-op after the first time it
+/// finishes for a vault -- the book remembers -- so every later unlock pays
+/// one flag check and nothing else.
+fn backfill_contacts(vault: &Arc<Vault>, contacts: Arc<crate::mailsync::contacts::ContactIndex>) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let vault = vault.clone();
+    runtime.spawn(async move {
+        let result = crate::service::blocking(move || Ok(contacts.backfill(&vault)?)).await;
+        match result {
+            Ok(true) => tracing::info!("counted stored mail into the contact book"),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "could not count stored mail into the contact book")
+            }
+        }
+    });
 }
 
 /// Drop what [`open`] opened. See `Service::locked`/`Service::close` for the

@@ -82,6 +82,19 @@ pub struct ThreadFilter {
     pub snoozed: Option<bool>,
 }
 
+/// How many of one mailbox's threads carry one category -- a row of
+/// [`MailStore::category_counts`]. `category` is `None` for the threads not
+/// categorised yet.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryCount {
+    pub category: Option<Category>,
+    /// Threads carrying it.
+    pub threads: u64,
+    /// Of those, the ones with something unread in this mailbox.
+    pub unread: u64,
+}
+
 /// One page of [`Thread`]s, keyset-paged -- see `everyday-store-sql::keyset`
 /// for why a mailbox pages this way rather than by offset.
 ///
@@ -545,6 +558,13 @@ pub trait MailStore: Send + Sync {
     /// that decrypts nothing at all. What the app bar's badge and the
     /// mailbox list's counts both read.
     fn unread_counts(&self, account: AccountId) -> Result<Vec<(MailboxId, u64)>>;
+
+    /// `mailbox`'s threads counted by category, one row per category that
+    /// has any -- what the inbox's category tabs show beside each name. A
+    /// snoozed thread is left out, as [`MailStore::list_threads`] leaves it
+    /// out of the list those tabs filter. A clear-column aggregate, like
+    /// [`MailStore::unread_counts`]: nothing is decrypted.
+    fn category_counts(&self, mailbox: MailboxId) -> Result<Vec<CategoryCount>>;
 
     // ---- the Overview's mail widgets ----------------------------------------
 

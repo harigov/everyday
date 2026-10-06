@@ -24,8 +24,9 @@ use everyday_core::mail::{
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
-    IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad, category_rules_aad, contacts_aad,
-    draft_aad, mailbox_aad, message_aad, op_aad, remote_image_settings_aad,
+    CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad,
+    category_rules_aad, contacts_aad, draft_aad, mailbox_aad, message_aad, op_aad,
+    remote_image_settings_aad,
 };
 use jiff::Timestamp;
 
@@ -575,6 +576,30 @@ impl MailStore for SqlStore {
                         everyday_core::error::Error::Invalid(e.to_string())
                     })?;
                 Ok((id, r.u64(1)?))
+            })
+            .collect()
+    }
+
+    fn category_counts(&self, mailbox: MailboxId) -> Result<Vec<CategoryCount>> {
+        // The same `CAST(... AS BIGINT)` as `unread_counts`, for the same
+        // reason: Postgres answers `SUM` as a `numeric` this driver cannot
+        // decode.
+        let rows = self.read().query(
+            "SELECT t.category, CAST(COUNT(*) AS BIGINT),
+                    CAST(COALESCE(SUM(CASE WHEN tm.unread > 0 THEN 1 ELSE 0 END), 0) AS BIGINT)
+             FROM thread_mailboxes tm
+             JOIN threads t ON t.id = tm.thread_id
+             WHERE tm.mailbox_id = ?1 AND t.snoozed_until_us IS NULL
+             GROUP BY t.category",
+            &vals![mailbox.to_string()],
+        )?;
+        rows.into_iter()
+            .map(|r| {
+                Ok(CategoryCount {
+                    category: r.opt_text(0)?.and_then(|c| Category::parse(&c)),
+                    threads: r.u64(1)?,
+                    unread: r.u64(2)?,
+                })
             })
             .collect()
     }
