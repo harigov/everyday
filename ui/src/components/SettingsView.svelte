@@ -673,19 +673,16 @@
     background: var(--bg-sunken);
     border-right: 1px solid var(--border);
   }
-  /* The brand row every sidebar has is `Sidebar.svelte`'s alone to draw --
-     Settings is not inside one -- so this is this page's own equivalent of
-     it: same height, so the window's top edge still lines up app to app,
-     with a title and a close button standing in for the logo. The same
-     macOS traffic-light allowance `Sidebar.svelte`'s `.brand` carries,
-     for the same reason: this sits in exactly the spot that row would. */
+  /* A header the height of every app's own, so the row under the strip at
+     the top of the window still lines up app to app, with a title and a
+     close button. No allowance for the macOS window controls any more:
+     they sit over that strip now (`TopBar.svelte`), not over this. */
   .head {
     display: flex;
     align-items: center;
     flex: none;
     height: var(--header-h);
     padding: 0 var(--sp-3) 0 var(--sp-4);
-    padding-left: max(var(--sp-4), env(titlebar-area-x, var(--sp-4)));
     border-bottom: 1px solid var(--border);
   }
   .head h2 {

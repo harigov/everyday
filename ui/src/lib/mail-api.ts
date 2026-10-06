@@ -67,6 +67,9 @@ export const fetchAttachment = (messageId: MailMessageId, index: number): Promis
 // command takes.
 
 export const markRead = (id: ThreadId): Promise<Op[]> => api.markRead([id])
+/** The batch itself, for the one caller that has a page of threads to mark
+ *  at once -- marking a whole mailbox read. */
+export const markReadAll = (ids: ThreadId[]): Promise<Op[]> => api.markRead(ids)
 export const markUnread = (id: ThreadId): Promise<Op[]> => api.markUnread([id])
 export const star = (id: ThreadId): Promise<Op[]> => api.star([id])
 export const unstar = (id: ThreadId): Promise<Op[]> => api.unstar([id])

@@ -11,6 +11,7 @@ import type {
   DeclineReason,
   AgentCallerKind,
   AgentEvent,
+  OnScreen,
   AgentMailAccess,
   AgentSettings,
   BadgeSources,
@@ -263,7 +264,7 @@ export let onMeetingOffer: (handler: (offer: MeetingOfferPayload) => void) => vo
 export let sendMessage: (
   conversationId: ConversationId,
   prompt: string,
-  context: string | null,
+  onScreen: OnScreen | null,
   onEvent: (event: AgentEvent) => void,
 ) => Promise<void> = async () => {
   throw new VaultError('unavailable', 'The assistant could not reach its backend.')
@@ -305,13 +306,13 @@ if (!MOCK) {
   }
 
   const mod = await import('@tauri-apps/api/core')
-  sendMessage = async (conversationId, prompt, context, onEvent) => {
+  sendMessage = async (conversationId, prompt, onScreen, onEvent) => {
     const channel = new mod.Channel<AgentEvent>()
     channel.onmessage = onEvent
     // By name, not through `call`: a turn answers with a stream rather than a
     // value, so the shell has a command of its own for it. The generated
     // `SERVICE_COMMANDS` leaves the streaming ones out for the same reason.
-    await mod.invoke<void>('send_message', { conversationId, prompt, context, channel })
+    await mod.invoke<void>('send_message', { conversationId, prompt, onScreen, channel })
   }
   invoke = async <T>(cmd: string, args?: InvokeArgs, requestId?: string): Promise<T> => {
     try {

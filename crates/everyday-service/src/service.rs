@@ -930,7 +930,10 @@ impl Service {
             pending: self.pending(),
             conversation: args.conversation_id,
             prompt: args.prompt,
-            context: args.context,
+            on_screen: args
+                .on_screen
+                .as_ref()
+                .and_then(everyday_core::agent::onscreen::OnScreen::lenient),
             channel: sink,
             // Somebody is sitting in front of this one, so a destructive call
             // stops and asks them.

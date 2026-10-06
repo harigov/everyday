@@ -205,21 +205,6 @@
     </button>
   </header>
 
-  <div class="searchbar">
-    <span class="glass"><Icon name="search" size={15} /></span>
-    <input
-      class="search"
-      data-search
-      type="search"
-      placeholder="Search"
-      value={app.query}
-      oninput={(e) => app.setQuery(e.currentTarget.value)}
-      onkeydown={(e) => {
-        if (e.key === 'Escape') app.clearSearch()
-      }}
-    />
-  </div>
-
   <!-- Hidden while searching: results are ranked by relevance across every
        month, so a calendar of one of them would be answering a question
        nobody asked. -->
@@ -400,44 +385,6 @@
   }
   .new.icon.on {
     color: var(--journal-accent, var(--accent));
-  }
-
-  .searchbar {
-    position: relative;
-    padding: 0 var(--sp-3) var(--sp-3);
-    flex: none;
-  }
-  .glass {
-    position: absolute;
-    left: calc(var(--sp-3) + 9px);
-    top: 8px;
-    color: var(--fg-faint);
-    pointer-events: none;
-  }
-  .search {
-    width: 100%;
-    height: 30px;
-    padding: 0 var(--sp-3) 0 30px;
-    border: 1px solid transparent;
-    border-radius: var(--radius);
-    background: var(--bg-sunken);
-    color: var(--fg);
-    font-size: var(--text-base);
-    user-select: text;
-    transition:
-      border-color var(--fast) var(--ease),
-      background var(--fast) var(--ease);
-  }
-  .search::placeholder {
-    color: var(--fg-faint);
-  }
-  .search::-webkit-search-cancel-button {
-    -webkit-appearance: none;
-  }
-  .search:focus {
-    outline: none;
-    border-color: var(--accent);
-    background: var(--bg-raised);
   }
 
   .rows {

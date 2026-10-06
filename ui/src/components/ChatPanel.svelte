@@ -13,9 +13,9 @@
   // its own. The conversation itself is `ChatThread`, drawn by both; what is
   // here is only what a rail has and a page does not: a width to drag, and
   // the history folded into a header button rather than a sidebar. What the
-  // person is looking at -- the line sent with every message so "this"
-  // resolves -- is worked out by the thread itself, from whichever app is
-  // open.
+  // person is looking at -- sent with every message so "this" resolves, as
+  // references the service describes -- is worked out by the thread itself,
+  // from whichever app is open; see `lib/onscreen.ts`.
   //
   // Three states, and the middle one matters most. The panel is not offered
   // at all on a backend with no assistant storage; it is offered but shows a

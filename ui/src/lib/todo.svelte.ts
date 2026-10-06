@@ -12,6 +12,7 @@
 
 import { api } from './api'
 import { Autosave } from './autosave'
+import { seen, type Showing } from './onscreen'
 import { purpose } from './purpose.svelte'
 import { targets } from './targets.svelte'
 import { pref } from './prefs'
@@ -515,6 +516,45 @@ class TodoState {
   /** The accent for the current scope. */
   get accent(): string {
     return this.project?.color ?? 'var(--accent)'
+  }
+
+  /**
+   * What is on screen, for the assistant -- see `onscreen.ts`.
+   *
+   * The goals pane is part of this app but holds no tasks, so it answers
+   * with the goal whose rail is open instead. Everything that narrows the
+   * list is said, because "these" means the tasks somebody can see: the
+   * smart list, a status other than the default, a priority, a tag.
+   */
+  get showing(): Showing {
+    if (this.showingGoals) {
+      const goal = purpose.goal(purpose.selected)
+      return {
+        view: 'goals, grouped by role',
+        open: seen('goal', goal?.id, goal?.title ?? ''),
+      }
+    }
+    const scope: Record<Exclude<Scope['kind'], 'project' | 'goals'>, string> = {
+      today: 'Today',
+      upcoming: 'Upcoming',
+      inbox: 'the inbox, tasks in no project',
+      all: 'all tasks',
+    }
+    const view = [
+      this.scope.kind === 'project' || this.scope.kind === 'goals' ? null : scope[this.scope.kind],
+      this.statusFilter === 'open' ? null : `status ${FILTER_LABELS[this.statusFilter]}`,
+      this.priorityFilter ? `${this.priorityFilter} priority` : null,
+      this.tagFilter ? `tagged ${this.tagFilter}` : null,
+      this.view === 'board' && this.boardable ? 'as a board' : null,
+    ].filter(Boolean)
+    const project = this.project
+    const task = this.detail
+    return {
+      view: view.length > 0 ? view.join(', ') : null,
+      within: seen('project', project?.id, project?.name ?? ''),
+      open: seen('task', task?.id, task?.title ?? ''),
+      query: this.filter,
+    }
   }
 
   /** Are this task's subtasks showing? They are, unless they were folded. */

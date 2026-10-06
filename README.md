@@ -74,6 +74,18 @@ of filters over the list below it. **Settings** and **Lock** are at the foot
 of the bar, under a rule, for the same reason: they belong to the vault
 rather than to whichever app is open.
 
+Across the top of the window runs one strip with two things in it, both of
+which belong to no app either. **The bar** in the middle searches whatever app
+is open and does anything the application can do — see [The bar at the
+top](#the-bar-at-the-top). It replaced a search field per app, five of them
+in five shapes and places, and the command palette's dialog. **The fold
+button** at its left hides the open app's sidebar (`Ctrl/Cmd \`), per app and
+remembered: folding the mail app's folders says nothing about the notes app's
+list of notes. A folded sidebar is one gesture away — rest the pointer on the
+window's left edge, beside the app bar, or on the fold button, and it is drawn
+over the app for a quick choice and goes again when the pointer leaves. Over
+rather than beside, so the list you were reading does not move under you.
+
 Settings is a dialog with tabs — General, About You, Accounts, Assistant (and,
 under it, Routines, What it did, Memory and Waiting for you), Meetings, Data,
 Vault — rather than a
@@ -99,7 +111,11 @@ you can see, the entry you are writing. It opens a rail beside that app rather
 than replacing it, and the rail can be dragged wider — a table or a fenced
 block of configuration in a 340px column is a column of wrapped fragments. It
 is the same thread as the page, not a second assistant, so a question started
-in one is finished in the other.
+in one is finished in the other. Every message from the rail carries what is
+on screen — the open email, the selected task, the week on the grid — so
+"draft a reply turning this down" knows which email; a line over the message
+box says what is going along, and a click leaves it out of one message. See
+[What it can see](#what-it-can-see).
 
 Its standing work — routines, what they did, what it remembers, what it left
 for you to decide — is in Settings, under Assistant. Those are things set up
@@ -1339,6 +1355,42 @@ characters of them), and the model is told when the start has been left out.
 What has to survive longer than that is what its [memory](#who-it-works-for)
 is for. The vault keeps every word either way; this is only what is read back.
 
+### What it can see
+
+With every message from the rail goes **what is on screen**: which app, what
+narrows it (the mailbox, the project, the shelf, the week), what is open (the
+email, the draft being written, the task in the detail rail, the selected
+event or block of time) and what is typed in the search bar. The line over the
+message box says what that is — *Mail › Re: the budget review* — and clicking
+it leaves the screen out of the next message.
+
+It travels as **references, not prose**: a kind and an id per record, never
+the title. The service looks each one up and writes the paragraph the model
+reads, which buys three things the old one-line sentence could not:
+
+- **Ids the model can act on.** "Reply to this" goes straight to the open
+  thread's latest message, rather than to a search for its subject that finds
+  the wrong one whenever two threads share it. The model is told the ids are
+  real, which is the one exception to the house rule that it must look an id
+  up before using it.
+- **The mail gate holds.** A thread is described only if the assistant's own
+  `read_thread` would have been allowed to read it — the same function decides
+  both. Open an email in an account the assistant may not read and it is told
+  that something is open there and that it may not see it, with no subject,
+  sender or id.
+- **A stranger's words are labelled.** A subject line and a sender's name are
+  written by whoever sent the mail, so they arrive quoted, on one line, and
+  marked as theirs — the same rule the mail tools follow — rather than as
+  part of the system prompt's own voice. And an open email counts as mail the
+  model has read: a web search or a page fetch later in that turn stops to
+  ask first, exactly as it would after `read_thread`, because a model that
+  has read a stranger's words can be talked into sending them somewhere.
+
+A reference the service cannot read — a kind of record a newer interface knows
+about and an older server does not — costs that reference, never the message.
+Each app says what it shows from its own store, through one entry in
+`ui/src/lib/apps.ts` that an app cannot be added without.
+
 ### While it works
 
 A turn that searches twice, reads a page and checks a forecast takes the
@@ -1861,7 +1913,7 @@ rather than code somebody has to remember to extend.
 That claim was tested by accident. The Overview, Roles, Goals and Purpose
 landed after server mode did, and reaching every client took one module, one
 scope, two change kinds and a regenerated client. Its quick actions became
-four rows in the same action table the keyboard and the palette read. There is
+four rows in the same action table the keyboard and the bar at the top read. There is
 a test — `a_client_can_use_the_records_that_arrived_after_it` — whose whole job
 is to keep that true for the sixth app.
 
@@ -2586,7 +2638,7 @@ with what the platform or the webview has already taken.
 |---|---|
 | `G` then `J` / `N` / `T` / `C` / `L` / `M` / `O` / `A` | journal, notes, todo, calendar, library, mail, overview, assistant |
 | `C` | start the next thing — an entry, a note, the task capture line, an hour set aside, the "add to shelf" field, a goal, a conversation |
-| `/` | search this app |
+| `/` | the bar at the top: search this app |
 | `A` | the assistant's rail — or, in the Assistant app, its message box |
 | `Esc` | in the message box, stop a turn that is running |
 | `?` | this list |
@@ -2594,7 +2646,8 @@ with what the platform or the webview has already taken.
 | `Ctrl/Cmd N` | the same as `C` |
 | `Ctrl/Cmd F` | the same as `/` |
 | `Ctrl/Cmd ,` | settings |
-| `Ctrl/Cmd K` | the command palette — everything, by name |
+| `Ctrl/Cmd K` | the bar at the top, for commands — everything, by name |
+| `Ctrl/Cmd \` | show or hide the open app's sidebar |
 | `Ctrl/Cmd L` | lock this screen |
 | `Ctrl/Cmd S` | flush pending edits (it autosaves anyway) |
 
@@ -2621,12 +2674,35 @@ else — the table is what the help sheet reads, so a shortcut that is not in
 it does not exist and one that is cannot be undocumented. The mechanics live
 next door in `keys.ts`, which has no stores in it and is tested on its own.
 
-## The palette
+## The bar at the top
 
-`Ctrl/Cmd K`. Everything the application can do, findable by typing, and the
-same rows the keyboard dispatches and the tray offers — because there is one
-table, in `ui/src/lib/shortcuts.svelte.ts`, and an action reaches all three
-surfaces by existing rather than by being declared three times.
+One field, in the same place in every app, for finding something and for doing
+something. It replaced a search field per app — in the sidebar in Mail and
+Notes, in the header in Todo and the Library, over the list in the journal,
+none at all in the calendar — and a command palette that opened in a dialog
+over everything.
+
+It has two modes, and the difference is whether what you type is a search:
+
+- **Search** — a click, `/` or `Ctrl/Cmd F`. What you type *is* the open
+  app's search: the list narrows as you type, exactly as the old fields did,
+  and each app keeps its own, so switching apps puts back what was there. A
+  short list underneath offers the commands whose names match and a way to
+  keep the text as a task or ask the assistant about it with what is on
+  screen; choosing one puts the app's search back the way it was, because what
+  you typed turned out not to be a search. `Esc` closes the list, again clears
+  the search, again leaves the bar.
+- **Commands** — `Ctrl/Cmd K`, the system-wide key, or the tray. The text is
+  the bar's own and filters nothing; everything that applies is listed, and
+  searching the app is one row among the rest. The calendar and the Overview,
+  which have nothing to search, only have this mode.
+
+Everything in the list is the same rows the keyboard dispatches and the tray
+offers — because there is one table, in `ui/src/lib/shortcuts.svelte.ts`, and
+an action reaches every surface by existing rather than by being declared
+three times. Each app's search is one entry in `ui/src/lib/apps.ts`, next to
+what it tells the assistant is on screen; an app with nothing to search says
+so there rather than by leaving it out.
 
 That was not true before. The keyboard had a table, the tray had its own, and
 the context menus had a third; the third one to learn about a new action was
@@ -2640,8 +2716,8 @@ another word are found at all: *lock* by "sign out", *board* by "kanban".
 
 **When nothing matches it offers to keep what was typed**: as a task, as a
 reading, on a shelf, or as a search. That is the half this is really for. Most
-of what somebody opens a palette to do is put a thing somewhere before they
-forget it, and "no results" is a dead end where "add as a task" is the answer.
+of what somebody reaches for a command bar to do is put a thing somewhere
+before they forget it, and "no results" is a dead end where "add as a task" is the answer.
 
 The grammars are the apps' own, not a third one written for this. So
 
@@ -2652,13 +2728,13 @@ mood 7/10                                      and it will make the tracker if i
 ```
 
 all do here exactly what they do where they came from. Reimplementing either
-grammar in the palette would be a third place for them to disagree, which is
+grammar in the bar would be a third place for them to disagree, which is
 the same argument that put every action in one table.
 
 ### From anywhere on the desktop
 
-`Ctrl/Cmd Shift Space` raises the window with the palette open, whatever you
-are looking at. Both modifiers, because the unshifted version is an
+`Ctrl/Cmd Shift Space` raises the window with the bar in command mode,
+whatever you are looking at. Both modifiers, because the unshifted version is an
 input-method switcher on most desktops and claiming it would break typing in
 another language — a worse outcome than having no hotkey.
 
@@ -2666,9 +2742,9 @@ A desktop refusing the key is an **ordinary answer rather than an error**:
 Wayland has no protocol for an application to claim a global key without the
 compositor's portal, and not every compositor implements one. Settings says
 whether it was granted and points at the tray instead. Nothing about the
-palette depends on it.
+bar depends on it.
 
-The honest limit: it raises the *window*. A palette in a window of its own,
+The honest limit: it raises the *window*. A bar in a window of its own,
 appearing over whatever is in front without taking focus from it, is the
 better end state and is deliberately not this. A second webview shares no
 memory with the first, so it would need its own connection to the vault, its

@@ -106,7 +106,10 @@ macro_rules! tool {
 mod conversations;
 mod journals;
 mod library;
-mod mail;
+// `pub(crate)` for one reader outside the catalogue: `agent::onscreen`, which
+// describes an open thread only when `mail::permits` says the tools could
+// have read it.
+pub(crate) mod mail;
 mod meetings;
 mod memory;
 mod notes;
@@ -205,7 +208,10 @@ impl Domain {
         Domain::Meetings,
     ];
 
-    fn available(self, vault: &Vault) -> bool {
+    /// Can this vault serve the domain, and may a model be shown it at all?
+    /// `pub(crate)` for `agent::onscreen`, which describes a record on screen
+    /// only on the terms a tool would have read it.
+    pub(crate) fn available(self, vault: &Vault) -> bool {
         self.sensitivity() == Sensitivity::Ordinary
             && match self {
                 Domain::Journals => true,

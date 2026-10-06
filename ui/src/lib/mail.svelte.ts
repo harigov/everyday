@@ -22,10 +22,12 @@ import { accounts } from './accounts.svelte'
 import { registerApply, type ChangeWithIds } from './live-apply'
 import { proposals } from './proposals.svelte'
 import {
+  CATEGORY_TABS,
   applyInviteResponse,
   applyRowPatch,
   isSnoozedMailbox,
   listTarget,
+  mailboxDisplayName,
   mailboxHasTabs,
   mergeSearchPage,
   needsSyntheticSnoozedMailbox,
@@ -40,6 +42,7 @@ import {
   syntheticSnoozedMailboxId,
   visibleThreadList,
 } from './mail'
+import { seen, type Showing } from './onscreen'
 import { app, handle, quietly } from './state.svelte'
 import { applySingleChange } from './store/live-patch'
 import { guardedRefresh } from './store/refresh'
@@ -73,6 +76,10 @@ const LIVE_REFRESH_DEBOUNCE_MS = 600
 
 /** How many threads a page loads at once. */
 const PAGE = 50
+
+/** `markMailboxRead`'s page, and the most it does in one go. */
+const MARK_PAGE = 200
+const MARK_CAP = 2000
 
 /** `null` selects every account this vault has. */
 export type AccountScope = AccountId | null
@@ -650,6 +657,44 @@ class MailState {
   markRead(id: ThreadId) {
     return this.#act(id, { unreadCount: 0 }, mailApi.markRead)
   }
+
+  /**
+   * Mark everything unread in one mailbox read -- the folder list's
+   * right-click.
+   *
+   * Paged through the unread filter and sent a page at a time, as the batch
+   * the real command already takes, rather than one call per thread: a
+   * folder somebody wants to clear is usually one with a great deal in it.
+   * Capped, so a mailbox of fifty thousand unread newsletters is a handful
+   * of round trips and an honest count rather than a minute of silence; the
+   * count says how many were done, and doing it again does the next lot.
+   * The rows already drawn are updated as each page lands, and the counts
+   * in the sidebar once at the end.
+   */
+  async markMailboxRead(id: MailboxId): Promise<number> {
+    const box = this.mailboxes.find((m) => m.id === id)
+    if (!box) return 0
+    const filter: ThreadFilter = { unread: true, snoozed: isSnoozedMailbox(box) }
+    let cursor: string | null = null
+    let done = 0
+    try {
+      do {
+        const page = await mailApi.listThreads(id, filter, cursor, MARK_PAGE)
+        const ids = page.threads.filter((t) => t.unreadCount > 0).map((t) => t.id)
+        if (ids.length > 0) await mailApi.markReadAll(ids)
+        for (const thread of ids) {
+          this.threads = applyRowPatch(this.threads, thread, { unreadCount: 0 }).rows
+          this.searchResults = applyRowPatch(this.searchResults, thread, { unreadCount: 0 }).rows
+        }
+        done += ids.length
+        cursor = page.nextCursor ?? null
+      } while (cursor && done < MARK_CAP)
+    } catch (e) {
+      await handle(e)
+    }
+    this.#scheduleUnreadRefresh()
+    return done
+  }
   markUnread(id: ThreadId) {
     return this.#act(id, { unreadCount: 1 }, mailApi.markUnread)
   }
@@ -1125,6 +1170,61 @@ class MailState {
 
   get mailbox(): Mailbox | null {
     return this.mailboxes.find((m) => m.id === this.selectedMailbox) ?? null
+  }
+
+  /**
+   * What is on screen, for the assistant -- see `onscreen.ts`.
+   *
+   * Most specific first in `open`: a draft being written is what "this"
+   * means while the compose sheet is up, over the thread it may be replying
+   * to. A message somebody expanded by hand is named after the thread, so
+   * "reply to this one" can mean an older message than the latest -- the
+   * newest expanded one, which is the one most recently read. Starred and
+   * Snoozed are views rather than mailboxes the vault holds, so they are
+   * named as a `view` rather than sent as references nothing could look up.
+   */
+  get showing(): Showing {
+    const draft = seen('draft', this.composing?.id, this.composing?.subject ?? '')
+    // The Scheduled list is mail queued to go out later, not a mailbox: the
+    // account it belongs to is what narrows it.
+    const scheduledFor = this.viewingScheduledFor
+    if (scheduledFor !== null) {
+      return {
+        view: 'the Scheduled list, mail of theirs queued to send later',
+        within: seen('account', scheduledFor, accounts.account(scheduledFor)?.address ?? ''),
+        open: draft,
+      }
+    }
+    const box = this.mailbox
+    const tab = mailboxHasTabs(box) ? CATEGORY_TABS.find((t) => t.key === this.category) : undefined
+    const detail = this.openThread
+    const shown = detail && detail.thread.id === this.selectedThread ? detail : null
+    const expanded = shown?.messages.filter((m) => this.expanded.has(m.id)).at(-1)
+    const latest = shown?.messages.at(-1)
+    return {
+      view: box?.pseudo ? mailboxDisplayName(box) : tab ? `the ${tab.label} tab` : null,
+      within: box?.pseudo
+        ? []
+        : box
+          ? seen('mailbox', box.id, mailboxDisplayName(box))
+          : seen(
+              'account',
+              this.selectedAccount,
+              accounts.account(this.selectedAccount ?? '')?.address ?? '',
+            ),
+      open: [
+        ...draft,
+        ...seen('thread', shown?.thread.id, shown?.thread.subject ?? ''),
+        ...(expanded && expanded.id !== latest?.id
+          ? seen(
+              'message',
+              expanded.id,
+              `${expanded.from.name || expanded.from.email}, ${expanded.subject}`,
+            )
+          : []),
+      ],
+      query: this.searchQuery,
+    }
   }
 }
 

@@ -11,9 +11,13 @@
   import { accounts } from '../lib/accounts.svelte'
   import { gmailSystemLabel, mailboxDisplayName } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
+  import { notify } from '../lib/notify.svelte'
   import { panels } from '../lib/panels.svelte'
   import { proposals } from '../lib/proposals.svelte'
-  import type { Mailbox, MailboxRole } from '../lib/types'
+  import { focusSearch } from '../lib/shortcuts.svelte'
+  import type { AccountId, Mailbox, MailboxRole } from '../lib/types'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
 
@@ -81,6 +85,10 @@
     count: number
     pseudo?: boolean
     role?: MailboxRole
+    accountId: AccountId
+    /** The mailbox behind the row -- absent for Scheduled, which is a list of
+     *  queued sends rather than a folder. */
+    box?: Mailbox
   }
 
   /** One account's rows: the eight fixed ones (skipping any role the
@@ -139,6 +147,7 @@
       onclick: () => mail.selectScheduled(accountId),
       sel: mail.viewingScheduledFor === accountId,
       count,
+      accountId,
     }
   }
 
@@ -154,6 +163,106 @@
       count: mail.unreadCounts.get(box.id) ?? 0,
       pseudo,
       role: box.role,
+      accountId: box.accountId,
+      box,
+    }
+  }
+
+  // ── What a right-click offers ─────────────────────────────────────
+  //
+  // The same three layers every other sidebar has: the list's own blank
+  // space, a heading, and a row. What is *not* here is anything a folder
+  // would need the server's say-so for -- renaming one, emptying Trash --
+  // because there is no command for either yet, and a menu row that cannot
+  // work is worse than one that is not there.
+
+  /** About the account a row belongs to: offered on its heading and, after
+   *  a rule, on every mailbox under it, so nobody has to aim for the
+   *  heading to reach them. */
+  function accountItems(accountId: AccountId): MenuItem[] {
+    const address = accounts.account(accountId)?.address
+    return [
+      {
+        label: address ? `New message from ${address}` : 'New message',
+        icon: 'pencil',
+        run: () => mail.compose(accountId),
+      },
+      { label: 'Sync now', icon: 'refresh', run: () => mail.syncNow(accountId) },
+      SEP,
+      {
+        label: 'Account settings…',
+        icon: 'settings',
+        hint: 'in Settings',
+        run: () => panels.openSettings('accounts'),
+      },
+    ]
+  }
+
+  function mailboxMenu(row: Row): MenuItem[] {
+    const box = row.box
+    return tidyMenu([
+      { label: 'Open', icon: 'inbox', disabled: row.sel, run: row.onclick },
+      // Starred and Snoozed are views rather than folders, so there is no
+      // `in:` for the search to name -- and Scheduled is not even mail that
+      // has arrived, so neither a search nor "read" means anything there.
+      box &&
+        !row.pseudo && {
+          label: `Search in ${row.label}`,
+          icon: 'search',
+          run: () => searchIn(box),
+        },
+      box && {
+        label: 'Mark all as read',
+        icon: 'tick',
+        disabled: row.count === 0,
+        hint: row.count > 0 ? String(row.count) : undefined,
+        run: () => markAllRead(box, row.label),
+      },
+      SEP,
+      ...accountItems(row.accountId),
+    ])
+  }
+
+  /** The blank space under the list. Nothing in it is about one account. */
+  function navMenu(): MenuItem[] {
+    return tidyMenu([
+      mailAccounts.length > 0 && {
+        label: 'New message',
+        icon: 'pencil',
+        run: () => mail.compose(),
+      },
+      mailAccounts.length > 0 && {
+        label: mailAccounts.length === 1 ? 'Sync now' : 'Sync every account',
+        icon: 'refresh',
+        run: () => Promise.all(mailAccounts.map((a) => mail.syncNow(a.id))),
+      },
+      SEP,
+      { label: 'Add an account…', icon: 'plus', run: () => panels.openSettings('accounts') },
+    ])
+  }
+
+  /**
+   * Open the folder and start a search inside it, in the bar at the top of
+   * the window -- `in:` is the same syntax a person would type there, so
+   * what this does is visible and can be edited rather than being a mode.
+   */
+  async function searchIn(box: Mailbox) {
+    if (mail.selectedMailbox !== box.id || mail.viewingScheduledFor !== null) {
+      await mail.selectMailbox(box.id)
+    }
+    // The name the server knows it by, which is what `in:` matches -- not
+    // the friendlier one the row draws for a Gmail system label.
+    const name = /\s/.test(box.remoteName) ? `"${box.remoteName}"` : box.remoteName
+    mail.setSearchQuery(`in:${name} `)
+    focusSearch()
+  }
+
+  async function markAllRead(box: Mailbox, label: string) {
+    const done = await mail.markMailboxRead(box.id)
+    if (done > 0) {
+      notify.success(`Marked ${done === 1 ? '1 conversation' : `${done} conversations`} read`, {
+        body: label,
+      })
     }
   }
 
@@ -190,24 +299,7 @@
   }
 </script>
 
-<nav class="scroll nav">
-  <div class="search">
-    <Icon name="search" size={14} />
-    <input
-      class="q"
-      data-search
-      placeholder="Search mail"
-      value={mail.searchQuery}
-      oninput={(e) => mail.setSearchQuery(e.currentTarget.value)}
-      spellcheck="false"
-    />
-    {#if mail.searchQuery}
-      <button class="clear" aria-label="Clear search" onclick={() => mail.clearSearch()}>
-        <Icon name="close" size={13} />
-      </button>
-    {/if}
-  </div>
-
+<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   {#if mailAccounts.length === 0}
     <p class="hint">
       No mail accounts yet. <button class="link" onclick={() => panels.openSettings('accounts')}
@@ -217,7 +309,8 @@
   {/if}
 
   {#each mailAccounts as account (account.id)}
-    <div class="head">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="head" oncontextmenu={(e) => menu.show(e, tidyMenu(accountItems(account.id)))}>
       <span class="eyebrow">{account.displayName || account.address}</span>
       <button
         class="sync-now"
@@ -229,7 +322,12 @@
       </button>
     </div>
     {#each rowsFor(account.id) as row (row.id)}
-      <button class="row" class:sel={row.sel} onclick={row.onclick}>
+      <button
+        class="row"
+        class:sel={row.sel}
+        onclick={row.onclick}
+        oncontextmenu={(e) => menu.show(e, mailboxMenu(row))}
+      >
         <span class="icon"
           ><Icon name={row.icon} size={15} filled={row.pseudo && row.icon === 'star'} /></span
         >
@@ -264,36 +362,6 @@
   .nav {
     flex: 1;
     padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
-
-  .search {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    background: var(--bg-hover);
-    color: var(--fg-faint);
-  }
-  .q {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
-    color: var(--fg);
-    font-size: var(--text-base);
-  }
-  .q:focus {
-    outline: none;
-  }
-  .clear {
-    display: grid;
-    place-items: center;
-    color: var(--fg-faint);
-  }
-  .clear:hover {
-    color: var(--fg);
   }
 
   .head {

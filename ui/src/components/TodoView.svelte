@@ -112,20 +112,6 @@
           {heading}
         </h1>
 
-        <div class="search">
-          <Icon name="search" size={14} />
-          <input
-            data-search
-            type="search"
-            placeholder="Filter tasks"
-            value={todo.filter}
-            oninput={(e) => todo.setFilter(e.currentTarget.value)}
-            onkeydown={(e) => {
-              if (e.key === 'Escape') todo.setFilter('')
-            }}
-          />
-        </div>
-
         <div class="tools">
           {#if todo.boardable}
             <div class="views" role="group" aria-label="View">
@@ -354,36 +340,6 @@
   .bar {
     padding: 0 var(--sp-4) var(--sp-2);
     flex: none;
-  }
-
-  /* The same shape as the library's, because it is the same control. */
-  .search {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    flex: 1;
-    max-width: 300px;
-    margin-left: auto;
-    height: 30px;
-    padding: 0 var(--sp-3);
-    border-radius: var(--radius-sm);
-    background: var(--bg-sunken);
-    color: var(--fg-faint);
-  }
-  .search input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
-    font-size: var(--text-sm);
-    color: var(--fg);
-    user-select: text;
-  }
-  .search input:focus {
-    outline: none;
-  }
-  .search input::-webkit-search-cancel-button {
-    -webkit-appearance: none;
   }
 
   .clear {

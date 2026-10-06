@@ -121,8 +121,17 @@ pub struct SkillRef {
 pub struct SendMessage {
     pub conversation_id: ConversationId,
     pub prompt: String,
+    /// What the person has on screen, by reference -- see
+    /// [`everyday_core::agent::onscreen`] for why it is ids and not a
+    /// sentence. Turned into prose by the turn itself, where the vault and
+    /// the mail gate are.
+    ///
+    /// Held as JSON until then and read with
+    /// [`everyday_core::agent::onscreen::OnScreen::lenient`], so a
+    /// reference this build cannot read -- an app or a kind added by a newer
+    /// interface -- costs the context rather than refusing the message.
     #[serde(default)]
-    pub context: Option<String>,
+    pub on_screen: Option<serde_json::Value>,
 }
 
 /// How the assistant is configured. Never carries the API key; see
@@ -484,7 +493,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
         signature: &[
             ("conversationId", "ConversationId", true),
             ("prompt", "string", true),
-            ("context", "string | null", false),
+            ("onScreen", "OnScreen | null", false),
         ],
         run: send_message,
     },

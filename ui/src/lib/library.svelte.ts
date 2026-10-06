@@ -21,6 +21,7 @@
 import { api } from './api'
 import { ask } from './quick.svelte'
 import { Autosave } from './autosave'
+import { seen, type Showing } from './onscreen'
 import { pref } from './prefs'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { debounce } from './store/debounce'
@@ -736,6 +737,31 @@ class LibraryState {
 
   get accent(): string {
     return this.kind?.color ?? 'var(--accent)'
+  }
+
+  /**
+   * What is on screen, for the assistant -- see `onscreen.ts`.
+   *
+   * The status filter is said in the plain words rather than the shelf's
+   * own verbs: "Read" and "Watched" are things a person typed into a shelf,
+   * and `view` is only ever the interface's own vocabulary.
+   */
+  get showing(): Showing {
+    const narrowed = [
+      this.favouritesOnly ? 'favourites only' : null,
+      this.filter === 'all'
+        ? null
+        : this.filter === 'ahead'
+          ? 'only what is still ahead'
+          : `only ${PLAIN_STATUS[this.filter].toLowerCase()} items`,
+    ].filter(Boolean)
+    const kind = this.kind
+    return {
+      view: narrowed.length > 0 ? narrowed.join(', ') : null,
+      within: seen('shelf', kind?.id, kind?.name ?? ''),
+      open: seen('item', this.item?.id, this.item?.title ?? ''),
+      query: this.query,
+    }
   }
 
   /** Shelves worth showing: everything the person has left ticked. */

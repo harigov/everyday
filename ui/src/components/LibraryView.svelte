@@ -127,17 +127,6 @@
         </span>
       </div>
 
-      <div class="search">
-        <Icon name="search" size={14} />
-        <input
-          data-search
-          type="search"
-          placeholder="Search titles, people, notes…"
-          value={library.query}
-          oninput={(e) => library.setQuery(e.currentTarget.value)}
-        />
-      </div>
-
       <select
         class="sort"
         aria-label="Sort"
@@ -407,33 +396,10 @@
     white-space: nowrap;
   }
 
-  .search {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    flex: 1;
-    max-width: 320px;
-    margin-left: auto;
-    height: 28px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    background: var(--bg-sunken);
-    color: var(--fg-faint);
-  }
-  .search input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
-    font-size: var(--text-sm);
-    color: var(--fg);
-    user-select: text;
-  }
-  .search input:focus {
-    outline: none;
-  }
-
+  /* First of the header's controls since the search moved to the bar at
+     the top of the window, so it is what pushes them to the right. */
   .sort {
+    margin-left: auto;
     height: 28px;
     padding: 0 var(--sp-2);
     border: 1px solid var(--border);

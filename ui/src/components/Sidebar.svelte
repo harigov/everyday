@@ -1,12 +1,13 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { app } from '../lib/state.svelte'
+  import { sidebar } from '../lib/sidebar.svelte'
   import { DEFAULT_COLORS } from '../lib/colors'
   import { focusOnMount } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
-  import Logo from './Logo.svelte'
   import JournalSettings from './JournalSettings.svelte'
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
@@ -16,6 +17,25 @@
   import NotesNav from './NotesNav.svelte'
   import PaneResizer from './PaneResizer.svelte'
   import type { Journal } from '../lib/types'
+
+  let {
+    folded = false,
+  }: {
+    /**
+     * Folded away by the button in the strip above -- see `sidebar.svelte.ts`.
+     * Still mounted, and drawn over the app while `sidebar.peeking`, but
+     * otherwise hidden and inert: out of the tab order and out of reach of a
+     * screen reader, which is what "not on screen" has to mean for both.
+     */
+    folded?: boolean
+  } = $props()
+
+  const peeking = $derived(folded && sidebar.peeking)
+
+  // The menu's hold ends when the menu does -- chosen from, or dismissed.
+  $effect(() => {
+    if (!menu.at) untrack(() => sidebar.letGo('menu'))
+  })
 
   // The apps themselves are `AppBar`, outside this: they are not one app's
   // navigation, and everything below is.
@@ -94,12 +114,58 @@
   const total = $derived(app.status?.stats?.entries ?? 0)
 </script>
 
-<aside class="sidebar">
-  <div class="brand">
-    <Logo size={20} tile />
-    <span class="name">Every Day</span>
-  </div>
-
+<!-- While folded, the pointer and the keyboard are what keep a peek open:
+     arriving holds it, leaving lets it go after a moment -- see
+     `sidebar.svelte.ts` for the delays. Escape puts it away at once. -->
+<aside
+  class="sidebar"
+  class:folded
+  class:peeking
+  inert={folded && !peeking}
+  aria-hidden={folded && !peeking ? 'true' : undefined}
+  onpointerenter={() => {
+    if (folded) sidebar.reach()
+  }}
+  onpointerleave={() => {
+    if (folded) sidebar.release()
+  }}
+  onfocusin={(e) => {
+    // The keyboard gets it at once -- the hover delay is there for a pointer
+    // passing by, and focus arriving is never that -- and keeps it while it
+    // is here, as does a field being typed into: neither must go inert
+    // because the pointer drifted off the panel. A row a mouse click
+    // focused does not hold it, or a quick choice of folder would leave the
+    // sidebar out over the app until somebody clicked somewhere else.
+    if (!folded) return
+    const at = e.target
+    const typing =
+      at instanceof HTMLElement &&
+      (at.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(at.tagName))
+    if (typing || (at instanceof Element && at.matches(':focus-visible'))) sidebar.hold('focus')
+  }}
+  onfocusout={(e) => {
+    const to = e.relatedTarget
+    if (folded && !(to instanceof Node && e.currentTarget.contains(to))) sidebar.letGo('focus')
+  }}
+  oncontextmenucapture={() => {
+    // A row's menu is drawn outside this panel, so the pointer leaves it to
+    // reach the menu; the menu holds the peek until it closes, so "Rename"
+    // does not open its field inside a sidebar that has just gone. Captured,
+    // because the row stops the event before it would bubble here.
+    if (!folded) return
+    sidebar.hold('menu')
+    // A row with nothing to offer opens no menu, and must not hold forever.
+    // Asked on the next task, not in a microtask: the row's own handler is
+    // delegated to the document root, and the browser drains microtasks
+    // between listeners -- so a microtask here runs before the menu exists.
+    setTimeout(() => {
+      if (!menu.at) sidebar.letGo('menu')
+    }, 0)
+  }}
+  onkeydown={(e) => {
+    if (folded && e.key === 'Escape') sidebar.hide()
+  }}
+>
   {#if app.section === 'assistant'}
     <AssistantNav />
   {:else if app.section === 'notes'}
@@ -217,24 +283,46 @@
     flex: none;
     display: flex;
     flex-direction: column;
+    padding-top: var(--sp-1);
     background: var(--bg-sunken);
     border-right: 1px solid var(--border);
   }
 
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    height: var(--header-h);
-    padding: 0 var(--sp-4);
-    flex: none;
-    /* Room for the traffic lights on macOS. */
-    padding-left: max(var(--sp-4), env(titlebar-area-x, var(--sp-4)));
+  /* Folded: out of the row, so the app takes its width, and laid over the
+     app's left edge instead -- invisible until a peek draws it. Over, not
+     beside: a peek that reflowed the app would move the very list somebody
+     was reading. `.panes` is what it is positioned in. */
+  .sidebar.folded {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--appbar-w);
+    z-index: 40;
+    visibility: hidden;
+    opacity: 0;
+    translate: -10px 0;
+    border-right-color: var(--border-strong, var(--border));
+    box-shadow: var(--shadow-lg);
+    transition:
+      opacity var(--fast) var(--ease),
+      translate var(--fast) var(--ease),
+      visibility 0s linear var(--fast);
   }
-  .name {
-    font-weight: 620;
-    letter-spacing: -0.006em;
-    font-size: var(--text-md);
+  .sidebar.folded.peeking {
+    visibility: visible;
+    opacity: 1;
+    translate: 0 0;
+    transition:
+      opacity var(--fast) var(--ease),
+      translate var(--fast) var(--ease),
+      visibility 0s;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar.folded,
+    .sidebar.folded.peeking {
+      translate: 0 0;
+      transition: none;
+    }
   }
 
   .nav {

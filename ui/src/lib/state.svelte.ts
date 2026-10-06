@@ -10,6 +10,7 @@ import { APP_ORDER, APPS, type Section } from './apps'
 import { AUTOSAVE_MS } from './autosave'
 import { errorMessage, handle, isConflict, isLocked, quietly, setPolicy } from './errors'
 import { notify } from './notify.svelte'
+import { seen, type Showing } from './onscreen'
 import { panels } from './panels.svelte'
 import { pref } from './prefs'
 import { debounce } from './store/debounce'
@@ -1364,6 +1365,23 @@ class AppState {
 
   get journal(): Journal | null {
     return this.journals.find((j) => j.id === this.selectedJournal) ?? null
+  }
+
+  /**
+   * What the journal has on screen, for the assistant -- see `onscreen.ts`.
+   *
+   * `journalShowing` rather than `showing`: this store is the window's as
+   * well as the journal's, and every other app's store answers the same
+   * question under the plain name.
+   */
+  get journalShowing(): Showing {
+    const entry = this.entry
+    return {
+      view: this.showStarredOnly ? 'starred entries' : null,
+      within: seen('journal', this.selectedJournal, this.journal?.name ?? ''),
+      open: seen('entry', entry?.id, entry?.title ?? ''),
+      query: this.query,
+    }
   }
 
   get accent(): string {

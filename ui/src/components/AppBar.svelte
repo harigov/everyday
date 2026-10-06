@@ -135,12 +135,9 @@
   }
 </script>
 
+<!-- No cap at the top any more: the window controls sit over the strip
+     across the top of the window instead -- see `TopBar.svelte`. -->
 <div class="bar">
-  <!-- Aligned with the brand row beside it, and empty on purpose: on macOS
-       this is where the window controls sit, and nothing of ours may be
-       drawn under them. -->
-  <div class="cap"></div>
-
   <!-- The recording pill: present in every app, because a call being
        recorded is a fact about the vault rather than about whichever app
        is open, the same reason `Notices` sits above every pane rather than
@@ -228,14 +225,11 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    /* The first app sits a little way under the strip above, rather than
+       flush against its rule. */
+    padding-top: var(--sp-2);
     background: var(--bg-sunken);
     border-right: 1px solid var(--border);
-  }
-
-  /* The height of the brand row and of every other header in the window. */
-  .cap {
-    height: var(--header-h);
-    flex: none;
   }
 
   .glyph {

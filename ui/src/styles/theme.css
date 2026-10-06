@@ -92,11 +92,15 @@
      default before anything has been dragged. */
   --mail-list-w: 366px;
 
-  /* Every header across every app, and the empty cap above the app bar
-     that lines up with them. It was written as a bare `46px` in eight
-     stylesheets, which is how a row of headings drifts out of alignment the
-     first time one of them is adjusted. */
+  /* Every header across every app. It was written as a bare `46px` in
+     eight stylesheets, which is how a row of headings drifts out of
+     alignment the first time one of them is adjusted. */
   --header-h: 54px;
+
+  /* The strip across the top of the window: the sidebar's fold button and
+     the bar that searches and does things. Also the title bar -- on macOS
+     the window controls sit over its left end. */
+  --topbar-h: 46px;
 
   /* One row in a sidebar, a menu or a list. Set here for the same reason as
      the header: the same target size in every app should be one number. */

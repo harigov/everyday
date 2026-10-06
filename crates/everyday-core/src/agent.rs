@@ -80,6 +80,7 @@
 //! it. A vault can hold as many as somebody writes without any of them
 //! crowding out the others.
 
+pub mod onscreen;
 pub mod tools;
 
 use crate::error::{Error, Result};
@@ -1334,7 +1335,8 @@ pub fn system_prompt(
          owner about their own data.\n\n\
          Use your tools rather than guessing. Ids are UUIDs and you will not \
          invent a working one: list or search for a record before you act on \
-         it. When you have changed something, say plainly what you changed \
+         it, unless its id is given to you below as on their screen. When you \
+         have changed something, say plainly what you changed \
          and give the title, not the id.\n\n\
          Prefer doing the work to describing how it could be done. If a \
          request is genuinely ambiguous in a way that changes what you would \
@@ -1407,12 +1409,15 @@ pub fn system_prompt(
         MAX_REJECTED,
     );
 
-    // What the person is looking at. Appended last, and labelled, because it
-    // is the one part of the prompt that changes between two otherwise
-    // identical turns -- and because "this" and "here" in a question mean
-    // this, and the model has no other way to know it.
+    // What the person is looking at -- or, on a scheduled run, that nobody
+    // is. Appended last because it is the one part of the prompt that
+    // changes between two otherwise identical turns, and because "this" and
+    // "here" in a question mean this, and the model has no other way to know
+    // it. A whole paragraph that labels itself: `agent::onscreen::describe`
+    // writes the usual one, and it carries ids and quoted strangers' writing
+    // that a one-line prefix here could not introduce properly.
     if let Some(context) = context.map(str::trim).filter(|c| !c.is_empty()) {
-        out.push_str("\n\nThe person is currently looking at: ");
+        out.push_str("\n\n");
         out.push_str(context);
     }
 
@@ -1995,7 +2000,8 @@ mod tests {
             Some("  "),
         );
         assert!(!prompt.contains("---"), "whitespace is not instructions");
-        assert!(!prompt.contains("currently looking at"), "whitespace is not context");
+        assert!(prompt.trim_end().ends_with('.'), "whitespace is not context: {prompt:?}");
+        assert!(!prompt.ends_with("\n\n"), "whitespace is not context");
         assert!(prompt.starts_with("You are the assistant"));
     }
 

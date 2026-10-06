@@ -20,6 +20,7 @@
 import { api } from './api'
 import { SvelteMap } from 'svelte/reactivity'
 import { notify } from './notify.svelte'
+import { seen, type Showing } from './onscreen'
 import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
 import { pref } from './prefs'
@@ -827,6 +828,36 @@ class CalendarState {
     return this.selection.kind === 'block'
       ? (this.blocks.find((b) => b.id === this.selection!.id) ?? null)
       : (this.events.find((e) => e.id === this.selection!.id) ?? null)
+  }
+
+  /**
+   * What is on screen, for the assistant -- see `onscreen.ts`.
+   *
+   * The dates are ISO rather than the grid's own headings: they are for a
+   * model, which is told today's date in the same form, and "Tue 6" is a
+   * heading that only reads correctly beside the rest of the grid.
+   */
+  get showing(): Showing {
+    const [from, to] = this.range
+    const view =
+      this.view === 'day'
+        ? `the day ${this.anchor}`
+        : this.view === 'week'
+          ? `the week ${from} to ${to}`
+          : `the month ${this.anchor.slice(0, 7)}`
+    const layer =
+      this.layer === 'planned' ? ', plans only' : this.layer === 'actual' ? ', time spent only' : ''
+    const picked = this.selected
+    const kind = this.selection?.kind
+    return {
+      view: view + layer,
+      open:
+        picked && kind === 'block'
+          ? seen('block', picked.id, picked.title)
+          : picked && kind === 'event'
+            ? seen('event', picked.id, picked.title)
+            : [],
+    }
   }
 
   select(slot: Slot | null) {

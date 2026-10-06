@@ -550,6 +550,15 @@ fn require_permission(
     Ok(())
 }
 
+/// Whether this call's caller may use `permission` on `account` -- exactly
+/// [`require_permission`]'s answer, without its explanation. For
+/// `agent::onscreen`, which describes the thread somebody has open only when
+/// a tool here would have let the model read it, so the two can never
+/// disagree about which account is off limits.
+pub(crate) fn permits(ctx: &ToolContext<'_>, account: &Account, permission: Permission) -> bool {
+    require_permission(ctx, account, permission, "describe").is_ok()
+}
+
 fn permission_word(p: Permission) -> &'static str {
     match p {
         Permission::Read => "read",

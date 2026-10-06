@@ -85,6 +85,7 @@ import type {
   NoteQuery,
   NoteSummary,
   NoteTemplate,
+  OnScreen,
   Op,
   PartInfo,
   Profile,
@@ -512,7 +513,7 @@ export interface Commands {
     result: Draft
   }
   sendMessage: {
-    args: { conversationId: ConversationId; prompt: string; context?: string | null }
+    args: { conversationId: ConversationId; prompt: string; onScreen?: OnScreen | null }
     result: void
   }
   setAgentAccess: {

@@ -38,6 +38,7 @@ import {
   setDays,
   setSize,
   setSubject,
+  specOf,
   trackerWindow,
   type Need,
   type Widget,
@@ -45,6 +46,7 @@ import {
   type WidgetType,
 } from './dashboard'
 import { periodStart, streakTarget, summarise, type HabitSummary } from './habits'
+import type { Showing } from './onscreen'
 import { purpose } from './purpose.svelte'
 import { pref } from './prefs'
 import { proposals } from './proposals.svelte'
@@ -182,6 +184,23 @@ class OverviewState {
   /** What the page as arranged actually reads. */
   get needs(): Set<Need> {
     return needsOf(this.widgets)
+  }
+
+  /**
+   * What is on screen, for the assistant -- see `onscreen.ts`.
+   *
+   * The cards by name rather than described: it is a page of whatever its
+   * owner put on it, so "where the week adds up by role" would be a claim
+   * about somebody else's page. An empty page is one somebody is allowed to
+   * have, and is said as such.
+   */
+  get showing(): Showing {
+    const cards = this.widgets.map((w) => specOf(w.type).label.toLowerCase()).slice(0, 8)
+    return {
+      view:
+        (cards.length > 0 ? `the cards ${cards.join(', ')}` : 'a page with no cards on it yet') +
+        `, for the week ${this.weekStart} to ${this.weekEnd}`,
+    }
   }
 
   // ── the week the page is showing ─────────────────────────────────────

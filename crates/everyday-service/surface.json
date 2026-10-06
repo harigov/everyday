@@ -4205,9 +4205,9 @@
           "type": "string"
         },
         {
-          "name": "context",
+          "name": "onScreen",
           "required": false,
-          "type": "string | null"
+          "type": "OnScreen | null"
         }
       ],
       "changes": {

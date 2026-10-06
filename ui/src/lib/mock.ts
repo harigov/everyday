@@ -90,6 +90,8 @@ import type {
   WeatherCurrent,
   WeatherDay,
   WeatherReport,
+  OnScreen,
+  Shown,
 } from './types'
 import { TASK_STATUSES, VaultError, goalIsOpen, isAhead, isOpen, priorityRank } from './types'
 import type {
@@ -6127,7 +6129,7 @@ function mockCancel(conversationId: string): boolean {
 export async function mockSendMessage(
   conversationId: string,
   prompt: string,
-  _context: string | null,
+  onScreen: OnScreen | null,
   onEvent: (event: AgentEvent) => void,
 ): Promise<void> {
   requireUnlocked()
@@ -6210,6 +6212,43 @@ export async function mockSendMessage(
   let reply: string
 
   try {
+    // What the real service would describe from these references -- the
+    // mock has no vault-side describer, so it reads back what it was sent,
+    // which is what checking the composer's strip against it needs.
+    if (
+      /\b(this|looking at|on screen|on my screen)\b/.test(lower) &&
+      /\b(what|which)\b/.test(lower)
+    ) {
+      await pause(250)
+      const refs = (label: string, list: Shown[] | undefined) =>
+        (list ?? []).map((r) => `- ${label}: ${r.kind} \`${r.id}\``)
+      reply = onScreen
+        ? [
+            `You are in **${onScreen.app}**${onScreen.view ? ` (${onScreen.view})` : ''}.`,
+            ...refs('Within', onScreen.within),
+            ...refs('Open', onScreen.open),
+            ...(onScreen.query ? [`- Searching for “${onScreen.query}”`] : []),
+          ].join('\n')
+        : 'Nothing about your screen came with that message.'
+      const words = reply.split(/(?<= )/)
+      for (const w of words) {
+        if (run.stopped) break
+        onEvent({ type: 'delta', text: w })
+      }
+      onEvent({ type: 'finished', messageId })
+      agentMessages.push({
+        id: messageId,
+        conversationId,
+        role: 'assistant',
+        content: reply,
+        toolCalls: [],
+        toolCallId: null,
+        failed: false,
+        createdAt: new Date().toISOString(),
+      })
+      return
+    }
+
     if (lower.includes('fail')) {
       await pause(300)
       onEvent({ type: 'failed', message: 'The API key was refused. Check it in Settings.' })

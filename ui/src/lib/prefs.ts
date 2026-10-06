@@ -28,6 +28,7 @@ export type PrefKey =
   | 'everyday.tray'
   | 'everyday.tray.meeting'
   | 'everyday.badge'
+  | 'everyday.sidebar.folded'
   | 'everyday:assistant-open'
   | 'everyday:assistant-width'
 

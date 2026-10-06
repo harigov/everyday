@@ -108,23 +108,6 @@
 />
 
 <nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
-  <div class="search">
-    <Icon name="search" size={14} />
-    <input
-      class="q"
-      data-search
-      placeholder="Search notes"
-      value={notes.query}
-      oninput={(e) => notes.setQuery(e.currentTarget.value)}
-      spellcheck="false"
-    />
-    {#if notes.query}
-      <button class="clear" aria-label="Clear search" onclick={() => notes.clearSearch()}>
-        <Icon name="close" size={13} />
-      </button>
-    {/if}
-  </div>
-
   {#if notes.tags.length > 0}
     <div class="tags">
       <button class="chip" class:on={notes.tag === null} onclick={() => void notes.setTag(null)}>
@@ -301,40 +284,6 @@
   .nav {
     flex: 1;
     padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
-
-  .search {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    background: var(--bg-hover);
-    color: var(--fg-faint);
-  }
-
-  .q {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
-    color: var(--fg);
-    font-size: var(--text-base);
-  }
-
-  .q:focus {
-    outline: none;
-  }
-
-  .clear {
-    display: grid;
-    place-items: center;
-    color: var(--fg-faint);
-  }
-
-  .clear:hover {
-    color: var(--fg);
   }
 
   .tags {

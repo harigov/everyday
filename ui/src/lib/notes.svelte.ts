@@ -18,6 +18,7 @@ import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
 import { registerApply, type ChangeWithIds } from './live-apply'
 import { proposals, recordAs } from './proposals.svelte'
+import { seen, type Showing } from './onscreen'
 import { app, handle, isConflict, isLocked } from './state.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
@@ -477,6 +478,17 @@ class NotesState {
     this.query = ''
     this.results = []
     this.searching = false
+  }
+
+  /** What is on screen, for the assistant -- see `onscreen.ts`. A tag is
+   *  the person's own word for a filter rather than a record, so it is said
+   *  as the view. */
+  get showing(): Showing {
+    return {
+      view: this.tag ? `notes tagged ${this.tag}` : null,
+      open: seen('note', this.open?.id, this.open?.title ?? ''),
+      query: this.query,
+    }
   }
 
   /** What the window title and the header show for the open note. */

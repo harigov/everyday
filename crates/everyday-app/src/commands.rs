@@ -516,7 +516,11 @@ pub async fn send_message(
     state: State<'_, AppState>,
     conversation_id: everyday_core::ConversationId,
     prompt: String,
-    context: Option<String>,
+    // Passed through untouched as JSON: the service reads it leniently --
+    // see `everyday_core::agent::onscreen::OnScreen::lenient` -- and a
+    // typed argument here would refuse, before the service ever saw it, the
+    // very message that leniency exists to let through.
+    on_screen: Option<serde_json::Value>,
     channel: tauri::ipc::Channel<AgentEvent>,
 ) -> CommandResult<()> {
     let session = state.session().as_session();
@@ -529,7 +533,7 @@ pub async fn send_message(
             serde_json::json!({
                 "conversationId": conversation_id,
                 "prompt": prompt,
-                "context": context,
+                "onScreen": on_screen,
             }),
             sink,
         )

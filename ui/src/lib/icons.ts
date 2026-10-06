@@ -220,6 +220,14 @@ export const ICONS = {
     '<path d="M3.5 12h17"/>' +
     '<path d="M12 3.5a13 13 0 0 1 0 17a13 13 0 0 1 0-17"/>',
 
+  // The open eye: something that is being shown, or seen -- what the
+  // assistant's composer says is going along with a message.
+  eye: '<path d="M3 12s4-6 9-6 9 6 9 6-4 6-9 6-9-6-9-6Z"/>' + '<circle cx="12" cy="12" r="2.5"/>',
+
+  // A window with its left-hand panel ruled off: the sidebar, for the
+  // button that folds it away and brings it back.
+  sidebar: '<rect x="3" y="4" width="18" height="16" rx="2"/>' + '<path d="M9.5 4v16"/>',
+
   // Hidden: the eye with the stroke through it. For a calendar that is
   // still subscribed but not drawn.
   hidden:

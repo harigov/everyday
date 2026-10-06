@@ -22,7 +22,7 @@ import { api, sendMessage } from './api'
 import { applyEvent, emptyTurn, isLoopback, liveTurn, replay, settle, type Turn } from './agent'
 import { pref } from './prefs'
 import { app, handle, isLocked, quietly } from './state.svelte'
-import type { AgentSettings, ConversationId, ConversationSummary, Memory } from './types'
+import type { AgentSettings, ConversationId, ConversationSummary, Memory, OnScreen } from './types'
 
 export type { ToolCard, Turn } from './agent'
 
@@ -241,7 +241,7 @@ class AgentState {
    * it — and if the request fails, the question is still on screen rather
    * than having vanished with it.
    */
-  async send(prompt: string, context: string | null): Promise<boolean> {
+  async send(prompt: string, onScreen: OnScreen | null): Promise<boolean> {
     const text = prompt.trim()
     if (!text || this.busy) return false
     if (!this.conversationId) {
@@ -268,7 +268,7 @@ class AgentState {
     const conversationId = this.conversationId
 
     try {
-      await sendMessage(conversationId, text, context, (event) => applyEvent(reply, event))
+      await sendMessage(conversationId, text, onScreen, (event) => applyEvent(reply, event))
       // The thread has a title now, and has moved to the top of the list.
       this.threads = await api.conversations(50)
     } catch (e) {

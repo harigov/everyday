@@ -2579,6 +2579,71 @@ export interface AgentSettings {
   hasKey: boolean
 }
 
+// ── What is on screen, for the assistant ─────────────────────────────────
+//
+// `agent::onscreen` in the core. References, not prose: the service looks
+// each one up and describes it through the same mail gate the assistant's
+// tools use -- see that module's docs, and `lib/onscreen.ts` for the
+// interface's half.
+
+/** Which app is open -- every `Section`, plus Settings standing in for one. */
+export const ON_SCREEN_APPS = [
+  'overview',
+  'notes',
+  'todo',
+  'calendar',
+  'library',
+  'mail',
+  'assistant',
+  'journal',
+  'settings',
+] as const
+export type OnScreenApp = (typeof ON_SCREEN_APPS)[number]
+
+/** Every kind of record the interface can say is on screen. `shelf` is the
+ *  library's `Kind`; `message` is a piece of mail, not a chat message. */
+export const SHOWN_KINDS = [
+  'journal',
+  'entry',
+  'note',
+  'project',
+  'task',
+  'block',
+  'role',
+  'goal',
+  'calendar',
+  'event',
+  'shelf',
+  'item',
+  'tracker',
+  'account',
+  'mailbox',
+  'thread',
+  'message',
+  'draft',
+] as const
+export type ShownKind = (typeof SHOWN_KINDS)[number]
+
+/** One record on screen. */
+export interface Shown {
+  kind: ShownKind
+  id: string
+}
+
+/** What `send_message` carries about the screen. */
+export interface OnScreen {
+  app: OnScreenApp
+  /** The interface's own words for where in the app -- never a record's
+   *  name, which travels as a reference in `within` instead. */
+  view?: string | null
+  /** What narrows the list: the mailbox, the project, the shelf. */
+  within?: Shown[]
+  /** What is open, most specific first. */
+  open?: Shown[]
+  /** What they typed into the search bar. */
+  query?: string | null
+}
+
 // ── The quick model ──────────────────────────────────────────────────────
 //
 // The answers the small, fast model gives. Every one of them is a *proposal*

@@ -41,20 +41,28 @@ import { menu } from './menu.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
+import { sidebar } from './sidebar.svelte'
 import { assistant } from './assistant.svelte'
 import { app, type Section } from './state.svelte'
 import { todo } from './todo.svelte'
 
 /**
- * Put the caret in whatever the open app calls its search.
+ * Put the caret in the bar at the top of the window, which searches the open
+ * app -- see `CommandBar.svelte`.
  *
- * Found by attribute rather than by selector-per-app: several apps have a
- * search field, they are in different components, and the alternative is this
- * function knowing all their class names. `data-search` is the contract, and
- * a new app gets the shortcut by wearing it.
+ * Found by attribute rather than by reaching into the component. Every app
+ * used to have a field of its own wearing it; there is one now, and the
+ * attribute is still the contract, so nothing here needs to know which
+ * component draws it.
  */
-function focusSearch() {
-  document.querySelector<HTMLInputElement>('[data-search]')?.focus()
+export function focusSearch() {
+  const field = document.querySelector<HTMLInputElement>('[data-search]')
+  if (!field) return
+  field.focus()
+  // At the end of whatever is already there -- a search somebody is coming
+  // back to, or one a menu has just started for them (`in:Receipts `).
+  const end = field.value.length
+  field.setSelectionRange(end, end)
 }
 
 /**
@@ -100,7 +108,12 @@ function dialogOpen(): boolean {
   // Nothing counts while the help sheet is asking what applies: it is asking
   // about the window it will not be covering. See `panels.listing`.
   if (panels.listing) return false
-  if (panels.shortcuts || panels.palette) return true
+  // Not `panels.palette`: commands are typed into the bar at the top of the
+  // window now, which is a field rather than a dialog over it, and a field
+  // already stops the bare letters through `isTyping`. The chords that fire
+  // while typing -- the next app, start the next thing -- should still fire
+  // from there.
+  if (panels.shortcuts) return true
   return modalInDom()
 }
 
@@ -286,9 +299,9 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     keywords: ['palette', 'command', 'run', 'search actions'],
     icon: 'search',
     whileTyping: true,
-    // Past the lock screen, and *not* gated on `anywhere()`: the palette is a
-    // dialog, so a rule about dialogs would stop it being closed by the same
-    // key that opened it.
+    // Past the lock screen, and *not* gated on `anywhere()`: the same key
+    // that puts the bar into command mode takes it out again, and over a
+    // dialog the bar is still the way to everything.
     when: () => app.screen === 'main',
     run: () => (panels.palette ? panels.closePalette() : panels.openPalette()),
   },
@@ -388,6 +401,17 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     whileTyping: true,
     when: inAnyApp,
     run: focusSearch,
+  },
+  {
+    keys: 'mod+\\',
+    label: 'Show or hide the sidebar',
+    group: 'Everywhere',
+    keywords: ['fold', 'collapse', 'expand', 'panel', 'folders', 'navigation'],
+    icon: 'sidebar',
+    whileTyping: true,
+    // Every app but the Overview has one; Settings draws its own tabs.
+    when: () => inAnyApp() && app.section !== 'overview',
+    run: () => sidebar.toggle(app.section),
   },
   {
     keys: 'a',

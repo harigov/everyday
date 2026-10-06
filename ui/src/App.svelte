@@ -28,6 +28,7 @@
   import { notify } from './lib/notify.svelte'
   import { panels } from './lib/panels.svelte'
   import { shortcuts } from './lib/shortcuts.svelte'
+  import { sidebar } from './lib/sidebar.svelte'
   import { tray } from './lib/tray.svelte'
   import { badge } from './lib/badge.svelte'
   import AppBar from './components/AppBar.svelte'
@@ -53,7 +54,7 @@
   import MeetingOfferBanner from './components/MeetingOfferBanner.svelte'
   import SettingsView from './components/SettingsView.svelte'
   import ShortcutsHelp from './components/ShortcutsHelp.svelte'
-  import Palette from './components/Palette.svelte'
+  import TopBar from './components/TopBar.svelte'
 
   void app.start()
   // Let the Rust shell speak. Its background work -- refreshing subscribed
@@ -72,6 +73,9 @@
   // unchanged and whoever unlocks lands back in Settings instead of back in
   // whatever app they had open. See `panels.svelte.ts`'s own note.
   app.onLock(() => panels.closeSettings())
+  // A peeking sidebar is drawn over whatever was open, and an unlock should
+  // not find it still out.
+  app.onLock(() => sidebar.hide())
 
   // Notice writes that happened somewhere else. On a local vault that is this
   // window's own commands and it already knows; under server mode it is another
@@ -145,6 +149,16 @@
   // grown a clause per app and quietly gave any new one the *journal's*
   // accent, which is the one answer that is wrong everywhere.
   const accent = $derived(APPS[app.section].accent({ app, todo, library }))
+
+  // Each app's sidebar folds on its own -- see `sidebar.svelte.ts` -- and a
+  // peek belongs to the app it was raised over, so changing app (or opening
+  // Settings over it) puts one away.
+  const folded = $derived(app.section !== 'overview' && sidebar.folded(app.section))
+  $effect(() => {
+    void app.section
+    void panels.settings
+    sidebar.hide()
+  })
 
   /**
    * The window's one keyboard handler.
@@ -225,6 +239,10 @@
          a fact about the whole window, and it must be visible whichever app
          is open. -->
     <div class="shell">
+      <!-- First, above the notices: it is the window's title bar as well as
+           the bar that searches it, and the window controls sit over its
+           left end on macOS. -->
+      <TopBar />
       <Notices />
       <MeetingOfferBanner />
       <div class="panes">
@@ -244,7 +262,21 @@
                reads when rearranging; that is the Add button's dialog now,
                and the page gets the width. -->
           {#if app.section !== 'overview'}
-            <Sidebar />
+            <!-- Folded, the sidebar is out of the row and a strip along the
+                 app's left edge stands in for it: resting the pointer there
+                 draws it over the app for a quick choice. The fold button in
+                 the strip above does the same. -->
+            {#if folded}
+              <div
+                class="edge"
+                aria-hidden="true"
+                onpointerenter={(e) => {
+                  if (e.pointerType === 'mouse') sidebar.reach()
+                }}
+                onpointerleave={() => sidebar.release()}
+              ></div>
+            {/if}
+            <Sidebar {folded} />
           {/if}
           {#if app.section === 'assistant'}
             <AssistantView />
@@ -304,10 +336,6 @@
     {#if panels.shortcuts}
       <ShortcutsHelp />
     {/if}
-    <!-- The palette draws its own scrim, and mounts unconditionally because
-         its open state is the one thing a global hotkey can set from outside
-         the window. -->
-    <Palette />
 
     <!-- What has been pressed, while a sequence is half finished. Small, in
          the corner, and gone in a second: without it, `g` is a keystroke
@@ -333,9 +361,23 @@
     height: 100%;
   }
   .panes {
+    position: relative;
     display: flex;
     flex: 1;
     min-height: 0;
+  }
+
+  /* Where a folded sidebar is found again: a strip of the app's left edge,
+     beside the app bar, a little wider than a pointer is likely to rest on
+     by accident on its way somewhere else. Drawn under the sidebar it
+     raises, so once that is out the pointer is over the sidebar itself. */
+  .edge {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: var(--appbar-w);
+    width: 10px;
+    z-index: 35;
   }
   .main {
     flex: 1;

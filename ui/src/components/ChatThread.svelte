@@ -25,15 +25,10 @@
   import { APPS } from '../lib/apps'
   import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
-  import { library } from '../lib/library.svelte'
-  import { mail } from '../lib/mail.svelte'
   import { renderMarkdown } from '../lib/markdown'
-  import { notes } from '../lib/notes.svelte'
-  import { overview } from '../lib/overview.svelte'
+  import { headline, toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
-  import { purpose } from '../lib/purpose.svelte'
-  import { app } from '../lib/state.svelte'
-  import { todo } from '../lib/todo.svelte'
+  import { onScreenNow } from '../lib/screen.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ToolCardView from './ToolCard.svelte'
@@ -45,32 +40,33 @@
     variant: 'page' | 'rail'
   } = $props()
 
-  /**
-   * What the person is looking at, in one line.
-   *
-   * Sent with every message so "this", "here" and "that one" resolve. It is
-   * prose rather than ids on purpose: the assistant has tools for finding
-   * records and does not need to be handed one, but it does need to know
-   * which app is open and what is selected in it.
-   */
-  const context = $derived.by(() =>
-    APPS[app.section].chatContext({
-      section: app.section,
-      todo: {
-        showingGoals: todo.showingGoals,
-        goalTitle: (purpose.selected ? purpose.goal(purpose.selected) : undefined)?.title ?? null,
-        projectName: todo.project?.name ?? null,
-      },
-      library: { shelfName: library.kind?.name ?? null },
-      notes: { openTitle: notes.open ? notes.title : null },
-      overview: { widgets: overview.widgets },
-      mail: {
-        subject: mail.openThread?.thread.subject ?? null,
-        mailboxName: mail.mailbox?.remoteName ?? null,
-      },
-      entry: app.entry,
-    }),
-  )
+  // ── What goes along with a message ─────────────────────────────────
+  //
+  // References to whatever is on screen -- the open thread, the selected
+  // task -- which the service looks up and describes for the model; see
+  // `lib/onscreen.ts`. The rail says which in a strip above the box, because
+  // a message that quietly carries "and this email" should not be a
+  // surprise, and lets it be left out of one message with a click.
+  //
+  // On the page there is nothing to say: the conversation is the whole
+  // window, so the only thing on screen is the Assistant app itself.
+
+  const screen = $derived(onScreenNow())
+  const seenNow = $derived(headline(screen.showing))
+  /** Whether the next message carries the screen. On by default, and back
+   *  on after every send and whenever what is on screen changes -- leaving
+   *  out one email is not leaving out the next one. */
+  let withScreen = $state(true)
+  /** Which record the strip names, as a string: `seenNow` is a fresh object
+   *  whenever anything in the open app's store moves -- a sync, an autosave
+   *  -- and an effect on it would turn the switch back on under somebody who
+   *  had just turned it off. A string only changes when the record does. */
+  const seenKey = $derived(seenNow ? `${seenNow.kind}:${seenNow.id}` : screen.app)
+  $effect(() => {
+    void seenKey
+    withScreen = true
+  })
+  const appName = $derived(screen.app === 'settings' ? 'Settings' : APPS[screen.app].label)
 
   let draft = $state('')
   let box = $state<HTMLTextAreaElement | null>(null)
@@ -206,7 +202,11 @@
     // silently eaten.
     const was = draft
     draft = ''
-    const accepted = await agent.send(text, context)
+    const accepted = await agent.send(
+      text,
+      variant === 'rail' && withScreen ? toWire(screen.app, screen.showing) : null,
+    )
+    withScreen = true
     if (!accepted) draft = was
     box?.focus()
   }
@@ -443,6 +443,24 @@
   {/if}
 
   <div class="composer">
+    {#if variant === 'rail'}
+      <button
+        class="seen"
+        class:off={!withScreen}
+        onclick={() => (withScreen = !withScreen)}
+        aria-pressed={withScreen}
+        title={withScreen
+          ? 'Sent with your message so “this” means what you are looking at. Click to leave it out.'
+          : 'Left out of your next message. Click to send it.'}
+      >
+        <Icon name={withScreen ? 'eye' : 'hidden'} size={13} />
+        <span class="seen-app">{appName}</span>
+        {#if seenNow}
+          <span class="seen-sep" aria-hidden="true">›</span>
+          <span class="seen-what">{seenNow.label}</span>
+        {/if}
+      </button>
+    {/if}
     <div class="compose">
       <textarea
         bind:this={box}
@@ -975,6 +993,47 @@
   .composer {
     padding: var(--sp-2);
     border-top: 1px solid var(--border);
+  }
+
+  /* What goes along with the message: one quiet line over the box, the
+     size of a caption, struck through when it is being left out. */
+  .seen {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+    margin: 0 0 var(--sp-2);
+    padding: 2px var(--sp-2);
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+  }
+  .seen:hover {
+    color: var(--fg);
+  }
+  .seen.off {
+    background: none;
+    color: var(--fg-faint);
+  }
+  .seen.off .seen-app,
+  .seen.off .seen-what {
+    text-decoration: line-through;
+  }
+  .seen-app {
+    flex: none;
+    font-weight: 600;
+  }
+  .seen-sep {
+    flex: none;
+    color: var(--fg-faint);
+  }
+  .seen-what {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* On the page it floats at the foot of the reading column instead of
      spanning the window under a rule: the box is the one control on the

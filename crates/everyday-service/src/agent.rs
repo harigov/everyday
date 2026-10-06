@@ -73,6 +73,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use everyday_core::RoutineRunId;
+use everyday_core::agent::onscreen::OnScreen;
 use everyday_core::agent::tools::{self, Caller as ToolCaller, Drafting, Effect, ToolContext};
 use everyday_core::agent::{
     AgentSettings, Conversation, MailLink, Message as VaultMessage, Role, ToolCall,
@@ -1785,8 +1786,10 @@ pub struct Turn {
     pub pending: Arc<Pending>,
     pub conversation: ConversationId,
     pub prompt: String,
-    /// What the person is looking at, if the interface said.
-    pub context: Option<String>,
+    /// What the person has on screen, if the interface said -- by
+    /// reference, and described by [`run_turn`] itself; see
+    /// [`everyday_core::agent::onscreen`].
+    pub on_screen: Option<OnScreen>,
     pub channel: Sink,
     /// Set when this turn is a scheduled run rather than something somebody
     /// typed.
@@ -1937,7 +1940,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         pending,
         conversation,
         prompt,
-        context,
+        on_screen,
         channel,
         unattended,
         drafting,
@@ -1996,7 +1999,25 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
          rather than putting it all in your reply."
             .to_string()
     });
-    let context = unattended_context.or(context);
+    // Otherwise, what they have open -- described here rather than by the
+    // interface, against the vault and through the same mail gate the tools
+    // use, under the very caller and provider those tools will run as.
+    //
+    // An open email described there is mail the model has now read, so it
+    // arms the same safeguard a `read_thread` call does -- see
+    // `mail_read_this_turn` and `Described::quotes_mail`.
+    let described = match (&unattended_context, on_screen) {
+        (None, Some(screen)) => {
+            let zone = zone_name(&settings);
+            let ctx = ToolContext::new(&vault, settings.now().date(), &zone)
+                .with_caller(ToolCaller::Assistant { conversation })
+                .with_assistant_provider(settings.provider_config.acknowledgement_name());
+            Some(everyday_core::agent::onscreen::describe(&ctx, &screen))
+        }
+        _ => None,
+    };
+    let screen_quotes_mail = described.as_ref().is_some_and(|d| d.quotes_mail);
+    let context = unattended_context.or(described.map(|d| d.text));
 
     let unattended_run = unattended.is_some();
     // A dream may write at most one note for real -- see `ConfirmGate`'s own
@@ -2028,7 +2049,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         run_id: unattended,
         park_unattended: settings.park_unattended,
         ledger: ledger.clone(),
-        mail_read_this_turn: Arc::default(),
+        mail_read_this_turn: Arc::new(AtomicBool::new(screen_quotes_mail)),
         provenance: Arc::new(Mutex::new(provenance)),
         note_budget,
     };
