@@ -1,11 +1,10 @@
-//! A small, deliberately partial HTML character-reference decoder, shared by
-//! [`crate::sanitize`]'s CSS scrubbing and [`crate::text`]'s hidden-content
-//! detection.
+//! A small, deliberately partial HTML character-reference decoder, for
+//! [`crate::sanitize`]'s CSS scrubbing.
 //!
 //! # Why this exists
 //!
-//! [`lol_html::html_content::Element::get_attribute`] -- what both those
-//! passes read a `style=""` value through -- hands back the attribute's
+//! [`lol_html::html_content::Element::get_attribute`] -- what that pass
+//! reads a `style=""` value through -- hands back the attribute's
 //! *source* text, character references and all:
 //! `style="background:url&#40;https://evil.example/t.gif&#41;"` arrives at
 //! `sanitize::scrub_css` still carrying `&#40;` and `&#41;`, which do not
@@ -14,15 +13,11 @@
 //! it re-parses and re-serialises the attribute -- an HTML parser has to, to
 //! know where the value ends -- so a scrubber that skips this step sees
 //! safe-looking text and lets through exactly the `url()` it exists to
-//! block. The same gap hits `text::is_invisible_style`: `display&#58;none`
-//! does not match a check that only ever compares against the literal
-//! string `"display"`/`"none"`, so a message can hide instructions from the
-//! *person* (a real browser decodes the attribute before laying it out) while
-//! staying invisible to this crate's own hidden-content detector, which is
-//! backwards -- see `text.rs`'s own docs on why that detector exists at all.
-//! Decoding character references before either pass runs, once, closes both
-//! gaps at the source instead of chasing each downstream symptom
-//! separately.
+//! block. Decoding character references before the scrub runs closes that
+//! gap at the source instead of chasing each downstream symptom
+//! separately. (`text.rs`'s hidden-content checks once needed the same
+//! decode; they now read the DOM html5ever builds, which has already
+//! resolved every reference.)
 //!
 //! # Why hand-rolled, and why partial
 //!
