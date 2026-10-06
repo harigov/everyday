@@ -120,10 +120,12 @@ import {
   mockDiscardDraft,
   mockFetchAttachment,
   mockGetThread,
+  mockInboxSenders,
   mockLabel,
   mockListDrafts,
   mockListMailboxes,
   mockListThreads,
+  mockListThreadsAcross,
   mockMailActionsByOrigin,
   mockMailActivity,
   mockMarkRead,
@@ -1971,13 +1973,23 @@ const accountPasswords = new Map<string, string>([['acct-fastmail', 'hunter2-dem
 
 /** Each seeded account's sync progress, as `sync_status` reads it back --
  *  both already settled at rest, the shape an account looks like once its
- *  first sync is long done. `sync_account` nudges one back through a couple
- *  of phases before settling again, so a status screen built against this
- *  mock has something to watch move. */
+ *  first sync is long done, each with a pass that finished a minute or two
+ *  ago, so Sync now's "last synced" has something to say from the start.
+ *  `sync_account` nudges one back through a couple of phases before settling
+ *  again, so a status screen built against this mock has something to
+ *  watch move. A fixed instant computed once at load, not a timer: see
+ *  `seedScheduledSend` in `mock-mail.ts` for why nothing here may start one. */
 const mailSyncProgress = new Map<string, MailSyncProgress>(
-  accounts.map((a) => [
+  accounts.map((a, i) => [
     a.id,
-    { accountId: a.id, phase: 'idling', done: 0, total: 0, lastError: null },
+    {
+      accountId: a.id,
+      phase: 'idling',
+      done: 0,
+      total: 0,
+      lastError: null,
+      lastSyncedAt: new Date(Date.now() - (60 + i * 45) * 1000).toISOString(),
+    },
   ]),
 )
 
@@ -5514,6 +5526,12 @@ export const mockInvoke = async <T>(
       const password = accountPasswords.get(account.id)
       const view: AccountView = {
         ...account,
+        // Clamped to 1..1440 the way the real backend reads it; absent and
+        // `null` both mean the default, one minute.
+        syncMinutes:
+          account.syncMinutes == null
+            ? null
+            : Math.min(1440, Math.max(1, Math.round(account.syncMinutes))),
         hasPassword: password !== undefined,
         signedIn:
           account.auth.type === 'password' ? password !== undefined : (existing?.signedIn ?? false),
@@ -5569,23 +5587,29 @@ export const mockInvoke = async <T>(
       // A plausible "just started a pass": headers first, the phase a
       // caller who force-syncs right after adding an account most wants to
       // see move -- then settled back to idling, with `lastSyncedAt`
-      // bumped, once this resolves.
+      // bumped, once this resolves. The progress row keeps the previous
+      // pass's `lastSyncedAt` while this one runs: it names the last pass
+      // that *finished*.
+      const before = mailSyncProgress.get(id)
       mailSyncProgress.set(id, {
         accountId: id,
         phase: 'headers',
         done: 0,
         total: 12,
         lastError: null,
+        lastSyncedAt: before?.lastSyncedAt,
       })
       await sleep(400)
+      const finished = new Date().toISOString()
       mailSyncProgress.set(id, {
         accountId: id,
         phase: 'idling',
         done: 0,
         total: 0,
         lastError: null,
+        lastSyncedAt: finished,
       })
-      account.lastSyncedAt = iso(0)
+      account.lastSyncedAt = finished
       return undefined as T
     }
 
@@ -5605,6 +5629,7 @@ export const mockInvoke = async <T>(
           done: 0,
           total: 0,
           lastError: null,
+          lastSyncedAt: mailSyncProgress.get(accountId)?.lastSyncedAt,
         })
       }
       await sleep(400)
@@ -5615,6 +5640,7 @@ export const mockInvoke = async <T>(
           done: 0,
           total: 0,
           lastError: null,
+          lastSyncedAt: mailSyncProgress.get(accountId)?.lastSyncedAt,
         })
       }
       return undefined as T
@@ -5692,6 +5718,23 @@ export const mockInvoke = async <T>(
         args.filter as ThreadFilter | undefined,
         args.cursor as string | null | undefined,
         args.limit as number | null | undefined,
+      ) as T
+
+    case 'list_threads_across':
+      requireUnlocked()
+      return mockListThreadsAcross(
+        strArray(args.mailboxes),
+        args.filter as ThreadFilter | undefined,
+        args.cursor as string | null | undefined,
+        args.limit as number | null | undefined,
+      ) as T
+
+    case 'inbox_senders':
+      requireUnlocked()
+      return mockInboxSenders(
+        typeof args.days === 'number' ? args.days : 30,
+        Array.isArray(args.accounts) ? strArray(args.accounts) : null,
+        typeof args.limit === 'number' ? args.limit : null,
       ) as T
 
     case 'get_thread':

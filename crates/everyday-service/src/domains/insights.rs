@@ -58,7 +58,11 @@ impl ActivityWindow {
 
 /// Every address and name that is you. An empty set rather than an error on
 /// a vault with no accounts: the calendar still has meetings in it.
-fn me(vault: &Vault) -> everyday_core::Result<Me> {
+///
+/// `pub(crate)` so Quick Cleanup (`domains::mailcleanup`) leaves you out of
+/// its sender list by exactly the rule the Overview does, rather than a
+/// second copy of it that could drift.
+pub(crate) fn me(vault: &Vault) -> everyday_core::Result<Me> {
     let accounts = if vault.supports_accounts() { vault.accounts()? } else { Vec::new() };
     Ok(Me::of(&accounts, &vault.profile().unwrap_or_default()))
 }

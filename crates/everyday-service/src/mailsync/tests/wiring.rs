@@ -6,6 +6,7 @@ use everyday_core::store::mail::ThreadFilter;
 use everyday_mail::session::{GmailMeta, Role};
 use jiff::Timestamp;
 
+use crate::events::{Change, EventSink, Kind};
 use crate::mailsync::discovery::LabelMailboxes;
 use crate::mailsync::ingest::ThreadIndex;
 use crate::mailsync::passes::{self, SyncContext};
@@ -523,11 +524,11 @@ async fn a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll(
 
     svc.notify_outbox(account_id);
     // Not a single virtual millisecond is advanced from here on: the clock
-    // stays exactly where `start_paused = true` left it. `POLL_INTERVAL`
-    // is five minutes and `OUTBOX_RETRY_INTERVAL` three seconds, so the
-    // only way this op can reach `Done` without either timer ever firing
-    // is the notify itself having woken the `IDLE` `select!` -- which is
-    // exactly the latency this test exists to prove.
+    // stays exactly where `start_paused = true` left it. The account's sync
+    // interval is a minute at its shortest and `OUTBOX_RETRY_INTERVAL` three
+    // seconds, so the only way this op can reach `Done` without either timer
+    // ever firing is the notify itself having woken the `IDLE` `select!` --
+    // which is exactly the latency this test exists to prove.
     settle(|| vault.op(op.id).map(|o| o.state == OpState::Done).unwrap_or(false)).await;
 
     stop_tx.send(true).unwrap();
@@ -536,7 +537,8 @@ async fn a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll(
 
 /// The regression for the bug [`crate::mailsync::task::sleep_until_due`] fixes: a
 /// send-at op queued ten seconds out must drain at about ten seconds, not
-/// at `POLL_INTERVAL` (five minutes).
+/// whenever the account's sync interval next comes round -- set to an hour
+/// here, so the poll cannot rescue a wrong fix inside this test's budget.
 ///
 /// No paused clock here, unlike this module's other timing tests: `not_before`
 /// due-ness is decided by [`jiff::Timestamp::now`] (the real wall clock),
@@ -545,12 +547,15 @@ async fn a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll(
 /// `crate::token_cache::deadline_from` makes, but the *due* check itself in
 /// `crate::outbox::drain_outbox` reads the wall clock fresh on every drain.
 /// So this test spends ten real seconds proving it, bounded well short of
-/// `POLL_INTERVAL` by [`settle_up_to`]'s own timeout, which is the one
-/// thing a wrong fix (falling back to `POLL_INTERVAL`) cannot pass short of
-/// genuinely waiting five minutes.
+/// the sync interval by [`settle_up_to`]'s own timeout, which is the one
+/// thing a wrong fix (falling back to the poll) cannot pass short of
+/// genuinely waiting an hour.
 #[tokio::test]
 async fn a_send_at_op_drains_at_its_own_time_not_the_poll_interval() {
     let (svc, vault, account_id, _dir) = service_test_env();
+    let mut account = vault.account(account_id).unwrap();
+    account.sync_minutes = Some(60);
+    vault.save_account(&account).unwrap();
     let server = plain_server();
     let session = FakeMailSession::new(server).blocking_idle();
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
@@ -609,11 +614,151 @@ async fn a_send_at_op_drains_at_its_own_time_not_the_poll_interval() {
     let elapsed = start.elapsed();
     assert!(
         elapsed < std::time::Duration::from_secs(30),
-        "took {elapsed:?} to drain a ten-second delay -- far too close to the five-minute poll"
+        "took {elapsed:?} to drain a ten-second delay -- it waited for the poll"
     );
 
     stop_tx.send(true).unwrap();
     handle.await.unwrap().unwrap();
+}
+
+/// Every [`Change`] raised while this is the service's sink, kept for a test
+/// to count.
+#[derive(Default)]
+struct Changes(Mutex<Vec<Change>>);
+
+impl EventSink for Changes {
+    fn changed(&self, change: Change) {
+        self.0.lock().unwrap().push(change);
+    }
+}
+
+impl Changes {
+    fn threads(&self) -> Vec<Change> {
+        self.0.lock().unwrap().iter().filter(|c| c.kind == Kind::Thread).cloned().collect()
+    }
+}
+
+/// A background pass writes under no command, so the account task itself
+/// has to tell an open window when one brought something in -- once per
+/// pass, as a batch, and not at all for a pass that found nothing. The same
+/// three passes also pin two things a pass must leave alone or keep up to
+/// date: an edit made in Settings while the task was running survives the
+/// pass's own status write (`credential::mark_ok` used to save the copy the
+/// task loaded at start, wiping it), and `sync_status` learns when the
+/// account was last checked.
+#[tokio::test]
+async fn a_background_pass_that_brings_in_mail_tells_the_window_once() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        for i in 0..3 {
+            s.append(
+                "INBOX",
+                raw_message(
+                    &format!("first-{i}@example.com"),
+                    None,
+                    "alice@example.com",
+                    &format!("Hello {i}"),
+                    "01 Jan 2024 10:00:00 +0000",
+                    "x",
+                ),
+                flags_seen(),
+                None,
+            );
+        }
+    }
+    let changes = Arc::new(Changes::default());
+    svc.set_events(changes.clone());
+    let session = FakeMailSession::new(server.clone()).blocking_idle();
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+
+    let svc_task = svc.clone();
+    let vault_task = vault.clone();
+    let handle = tokio::spawn(async move {
+        crate::mailsync::task::run_account_with(
+            svc_task,
+            vault_task,
+            account_id,
+            stop_rx,
+            move |_account, _credential| {
+                let session = session.clone();
+                async move { Ok(session) }
+            },
+            |_account, _svc, _vault| FakeSender::default(),
+        )
+        .await
+    });
+
+    let statuses = svc.mail_statuses().unwrap();
+    let last_synced = || {
+        let progress = statuses.all().into_iter().find(|p| p.account_id == account_id);
+        progress.and_then(|p| p.last_synced_at)
+    };
+
+    // The first pass: three new threads, one announcement, and a batch one
+    // -- no `id`, which is what makes a client reload the whole list.
+    // Real seconds rather than `settle`'s handful of milliseconds: each of
+    // these waits is a whole pass, bodies and all, on the blocking pool.
+    let pass = std::time::Duration::from_secs(30);
+    settle_up_to(pass, || last_synced().is_some()).await;
+    let first = last_synced().unwrap();
+    let announced = changes.threads();
+    assert_eq!(announced.len(), 1, "one pass, one announcement: {announced:?}");
+    assert!(announced[0].id.is_none() && announced[0].ids.is_empty(), "{announced:?}");
+
+    // Settings, while the task runs.
+    let mut edited = vault.account(account_id).unwrap();
+    edited.display_name = "Work".into();
+    edited.sync_minutes = Some(30);
+    vault.save_account(&edited).unwrap();
+
+    // A second pass with nothing new on the server says nothing.
+    statuses.nudge(account_id);
+    settle_up_to(pass, || last_synced().is_some_and(|t| t > first)).await;
+    let second = last_synced().unwrap();
+    assert_eq!(changes.threads().len(), 1, "a pass that changed nothing announced something");
+    let account = vault.account(account_id).unwrap();
+    assert_eq!(account.display_name, "Work", "the pass's status write wiped a Settings edit");
+    assert_eq!(account.sync_minutes, Some(30), "the pass's status write wiped a Settings edit");
+    assert!(account.last_synced_at.is_some_and(|t| t > first), "{:?}", account.last_synced_at);
+
+    // New mail arrives: the next pass announces it, once.
+    server.lock().unwrap().append(
+        "INBOX",
+        raw_message(
+            "later@example.com",
+            None,
+            "bob@example.com",
+            "Later",
+            "02 Jan 2024 10:00:00 +0000",
+            "y",
+        ),
+        flags_seen(),
+        None,
+    );
+    statuses.nudge(account_id);
+    settle_up_to(pass, || last_synced().is_some_and(|t| t > second)).await;
+    assert_eq!(changes.threads().len(), 2, "{:?}", changes.threads());
+
+    stop_tx.send(true).unwrap();
+    handle.await.unwrap().unwrap();
+}
+
+/// A deleted account stays deleted: the pass's own status write re-reads
+/// the account before saving it, and finding it gone, writes nothing --
+/// rather than saving the copy the task started with and bringing it back.
+#[tokio::test]
+async fn a_status_write_does_not_bring_back_a_deleted_account() {
+    let (_svc, vault, account_id, _dir) = service_test_env();
+    let stale = vault.account(account_id).unwrap();
+    vault.delete_account(account_id).unwrap();
+
+    crate::mailsync::credential::mark_ok(&vault, &stale, Timestamp::now());
+    crate::mailsync::credential::mark_error(&vault, &stale, "refused", Timestamp::now());
+    crate::mailsync::credential::mark_needs_sign_in(&vault, &stale, "expired", Timestamp::now());
+
+    assert!(vault.account(account_id).is_err(), "a status write resurrected a deleted account");
 }
 
 /// Poll the runtime until `f` is true or `tries` yields have gone by,

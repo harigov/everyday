@@ -1,5 +1,8 @@
-//! The two thread lists: one mailbox's, keyset-paged over the index the
-//! plan names by hand, and one account's, by category.
+//! The thread lists: one mailbox's, keyset-paged over the index the plan
+//! names by hand; several mailboxes' merged into one, the same way (the
+//! unified inbox); and one account's, by category.
+
+use std::collections::HashSet;
 
 use everyday_core::error::Result;
 use everyday_core::id::{AccountId, MailboxId, ThreadId};
@@ -10,7 +13,9 @@ use crate::SqlStore;
 use crate::conn::{Sql, Value, Where};
 use crate::keyset::{Dir, KeyCursor};
 
-/// See [`everyday_core::store::mail::MailStore::list_threads`].
+/// See [`everyday_core::store::mail::MailStore::list_threads`]: the
+/// one-mailbox case of [`list_threads_across`], and written as exactly that
+/// so the two can never disagree about a filter or the order.
 pub(super) fn list_threads(
     store: &SqlStore,
     mailbox: MailboxId,
@@ -18,7 +23,33 @@ pub(super) fn list_threads(
     cursor: Option<&str>,
     limit: u32,
 ) -> Result<ThreadPage> {
-    let mut w = Where::new().eq("tm.mailbox_id", mailbox.to_string());
+    list_threads_across(store, &[mailbox], filter, cursor, limit)
+}
+
+/// See [`everyday_core::store::mail::MailStore::list_threads_across`].
+///
+/// The same query [`list_threads`] always ran, with `tm.mailbox_id = ?`
+/// widened to `IN (...)`: the keyset is still `(tm.last_date_us DESC,
+/// tm.thread_id ASC)`, so rows from every listed mailbox interleave by date
+/// exactly as one mailbox's rows already did. One mailbox is still written
+/// `=` rather than a one-element `IN`, so the query plan the inbox has
+/// always had -- straight down `thread_mailboxes (mailbox_id, last_date_us
+/// DESC, thread_id)` -- is the one it keeps.
+pub(super) fn list_threads_across(
+    store: &SqlStore,
+    mailboxes: &[MailboxId],
+    filter: &ThreadFilter,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<ThreadPage> {
+    // `Where::in_list` treats an empty list as no condition at all -- every
+    // mailbox in the vault -- which is the opposite of what an empty
+    // selection means here.
+    let mut w = match mailboxes {
+        [] => return Ok(ThreadPage::default()),
+        [one] => Where::new().eq("tm.mailbox_id", one.to_string()),
+        many => Where::new().in_list("tm.mailbox_id", many.iter().map(|m| m.to_string())),
+    };
     match filter.unread {
         Some(true) => w = w.gte("tm.unread", 1i64),
         Some(false) => w = w.eq("tm.unread", 0i64),
@@ -72,9 +103,18 @@ pub(super) fn threads_in_category(
 
 /// Append the keyset predicate for `order`, run the three-column query
 /// `sql` names (`id, last_date_us, data`, in that order, whatever the
-/// source table), and decrypt the result into a page. Shared by both
-/// listings above, which differ only in their `WHERE` and which table's
+/// source table), and decrypt the result into a page. Shared by every
+/// listing above, which differ only in their `WHERE` and which table's
 /// `id` column they select.
+///
+/// A thread id already on this page is skipped rather than decrypted and
+/// returned twice. Only [`list_threads_across`] can produce one -- a thread
+/// filed in two of the mailboxes it was asked about, which is one
+/// `thread_mailboxes` row each -- and only within a page can it be caught
+/// here: the second row may well land on a later page, which is why that
+/// method's own contract leaves dedupe across pages to its caller. The
+/// skipped row still moves the cursor, so paging past it neither repeats
+/// nor loses anything else.
 fn page_and_run(
     store: &SqlStore,
     sql: &mut String,
@@ -88,6 +128,7 @@ fn page_and_run(
 
     let rows = store.read().query(sql, args)?;
     let mut threads = Vec::with_capacity(rows.len());
+    let mut seen: HashSet<ThreadId> = HashSet::with_capacity(rows.len());
     let mut last_key: Option<(i64, String)> = None;
     for row in &rows {
         let thread_id: ThreadId =
@@ -95,9 +136,12 @@ fn page_and_run(
                 everyday_core::error::Error::Invalid(e.to_string())
             })?;
         let last_date_us = row.i64(1)?;
+        last_key = Some((last_date_us, thread_id.to_string()));
+        if !seen.insert(thread_id) {
+            continue;
+        }
         let data = row.bytes(2)?;
         let thread: Thread = store.unseal(&thread_aad(thread_id), &data)?;
-        last_key = Some((last_date_us, thread_id.to_string()));
         threads.push(thread);
     }
 

@@ -106,11 +106,18 @@ ok('the mock vault opens unlocked', app.screen === 'main')
 // Mail: the mailbox narrows, the open thread is what is open.
 app.section = 'mail'
 await mail.start()
+// Two accounts with mail: Mail opens on every inbox at once -- a view, not
+// a mailbox the vault could look up, so it narrows nothing by reference.
+let now = onScreenNow()
+check('mail: the unified Inbox is a view', now.showing.view, 'All inboxes, from every account')
+check('mail: and no mailbox reference', now.showing.within, [])
+// One account's own Inbox for the rest, which is a mailbox.
+await mail.selectMailbox(mail.mailboxes.find((m) => m.role === 'inbox').id)
 const first = mail.threads[0]
 ok('the mock inbox has a thread to open', first !== undefined)
 await mail.openThreadById(first.id)
 mail.setSearchQuery('roof')
-let now = onScreenNow()
+now = onScreenNow()
 check('mail: the app', now.app, 'mail')
 check('mail: the mailbox narrows it', now.showing.within?.[0]?.kind, 'mailbox')
 check('mail: the mailbox is the selected one', now.showing.within?.[0]?.id, mail.selectedMailbox)

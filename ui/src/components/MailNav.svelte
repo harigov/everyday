@@ -7,9 +7,18 @@
   // Archive, Spam, Trash, then whatever labels and folders the account has.
   // `role` decides the first eight; anything left over is a label or folder,
   // sorted by name so the list does not reshuffle as new mail arrives.
+  //
+  // With two or more accounts, an "All accounts" section comes first: every
+  // Inbox in one list, and the same for Snoozed and the six fixed roles --
+  // see `mail.ts`'s `unifiedMailboxes`.
 
   import { accounts } from '../lib/accounts.svelte'
-  import { gmailSystemLabel, mailboxDisplayName } from '../lib/mail'
+  import {
+    gmailSystemLabel,
+    mailboxDisplayName,
+    syncInProgress,
+    unifiedMailboxId,
+  } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -50,7 +59,7 @@
   })
   let wasSyncing = false
   $effect(() => {
-    const active = mail.syncStatus.some((s) => s.phase !== 'idle' && s.phase !== 'idling')
+    const active = mail.syncStatus.some(syncInProgress)
     if (active) {
       wasSyncing = true
       const timer = setTimeout(() => void mail.refreshSyncStatus(), 2000)
@@ -58,11 +67,15 @@
     }
     // A sync that just finished may have discovered mailboxes that did not
     // exist at the last fetch -- a newly-created label, a folder IMAP only
-    // reports once it holds something. Refreshed once, on the falling edge,
-    // rather than on every idle tick.
+    // reports once it holds something -- and has very likely brought new
+    // mail into the list on screen. Refreshed once, on the falling edge,
+    // rather than on every idle tick: the mailboxes, and with them the
+    // unread counts (`refreshMailboxes` asks for those itself), and the open
+    // list, which `refreshMailboxes` leaves alone once something is open.
     if (wasSyncing) {
       wasSyncing = false
       void mail.refreshMailboxes()
+      void mail.refresh()
     }
   })
 
@@ -84,12 +97,27 @@
     sel: boolean
     count: number
     pseudo?: boolean
+    /** An "All accounts" row -- in no one account, so its menu has nothing
+     *  about one to offer. */
+    unified?: boolean
     role?: MailboxRole
     accountId: AccountId
     /** The mailbox behind the row -- absent for Scheduled, which is a list of
      *  queued sends rather than a folder. */
     box?: Mailbox
   }
+
+  /** The "All accounts" section's rows, in `unifiedMailboxes`'s own order,
+   *  each with the icon its per-account counterpart draws. */
+  const unifiedRows = $derived(
+    mail.unifiedMailboxes.map((box): Row => ({
+      ...rowFor(
+        box,
+        box.id === unifiedMailboxId('snoozed') ? 'clock' : (ROLE_ICON[box.role] ?? 'inbox'),
+      ),
+      unified: true,
+    })),
+  )
 
   /** One account's rows: the eight fixed ones (skipping any role the
    *  provider does not send), then Scheduled if it has one, then its
@@ -200,6 +228,20 @@
 
   function mailboxMenu(row: Row): MenuItem[] {
     const box = row.box
+    // Every account at once: nothing here is about one of them, and `in:`
+    // names one account's folder, not a role across all of them.
+    if (row.unified && box) {
+      return tidyMenu([
+        { label: 'Open', icon: 'inbox', disabled: row.sel, run: row.onclick },
+        {
+          label: 'Mark all as read',
+          icon: 'tick',
+          disabled: row.count === 0,
+          hint: row.count > 0 ? String(row.count) : undefined,
+          run: () => markAllRead(box, row.label),
+        },
+      ])
+    }
     return tidyMenu([
       { label: 'Open', icon: 'inbox', disabled: row.sel, run: row.onclick },
       // Starred and Snoozed are views rather than folders, so there is no
@@ -234,7 +276,9 @@
       mailAccounts.length > 0 && {
         label: mailAccounts.length === 1 ? 'Sync now' : 'Sync every account',
         icon: 'refresh',
-        run: () => Promise.all(mailAccounts.map((a) => mail.syncNow(a.id))),
+        // `syncAll` rather than one `syncNow` each, so the list column's own
+        // Sync now button spins for this too.
+        run: () => mail.syncAll(mailAccounts.map((a) => a.id)),
       },
       SEP,
       { label: 'Add an account…', icon: 'plus', run: () => panels.openSettings('accounts') },
@@ -308,6 +352,47 @@
     </p>
   {/if}
 
+  {#snippet mailboxRow(row: Row)}
+    <button
+      class="row"
+      class:sel={row.sel}
+      onclick={row.onclick}
+      oncontextmenu={(e) => menu.show(e, mailboxMenu(row))}
+    >
+      <span class="icon"
+        ><Icon name={row.icon} size={15} filled={row.pseudo && row.icon === 'star'} /></span
+      >
+      <span class="text">{row.label}</span>
+      {#if row.role === 'drafts' && pendingSends > 0}
+        <span
+          class="ghost-badge"
+          title="{pendingSends} {pendingSends === 1 ? 'draft' : 'drafts'} proposed to send"
+        >
+          <Icon name="sparkle" size={11} />
+        </span>
+      {/if}
+      {#if row.count > 0}<span class="count">{row.count}</span>{/if}
+    </button>
+  {/snippet}
+
+  {#if unifiedRows.length > 0}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="head" oncontextmenu={(e) => menu.show(e, navMenu())}>
+      <span class="eyebrow">All accounts</span>
+      <button
+        class="sync-now"
+        title="Sync every account"
+        aria-label="Sync every account"
+        onclick={() => void mail.syncAll(mailAccounts.map((a) => a.id))}
+      >
+        <Icon name="refresh" size={12} />
+      </button>
+    </div>
+    {#each unifiedRows as row (row.id)}
+      {@render mailboxRow(row)}
+    {/each}
+  {/if}
+
   {#each mailAccounts as account (account.id)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="head" oncontextmenu={(e) => menu.show(e, tidyMenu(accountItems(account.id)))}>
@@ -322,26 +407,7 @@
       </button>
     </div>
     {#each rowsFor(account.id) as row (row.id)}
-      <button
-        class="row"
-        class:sel={row.sel}
-        onclick={row.onclick}
-        oncontextmenu={(e) => menu.show(e, mailboxMenu(row))}
-      >
-        <span class="icon"
-          ><Icon name={row.icon} size={15} filled={row.pseudo && row.icon === 'star'} /></span
-        >
-        <span class="text">{row.label}</span>
-        {#if row.role === 'drafts' && pendingSends > 0}
-          <span
-            class="ghost-badge"
-            title="{pendingSends} {pendingSends === 1 ? 'draft' : 'drafts'} proposed to send"
-          >
-            <Icon name="sparkle" size={11} />
-          </span>
-        {/if}
-        {#if row.count > 0}<span class="count">{row.count}</span>{/if}
-      </button>
+      {@render mailboxRow(row)}
     {/each}
     {@const line = statusLine(account.id)}
     {#if line}

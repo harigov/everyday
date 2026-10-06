@@ -558,6 +558,15 @@ pub async fn sync_headers<S: MailSession>(
     if changed && let Some(cache) = &ctx.unread_cache {
         cache.invalidate(ctx.account_id);
     }
+    // The same "this mailbox's list is different now" the cache just heard,
+    // passed on to whoever is drawing it: `crate::mailsync::task` takes this
+    // once the whole pass is over and raises one change event for it, so an
+    // open window reloads its thread list instead of showing what it had
+    // before the mail arrived. Marked here, not announced here, so a pass
+    // that touches six mailboxes says so once.
+    if changed {
+        ctx.statuses.mark_changed(ctx.account_id);
+    }
 
     Ok(changes.vanished)
 }

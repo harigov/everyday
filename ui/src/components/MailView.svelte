@@ -10,10 +10,14 @@
     categoryTabCount,
     formatSenders,
     isSnoozedMailbox,
+    isUnifiedMailbox,
     mailboxDisplayName,
+    newestSyncedAt,
     recentActionLine,
     snoozedUntilLabel,
+    syncInProgress,
     threadListDate,
+    unifiedMailboxId,
     weekdayAndTime,
     withDateSections,
     type ListRow,
@@ -22,9 +26,17 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { compactCount, plural, relativeTime } from '../lib/format'
-  import type { Mailbox, MailAddress, MailCategory, Thread, ThreadId } from '../lib/types'
+  import type {
+    AccountId,
+    Mailbox,
+    MailAddress,
+    MailCategory,
+    Thread,
+    ThreadId,
+  } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import MailCleanup from './MailCleanup.svelte'
   import MailCompose from './MailCompose.svelte'
   import MailLabelPicker from './MailLabelPicker.svelte'
   import MailScheduled from './MailScheduled.svelte'
@@ -35,13 +47,62 @@
 
   void mail.start()
 
+  /** Is the list column one of the "All accounts" rows -- every account's
+   *  threads in one list, so each row says whose it is. */
+  const unifiedView = $derived(isUnifiedMailbox(mail.mailbox))
+
   const heading = $derived(
     mail.viewingScheduledFor
       ? 'Scheduled'
       : mail.mailbox
-        ? mailboxDisplayName(mail.mailbox)
+        ? unifiedView && mail.mailbox.id !== unifiedMailboxId('inbox')
+          ? // "All inboxes" already says it; "Sent" alone would read as one
+            // account's Sent.
+            `${mailboxDisplayName(mail.mailbox)}, all accounts`
+          : mailboxDisplayName(mail.mailbox)
         : 'Mail',
   )
+
+  const mailAccounts = $derived(accounts.list.filter((a) => a.services.mail))
+
+  /** The account a list row belongs to, as compactly as it can be named. */
+  function accountLabel(id: AccountId): string {
+    const account = accounts.account(id)
+    return account ? account.displayName || account.address : ''
+  }
+
+  /**
+   * The one account the list column is about, or `null` for every one --
+   * an "All accounts" row, or nothing open yet. What Sync now syncs and
+   * what Quick cleanup looks through. The Scheduled list is one account's,
+   * and is checked first: `selectedMailbox` stays set underneath it.
+   */
+  const scopeAccount = $derived<AccountId | null>(
+    mail.viewingScheduledFor ?? (mail.mailbox && !unifiedView ? mail.mailbox.accountId : null),
+  )
+  const syncScope = $derived<AccountId[]>(
+    scopeAccount ? [scopeAccount] : mailAccounts.map((a) => a.id),
+  )
+
+  const syncing = $derived(
+    mail.syncRequested ||
+      mail.syncStatus.some((s) => syncScope.includes(s.accountId) && syncInProgress(s)),
+  )
+  const syncTitle = $derived.by(() => {
+    if (syncing) return 'Syncing…'
+    const at = newestSyncedAt(syncScope, mail.syncStatus, accounts.list)
+    return at ? `Sync now · last synced ${relativeTime(at)}` : 'Sync now'
+  })
+
+  // A slow status read for as long as Mail is on screen, so the "last
+  // synced" in Sync now's title stays true while nothing is syncing --
+  // `MailNav`'s own two-second poll only runs while something is.
+  $effect(() => {
+    const timer = setInterval(() => void mail.refreshSyncStatus(), 30_000)
+    return () => clearInterval(timer)
+  })
+
+  let cleaning = $state(false)
 
   /** Is the list column currently the Snoozed view -- the one place a row's
    *  own date column means "comes back" rather than "last arrived", and the
@@ -262,6 +323,25 @@
     <span class="heading">{heading}</span>
     <button
       class="plus"
+      class:spinning={syncing}
+      title={syncTitle}
+      aria-label={syncing ? 'Syncing' : 'Sync now'}
+      aria-busy={syncing}
+      onclick={() => void mail.syncAll(syncScope.length > 0 ? syncScope : undefined)}
+    >
+      <Icon name="refresh" size={15} />
+    </button>
+    <button
+      class="plus"
+      title="Quick cleanup"
+      aria-label="Quick cleanup"
+      aria-haspopup="dialog"
+      onclick={() => (cleaning = true)}
+    >
+      <Icon name="broom" size={15} />
+    </button>
+    <button
+      class="plus"
       title="Compose (C)"
       aria-label="Compose"
       onclick={() => void mail.compose()}
@@ -415,6 +495,10 @@
                     {/if}
                     {#if t.hasAttachments}
                       <Icon name="paperclip" size={12} />
+                    {/if}
+                    {#if unifiedView}
+                      {@const whose = accountLabel(t.accountId)}
+                      <span class="account" title={whose}>{whose}</span>
                     {/if}
                     <span class="date">
                       {inSnoozedView && t.snoozedUntil
@@ -622,6 +706,10 @@
   <MailLabelPicker onchoose={applyLabel} oncancel={() => (mail.wantsLabel = null)} />
 {/if}
 
+{#if cleaning}
+  <MailCleanup accountId={scopeAccount} onclose={() => (cleaning = false)} />
+{/if}
+
 {#if mail.sendingUndo}
   <div class="undo-toast">
     <span>
@@ -681,6 +769,23 @@
   .plus:hover {
     background: var(--bg-hover);
     color: var(--fg);
+  }
+  /* Sync now, while a pass is running: the icon turns, the button around it
+     stays put. Stopped outright under reduced motion -- the title still
+     says "Syncing…" -- rather than left to the global rule, which would
+     still play one very short turn. */
+  .plus.spinning :global(svg) {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .plus.spinning :global(svg) {
+      animation: none;
+    }
   }
 
   .hint {
@@ -828,6 +933,19 @@
     flex: none;
     font-size: var(--text-xs);
     color: var(--fg-faint);
+  }
+  /* Whose thread this is, in an "All accounts" list: fainter than the date
+     beside it, and the first thing to give way when the row is narrow. */
+  .account {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 9rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    opacity: 0.8;
   }
   .subject {
     flex: 1;

@@ -91,6 +91,22 @@ export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string 
   },
 ]
 
+/**
+ * "Check for new mail", as Settings → Accounts offers it: `Account.syncMinutes`
+ * in the order the select lists them. Every minute is the default, and is
+ * stored as `null` rather than `1` -- an account that never chose keeps
+ * following the default if it ever changes.
+ */
+export const SYNC_INTERVALS: { minutes: number | null; label: string }[] = [
+  { minutes: null, label: 'Every minute' },
+  { minutes: 2, label: 'Every 2 minutes' },
+  { minutes: 5, label: 'Every 5 minutes' },
+  { minutes: 10, label: 'Every 10 minutes' },
+  { minutes: 15, label: 'Every 15 minutes' },
+  { minutes: 30, label: 'Every 30 minutes' },
+  { minutes: 60, label: 'Every hour' },
+]
+
 /** The six things a caller can be let do, in the order the grid draws them. */
 export const PERMISSIONS: { key: keyof AgentMailAccess; label: string }[] = [
   { key: 'read', label: 'Read' },

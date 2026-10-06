@@ -53,6 +53,7 @@ fn account_round_trips_every_field(store: &dyn JournalStore) {
     account.services.calendar = true;
     account.mcp_access = crate::account::AgentMailAccess::none();
     account.attachment_cap_bytes = Some(25_000_000);
+    account.sync_minutes = Some(15);
     account.status = crate::account::AccountStatus::Error { message: "the server refused".into() };
     a.put_account(&account).expect("put_account");
 

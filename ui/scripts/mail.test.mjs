@@ -34,6 +34,13 @@ const {
   isSnoozedMailbox,
   needsSyntheticSnoozedMailbox,
   listTarget,
+  UNIFIED_PREFIX,
+  unifiedMailboxId,
+  unifiedMailboxes,
+  isUnifiedMailbox,
+  syncInProgress,
+  newestSyncedAt,
+  sumCategoryCounts,
   gmailSystemLabel,
   mailboxDisplayName,
   promoteGmailInbox,
@@ -416,21 +423,195 @@ const accountMailboxes = [INBOX, SENT, REAL_SNOOZED]
 
 assert.deepEqual(
   listTarget(INBOX, accountMailboxes),
-  { mailboxId: 'mb-inbox', snoozed: false },
+  { mailboxIds: ['mb-inbox'], snoozed: false },
   'an ordinary mailbox lists under its own id',
 )
 assert.deepEqual(
   listTarget(REAL_SNOOZED, accountMailboxes),
-  { mailboxId: 'mb-snoozed', snoozed: true },
+  { mailboxIds: ['mb-snoozed'], snoozed: true },
   "a real Snoozed pseudo-mailbox -- the mock's own -- lists under its own id too",
 )
 assert.deepEqual(
   listTarget({ id: 'synthetic-snoozed:a1', accountId: 'a1', pseudo: 'snoozed' }, accountMailboxes),
-  { mailboxId: 'mb-inbox', snoozed: true },
+  { mailboxIds: ['mb-inbox'], snoozed: true },
   "the synthetic stand-in redirects to the account's own Inbox, filtered",
 )
 assert.equal(listTarget(null, accountMailboxes), null, 'nothing selected: nothing to list')
 assert.equal(listTarget(undefined, accountMailboxes), null)
+
+// ── All accounts at once: the unified rows ──────────────────────────────
+
+function box(id, accountId, role, pseudo) {
+  return {
+    id,
+    accountId,
+    remoteName: id,
+    role,
+    pseudo,
+    uidvalidity: 1,
+    uidnext: 1,
+    highestModseq: 1,
+  }
+}
+
+// Account a1 has every role; a2 has no Spam and no Archive -- and both have
+// a Snoozed row of their own (the mock's, and a synthetic stand-in), which
+// must never be mistaken for a mailbox to gather.
+const A1 = [
+  box('a1-inbox', 'a1', 'inbox'),
+  box('a1-drafts', 'a1', 'drafts'),
+  box('a1-sent', 'a1', 'sent'),
+  box('a1-archive', 'a1', 'archive'),
+  box('a1-spam', 'a1', 'spam'),
+  box('a1-trash', 'a1', 'trash'),
+  box('a1-receipts', 'a1', 'other'),
+  box('a1-snoozed', 'a1', 'other', 'snoozed'),
+]
+const A2 = [
+  box('a2-inbox', 'a2', 'inbox'),
+  box('a2-drafts', 'a2', 'drafts'),
+  box('a2-sent', 'a2', 'sent'),
+  box('a2-trash', 'a2', 'trash'),
+  box('synthetic-snoozed:a2', 'a2', 'other', 'snoozed'),
+]
+const BOTH = [...A1, ...A2]
+
+assert.deepEqual(
+  unifiedMailboxes(A1, ['a1']),
+  [],
+  'one account: a unified Inbox would only be its Inbox drawn twice',
+)
+assert.deepEqual(
+  unifiedMailboxes(A1, ['a1', 'a2']),
+  [],
+  "two accounts, but only one with any mailboxes loaded yet -- still one account's worth",
+)
+assert.deepEqual(
+  unifiedMailboxes([box('a1-starred', 'a1', 'other', 'starred'), ...A2], ['a1', 'a2']),
+  [],
+  'a pseudo-mailbox alone does not count as an account having mailboxes',
+)
+
+{
+  const rows = unifiedMailboxes(BOTH, ['a1', 'a2'])
+  assert.deepEqual(
+    rows.map((r) => r.id),
+    [
+      unifiedMailboxId('inbox'),
+      unifiedMailboxId('snoozed'),
+      unifiedMailboxId('drafts'),
+      unifiedMailboxId('sent'),
+      unifiedMailboxId('archive'),
+      unifiedMailboxId('spam'),
+      unifiedMailboxId('trash'),
+    ],
+    'every kind at least one account has, in the nav order',
+  )
+  assert.ok(
+    rows.every((r) => r.id.startsWith(UNIFIED_PREFIX)),
+    'every id carries the prefix',
+  )
+  assert.ok(
+    rows.every((r) => r.pseudo === 'unified' && r.accountId === ''),
+    'pseudo rows in no account',
+  )
+  assert.ok(rows.every(isUnifiedMailbox))
+  const roleOf = (kind) => rows.find((r) => r.id === unifiedMailboxId(kind)).role
+  assert.equal(roleOf('inbox'), 'inbox', 'the unified Inbox is an inbox -- it keeps the tabs')
+  assert.equal(roleOf('sent'), 'sent')
+  assert.equal(roleOf('trash'), 'trash')
+  assert.equal(
+    roleOf('snoozed'),
+    'other',
+    "Snoozed is not an inbox to anything that reads role -- no tabs, as a single account's",
+  )
+  assert.equal(mailboxHasTabs(rows.find((r) => r.id === unifiedMailboxId('inbox'))), true)
+  assert.equal(mailboxHasTabs(rows.find((r) => r.id === unifiedMailboxId('snoozed'))), false)
+  assert.equal(
+    mailboxDisplayName(rows.find((r) => r.id === unifiedMailboxId('inbox'))),
+    'All inboxes',
+  )
+}
+
+{
+  // Neither account has Spam: no unified Spam row either.
+  const noSpam = BOTH.filter((m) => m.role !== 'spam')
+  const ids = unifiedMailboxes(noSpam, ['a1', 'a2']).map((r) => r.id)
+  assert.ok(!ids.includes(unifiedMailboxId('spam')), 'a kind nobody has is left out')
+  assert.ok(ids.includes(unifiedMailboxId('archive')), 'a kind only one account has is kept')
+}
+
+assert.equal(
+  unifiedMailboxes(BOTH, ['a1']).length,
+  0,
+  'only the accounts asked about count -- an account filtered out is not a second account',
+)
+
+{
+  const rows = unifiedMailboxes(BOTH, ['a1', 'a2'])
+  const row = (kind) => rows.find((r) => r.id === unifiedMailboxId(kind))
+  assert.deepEqual(
+    listTarget(row('inbox'), BOTH),
+    { mailboxIds: ['a1-inbox', 'a2-inbox'], snoozed: false },
+    'the unified Inbox lists every account Inbox, snoozed threads hidden',
+  )
+  assert.deepEqual(
+    listTarget(row('snoozed'), BOTH),
+    { mailboxIds: ['a1-inbox', 'a2-inbox'], snoozed: true },
+    "the unified Snoozed is every Inbox, filtered -- never the accounts' own Snoozed rows",
+  )
+  assert.deepEqual(listTarget(row('drafts'), BOTH), {
+    mailboxIds: ['a1-drafts', 'a2-drafts'],
+    snoozed: false,
+  })
+  assert.deepEqual(
+    listTarget(row('archive'), BOTH),
+    { mailboxIds: ['a1-archive'], snoozed: false },
+    'a role only one account has lists that one mailbox',
+  )
+  assert.equal(
+    listTarget(
+      row('spam'),
+      BOTH.filter((m) => m.role !== 'spam'),
+    ),
+    null,
+    'a unified row whose role no account has any longer has nothing to list',
+  )
+  assert.equal(isSnoozedMailbox(row('snoozed')), true, 'the unified Snoozed is a Snoozed view')
+  assert.equal(isSnoozedMailbox(row('inbox')), false)
+}
+
+// ── Sync status ─────────────────────────────────────────────────────────
+
+assert.equal(syncInProgress({ phase: 'idle' }), false)
+assert.equal(syncInProgress({ phase: 'idling' }), false, 'waiting on IDLE is resting')
+assert.equal(syncInProgress({ phase: 'connecting' }), true)
+assert.equal(syncInProgress({ phase: 'headers' }), true)
+assert.equal(syncInProgress({ phase: 'bodies' }), true)
+
+assert.equal(
+  newestSyncedAt(
+    ['a1', 'a2'],
+    [
+      { accountId: 'a1', lastSyncedAt: '2026-10-06T09:00:00Z' },
+      { accountId: 'a2', lastSyncedAt: '2026-10-06T09:05:00Z' },
+      { accountId: 'a3', lastSyncedAt: '2026-10-06T10:00:00Z' },
+    ],
+    [],
+  ),
+  '2026-10-06T09:05:00Z',
+  'the newest among the accounts asked about -- never one outside them',
+)
+assert.equal(
+  newestSyncedAt(
+    ['a1'],
+    [{ accountId: 'a1' }],
+    [{ id: 'a1', lastSyncedAt: '2026-10-05T08:00:00Z' }],
+  ),
+  '2026-10-05T08:00:00Z',
+  "no pass this session: the account record's own",
+)
+assert.equal(newestSyncedAt(['a1'], [], [{ id: 'a1', lastSyncedAt: null }]), null)
 
 // ── Gmail's own system labels, still IMAP-escaped on some rows ──────────
 
@@ -701,6 +882,28 @@ assert.deepEqual(
   'quotes round the name are dropped, and a trailing separator is not part of it',
 )
 assert.equal(parseTypedAddress(' , '), null, 'nothing typed is no address')
+
+// ── sumCategoryCounts: the unified Inbox's tab badges ───────────────
+
+assert.deepEqual(
+  sumCategoryCounts([
+    [
+      { category: 'important', threads: 3, unread: 1 },
+      { category: null, threads: 2, unread: 0 },
+    ],
+    [
+      { category: 'important', threads: 1, unread: 1 },
+      { category: 'newsletters', threads: 4, unread: 2 },
+    ],
+  ]),
+  [
+    { category: 'important', threads: 4, unread: 2 },
+    { category: null, threads: 2, unread: 0 },
+    { category: 'newsletters', threads: 4, unread: 2 },
+  ],
+  'each category is added up across every inbox, in the order first met',
+)
+assert.deepEqual(sumCategoryCounts([]), [], 'no inboxes, no badges')
 
 await close()
 console.log('mail: all checks passed')

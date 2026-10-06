@@ -375,7 +375,7 @@
     "type": "Mailbox",
     "field": "pseudo",
     "kind": "field-only-in-ts",
-    "reason": "types.ts's own comment says it: synthetic, set only by the mock for its \"Starred\"/\"Snoozed\" views, never sent by the real backend."
+    "reason": "types.ts's own comment says it: synthetic, set only by the mock for its \"Starred\"/\"Snoozed\" views and by the interface for its \"All accounts\" rows, never sent by the real backend."
   },
   {
     "type": "Memory",
@@ -580,6 +580,12 @@
     "field": "aiCategorizeAskedAtCount",
     "kind": "field-only-in-rust",
     "reason": "As aiAutoDraftAskedAtCount, for the categorisation pass; internal bookkeeping."
+  },
+  {
+    "type": "Thread",
+    "field": "aiPriorityAskedAtCount",
+    "kind": "field-only-in-rust",
+    "reason": "As aiAutoDraftAskedAtCount, for the priority pass; internal bookkeeping."
   },
   {
     "type": "Thread",

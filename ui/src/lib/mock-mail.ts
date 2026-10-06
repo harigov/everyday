@@ -21,6 +21,7 @@ import type {
   CategoryCount,
   Draft,
   DraftId,
+  InboxSender,
   MailActionByOrigin,
   MailAddress,
   MailAgentOriginKind,
@@ -755,6 +756,104 @@ export function mockCategoryCounts(mailbox: MailboxId): CategoryCount[] {
     counts.set(key, row)
   }
   return [...counts.values()]
+}
+
+/**
+ * `list_threads_across`: what `mockListThreads` answers for each of
+ * `mailboxIds`, as one list, newest first, paged by the same offset cursor.
+ * Deduped within the mock, which the real command does not promise across
+ * pages -- harmless, since the store dedupes what it appends either way.
+ */
+export function mockListThreadsAcross(
+  mailboxIds: MailboxId[],
+  filter: ThreadFilter | undefined,
+  cursor: string | null | undefined,
+  limit: number | null | undefined,
+): ThreadPage {
+  const byId = new Map<ThreadId, Thread>()
+  for (const id of mailboxIds) {
+    // Every row of each, not one page: the union is what gets paged.
+    for (const t of mockListThreads(id, filter, null, seed.threads.length).threads) {
+      byId.set(t.id, t)
+    }
+  }
+  const rows = [...byId.values()].sort((a, b) => b.lastDate.localeCompare(a.lastDate))
+  const start = cursor ? Number(cursor) : 0
+  const take = limit ?? PAGE
+  const nextCursor = start + take < rows.length ? String(start + take) : null
+  return { threads: rows.slice(start, start + take), nextCursor }
+}
+
+/**
+ * `inbox_senders`, over the seed: every message from someone else in the
+ * last `days`, in a thread still in an Inbox and not snoozed, grouped by
+ * the sender's lower-cased address -- most messages first, then most
+ * unread. The seed's automated senders (The Economist, GitHub) and its
+ * regular correspondents each have several such messages, so every period
+ * has somebody worth cleaning out.
+ */
+export function mockInboxSenders(
+  days: number,
+  accounts: AccountId[] | null | undefined,
+  limit: number | null | undefined,
+): InboxSender[] {
+  const span = Math.min(365, Math.max(1, Math.round(days)))
+  const take = Math.min(50, Math.max(1, limit ?? 20))
+  const since = Date.now() - span * 86_400_000
+  const inboxes = new Set(
+    mailboxes
+      .filter((m) => m.role === 'inbox' && (!accounts || accounts.includes(m.accountId)))
+      .map((m) => m.id),
+  )
+  interface Tally {
+    name: string
+    messages: number
+    unread: number
+    latest: string
+    /** Thread id to its `lastDate`, for the newest-first order at the end. */
+    threads: Map<ThreadId, string>
+    accounts: Set<AccountId>
+  }
+  const bySender = new Map<string, Tally>()
+  for (const t of seed.threads) {
+    if (t.snoozedUntil != null) continue
+    if (!(seed.threadMailboxes.get(t.id) ?? []).some((id) => inboxes.has(id))) continue
+    for (const m of messagesOf(t.id)) {
+      if (new Date(m.date).getTime() < since) continue
+      const email = m.from.email.toLowerCase()
+      if (OWN.has(email)) continue
+      const tally: Tally = bySender.get(email) ?? {
+        name: '',
+        messages: 0,
+        unread: 0,
+        latest: m.date,
+        threads: new Map(),
+        accounts: new Set(),
+      }
+      tally.messages += 1
+      if (!m.flags.seen) tally.unread += 1
+      // The newest name wins, the way `mockMailActivity` keeps it.
+      if (m.from.name && (m.date >= tally.latest || !tally.name)) tally.name = m.from.name
+      if (m.date > tally.latest) tally.latest = m.date
+      tally.threads.set(t.id, t.lastDate)
+      tally.accounts.add(t.accountId)
+      bySender.set(email, tally)
+    }
+  }
+  return [...bySender]
+    .map(([email, tally]): InboxSender => ({
+      email,
+      name: tally.name,
+      messages: tally.messages,
+      unread: tally.unread,
+      threads: [...tally.threads].sort((a, b) => b[1].localeCompare(a[1])).map(([id]) => id),
+      accounts: [...tally.accounts],
+      latest: tally.latest,
+    }))
+    .sort(
+      (a, b) => b.messages - a.messages || b.unread - a.unread || a.email.localeCompare(b.email),
+    )
+    .slice(0, take)
 }
 
 export function mockGetThread(id: ThreadId): ThreadDetail {

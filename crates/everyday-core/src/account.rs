@@ -476,6 +476,19 @@ pub struct Account {
     /// per the plan, attachments are kept in full by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_cap_bytes: Option<u64>,
+    /// How often, in minutes, this account's sync task re-checks every
+    /// mailbox even when `IDLE` has said nothing -- the sweep that catches a
+    /// folder `IDLE` never watches (it only ever watches the inbox), and the
+    /// whole of what keeps a server without `IDLE` current. `None` is the
+    /// default, [`DEFAULT_SYNC_MINUTES`]; whatever is stored is read through
+    /// [`Account::sync_interval`], which clamps it, so a hand-edited zero
+    /// cannot turn the task into a busy loop.
+    ///
+    /// `skip_serializing_if` for the same reason as `attachment_cap_bytes`:
+    /// an account nobody has changed this on seals byte-for-byte as it did
+    /// before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_minutes: Option<u32>,
     pub status: AccountStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_synced_at: Option<Timestamp>,
@@ -520,6 +533,7 @@ impl Account {
             assistant_provider_acknowledged: None,
             mail_ai: MailAi::default(),
             attachment_cap_bytes: None,
+            sync_minutes: None,
             status: AccountStatus::NeedsSignIn { reason: "not yet signed in".into() },
             last_synced_at: None,
             created_at: now,
@@ -549,7 +563,31 @@ impl Account {
     pub fn assistant_acknowledged_for(&self, provider: &str) -> bool {
         !provider.is_empty() && self.assistant_provider_acknowledged.as_deref() == Some(provider)
     }
+
+    /// How long this account's sync task waits between full passes when
+    /// nothing wakes it sooner: [`Account::sync_minutes`], or
+    /// [`DEFAULT_SYNC_MINUTES`] when unset, clamped to
+    /// `1..=`[`MAX_SYNC_MINUTES`]. The clamp is here rather than at the
+    /// one command that saves an account because the record is not only
+    /// ever written by that command -- an import, an older client, or a
+    /// hand-edited vault can all put any `u32` in the field, and the task
+    /// reading it must still neither spin (zero) nor go quiet for weeks.
+    pub fn sync_interval(&self) -> std::time::Duration {
+        let minutes = self.sync_minutes.unwrap_or(DEFAULT_SYNC_MINUTES).clamp(1, MAX_SYNC_MINUTES);
+        std::time::Duration::from_secs(u64::from(minutes) * 60)
+    }
 }
+
+/// What [`Account::sync_interval`] answers for an account that has never
+/// chosen one: every minute. Short, because the sweep is what notices mail
+/// filed anywhere `IDLE` is not watching, and a steady-state pass over a
+/// mailbox with nothing new is a `SELECT` and a `CONDSTORE` diff -- cheap on
+/// every server this has been run against.
+pub const DEFAULT_SYNC_MINUTES: u32 = 1;
+
+/// The longest interval [`Account::sync_interval`] will answer with: a day.
+/// Past that, "sync" has stopped meaning anything a person would expect.
+pub const MAX_SYNC_MINUTES: u32 = 24 * 60;
 
 /// Which of the two callers [`Account::access_for`] is answering for.
 ///
@@ -852,5 +890,36 @@ mod tests {
         assert_eq!(json["auth"]["type"], "oAuth");
         assert_eq!(json["status"]["type"], "needsSignIn");
         assert!(json.get("caldav").is_none(), "no caldav on a fresh gmail account");
+        assert!(json.get("syncMinutes").is_none(), "an unset interval is left off the record");
+    }
+
+    #[test]
+    fn the_sync_interval_defaults_to_a_minute_and_is_clamped_both_ways() {
+        use std::time::Duration;
+        let mut a = Account::new(Provider::Fastmail, "me@fastmail.com");
+        assert_eq!(a.sync_interval(), Duration::from_secs(60), "unset is the default");
+        a.sync_minutes = Some(0);
+        assert_eq!(a.sync_interval(), Duration::from_secs(60), "zero would be a busy loop");
+        a.sync_minutes = Some(5);
+        assert_eq!(a.sync_interval(), Duration::from_secs(300));
+        a.sync_minutes = Some(u32::MAX);
+        assert_eq!(
+            a.sync_interval(),
+            Duration::from_secs(u64::from(MAX_SYNC_MINUTES) * 60),
+            "capped at a day"
+        );
+    }
+
+    #[test]
+    fn an_account_sealed_before_the_sync_interval_existed_still_reads() {
+        let mut json = serde_json::to_value(Account::new(Provider::Yahoo, "me@yahoo.com")).unwrap();
+        json.as_object_mut().unwrap().remove("syncMinutes");
+        let a: Account = serde_json::from_value(json).expect("the field is optional");
+        assert_eq!(a.sync_minutes, None);
+
+        let mut chosen = a;
+        chosen.sync_minutes = Some(15);
+        let wire = serde_json::to_value(&chosen).unwrap();
+        assert_eq!(wire["syncMinutes"], 15, "camelCase on the wire, like every other field");
     }
 }

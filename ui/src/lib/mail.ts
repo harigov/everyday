@@ -12,15 +12,18 @@ import {
 } from './format'
 import { isoDate, startOfDay } from './time'
 import type {
+  Account,
   AccountId,
   CategoryCount,
   Draft,
   Mailbox,
   MailboxId,
+  MailboxRole,
   MailAddress,
   MailCategory,
   MailInvite,
   MailOrigin,
+  MailSyncProgress,
   OpKind,
   RecentAction,
   RemoteImageSettings,
@@ -690,8 +693,16 @@ export function promoteGmailInbox(accountMailboxes: readonly Mailbox[]): Mailbox
  * (see `mock-mail.ts`'s own note on why), and a real folder that happens to
  * be called "Snoozed" -- Spark makes one -- matched by name would list only
  * snoozed threads, which is to say nothing, with a zero unread badge.
+ *
+ * The "All accounts" Snoozed row (`unifiedMailboxes`) counts too, by its id:
+ * it is every account's Snoozed view at once, and the list, the row menu's
+ * Unsnooze and the "Until Tue 8:00" date column all want exactly what a
+ * single account's Snoozed row gets.
  */
-export function isSnoozedMailbox(mailbox: Pick<Mailbox, 'pseudo'> | null | undefined): boolean {
+export function isSnoozedMailbox(
+  mailbox: (Pick<Mailbox, 'pseudo'> & Partial<Pick<Mailbox, 'id'>>) | null | undefined,
+): boolean {
+  if (mailbox?.pseudo === 'unified') return mailbox.id === unifiedMailboxId('snoozed')
   return mailbox?.pseudo === 'snoozed'
 }
 
@@ -725,17 +736,110 @@ export function syntheticSnoozedMailboxId(accountId: AccountId): MailboxId {
   return `${SYNTHETIC_SNOOZED_PREFIX}${accountId}`
 }
 
+// ── All accounts at once: the unified rows ─────────────────────────────
+//
+// With two or more accounts, `MailNav` draws an "All accounts" section over
+// the per-account ones: every Inbox in one list, and the same for Snoozed,
+// Drafts, Sent, Archive, Spam and Trash. Each is a pseudo-mailbox like the
+// synthetic Snoozed row above -- never sent to the backend as an id in its
+// own right; `listTarget` expands it into the real mailboxes it gathers,
+// which `refresh` then hands to `list_threads_across` in one go.
+
+/** The id prefix every unified row carries -- see `unifiedMailboxId`. */
+export const UNIFIED_PREFIX = 'unified:'
+
+/** What a unified row gathers. Every kind but `snoozed` is the `role` of the
+ *  real mailboxes it lists; `snoozed` lists every Inbox, filtered to what is
+ *  snoozed, the way a single account's synthetic Snoozed row does. */
+export type UnifiedKind = 'inbox' | 'snoozed' | 'drafts' | 'sent' | 'archive' | 'spam' | 'trash'
+
+/** In the order `MailNav` draws them -- the per-account order, Starred aside
+ *  (a mock-only view with no real mailbox behind it to gather). */
+const UNIFIED_KINDS: { kind: UnifiedKind; gathers: MailboxRole; name: string }[] = [
+  { kind: 'inbox', gathers: 'inbox', name: 'All inboxes' },
+  { kind: 'snoozed', gathers: 'inbox', name: 'Snoozed' },
+  { kind: 'drafts', gathers: 'drafts', name: 'Drafts' },
+  { kind: 'sent', gathers: 'sent', name: 'Sent' },
+  { kind: 'archive', gathers: 'archive', name: 'Archive' },
+  { kind: 'spam', gathers: 'spam', name: 'Spam' },
+  { kind: 'trash', gathers: 'trash', name: 'Trash' },
+]
+
+export function unifiedMailboxId(kind: UnifiedKind): MailboxId {
+  return `${UNIFIED_PREFIX}${kind}`
+}
+
+/** Is this one of the "All accounts" rows -- by `pseudo`, never by name or
+ *  id alone, the same rule `isSnoozedMailbox` keeps. */
+export function isUnifiedMailbox(mailbox: Pick<Mailbox, 'pseudo'> | null | undefined): boolean {
+  return mailbox?.pseudo === 'unified'
+}
+
+function unifiedKindOf(id: MailboxId): (typeof UNIFIED_KINDS)[number] | null {
+  if (!id.startsWith(UNIFIED_PREFIX)) return null
+  const kind = id.slice(UNIFIED_PREFIX.length)
+  return UNIFIED_KINDS.find((k) => k.kind === kind) ?? null
+}
+
+/** A mailbox that is a folder some server actually has: not a mock view,
+ *  not a synthetic Snoozed stand-in, not a unified row. */
+function isRealMailbox(m: Pick<Mailbox, 'pseudo'>): boolean {
+  return !m.pseudo
+}
+
 /**
- * Where listing `mailbox` should actually go: its own id, with `snoozed`
- * set by `isSnoozedMailbox` exactly as `refresh`/`loadMore`/
- * `refreshUnreadCounts` already asked it by hand before this existed --
- * `false` for an ordinary mailbox, `true` for a real Snoozed pseudo-mailbox
- * a backend (today, only the mock) sent itself.
+ * The "All accounts" rows for this set of mailboxes: one per kind that at
+ * least one account actually has, in `UNIFIED_KINDS`'s order -- and none at
+ * all unless two or more of `accountIds` have mailboxes loaded, since with
+ * one account a unified Inbox would only be its Inbox drawn twice.
  *
- * The one exception is the *synthetic* row `refreshMailboxes` builds for an
- * account whose backend sends no Snoozed mailbox at all: that id means
- * nothing to `list_threads`, so it is swapped here for the account's own
- * Inbox, `snoozed: true` -- "the account's Inbox, filtered," per the plan.
+ * Kept apart from the per-account list (`mail.svelte.ts` holds them in
+ * `unifiedMailboxes`, not `mailboxes`): a great deal reads `mailboxes` as
+ * "real folders, each in one account" -- "Move to…", the label rows, the
+ * Gmail duplicate filter -- and a row with no account would confuse all of
+ * it. `accountId` is the empty string for the same reason: it belongs to
+ * none of them.
+ */
+export function unifiedMailboxes(
+  mailboxes: readonly Mailbox[],
+  accountIds: readonly AccountId[],
+): Mailbox[] {
+  const wanted = new Set(accountIds)
+  const real = mailboxes.filter((m) => isRealMailbox(m) && wanted.has(m.accountId))
+  if (new Set(real.map((m) => m.accountId)).size < 2) return []
+  return UNIFIED_KINDS.filter((k) => real.some((m) => m.role === k.gathers)).map((k): Mailbox => ({
+    id: unifiedMailboxId(k.kind),
+    accountId: '',
+    remoteName: k.name,
+    // Snoozed is not an Inbox for anything that reads `role` -- the
+    // category tabs, chiefly, which a single account's Snoozed row has
+    // never drawn either -- so only the kinds that *are* their role say so.
+    role: k.kind === 'snoozed' ? 'other' : k.gathers,
+    pseudo: 'unified',
+    uidvalidity: 0,
+    uidnext: 0,
+    highestModseq: 0,
+  }))
+}
+
+/**
+ * Where listing `mailbox` should actually go: the mailbox ids to ask, and
+ * whether to ask for snoozed threads or hide them -- `isSnoozedMailbox`'s
+ * answer, exactly as `refresh`/`loadMore`/`refreshUnreadCounts` asked it by
+ * hand before this existed: `false` for an ordinary mailbox, `true` for a
+ * real Snoozed pseudo-mailbox a backend (today, only the mock) sent itself.
+ *
+ * One id, ordinarily: the mailbox's own. Two exceptions:
+ *
+ *   - The *synthetic* row `refreshMailboxes` builds for an account whose
+ *     backend sends no Snoozed mailbox at all: that id means nothing to
+ *     `list_threads`, so it is swapped here for the account's own Inbox,
+ *     `snoozed: true` -- "the account's Inbox, filtered," per the plan.
+ *   - A unified row (`unifiedMailboxes`): every real mailbox of the role it
+ *     gathers, across every account loaded -- every Inbox, `snoozed: true`,
+ *     for the unified Snoozed. More than one id is what sends `refresh` to
+ *     `list_threads_across` instead of `list_threads`.
+ *
  * A backend-sent pseudo-mailbox is left exactly as it was: it lists under
  * its own id, because that id is real as far as whichever backend sent it
  * is concerned, and redirecting it too would mean asking the Inbox alone
@@ -743,18 +847,73 @@ export function syntheticSnoozedMailboxId(accountId: AccountId): MailboxId {
  * (`mock-mail.ts`'s `isPseudo`) -- doubling what the mock already answers
  * for itself rather than leaving it be.
  *
- * `null` only when there is no mailbox to ask about at all.
+ * `null` when there is nothing to ask about at all: no mailbox, or a
+ * unified row whose role no loaded account has any longer.
  */
 export function listTarget(
   mailbox: Pick<Mailbox, 'id' | 'accountId' | 'pseudo'> | null | undefined,
-  mailboxes: readonly Pick<Mailbox, 'id' | 'accountId' | 'role'>[],
-): { mailboxId: MailboxId; snoozed: boolean } | null {
+  mailboxes: readonly Pick<Mailbox, 'id' | 'accountId' | 'role' | 'pseudo'>[],
+): { mailboxIds: MailboxId[]; snoozed: boolean } | null {
   if (!mailbox) return null
+  if (isUnifiedMailbox(mailbox)) {
+    const kind = unifiedKindOf(mailbox.id)
+    if (!kind) return null
+    const mailboxIds = mailboxes
+      .filter((m) => isRealMailbox(m) && m.role === kind.gathers)
+      .map((m) => m.id)
+    return mailboxIds.length > 0 ? { mailboxIds, snoozed: kind.kind === 'snoozed' } : null
+  }
   if (!mailbox.id.startsWith(SYNTHETIC_SNOOZED_PREFIX)) {
-    return { mailboxId: mailbox.id, snoozed: isSnoozedMailbox(mailbox) }
+    return { mailboxIds: [mailbox.id], snoozed: isSnoozedMailbox(mailbox) }
   }
   const inbox = mailboxes.find((m) => m.accountId === mailbox.accountId && m.role === 'inbox')
-  return { mailboxId: inbox?.id ?? mailbox.id, snoozed: true }
+  return { mailboxIds: [inbox?.id ?? mailbox.id], snoozed: true }
+}
+
+/**
+ * Several mailboxes' `category_counts` as one: each category's threads and
+ * unread threads added up, in the order each category is first met. What
+ * the unified Inbox's tab badges read, one count per account's Inbox.
+ */
+export function sumCategoryCounts(lists: readonly (readonly CategoryCount[])[]): CategoryCount[] {
+  const sums = new Map<MailCategory | null, CategoryCount>()
+  for (const count of lists.flat()) {
+    const sum = sums.get(count.category) ?? { category: count.category, threads: 0, unread: 0 }
+    sum.threads += count.threads
+    sum.unread += count.unread
+    sums.set(count.category, sum)
+  }
+  return [...sums.values()]
+}
+
+// ── Sync status ─────────────────────────────────────────────────────────
+
+/** Is this account's task partway through a pass -- anything but resting,
+ *  whether between passes (`idle`) or waiting on IMAP IDLE (`idling`). */
+export function syncInProgress(progress: Pick<MailSyncProgress, 'phase'>): boolean {
+  return progress.phase !== 'idle' && progress.phase !== 'idling'
+}
+
+/**
+ * The newest "last synced" among `accountIds`: the session's own
+ * `MailSyncProgress.lastSyncedAt` where it has one, the account record's
+ * `lastSyncedAt` otherwise (a pass finished before this session began).
+ * `null` when none of them has ever finished one.
+ */
+export function newestSyncedAt(
+  accountIds: readonly AccountId[],
+  statuses: readonly Pick<MailSyncProgress, 'accountId' | 'lastSyncedAt'>[],
+  accounts: readonly Pick<Account, 'id' | 'lastSyncedAt'>[],
+): string | null {
+  let newest: string | null = null
+  for (const id of accountIds) {
+    const at =
+      statuses.find((s) => s.accountId === id)?.lastSyncedAt ??
+      accounts.find((a) => a.id === id)?.lastSyncedAt ??
+      null
+    if (at && (!newest || new Date(at).getTime() > new Date(newest).getTime())) newest = at
+  }
+  return newest
 }
 
 // ── (i) Invitations ─────────────────────────────────────────────────

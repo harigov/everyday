@@ -208,6 +208,33 @@ pub trait MailStore: Send + Sync {
         limit: u32,
     ) -> Result<ThreadPage>;
 
+    /// Threads from any of `mailboxes`, merged into one list: newest
+    /// activity first, on the same keyset [`MailStore::list_threads`] pages
+    /// one mailbox by -- each thread placed by its newest message in
+    /// whichever listed mailbox holds it -- with the same `filter` applied
+    /// to every one. Typically one mailbox of the same role from each
+    /// account, which is what the unified Inbox is; [`MailStore::list_threads`]
+    /// is exactly this method with one mailbox in the slice, and must
+    /// answer identically to it.
+    ///
+    /// `mailboxes` empty is an empty page, never "every mailbox".
+    ///
+    /// A thread filed in two of the listed mailboxes -- a Gmail label and
+    /// the inbox, both asked for -- has a row in each, and is returned once
+    /// per *page*: a second row landing on the same page as the first is
+    /// skipped. One landing on a later page is not, since a page cannot
+    /// know what an earlier one held; a caller that might list such a pair
+    /// dedupes by [`Thread::id`] as it appends pages. Mailboxes of the same
+    /// role from different accounts can never share a thread, so the
+    /// unified Inbox never sees this.
+    fn list_threads_across(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ThreadPage>;
+
     /// Every thread of `account`'s carrying `category`, across every
     /// mailbox, newest first. What a split-inbox tab reads, once phase 7
     /// assigns categories -- the query works today against whatever

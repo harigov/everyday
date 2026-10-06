@@ -1313,6 +1313,15 @@ export const api = {
     cursor?: string | null,
     limit?: number | null,
   ) => call('listThreads', { mailbox, filter, cursor, limit }),
+  /** `threads`, across several mailboxes at once -- the "All accounts"
+   *  rows' one list -- newest activity first. A thread filed in two of them
+   *  can come back on two different pages, so an appending caller dedupes. */
+  threadsAcross: (
+    mailboxes: MailboxId[],
+    filter?: ThreadFilter,
+    cursor?: string | null,
+    limit?: number | null,
+  ) => call('listThreadsAcross', { mailboxes, filter, cursor, limit }),
   thread: (id: ThreadId) => call('getThread', { id }),
   /** `mailbox`'s threads counted by category -- the inbox tabs' badges. */
   categoryCounts: (mailbox: MailboxId) => call('categoryCounts', { mailbox }),
@@ -1398,6 +1407,14 @@ export const api = {
   ) => call('searchMail', { query, accountIds, cursor, limit }),
   suggestAddresses: (prefix: string, limit?: number | null) =>
     call('suggestAddresses', { prefix, limit }),
+
+  // ── Mail: Quick cleanup ─────────────────────────────────────────────
+
+  /** Who sent the most of what is still in the Inbox over the last `days`
+   *  (1..365), most first; `accounts` absent or `null` is every mail
+   *  account, `limit` defaults to 20 and stops at 50. */
+  inboxSenders: (days: number, accounts?: AccountId[] | null, limit?: number | null) =>
+    call('inboxSenders', { days, accounts, limit }),
 
   // ── Accounts ───────────────────────────────────────────────────────
   //

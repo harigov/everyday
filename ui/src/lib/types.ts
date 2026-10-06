@@ -1438,6 +1438,11 @@ export interface Account {
    *  than spell out all three `false`s by hand. */
   mailAi?: MailAi
   attachmentCapBytes?: number | null
+  /** Minutes between full re-syncs of every folder -- new Inbox mail
+   *  normally arrives straight away over IDLE, so this is how often the
+   *  rest is re-checked. Absent or `null` is the default, one minute; the
+   *  backend clamps anything else to 1..1440. */
+  syncMinutes?: number | null
   status: AccountStatus
   lastSyncedAt?: string | null
   createdAt: string
@@ -1505,10 +1510,12 @@ export interface Mailbox {
   highestModseq: number
   /**
    * Set only on the mock's "Starred" and "Snoozed" views, which are not
-   * folders on any server. Never sent by the backend, so a real folder that
-   * happens to be called "Snoozed" -- Spark makes one -- stays a folder.
+   * folders on any server, and on the "All accounts" rows `mail.ts`'s
+   * `unifiedMailboxes` builds, which gather one role across every account.
+   * Never sent by the backend, so a real folder that happens to be called
+   * "Snoozed" -- Spark makes one -- stays a folder.
    */
-  pseudo?: 'starred' | 'snoozed'
+  pseudo?: 'starred' | 'snoozed' | 'unified'
 }
 
 /** A closed, small set -- see `crate::mail::Category` for why a user-named
@@ -1759,6 +1766,27 @@ export interface MailSyncProgress {
   done: number
   total: number
   lastError?: string | null
+  /** When the account's last complete pass finished, this session -- absent
+   *  until one has. */
+  lastSyncedAt?: string
+}
+
+/**
+ * One sender `inbox_senders` ranks for Quick cleanup: who sent the most
+ * messages in the last few days that are still sitting in the Inbox (not
+ * snoozed), your own addresses left out. `threads` is exactly the Inbox
+ * conversations those messages are in, newest first -- what archiving or
+ * trashing "everything from them" acts on.
+ */
+export interface InboxSender {
+  email: string
+  name: string
+  messages: number
+  unread: number
+  threads: ThreadId[]
+  accounts: AccountId[]
+  /** The newest of those messages, as an ISO instant. */
+  latest: string
 }
 
 // ── Drafts and the outbox (phase 3) ─────────────────────────────────────

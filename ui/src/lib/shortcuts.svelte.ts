@@ -34,7 +34,7 @@ import { APPS } from './apps'
 import { calendar } from './calendar.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
-import { mailboxDisplayName, mailboxHasTabs } from './mail'
+import { mailboxDisplayName, mailboxHasTabs, unifiedMailboxId } from './mail'
 import { mail } from './mail.svelte'
 import { mailwrite } from './mailwrite.svelte'
 import { menu } from './menu.svelte'
@@ -1242,10 +1242,16 @@ function removeSelectedBlock() {
   if (selection?.kind === 'block') void calendar.removeBlock(selection.id)
 }
 
-/** `g i`/`g d`/`g u`: the first mailbox of this role in the currently
- *  loaded set, across every account. */
+/** `g i`/`g d`/`g u`: the "All accounts" row for this role when there is one
+ *  and Mail is not narrowed to one account -- every inbox, not whichever
+ *  account's happens to load first -- else the first mailbox of this role
+ *  in the currently loaded set. */
 function selectMailboxByRole(role: 'inbox' | 'drafts' | 'sent') {
-  const box = mail.mailboxes.find((m) => m.role === role)
+  const unified =
+    mail.selectedAccount === null
+      ? mail.unifiedMailboxes.find((m) => m.id === unifiedMailboxId(role))
+      : undefined
+  const box = unified ?? mail.mailboxes.find((m) => m.role === role)
   if (box) void mail.selectMailbox(box.id)
 }
 

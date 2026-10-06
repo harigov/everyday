@@ -1,11 +1,23 @@
 //! [`run_account`]: one account's whole supervised task.
 //!
 //! Connect, sync every mailbox, drain the outbox, hold `IDLE` (or poll, on a
-//! server without it) until something changes or [`POLL_INTERVAL`] elapses,
-//! and do it all again -- for as long as the supervisor keeps this key
-//! alive. See `crate::supervisor`'s module doc for the restart-with-backoff
-//! and stop-on-lock machinery this task's `Result` and `Ok(Outcome::Done)`
-//! answers drive.
+//! server without it) until something changes or the account's own sync
+//! interval elapses ([`Account::sync_interval`], a minute unless the person
+//! chose otherwise -- see [`poll_interval`]), and do it all again -- for as
+//! long as the supervisor keeps this key alive. See `crate::supervisor`'s
+//! module doc for the restart-with-backoff and stop-on-lock machinery this
+//! task's `Result` and `Ok(Outcome::Done)` answers drive.
+//!
+//! # Telling an open window what a pass brought in
+//!
+//! Nothing a pass writes goes through a command, so nothing a command would
+//! announce is announced for it: left alone, a window showing the inbox
+//! keeps drawing the list it loaded before the new mail arrived. So once a
+//! pass has finished, the loop below asks the
+//! [`StatusRegistry`](crate::mailsync::status::StatusRegistry) whether
+//! `passes::sync_headers` marked anything changed on the way through, and
+//! if it did, raises one batch [`Kind::Thread`] change -- no `id`, which
+//! every client reads as "reload the list" -- for the whole pass.
 //!
 //! Generic over [`MailSession`] and over how a connection is made
 //! ([`run_account_with`]'s `connect`), so [`tests`](super::tests) can drive
@@ -31,12 +43,12 @@
 //! second window, send-at, a backed-off retry -- becomes due while this
 //! task is already parked in `IDLE` or the poll sleep, with nobody about to
 //! notify it and no reason for `IDLE` itself to fire. Without this, that op
-//! would simply wait for `POLL_INTERVAL` (five minutes) or the next
-//! unrelated wake to come around. [`next_pending_wake`] reads the earliest
-//! `not_before` still `Pending` for this account once per loop turn, and the
-//! `select!`s race a sleep to exactly that instant alongside their other
-//! arms -- `None`, when nothing is pending, is a branch that simply never
-//! wins.
+//! would simply wait for the sync interval (a minute by default, up to a
+//! day if the person chose that) or the next unrelated wake to come around.
+//! [`next_pending_wake`] reads the earliest `not_before` still `Pending` for
+//! this account once per loop turn, and the `select!`s race a sleep to
+//! exactly that instant alongside their other arms -- `None`, when nothing
+//! is pending, is a branch that simply never wins.
 //!
 //! # Cancelling `IDLE` without losing the connection
 //!
@@ -65,13 +77,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use everyday_core::Vault;
-use everyday_core::account::{Account, EndpointSecurity};
+use everyday_core::account::{Account, DEFAULT_SYNC_MINUTES, EndpointSecurity};
 use everyday_core::id::AccountId;
 use everyday_mail::imap::{self, ImapSession, Security};
 use everyday_mail::session::{Credential, IdleEvent, MailError, MailSession};
 use tokio::sync::watch;
 
 use crate::error::CommandResult;
+use crate::events::{Change, Kind, Op};
 use crate::mailsync::discovery::{LabelMailboxes, SyncedMailbox};
 use crate::mailsync::ingest::ThreadIndex;
 use crate::mailsync::sender::LazySmtpSender;
@@ -80,10 +93,14 @@ use crate::mailsync::{credential, passes};
 use crate::service::Service;
 use crate::supervisor::{Outcome, TaskError, TaskResult};
 
-/// How often the account task re-syncs even when nothing has told it to --
-/// the plan's "every N minutes for the other mailboxes", and what stands in
-/// for `IDLE` on a server, or an `IdleEvent`, that never fires.
-const POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
+/// What [`poll_interval`] answers when it cannot read the account's own
+/// choice: [`DEFAULT_SYNC_MINUTES`], the same as an account that never made
+/// one. How often the task re-syncs even when nothing has told it to is
+/// otherwise the account's own [`Account::sync_interval`] -- the plan's
+/// "every N minutes for the other mailboxes", with N now the person's to
+/// choose, and what stands in for `IDLE` on a server, or an `IdleEvent`,
+/// that never fires.
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(DEFAULT_SYNC_MINUTES as u64 * 60);
 
 /// How long [`drain_until_caught_up`] waits between drain attempts while ops
 /// remain due, interruptibly -- "a few seconds is plenty" per
@@ -247,7 +264,18 @@ where
                     .await;
             }
         };
-        credential::mark_ok(&vault, &account, svc.now());
+        let synced_at = svc.now();
+        credential::mark_ok(&vault, &account, synced_at);
+        statuses.set_synced(account_id, synced_at);
+        // See the module docs' "telling an open window": a background pass
+        // writes under no command, so this is the only announcement its new
+        // mail ever gets. One batch change for the whole pass -- not one per
+        // thread, since a first sync lands thousands and the window needs
+        // telling once -- and none at all for a pass that found nothing new,
+        // which with a one-minute interval is nearly every pass.
+        if statuses.take_changed(account_id) {
+            svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+        }
         statuses.set_phase(account_id, Phase::Idling, 0, 0);
 
         // Between passes, with the bodies pass idle and the outbox already
@@ -266,25 +294,32 @@ where
 
         // Undo-send and send-at are both a `Pending` op whose `not_before`
         // is the only thing standing between it and a drain; so is a
-        // backed-off retry. Waiting out `POLL_INTERVAL` (or `IDLE`, which
+        // backed-off retry. Waiting out the sync interval (or `IDLE`, which
         // may not fire again for a while on a quiet mailbox) for one of
-        // those would mean a five-second undo window taking up to five
-        // minutes to actually send. `next_wake` is `None` whenever nothing
-        // is pending, in which case its branch below never fires -- exactly
-        // the outcome racing it against `stop`, a nudge and a notify already
-        // gives the other branches.
+        // those would mean a five-second undo window taking up to a minute
+        // -- or, on an account set to sync hourly, an hour -- to actually
+        // send. `next_wake` is `None` whenever nothing is pending, in which
+        // case its branch below never fires -- exactly the outcome racing it
+        // against `stop`, a nudge and a notify already gives the other
+        // branches.
         let next_wake = next_pending_wake(&vault, account_id).await;
+
+        // Read every turn rather than once when the task started, so an
+        // interval changed in Settings applies from the very next wait
+        // without restarting the task -- and `save_account` nudges this task
+        // as it saves, ending whatever wait the old interval had it in.
+        let poll = poll_interval(&vault, account_id).await;
 
         // `IDLE` on the inbox -- All Mail, on Gmail, since that is where its
         // messages physically live -- re-issued (inside `ImapSession::idle`
-        // itself) every twenty-five minutes; this task's own `POLL_INTERVAL`
-        // is shorter, so the mailboxes `IDLE` says nothing about still get
-        // their `changes_since` sweep on a cadence, not only when the inbox
-        // happens to change.
+        // itself) every twenty-five minutes; this task's own `poll` is
+        // shorter unless the person chose otherwise, so the mailboxes `IDLE`
+        // says nothing about still get their `changes_since` sweep on a
+        // cadence, not only when the inbox happens to change.
         let idle_target = idle_mailbox(&mailboxes);
         let can_idle = session.capabilities().idle && idle_target.is_some();
         if !can_idle {
-            match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake).await {
+            match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll).await {
                 Wake::Stop => return Ok(Outcome::Done),
                 Wake::Nudge | Wake::OutboxNotify | Wake::Due | Wake::Poll => continue,
             }
@@ -296,7 +331,7 @@ where
         // after it is visited later. `IDLE` reports activity only for the
         // mailbox currently selected, so without this, new inbox mail
         // raises no `EXISTS` here at all and this task would sit `IDLE` on
-        // some other mailbox until `POLL_INTERVAL` came back around.
+        // some other mailbox until the sync interval came back around.
         if let Some(target) = idle_target {
             let remote_name = target.remote_name.clone();
             if let Err(e) = session.select(&remote_name).await {
@@ -310,7 +345,7 @@ where
         // the session back the moment `wake_rx` changes -- see
         // `MailSession::idle`'s own docs -- so every reason this task has
         // to stop waiting (the supervisor's `stop`, a nudge, an outbox
-        // notification, a due op's deadline, or simply `POLL_INTERVAL`
+        // notification, a due op's deadline, or simply the sync interval
         // elapsing) ends the `IDLE` the same clean way, never by dropping
         // the call outright the way racing it in a bare `select!` used to.
         // Racing the call *itself* below is only ever won by `idle`
@@ -323,7 +358,7 @@ where
         tokio::pin!(idle_call);
         let (outcome, wake) = tokio::select! {
             outcome = &mut idle_call => (outcome, None),
-            wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake) => {
+            wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll) => {
                 let _ = wake_tx.send(());
                 (idle_call.await, Some(wake))
             }
@@ -403,24 +438,43 @@ enum Wake {
 }
 
 /// Race the supervisor's stop signal, a `sync_account` nudge, an outbox
-/// notification, a due-but-not-yet op's deadline, and [`POLL_INTERVAL`]
-/// itself, and report whichever fires first. The one place both of this
-/// task's `select!`s -- the no-`IDLE` poll sleep and the `IDLE` call's own
-/// wake channel -- build their race from, so the five arms are written
-/// once.
+/// notification, a due-but-not-yet op's deadline, and `poll` -- this turn's
+/// sync interval, see [`poll_interval`] -- and report whichever fires first.
+/// The one place both of this task's `select!`s -- the no-`IDLE` poll sleep
+/// and the `IDLE` call's own wake channel -- build their race from, so the
+/// five arms are written once.
 async fn wait_for_wake(
     stop: &mut watch::Receiver<bool>,
     nudged: &mut watch::Receiver<()>,
     outbox_notify: &tokio::sync::Notify,
     next_wake: Option<Duration>,
+    poll: Duration,
 ) -> Wake {
     tokio::select! {
         _ = stop.changed() => Wake::Stop,
         _ = nudged.changed() => Wake::Nudge,
         () = outbox_notify.notified() => Wake::OutboxNotify,
         () = sleep_until_due(next_wake) => Wake::Due,
-        () = tokio::time::sleep(POLL_INTERVAL) => Wake::Poll,
+        () = tokio::time::sleep(poll) => Wake::Poll,
     }
+}
+
+/// How long this loop turn may wait before a full pass is due regardless:
+/// `account_id`'s own [`Account::sync_interval`], read fresh from the vault
+/// -- see its call site in [`run_account_with`] for why fresh rather than
+/// from the copy the task started with. Falls back to
+/// [`DEFAULT_POLL_INTERVAL`] when the read fails (an account deleted out
+/// from under the task, a vault mid-lock) rather than ending the task over
+/// it: the wait is the one thing here a read error must not make shorter or
+/// longer than an ordinary account's, and the next pass's own reads will
+/// notice anything that actually matters.
+async fn poll_interval(vault: &Arc<Vault>, account_id: AccountId) -> Duration {
+    crate::service::blocking({
+        let vault = vault.clone();
+        move || Ok(vault.account(account_id)?.sync_interval())
+    })
+    .await
+    .unwrap_or(DEFAULT_POLL_INTERVAL)
 }
 
 /// How long until `account_id`'s earliest still-[`OpState::Pending`] op is

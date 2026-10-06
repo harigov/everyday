@@ -15,6 +15,7 @@ pub mod insights;
 pub mod journals;
 pub mod library;
 pub mod mail;
+pub mod mailcleanup;
 pub mod mailsearch;
 pub mod mailsync;
 pub mod mailview;
@@ -68,6 +69,7 @@ pub fn catalog() -> &'static [&'static Command] {
             insights::COMMANDS,
             library::COMMANDS,
             mail::COMMANDS,
+            mailcleanup::COMMANDS,
             mailsearch::COMMANDS,
             mailview::COMMANDS,
             mailsync::COMMANDS,

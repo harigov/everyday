@@ -68,6 +68,26 @@ fn default_page_size() -> u32 {
     50
 }
 
+/// `list_threads_across`'s arguments: [`ListThreads`] with a list of
+/// mailboxes where that has one.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListThreadsAcross {
+    pub mailboxes: Vec<MailboxId>,
+    #[serde(default)]
+    pub filter: ThreadFilter,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default = "default_page_size")]
+    pub limit: u32,
+}
+
+/// The most mailboxes one `list_threads_across` call may name. The unified
+/// Inbox asks for one per account, so this is far past anything the
+/// interface sends; it is here so that a caller cannot hand the store an
+/// `IN (...)` list of thousands, which costs a placeholder each.
+const MAX_MAILBOXES_ACROSS: usize = 64;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRef {
@@ -1305,6 +1325,37 @@ async fn list_threads(
     .await
 }
 
+/// Several mailboxes as one list, newest first -- the unified Inbox, which
+/// names the inbox of every account with mail on. Gated exactly as
+/// [`list_threads`] is, by the command's `Mail` scope and nothing finer: a
+/// caller allowed one mailbox's list is allowed any, and this is that same
+/// read, merged. See [`everyday_core::Vault::list_threads_across`] for the
+/// one thing a caller paging this has to do itself -- drop a thread a
+/// previous page already returned, which only a thread filed in two of the
+/// listed mailboxes can produce.
+async fn list_threads_across(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ListThreadsAcross,
+) -> CommandResult<ThreadPage> {
+    if args.mailboxes.len() > MAX_MAILBOXES_ACROSS {
+        return Err(CommandError::new(
+            codes::INVALID,
+            format!("list at most {MAX_MAILBOXES_ACROSS} mailboxes at once"),
+        ));
+    }
+    let vault = svc.require()?;
+    blocking(move || {
+        Ok(vault.list_threads_across(
+            &args.mailboxes,
+            &args.filter,
+            args.cursor.as_deref(),
+            args.limit,
+        )?)
+    })
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CategoryCountsQuery {
@@ -1447,6 +1498,17 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: CategoryCountsQuery, returns: "CategoryCount[]",
         signature: &[("mailbox", "MailboxId", true)],
         run: category_counts,
+    },
+    command! {
+        name: "list_threads_across", scope: Mail, effect: Read,
+        args: ListThreadsAcross, returns: "ThreadPage",
+        signature: &[
+            ("mailboxes", "MailboxId[]", true),
+            ("filter", "ThreadFilter", false),
+            ("cursor", "string | null", false),
+            ("limit", "number | null", false),
+        ],
+        run: list_threads_across,
     },
     command! {
         name: "get_thread", scope: Mail, effect: Read,

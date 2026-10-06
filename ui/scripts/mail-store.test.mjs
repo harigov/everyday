@@ -50,6 +50,61 @@ assert.ok(mail.mailboxes.length > 0, 'the mock vault ships with mailboxes')
 assert.ok(mail.selectedMailbox, 'the inbox is selected by default')
 assert.equal(mail.loading, false, 'loading settles back to false once the load lands')
 
+// ── All accounts at once ─────────────────────────────────────────────
+//
+// The mock seeds two accounts with mail, so Mail opens on every inbox at
+// once rather than on whichever account's comes first.
+
+{
+  assert.equal(
+    mail.selectedMailbox,
+    'unified:inbox',
+    'two accounts with mail: Mail opens on the unified Inbox',
+  )
+  assert.equal(mail.mailbox?.pseudo, 'unified', '`mailbox` finds the unified row too')
+  assert.ok(
+    !mail.mailboxes.some((m) => m.pseudo === 'unified'),
+    'unified rows stay out of `mailboxes`, which everything else reads as real folders',
+  )
+  const accountsShown = new Set(mail.threads.map((t) => t.accountId))
+  assert.ok(
+    accountsShown.has('acct-google') && accountsShown.has('acct-fastmail'),
+    "both accounts' inbox threads are in the one list",
+  )
+  const dates = mail.threads.map((t) => t.lastDate)
+  assert.deepEqual(dates, [...dates].sort().reverse(), 'newest first, across both accounts')
+  assert.equal(
+    new Set(mail.threads.map((t) => t.id)).size,
+    mail.threads.length,
+    'no thread listed twice',
+  )
+  assert.ok(
+    mail.threads.every((t) => !t.snoozedUntil),
+    'snoozed threads stay out of the unified Inbox, as out of each one',
+  )
+
+  // Its badge is its members' added up.
+  await mail.refreshUnreadCounts()
+  const google = mail.mailboxes.find((m) => m.accountId === 'acct-google' && m.role === 'inbox')
+  const fastmail = mail.mailboxes.find((m) => m.accountId === 'acct-fastmail' && m.role === 'inbox')
+  assert.equal(
+    mail.unreadCounts.get('unified:inbox'),
+    (mail.unreadCounts.get(google.id) ?? 0) + (mail.unreadCounts.get(fastmail.id) ?? 0),
+    "the unified Inbox's unread count is both inboxes' together",
+  )
+
+  // A batch change from a background sync names no thread at all -- it is
+  // taken, not declined to `RELOAD.mail`'s list-only refresh.
+  const applier = applierFor('mail')
+  assert.equal(
+    applier([{ kind: 'thread', op: 'updated', origin: 'remote' }]),
+    true,
+    'a sync pass with no ids is handled by the store itself',
+  )
+  await new Promise((r) => setTimeout(r, 700))
+  assert.equal(mail.selectedMailbox, 'unified:inbox', 'and leaves the open list where it was')
+}
+
 // A selection that has left the reloaded page is dropped.
 mail.selectedThread = 'not-a-real-id'
 await mail.refresh()
@@ -256,6 +311,40 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
   assert.ok(mail.categoryCounts.length > 0, 'the inbox has its threads counted by category')
   const counted = mail.categoryCounts.reduce((n, c) => n + c.threads, 0)
   assert.ok(counted >= mail.threads.length, 'every listed thread is counted somewhere')
+}
+
+// ── Quick cleanup: archiving many threads at once ───────────────────
+
+{
+  await mail.selectMailbox('unified:inbox')
+  const ids = mail.threads.slice(0, 3).map((t) => t.id)
+  assert.equal(ids.length, 3, 'the seed has at least three inbox threads to clear')
+  const before = mail.threads.length
+  await mail.openThreadById(ids[0])
+  const ok = await mail.archiveThreads([...ids, ids[0]])
+  assert.equal(ok, true, 'every chunk went')
+  assert.equal(mail.threads.length, before - 3, 'each thread leaves the list once')
+  assert.ok(
+    ids.every((id) => !mail.threads.some((t) => t.id === id)),
+    'none of them is still listed',
+  )
+  assert.ok(
+    mail.selectedThread === null || !ids.includes(mail.selectedThread),
+    'the open thread moved on to one that is staying',
+  )
+  await mail.refresh()
+  assert.ok(
+    ids.every((id) => !mail.threads.some((t) => t.id === id)),
+    'archived threads stay gone once the list is asked for again',
+  )
+
+  const more = mail.threads.slice(0, 2).map((t) => t.id)
+  assert.equal(await mail.trashThreads(more), true)
+  assert.ok(
+    more.every((id) => !mail.threads.some((t) => t.id === id)),
+    'trashed rows leave too',
+  )
+  assert.equal(await mail.archiveThreads([]), true, 'nothing to do is not a failure')
 }
 
 await close()

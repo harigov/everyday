@@ -5,8 +5,8 @@
 // while this app was being built against stand-in names. This file is what
 // is left of that plan once the rewrite is done: singular, per-thread
 // convenience over the real `threads: ThreadId[]` batch commands (and the
-// batch shape itself, for the list's own multi-selection), and two
-// contracts that have not landed in Rust at all --
+// batch shape itself, for the list's own multi-selection and Quick
+// cleanup), and two contracts that have not landed in Rust at all --
 //
 //   (i) invitations       -- `respond_to_invite`
 //   (p) the Superhuman layer -- `set_thread_category`, `summarize_thread`
@@ -24,6 +24,7 @@ import type {
   CategoryCount,
   Draft,
   DraftId,
+  InboxSender,
   MailAddress,
   MailAttachment,
   MailboxId,
@@ -53,6 +54,14 @@ export const listThreads = (
   cursor?: string | null,
   limit?: number | null,
 ): Promise<ThreadPage> => api.threads(mailbox, filter, cursor, limit)
+/** `listThreads` over several mailboxes at once, for the "All accounts"
+ *  rows -- see `mail.ts`'s `listTarget`. */
+export const listThreadsAcross = (
+  mailboxes: MailboxId[],
+  filter?: ThreadFilter,
+  cursor?: string | null,
+  limit?: number | null,
+): Promise<ThreadPage> => api.threadsAcross(mailboxes, filter, cursor, limit)
 export const getThread = (id: ThreadId): Promise<ThreadDetail> => api.thread(id)
 /** How many of `mailbox`'s threads carry each category -- what the inbox's
  *  tabs show beside their names. */
@@ -166,6 +175,16 @@ export const searchMail = (
 
 export const suggestAddresses = (prefix: string, limit?: number): Promise<MailAddress[]> =>
   api.suggestAddresses(prefix, limit)
+
+// ── Quick cleanup ──────────────────────────────────────────────────────
+
+/** The senders with the most messages still in the Inbox over the last
+ *  `days`, most first -- `accounts` `null` for every mail account. */
+export const inboxSenders = (
+  days: number,
+  accounts?: AccountId[] | null,
+  limit?: number | null,
+): Promise<InboxSender[]> => api.inboxSenders(days, accounts, limit)
 
 // ── (i) Invitations ─────────────────────────────────────────────────
 //

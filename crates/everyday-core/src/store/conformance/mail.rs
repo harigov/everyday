@@ -26,6 +26,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     ingest_then_list(store);
     threads_span_two_mailboxes(store);
     keyset_paging_a_thousand_threads_has_no_duplicates_or_gaps(store);
+    listing_across_mailboxes_merges_them_newest_first(store);
     flag_change_updates_unread_counts(store);
     category_counts_leave_out_snoozed_threads(store);
     removal_shrinks_a_thread_and_deletes_an_empty_one(store);
@@ -225,6 +226,114 @@ fn keyset_paging_a_thousand_threads_has_no_duplicates_or_gaps(store: &dyn Journa
     assert_eq!(seen.len(), 1000, "every thread must be seen exactly once, with no gap");
 
     cleanup_account(store, account);
+}
+
+/// The unified Inbox: two accounts' inboxes as one list. Interleaved dates
+/// prove the merge is by date rather than one mailbox after the other;
+/// paging by two proves the keyset still holds across the merge; each filter
+/// applies to every listed mailbox; a mailbox nobody asked for stays out; a
+/// thread filed in two listed mailboxes comes back once; and an empty
+/// selection is an empty page, never every mailbox there is.
+fn listing_across_mailboxes_merges_them_newest_first(store: &dyn JournalStore) {
+    use crate::mail::Category;
+
+    let m = mail_store(store);
+    let (a, b) = (AccountId::new(), AccountId::new());
+    let inbox_a = Mailbox::new(a, "INBOX", MailboxRole::Inbox);
+    let label_a = Mailbox::new(a, "Work", MailboxRole::Other);
+    let inbox_b = Mailbox::new(b, "INBOX", MailboxRole::Inbox);
+    let archive_b = Mailbox::new(b, "Archive", MailboxRole::Archive);
+    for mailbox in [&inbox_a, &label_a, &inbox_b, &archive_b] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+
+    // Six threads a second apart, alternating between the two accounts,
+    // oldest first: thread `i` is account A's when `i` is even. Thread 3 is
+    // a newsletter, and thread 4 is also filed under A's "Work" label.
+    let base = Timestamp::now();
+    let mut threads = Vec::new();
+    for i in 0..6u32 {
+        let (account, inbox) = if i % 2 == 0 { (a, &inbox_a) } else { (b, &inbox_b) };
+        let thread_id = ThreadId::new();
+        let date = base + SignedDuration::from_secs(i64::from(i));
+        let mut msg = message(account, thread_id, &format!("thread {i}"), "a@example.com", date);
+        if i == 3 {
+            msg.category = Some(Category::Newsletter);
+        }
+        let mut ingest =
+            vec![IngestMessage { message: msg.clone(), mailbox: inbox.id, uid: i + 1 }];
+        if i == 4 {
+            ingest.push(IngestMessage { message: msg, mailbox: label_a.id, uid: 1 });
+        }
+        m.ingest(account, ingest).unwrap();
+        threads.push(thread_id);
+    }
+    // Newer than every inbox thread, in a mailbox the list does not name.
+    let later = base + SignedDuration::from_secs(60);
+    let archived = message(b, ThreadId::new(), "archived", "a@example.com", later);
+    m.ingest(b, vec![IngestMessage { message: archived, mailbox: archive_b.id, uid: 1 }]).unwrap();
+
+    let newest_first: Vec<ThreadId> = threads.iter().rev().copied().collect();
+    let both = [inbox_a.id, inbox_b.id];
+    let all = ThreadFilter::default();
+    // One page, big enough for everything, as bare ids.
+    fn ids(m: &dyn MailStore, filter: &ThreadFilter, mailboxes: &[MailboxId]) -> Vec<ThreadId> {
+        let page = m.list_threads_across(mailboxes, filter, None, 50).unwrap();
+        page.threads.into_iter().map(|t| t.id).collect()
+    }
+
+    assert_eq!(ids(m, &all, &both), newest_first, "merged by date; Archive was never asked for");
+
+    let mut paged = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = m.list_threads_across(&both, &all, cursor.as_deref(), 2).unwrap();
+        paged.extend(page.threads.iter().map(|t| t.id));
+        assert!(paged.len() <= newest_first.len(), "paging ran past the end: {paged:?}");
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(paged, newest_first, "every thread exactly once, in order, across pages of two");
+
+    assert_eq!(
+        ids(m, &all, &[inbox_a.id]),
+        inbox_threads(m, inbox_a.id),
+        "one mailbox across is the same list as that mailbox's own"
+    );
+    assert_eq!(
+        ids(m, &all, &[inbox_a.id, label_a.id, inbox_b.id]),
+        newest_first,
+        "a thread in two of the listed mailboxes comes back once"
+    );
+
+    // Thread 4's message was uid 5 in A's inbox: read now, everywhere.
+    m.update_flags(inbox_a.id, 5, MessageFlags { seen: true, ..Default::default() }).unwrap();
+    let unread = ThreadFilter { unread: Some(true), ..Default::default() };
+    let read = ThreadFilter { unread: Some(false), ..Default::default() };
+    let still_unread: Vec<ThreadId> =
+        newest_first.iter().copied().filter(|t| *t != threads[4]).collect();
+    assert_eq!(ids(m, &unread, &both), still_unread);
+    assert_eq!(ids(m, &read, &both), vec![threads[4]]);
+
+    let newsletters = ThreadFilter { category: Some(Category::Newsletter), ..Default::default() };
+    assert_eq!(ids(m, &newsletters, &both), vec![threads[3]]);
+
+    m.set_thread_snoozed_until(threads[2], Some(base + SignedDuration::from_hours(1))).unwrap();
+    let snoozed = ThreadFilter { snoozed: Some(true), ..Default::default() };
+    let awake = ThreadFilter { snoozed: Some(false), ..Default::default() };
+    let not_snoozed: Vec<ThreadId> =
+        newest_first.iter().copied().filter(|t| *t != threads[2]).collect();
+    assert_eq!(ids(m, &snoozed, &both), vec![threads[2]]);
+    assert_eq!(ids(m, &awake, &both), not_snoozed);
+
+    let empty = m.list_threads_across(&[], &all, None, 10).unwrap();
+    assert!(empty.threads.is_empty(), "no mailboxes is no threads, not every thread");
+    assert!(empty.next_cursor.is_none());
+
+    cleanup_account(store, a);
+    cleanup_account(store, b);
 }
 
 fn flag_change_updates_unread_counts(store: &dyn JournalStore) {

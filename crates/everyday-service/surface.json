@@ -1565,6 +1565,33 @@
     {
       "args": [
         {
+          "name": "days",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "accounts",
+          "required": false,
+          "type": "AccountId[] | null"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "inbox_senders",
+      "orScope": null,
+      "returns": "InboxSender[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -2061,6 +2088,38 @@
       "changes": null,
       "effect": "read",
       "name": "list_threads",
+      "orScope": null,
+      "returns": "ThreadPage",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "mailboxes",
+          "required": true,
+          "type": "MailboxId[]"
+        },
+        {
+          "name": "filter",
+          "required": false,
+          "type": "ThreadFilter"
+        },
+        {
+          "name": "cursor",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_threads_across",
       "orScope": null,
       "returns": "ThreadPage",
       "scope": "mail",

@@ -32,6 +32,7 @@
 
 pub mod ai_gate;
 pub mod categorize;
+pub mod cleanup;
 pub mod compose;
 pub mod contacts;
 pub mod outbox;

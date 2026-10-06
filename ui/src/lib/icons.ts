@@ -127,6 +127,15 @@ export const ICONS = {
     '<path d="M8.5 6V4.5A2 2 0 0 1 10.5 2.5h3a2 2 0 0 1 2 2V6"/>' +
     '<path d="M10 11v6"/><path d="M14 11v6"/>',
 
+  // A broom standing on its bristles: Mail's Quick cleanup, which clears a
+  // whole sender out of the Inbox at once. Not `trash`, which is one thing
+  // thrown away, nor `sparkle`, which means the assistant is doing the work.
+  broom:
+    '<path d="M19 14a1 1 0 0 0 1-1v-1a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5' +
+    'a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v1a1 1 0 0 0 1 1"/>' +
+    '<path d="M5 14h14l1.97 6.77A1 1 0 0 1 20 22H4a1 1 0 0 1-.97-1.23Z"/>' +
+    '<path d="m8 22 1-4"/><path d="m16 22-1-4"/>',
+
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 
   lock:

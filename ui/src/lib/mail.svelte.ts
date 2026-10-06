@@ -26,6 +26,7 @@ import {
   applyInviteResponse,
   applyRowPatch,
   isSnoozedMailbox,
+  isUnifiedMailbox,
   listTarget,
   mailboxDisplayName,
   mailboxHasTabs,
@@ -39,8 +40,12 @@ import {
   revertRow,
   snoozeChoices,
   stepCategoryTab,
+  sumCategoryCounts,
+  syncInProgress,
   syntheticSnoozedMailboxId,
   threadRange,
+  unifiedMailboxId,
+  unifiedMailboxes as buildUnifiedMailboxes,
   visibleThreadList,
 } from './mail'
 import { seen, type Showing } from './onscreen'
@@ -62,6 +67,7 @@ import type {
   ThreadDetail,
   ThreadFilter,
   ThreadId,
+  ThreadPage,
 } from './types'
 
 /** How long an unread recount waits after the last optimistic action before
@@ -82,6 +88,18 @@ const PAGE = 50
 /** `markMailboxRead`'s page, and the most it does in one go. */
 const MARK_PAGE = 200
 const MARK_CAP = 2000
+
+/** How many threads one `archive`/`trash` call carries when Quick cleanup
+ *  acts on many at once -- a sender with years of newsletters can be a few
+ *  thousand, and one command per few hundred keeps each round trip short
+ *  enough that a failure partway loses only the chunk it was in. */
+const BATCH_CHUNK = 200
+
+/** How long `syncAll` waits before reading status back. `sync_account` only
+ *  wakes the account's task and answers at once, before the pass has begun,
+ *  so a status read straight after it still says "idle" -- and the button's
+ *  spinner would stop the instant it started. */
+const SYNC_SETTLE_MS = 1200
 
 /** `null` selects every account this vault has. */
 export type AccountScope = AccountId | null
@@ -155,6 +173,11 @@ class MailState {
   // ── what has been loaded ──────────────────────────────────────────
 
   mailboxes = $state<Mailbox[]>([])
+  /** The "All accounts" rows -- every Inbox at once, every Sent, and so on
+   *  -- once two or more accounts have mailboxes; empty otherwise. Kept out
+   *  of `mailboxes`, which everything else reads as real folders that each
+   *  belong to one account: see `mail.ts`'s `unifiedMailboxes`. */
+  unifiedMailboxes = $state<Mailbox[]>([])
   /** Threads for the open mailbox, in list order. Read `VirtualList`'s own
    *  doc for why this is `.raw` rather than deeply reactive. */
   threads = $state.raw<Thread[]>([])
@@ -170,6 +193,10 @@ class MailState {
    *  mailbox with no tabs. See `refreshCategoryCounts`. */
   categoryCounts = $state<CategoryCount[]>([])
   syncStatus = $state<MailSyncProgress[]>([])
+  /** True from a "Sync now" press until status has been read back after it
+   *  -- see `SYNC_SETTLE_MS` -- so the button answers the press at once,
+   *  before any account's own phase has had time to move. */
+  syncRequested = $state(false)
   /** Every account's drafts still queued to send later, soonest first --
    *  what `MailNav`'s own Scheduled row counts and `MailScheduled.svelte`
    *  lists. Unscoped by `selectedAccount`: the nav draws one row per
@@ -230,12 +257,14 @@ class MailState {
     if (this.#liveRefreshTimer) clearTimeout(this.#liveRefreshTimer)
     this.#liveRefreshTimer = null
     this.mailboxes = []
+    this.unifiedMailboxes = []
     this.threads = []
     this.nextCursor = null
     this.openThread = null
     this.unreadCounts = new Map()
     this.categoryCounts = []
     this.syncStatus = []
+    this.syncRequested = false
     this.scheduled = []
     this.clearSearch()
     this.#loaded = false
@@ -283,8 +312,15 @@ class MailState {
           highestModseq: 0,
         }))
       this.mailboxes = [...real, ...synthetic]
-      if (!this.selectedMailbox) {
-        const inbox = this.mailboxes.find((m) => m.role === 'inbox')
+      this.unifiedMailboxes = buildUnifiedMailboxes(this.mailboxes, accountIds)
+      // Nothing open yet -- or what was open is gone, the unified Inbox of
+      // an account set that has since dropped to one. With two or more
+      // accounts, Mail opens on every inbox at once rather than whichever
+      // account happens to come first.
+      if (!this.selectedMailbox || !this.#findMailbox(this.selectedMailbox)) {
+        const inbox =
+          this.unifiedMailboxes.find((m) => m.id === unifiedMailboxId('inbox')) ??
+          this.mailboxes.find((m) => m.role === 'inbox')
         if (inbox) await this.selectMailbox(inbox.id)
       }
       void this.refreshUnreadCounts()
@@ -292,6 +328,12 @@ class MailState {
     } catch (e) {
       await handle(e)
     }
+  }
+
+  /** A mailbox by id, the "All accounts" rows included. */
+  #findMailbox(id: MailboxId | null): Mailbox | undefined {
+    if (id === null) return undefined
+    return this.mailboxes.find((m) => m.id === id) ?? this.unifiedMailboxes.find((m) => m.id === id)
   }
 
   async #accountIds(): Promise<AccountId[]> {
@@ -306,21 +348,42 @@ class MailState {
    *  Filtered by `snoozed` the same way `refresh`/`loadMore` are (Bug 3): an
    *  ordinary mailbox's badge must not count a thread hidden from its own
    *  list because it is currently snoozed, and the Snoozed pseudo-mailbox's
-   *  badge is exactly the reverse -- only threads that are. */
+   *  badge is exactly the reverse -- only threads that are.
+   *
+   *  A unified row's badge is its members' added up, each member read once
+   *  however many rows want it -- the unified Inbox and each account's own
+   *  Inbox ask the very same question -- and a thread filed in two of them
+   *  (a Gmail label) counted once rather than twice. */
   async refreshUnreadCounts() {
     void this.refreshCategoryCounts()
     try {
+      const pages = new Map<string, Promise<Thread[]>>()
+      const threadsIn = (mailboxId: MailboxId, snoozed: boolean): Promise<Thread[]> => {
+        const key = `${snoozed ? 'snoozed' : 'shown'}:${mailboxId}`
+        let page = pages.get(key)
+        if (!page) {
+          const filter: ThreadFilter = { snoozed }
+          page = mailApi.listThreads(mailboxId, filter, null, 200).then((p) => p.threads)
+          pages.set(key, page)
+        }
+        return page
+      }
       const counts = new Map<MailboxId, number>()
       await Promise.all(
-        this.mailboxes.map(async (mailbox) => {
+        [...this.mailboxes, ...this.unifiedMailboxes].map(async (mailbox) => {
           const target = listTarget(mailbox, this.mailboxes)
           if (!target) return
-          const filter: ThreadFilter = { snoozed: target.snoozed }
-          const page = await mailApi.listThreads(target.mailboxId, filter, null, 200)
-          counts.set(
-            mailbox.id,
-            page.threads.reduce((sum, t) => sum + t.unreadCount, 0),
+          const lists = await Promise.all(
+            target.mailboxIds.map((id) => threadsIn(id, target.snoozed)),
           )
+          const seenIds = new Set<ThreadId>()
+          let unread = 0
+          for (const thread of lists.flat()) {
+            if (seenIds.has(thread.id)) continue
+            seenIds.add(thread.id)
+            unread += thread.unreadCount
+          }
+          counts.set(mailbox.id, unread)
         }),
       )
       this.unreadCounts = counts
@@ -341,7 +404,11 @@ class MailState {
       return
     }
     try {
-      const counts = await mailApi.categoryCounts(target.mailboxId)
+      // One count per member mailbox, added up: the unified Inbox's tabs
+      // are every account's tabs at once, and no thread is in two
+      // accounts' inboxes to be counted twice.
+      const lists = await Promise.all(target.mailboxIds.map((id) => mailApi.categoryCounts(id)))
+      const counts = sumCategoryCounts(lists)
       if (this.mailbox?.id === box?.id) this.categoryCounts = counts
     } catch (e) {
       await quietly(e)
@@ -381,6 +448,48 @@ class MailState {
     }
   }
 
+  /**
+   * The list column's "Sync now": a pass for each of `accountIds`, or for
+   * every mail account when none are named.
+   *
+   * `MailNav`'s two-second poll takes over from here for as long as any
+   * account is mid-pass, and reloads the list and the counts on the way
+   * back to idle. A pass that was over before status was even read back --
+   * nothing new on the server, or the mock, whose `sync_account` resolves
+   * only once its pretend pass is done -- never gives that poll a falling
+   * edge to see, so this reloads them itself in that case.
+   */
+  async syncAll(accountIds?: AccountId[]) {
+    // A second press while the first is still settling would only wake the
+    // same tasks again -- and its `finally` would stop the first one's
+    // spinner early.
+    if (this.syncRequested) return
+    this.syncRequested = true
+    try {
+      const ids = accountIds ?? (await this.#mailAccountIds())
+      if (ids.length === 0) return
+      await Promise.all(ids.map((id) => mailApi.syncAccount(id)))
+      await new Promise((resolve) => setTimeout(resolve, SYNC_SETTLE_MS))
+      await this.refreshSyncStatus()
+      const still = this.syncStatus.some((s) => ids.includes(s.accountId) && syncInProgress(s))
+      if (!still) {
+        void this.refresh()
+        this.#scheduleUnreadRefresh()
+      }
+    } catch (e) {
+      await handle(e)
+    } finally {
+      this.syncRequested = false
+    }
+  }
+
+  /** Every account with mail switched on, whatever `selectedAccount` says --
+   *  unlike `#accountIds`, which narrows to it. */
+  async #mailAccountIds(): Promise<AccountId[]> {
+    const list = await mailApi.listAccounts()
+    return list.filter((a) => a.services.mail).map((a) => a.id)
+  }
+
   /** The account and mailbox picked in the nav. */
   async selectMailbox(id: MailboxId) {
     // Leaves the Scheduled list behind, the way picking a thread leaves a
@@ -392,8 +501,8 @@ class MailState {
     this.clearChecked()
     // Finding 1: only the inbox has tabs to have set this from, so a
     // category chosen there must not go on filtering a mailbox with no tab
-    // strip to clear it from.
-    if (!mailboxHasTabs(this.mailboxes.find((m) => m.id === id))) this.category = null
+    // strip to clear it from. The unified Inbox is an inbox, and keeps it.
+    if (!mailboxHasTabs(this.#findMailbox(id))) this.category = null
     void this.refreshCategoryCounts()
     await this.refresh()
   }
@@ -437,10 +546,12 @@ class MailState {
    * page-one-only check was mistaking it for.
    */
   async refresh() {
-    // `listTarget` is where a mailbox id actually meant for `list_threads`
-    // comes from -- itself, ordinarily, except for the synthetic Snoozed row
-    // `refreshMailboxes` stands in for an account whose own Inbox is what
-    // must be asked instead. `null` here is exactly the old `!mailboxId`.
+    // `listTarget` is where the mailbox ids actually meant for the backend
+    // come from -- the mailbox itself, ordinarily, except for the synthetic
+    // Snoozed row `refreshMailboxes` stands in for an account whose own
+    // Inbox is what must be asked instead, and a unified row, which is
+    // every account's mailbox of its role at once. `null` here is exactly
+    // the old `!mailboxId`.
     const target = listTarget(this.mailbox, this.mailboxes)
     if (!target) return
     await guardedRefresh(
@@ -456,14 +567,16 @@ class MailState {
         // the Snoozed view, which wants nothing else.
         const filter: ThreadFilter = { snoozed: target.snoozed }
         if (category) filter.category = category
-        const page = await mailApi.listThreads(
-          target.mailboxId,
+        const page = await this.#listPage(
+          target.mailboxIds,
           filter,
           null,
           refreshLimit(this.threads.length, PAGE),
         )
         if (!isCurrent()) return
-        this.threads = page.threads
+        // Deduped even within one page: a thread filed in two of a unified
+        // row's mailboxes must never be two rows with one key.
+        this.threads = mergeSearchPage([], page.threads)
         this.nextCursor = page.nextCursor ?? null
         if (this.checked.size > 0) {
           const listed = new Set(this.threads.map((t) => t.id))
@@ -491,17 +604,35 @@ class MailState {
       // scrolling to a second page would bring snoozed threads back.
       const filter: ThreadFilter = { snoozed: target.snoozed }
       if (this.category) filter.category = this.category
-      const page = await mailApi.listThreads(target.mailboxId, filter, cursor, PAGE)
+      const page = await this.#listPage(target.mailboxIds, filter, cursor, PAGE)
       // A mailbox or category change while this page was on its way bumps
       // the generation; its rows belong to a list no longer showing.
       if (generation !== this.#generation || cursor !== this.nextCursor) return
-      this.threads = [...this.threads, ...page.threads]
+      // `mergeSearchPage` rather than a bare append: across several
+      // mailboxes, a thread filed in two of them comes back once for each,
+      // on whichever pages its two rows land.
+      this.threads = mergeSearchPage(this.threads, page.threads)
       this.nextCursor = page.nextCursor ?? null
     } catch (e) {
       await quietly(e)
     } finally {
       this.loadingMore = false
     }
+  }
+
+  /** One page of `mailboxIds` -- `list_threads` for the one mailbox nearly
+   *  every view is, `list_threads_across` for a unified row's several. */
+  #listPage(
+    mailboxIds: MailboxId[],
+    filter: ThreadFilter,
+    cursor: string | null,
+    limit: number,
+  ): Promise<ThreadPage> {
+    const [only] = mailboxIds
+    if (mailboxIds.length === 1 && only !== undefined) {
+      return mailApi.listThreads(only, filter, cursor, limit)
+    }
+    return mailApi.listThreadsAcross(mailboxIds, filter, cursor, limit)
   }
 
   // ── the open thread ────────────────────────────────────────────────
@@ -710,6 +841,11 @@ class MailState {
    * to run first. Superhuman's own convention for archiving into the thread
    * that was next, which a thread removed by a live change (finding 5)
    * deserves exactly as much as one removed by the reader's own `e`.
+   *
+   * `leaving` may be several threads at once -- Quick cleanup's "everything
+   * from this sender" -- in which case the neighbour is the nearest row
+   * that is not itself about to go, rather than the next row over, which
+   * may well be the same sender's next newsletter.
    */
   #advanceIfOpen(ids: ReadonlySet<ThreadId>): void {
     const open = this.selectedThread
@@ -844,25 +980,35 @@ class MailState {
    * count says how many were done, and doing it again does the next lot.
    * The rows already drawn are updated as each page lands, and the counts
    * in the sidebar once at the end.
+   *
+   * Through `listTarget`, like every other read of a mailbox: a unified row
+   * is each of its member mailboxes in turn, under the one shared cap, and
+   * the synthetic Snoozed row is its account's Inbox -- an id no backend
+   * would have recognised when this asked for it by its own.
    */
   async markMailboxRead(id: MailboxId): Promise<number> {
-    const box = this.mailboxes.find((m) => m.id === id)
-    if (!box) return 0
-    const filter: ThreadFilter = { unread: true, snoozed: isSnoozedMailbox(box) }
-    let cursor: string | null = null
+    const target = listTarget(this.#findMailbox(id), this.mailboxes)
+    if (!target) return 0
+    const filter: ThreadFilter = { unread: true, snoozed: target.snoozed }
     let done = 0
     try {
-      do {
-        const page = await mailApi.listThreads(id, filter, cursor, MARK_PAGE)
-        const ids = page.threads.filter((t) => t.unreadCount > 0).map((t) => t.id)
-        if (ids.length > 0) await mailApi.markReadAll(ids)
-        for (const thread of ids) {
-          this.threads = applyRowPatch(this.threads, thread, { unreadCount: 0 }).rows
-          this.searchResults = applyRowPatch(this.searchResults, thread, { unreadCount: 0 }).rows
-        }
-        done += ids.length
-        cursor = page.nextCursor ?? null
-      } while (cursor && done < MARK_CAP)
+      for (const mailboxId of target.mailboxIds) {
+        let cursor: string | null = null
+        do {
+          const page: ThreadPage = await mailApi.listThreads(mailboxId, filter, cursor, MARK_PAGE)
+          const ids = page.threads.filter((t) => t.unreadCount > 0).map((t) => t.id)
+          if (ids.length > 0) await mailApi.markReadAll(ids)
+          for (const thread of ids) {
+            this.threads = applyRowPatch(this.threads, thread, { unreadCount: 0 }).rows
+            this.searchResults = applyRowPatch(this.searchResults, thread, {
+              unreadCount: 0,
+            }).rows
+          }
+          done += ids.length
+          cursor = page.nextCursor ?? null
+        } while (cursor && done < MARK_CAP)
+        if (done >= MARK_CAP) break
+      }
     } catch (e) {
       await handle(e)
     }
@@ -910,6 +1056,79 @@ class MailState {
   }
   trashMany(ids: readonly ThreadId[]) {
     return this.#remove(ids, mailApi.trashMany)
+  }
+
+  /** Quick cleanup's Archive: every thread in `ids` at once. Answers whether
+   *  all of it went -- see `#removeMany`. */
+  archiveThreads(ids: ThreadId[]): Promise<boolean> {
+    return this.#removeMany(ids, mailApi.archiveMany)
+  }
+
+  /** Quick cleanup's Delete -- to Trash, never gone for good. */
+  trashThreads(ids: ThreadId[]): Promise<boolean> {
+    return this.#removeMany(ids, mailApi.trashMany)
+  }
+
+  /**
+   * `#remove`, for however many threads Quick cleanup names -- a sender
+   * with years of newsletters is thousands, where a selection in the list
+   * is a handful. Every row leaves the list on screen and a search's
+   * results at once, then the batch goes out `BATCH_CHUNK` at a time. A
+   * chunk that fails puts back only its own rows and the ones after it --
+   * every chunk before it already happened on the server, and drawing
+   * those rows again would show threads that are no longer there. Answers
+   * `true` only when every chunk went, which is what lets the dialog drop
+   * the senders it acted on.
+   */
+  async #removeMany(
+    ids: ThreadId[],
+    call: (chunk: ThreadId[]) => Promise<unknown>,
+  ): Promise<boolean> {
+    const unique = [...new Set(ids)]
+    if (unique.length === 0) return true
+    const gone = new Set(unique)
+    this.#advanceIfOpen(gone)
+    if ([...this.checked].some((id) => gone.has(id))) {
+      this.checked = new Set([...this.checked].filter((id) => !gone.has(id)))
+    }
+    const removedFrom = (rows: readonly Thread[]) =>
+      rows.flatMap((row, index) => (gone.has(row.id) ? [{ row, index }] : []))
+    const removed = removedFrom(this.threads)
+    const searchRemoved = removedFrom(this.searchResults)
+    this.threads = this.threads.filter((t) => !gone.has(t.id))
+    this.searchResults = this.searchResults.filter((t) => !gone.has(t.id))
+    let sent = 0
+    try {
+      while (sent < unique.length) {
+        await call(unique.slice(sent, sent + BATCH_CHUNK))
+        sent += BATCH_CHUNK
+      }
+      // A refresh already on its way when these rows were dropped asked the
+      // backend before the removal reached it, and lands with them still in
+      // it -- a live change, or the sync event, can start one at any
+      // moment. So they are dropped again in case it has landed, and the
+      // list is asked for once more in case it has not: the newer ask
+      // supersedes the stale one before it can land at all.
+      this.threads = this.threads.filter((t) => !gone.has(t.id))
+      this.searchResults = this.searchResults.filter((t) => !gone.has(t.id))
+      if (this.loading) void this.refresh()
+      return true
+    } catch (e) {
+      const failed = new Set(unique.slice(sent))
+      // In their original order, so each lands back where it was -- the
+      // same thing `restoreRow` does for one -- and never twice, if a
+      // refresh in the meantime already brought it back.
+      const putBack = (rows: Thread[], was: { row: Thread; index: number }[]) =>
+        was
+          .filter((r) => failed.has(r.row.id))
+          .reduce((acc, r) => (acc.some((t) => t.id === r.row.id) ? acc : restoreRow(acc, r)), rows)
+      this.threads = putBack(this.threads, removed)
+      this.searchResults = putBack(this.searchResults, searchRemoved)
+      await handle(e)
+      return false
+    } finally {
+      this.#scheduleUnreadRefresh()
+    }
   }
   moveTo(id: ThreadId, mailbox: MailboxId) {
     return this.moveManyTo([id], mailbox)
@@ -1315,6 +1534,19 @@ class MailState {
   // ── live-apply ───────────────────────────────────────────────────
 
   #applyChanges(changes: ChangeWithIds[]): boolean {
+    // A background sync pass that changed something says so with one thread
+    // change naming no thread at all -- it may have touched hundreds, in any
+    // mailbox. Declining it would send `live` to `RELOAD.mail`, which reloads
+    // the list alone: new mail would appear while the sidebar's unread
+    // counts and the "last synced" line went on describing the pass before.
+    // So the list, the counts and the status are all asked again, the first
+    // two debounced so a burst of passes costs one of each.
+    if (changes.some((c) => c.kind === 'thread' && !c.id && !c.ids?.length)) {
+      this.#scheduleLiveRefresh()
+      this.#scheduleUnreadRefresh()
+      void this.refreshSyncStatus()
+      return true
+    }
     return applySingleChange(changes, {
       // Nothing in the visible thread list or the sync-status line reads a
       // draft directly today -- the compose sheet owns its own working copy
@@ -1399,8 +1631,9 @@ class MailState {
 
   // ── derived ──────────────────────────────────────────────────────
 
+  /** The open mailbox -- one of an account's own, or an "All accounts" row. */
   get mailbox(): Mailbox | null {
-    return this.mailboxes.find((m) => m.id === this.selectedMailbox) ?? null
+    return this.#findMailbox(this.selectedMailbox) ?? null
   }
 
   /**
@@ -1434,8 +1667,19 @@ class MailState {
       detail && detail.thread.id === this.selectedThread && this.checked.size === 0 ? detail : null
     const expanded = shown?.messages.filter((m) => this.expanded.has(m.id)).at(-1)
     const latest = shown?.messages.at(-1)
+    // An "All accounts" row is a view too, and the one pseudo-mailbox with
+    // tabs: the unified Inbox's tab is worth naming alongside it.
+    const onTab = tab ? `, on the ${tab.label} tab` : ''
+    const view =
+      box && isUnifiedMailbox(box)
+        ? `${mailboxDisplayName(box)}, from every account${onTab}`
+        : box?.pseudo
+          ? mailboxDisplayName(box)
+          : tab
+            ? `the ${tab.label} tab`
+            : null
     return {
-      view: box?.pseudo ? mailboxDisplayName(box) : tab ? `the ${tab.label} tab` : null,
+      view,
       within: box?.pseudo
         ? []
         : box

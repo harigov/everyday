@@ -20,6 +20,7 @@
     DEFAULT_MAIL_AI,
     MAIL_AI_SWITCHES,
     PROVIDER_LABELS,
+    SYNC_INTERVALS,
     providerLabel,
     statusLabel,
   } from '../lib/accounts'
@@ -204,6 +205,48 @@
       notice = errorMessage(e)
     } finally {
       mailAiSaving = false
+    }
+  }
+
+  // ── How often every folder is re-checked ─────────────────────────────
+  //
+  // Applied the moment it is picked, the same as the switches above: one
+  // setting, one call -- and the backend runs a pass straight away on
+  // saving, so a shorter interval is felt at once rather than after the old
+  // one runs out.
+
+  let syncSaving = $state(false)
+
+  /** The saved interval, `null` for the default -- `1` included, which is
+   *  the default spelled out. */
+  const syncMinutes = $derived.by((): number | null => {
+    const minutes = original?.syncMinutes
+    return minutes != null && minutes > 1 ? minutes : null
+  })
+  /** The select's own value: `SYNC_INTERVALS`' minutes as a string, `''`
+   *  for the default. */
+  const syncChoice = $derived(syncMinutes === null ? '' : String(syncMinutes))
+  /** An interval saved by something other than this select -- the backend
+   *  takes anything from 1 to 1440 -- is still shown, as itself, rather than
+   *  the select silently reading as a choice that was never made. */
+  const syncOther = $derived(
+    syncMinutes !== null && !SYNC_INTERVALS.some((i) => i.minutes === syncMinutes)
+      ? syncMinutes
+      : null,
+  )
+
+  async function setSyncMinutes(value: string) {
+    if (!original) return
+    const parsed = Number(value)
+    const minutes = value && parsed > 1 ? parsed : null
+    syncSaving = true
+    try {
+      await api.saveAccount($state.snapshot({ ...original, syncMinutes: minutes }))
+      await accounts.refresh()
+    } catch (e) {
+      notice = errorMessage(e)
+    } finally {
+      syncSaving = false
     }
   }
 
@@ -459,6 +502,32 @@
         {saving ? 'Saving…' : 'Save changes'}
       </button>
     </div>
+
+    {#if original.services.mail}
+      <section>
+        <label class="eyebrow" for="detail-sync">Check for new mail</label>
+        <select
+          id="detail-sync"
+          class="interval"
+          value={syncChoice}
+          disabled={syncSaving}
+          onchange={(e) => void setSyncMinutes(e.currentTarget.value)}
+        >
+          {#each SYNC_INTERVALS as interval (interval.label)}
+            <option value={interval.minutes === null ? '' : String(interval.minutes)}>
+              {interval.label}
+            </option>
+          {/each}
+          {#if syncOther}
+            <option value={String(syncOther)}>Every {syncOther} minutes</option>
+          {/if}
+        </select>
+        <p class="hint">
+          New mail in the Inbox normally arrives straight away. This is how often every folder is
+          checked again as well.
+        </p>
+      </section>
+    {/if}
 
     <section>
       <span class="eyebrow">Signing in</span>
@@ -737,6 +806,23 @@
 
   .cap-row {
     margin-top: var(--sp-1);
+  }
+
+  /* The same compact select the goal-target editor draws, sized to its
+     longest choice rather than the sheet. */
+  .interval {
+    align-self: flex-start;
+    height: 30px;
+    padding: 0 var(--sp-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--fg);
+    font-size: var(--text-sm);
+  }
+  .interval:focus {
+    outline: none;
+    border-color: var(--accent);
   }
   .cap {
     width: 88px;

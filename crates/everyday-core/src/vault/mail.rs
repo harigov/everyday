@@ -155,6 +155,20 @@ impl Vault {
         self.with_mail(|m| m.list_threads(mailbox, filter, cursor, limit))
     }
 
+    /// Several mailboxes' threads as one list, newest first -- the unified
+    /// Inbox. See [`crate::store::mail::MailStore::list_threads_across`],
+    /// including why a thread filed in two of `mailboxes` is deduplicated
+    /// within a page but not across pages.
+    pub fn list_threads_across(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ThreadPage> {
+        self.with_mail(|m| m.list_threads_across(mailboxes, filter, cursor, limit))
+    }
+
     pub fn threads_in_category(
         &self,
         account: AccountId,

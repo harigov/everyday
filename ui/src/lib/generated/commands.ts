@@ -50,6 +50,7 @@ import type {
   ImportResult,
   ImportUpload,
   ImproveMode,
+  InboxSender,
   Item,
   ItemId,
   ItemQuery,
@@ -295,6 +296,10 @@ export interface Commands {
     args: { account: AccountId; text: string; mode: ImproveMode; instruction?: string | null }
     result: WrittenText
   }
+  inboxSenders: {
+    args: { days: number; accounts?: AccountId[] | null; limit?: number | null }
+    result: InboxSender[]
+  }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
   lintMeetingTemplate: { args: { body: string }; result: string[] }
@@ -333,6 +338,15 @@ export interface Commands {
   listThreads: {
     args: {
       mailbox: MailboxId
+      filter?: ThreadFilter
+      cursor?: string | null
+      limit?: number | null
+    }
+    result: ThreadPage
+  }
+  listThreadsAcross: {
+    args: {
+      mailboxes: MailboxId[]
       filter?: ThreadFilter
       cursor?: string | null
       limit?: number | null
@@ -649,6 +663,7 @@ export const COMMAND_NAMES = {
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
   improveWriting: 'improve_writing',
+  inboxSenders: 'inbox_senders',
   label: 'label',
   libraryStats: 'library_stats',
   lintMeetingTemplate: 'lint_meeting_template',
@@ -682,6 +697,7 @@ export const COMMAND_NAMES = {
   listTags: 'list_tags',
   listTasks: 'list_tasks',
   listThreads: 'list_threads',
+  listThreadsAcross: 'list_threads_across',
   listTools: 'list_tools',
   listTrackers: 'list_trackers',
   listVoiceprints: 'list_voiceprints',
@@ -925,6 +941,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'goal_activity',
   'import_calendar',
   'improve_writing',
+  'inbox_senders',
   'label',
   'library_stats',
   'lint_meeting_template',
@@ -958,6 +975,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_tags',
   'list_tasks',
   'list_threads',
+  'list_threads_across',
   'list_tools',
   'list_trackers',
   'list_voiceprints',

@@ -196,7 +196,7 @@
         "type": "object"
       },
       "MailAi": {
-        "description": "Which of the service-side, model-assisted mail features\n`docs/plans/mail.md`'s phase 7 adds are switched on for this account.\n\nAll three start `false` — the same \"off is the state a new vault is in\"\nrule [`crate::agent::AgentSettings::enabled`] follows, for the same\nreason: every one of these sends something about this account's mail to\nthe configured model. Each is also gated on\n[`Account::assistant_provider_acknowledged`] naming that model's provider\n— see [`crate::mail::mail_ai_allowed`], the one function that checks\nboth switches together, so a feature can never run because one of the two\nwas left on from before.\n\nRules-based categorisation — headers, known senders, a person's own\ncorrections — is not here: it sends nothing anywhere and runs whether or\nnot any of these three is on. This struct exists only for the parts that\nreach a model.",
+        "description": "Which of the service-side, model-assisted mail features\n`docs/plans/mail.md`'s phase 7 adds are switched on for this account.\n\nAll of them start `false` — the same \"off is the state a new vault is in\"\nrule [`crate::agent::AgentSettings::enabled`] follows, for the same\nreason: every one of these sends something about this account's mail to\nthe configured model. Each is also gated on\n[`Account::assistant_provider_acknowledged`] naming that model's provider\n— see [`crate::mail::mail_ai_allowed`], the one function that checks\nboth switches together, so a feature can never run because one of the two\nwas left on from before.\n\nRules-based categorisation — headers, known senders, a person's own\ncorrections — is not here: it sends nothing anywhere and runs whether or\nnot any of these three is on. This struct exists only for the parts that\nreach a model.",
         "properties": {
           "autoDraft": {
             "description": "A background pass that drafts a reply, in this account's own voice,\nfor an inbound thread in Important that looks like it wants one.\nNever sends — see `everyday_service::mailai::AUTO_DRAFT_CONVERSATION`,\nthe fixed [`crate::mail::Origin::Assistant`] conversation name every\ndraft it writes is stamped with.",
@@ -208,6 +208,11 @@
           },
           "summaries": {
             "description": "`summarize_thread`, on request, through the configured model.",
+            "type": "boolean"
+          },
+          "writing": {
+            "default": false,
+            "description": "Writing help, each on request: three short replies offered under an\nopen thread (`suggest_replies`), a draft written from a few words\n(`draft_with_ai`), and a pass over what the person wrote\n(`improve_writing`) -- all in this account's own voice, read from its\nsent mail. See `everyday_service::mailwrite`.\n\n`#[serde(default)]` so an account sealed before this switch existed\nstill decodes, with it off.",
             "type": "boolean"
           }
         },
@@ -322,7 +327,8 @@
         "default": {
           "autoDraft": false,
           "categorize": false,
-          "summaries": false
+          "summaries": false,
+          "writing": false
         },
         "description": "The service-side, model-assisted mail features switched on for this\naccount — categorisation, auto-drafts, summaries. `#[serde(default)]`\nand every field `false` on an account minted before phase 7, per\n[`MailAi`]'s own docs: nothing here runs quietly on an upgrade."
       },
@@ -348,6 +354,15 @@
       },
       "status": {
         "$ref": "#/$defs/AccountStatus"
+      },
+      "syncMinutes": {
+        "description": "How often, in minutes, this account's sync task re-checks every\nmailbox even when `IDLE` has said nothing -- the sweep that catches a\nfolder `IDLE` never watches (it only ever watches the inbox), and the\nwhole of what keeps a server without `IDLE` current. `None` is the\ndefault, [`DEFAULT_SYNC_MINUTES`]; whatever is stored is read through\n[`Account::sync_interval`], which clamps it, so a hand-edited zero\ncannot turn the task into a busy loop.\n\n`skip_serializing_if` for the same reason as `attachment_cap_bytes`:\nan account nobody has changed this on seals byte-for-byte as it did\nbefore the field existed.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
       },
       "updatedAt": {
         "format": "date-time",
@@ -2577,8 +2592,9 @@
         "type": "string"
       },
       "Category": {
-        "description": "A closed set of split-inbox categories, small and fixed rather than\nfree text, because [`Message::category`] and [`Thread::category`] are\nboth clear columns — see `crate::store::mail`. A user-named category\n(phase 7 of the plan: \"the ones the user names\") cannot be one of these\nwithout leaking its name into the clear the way a goal's name is kept out\nof `purposes` by being a pointer rather than a string; that side table is\nphase 7's to add, alongside the model rules that assign one. What exists\nnow is the fixed set phase 7's own preview names, so `Option<Category>`\nhas somewhere to live before the rules that fill it do.",
+        "description": "A closed set of split-inbox categories, small and fixed rather than\nfree text, because [`Message::category`] and [`Thread::category`] are\nboth clear columns — see `crate::store::mail`. A user-named category\n(phase 7 of the plan: \"the ones the user names\") cannot be one of these\nwithout leaking its name into the clear the way a goal's name is kept out\nof `purposes` by being a pointer rather than a string; that side table is\nphase 7's to add, alongside the model rules that assign one. What exists\nnow is the fixed set phase 7's own preview names, so `Option<Category>`\nhas somewhere to live before the rules that fill it do.\n\n[`Category::Priority`] is the odd one out: first among\n[`Category::ALL`] and the split inbox's first tab, ahead of `Important`,\nbut nothing [`crate::mail::categorize::categorize`] ever answers on its\nown -- see that function's own precedence list. A message only ever\nreaches it through a sealed [`CategoryRules`] correction (a sender\nmarked a standing \"VIP\", through the existing `set_thread_category`\ncommand), through [`crate::vault::Vault::set_thread_priority`] (one\nthread marked by hand, no sender rule), or through the model-assisted\npass that promotes an `Important` thread whose newest message needs the\nperson soon. The first two write [`CategorySource::Person`] alongside\nit; the third writes [`CategorySource::Model`] — see that type's own\ndocs for what each source is allowed to overwrite later.",
         "enum": [
+          "priority",
           "important",
           "other",
           "newsletter",
@@ -6343,8 +6359,9 @@
         "type": "object"
       },
       "Category": {
-        "description": "A closed set of split-inbox categories, small and fixed rather than\nfree text, because [`Message::category`] and [`Thread::category`] are\nboth clear columns — see `crate::store::mail`. A user-named category\n(phase 7 of the plan: \"the ones the user names\") cannot be one of these\nwithout leaking its name into the clear the way a goal's name is kept out\nof `purposes` by being a pointer rather than a string; that side table is\nphase 7's to add, alongside the model rules that assign one. What exists\nnow is the fixed set phase 7's own preview names, so `Option<Category>`\nhas somewhere to live before the rules that fill it do.",
+        "description": "A closed set of split-inbox categories, small and fixed rather than\nfree text, because [`Message::category`] and [`Thread::category`] are\nboth clear columns — see `crate::store::mail`. A user-named category\n(phase 7 of the plan: \"the ones the user names\") cannot be one of these\nwithout leaking its name into the clear the way a goal's name is kept out\nof `purposes` by being a pointer rather than a string; that side table is\nphase 7's to add, alongside the model rules that assign one. What exists\nnow is the fixed set phase 7's own preview names, so `Option<Category>`\nhas somewhere to live before the rules that fill it do.\n\n[`Category::Priority`] is the odd one out: first among\n[`Category::ALL`] and the split inbox's first tab, ahead of `Important`,\nbut nothing [`crate::mail::categorize::categorize`] ever answers on its\nown -- see that function's own precedence list. A message only ever\nreaches it through a sealed [`CategoryRules`] correction (a sender\nmarked a standing \"VIP\", through the existing `set_thread_category`\ncommand), through [`crate::vault::Vault::set_thread_priority`] (one\nthread marked by hand, no sender rule), or through the model-assisted\npass that promotes an `Important` thread whose newest message needs the\nperson soon. The first two write [`CategorySource::Person`] alongside\nit; the third writes [`CategorySource::Model`] — see that type's own\ndocs for what each source is allowed to overwrite later.",
         "enum": [
+          "priority",
           "important",
           "other",
           "newsletter",
@@ -6371,6 +6388,15 @@
       },
       "aiCategorizeAskedAtCount": {
         "description": "`message_count` the last time `everyday_service::mailai`'s\ncategorisation pass sent this thread's newest message to the model,\nwhatever label came back -- including \"still other\". `None` means\nnever asked.\n\nWhat stops the bug the field exists to fix: without a marker, a\nthread the model reads and still calls \"other\" is exactly as\neligible next tick as one it has never seen, so every `Other` thread\npast the newest page is asked again, forever, for no new\ninformation. Comparing this to the thread's *current*\n`message_count` is the whole rule -- equal means \"asked, and nothing\nhas arrived since\", so `everyday_service::mailai::categorize_account`\nskips it; a new message moves `message_count` past this value, which\nis what makes the thread eligible again without this field ever\nneeding to be cleared.\n\nSealed, not a clear column: it is read only after\n`MailStore::threads_in_category` has already fetched the page (the\nfilter is applied in `everyday_service::mailai`, not in SQL), so it\ncosts nothing to keep beside `participants` and `snippet` rather\nthan in a column of its own. `#[serde(default)]` so a `Thread` sealed\nbefore this field existed still decodes, as `None` -- exactly what\n\"never asked under this scheme\" already means.\n\nA storage-layer `category_source: Rules | Model | Person` on\n`Message` (once merged) would let this same question be answered\nfrom the newest message's own record instead -- \"already `Model`\"\nmeaning the same thing this field means today. Until then, this is\nthe fallback the finding that added it names explicitly.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "aiPriorityAskedAtCount": {
+        "description": "As [`Thread::ai_categorize_asked_at_count`], for the model-assisted\npass that promotes an `Important` thread to [`Category::Priority`]\n-- \"needs the person soon\" is its own answer, on the same terms\n\"still other\" is categorisation's and \"reply: false\" is\nauto-draft's, and gets the same treatment: recorded once asked,\nre-asked only once a new message moves `message_count` past it.\n\nKept apart from `ai_categorize_asked_at_count` and\n`ai_auto_draft_asked_at_count` for the same reason those two are\nkept apart from each other: this pass reads `Important` threads,\nthe other two read `Other` and `Important` ones respectively for a\ndifferent question each, and a shared marker written by one would\nmake another believe it had already asked about a thread it has\nnever actually seen.",
         "format": "uint32",
         "minimum": 0,
         "type": [

@@ -150,6 +150,12 @@ async fn get_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandR
 /// this field can change: switching mail on or off, and any other edit,
 /// since `ensure_account_task`/`stop_account_task` are idempotent on a task
 /// that is already in the state asked for.
+///
+/// A task that was already running is nudged as well. It re-reads the
+/// account's sync interval at the top of every wait, but a wait already in
+/// progress was started under the old one: without the nudge, shortening an
+/// hourly interval to a minute would still sit out the rest of the hour
+/// before the new setting did anything at all.
 async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> CommandResult<()> {
     let vault = svc.require()?;
     let account = args.account;
@@ -162,6 +168,9 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
     .await?;
     if mail_on {
         crate::mailsync::wiring::ensure_account_task(&svc, &vault, account_id);
+        if let Some(statuses) = svc.mail_statuses() {
+            statuses.nudge(account_id);
+        }
     } else {
         crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
     }

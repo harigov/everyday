@@ -181,6 +181,16 @@ impl MailStore for SqlStore {
         threads::list_threads(self, mailbox, filter, cursor, limit)
     }
 
+    fn list_threads_across(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ThreadPage> {
+        threads::list_threads_across(self, mailboxes, filter, cursor, limit)
+    }
+
     fn threads_in_category(
         &self,
         account: AccountId,
