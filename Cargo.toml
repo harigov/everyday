@@ -75,7 +75,10 @@ tracing = "0.1"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort. The supervisor restarts a background task that panics,
+# and mail sync contains a panic in the HTML libraries it hands a stranger's
+# message to; with "abort" neither could run, and one bad email killed the
+# app at the same message on every launch.
 strip = true
 
 [profile.dist]

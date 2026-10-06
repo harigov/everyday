@@ -816,7 +816,7 @@ pub async fn bodies_pass<S: MailSession>(
 
             let mut processed = Vec::with_capacity(present.len());
             for ((message, uid, raw), pack) in present.into_iter().zip(sealed) {
-                processed.push(process_body(
+                processed.push(process_body_contained(
                     vault.as_ref(),
                     uid,
                     message,
@@ -906,6 +906,49 @@ fn pending_messages(vault: &Vault, mailbox_id: MailboxId) -> Vec<(Message, Uid)>
     // one query's cost more tightly than "effectively unlimited".
     const PENDING_QUERY_LIMIT: u32 = 1_000_000;
     vault.mail_pending_bodies(mailbox_id, PENDING_QUERY_LIMIT).unwrap_or_default()
+}
+
+/// [`process_body`], with a panic anywhere inside it turned into the blank
+/// body a message that fails to parse already gets.
+///
+/// `process_body` hands a stranger's bytes to a MIME parser and two HTML
+/// libraries, and one message that makes any of them panic must not cost
+/// the other ninety-nine in its batch. Without this, the panic fails the
+/// whole `spawn_blocking` call, nothing in the batch is written, and every
+/// later pass downloads the same hundred messages again, appends them to
+/// the pack store again, and panics again -- for ever. The panic hook
+/// still prints the panic itself.
+fn process_body_contained(
+    vault: &Vault,
+    uid: Uid,
+    message: Message,
+    raw: &[u8],
+    pack: PackRef,
+    attachment_cap_bytes: Option<u64>,
+    identities: &[String],
+) -> (Message, Uid, Body) {
+    let blank = (message.clone(), pack.clone());
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        process_body(vault, uid, message, raw, pack, attachment_cap_bytes, identities)
+    }))
+    .unwrap_or_else(|_| {
+        let (mut message, pack) = blank;
+        tracing::warn!(message = %message.id, "reading a message body panicked; keeping it blank");
+        message.pack = pack;
+        message.snippet = String::new();
+        message.has_attachments = false;
+        message.invite = None;
+        let body = Body {
+            message_id: message.id,
+            html_sanitised: String::new(),
+            text: String::new(),
+            quoted_ranges: Vec::new(),
+            signature_range: None,
+            parts: Vec::new(),
+            remote_images: Vec::new(),
+        };
+        (message, uid, body)
+    })
 }
 
 /// One message's raw bytes, already sealed by [`bodies_pass`]'s single

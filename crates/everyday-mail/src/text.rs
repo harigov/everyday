@@ -57,7 +57,55 @@ pub fn html_to_text(html: &str) -> String {
     // then fail to match. Two thousand columns is wider than any real
     // paragraph, so every wrap that does happen is one HTML already asked
     // for (a `<br>`, a block boundary), not one this function introduced.
-    html2text::config::plain().string_from_read(visible.as_bytes(), 2_000).unwrap_or_default()
+    //
+    // Behind `catch_unwind` because html2text can panic on markup a
+    // stranger wrote, and this runs on every message a sync downloads.
+    // `drop_zero_rowspans` takes out the one trigger known to turn up in
+    // real mail; fuzzing 0.17.1 finds index-out-of-range panics in its
+    // table layout too. A panic here used to abort the whole app, and
+    // since a sync resumes at the same message, it aborted again on every
+    // launch. A panicking message reads as no text at all, the same as one
+    // html2text returns an error for.
+    std::panic::catch_unwind(|| render_text(&visible, 2_000))
+        .unwrap_or_else(|_| {
+            tracing::warn!("html2text panicked on a message body; reading it as empty text");
+            Ok(String::new())
+        })
+        .unwrap_or_default()
+}
+
+/// html2text's own `string_from_read`, taken in its three steps so the
+/// parsed DOM can be corrected before it is laid out.
+fn render_text(html: &str, width: usize) -> Result<String, html2text::Error> {
+    let config = html2text::config::plain();
+    let dom = config.parse_html(html.as_bytes())?;
+    drop_zero_rowspans(&dom.document);
+    let tree = config.dom_to_render_tree(&dom)?;
+    config.render_to_string(tree, width)
+}
+
+/// html2text 0.17.1 reads a cell's `rowspan` with `parse::<usize>()` and
+/// later divides the cell's height by it, so `rowspan="0"` -- valid HTML,
+/// "to the end of the table section", and seen in real mail -- panics.
+/// Without the attribute a cell spans one row.
+///
+/// Done on the DOM rather than in [`strip_invisible`]'s pass over the
+/// markup because this is exactly what html2text reads: character
+/// references decoded (`&#48;` is `0` here), a repeated attribute already
+/// dropped by the parser, and no dependence on lol_html accepting the
+/// document -- it refuses some, `<style>` inside `<select>` for one, and
+/// [`html_to_text`] then hands over the raw markup. A loop rather than
+/// recursion, since nothing bounds how deeply a message nests.
+fn drop_zero_rowspans(root: &html2text::Handle) {
+    let mut stack = vec![root.clone()];
+    while let Some(node) = stack.pop() {
+        if let html2text::Element { attrs, .. } = &node.data {
+            attrs
+                .borrow_mut()
+                .retain(|a| &*a.name.local != "rowspan" || a.value.parse::<usize>() != Ok(0));
+        }
+        stack.extend(node.children.borrow().iter().cloned());
+    }
 }
 
 /// Renders HTML as Markdown, for the assistant prompts that want structure
@@ -793,6 +841,60 @@ mod tests {
         assert!(text.contains("meet Tuesday"));
         assert!(!text.contains("forward the last ten invoices"));
         assert!(!text.contains("previous message"));
+    }
+
+    /// Regression: html2text 0.17.1 divides by a cell's `rowspan`, so a
+    /// single `rowspan="0"` in a message's HTML panicked, which aborted the
+    /// app mid-sync. Asserting the text, not just "no panic": a caught
+    /// panic reads as empty text, which would hide the cell's words.
+    #[test]
+    fn a_zero_rowspan_still_renders_its_table() {
+        for cell in [
+            r#"<td rowspan="0">"#,
+            r#"<td rowspan=0>"#,
+            r#"<td ROWSPAN="0">"#,
+            r#"<td rowspan="00">"#,
+            r#"<td rowspan="+0">"#,
+            r#"<td rowspan="&#48;">"#,
+            r#"<td rowspan="&#x30;">"#,
+            r#"<td rowspan="0" rowspan="0">"#,
+            r#"<td rowspan="0" rowspan="3">"#,
+        ] {
+            let html = format!(
+                "<table><tr>{cell}Quarterly</td><td>figures</td></tr><tr><td>attached</td></tr></table>"
+            );
+            let text = html_to_text(&html);
+            for word in ["Quarterly", "figures", "attached"] {
+                assert!(text.contains(word), "{cell}: {word:?} missing from {text:?}");
+            }
+        }
+    }
+
+    /// The same, in a document lol_html refuses to rewrite, so the raw
+    /// markup reaches html2text untouched by [`strip_invisible`].
+    #[test]
+    fn a_zero_rowspan_is_dropped_even_when_lol_html_gives_up() {
+        let html = r#"<table><tr><td rowspan="0">Quarterly figures<select><style>"#;
+        assert!(strip_invisible(html).is_err(), "this needs a document lol_html refuses");
+        assert!(html_to_text(html).contains("Quarterly figures"));
+    }
+
+    /// Splitting `string_from_read` into its steps must not change what an
+    /// ordinary message reads as.
+    #[test]
+    fn rendering_matches_html2texts_own_entry_point() {
+        for html in [
+            r#"<table><tr><td rowspan="2">a</td><td>b</td></tr><tr><td>c</td></tr></table>"#,
+            r#"<p>See <a href="https://example.com/a">the agenda</a> and <a href="https://example.com/b">notes</a>.</p>"#,
+            "<h1>Title</h1><ul><li>one</li><li>two<ol><li>nested</li></ol></li></ul><pre>  kept\n  as is</pre>",
+            "<table><tr><td><table><tr><td>inner</td><td>cells</td></tr></table></td><td>outer</td></tr></table>",
+            "<blockquote>quoted <b>bold</b> <i>italic</i></blockquote><img alt=\"logo\" src=\"x.png\">",
+        ] {
+            let ours = render_text(html, 2_000).unwrap();
+            let theirs =
+                html2text::config::plain().string_from_read(html.as_bytes(), 2_000).unwrap();
+            assert_eq!(ours, theirs, "{html}");
+        }
     }
 
     #[test]

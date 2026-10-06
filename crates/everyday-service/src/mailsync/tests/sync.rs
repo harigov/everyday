@@ -157,6 +157,62 @@ async fn a_process_killed_mid_pass_resumes_without_duplicates() {
     }
 }
 
+/// Regression: an HTML message with `<td rowspan="0">` made html2text
+/// divide by zero, which aborted the app in the middle of the bodies pass.
+/// The pass resumes at the same batch, so it aborted again on every launch.
+/// The message and the rest of its batch must all get their bodies, and
+/// the table's text must survive.
+#[tokio::test]
+async fn an_html_body_html2text_cannot_lay_out_does_not_stop_its_batch() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        for i in 0..5 {
+            let raw = raw_message(
+                &format!("plain-{i}@example.com"),
+                None,
+                "alice@example.com",
+                &format!("Plain {i}"),
+                "01 Jan 2024 10:00:00 +0000",
+                "nothing unusual",
+            );
+            s.append("INBOX", raw, flags_seen(), None);
+        }
+        let html = concat!(
+            "Message-ID: <rowspan-zero@example.com>\r\n",
+            "From: billing@example.com\r\n",
+            "To: me@example.com\r\n",
+            "Subject: Your statement\r\n",
+            "Date: 01 Jan 2024 11:00:00 +0000\r\n",
+            "MIME-Version: 1.0\r\n",
+            "Content-Type: text/html; charset=utf-8\r\n\r\n",
+            "<table><tr><td rowspan=\"0\">Statement total</td><td>42.00</td></tr></table>\r\n",
+        );
+        s.append("INBOX", html.as_bytes().to_vec(), flags_seen(), None);
+    }
+
+    let mut session = FakeMailSession::new(server);
+    let mailboxes = env.sync(&mut session).await;
+    let inbox = mailboxes.iter().find(|m| m.row.role == MailboxRole::Inbox).unwrap();
+
+    for uid in env.vault.mail_uid_set(inbox.row.id).unwrap() {
+        let message = env.vault.message_by_uid(inbox.row.id, uid).unwrap().unwrap();
+        assert!(
+            !crate::mailsync::ingest::is_pending(&message.pack),
+            "uid {uid} should have a body after one pass"
+        );
+    }
+    let statement = env
+        .vault
+        .message_by_message_id_header(env.account_id, "rowspan-zero@example.com")
+        .unwrap()
+        .expect("the HTML message is stored");
+    let body = env.vault.body(statement.id).unwrap();
+    assert!(body.text.contains("Statement total"), "text was {:?}", body.text);
+    assert!(statement.snippet.contains("Statement total"), "snippet was {:?}", statement.snippet);
+}
+
 /// Regression: `bodies_pass` used to upsert the whole `Message` snapshot
 /// `pending_messages` took *before* the network fetch, so a local write
 /// landing in the window between the headers pass creating a row and the
