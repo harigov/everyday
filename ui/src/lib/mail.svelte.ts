@@ -108,13 +108,23 @@ class MailState {
   expanded = $state<Set<string>>(new Set())
   composing = $state<Draft | null>(null)
   /** Is `composing` an inline reply drawn under the open thread's own
-   *  messages, rather than the dialog `MailCompose.svelte` otherwise draws
-   *  over the window. A brand-new message (`compose()`) is always a
-   *  dialog; a reply or forward (`reply()`/`forward()`, and a suggested
-   *  reply's own "send" through `openInlineDraft`) is always inline.
-   *  `closeCompose` always drops this back to `false`, so a stale `true`
-   *  can never make the *next* draft this store opens inline by accident. */
+   *  messages, rather than filling the reading pane in place of a thread.
+   *  A brand-new message (`compose()`) always fills the pane; a reply or
+   *  forward (`reply()`/`forward()`, and a suggested reply's own "send"
+   *  through `openInlineDraft`) is always inline. Neither is ever a dialog:
+   *  writing happens where reading does. `closeCompose` always drops this
+   *  back to `false`, so a stale `true` can never make the *next* draft
+   *  this store opens inline by accident. */
   composeInline = $state(false)
+  /**
+   * The draft just put aside to make room for something else -- a thread
+   * opened over a message being written in the pane, or another draft
+   * opened over it. Read, and cleared, by that draft's own sheet as it
+   * goes (`MailCompose.svelte`'s `onDestroy`), which alone knows whether
+   * anything was written in it, and so whether "Draft saved · Open" is
+   * worth saying. Not `$state`: nothing draws it.
+   */
+  parkedDraft: DraftId | null = null
   /** The threads the snooze picker is open for, or `null` -- one, or every
    *  thread `checked`. A store field rather than component state -- the
    *  same reason `overview.wantsLog` is -- so the `h` shortcut can open it
@@ -207,6 +217,7 @@ class MailState {
     this.expanded = new Set()
     this.composing = null
     this.composeInline = false
+    this.parkedDraft = null
     this.wantsSnooze = null
     this.wantsLabel = null
     this.viewingScheduledFor = null
@@ -502,6 +513,9 @@ class MailState {
     // the thread already open: reopening the same one must not drop a
     // reply somebody is still writing.
     if (this.composeInline && this.selectedThread !== id) this.closeCompose()
+    // A message filling the pane makes way for the thread -- set aside, not
+    // lost: see `parkedDraft`.
+    if (this.composing && !this.composeInline) this.#park()
     this.selectedThread = id
     this.summary = null
     // Opening one thread is leaving the many behind -- see `checked`.
@@ -563,8 +577,12 @@ class MailState {
           ids.has(d.inReplyTo),
       )
       // A reply into the thread that is still open -- the same inline
-      // treatment `reply()`/`forward()` give one started by hand.
-      if (auto && this.selectedThread === detail.thread.id) this.openInlineDraft(auto)
+      // treatment `reply()`/`forward()` give one started by hand -- unless
+      // something else began being written while the drafts were loading,
+      // which is the person's own and stays where it is.
+      if (auto && this.selectedThread === detail.thread.id && !this.composing) {
+        this.openInlineDraft(auto)
+      }
     } catch (e) {
       await quietly(e)
     }
@@ -1013,22 +1031,40 @@ class MailState {
 
   // ── compose ──────────────────────────────────────────────────────
 
-  /** A brand-new message is always the dialog -- there is no thread under
-   *  it for an inline reply to sit beneath. */
+  /** A brand-new message fills the reading pane -- there is no thread
+   *  under it for an inline reply to sit beneath. */
   async compose(account?: AccountId) {
     const accountId = account ?? this.selectedAccount ?? this.mailboxes[0]?.accountId
     if (!accountId) return
     const draft = await mailApi.newDraft({ account: accountId })
-    this.composing = draft
-    this.composeInline = false
+    this.#show(draft, false)
   }
 
   /** Opens `draft` inline, under the open thread's own messages -- what
    *  `reply`/`forward` below use, and what a suggested reply's own "send"
    *  reaches for directly (`mailwrite.ts`'s agent). */
   openInlineDraft(draft: Draft): void {
+    this.#show(draft, true)
+  }
+
+  /** Opens `draft` filling the reading pane -- what "Draft saved · Open"
+   *  calls to bring a draft put aside back. */
+  openDraft(draft: Draft): void {
+    this.#show(draft, false)
+  }
+
+  /** The one way a draft goes on screen: whatever was being written before
+   *  it is set aside first (see `parkedDraft`), never dropped silently. */
+  #show(draft: Draft, inline: boolean) {
+    if (this.composing && this.composing.id !== draft.id) this.#park()
     this.composing = draft
-    this.composeInline = true
+    this.composeInline = inline
+  }
+
+  #park() {
+    if (!this.composing) return
+    this.parkedDraft = this.composing.id
+    this.closeCompose()
   }
 
   async reply(messageId: string, all: boolean) {
@@ -1135,14 +1171,15 @@ class MailState {
       // `sendDraft`'s own local write (there is none today, but nothing rules
       // one out) show up when Undo reopens the sheet.
       const reverted = await mailApi.undoSend(pending.draft.id)
-      this.composing = reverted
       // Inline again if it is a reply into the thread still open -- the
-      // same thing that was true the moment before it was sent -- a dialog
-      // otherwise: a reply into a thread no longer open, or a brand-new
-      // message, has no reading pane left under it to sit inside.
-      this.composeInline =
+      // same thing that was true the moment before it was sent -- filling
+      // the pane otherwise: a reply into a thread no longer open, or a
+      // brand-new message, has no thread on screen to sit under.
+      this.#show(
+        reverted,
         reverted.inReplyTo != null &&
-        (this.openThread?.messages.some((m) => m.id === reverted.inReplyTo) ?? false)
+          (this.openThread?.messages.some((m) => m.id === reverted.inReplyTo) ?? false),
+      )
       // Only a scheduled send was ever in `scheduled` to begin with -- see
       // `send`'s own note -- but asking unconditionally costs one cheap,
       // already-debounced-by-nothing-else read rather than a second flag
@@ -1175,11 +1212,10 @@ class MailState {
    *  which only ever remembers the one send this window itself just made. */
   async editScheduled(draftId: DraftId) {
     try {
-      this.composing = await mailApi.undoSend(draftId)
-      // Always the dialog: reached from the Scheduled list, which has no
-      // open thread under it for an inline reply to sit inside -- unlike
+      // Always filling the pane: reached from the Scheduled list, which has
+      // no open thread for an inline reply to sit under -- unlike
       // `undoSend`'s own reopening, this has nothing to decide.
-      this.composeInline = false
+      this.#show(await mailApi.undoSend(draftId), false)
       void this.refreshScheduled()
     } catch (e) {
       await handle(e)

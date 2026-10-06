@@ -1,7 +1,9 @@
 <script lang="ts">
   // The compose sheet: From, To/Cc/Bcc as address chips, subject, a body in
   // TipTap, attachments, and the two ways a message leaves -- send now,
-  // through an undo window, or send later.
+  // through an undo window, or send later. Never a dialog: it opens in the
+  // reading pane, where a message is read, either filling it (a new message,
+  // or a draft reopened) or under the thread it answers -- see `placement`.
   //
   // The body is TipTap, the same library `RichText.svelte` wraps for the
   // journal and for notes -- but not that component: a `Draft` stores
@@ -22,7 +24,7 @@
   import { accounts } from '../lib/accounts.svelte'
   import { Autosave } from '../lib/autosave'
   import { handle } from '../lib/errors'
-  import { focusOnMount, trapFocus } from '../lib/focus'
+  import { focusOnMount } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
   import { estimateQuoteHeight, formatSenders, isBlankDraft, parseTypedAddress } from '../lib/mail'
   import {
@@ -36,6 +38,7 @@
   import { quoteDocument } from '../lib/mailview'
   import { MarkdownClipboard } from '../lib/markdown-clipboard'
   import { mail } from '../lib/mail.svelte'
+  import { notify } from '../lib/notify.svelte'
   import { menu } from '../lib/menu.svelte'
   import type { MenuItem } from '../lib/menu'
   import { DECLINE_REASONS, proposals } from '../lib/proposals.svelte'
@@ -58,20 +61,22 @@
   let {
     draft,
     onclose,
-    inline = false,
+    placement = 'pane',
   }: {
     draft: Draft
     onclose: () => void
     /**
-     * Reply/Reply all/Forward, and a quick reply chosen under a thread, open
-     * in the reading pane rather than a dialog over it -- `MailView.svelte`
-     * passes this whenever `mail.composeInline` says so. A brand-new message
-     * (`mail.compose()`, with nothing to be a reply to) is never opened this
-     * way, so this stays the one prop rather than something read off `draft`
-     * itself.
+     * Where in the reading pane the sheet sits. `'thread'`: under the open
+     * thread's messages -- Reply, Reply all, Forward, a suggested reply --
+     * whenever `mail.composeInline` says so. `'pane'`: the whole pane, in
+     * place of a thread -- a new message (`mail.compose()`), or a draft
+     * reopened with no open thread to sit under. A prop rather than read
+     * off `draft`, since a reply reopened from the Scheduled list fills the
+     * pane all the same.
      */
-    inline?: boolean
+    placement?: 'pane' | 'thread'
   } = $props()
+  const underThread = $derived(placement === 'thread')
 
   /**
    * A dream wrote this and asked to send it. Found by id rather than held as
@@ -159,35 +164,26 @@
   let pickingDateTime = $state(false)
   let sendAt = $state(toLocalInputValue(new Date(Date.now() + 3_600_000)))
 
-  // ── inline, in the reading pane, rather than a dialog over it ──────
+  // ── in the reading pane, beside the rest of the app ─────────────
 
   /** This sheet's own root element -- not `host` (the editor's own mount
    *  point): `onKeydown` needs to know whether focus is anywhere in the
    *  *sheet*, chips and buttons included, not only in the prose itself. */
   let sheetEl = $state<HTMLDivElement>()
 
-  /** `working.to`'s first name or address, for the inline header's "Reply
+  /** `working.to`'s first name or address, for the thread header's "Reply
    *  to {name}" -- there is always at least one by the time a reply draft
    *  reaches here (`new_draft` fills it from the parent's `from`/`reply_to`
    *  before this ever mounts), but a forward's `to` starts empty, which is
    *  exactly the case this reads as "Forward" instead. */
   const replyToName = $derived(working.to[0]?.name || working.to[0]?.email || '')
 
-  /** Checked before `onKeydown` acts on anything, but only when `inline`:
-   *  a dialog traps focus inside itself already (`trapFocus`, below), so
-   *  this is never false while one is open, but an inline reply sits in
-   *  normal flow beside the rest of the app, and Escape or Mod+Enter
-   *  pressed while reading a *different* thread must not reach across the
-   *  pane and act on a draft nobody is looking at. */
+  /** Checked before `onKeydown` acts on anything: the sheet is not modal,
+   *  it sits in normal flow beside the list and the rest of the app, and
+   *  Mod+Enter pressed while focus is somewhere else must not reach across
+   *  and send a draft nobody is looking at. */
   function focusWithinSheet(): boolean {
     return Boolean(sheetEl?.contains(document.activeElement))
-  }
-
-  /** `trapFocus` only when this is a dialog -- an inline reply is not
-   *  modal, so Tab must stay free to leave it for the rest of the window. */
-  function trapFocusUnlessInline(node: HTMLElement) {
-    if (inline) return
-    return trapFocus(node)
   }
 
   // ── writing help ─────────────────────────────────────────────────
@@ -226,7 +222,13 @@
    * with when the sheet opened (blank, or a quoted reply) and never a
    * keystroke that had been typed since.
    */
+  /** Has anything been changed here -- what "Draft saved" waits for, so
+   *  putting aside a draft somebody only looked at (the assistant's own,
+   *  opened under its thread) says nothing. */
+  let edited = false
+
   function touch() {
+    edited = true
     syncBody()
     working.updatedAt = new Date().toISOString()
     saver.touch(working.id)
@@ -386,12 +388,19 @@
       // Only the person's own part -- see `quotedHtml`.
       content: initialBody.own,
       editorProps: { attributes: { class: 'ed-content', spellcheck: 'true' } },
-      // Inline -- Reply, Reply all, Forward -- the sheet opens straight
-      // into the body, on the empty first line above the folded quote, so
-      // typing can start at once; a forward's recipients can follow. A
-      // dialog keeps TipTap's own default of not stealing focus, and the
-      // To field takes it instead.
-      autofocus: inline ? 'start' : false,
+      // Reply, Reply all, Forward -- and any draft that already has its
+      // recipients -- open straight into the body: a fresh reply on the
+      // empty first line above the folded quote, so typing can start at
+      // once (a forward's recipients can follow); a draft with words of its
+      // own already, after the last of them. A new message, with nobody to
+      // send it to yet, leaves focus to the To field instead.
+      autofocus: underThread
+        ? 'start'
+        : working.to.length === 0
+          ? false
+          : initialBody.own.replace(/<[^>]*>/g, '').trim()
+            ? 'end'
+            : 'start',
       onUpdate: () => touch(),
     })
     editor = ed
@@ -634,45 +643,31 @@
   }
 
   function onKeydown(e: KeyboardEvent) {
-    // An inline reply is not modal: it sits in the reading pane beside
-    // whatever else is on screen, so a key meant for the rest of the
-    // window -- `j`/`k` over a different thread, another app's own
-    // shortcut -- must pass straight through rather than being read as
-    // this draft's. A dialog never fails this check while it is open:
-    // `trapFocus` keeps focus inside it the whole time.
-    if (inline && !focusWithinSheet()) return
+    // The sheet is not modal: it sits in the reading pane beside whatever
+    // else is on screen, so a key meant for the rest of the window --
+    // `j`/`k` over the list, another app's own shortcut -- must pass
+    // straight through rather than being read as this draft's.
+    if (!focusWithinSheet()) return
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault()
       void (proposal ? acceptProposal() : send())
     }
     // Not "Mod+J": `shortcuts.svelte.ts`'s own "the next app" only keys off
-    // `anywhere()`, which a *dialog*'s `aria-modal="true"` defeats -- but an
-    // inline reply adds no such attribute, and that file's window listener
-    // was registered long before this component ever mounts, so it would
-    // already have switched apps before this handler got a chance to call
-    // `preventDefault()`. Not "Mod+I" either: `@tiptap/extension-italic`
-    // (StarterKit, below) binds that inside the prose itself, which is
-    // exactly where focus sits the moment an inline reply opens. "Mod+G" is
-    // bound by neither table nor any extension in `extensions`, below, in
-    // any mode.
+    // `anywhere()`, which nothing modal stands in front of here, and that
+    // file's window listener was registered long before this component ever
+    // mounts, so it would already have switched apps before this handler
+    // got a chance to call `preventDefault()`. Not "Mod+I" either:
+    // `@tiptap/extension-italic` (StarterKit, below) binds that inside the
+    // prose itself, which is exactly where focus sits the moment a reply
+    // opens. "Mod+G" is bound by neither table nor any extension in
+    // `extensions`, below.
+    //
+    // No Escape: a draft sitting in the reading pane must not vanish
+    // because the reader pressed Escape to back out of something else
+    // entirely. Only the close button -- `discard()` -- removes it.
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'g') {
       e.preventDefault()
       if (writingEnabled) aiPromptOpen = !aiPromptOpen
-    }
-    if (e.key === 'Escape') {
-      // Inline, Escape is not a way out: there is no scrim it would
-      // otherwise match, and a reply sitting quietly in the reading pane
-      // must not vanish because the reader pressed Escape to back out of
-      // something else entirely. Only the close button -- `discard()`,
-      // same as it is here -- removes it.
-      if (inline) return
-      // Not a bare `onclose()`: that dropped whatever autosave had not yet
-      // written, per Bug 1. `discard()` is exactly what the close button and
-      // the scrim already do -- flush a draft worth keeping, delete a blank
-      // one -- so Escape stops being the one way out of this sheet that
-      // loses text.
-      e.preventDefault()
-      void discard()
     }
   }
 
@@ -681,9 +676,10 @@
     // blank-draft branch, `forget()` -- before `onclose()` ever runs, so by
     // the time Svelte tears this down through the ordinary close paths there
     // is nothing left dirty. This is the safety net for the
-    // other ways the sheet can go away -- `mail.reset()` on a lock, or
-    // `undoSend()` swapping in a fresh draft instance over this one -- where
-    // nothing upstream called either.
+    // other ways the sheet can go away -- `mail.reset()` on a lock,
+    // `undoSend()` swapping in a fresh draft instance over this one, or a
+    // thread opened over a draft filling the pane (`mail.parkedDraft`) --
+    // where nothing upstream called either.
     //
     // `flush()` cannot be awaited here: `onDestroy` cannot suspend teardown.
     // It does not need to be. The write it starts does not depend on this
@@ -695,28 +691,38 @@
     // edits without writing them, stays reserved for the one case `Autosave`
     // itself says it is for: a lock, with nothing left to write to.
     void saver.flush()
+
+    // Put aside rather than closed: say where it went, and offer it back --
+    // when it was written in here. A blank one was never saved, and one
+    // only looked at is still in Drafts exactly as it was.
+    if (mail.parkedDraft === working.id) {
+      mail.parkedDraft = null
+      syncBody()
+      if (edited && !isBlankDraft(working)) {
+        const kept = $state.snapshot(working)
+        notify.info('Draft saved', {
+          body: kept.subject || undefined,
+          key: 'mail-draft-parked',
+          action: { label: 'Open', run: () => mail.openDraft(kept) },
+        })
+      }
+    }
   })
 </script>
 
 <svelte:window onkeydown={onKeydown} />
 
-{#if !inline}
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="scrim" onclick={discard}></div>
-{/if}
 <div
   bind:this={sheetEl}
-  class={inline ? 'inline-compose' : 'sheet compose'}
-  role={inline ? undefined : 'dialog'}
-  aria-modal={inline ? undefined : true}
+  class={underThread ? 'thread-compose' : 'pane-compose'}
+  role="region"
   aria-label="Compose"
-  use:trapFocusUnlessInline
 >
-  <div class="head" class:inline-head={inline}>
-    {#if inline}
+  <div class="head" class:thread-head={underThread}>
+    {#if underThread}
       <h2>{working.inReplyTo ? `Reply to ${replyToName}` : 'Forward'}</h2>
       {#if working.to.length > 0}
-        <span class="inline-to">To: {formatSenders(working.to, 3)}</span>
+        <span class="thread-to">To: {formatSenders(working.to, 3)}</span>
       {/if}
     {:else}
       <h2>{working.subject || 'New message'}</h2>
@@ -748,7 +754,7 @@
           >
         {/each}
         <input
-          use:focusOnMount={field === 'to' && !inline}
+          use:focusOnMount={field === 'to' && !underThread && working.to.length === 0}
           value={typedIn(field)}
           aria-label={label}
           aria-autocomplete="list"
@@ -987,23 +993,28 @@
 </div>
 
 <style>
-  /* Room to write in: most of a laptop screen, centred rather than hung
-     from `.sheet`'s 22% -- the body below the fields takes whatever height
-     is left, and scrolls inside it. */
-  .compose {
-    top: 50%;
-    translate: -50% -50%;
-    width: min(880px, calc(100vw - var(--sp-8) * 2));
-    height: min(720px, calc(100vh - var(--sp-8) * 2));
+  /* The whole reading pane, where a thread would otherwise be: a header the
+     height of the thread's own, then the fields, then the body taking
+     whatever height is left and scrolling inside it, the footer always in
+     view at the bottom. */
+  .pane-compose {
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
+    padding: 0 var(--sp-4) var(--sp-3);
   }
-  /* In normal flow, not over it: no `position`, no `z-index`, a width that
-     follows its parent rather than naming one of its own -- the opposite of
-     every rule `.sheet`/`.compose` set for a reason that was always "this
-     floats over the window", which an inline reply does not. */
-  .inline-compose {
+  .pane-compose > .head {
+    flex: none;
+    height: var(--header-h);
+    margin: 0 calc(-1 * var(--sp-4));
+    padding: 0 var(--sp-4);
+    border-bottom: 1px solid var(--border);
+  }
+  /* Under the thread it answers, in its flow: a card the width of the
+     messages above it. */
+  .thread-compose {
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
@@ -1029,10 +1040,10 @@
   }
   /* The compact header: the title names what this is rather than growing to
      fill the row, so there is still room for the recipients line beside it. */
-  .head.inline-head h2 {
+  .head.thread-head h2 {
     flex: none;
   }
-  .inline-to {
+  .thread-to {
     flex: 1;
     min-width: 0;
     overflow: hidden;
@@ -1194,14 +1205,14 @@
     font-size: var(--text-xs);
   }
 
-  /* The editor and the folded quote under it. In the dialog this is what
-     takes the height the fields leave, and what scrolls; inline, the
-     reading pane around it already scrolls. */
+  /* The editor and the folded quote under it. Filling the pane, this is
+     what takes the height the fields leave, and what scrolls; under a
+     thread, the reading pane around it already scrolls. */
   .body {
     display: flex;
     flex-direction: column;
   }
-  .compose .body {
+  .pane-compose .body {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
@@ -1214,7 +1225,7 @@
   }
   /* A message quoting nothing: the editor fills the body, so a click
      anywhere in the empty space below the last line still lands in it. */
-  .compose .prose.fill {
+  .pane-compose .prose.fill {
     flex: 1 0 auto;
   }
   .prose :global(.ed-content) {

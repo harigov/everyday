@@ -161,7 +161,7 @@ assert.ok(
   void before
 }
 
-// ── Inline replies vs. the compose dialog ───────────────────────────
+// ── Inline replies vs. a message filling the reading pane ───────────
 
 {
   const id = mail.threads[0].id
@@ -174,13 +174,35 @@ assert.ok(
   assert.equal(mail.composeInline, false, 'closeCompose always drops composeInline back to false')
 
   await mail.compose()
-  assert.equal(mail.composeInline, false, 'a brand-new message is always the dialog')
+  assert.equal(mail.composeInline, false, 'a brand-new message fills the reading pane')
+  const fresh = mail.composing
+
+  // Opening a thread makes way for it, putting the message aside for its
+  // sheet to offer back -- never dropping it on the floor.
+  await mail.openThreadById(mail.threads[1].id)
+  assert.equal(mail.composing, null, 'the thread takes the pane')
+  assert.equal(mail.parkedDraft, fresh.id, 'the message it replaced is the one set aside')
+  mail.parkedDraft = null
+
+  mail.openDraft(fresh)
+  assert.equal(mail.composing.id, fresh.id, 'Open brings the same draft back')
+  assert.equal(mail.composeInline, false)
+
+  // A second message over the first sets the first aside the same way.
+  await mail.compose()
+  assert.notEqual(mail.composing.id, fresh.id)
+  assert.equal(mail.parkedDraft, fresh.id)
+  mail.parkedDraft = null
   mail.closeCompose()
 }
 
 // ── Picking several threads ─────────────────────────────────────────
 
+/** Long enough for the store's debounced live refresh to have run. */
+const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
+
 {
+  await settle()
   await mail.selectMailbox(mail.mailboxes.find((m) => m.role === 'inbox').id)
   const ids = mail.threads.map((t) => t.id)
   assert.ok(ids.length >= 4, 'the mock inbox has enough threads to pick from')
@@ -219,6 +241,9 @@ assert.ok(
   mail.clickThread(ids[0], { toggle: true })
   mail.clickThread(ids[1], { toggle: true })
   await mail.archiveMany(mail.targets)
+  // A live refresh can land mid-archive with the page as it was a moment
+  // before -- the store's own follow-up refresh is what settles it.
+  await settle()
   assert.equal(mail.threads.length, before - 2, 'archiving the pick removes every picked row')
   assert.ok(!mail.threads.some((t) => t.id === ids[0] || t.id === ids[1]))
   assert.equal(mail.checked.size, 0, 'and nothing archived is left picked')

@@ -445,7 +445,15 @@
 </section>
 
 <main class="main">
-  {#if mail.checked.size > 0}
+  {#if mail.composing && !mail.composeInline}
+    <!-- A new message, or a draft reopened, where a thread is read rather
+         than in a dialog over everything: the list stays in reach beside
+         it. Keyed, so a second draft opened over the first is a fresh sheet
+         rather than the first one's working copy under another name. -->
+    {#key mail.composing.id}
+      <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
+    {/key}
+  {:else if mail.checked.size > 0}
     <div class="bulk">
       <h2>{plural(mail.checked.size, 'conversation')} selected</h2>
       <div class="bulk-actions">
@@ -586,7 +594,11 @@
       {#if mail.composing && mail.composeInline}
         {#key mail.composing.id}
           <div class="inline-reply" use:scrollIntoViewOnMount>
-            <MailCompose draft={mail.composing} inline onclose={() => mail.closeCompose()} />
+            <MailCompose
+              draft={mail.composing}
+              placement="thread"
+              onclose={() => mail.closeCompose()}
+            />
           </div>
         {/key}
       {/if}
@@ -601,10 +613,6 @@
     </EmptyState>
   {/if}
 </main>
-
-{#if mail.composing && !mail.composeInline}
-  <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
-{/if}
 
 {#if mail.wantsSnooze}
   <MailSnoozePicker onchoose={snooze} oncancel={() => (mail.wantsSnooze = null)} />
