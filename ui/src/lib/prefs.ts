@@ -29,6 +29,7 @@ export type PrefKey =
   | 'everyday.tray.meeting'
   | 'everyday.badge'
   | 'everyday.sidebar.folded'
+  | 'everyday.mail.accounts.open'
   | 'everyday:assistant-open'
   | 'everyday:assistant-width'
 

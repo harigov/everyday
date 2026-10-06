@@ -21,6 +21,7 @@
     isCurrentInviteResponse,
     inviteIsCancelled,
     estimateBodyHeight,
+    messageDateLabel,
     remoteImagesAllowed,
     threadListDate,
   } from '../lib/mail'
@@ -45,6 +46,7 @@
   import { isoDate } from '../lib/time'
   import { app, handle } from '../lib/state.svelte'
   import type { MailAttachment, MailMessageDetail, RemoteImageSettings } from '../lib/types'
+  import Avatar from './Avatar.svelte'
   import Icon from './Icon.svelte'
   import MailQuickReplies from './MailQuickReplies.svelte'
 
@@ -215,26 +217,39 @@
     {@const isLast = i === messages.length - 1}
     {@const loaded = bodies.get(message.id)}
     <article class="message" class:open={isOpen}>
+      <!-- The whole header toggles the message: open, it names who wrote
+           to whom and when in full; folded, it is one line of the message
+           itself, the way a stack of replies is skimmed. -->
       <button class="head" onclick={() => toggle(message.id)} aria-expanded={isOpen}>
-        <span class="chev" class:down={isOpen}><Icon name="chevron" size={13} /></span>
-        <span class="from">{message.from.name || message.from.email}</span>
-        {#if !isOpen}
-          <span class="snippet">{message.snippet}</span>
-        {/if}
-        <span class="date">{threadListDate(message.date)}</span>
-        {#if message.hasAttachments}
-          <span class="clip" title="Has an attachment"><Icon name="paperclip" size={12} /></span>
-        {/if}
+        <Avatar name={message.from.name} email={message.from.email} size={isOpen ? 40 : 34} />
+        <span class="who">
+          <span class="who-line">
+            <span class="from">{message.from.name || message.from.email}</span>
+            {#if isOpen && message.from.name}
+              <span class="addr">{message.from.email}</span>
+            {/if}
+          </span>
+          {#if isOpen}
+            <span class="to">
+              To: {formatSenders(message.to, 4)}{#if message.cc.length > 0}
+                <span class="cc">· Cc: {formatSenders(message.cc, 4)}</span>{/if}
+            </span>
+          {:else}
+            <span class="snippet">{message.snippet}</span>
+          {/if}
+        </span>
+        <span class="when">
+          {#if message.hasAttachments}
+            <span class="clip" title="Has an attachment"><Icon name="paperclip" size={13} /></span>
+          {/if}
+          <span class="date" title={messageDateLabel(message.date)}
+            >{isOpen ? messageDateLabel(message.date) : threadListDate(message.date)}</span
+          >
+        </span>
       </button>
 
       {#if isOpen}
         <div class="body">
-          <div class="who">
-            <span class="to">To: {formatSenders(message.to, 4)}</span>
-            {#if message.cc.length > 0}<span class="to">Cc: {formatSenders(message.cc, 4)}</span
-              >{/if}
-          </div>
-
           {#if message.invite}
             {@const invite = message.invite}
             <div class="invite-card" class:cancelled={inviteIsCancelled(invite)}>
@@ -347,7 +362,7 @@
           {:else if loaded === 'error'}
             <p class="loading">This message could not be loaded.</p>
           {:else}
-            <div class="frame-wrap" use:autoSize={loaded.html}>
+            <div class="frame-wrap card" use:autoSize={loaded.html}>
               <iframe
                 title={message.subject || 'Message body'}
                 sandbox="allow-popups allow-popups-to-escape-sandbox"
@@ -359,10 +374,14 @@
           {#if isLast}
             <div class="actions">
               <button class="btn" onclick={() => mail.reply(message.id, false)}>
-                <Icon name="arrow-up" size={13} /> Reply
+                <Icon name="reply" size={15} /> Reply
               </button>
-              <button class="btn" onclick={() => mail.reply(message.id, true)}> Reply all </button>
-              <button class="btn" onclick={() => mail.forward(message.id)}> Forward </button>
+              <button class="btn" onclick={() => mail.reply(message.id, true)}>
+                <Icon name="reply-all" size={15} /> Reply all
+              </button>
+              <button class="btn" onclick={() => mail.forward(message.id)}>
+                <Icon name="forward" size={15} /> Forward
+              </button>
               <!-- Quick replies and "Write with AI…", in the same row as the
                    three above rather than a block of their own -- renders
                    nothing when writing help is off for this account, the
@@ -381,72 +400,106 @@
   .thread {
     display: flex;
     flex-direction: column;
-    gap: var(--sp-2);
-    padding: var(--sp-4);
+    padding: var(--sp-2) var(--sp-6) var(--sp-6);
+    container-type: inline-size;
   }
 
+  /* Messages are a list, not a stack of boxes: each separated from the next
+     by a hairline, and only an open one's body drawn as a card. */
   .message {
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
   }
-  .message.open {
-    background: var(--bg-raised);
+  .message:last-child {
+    border-bottom: 0;
   }
 
   .head {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
+    gap: var(--sp-3);
     width: 100%;
-    height: var(--row-h);
-    padding: 0 var(--sp-3);
+    padding: var(--sp-3) var(--sp-1);
+    border-radius: var(--radius);
     text-align: left;
-    color: var(--fg-muted);
   }
-  .chev {
-    display: grid;
-    place-items: center;
-    flex: none;
-    transition: transform var(--fast) var(--ease);
+  .message:not(.open) .head:hover {
+    background: var(--bg-hover);
   }
-  .chev.down {
-    transform: rotate(90deg);
+  .who {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .who-line {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    min-width: 0;
   }
   .from {
     flex: none;
-    font-weight: 600;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-base);
+    font-weight: 650;
     color: var(--fg);
   }
-  .snippet {
-    flex: 1;
+  .message.open .from {
+    font-size: var(--text-md);
+  }
+  .addr {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--fg-faint);
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+  .snippet,
+  .to {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+  .cc {
+    margin-left: 2px;
+  }
+  .when {
+    flex: none;
+    align-self: flex-start;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding-top: 3px;
   }
   .date {
-    flex: none;
     font-size: var(--text-xs);
-    color: var(--fg-faint);
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
   }
   .clip {
-    flex: none;
     display: grid;
     place-items: center;
     color: var(--fg-faint);
   }
 
+  /* Indented to start under the name, past the avatar, so the body reads as
+     belonging to the header above it. */
   .body {
-    padding: 0 var(--sp-3) var(--sp-3);
+    padding: 0 0 var(--sp-5) calc(40px + var(--sp-3) + var(--sp-1));
   }
-  .who {
-    display: flex;
-    gap: var(--sp-3);
-    padding-bottom: var(--sp-2);
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
+  /* A narrow pane needs the width more than the alignment. */
+  @container (max-width: 520px) {
+    .body {
+      padding-left: 0;
+    }
   }
 
   .loading {
@@ -457,14 +510,20 @@
 
   .images-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--sp-1);
+    gap: 2px var(--sp-2);
     margin-bottom: var(--sp-2);
-    padding: var(--sp-1) var(--sp-2);
-    border-radius: var(--radius-sm);
+    padding: 6px var(--sp-3);
+    border-radius: var(--radius);
     background: var(--bg-sunken);
     font-size: var(--text-xs);
-    color: var(--fg-faint);
+    color: var(--fg-subtle);
+  }
+  /* Each choice wraps whole or not at all -- "Always from / sender" broken
+     over two lines read as two different offers. */
+  .images-bar > * {
+    white-space: nowrap;
   }
   .sep {
     opacity: 0.5;
@@ -591,11 +650,20 @@
 
   /* `overflow-y: auto` is the safety net `estimateBodyHeight`'s own doc
      promises: the guess is sometimes short, and this is what stops a short
-     guess clipping the last line instead of scrolling to it. */
+     guess clipping the last line instead of scrolling to it.
+
+     The card is the page colour -- the same one the message's own document
+     paints behind its text, light theme and dark (`mailview.rs`'s
+     `BASE_STYLE`, and `applyDarkOverride`) -- set into the raised reading
+     pane, so the frame's edge and the card's are one edge. */
   .frame-wrap {
     max-height: 70vh;
     overflow-y: auto;
-    border-radius: var(--radius-sm);
+  }
+  .frame-wrap.card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    background: var(--bg);
   }
   .frame-wrap iframe {
     display: block;
@@ -606,18 +674,24 @@
   .actions {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: var(--sp-2);
-    padding-top: var(--sp-3);
+    padding-top: var(--sp-4);
   }
   .btn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    gap: 7px;
+    height: 34px;
+    padding: 0 var(--sp-4) 0 var(--sp-3);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
     font-size: var(--text-sm);
+    font-weight: 600;
     color: var(--fg-muted);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
   .btn:hover {
     background: var(--bg-hover);

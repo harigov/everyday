@@ -68,6 +68,22 @@ export function threadListDate(instant: string): string {
 }
 
 /**
+ * "Today at 7:52 AM", "Yesterday at 6:30 AM", "Saturday at 9:10 PM": an open
+ * message's own moment, where the list's `threadListDate` gives only one of
+ * the two -- in a thread of several replies an hour apart, the day alone
+ * cannot say which came first and the time alone cannot say which day.
+ */
+export function messageDateLabel(instant: string, now = new Date()): string {
+  const d = new Date(instant)
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  const day = sameDay ? 'Today' : friendlyDate(isoDate(d))
+  return `${day} at ${timeOfDay(d)}`
+}
+
+/**
  * "Tue 8:00": a weekday and a time together, for the two places a bare date
  * or a bare time says less than both at once -- the Snoozed view's own date
  * column (`snoozedUntilLabel`) and the Scheduled list's own one line

@@ -5,6 +5,7 @@
   // folded into one component the way the library and the todo app do.
 
   import { accounts } from '../lib/accounts.svelte'
+  import { accountColor } from '../lib/avatar'
   import {
     CATEGORY_TABS,
     categoryTabCount,
@@ -26,6 +27,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { compactCount, plural, relativeTime } from '../lib/format'
+  import type { IconName } from '../lib/icons'
   import type {
     AccountId,
     Mailbox,
@@ -34,6 +36,7 @@
     Thread,
     ThreadId,
   } from '../lib/types'
+  import Avatar from './Avatar.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import MailCleanup from './MailCleanup.svelte'
@@ -64,6 +67,37 @@
   )
 
   const mailAccounts = $derived(accounts.list.filter((a) => a.services.mail))
+
+  /** Every mail account, in the order their dots take `accountColor`'s
+   *  palette -- the order Settings and the sidebar list them in. */
+  const accountIds = $derived(mailAccounts.map((a) => a.id))
+
+  /** The line under the heading: how much of what is listed is unread, from
+   *  the same count the sidebar row shows -- nothing until that has loaded,
+   *  rather than a "0 unread" that is not yet true. */
+  const unreadLine = $derived.by(() => {
+    if (mail.viewingScheduledFor) {
+      const waiting = mail.scheduled.filter(
+        (s) => s.draft.accountId === mail.viewingScheduledFor,
+      ).length
+      return waiting > 0 ? `${waiting.toLocaleString()} waiting to send` : ''
+    }
+    const box = mail.mailbox
+    const unread = box ? mail.unreadCounts.get(box.id) : undefined
+    if (unread === undefined) return ''
+    return unread > 0 ? `${unread.toLocaleString()} unread` : 'Nothing unread'
+  })
+
+  /** Each category chip's mark. `user` for Important, which is mail a
+   *  person wrote to you; `more` for whatever the rules could not place. */
+  const TAB_ICONS: Record<MailCategory | 'all', IconName> = {
+    all: 'inbox',
+    priority: 'flag',
+    important: 'user',
+    other: 'more',
+    newsletter: 'newspaper',
+    notification: 'bell',
+  }
 
   /** The account a list row belongs to, as compactly as it can be named. */
   function accountLabel(id: AccountId): string {
@@ -320,7 +354,10 @@
 
 <section class="list">
   <div class="top">
-    <span class="heading">{heading}</span>
+    <div class="titles">
+      <span class="heading">{heading}</span>
+      {#if unreadLine}<span class="subline">{unreadLine}</span>{/if}
+    </div>
     <button
       class="plus"
       class:spinning={syncing}
@@ -329,7 +366,7 @@
       aria-busy={syncing}
       onclick={() => void mail.syncAll(syncScope.length > 0 ? syncScope : undefined)}
     >
-      <Icon name="refresh" size={15} />
+      <Icon name="refresh" size={17} />
     </button>
     <button
       class="plus"
@@ -338,15 +375,15 @@
       aria-haspopup="dialog"
       onclick={() => (cleaning = true)}
     >
-      <Icon name="broom" size={15} />
+      <Icon name="broom" size={17} />
     </button>
     <button
-      class="plus"
+      class="plus compose"
       title="Compose (C)"
       aria-label="Compose"
       onclick={() => void mail.compose()}
     >
-      <Icon name="plus" size={16} />
+      <Icon name="pencil" size={16} />
     </button>
   </div>
 
@@ -354,26 +391,34 @@
     <MailScheduled accountId={mail.viewingScheduledFor} />
   {:else}
     {#if showTabs && !mail.searchQuery.trim()}
-      <!-- (p) TODO: `Tab`/`Shift+Tab` move between these -- see
-           `shortcuts.svelte.ts`'s own note on why that key was free to take. -->
+      <!-- One chip per category, the open one named and the rest an icon
+           with its count -- six labelled tabs and their counts are wider
+           than the list column, and wrapped onto two rows they read as a
+           paragraph rather than a control. Every chip is still named, in
+           its title and to assistive technology. -->
       <div class="tabs" role="tablist" aria-label="Mail categories">
         {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
           {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
+          {@const on = mail.category === tab.key}
           <button
-            class="tab"
+            class="chip"
             role="tab"
-            aria-selected={mail.category === tab.key}
-            class:sel={mail.category === tab.key}
+            aria-selected={on}
+            aria-label={tab.label}
+            class:sel={on}
             title={count.threads > 0
-              ? `${plural(count.threads, 'conversation')}, ${count.unread.toLocaleString()} unread`
-              : undefined}
+              ? `${tab.label}: ${plural(count.threads, 'conversation')}, ${count.unread.toLocaleString()} unread`
+              : tab.label}
             onclick={() => mail.setCategory(tab.key)}
           >
-            {tab.label}
-            {#if count.threads > 0}
-              <span class="tab-count" class:has-unread={count.unread > 0}
+            <Icon name={TAB_ICONS[tab.key ?? 'all']} size={15} />
+            {#if on}<span class="chip-label">{tab.label}</span>{/if}
+            {#if count.threads > 0 && !on}
+              <span class="badge" class:has-unread={count.unread > 0}
                 >{compactCount(count.threads)}</span
               >
+            {:else if count.threads > 0}
+              <span class="chip-count">{compactCount(count.threads)}</span>
             {/if}
           </button>
         {/each}
@@ -394,56 +439,24 @@
         <!-- `SearchMailResult.threads` is the same `Thread` shape every other
              row already draws from -- see `types.ts`'s own doc on why a
              search hit is not a narrower type of its own. -->
-        {#each searchRows as row (rowKey(row))}
-          {#if row.type === 'header'}
-            <div class="date-section" aria-hidden="true">{row.label}</div>
-          {:else}
-            {@const t = threadOf(row)}
+        <div class="scroll thread-rows">
+          {#each searchRows as row (rowKey(row))}
+            {#if row.type === 'header'}
+              <div class="date-section" aria-hidden="true">{row.label}</div>
+            {:else}
+              {@render threadRow(threadOf(row))}
+            {/if}
+          {/each}
+          {#if mail.searchCursor}
             <button
-              class="row"
-              class:checked={mail.checked.has(t.id)}
-              onmousedown={noTextRange}
-              onclick={(e) => clickRow(e, t.id)}
-              oncontextmenu={(e) => menu.show(e, menuFor(t))}
+              class="load-more"
+              disabled={mail.searching}
+              onclick={() => void mail.loadMoreSearchResults()}
             >
-              {#if mail.checked.has(t.id)}
-                <span class="tick" aria-hidden="true"><Icon name="tick" size={10} /></span>
-              {:else}
-                <span class="dot" aria-hidden="true"></span>
-              {/if}
-              <div class="body">
-                <div class="line1">
-                  <span class="from">{formatSenders(t.participants)}</span>
-                  {#if t.category === 'priority'}
-                    <span class="priority-mark" title="Priority"
-                      ><Icon name="flag" size={12} /></span
-                    >
-                  {/if}
-                  {#if t.starred}
-                    <Icon name="star" size={12} />
-                  {/if}
-                  {#if t.hasAttachments}
-                    <Icon name="paperclip" size={12} />
-                  {/if}
-                  <span class="date">{threadListDate(t.lastDate)}</span>
-                </div>
-                <div class="line2">
-                  <span class="subject">{t.subject || '(no subject)'}</span>
-                  {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
-                </div>
-              </div>
+              {mail.searching ? 'Loading…' : 'Load more'}
             </button>
           {/if}
-        {/each}
-        {#if mail.searchCursor}
-          <button
-            class="load-more"
-            disabled={mail.searching}
-            onclick={() => void mail.loadMoreSearchResults()}
-          >
-            {mail.searching ? 'Loading…' : 'Load more'}
-          </button>
-        {/if}
+        </div>
       {/if}
     {:else if mail.loading && mail.threads.length === 0}
       <p class="hint">Loading…</p>
@@ -467,52 +480,7 @@
             {#if row.type === 'header'}
               <div class="date-section" aria-hidden="true">{row.label}</div>
             {:else}
-              {@const t = threadOf(row)}
-              <button
-                class="row"
-                class:sel={mail.selectedThread === t.id}
-                class:checked={mail.checked.has(t.id)}
-                class:unread={t.unreadCount > 0}
-                onmousedown={noTextRange}
-                onclick={(e) => clickRow(e, t.id)}
-                oncontextmenu={(e) => menu.show(e, menuFor(t))}
-              >
-                {#if mail.checked.has(t.id)}
-                  <span class="tick" aria-hidden="true"><Icon name="tick" size={10} /></span>
-                {:else}
-                  <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
-                {/if}
-                <div class="body">
-                  <div class="line1">
-                    <span class="from">{formatSenders(t.participants)}</span>
-                    {#if t.category === 'priority'}
-                      <span class="priority-mark" title="Priority"
-                        ><Icon name="flag" size={12} /></span
-                      >
-                    {/if}
-                    {#if t.starred}
-                      <Icon name="star" size={12} />
-                    {/if}
-                    {#if t.hasAttachments}
-                      <Icon name="paperclip" size={12} />
-                    {/if}
-                    {#if unifiedView}
-                      {@const whose = accountLabel(t.accountId)}
-                      <span class="account" title={whose}>{whose}</span>
-                    {/if}
-                    <span class="date">
-                      {inSnoozedView && t.snoozedUntil
-                        ? snoozedUntilLabel(t.snoozedUntil)
-                        : threadListDate(t.lastDate)}
-                    </span>
-                  </div>
-                  <div class="line2">
-                    <span class="subject">{t.subject || '(no subject)'}</span>
-                    {#if t.snippet}<span class="snippet">— {t.snippet}</span>{/if}
-                    {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
-                  </div>
-                </div>
-              </button>
+              {@render threadRow(threadOf(row))}
             {/if}
           {/snippet}
         </VirtualList>
@@ -522,11 +490,67 @@
   <PaneResizer
     cssVar="--mail-list-w"
     storageKey="pane-w:mail-list"
-    defaultWidth={366}
-    min={260}
+    defaultWidth={380}
+    min={280}
     max={640}
   />
 </section>
+
+<!-- One thread in a list -- the mailbox's own and a search's draw the same
+     row. The avatar is whoever the thread is with (the newest voice that is
+     not this account's own), a tick in its place once the row is picked;
+     the unread dot sits in the gutter left of it, where the eye starts. -->
+{#snippet threadRow(t: Thread)}
+  {@const picked = mail.checked.has(t.id)}
+  {@const other = vipSenderFor(t)}
+  <button
+    class="row"
+    class:sel={mail.selectedThread === t.id}
+    class:checked={picked}
+    class:unread={t.unreadCount > 0}
+    onmousedown={noTextRange}
+    onclick={(e) => clickRow(e, t.id)}
+    oncontextmenu={(e) => menu.show(e, menuFor(t))}
+  >
+    <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
+    {#if picked}
+      <span class="tick" aria-hidden="true"><Icon name="tick" size={16} weight={2} /></span>
+    {:else}
+      <Avatar name={other?.name ?? ''} email={other?.email ?? ''} size={38} />
+    {/if}
+    <div class="body">
+      <div class="line1">
+        {#if unifiedView}
+          <span
+            class="acct"
+            style:background={accountColor(t.accountId, accountIds)}
+            title={accountLabel(t.accountId)}
+          ></span>
+        {/if}
+        <span class="from">{formatSenders(t.participants)}</span>
+        {#if t.hasAttachments}
+          <span class="mark" title="Has an attachment"><Icon name="paperclip" size={13} /></span>
+        {/if}
+        <span class="date">
+          {inSnoozedView && t.snoozedUntil
+            ? snoozedUntilLabel(t.snoozedUntil)
+            : threadListDate(t.lastDate)}
+        </span>
+      </div>
+      <div class="line2">
+        <span class="subject">{t.subject || '(no subject)'}</span>
+        {#if t.category === 'priority'}
+          <span class="mark priority" title="Priority"><Icon name="flag" size={13} /></span>
+        {/if}
+        {#if t.starred}
+          <span class="mark starred" title="Starred"><Icon name="star" size={13} filled /></span>
+        {/if}
+        {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
+      </div>
+      {#if t.snippet}<p class="snippet">{t.snippet}</p>{/if}
+    </div>
+  </button>
+{/snippet}
 
 <main class="main">
   {#if mail.composing && !mail.composeInline}
@@ -578,65 +602,106 @@
          hand. `open` is itself never reassigned for the life of the block,
          so every closure below closes over the same non-null value. -->
     {@const open = mail.openThread}
+    {@const newest = open.messages.at(-1)}
     <div class="thread-head">
-      <div class="thread-head-row">
-        <button class="back" onclick={() => mail.closeThread()} title="Back to the list (Escape)">
-          <Icon name="chevron" size={14} />
+      <!-- The toolbar: what to do with this thread, grouped the way the
+           hands reach for it -- answer it, put it away, mark it -- each group
+           one pill, so a row of twelve icons reads as three decisions. -->
+      <div class="toolbar" role="toolbar" aria-label="Thread actions">
+        <button
+          class="tool back"
+          onclick={() => mail.closeThread()}
+          title="Back to the list (Escape)"
+          aria-label="Back to the list"
+        >
+          <Icon name="chevron" size={15} />
         </button>
-        <h1>{open.thread.subject || '(no subject)'}</h1>
-        {#if open.thread.category === 'priority'}
-          <span class="priority-mark" title="Priority">
-            <Icon name="flag" size={12} />
-            Priority
-          </span>
+        {#if newest}
+          <div class="group">
+            <button
+              class="tool"
+              title="Reply (R)"
+              aria-label="Reply"
+              onclick={() => mail.reply(newest.id, false)}
+            >
+              <Icon name="reply" size={17} />
+            </button>
+            <button
+              class="tool"
+              title="Reply all (W)"
+              aria-label="Reply all"
+              onclick={() => mail.reply(newest.id, true)}
+            >
+              <Icon name="reply-all" size={17} />
+            </button>
+            <button
+              class="tool"
+              title="Forward (F)"
+              aria-label="Forward"
+              onclick={() => mail.forward(newest.id)}
+            >
+              <Icon name="forward" size={17} />
+            </button>
+          </div>
         {/if}
-        <span class="count">{plural(open.messages.length, 'message')}</span>
-        <div class="thread-actions">
+        <div class="group">
           <button
-            class="icon-btn"
+            class="tool"
             title="Archive (E)"
             aria-label="Archive"
             onclick={() => void mail.archive(open.thread.id)}
           >
-            <Icon name="layers" size={14} />
+            <Icon name="archive" size={17} />
           </button>
           <button
-            class="icon-btn"
+            class="tool"
             title="Snooze… (H)"
             aria-label="Snooze"
             onclick={() => (mail.wantsSnooze = [open.thread.id])}
           >
-            <Icon name="clock" size={14} />
+            <Icon name="clock" size={17} />
           </button>
           <button
-            class="icon-btn"
+            class="tool"
+            title="Trash (#)"
+            aria-label="Trash"
+            onclick={() => void mail.trash(open.thread.id)}
+          >
+            <Icon name="trash" size={17} />
+          </button>
+        </div>
+        <div class="group">
+          <button
+            class="tool"
             class:on={open.thread.category === 'priority'}
             title={open.thread.category === 'priority'
               ? 'Remove from priority (!)'
               : 'Mark as priority (!)'}
             aria-label="Toggle priority"
+            aria-pressed={open.thread.category === 'priority'}
             onclick={() =>
               void mail.setPriority(open.thread.id, open.thread.category !== 'priority')}
           >
-            <Icon name="flag" size={14} />
+            <Icon name="flag" size={17} />
           </button>
           <button
-            class="icon-btn"
+            class="tool"
             title="Mark unread (U)"
             aria-label="Mark unread"
             onclick={() => void mail.markUnread(open.thread.id)}
           >
-            <Icon name="check" size={14} />
+            <Icon name="mail" size={17} />
           </button>
           <button
-            class="icon-btn"
-            title="Trash (#)"
-            aria-label="Trash"
-            onclick={() => void mail.trash(open.thread.id)}
+            class="tool"
+            title="Label… (L)"
+            aria-label="Label"
+            onclick={() => (mail.wantsLabel = [open.thread.id])}
           >
-            <Icon name="trash" size={14} />
+            <Icon name="tag" size={17} />
           </button>
         </div>
+        <span class="spacer"></span>
         {#if canSummarize}
           <button
             class="summarize"
@@ -644,25 +709,47 @@
             disabled={mail.summarizing}
             onclick={() => void mail.summarizeOpenThread()}
           >
-            <Icon name="sparkle" size={13} />
+            <Icon name="sparkle" size={14} />
             {mail.summarizing ? 'Summarising…' : 'Summarise'}
           </button>
         {/if}
       </div>
-      {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
-        <p class="snoozed-banner">
-          <Icon name="clock" size={13} />
-          <span>Snoozed until {weekdayAndTime(open.thread.snoozedUntil)}</span>
-          <button class="link" onclick={() => void mail.unsnooze(open.thread.id)}>Unsnooze</button>
+      <div class="subject-block">
+        <h1>{open.thread.subject || '(no subject)'}</h1>
+        <p class="meta">
+          <span>{plural(open.messages.length, 'message')}</span>
+          {#if openAccount && mailAccounts.length > 1}
+            <span class="sep">·</span>
+            <span class="meta-acct">
+              <span
+                class="acct"
+                style:background={accountColor(openAccount.id, accountIds)}
+                aria-hidden="true"
+              ></span>
+              {openAccount.displayName || openAccount.address}
+            </span>
+          {/if}
+          {#if open.thread.category === 'priority'}
+            <span class="sep">·</span>
+            <span class="priority-mark"><Icon name="flag" size={12} /> Priority</span>
+          {/if}
         </p>
-      {/if}
-      {#if recentActionLines.length > 0}
-        <p class="recent-actions">
-          {#each recentActionLines as line, i (i)}
-            {#if i > 0}<span class="sep">·</span>{/if}<span>{line}</span>
-          {/each}
-        </p>
-      {/if}
+        {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
+          <p class="snoozed-banner">
+            <Icon name="clock" size={13} />
+            <span>Snoozed until {weekdayAndTime(open.thread.snoozedUntil)}</span>
+            <button class="link" onclick={() => void mail.unsnooze(open.thread.id)}>Unsnooze</button
+            >
+          </p>
+        {/if}
+        {#if recentActionLines.length > 0}
+          <p class="recent-actions">
+            {#each recentActionLines as line, i (i)}
+              {#if i > 0}<span class="sep">·</span>{/if}<span>{line}</span>
+            {/each}
+          </p>
+        {/if}
+      </div>
     </div>
     {#if mail.summary && mail.summary.threadId === open.thread.id}
       <div class="summary-panel">
@@ -736,39 +823,66 @@
     flex: none;
     display: flex;
     flex-direction: column;
-    background: var(--bg-panel);
+    /* The raised surface, a step lighter than the sidebar beside it: the
+       list and the reading pane are the page, the sidebar the margin. */
+    background: var(--bg-raised);
     border-right: 1px solid var(--border);
   }
   .top {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
-    height: var(--header-h);
-    padding: 0 var(--sp-3) 0 var(--sp-4);
+    gap: 2px;
+    min-height: 64px;
+    padding: var(--sp-2) var(--sp-3) var(--sp-1) var(--sp-5);
     flex: none;
-    border-bottom: 1px solid var(--border);
   }
-  .heading {
+  .titles {
     flex: 1;
     min-width: 0;
-    font-size: var(--text-md);
-    font-weight: 620;
-    letter-spacing: -0.006em;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .heading {
+    font-size: var(--text-lg);
+    font-weight: 680;
+    letter-spacing: -0.015em;
+    line-height: var(--leading-tight);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .subline {
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+  }
   .plus {
     display: grid;
     place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    color: var(--fg-muted);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
   .plus:hover {
     background: var(--bg-hover);
     color: var(--fg);
+  }
+  /* Compose is the one thing this column is for besides reading, so it is
+     the one filled button: the accent, the way the assistant's own is. */
+  .plus.compose {
+    margin-left: var(--sp-1);
+    background: var(--accent);
+    color: var(--fg-on-accent);
+    box-shadow: var(--shadow-sm);
+  }
+  .plus.compose:hover {
+    background: var(--accent-hover);
+    color: var(--fg-on-accent);
   }
   /* Sync now, while a pass is running: the icon turns, the button around it
      stays put. Stopped outright under reduced motion -- the title still
@@ -789,12 +903,12 @@
   }
 
   .hint {
-    padding: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5);
     color: var(--fg-faint);
     font-size: var(--text-sm);
   }
   .operator-hint {
-    padding: var(--sp-2) var(--sp-4);
+    padding: var(--sp-2) var(--sp-5);
     font-size: var(--text-xs);
     line-height: var(--leading-normal);
   }
@@ -815,105 +929,179 @@
     background: var(--bg-hover);
   }
 
+  /* ── The category chips ─────────────────────────────────────────── */
+
+  .tabs {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: var(--sp-1) var(--sp-4) var(--sp-3);
+    flex: none;
+  }
+  .chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 40px;
+    height: 32px;
+    padding: 0 11px;
+    border-radius: 999px;
+    background: var(--bg-sunken);
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .chip:hover {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
+  .chip.sel {
+    padding: 0 14px;
+    background: var(--accent);
+    color: var(--fg-on-accent);
+    box-shadow: var(--shadow-sm);
+  }
+  .chip-count {
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+  }
+  /* An unchosen chip's count, pinned to its corner the way an app icon's
+     is: grey when everything under it is read, the accent when anything
+     is not. */
+  .badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 4px;
+    border-radius: 999px;
+    border: 2px solid var(--bg-raised);
+    background: var(--fg-faint);
+    color: var(--bg-raised);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 13px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.has-unread {
+    background: var(--accent);
+    color: var(--fg-on-accent);
+  }
+
+  /* ── Rows ───────────────────────────────────────────────────────── */
+
+  .thread-rows {
+    flex: 1;
+    min-height: 0;
+    padding-bottom: var(--sp-2);
+  }
+
   /* A grouping heading over a run of rows -- never a button, never
      focusable: `j`/`k` and a row's own context menu read `mail.threads`
      directly, which never contains one of these, so there is nothing here
      for either to skip over by accident. */
   .date-section {
-    padding: var(--sp-2) var(--sp-3) 4px;
+    padding: var(--sp-4) var(--sp-5) 6px;
     font-size: var(--text-xs);
     font-weight: 650;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--fg-faint);
   }
 
+  /* A card inset from the column's edges, so the selection reads as a
+     thing picked up rather than a stripe painted across the list. */
   .row {
+    position: relative;
     display: flex;
     align-items: flex-start;
-    gap: var(--sp-2);
-    width: 100%;
-    padding: var(--sp-2) var(--sp-3);
+    gap: var(--sp-3);
+    width: calc(100% - var(--sp-4));
+    margin: 0 var(--sp-2);
+    padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+    border-radius: var(--radius-lg);
     text-align: left;
-    border-bottom: 1px solid var(--border);
+    transition: background var(--fast) var(--ease);
+  }
+  /* The hairline between rows, starting under the text rather than the
+     avatar -- the column of faces stays one unbroken edge. */
+  .row::after {
+    content: '';
+    position: absolute;
+    left: calc(var(--sp-5) + 38px + var(--sp-3));
+    right: var(--sp-3);
+    bottom: 0;
+    height: 1px;
+    background: var(--border);
   }
   .row:hover {
     background: var(--bg-hover);
   }
   .row.sel {
-    background: var(--bg-active);
+    background: var(--bg-selected);
   }
-  /* Picked, one of several -- tinted with the accent rather than the plain
-     selection grey, so a picked row and the cursor row read apart. */
+  .row.sel::after,
+  .row:hover::after {
+    opacity: 0;
+  }
+  /* Picked, one of several: the same tint as the open row, a shade deeper,
+     with the tick standing in for the avatar. */
   .row.checked {
-    background: color-mix(in oklab, var(--accent) 13%, transparent);
-  }
-  .row.checked:hover {
     background: color-mix(in oklab, var(--accent) 18%, transparent);
   }
-  .tick {
-    flex: none;
-    display: grid;
-    place-items: center;
-    width: 13px;
-    height: 13px;
-    margin: 3px -3px 0;
-    border-radius: 4px;
-    background: var(--accent);
-    color: var(--bg);
+  .row.checked::after {
+    opacity: 0;
   }
   .dot {
-    flex: none;
-    width: 7px;
-    height: 7px;
-    margin-top: 6px;
+    position: absolute;
+    left: 7px;
+    top: calc(var(--sp-3) + 16px);
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: transparent;
   }
   .dot.on {
     background: var(--accent);
   }
+  .tick {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--fg-on-accent);
+  }
   .body {
     flex: 1;
     min-width: 0;
-    display: grid;
-    gap: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
   .line1,
   .line2 {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
-    overflow: hidden;
-  }
-  .line1 :global(svg),
-  .line2 :global(svg) {
-    flex: none;
-    color: var(--fg-faint);
-  }
-  /* Accent-coloured, against the rule above that would otherwise read every
-     icon in these two lines as `--fg-faint` -- equal specificity to that
-     rule, so this one wins only by being declared after it; moving it
-     ahead of `.line1 :global(svg)` would silently lose the colour again. */
-  .priority-mark {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    flex: none;
-    color: var(--journal-accent, var(--accent));
-    font-size: var(--text-xs);
-    font-weight: 600;
-  }
-  .priority-mark :global(svg) {
-    color: var(--journal-accent, var(--accent));
-  }
-  .snippet {
-    flex: 1;
+    gap: 6px;
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--fg-faint);
+  }
+  .acct {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
   }
   .from {
     flex: 1;
@@ -921,31 +1109,32 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
-  }
-  .row.unread .from,
-  .row.unread .subject {
+    font-size: var(--text-base);
+    font-weight: 560;
     color: var(--fg);
-    font-weight: 650;
+  }
+  .row.unread .from {
+    font-weight: 700;
+  }
+  .mark {
+    flex: none;
+    display: grid;
+    place-items: center;
+    color: var(--fg-faint);
+  }
+  .mark.priority,
+  .mark.starred {
+    color: var(--journal-accent, var(--accent));
   }
   .date {
     flex: none;
     font-size: var(--text-xs);
-    color: var(--fg-faint);
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
   }
-  /* Whose thread this is, in an "All accounts" list: fainter than the date
-     beside it, and the first thing to give way when the row is narrow. */
-  .account {
-    flex: 0 1 auto;
-    min-width: 0;
-    max-width: 9rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    opacity: 0.8;
+  .row.unread .date {
+    color: var(--accent);
+    font-weight: 650;
   }
   .subject {
     flex: 1;
@@ -954,60 +1143,54 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-sm);
+    font-weight: 500;
     color: var(--fg-muted);
   }
+  .row.unread .subject {
+    font-weight: 650;
+    color: var(--fg);
+  }
+  /* How many messages, as a quiet pill rather than a bare number that
+     could be read as a count of something else. */
   .line2 .count {
     flex: none;
-    margin-left: auto;
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
+    min-width: 20px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--bg-sunken);
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  .row.sel .line2 .count {
+    background: var(--bg-raised);
+  }
+  /* Two lines of the message, not one squeezed in beside the subject: enough
+     to tell a question from an announcement without opening either. */
+  .snippet {
+    margin: 2px 0 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: var(--text-sm);
+    line-height: 1.4;
+    color: var(--fg-subtle);
+    overflow-wrap: anywhere;
   }
 
-  /* Six tabs and their counts are wider than the list column at its
-     default width. They wrap to a second row rather than scroll: a strip
-     scrolled sideways, with its bar hidden, kept the last two tabs -- and
-     their counts -- out of sight with nothing to say they were there. */
-  .tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 2px;
-    padding: var(--sp-1) var(--sp-3);
-    border-bottom: 1px solid var(--border);
-  }
-  .tab {
+  /* The open thread's Priority mark in the reading pane's header. */
+  .priority-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     flex: none;
-    padding: 5px var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    color: var(--fg-faint);
-  }
-  .tab:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .tab.sel {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
-  }
-  .tab-count {
-    margin-left: 4px;
-    padding: 0 5px;
-    border-radius: 999px;
-    background: var(--bg-hover);
-    font-size: var(--text-xs);
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-    color: var(--fg-faint);
-  }
-  .tab.sel .tab-count {
-    background: var(--bg-panel);
-    color: var(--fg-muted);
-  }
-  /* Something unread under this tab: the accent, the way the unread dot on
-     a row is. */
-  .tab-count.has-unread {
     color: var(--journal-accent, var(--accent));
+    font-size: var(--text-xs);
+    font-weight: 600;
   }
 
   .main {
@@ -1019,99 +1202,127 @@
     min-width: 360px;
     display: flex;
     flex-direction: column;
+    background: var(--bg-raised);
   }
   .thread-head {
     display: flex;
     flex-direction: column;
     flex: none;
-    padding: 0 var(--sp-4);
+  }
+  /* Wraps rather than clips: on a narrow window the third group drops to a
+     second line instead of losing its last button off the edge. */
+  .toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px var(--sp-2);
+    min-height: 56px;
+    padding: var(--sp-2) var(--sp-4);
     border-bottom: 1px solid var(--border);
   }
-  .thread-head-row {
+  .group {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
-    height: var(--header-h);
+    gap: 1px;
+    padding: 2px;
+    border-radius: 999px;
+    background: var(--bg-sunken);
+  }
+  .tool {
+    display: grid;
+    place-items: center;
+    width: 36px;
+    height: 32px;
+    border-radius: 999px;
+    color: var(--fg-muted);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .tool:hover {
+    background: var(--bg-raised);
+    color: var(--fg);
+    box-shadow: var(--shadow-sm);
+  }
+  .tool.back {
+    width: 32px;
+    transform: rotate(180deg);
+  }
+  .tool.back:hover {
+    background: var(--bg-hover);
+    box-shadow: none;
+  }
+  /* The priority toggle's pressed state, in colour alone: `Icon`'s
+     `filled` swaps stroke for fill, and the flag's pole is a bare line with
+     no area to fill, so the filled flag drew as a floating orange block. */
+  .tool.on {
+    color: var(--journal-accent, var(--accent));
+    background: var(--bg-raised);
+  }
+  .spacer {
+    flex: 1;
+  }
+  .subject-block {
+    padding: var(--sp-5) var(--sp-6) var(--sp-2);
+  }
+  .subject-block h1 {
+    margin: 0;
+    font-size: var(--text-xl);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    line-height: var(--leading-tight);
+    overflow-wrap: anywhere;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 6px 0 0;
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+  /* A small round dot between the facts, drawn rather than typed: the
+     middle-dot glyph sits on whatever baseline the font gives it, which
+     beside an 8px account dot and an icon read as a stray full stop. */
+  .meta .sep {
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+    font-size: 0;
+  }
+  .meta-acct {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .meta .acct {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
   }
   .recent-actions {
     display: flex;
     gap: var(--sp-2);
-    margin: 0;
-    padding-bottom: var(--sp-2);
+    margin: var(--sp-2) 0 0;
     font-size: var(--text-xs);
     color: var(--fg-faint);
   }
   .recent-actions .sep {
     opacity: 0.5;
   }
-  .back {
-    display: grid;
-    place-items: center;
-    width: 24px;
-    height: 24px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-    transform: rotate(180deg);
-  }
-  .back:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .thread-head h1 {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-md);
-    font-weight: 620;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .thread-head .count {
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-  }
-  /* The reading pane's own compact action bar -- archive, snooze, priority,
-     mark unread, trash -- ahead of Summarise, which keeps its own larger,
-     labelled button rather than joining this row: it is the one action
-     here that is not also on `h`/`e`/`u`/`!`/`#`'s own list, so it reads as
-     a distinct offer rather than a sixth icon indistinguishable from the
-     rest. */
-  .thread-actions {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 2px;
-  }
-  .icon-btn {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-  .icon-btn:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  /* The priority toggle's pressed state, in colour alone: `Icon`'s
-     `filled` swaps stroke for fill, and the flag's pole is a bare line with
-     no area to fill, so the filled flag drew as a floating orange block. */
-  .icon-btn.on {
-    color: var(--journal-accent, var(--accent));
-    background: color-mix(in oklab, var(--accent) 12%, transparent);
-  }
   .snoozed-banner {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: var(--sp-2);
-    margin: 0;
-    padding-bottom: var(--sp-2);
-    color: var(--fg-faint);
+    margin: var(--sp-2) 0 0;
+    padding: 4px var(--sp-3);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    color: var(--fg-muted);
     font-size: var(--text-xs);
-  }
-  .snoozed-banner span {
-    flex: 1;
   }
   .snoozed-banner .link {
     color: var(--journal-accent, var(--accent));
@@ -1121,14 +1332,17 @@
     flex: none;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 4px var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
+    gap: 6px;
+    height: 34px;
+    padding: 0 var(--sp-3);
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    font-size: var(--text-sm);
+    font-weight: 600;
     color: var(--journal-accent, var(--accent));
   }
   .summarize:hover {
-    background: var(--bg-hover);
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
   }
   .summarize:disabled {
     opacity: 0.6;
@@ -1166,12 +1380,7 @@
   /* Inset the way `MailThread`'s own messages are, so the reply lines up
      under the message it answers rather than running edge to edge. */
   .inline-reply {
-    padding: 0 var(--sp-4) var(--sp-4);
-  }
-
-  .thread-rows {
-    flex: 1;
-    min-height: 0;
+    padding: 0 var(--sp-6) var(--sp-6);
   }
 
   .bulk {
@@ -1197,12 +1406,14 @@
   .bulk-btn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    gap: 7px;
+    height: 36px;
+    padding: 0 var(--sp-4) 0 var(--sp-3);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
     background: var(--bg-raised);
     font-size: var(--text-sm);
+    font-weight: 600;
     color: var(--fg);
   }
   .bulk-btn:hover {

@@ -13,6 +13,7 @@
   // see `mail.ts`'s `unifiedMailboxes`.
 
   import { accounts } from '../lib/accounts.svelte'
+  import { accountColor } from '../lib/avatar'
   import {
     gmailSystemLabel,
     mailboxDisplayName,
@@ -24,6 +25,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { notify } from '../lib/notify.svelte'
   import { panels } from '../lib/panels.svelte'
+  import { pref } from '../lib/prefs'
   import { proposals } from '../lib/proposals.svelte'
   import { focusSearch } from '../lib/shortcuts.svelte'
   import type { AccountId, Mailbox, MailboxRole } from '../lib/types'
@@ -311,6 +313,51 @@
   }
 
   const mailAccounts = $derived(accounts.list.filter((a) => a.services.mail))
+  /** In the order their dots take `accountColor`'s palette -- the same
+   *  order the thread list reads, so an account's dot matches in both. */
+  const accountIds = $derived(mailAccounts.map((a) => a.id))
+
+  // ── Which accounts are unfolded ───────────────────────────────────
+  //
+  // Only with the "All accounts" section above them: there every inbox is
+  // already one click away, and each account folds to one row until its own
+  // folders are wanted. Remembered per device, like the sidebar's own fold.
+
+  const openPref = pref<AccountId[]>(
+    'everyday.mail.accounts.open',
+    (raw) => {
+      const parsed: unknown = raw ? JSON.parse(raw) : []
+      return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []
+    },
+    [],
+    (ids) => JSON.stringify(ids),
+  )
+  let openAccounts = $state<Set<AccountId>>(new Set(openPref.get()))
+
+  /** The account whose folder is open in the list -- always shown unfolded,
+   *  so the selected row is never one hidden inside a closed account. */
+  const selectedAccount = $derived(
+    mail.mailboxes.find((m) => m.id === mail.selectedMailbox)?.accountId ??
+      mail.viewingScheduledFor,
+  )
+
+  function accountOpen(id: AccountId): boolean {
+    return openAccounts.has(id) || selectedAccount === id
+  }
+
+  function toggleAccount(id: AccountId) {
+    const next = new Set(openAccounts)
+    if (accountOpen(id)) next.delete(id)
+    else next.add(id)
+    openAccounts = next
+    openPref.set([...next])
+  }
+
+  /** A folded account's Inbox count, shown on its own row in its place. */
+  function inboxCountFor(id: AccountId): number {
+    const inbox = mail.mailboxes.find((m) => m.accountId === id && m.role === 'inbox')
+    return inbox ? (mail.unreadCounts.get(inbox.id) ?? 0) : 0
+  }
 
   /** Phase names as a person reads them, not as the enum spells them --
    *  mirrors `MailSyncPhase` in `types.ts`. */
@@ -352,15 +399,16 @@
     </p>
   {/if}
 
-  {#snippet mailboxRow(row: Row)}
+  {#snippet mailboxRow(row: Row, nested = false)}
     <button
       class="row"
       class:sel={row.sel}
+      class:nested
       onclick={row.onclick}
       oncontextmenu={(e) => menu.show(e, mailboxMenu(row))}
     >
       <span class="icon"
-        ><Icon name={row.icon} size={15} filled={row.pseudo && row.icon === 'star'} /></span
+        ><Icon name={row.icon} size={16} filled={row.pseudo && row.icon === 'star'} /></span
       >
       <span class="text">{row.label}</span>
       {#if row.role === 'drafts' && pendingSends > 0}
@@ -371,8 +419,25 @@
           <Icon name="sparkle" size={11} />
         </span>
       {/if}
-      {#if row.count > 0}<span class="count">{row.count}</span>{/if}
+      {#if row.count > 0}
+        <span class="count" class:strong={row.role === 'inbox'}>{row.count}</span>
+      {/if}
     </button>
+  {/snippet}
+
+  {#snippet statusFor(accountId: AccountId)}
+    {@const line = statusLine(accountId)}
+    {#if line}
+      <p class="status" class:error={line.error} title={line.text}>
+        {#if line.error}
+          <button class="link status-link" onclick={() => panels.openSettings('accounts')}
+            >{line.text}</button
+          >
+        {:else}
+          {line.text}
+        {/if}
+      </p>
+    {/if}
   {/snippet}
 
   {#if unifiedRows.length > 0}
@@ -391,50 +456,82 @@
     {#each unifiedRows as row (row.id)}
       {@render mailboxRow(row)}
     {/each}
-  {/if}
 
-  {#each mailAccounts as account (account.id)}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="head" oncontextmenu={(e) => menu.show(e, tidyMenu(accountItems(account.id)))}>
-      <span class="eyebrow">{account.displayName || account.address}</span>
-      <button
-        class="sync-now"
-        title="Sync now"
-        aria-label="Sync now"
-        onclick={() => void mail.syncNow(account.id)}
-      >
-        <Icon name="refresh" size={12} />
-      </button>
+    <!-- With every inbox already above, each account folds to one row --
+         its own folders and labels a click away rather than three copies of
+         Inbox, Drafts and Sent stacked down the sidebar. -->
+    <div class="head">
+      <span class="eyebrow">Accounts</span>
     </div>
-    {#each rowsFor(account.id) as row (row.id)}
-      {@render mailboxRow(row)}
+    {#each mailAccounts as account (account.id)}
+      {@const open = accountOpen(account.id)}
+      {@const inbox = inboxCountFor(account.id)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="account"
+        class:open
+        oncontextmenu={(e) => menu.show(e, tidyMenu(accountItems(account.id)))}
+      >
+        <button
+          class="account-toggle"
+          aria-expanded={open}
+          onclick={() => toggleAccount(account.id)}
+          title={account.address}
+        >
+          <span class="chev" class:down={open}><Icon name="chevron" size={12} /></span>
+          <span class="acct-dot" style:background={accountColor(account.id, accountIds)}></span>
+          <span class="text">{account.displayName || account.address}</span>
+          {#if !open && inbox > 0}<span class="count strong">{inbox}</span>{/if}
+        </button>
+        <button
+          class="sync-now"
+          title="Sync now"
+          aria-label="Sync {account.displayName || account.address} now"
+          onclick={() => void mail.syncNow(account.id)}
+        >
+          <Icon name="refresh" size={12} />
+        </button>
+      </div>
+      {#if open}
+        {#each rowsFor(account.id) as row (row.id)}
+          {@render mailboxRow(row, true)}
+        {/each}
+      {/if}
+      {@render statusFor(account.id)}
     {/each}
-    {@const line = statusLine(account.id)}
-    {#if line}
-      <p class="status" class:error={line.error} title={line.text}>
-        {#if line.error}
-          <button class="link status-link" onclick={() => panels.openSettings('accounts')}
-            >{line.text}</button
-          >
-        {:else}
-          {line.text}
-        {/if}
-      </p>
-    {/if}
-  {/each}
+  {:else}
+    {#each mailAccounts as account (account.id)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="head" oncontextmenu={(e) => menu.show(e, tidyMenu(accountItems(account.id)))}>
+        <span class="eyebrow">{account.displayName || account.address}</span>
+        <button
+          class="sync-now"
+          title="Sync now"
+          aria-label="Sync now"
+          onclick={() => void mail.syncNow(account.id)}
+        >
+          <Icon name="refresh" size={12} />
+        </button>
+      </div>
+      {#each rowsFor(account.id) as row (row.id)}
+        {@render mailboxRow(row)}
+      {/each}
+      {@render statusFor(account.id)}
+    {/each}
+  {/if}
 </nav>
 
 <style>
   .nav {
     flex: 1;
-    padding: var(--sp-2) var(--sp-2) var(--sp-4);
+    padding: var(--sp-1) var(--sp-3) var(--sp-4);
   }
 
   .head {
     display: flex;
     align-items: center;
     gap: var(--sp-1);
-    padding: var(--sp-5) var(--sp-2) var(--sp-1);
+    padding: var(--sp-5) var(--sp-3) 6px;
   }
   .eyebrow {
     flex: 1;
@@ -442,9 +539,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--text-xs);
+    font-size: 11px;
     font-weight: 650;
-    letter-spacing: 0.02em;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--fg-faint);
   }
@@ -452,13 +549,15 @@
     flex: none;
     display: grid;
     place-items: center;
-    width: 18px;
-    height: 18px;
-    border-radius: var(--radius-sm);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
     color: var(--fg-faint);
     opacity: 0;
+    transition: opacity var(--fast) var(--ease);
   }
   .head:hover .sync-now,
+  .account:hover .sync-now,
   .sync-now:focus-visible {
     opacity: 1;
   }
@@ -470,53 +569,118 @@
   .row {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
+    gap: 10px;
     width: 100%;
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
+    height: 34px;
+    padding: 0 var(--sp-3);
+    border-radius: var(--radius);
     font-size: var(--text-base);
     color: var(--fg-muted);
     text-align: left;
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  /* An account's own folders, set in under its name. */
+  .row.nested {
+    padding-left: 30px;
   }
   .row:hover {
     background: var(--bg-hover);
     color: var(--fg);
   }
+  /* The open folder: the accent, tinted, the way the open thread in the
+     list beside it is -- the two selections read as one. */
   .row.sel {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
+    background: var(--bg-selected);
+    color: var(--accent);
+    font-weight: 620;
   }
   .icon {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     flex: none;
     display: grid;
     place-items: center;
   }
   .text {
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .count {
+    flex: none;
     font-size: var(--text-xs);
     color: var(--fg-faint);
     font-variant-numeric: tabular-nums;
+  }
+  /* An inbox's unread count is the number worth seeing at a glance; every
+     other folder's stays quiet beside it. */
+  .count.strong {
+    min-width: 20px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    color: var(--accent);
+    font-weight: 650;
+    text-align: center;
+  }
+  .row.sel .count {
+    color: var(--accent);
   }
   .ghost-badge {
     display: flex;
     color: var(--accent);
     opacity: 0.85;
   }
-  .row.sel .count {
-    color: var(--fg-muted);
+
+  /* ── An account, folded or not ──────────────────────────────────── */
+
+  .account {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-right: var(--sp-1);
+    border-radius: var(--radius);
+  }
+  .account:hover {
+    background: var(--bg-hover);
+  }
+  .account-toggle {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    height: 34px;
+    padding: 0 var(--sp-2) 0 var(--sp-2);
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--fg);
+    text-align: left;
+  }
+  .chev {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 14px;
+    color: var(--fg-faint);
+    transition: transform var(--fast) var(--ease);
+  }
+  .chev.down {
+    transform: rotate(90deg);
+  }
+  .acct-dot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
   }
 
   .status {
-    padding: 2px var(--sp-2) var(--sp-1);
+    padding: 2px var(--sp-3) var(--sp-1);
     font-size: var(--text-xs);
     color: var(--fg-faint);
     overflow: hidden;

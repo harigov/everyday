@@ -333,6 +333,34 @@ export const ICONS = {
     '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>' +
     '<path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
 
+  // The reading pane's toolbar: answering, and putting away. An arrow that
+  // bends back is a reply the world over; a doubled one is everyone on it;
+  // the same bend forwards passes it on.
+  reply: '<path d="M9 17 4 12l5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/>',
+  'reply-all':
+    '<path d="M7 17 2 12l5-5"/><path d="m12 17-5-5 5-5"/><path d="M22 18v-2a4 4 0 0 0-4-4H7"/>',
+  forward: '<path d="m15 17 5-5-5-5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/>',
+
+  /** Lucide's "archive": a box with its lid, for putting a thread away --
+   *  the list's own `layers` mark stays the Archive *folder*. */
+  archive:
+    '<rect width="20" height="5" x="2" y="3" rx="1"/>' +
+    '<path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+
+  /** One person: the Important tab, which is mail written to you by
+   *  someone, as against `people`, the Overview's "who you see". */
+  user: '<circle cx="12" cy="8" r="4.5"/><path d="M20 21a8 8 0 0 0-16 0"/>',
+
+  /** Lucide's "bell": the Notifications tab. */
+  bell:
+    '<path d="M10.27 21a2 2 0 0 0 3.46 0"/>' +
+    '<path d="M3.26 15.33A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.67C19.41 13.96 18 12.5 18 8A6 6 0 0 0 6 8c0 4.5-1.41 5.96-2.74 7.33"/>',
+
+  /** Lucide's "newspaper": the Newsletters tab. */
+  newspaper:
+    '<path d="M15 18h-5"/><path d="M18 14h-8"/><rect width="8" height="4" x="10" y="6" rx="1"/>' +
+    '<path d="M4 22h16a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H8a2 2 0 0 0-2 2v16a2 2 0 0 1-4 0v-9a2 2 0 0 1 2-2h2"/>',
+
   // ── Meeting notes ──────────────────────────────────────────────────────
 
   // A microphone: the capsule, and the stand it is never drawn without --

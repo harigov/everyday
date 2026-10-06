@@ -40,6 +40,7 @@ const {
   isUnifiedMailbox,
   syncInProgress,
   newestSyncedAt,
+  messageDateLabel,
   sumCategoryCounts,
   gmailSystemLabel,
   mailboxDisplayName,
@@ -904,6 +905,27 @@ assert.deepEqual(
   'each category is added up across every inbox, in the order first met',
 )
 assert.deepEqual(sumCategoryCounts([]), [], 'no inboxes, no badges')
+
+// ── messageDateLabel: an open message's day and time together ───────
+
+{
+  const now = new Date(2026, 9, 6, 15, 0)
+  assert.match(
+    messageDateLabel(new Date(2026, 9, 6, 7, 52).toISOString(), now),
+    /^Today at 0?7:52/,
+    'today says so, with the time',
+  )
+  assert.match(
+    messageDateLabel(new Date(2026, 9, 5, 6, 30).toISOString(), now),
+    /^Yesterday at 0?6:30/,
+    'yesterday says so too',
+  )
+  assert.match(
+    messageDateLabel(new Date(2026, 8, 1, 9, 5).toISOString(), now),
+    / at 0?9:05/,
+    'an older day still carries its time',
+  )
+}
 
 await close()
 console.log('mail: all checks passed')

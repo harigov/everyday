@@ -168,19 +168,25 @@
     font-size: var(--text-xs);
     color: var(--fg-faint);
   }
+  /* Pills, like the Reply/Reply all/Forward buttons they sit beside, but
+     filled with a tint of the accent rather than outlined: a suggestion
+     reads as the assistant's, an action as the person's own. */
   .qr-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 6px var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    height: 34px;
+    padding: 0 var(--sp-3);
+    border: 1px solid transparent;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--accent) 9%, transparent);
     font-size: var(--text-sm);
+    font-weight: 500;
     color: var(--fg-muted);
   }
   .qr-btn:hover,
   .qr-btn:focus-visible {
-    background: var(--bg-hover);
+    background: color-mix(in oklab, var(--accent) 15%, transparent);
     color: var(--fg);
     outline: none;
   }
@@ -188,8 +194,9 @@
     color: var(--journal-accent, var(--accent));
   }
   .qr-quiet {
-    border-style: dashed;
-    color: var(--fg-faint);
+    border: 1px dashed var(--border-strong);
+    background: transparent;
+    color: var(--fg-subtle);
   }
   .qr-quiet :global(svg) {
     color: var(--fg-faint);
@@ -199,7 +206,7 @@
      "something is broken", while `suggest_replies` is still thinking. */
   .qr-placeholder {
     width: 92px;
-    height: 29px;
+    height: 34px;
     border-style: dashed;
     background: linear-gradient(
       100deg,
