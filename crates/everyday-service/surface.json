@@ -419,6 +419,23 @@
     {
       "args": [
         {
+          "name": "mailbox",
+          "required": true,
+          "type": "MailboxId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "category_counts",
+      "orScope": null,
+      "returns": "CategoryCount[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "current",
           "required": true,
           "type": "string"

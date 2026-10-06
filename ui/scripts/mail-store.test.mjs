@@ -178,6 +178,61 @@ assert.ok(
   mail.closeCompose()
 }
 
+// ── Picking several threads ─────────────────────────────────────────
+
+{
+  await mail.selectMailbox(mail.mailboxes.find((m) => m.role === 'inbox').id)
+  const ids = mail.threads.map((t) => t.id)
+  assert.ok(ids.length >= 4, 'the mock inbox has enough threads to pick from')
+
+  await mail.openThreadById(ids[0])
+  mail.clickThread(ids[2], { toggle: true })
+  assert.deepEqual(
+    [...mail.checked].sort(),
+    [ids[0], ids[2]].sort(),
+    'a first Ctrl+click picks the open thread too',
+  )
+  mail.clickThread(ids[2], { toggle: true })
+  assert.deepEqual([...mail.checked], [ids[0]], 'a second Ctrl+click puts it back')
+
+  mail.clickThread(ids[1], { toggle: true })
+  mail.clickThread(ids[3], { shift: true })
+  assert.deepEqual(
+    mail.targets,
+    [ids[1], ids[2], ids[3]],
+    'Shift+click takes the run from the last click',
+  )
+  assert.equal(mail.showing.open.length, 0, 'no single open thread while several are picked')
+
+  await mail.moveSelection(1)
+  assert.equal(mail.checked.size, 3, 'j only moves the cursor while threads are picked')
+
+  mail.clickThread(ids[0])
+  await Promise.resolve()
+  assert.equal(mail.checked.size, 0, 'a plain click opens one and lets the rest go')
+
+  mail.checkAll()
+  assert.equal(mail.checked.size, mail.threads.length, 'Mod+A picks every loaded thread')
+  mail.clearChecked()
+
+  const before = mail.threads.length
+  mail.clickThread(ids[0], { toggle: true })
+  mail.clickThread(ids[1], { toggle: true })
+  await mail.archiveMany(mail.targets)
+  assert.equal(mail.threads.length, before - 2, 'archiving the pick removes every picked row')
+  assert.ok(!mail.threads.some((t) => t.id === ids[0] || t.id === ids[1]))
+  assert.equal(mail.checked.size, 0, 'and nothing archived is left picked')
+}
+
+// ── The category tabs' badges ───────────────────────────────────────
+
+{
+  await mail.refreshCategoryCounts()
+  assert.ok(mail.categoryCounts.length > 0, 'the inbox has its threads counted by category')
+  const counted = mail.categoryCounts.reduce((n, c) => n + c.threads, 0)
+  assert.ok(counted >= mail.threads.length, 'every listed thread is counted somewhere')
+}
+
 await close()
 console.log('mail-store: all checks passed')
 

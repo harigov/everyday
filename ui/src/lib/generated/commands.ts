@@ -27,6 +27,7 @@ import type {
   CalendarEvent,
   CalendarId,
   CalendarInfo,
+  CategoryCount,
   Conversation,
   ConversationId,
   ConversationSummary,
@@ -219,6 +220,7 @@ export interface Commands {
   cancelOauthSignIn: { args: { signInId: string }; result: void }
   cancelSpeechModelDownload: { args: { id: string }; result: void }
   cancelTurn: { args: { conversationId: ConversationId }; result: boolean }
+  categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
   clearAgentKey: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
@@ -589,6 +591,7 @@ export const COMMAND_NAMES = {
   cancelOauthSignIn: 'cancel_oauth_sign_in',
   cancelSpeechModelDownload: 'cancel_speech_model_download',
   cancelTurn: 'cancel_turn',
+  categoryCounts: 'category_counts',
   changePassword: 'change_password',
   clearAgentKey: 'clear_agent_key',
   collectGarbage: 'collect_garbage',
@@ -864,6 +867,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
   'cancel_turn',
+  'category_counts',
   'change_password',
   'clear_agent_key',
   'collect_garbage',

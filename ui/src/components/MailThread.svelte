@@ -223,7 +223,7 @@
         {/if}
         <span class="date">{threadListDate(message.date)}</span>
         {#if message.hasAttachments}
-          <span class="clip" title="Has an attachment"><Icon name="tag" size={12} /></span>
+          <span class="clip" title="Has an attachment"><Icon name="paperclip" size={12} /></span>
         {/if}
       </button>
 
@@ -319,14 +319,14 @@
                     {#if isImage}
                       <img class="thumb" src={url} alt="" loading="lazy" />
                     {:else}
-                      <Icon name="tag" size={12} />
+                      <Icon name="paperclip" size={12} />
                     {/if}
                     <span class="chip-name">{a.filename || 'attachment'}</span>
                     <span class="chip-size">{humanBytes(a.size)}</span>
                   </a>
                 {:else}
                   <span class="chip unavailable">
-                    <Icon name="tag" size={12} />
+                    <Icon name="paperclip" size={12} />
                     <span class="chip-name">{a.filename || 'attachment'}</span>
                     <span class="chip-size">{humanBytes(a.size)}</span>
                     <button

@@ -1314,6 +1314,8 @@ export const api = {
     limit?: number | null,
   ) => call('listThreads', { mailbox, filter, cursor, limit }),
   thread: (id: ThreadId) => call('getThread', { id }),
+  /** `mailbox`'s threads counted by category -- the inbox tabs' badges. */
+  categoryCounts: (mailbox: MailboxId) => call('categoryCounts', { mailbox }),
   /** A part left `available: false` on a `MailMessageDetail` -- over the
    *  attachment cap, with no blob yet. */
   fetchAttachment: (messageId: MailMessageId, index: number) =>

@@ -27,6 +27,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     threads_span_two_mailboxes(store);
     keyset_paging_a_thousand_threads_has_no_duplicates_or_gaps(store);
     flag_change_updates_unread_counts(store);
+    category_counts_leave_out_snoozed_threads(store);
     removal_shrinks_a_thread_and_deletes_an_empty_one(store);
     op_queue_ordering_and_not_before(store);
     optimistic_writes_and_snooze_round_trip(store);
@@ -253,6 +254,50 @@ fn flag_change_updates_unread_counts(store: &dyn JournalStore) {
 
     // A uid this store never ingested is a no-op, not an error.
     m.update_flags(mailbox.id, 999, flags).unwrap();
+
+    cleanup_account(store, account);
+}
+
+/// The inbox's tab counts: threads per category, how many of those are
+/// unread, a `None` row for the uncategorised, and a snoozed thread counted
+/// nowhere -- its list leaves it out too.
+fn category_counts_leave_out_snoozed_threads(store: &dyn JournalStore) {
+    use crate::mail::Category;
+    use crate::store::mail::CategoryCount;
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let mut batch = Vec::new();
+    let mut add = |uid: u32, category: Option<Category>, seen: bool| {
+        let thread = ThreadId::new();
+        let mut msg = message(account, thread, "Hi", "a@example.com", Timestamp::now());
+        msg.category = category;
+        msg.flags.seen = seen;
+        batch.push(IngestMessage { message: msg, mailbox: mailbox.id, uid });
+        thread
+    };
+    add(1, Some(Category::Important), false);
+    add(2, Some(Category::Important), true);
+    add(3, Some(Category::Newsletter), true);
+    add(4, None, false);
+    let snoozed = add(5, Some(Category::Important), false);
+    m.ingest(account, batch).unwrap();
+    m.set_thread_snoozed_until(snoozed, Some(Timestamp::now() + SignedDuration::from_hours(5)))
+        .unwrap();
+
+    let mut counts = m.category_counts(mailbox.id).unwrap();
+    counts.sort_by_key(|c| c.category.map(Category::as_str));
+    assert_eq!(
+        counts,
+        vec![
+            CategoryCount { category: None, threads: 1, unread: 1 },
+            CategoryCount { category: Some(Category::Important), threads: 2, unread: 1 },
+            CategoryCount { category: Some(Category::Newsletter), threads: 1, unread: 0 },
+        ]
+    );
 
     cleanup_account(store, account);
 }

@@ -168,6 +168,51 @@ function mockDocument(inner: string): string {
   )
 }
 
+/**
+ * The quoted part of a reply or forward -- `splitQuoted`'s `quoted`, the
+ * parent's own sanitised HTML under an "On … wrote:" line -- as a document
+ * for the compose sheet's own sandboxed frame.
+ *
+ * Shown in a frame rather than in the editor, because the editor can only
+ * hold what its own schema knows -- paragraphs, lists, a table -- and an
+ * HTML email's layout, images and colours did not survive the trip. The
+ * same walls as a message body (`mailview::body_document`): the frame's
+ * sandbox, and this CSP, which lets an image load only from this app's own
+ * `mail/` addresses -- so a quoted image still asks the remote-image
+ * allow-list before anything leaves the machine.
+ *
+ * Plain mail is drawn transparent and unpadded, so it reads as part of the
+ * sheet rather than a card inside it, in the app's own text colours for
+ * `dark` -- the same choice `applyDarkOverride` makes for a message body.
+ * A styled one -- anything that sets its own colours -- keeps a light card
+ * of its own instead, whatever the theme: its sender chose dark text for a
+ * light page, and on the app's dark background that text all but vanished.
+ */
+export function quoteDocument(quotedHtml: string, dark: boolean): string {
+  const styled = /(?:^|[\s;"'])(?:color|background(?:-color)?)\s*:|\bbgcolor\s*=/i.test(quotedHtml)
+  const paper = !dark || styled
+  const fg = paper ? '#1c1a17' : '#eceaf0'
+  const muted = paper ? '#5f5a52' : '#a9a5b2'
+  const rule = paper ? '#d6d2ca' : '#3a3840'
+  const card = styled
+    ? `background:#ffffff;padding:12px 14px;border-radius:8px;`
+    : 'background:transparent;padding:0 2px;'
+  return applyPlatformOrigin(
+    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src everyday: http://everyday.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
+      `<base target="_blank">` +
+      `<style>:root{color-scheme:${paper ? 'light' : 'dark'}}` +
+      `html{background:transparent}body{margin:0;${card}color:${fg};` +
+      `font-family:'Source Sans 3 Variable','Source Sans Pro','Segoe UI',system-ui,sans-serif;` +
+      `font-size:14px;line-height:1.55;overflow-wrap:break-word}` +
+      `body>p:first-child{margin:0 0 6px;color:${muted}}` +
+      `blockquote[type=cite],body>blockquote{margin:0;padding-left:12px;border-left:2px solid ${rule}}` +
+      `a{color:inherit}img{max-width:100%;height:auto}table{max-width:100%}` +
+      `pre{white-space:pre-wrap;font-family:inherit;margin:0}</style>` +
+      `</head><body>${quotedHtml}</body></html>`,
+  )
+}
+
 /** A body, ready for `iframe.srcdoc` -- fetched (real mode) or built (mock
  *  mode) by {@link loadBody}, below. */
 export interface LoadedMailBody {

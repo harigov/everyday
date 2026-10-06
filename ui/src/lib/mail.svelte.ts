@@ -40,6 +40,7 @@ import {
   snoozeChoices,
   stepCategoryTab,
   syntheticSnoozedMailboxId,
+  threadRange,
   visibleThreadList,
 } from './mail'
 import { seen, type Showing } from './onscreen'
@@ -48,6 +49,7 @@ import { applySingleChange } from './store/live-patch'
 import { guardedRefresh } from './store/refresh'
 import type {
   AccountId,
+  CategoryCount,
   Draft,
   DraftId,
   Mailbox,
@@ -91,6 +93,17 @@ class MailState {
   selectedMailbox = $state<MailboxId | null>(null)
   category = $state<MailCategory | null>(null)
   selectedThread = $state<ThreadId | null>(null)
+  /**
+   * Threads picked together -- Ctrl/Cmd+click toggles one, Shift+click takes
+   * the run from the last one clicked, `x` toggles the one under the cursor
+   * and Mod+A takes every thread loaded. While any are, the reading pane
+   * offers what can be done to all of them at once instead of one open
+   * thread, and the action keys (`e`, `#`, `u`, `h`, …) act on all of them.
+   * Empty is the ordinary one-thread-at-a-time list. See `targets`.
+   */
+  checked = $state.raw<ReadonlySet<ThreadId>>(new Set())
+  /** Where Shift+click's range starts: the last row clicked or toggled. */
+  #anchor: ThreadId | null = null
   /** Which messages in the open thread are expanded, newest first by default. */
   expanded = $state<Set<string>>(new Set())
   composing = $state<Draft | null>(null)
@@ -102,14 +115,15 @@ class MailState {
    *  `closeCompose` always drops this back to `false`, so a stale `true`
    *  can never make the *next* draft this store opens inline by accident. */
   composeInline = $state(false)
-  /** The thread the snooze picker is open for, or `null`. A store field
-   *  rather than component state -- the same reason `overview.wantsLog` is
-   *  -- so the `h` shortcut can open it from `shortcuts.svelte.ts`, which
-   *  has no component of its own to reach into. */
-  wantsSnooze = $state<ThreadId | null>(null)
-  /** The thread the label picker is open for -- the proper picker `l` opens
-   *  in place of a `window.prompt`. */
-  wantsLabel = $state<ThreadId | null>(null)
+  /** The threads the snooze picker is open for, or `null` -- one, or every
+   *  thread `checked`. A store field rather than component state -- the
+   *  same reason `overview.wantsLog` is -- so the `h` shortcut can open it
+   *  from `shortcuts.svelte.ts`, which has no component of its own to reach
+   *  into. */
+  wantsSnooze = $state<ThreadId[] | null>(null)
+  /** The threads the label picker is open for -- the proper picker `l`
+   *  opens in place of a `window.prompt`. */
+  wantsLabel = $state<ThreadId[] | null>(null)
   /**
    * The account whose Scheduled list `MailView`'s list column is showing in
    * place of a mailbox's threads, or `null` -- a view state alongside
@@ -142,6 +156,9 @@ class MailState {
    *  one. Approximate at scale -- see the module doc -- fine at a mailbox's
    *  worth of mock data. */
   unreadCounts = $state<Map<MailboxId, number>>(new Map())
+  /** The open inbox's threads by category -- the tabs' badges. Empty for a
+   *  mailbox with no tabs. See `refreshCategoryCounts`. */
+  categoryCounts = $state<CategoryCount[]>([])
   syncStatus = $state<MailSyncProgress[]>([])
   /** Every account's drafts still queued to send later, soonest first --
    *  what `MailNav`'s own Scheduled row counts and `MailScheduled.svelte`
@@ -185,6 +202,8 @@ class MailState {
     this.selectedMailbox = null
     this.category = null
     this.selectedThread = null
+    this.checked = new Set()
+    this.#anchor = null
     this.expanded = new Set()
     this.composing = null
     this.composeInline = false
@@ -204,6 +223,7 @@ class MailState {
     this.nextCursor = null
     this.openThread = null
     this.unreadCounts = new Map()
+    this.categoryCounts = []
     this.syncStatus = []
     this.scheduled = []
     this.clearSearch()
@@ -277,6 +297,7 @@ class MailState {
    *  list because it is currently snoozed, and the Snoozed pseudo-mailbox's
    *  badge is exactly the reverse -- only threads that are. */
   async refreshUnreadCounts() {
+    void this.refreshCategoryCounts()
     try {
       const counts = new Map<MailboxId, number>()
       await Promise.all(
@@ -292,6 +313,25 @@ class MailState {
         }),
       )
       this.unreadCounts = counts
+    } catch (e) {
+      await quietly(e)
+    }
+  }
+
+  /** The tabs' badges, for the mailbox on screen -- nothing to count for
+   *  one without tabs. Quiet on failure: a badge that does not update is not
+   *  worth a toast. Rides along with every unread recount, so an archive or
+   *  a live change moves the numbers the same moment it moves the nav's. */
+  async refreshCategoryCounts() {
+    const box = this.mailbox
+    const target = mailboxHasTabs(box) ? listTarget(box, this.mailboxes) : null
+    if (!target) {
+      this.categoryCounts = []
+      return
+    }
+    try {
+      const counts = await mailApi.categoryCounts(target.mailboxId)
+      if (this.mailbox?.id === box?.id) this.categoryCounts = counts
     } catch (e) {
       await quietly(e)
     }
@@ -338,10 +378,12 @@ class MailState {
     this.selectedMailbox = id
     this.selectedThread = null
     this.openThread = null
+    this.clearChecked()
     // Finding 1: only the inbox has tabs to have set this from, so a
     // category chosen there must not go on filtering a mailbox with no tab
     // strip to clear it from.
     if (!mailboxHasTabs(this.mailboxes.find((m) => m.id === id))) this.category = null
+    void this.refreshCategoryCounts()
     await this.refresh()
   }
 
@@ -354,6 +396,7 @@ class MailState {
 
   setCategory(category: MailCategory | null) {
     this.category = category
+    this.clearChecked()
     void this.refresh()
   }
 
@@ -411,6 +454,11 @@ class MailState {
         if (!isCurrent()) return
         this.threads = page.threads
         this.nextCursor = page.nextCursor ?? null
+        if (this.checked.size > 0) {
+          const listed = new Set(this.threads.map((t) => t.id))
+          const kept = [...this.checked].filter((id) => listed.has(id))
+          if (kept.length !== this.checked.size) this.checked = new Set(kept)
+        }
         if (this.selectedThread && !this.threads.some((t) => t.id === this.selectedThread)) {
           this.selectedThread = null
           this.openThread = null
@@ -456,6 +504,9 @@ class MailState {
     if (this.composeInline && this.selectedThread !== id) this.closeCompose()
     this.selectedThread = id
     this.summary = null
+    // Opening one thread is leaving the many behind -- see `checked`.
+    this.clearChecked()
+    this.#anchor = id
     try {
       const detail = await mailApi.getThread(id)
       // Moved on while this was loading: a later open owns the pane now, and
@@ -549,8 +600,68 @@ class MailState {
   async moveSelection(step: 1 | -1) {
     const next = this.#neighbour(step)
     if (!next) return
-    if (this.selectedThread) await this.openThreadById(next.id)
+    // With threads picked, `j`/`k` only move the cursor, so `x` can pick
+    // the next one -- opening it would drop the picked ones.
+    if (this.selectedThread && this.checked.size === 0) await this.openThreadById(next.id)
     else this.selectedThread = next.id
+  }
+
+  // ── picking several threads ──────────────────────────────────────
+
+  /**
+   * A click on a thread row: Shift takes the run from the last row clicked
+   * to this one (added to what is already picked when Ctrl/Cmd is held
+   * too); Ctrl/Cmd adds this one or takes it away; a plain click opens it,
+   * leaving any picked ones behind. A first Ctrl+click while a thread is
+   * open picks that one too, the way a file manager's selection grows from
+   * the item already selected rather than starting over.
+   */
+  clickThread(id: ThreadId, mods: { shift?: boolean; toggle?: boolean } = {}) {
+    if (mods.shift) {
+      const from = this.#anchor ?? this.selectedThread
+      const range = threadRange(this.#shownThreads, from, id)
+      this.checked = new Set(mods.toggle ? [...this.checked, ...range] : range)
+      return
+    }
+    if (mods.toggle) {
+      const next = new Set(this.checked)
+      if (next.size === 0 && this.selectedThread && this.selectedThread !== id) {
+        next.add(this.selectedThread)
+      }
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      this.checked = next
+      this.#anchor = id
+      return
+    }
+    void this.openThreadById(id)
+  }
+
+  /** `x`: pick the thread under the cursor, or put it back. */
+  toggleChecked(id: ThreadId) {
+    const next = new Set(this.checked)
+    if (next.has(id)) next.delete(id)
+    else next.add(id)
+    this.checked = next
+    this.#anchor = id
+  }
+
+  /** Mod+A: every thread the list has loaded. */
+  checkAll() {
+    this.checked = new Set(this.#shownThreads.map((t) => t.id))
+  }
+
+  clearChecked() {
+    if (this.checked.size > 0) this.checked = new Set()
+  }
+
+  /** What an action key acts on: every picked thread, else the selected
+   *  one, else nothing. In list order, so a batch reads top to bottom. */
+  get targets(): ThreadId[] {
+    if (this.checked.size > 0) {
+      return this.#shownThreads.filter((t) => this.checked.has(t.id)).map((t) => t.id)
+    }
+    return this.selectedThread ? [this.selectedThread] : []
   }
 
   /**
@@ -582,13 +693,23 @@ class MailState {
    * that was next, which a thread removed by a live change (finding 5)
    * deserves exactly as much as one removed by the reader's own `e`.
    */
-  #advanceIfOpen(id: ThreadId): void {
-    if (this.selectedThread !== id) return
+  #advanceIfOpen(ids: ReadonlySet<ThreadId>): void {
+    const open = this.selectedThread
+    if (!open || !ids.has(open)) return
     // The thread this reply was inline under is about to disappear from
     // under it -- archived, trashed, snoozed, moved, or deleted by another
     // window. Same as `closeThread`'s own guard; see `composeInline`.
     if (this.composeInline) this.closeCompose()
-    this.selectedThread = (this.#neighbour(1) ?? this.#neighbour(-1))?.id ?? null
+    // The nearest neighbour that is not leaving too -- several can go at
+    // once, from a multi-thread selection.
+    const list = this.#shownThreads
+    const at = list.findIndex((t) => t.id === open)
+    const after = list.slice(at + 1).find((t) => !ids.has(t.id))
+    const before = list
+      .slice(0, Math.max(at, 0))
+      .reverse()
+      .find((t) => !ids.has(t.id))
+    this.selectedThread = (after ?? before)?.id ?? null
     this.openThread = null
     this.summary = null
   }
@@ -607,25 +728,39 @@ class MailState {
    * pane and a failed action of any kind left a search result stale.
    */
   async #act(
-    id: ThreadId,
+    ids: readonly ThreadId[],
     patch: Partial<Thread>,
-    call: (id: ThreadId) => Promise<unknown>,
+    call: (ids: ThreadId[]) => Promise<unknown>,
   ): Promise<void> {
-    const { rows, before } = applyRowPatch(this.threads, id, patch)
-    this.threads = rows
-    const { rows: searchRows, before: searchBefore } = applyRowPatch(this.searchResults, id, patch)
-    this.searchResults = searchRows
-    const openBefore = this.openThread?.thread.id === id ? this.openThread.thread : null
+    if (ids.length === 0) return
+    const befores: Thread[] = []
+    const searchBefores: Thread[] = []
+    for (const id of ids) {
+      const { rows, before } = applyRowPatch(this.threads, id, patch)
+      this.threads = rows
+      if (before) befores.push(before)
+      const { rows: searchRows, before: searchBefore } = applyRowPatch(
+        this.searchResults,
+        id,
+        patch,
+      )
+      this.searchResults = searchRows
+      if (searchBefore) searchBefores.push(searchBefore)
+    }
+    const openId = this.openThread?.thread.id
+    const openBefore = openId && ids.includes(openId) ? this.openThread!.thread : null
     if (openBefore) {
       this.openThread = { ...this.openThread!, thread: { ...openBefore, ...patch } }
     }
     try {
-      await call(id)
+      await call([...ids])
       this.#scheduleUnreadRefresh()
     } catch (e) {
-      if (before) this.threads = revertRow(this.threads, id, before)
-      if (searchBefore) this.searchResults = revertRow(this.searchResults, id, searchBefore)
-      if (openBefore && this.openThread?.thread.id === id) {
+      for (const before of befores) this.threads = revertRow(this.threads, before.id, before)
+      for (const before of searchBefores) {
+        this.searchResults = revertRow(this.searchResults, before.id, before)
+      }
+      if (openBefore && this.openThread?.thread.id === openBefore.id) {
         this.openThread = { ...this.openThread, thread: openBefore }
       }
       await handle(e)
@@ -635,27 +770,48 @@ class MailState {
   /** Removes the row from the list on screen -- archive, trash, move,
    *  snooze -- and from a search's results too (finding 4), restoring both
    *  in place on failure. */
-  async #remove(id: ThreadId, call: (id: ThreadId) => Promise<unknown>): Promise<void> {
+  async #remove(
+    ids: readonly ThreadId[],
+    call: (ids: ThreadId[]) => Promise<unknown>,
+  ): Promise<void> {
+    if (ids.length === 0) return
+    const leaving = new Set(ids)
     // Finding 5: move on to the neighbour rather than simply closing the
     // pane -- `#advanceIfOpen` must run before the row disappears below, so
     // it can still find one.
-    this.#advanceIfOpen(id)
-    const { rows, removed } = removeRow(this.threads, id)
-    this.threads = rows
-    const { rows: searchRows, removed: searchRemoved } = removeRow(this.searchResults, id)
-    this.searchResults = searchRows
+    this.#advanceIfOpen(leaving)
+    if ([...this.checked].some((id) => leaving.has(id))) {
+      this.checked = new Set([...this.checked].filter((id) => !leaving.has(id)))
+    }
+    // Put back in the reverse of the order they came out, so each lands at
+    // the index it was taken from.
+    const removed: { row: Thread; index: number }[] = []
+    const searchRemoved: { row: Thread; index: number }[] = []
+    for (const id of ids) {
+      const out = removeRow(this.threads, id)
+      this.threads = out.rows
+      if (out.removed) removed.push(out.removed)
+      const searchOut = removeRow(this.searchResults, id)
+      this.searchResults = searchOut.rows
+      if (searchOut.removed) searchRemoved.push(searchOut.removed)
+    }
     try {
-      await call(id)
+      await call([...ids])
       this.#scheduleUnreadRefresh()
     } catch (e) {
-      if (removed) this.threads = restoreRow(this.threads, removed)
-      if (searchRemoved) this.searchResults = restoreRow(this.searchResults, searchRemoved)
+      for (const r of removed.reverse()) this.threads = restoreRow(this.threads, r)
+      for (const r of searchRemoved.reverse()) {
+        this.searchResults = restoreRow(this.searchResults, r)
+      }
       await handle(e)
     }
   }
 
   markRead(id: ThreadId) {
-    return this.#act(id, { unreadCount: 0 }, mailApi.markRead)
+    return this.markReadMany([id])
+  }
+  markReadMany(ids: readonly ThreadId[]) {
+    return this.#act(ids, { unreadCount: 0 }, mailApi.markReadMany)
   }
 
   /**
@@ -696,7 +852,10 @@ class MailState {
     return done
   }
   markUnread(id: ThreadId) {
-    return this.#act(id, { unreadCount: 1 }, mailApi.markUnread)
+    return this.markUnreadMany([id])
+  }
+  markUnreadMany(ids: readonly ThreadId[]) {
+    return this.#act(ids, { unreadCount: 1 }, mailApi.markUnreadMany)
   }
   /**
    * Star, best-effort. `Thread.starred` -- the real per-thread aggregate,
@@ -706,26 +865,51 @@ class MailState {
    * not happen in the interface today, but costs nothing to keep honest).
    */
   toggleStar(id: ThreadId) {
+    return this.toggleStarMany([id])
+  }
+  /** Several at once: star them all unless every one already is, then
+   *  unstar them all -- what a mail client's one Star button does to a
+   *  mixed selection. */
+  toggleStarMany(ids: readonly ThreadId[]) {
+    const starred = ids.every((id) => this.#isStarred(id))
+    return this.#act(ids, { starred: !starred }, starred ? mailApi.unstarMany : mailApi.starMany)
+  }
+  #isStarred(id: ThreadId): boolean {
     const row = this.threads.find((t) => t.id === id) ?? this.searchResults.find((t) => t.id === id)
-    const starred =
+    return (
       row?.starred ??
       (this.openThread?.thread.id === id && this.openThread.messages.some((m) => m.flags.flagged))
-    return this.#act(id, { starred: !starred }, starred ? mailApi.unstar : mailApi.star)
+    )
   }
   archive(id: ThreadId) {
-    return this.#remove(id, mailApi.archive)
+    return this.archiveMany([id])
+  }
+  archiveMany(ids: readonly ThreadId[]) {
+    return this.#remove(ids, mailApi.archiveMany)
   }
   trash(id: ThreadId) {
-    return this.#remove(id, mailApi.trash)
+    return this.trashMany([id])
+  }
+  trashMany(ids: readonly ThreadId[]) {
+    return this.#remove(ids, mailApi.trashMany)
   }
   moveTo(id: ThreadId, mailbox: MailboxId) {
-    return this.#remove(id, (t) => mailApi.moveToMailbox(t, mailbox))
+    return this.moveManyTo([id], mailbox)
+  }
+  moveManyTo(ids: readonly ThreadId[], mailbox: MailboxId) {
+    return this.#remove(ids, (t) => mailApi.moveManyToMailbox(t, mailbox))
   }
   label(id: ThreadId, labelName: string) {
-    return this.#act(id, {}, (t) => mailApi.label(t, labelName))
+    return this.labelMany([id], labelName)
+  }
+  labelMany(ids: readonly ThreadId[], labelName: string) {
+    return this.#act(ids, {}, (t) => mailApi.labelMany(t, labelName))
   }
   snooze(id: ThreadId, until: Date) {
-    return this.#remove(id, (t) => mailApi.snooze(t, until.toISOString()))
+    return this.snoozeMany([id], until)
+  }
+  snoozeMany(ids: readonly ThreadId[], until: Date) {
+    return this.#remove(ids, (t) => mailApi.snoozeMany(t, until.toISOString()))
   }
   /**
    * Unsnooze. In the Snoozed view itself this must also drop the row --
@@ -737,14 +921,20 @@ class MailState {
    * patch alone is right, the same as it always was.
    */
   unsnooze(id: ThreadId) {
-    if (isSnoozedMailbox(this.mailbox)) return this.#remove(id, mailApi.unsnooze)
-    return this.#act(id, { snoozedUntil: null }, mailApi.unsnooze)
+    return this.unsnoozeMany([id])
+  }
+  unsnoozeMany(ids: readonly ThreadId[]) {
+    if (isSnoozedMailbox(this.mailbox)) return this.#remove(ids, mailApi.unsnoozeMany)
+    return this.#act(ids, { snoozedUntil: null }, mailApi.unsnoozeMany)
   }
 
   /** (p) TODO: teaches the split-inbox rules -- see `mail-api.ts`'s own
    *  TODO(p) for `set_thread_category`'s contract. */
   setCategoryFor(id: ThreadId, category: MailCategory) {
-    return this.#act(id, { category }, (t) => mailApi.setThreadCategory([t], category))
+    return this.setCategoryForMany([id], category)
+  }
+  setCategoryForMany(ids: readonly ThreadId[], category: MailCategory) {
+    return this.#act(ids, { category }, (t) => mailApi.setThreadCategory(t, category))
   }
 
   /**
@@ -754,8 +944,11 @@ class MailState {
    * exactly the way that one already does -- see its own TODO(p) above.
    */
   setPriority(id: ThreadId, on: boolean) {
-    return this.#act(id, { category: on ? 'priority' : 'important' }, (t) =>
-      mailApi.setThreadPriority([t], on),
+    return this.setPriorityMany([id], on)
+  }
+  setPriorityMany(ids: readonly ThreadId[], on: boolean) {
+    return this.#act(ids, { category: on ? 'priority' : 'important' }, (t) =>
+      mailApi.setThreadPriority(t, on),
     )
   }
 
@@ -1032,6 +1225,7 @@ class MailState {
   setSearchQuery(q: string) {
     this.searchQuery = q
     this.searchCursor = null
+    this.clearChecked()
     if (!q.trim()) {
       this.searchResults = []
       this.searching = false
@@ -1099,7 +1293,7 @@ class MailState {
         // from `openThread` -- `#advanceIfOpen` does what archiving already
         // does, moving on to the neighbour, before the row disappears from
         // under it.
-        this.#advanceIfOpen(id)
+        this.#advanceIfOpen(new Set([id]))
         this.threads = this.threads.filter((t) => t.id !== id)
         this.searchResults = this.searchResults.filter((t) => t.id !== id)
       },
@@ -1134,6 +1328,7 @@ class MailState {
     this.#liveRefreshTimer = setTimeout(() => {
       this.#liveRefreshTimer = null
       void this.refresh()
+      void this.refreshCategoryCounts()
     }, LIVE_REFRESH_DEBOUNCE_MS)
   }
 
@@ -1198,7 +1393,9 @@ class MailState {
     const box = this.mailbox
     const tab = mailboxHasTabs(box) ? CATEGORY_TABS.find((t) => t.key === this.category) : undefined
     const detail = this.openThread
-    const shown = detail && detail.thread.id === this.selectedThread ? detail : null
+    // Several threads picked replace the open one in the reading pane.
+    const shown =
+      detail && detail.thread.id === this.selectedThread && this.checked.size === 0 ? detail : null
     const expanded = shown?.messages.filter((m) => this.expanded.has(m.id)).at(-1)
     const latest = shown?.messages.at(-1)
     return {

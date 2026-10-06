@@ -1652,6 +1652,15 @@ export interface ThreadFilter {
   snoozed?: boolean | null
 }
 
+/** `category_counts`: how many of one mailbox's threads carry `category`
+ *  (`null` for the uncategorised), and how many of those are unread there.
+ *  A snoozed thread is counted nowhere, as its list leaves it out. */
+export interface CategoryCount {
+  category: MailCategory | null
+  threads: number
+  unread: number
+}
+
 /** One keyset-paged page of threads. `nextCursor` is opaque: hand it back as
  * `cursor` for the next page, and never inspect it. */
 export interface ThreadPage {

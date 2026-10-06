@@ -25,7 +25,7 @@ use crate::mail::{
 };
 use crate::packstore::{PackRef, PackStore};
 use crate::record::RecordKind;
-use crate::store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
+use crate::store::mail::{CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage};
 use crate::timestamped::Timestamped;
 use jiff::Timestamp;
 
@@ -404,6 +404,12 @@ impl Vault {
 
     pub fn mail_unread_counts(&self, account: AccountId) -> Result<Vec<(MailboxId, u64)>> {
         self.with_mail(|m| m.unread_counts(account))
+    }
+
+    /// `mailbox`'s threads counted by category -- see
+    /// [`MailStore::category_counts`].
+    pub fn mail_category_counts(&self, mailbox: MailboxId) -> Result<Vec<CategoryCount>> {
+        self.with_mail(|m| m.category_counts(mailbox))
     }
 
     /// `account`'s messages dated in `[from, to)`, spam left out -- see

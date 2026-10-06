@@ -31,9 +31,14 @@
  * has somewhere to go below it; those trailing empty paragraphs are part of
  * the quote's tail, not the person's own words, and without allowing for
  * them nothing that had been through the editor ever matched at all.
+ *
+ * The attribution is one paragraph, and the match never runs past its end:
+ * a reply that itself begins "On Monday we could…" would otherwise start
+ * the match there, and everything the person wrote would be taken for the
+ * quote -- folded away under it, out of reach of their own editor.
  */
 const ATTRIBUTION_AND_QUOTE =
-  /<p>On [^]*? wrote:<\/p>\s*<blockquote[^>]*>[^]*<\/blockquote>(?:\s*<p>(?:<br\s*\/?>)?<\/p>)*\s*$/i
+  /<p>On (?:(?!<\/p>)[^])*? wrote:<\/p>\s*<blockquote[^>]*>[^]*<\/blockquote>(?:\s*<p>(?:<br\s*\/?>)?<\/p>)*\s*$/i
 
 export interface SplitBody {
   own: string

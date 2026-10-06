@@ -44,6 +44,7 @@ Intl.RelativeTimeFormat = function (...args) {
 
 const { module: format, close } = await load('/src/lib/format.ts')
 const {
+  compactCount,
   dateFormat,
   dayHeading,
   formatInstantTime,
@@ -181,6 +182,15 @@ assert.equal(formatInstantTime(nineAm), inLondon, 'coming home must read as it d
 
 if (before === undefined) delete process.env.TZ
 else process.env.TZ = before
+
+// ── compactCount ────────────────────────────────────────────────────
+
+assert.equal(compactCount(0), '0')
+assert.equal(compactCount(999), '999')
+assert.equal(compactCount(1000), '1k')
+assert.equal(compactCount(1250), '1.2k', 'rounded down, never up past what is there')
+assert.equal(compactCount(12_999), '12k')
+assert.equal(compactCount(2_500_000), '2.5M')
 
 await close()
 console.log('format: all checks passed')

@@ -13,6 +13,7 @@ import {
 import { isoDate, startOfDay } from './time'
 import type {
   AccountId,
+  CategoryCount,
   Draft,
   Mailbox,
   MailboxId,
@@ -461,6 +462,24 @@ export function estimateBodyHeight(bodyHtml: string, widthPx: number): number {
   return Math.min(2400, lines * lineHeightPx + blocks * blockGapPx + 32 + headroomPx)
 }
 
+/**
+ * {@link estimateBodyHeight}, with room for what an HTML email's layout adds
+ * that its text does not say: a table row's own padding, a heading, and an
+ * image's height (its `height` attribute, or a guess for one without). For
+ * the compose sheet's quoted message, whose frame -- sandboxed, like a
+ * message's -- cannot be measured from outside, and where a newsletter is
+ * the usual thing being quoted.
+ */
+export function estimateQuoteHeight(html: string, widthPx: number): number {
+  const rows = (html.match(/<tr[\s>]/gi) ?? []).length
+  const headings = (html.match(/<h[1-6][\s>]/gi) ?? []).length
+  const images = (html.match(/<img\b[^>]*>/gi) ?? []).reduce((sum, tag) => {
+    const height = /\bheight\s*=\s*["']?(\d+)/i.exec(tag)
+    return sum + Math.min(600, height ? Number(height[1]) : 160)
+  }, 0)
+  return Math.min(4000, estimateBodyHeight(html, widthPx) + rows * 28 + headings * 16 + images + 24)
+}
+
 // ── Compose: is there anything here worth keeping? ──────────────────────
 
 /**
@@ -474,6 +493,30 @@ export function estimateBodyHeight(bodyHtml: string, widthPx: number): number {
  */
 export function isBlankDraft(draft: Pick<Draft, 'subject' | 'bodyHtml' | 'to'>): boolean {
   return !draft.subject && !draft.bodyHtml.replace(/<[^>]*>/g, '').trim() && draft.to.length === 0
+}
+
+/**
+ * An address typed into To/Cc/Bcc and committed without picking a
+ * suggestion: a bare `ann@example.com`, or the `Ann Lee <ann@example.com>`
+ * a pasted header line carries, with any quotes round the name dropped.
+ * Trailing commas and semicolons -- what a person types to move on to the
+ * next one -- are not part of it. `null` for nothing at all.
+ */
+export function parseTypedAddress(text: string): MailAddress | null {
+  const trimmed = text
+    .trim()
+    .replace(/[,;]+$/, '')
+    .trim()
+  if (!trimmed) return null
+  const angled = /^(.*?)\s*<([^<>]+)>$/.exec(trimmed)
+  if (angled) {
+    const name = angled[1]!
+      .trim()
+      .replace(/^"(.*)"$/, '$1')
+      .trim()
+    return { name, email: angled[2]!.trim() }
+  }
+  return { name: '', email: trimmed }
 }
 
 // ── (p) The split inbox: category tabs ─────────────────────────────────
@@ -505,6 +548,22 @@ export function stepCategoryTab(current: MailCategory | null, step: 1 | -1): Mai
   const at = order.indexOf(current)
   const next = ((((at < 0 ? 0 : at) + step) % order.length) + order.length) % order.length
   return order[next]!
+}
+
+/**
+ * A tab's badge, out of `category_counts`' rows: one category's threads, or
+ * every row together for "All" (`null`) -- the uncategorised included,
+ * since "All" lists them too.
+ */
+export function categoryTabCount(
+  counts: readonly CategoryCount[],
+  key: MailCategory | null,
+): { threads: number; unread: number } {
+  const rows = key === null ? counts : counts.filter((c) => c.category === key)
+  return {
+    threads: rows.reduce((sum, c) => sum + c.threads, 0),
+    unread: rows.reduce((sum, c) => sum + c.unread, 0),
+  }
 }
 
 /** Does this mailbox draw the split-inbox category tabs -- only the inbox
@@ -771,6 +830,25 @@ export function visibleThreadList<T>(
   searchResults: readonly T[],
 ): readonly T[] {
   return query.trim() ? searchResults : threads
+}
+
+/**
+ * Every thread from `fromId` to `toId` in `list`, both ends included and in
+ * list order whichever way round they are given -- Shift+click's range.
+ * Only `[toId]` when `fromId` is not in `list` (no anchor yet, or one left
+ * behind on a list no longer showing), and nothing when `toId` is not.
+ */
+export function threadRange(
+  list: readonly Pick<Thread, 'id'>[],
+  fromId: string | null,
+  toId: string,
+): string[] {
+  const to = list.findIndex((t) => t.id === toId)
+  if (to < 0) return []
+  const from = fromId === null ? -1 : list.findIndex((t) => t.id === fromId)
+  if (from < 0) return [toId]
+  const [lo, hi] = from <= to ? [from, to] : [to, from]
+  return list.slice(lo, hi + 1).map((t) => t.id)
 }
 
 /** The next or previous thread in `list`, `step` positions from

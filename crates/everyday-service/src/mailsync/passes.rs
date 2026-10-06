@@ -482,6 +482,12 @@ pub async fn sync_headers<S: MailSession>(
         if let Err(e) = ctx.vault.ingest_mail(ctx.account_id, ingest_batch) {
             tracing::warn!(error = %e, "could not ingest a batch of headers");
         }
+        // Saved as the pass goes, not only once `sync_once` finishes -- see
+        // `ContactIndex::persist_if_due` for what stopping half way used to
+        // lose.
+        if let Some(contacts) = &ctx.contacts {
+            contacts.persist_if_due(ctx.vault);
+        }
 
         // `batch.len()`, not `headers.len()`: a uid the `SEARCH` at the top
         // of this function saw but that vanished (an expunge racing this

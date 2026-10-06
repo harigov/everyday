@@ -116,6 +116,7 @@ import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
+  mockCategoryCounts,
   mockDiscardDraft,
   mockFetchAttachment,
   mockGetThread,
@@ -5696,6 +5697,10 @@ export const mockInvoke = async <T>(
     case 'get_thread':
       requireUnlocked()
       return mockGetThread(str(args.id)) as T
+
+    case 'category_counts':
+      requireUnlocked()
+      return mockCategoryCounts(str(args.mailbox)) as T
 
     case 'fetch_attachment':
       requireUnlocked()

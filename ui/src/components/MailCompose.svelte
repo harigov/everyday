@@ -24,7 +24,7 @@
   import { handle } from '../lib/errors'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
-  import { formatSenders, isBlankDraft } from '../lib/mail'
+  import { estimateQuoteHeight, formatSenders, isBlankDraft, parseTypedAddress } from '../lib/mail'
   import {
     escapeHtml,
     htmlToPlainText,
@@ -33,11 +33,13 @@
     splitQuoted,
   } from '../lib/mailwrite'
   import { mailwrite } from '../lib/mailwrite.svelte'
+  import { quoteDocument } from '../lib/mailview'
   import { MarkdownClipboard } from '../lib/markdown-clipboard'
   import { mail } from '../lib/mail.svelte'
   import { menu } from '../lib/menu.svelte'
   import type { MenuItem } from '../lib/menu'
   import { DECLINE_REASONS, proposals } from '../lib/proposals.svelte'
+  import { app } from '../lib/state.svelte'
   import { timeOfDay, toLocalInputValue } from '../lib/format'
   import type { Draft, ImproveMode, MailAddress } from '../lib/types'
   import Icon from './Icon.svelte'
@@ -102,12 +104,51 @@
    */
   let working = $state<Draft>(untrack(() => ({ ...draft })))
 
+  /**
+   * The quoted parent of a reply or forward -- "On … wrote:" and the
+   * message under it -- held apart from the editor for the life of the
+   * sheet, and joined back on behind the person's own words whenever the
+   * body is read (`syncBody`).
+   *
+   * Not in the editor, because the editor only keeps what its own schema
+   * knows: an HTML email's layout tables, images and colours came out of
+   * it mangled, and the person's caret landed inside somebody else's
+   * message. Out here it is shown as it was sent, in a sandboxed frame
+   * (`quoteDocument`), folded away behind "•••" the way Gmail and
+   * Superhuman fold theirs, and sent exactly as it was quoted.
+   */
+  const initialBody = untrack(() => splitQuoted(working.bodyHtml))
+  const quotedHtml = initialBody.quoted
+  let showQuote = $state(false)
+
+  function isDarkMode(): boolean {
+    if (app.theme === 'dark') return true
+    if (app.theme === 'light') return false
+    return window.matchMedia('(prefers-color-scheme: dark)').matches
+  }
+  const quoteSrcdoc = $derived(quotedHtml ? quoteDocument(quotedHtml, isDarkMode()) : '')
+
+  /** Sizes the quote's frame from its HTML, the way `MailThread` sizes a
+   *  message's: a sandboxed frame cannot be measured from out here. */
+  function sizeQuote(node: HTMLElement) {
+    const frame = node.querySelector('iframe')
+    function apply() {
+      if (frame) frame.style.height = `${estimateQuoteHeight(quotedHtml, node.clientWidth)}px`
+    }
+    apply()
+    const ro = new ResizeObserver(apply)
+    ro.observe(node)
+    return { destroy: () => ro.disconnect() }
+  }
+
   let toText = $state('')
   let ccText = $state('')
   let bccText = $state('')
   let showCcBcc = $state(working.cc.length > 0 || working.bcc.length > 0)
   let suggestions = $state<MailAddress[]>([])
   let suggestingField: 'to' | 'cc' | 'bcc' | null = $state(null)
+  /** The suggestion Enter or Tab would take -- moved by the arrow keys. */
+  let activeSuggestion = $state(0)
   /** Guards `addressField`'s await -- see that function's own note. */
   let addressGeneration = 0
 
@@ -205,6 +246,7 @@
     // would add a second `{a.email}`-keyed row, which is Bug 7's crash.
     const already = new Set(working[field].map((a) => a.email.trim().toLowerCase()))
     suggestions = results.filter((s) => !already.has(s.email.trim().toLowerCase()))
+    activeSuggestion = 0
   }
 
   /** Adds `address` to `field`, unless it is already there -- case-insensitively,
@@ -230,11 +272,78 @@
   }
 
   /** Enter (or a comma) on a bare address turns typed text into a chip
-   *  without waiting for a suggestion to be clicked. */
+   *  without waiting for a suggestion to be clicked. Several pasted at once
+   *  -- `a@x.com, b@y.com` -- become a chip each; one written as
+   *  `Ann Lee <ann@x.com>` keeps its name. */
   function commitTyped(field: 'to' | 'cc' | 'bcc', text: string) {
-    const email = text.trim().replace(/,$/, '')
-    if (!email) return
-    addAddress(field, { name: '', email })
+    const parts = text.includes('<') ? [text] : text.split(/[,;]/)
+    for (const part of parts) {
+      const address = parseTypedAddress(part)
+      if (address) addAddress(field, address)
+    }
+  }
+
+  function typedIn(field: 'to' | 'cc' | 'bcc'): string {
+    return field === 'to' ? toText : field === 'cc' ? ccText : bccText
+  }
+
+  function setTyped(field: 'to' | 'cc' | 'bcc', text: string) {
+    if (field === 'to') toText = text
+    if (field === 'cc') ccText = text
+    if (field === 'bcc') bccText = text
+  }
+
+  /**
+   * An address field's keys: the arrows move through the suggestions and
+   * Enter or Tab takes the highlighted one, the way Gmail's own list
+   * answers; Enter, a comma or a semicolon commit what was typed when
+   * nothing is suggested; Backspace in an empty field takes back the last
+   * chip; Escape closes the list without reaching the sheet's own Escape.
+   */
+  function onAddressKeydown(e: KeyboardEvent, field: 'to' | 'cc' | 'bcc') {
+    const text = typedIn(field)
+    const open = suggestingField === field && suggestions.length > 0
+    if (open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault()
+      const step = e.key === 'ArrowDown' ? 1 : -1
+      activeSuggestion = (activeSuggestion + step + suggestions.length) % suggestions.length
+      return
+    }
+    if (open && (e.key === 'Enter' || (e.key === 'Tab' && text.trim()))) {
+      e.preventDefault()
+      const chosen = suggestions[activeSuggestion]
+      if (chosen) addAddress(field, chosen)
+      return
+    }
+    if (open && e.key === 'Escape') {
+      e.preventDefault()
+      e.stopPropagation()
+      suggestions = []
+      return
+    }
+    if (e.key === 'Enter' || e.key === ',' || e.key === ';') {
+      e.preventDefault()
+      commitTyped(field, text)
+      return
+    }
+    if (e.key === 'Backspace' && !text && working[field].length > 0) {
+      e.preventDefault()
+      working[field] = working[field].slice(0, -1)
+      touch()
+    }
+  }
+
+  /** Leaving a field with an address typed in it keeps it, as a chip --
+   *  but not a half-typed name, which is still a search. The list closes a
+   *  beat later, unless focus has come back to the same field: a click on
+   *  a suggestion never takes focus at all (its `mousedown` is cancelled),
+   *  so anywhere else focus lands -- Subject, the body -- the list goes. */
+  function onAddressBlur(field: 'to' | 'cc' | 'bcc', input: HTMLInputElement) {
+    const text = typedIn(field)
+    if (text.includes('@')) commitTyped(field, text)
+    setTimeout(() => {
+      if (suggestingField === field && document.activeElement !== input) suggestions = []
+    }, 150)
   }
 
   // ── the editor ───────────────────────────────────────────────────
@@ -274,26 +383,28 @@
         // as `[x]`.
         MarkdownClipboard.configure({ taskLists: false, headings: 0 }),
       ],
-      content: working.bodyHtml,
+      // Only the person's own part -- see `quotedHtml`.
+      content: initialBody.own,
       editorProps: { attributes: { class: 'ed-content', spellcheck: 'true' } },
-      // Inline, a reply opens straight into the body rather than the To
-      // field it already knows -- `'start'` lands the caret before the
-      // quote, which is exactly where the person's own text belongs.
-      // Anything else (a dialog, or a forward still waiting on a
-      // recipient) keeps TipTap's own default of not stealing focus.
-      autofocus: inline && working.inReplyTo ? 'start' : false,
+      // Inline -- Reply, Reply all, Forward -- the sheet opens straight
+      // into the body, on the empty first line above the folded quote, so
+      // typing can start at once; a forward's recipients can follow. A
+      // dialog keeps TipTap's own default of not stealing focus, and the
+      // To field takes it instead.
+      autofocus: inline ? 'start' : false,
       onUpdate: () => touch(),
     })
     editor = ed
     return () => {
-      working.bodyHtml = ed.getHTML()
+      working.bodyHtml = joinQuoted(ed.getHTML(), quotedHtml)
       ed.destroy()
       editor = null
     }
   })
 
+  /** The editor's text, with the quote put back behind it. */
   function syncBody() {
-    if (editor) working.bodyHtml = editor.getHTML()
+    if (editor) working.bodyHtml = joinQuoted(editor.getHTML(), quotedHtml)
   }
 
   // ── writing help ─────────────────────────────────────────────────
@@ -624,102 +735,68 @@
     >
   </div>
 
-  <div class="field">
-    <span class="label">To</span>
-    <div class="chips">
-      {#each working.to as a (a.email)}
-        <span class="chip"
-          >{a.name || a.email}<button onclick={() => removeAddress('to', a.email)}
-            ><Icon name="close" size={10} /></button
-          ></span
-        >
-      {/each}
-      <input
-        use:focusOnMount={!(inline && working.inReplyTo)}
-        value={toText}
-        oninput={(e) => {
-          toText = e.currentTarget.value
-          void addressField(toText, 'to')
-        }}
-        onkeydown={(e) => {
-          if (e.key === 'Enter' || e.key === ',') {
-            e.preventDefault()
-            commitTyped('to', toText)
-          }
-        }}
-        placeholder={working.to.length === 0 ? 'Recipients' : ''}
-      />
+  {#snippet addressRow(field: 'to' | 'cc' | 'bcc', label: string)}
+    <div class="field address">
+      <span class="label">{label}</span>
+      <div class="chips">
+        {#each working[field] as a (a.email)}
+          <span class="chip" title={a.email}
+            >{a.name || a.email}<button
+              aria-label={`Remove ${a.name || a.email}`}
+              onclick={() => removeAddress(field, a.email)}><Icon name="close" size={10} /></button
+            ></span
+          >
+        {/each}
+        <input
+          use:focusOnMount={field === 'to' && !inline}
+          value={typedIn(field)}
+          aria-label={label}
+          aria-autocomplete="list"
+          aria-expanded={suggestingField === field && suggestions.length > 0}
+          autocomplete="off"
+          spellcheck="false"
+          oninput={(e) => {
+            setTyped(field, e.currentTarget.value)
+            void addressField(e.currentTarget.value, field)
+          }}
+          onkeydown={(e) => onAddressKeydown(e, field)}
+          onblur={(e) => onAddressBlur(field, e.currentTarget)}
+          placeholder={field === 'to' && working.to.length === 0 ? 'Name or email address' : ''}
+        />
+      </div>
+      {#if field === 'to' && !showCcBcc}
+        <button class="textlink" onclick={() => (showCcBcc = true)}>Cc/Bcc</button>
+      {/if}
+      {#if suggestingField === field && suggestions.length > 0}
+        <div class="suggestions" role="listbox" aria-label="Suggested people">
+          {#each suggestions as s, i (s.email)}
+            <button
+              class="suggestion"
+              class:active={i === activeSuggestion}
+              role="option"
+              aria-selected={i === activeSuggestion}
+              onmousedown={(e) => e.preventDefault()}
+              onmouseenter={() => (activeSuggestion = i)}
+              onclick={() => addAddress(field, s)}
+            >
+              <span class="avatar" aria-hidden="true"
+                >{(s.name || s.email).trim().charAt(0).toUpperCase()}</span
+              >
+              <span class="s-text">
+                <span class="s-name">{s.name || s.email}</span>
+                {#if s.name}<span class="s-email">{s.email}</span>{/if}
+              </span>
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
-    {#if !showCcBcc}
-      <button class="textlink" onclick={() => (showCcBcc = true)}>Cc/Bcc</button>
-    {/if}
-  </div>
+  {/snippet}
 
+  {@render addressRow('to', 'To')}
   {#if showCcBcc}
-    <div class="field">
-      <span class="label">Cc</span>
-      <div class="chips">
-        {#each working.cc as a (a.email)}
-          <span class="chip"
-            >{a.name || a.email}<button onclick={() => removeAddress('cc', a.email)}
-              ><Icon name="close" size={10} /></button
-            ></span
-          >
-        {/each}
-        <input
-          value={ccText}
-          oninput={(e) => {
-            ccText = e.currentTarget.value
-            void addressField(ccText, 'cc')
-          }}
-          onkeydown={(e) => {
-            if (e.key === 'Enter' || e.key === ',') {
-              e.preventDefault()
-              commitTyped('cc', ccText)
-            }
-          }}
-        />
-      </div>
-    </div>
-    <div class="field">
-      <span class="label">Bcc</span>
-      <div class="chips">
-        {#each working.bcc as a (a.email)}
-          <span class="chip"
-            >{a.name || a.email}<button onclick={() => removeAddress('bcc', a.email)}
-              ><Icon name="close" size={10} /></button
-            ></span
-          >
-        {/each}
-        <input
-          value={bccText}
-          oninput={(e) => {
-            bccText = e.currentTarget.value
-            void addressField(bccText, 'bcc')
-          }}
-          onkeydown={(e) => {
-            if (e.key === 'Enter' || e.key === ',') {
-              e.preventDefault()
-              commitTyped('bcc', bccText)
-            }
-          }}
-        />
-      </div>
-    </div>
-  {/if}
-
-  {#if suggestingField && suggestions.length > 0}
-    <div class="suggestions">
-      {#each suggestions as s (s.email)}
-        <button
-          class="suggestion"
-          onclick={() => suggestingField && addAddress(suggestingField, s)}
-        >
-          <span class="s-name">{s.name || s.email}</span>
-          {#if s.name}<span class="s-email">{s.email}</span>{/if}
-        </button>
-      {/each}
-    </div>
+    {@render addressRow('cc', 'Cc')}
+    {@render addressRow('bcc', 'Bcc')}
   {/if}
 
   <div class="field">
@@ -783,7 +860,28 @@
     </p>
   {/if}
 
-  <div class="prose" bind:this={host}></div>
+  <div class="body">
+    <div class="prose" class:fill={!quotedHtml} bind:this={host}></div>
+    {#if quotedHtml}
+      <button
+        class="quote-toggle"
+        class:open={showQuote}
+        title={showQuote ? 'Hide the quoted message' : 'Show the quoted message'}
+        aria-label={showQuote ? 'Hide the quoted message' : 'Show the quoted message'}
+        aria-expanded={showQuote}
+        onclick={() => (showQuote = !showQuote)}>•••</button
+      >
+      {#if showQuote}
+        <div class="quote" use:sizeQuote>
+          <iframe
+            title="The quoted message"
+            sandbox="allow-popups allow-popups-to-escape-sandbox"
+            srcdoc={quoteSrcdoc}
+          ></iframe>
+        </div>
+      {/if}
+    {/if}
+  </div>
 
   {#if working.attachments.length > 0}
     <div class="attachments">
@@ -798,8 +896,8 @@
   {/if}
 
   <div class="foot">
-    <label class="attach">
-      <Icon name="plus" size={14} />
+    <label class="attach" title="Attach files" aria-label="Attach files">
+      <Icon name="paperclip" size={15} />
       <input type="file" multiple hidden onchange={(e) => void onFiles(e.currentTarget.files)} />
     </label>
     <button
@@ -889,9 +987,14 @@
 </div>
 
 <style>
+  /* Room to write in: most of a laptop screen, centred rather than hung
+     from `.sheet`'s 22% -- the body below the fields takes whatever height
+     is left, and scrolls inside it. */
   .compose {
-    width: 620px;
-    max-width: calc(100vw - var(--sp-8));
+    top: 50%;
+    translate: -50% -50%;
+    width: min(880px, calc(100vw - var(--sp-8) * 2));
+    height: min(720px, calc(100vh - var(--sp-8) * 2));
     display: flex;
     flex-direction: column;
     gap: var(--sp-2);
@@ -972,6 +1075,10 @@
     border-bottom: 1px solid var(--border);
     padding: var(--sp-1) 0;
   }
+  /* What the suggestions hang from. */
+  .field.address {
+    position: relative;
+  }
   .label {
     flex: none;
     width: 36px;
@@ -1025,36 +1132,93 @@
     color: var(--fg);
   }
 
+  /* Under the field being typed in, over whatever is below it -- the
+     subject, the body -- rather than pushing it all down a row at a time
+     as the list fills. */
   .suggestions {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 44px;
+    z-index: 30;
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-raised);
-    max-height: 160px;
+    width: min(420px, calc(100% - 44px));
+    max-height: 280px;
     overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    box-shadow: var(--shadow-lg);
   }
   .suggestion {
     display: flex;
+    align-items: center;
     gap: var(--sp-2);
-    padding: var(--sp-1) var(--sp-2);
+    padding: 6px var(--sp-2);
+    border-radius: var(--radius-sm);
     text-align: left;
   }
-  .suggestion:hover {
+  .suggestion.active {
     background: var(--bg-hover);
+  }
+  .avatar {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: color-mix(in oklab, var(--accent) 22%, var(--bg-hover));
+    color: var(--fg);
+    font-size: var(--text-xs);
+    font-weight: 650;
+  }
+  .s-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .s-name,
+  .s-email {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .s-name {
+    font-size: var(--text-sm);
+    color: var(--fg);
   }
   .s-email {
     color: var(--fg-faint);
     font-size: var(--text-xs);
   }
 
-  .prose {
-    min-height: 140px;
-    max-height: 40vh;
+  /* The editor and the folded quote under it. In the dialog this is what
+     takes the height the fields leave, and what scrolls; inline, the
+     reading pane around it already scrolls. */
+  .body {
+    display: flex;
+    flex-direction: column;
+  }
+  .compose .body {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
+  }
+  .prose {
+    display: flex;
+    flex-direction: column;
+    min-height: 120px;
     padding: var(--sp-2) 0;
   }
+  /* A message quoting nothing: the editor fills the body, so a click
+     anywhere in the empty space below the last line still lands in it. */
+  .compose .prose.fill {
+    flex: 1 0 auto;
+  }
   .prose :global(.ed-content) {
+    flex: 1;
     outline: none;
     font-size: var(--text-base);
     line-height: var(--leading-normal);
@@ -1083,6 +1247,33 @@
     height: 0;
     pointer-events: none;
     color: var(--fg-faint);
+  }
+
+  /* Gmail's "•••": the whole quote, folded into one small pill. */
+  .quote-toggle {
+    align-self: flex-start;
+    padding: 0 8px;
+    height: 16px;
+    line-height: 14px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--fg-muted);
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+  .quote-toggle:hover,
+  .quote-toggle.open {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
+  .quote {
+    margin-top: var(--sp-2);
+  }
+  .quote iframe {
+    display: block;
+    width: 100%;
+    border: 0;
+    background: transparent;
   }
 
   .attachments {
@@ -1116,6 +1307,10 @@
   }
   .attach:disabled {
     opacity: 0.5;
+  }
+  /* Send and Send later to the far end of the row, away from the tools. */
+  .foot .spacer {
+    flex: 1;
   }
   .foot .hint {
     opacity: 0.7;

@@ -42,6 +42,15 @@ const typedReply = `<p>Sounds good.</p>${freshReply}`
   assert.equal(joinQuoted(own, quoted), typedReply)
 }
 
+// A reply whose own first line happens to start "On …" stays the person's
+// own: the attribution is one paragraph, never a run across theirs.
+{
+  const own = '<p>On Monday we could meet.</p><p>Thanks</p>'
+  const { own: split, quoted } = splitQuoted(own + freshReply)
+  assert.equal(split, own, 'the reply is not swallowed into the quote')
+  assert.equal(quoted, freshReply)
+}
+
 // Once this has been through TipTap and back, `<blockquote type="cite">`
 // comes back as a bare `<blockquote>` -- StarterKit's node has no attribute
 // spec for `type` -- so the split still has to find it.

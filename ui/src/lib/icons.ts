@@ -101,6 +101,11 @@ export const ICONS = {
 
   plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
 
+  // A file attached to a message: the compose sheet's attach button, and
+  // the mark on a thread or message that carries one.
+  paperclip:
+    '<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+
   // Another computer, and the act of reaching one. Used by the connect screen
   // and by the sharing panel in settings.
   monitor:

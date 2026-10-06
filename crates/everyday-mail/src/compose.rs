@@ -456,6 +456,126 @@ fn escape_html(s: &str) -> String {
     out
 }
 
+/// The prefix [`crate::sanitize`] gives every image it rewrites in a stored
+/// body -- a proxied remote image (`mail/img/…`) or a `cid:` part of that
+/// message (`mail/part/…`).
+const LOCAL_MAIL_REF: &str = "everyday://mail/";
+
+/// Point a draft's quoted HTML back at the outside world before it is sent.
+///
+/// A reply or forward quotes the parent's stored body verbatim, and that
+/// body is the sanitised copy -- every image in it already rewritten to an
+/// `everyday://mail/…` address only this app can answer. Sent as it is, a
+/// recipient would see a broken image for every one. So, on the way out:
+///
+/// - a proxied remote image goes back to the address the sender actually
+///   used, which `original_url` answers from the quoted message's own
+///   [`crate::sanitize::RemoteImage`] list, given its message id and token;
+/// - an `<img>` this cannot point anywhere real -- a `cid:` part of the
+///   quoted message, which this message does not carry, or a remote image
+///   `original_url` no longer knows -- is dropped rather than sent broken;
+/// - any other attribute naming one (a `style` background, a `srcset`) has
+///   the address replaced, or emptied when there is nothing to replace it
+///   with.
+///
+/// HTML with no local address in it, which is every message that quotes
+/// nothing, comes back untouched.
+pub fn externalize_local_refs(
+    html: &str,
+    original_url: impl Fn(&str, &str) -> Option<String>,
+) -> String {
+    use lol_html::{RewriteStrSettings, element, rewrite_str};
+
+    if !html.contains(LOCAL_MAIL_REF) {
+        return html.to_string();
+    }
+    let original_url = &original_url;
+    let settings =
+        RewriteStrSettings::new().append_element_content_handler(element!("*", move |el| {
+            let local: Vec<(String, String)> = el
+                .attributes()
+                .iter()
+                .filter(|a| a.value().contains(LOCAL_MAIL_REF))
+                .map(|a| (a.name(), a.value()))
+                .collect();
+            for (name, value) in local {
+                if el.tag_name() == "img" && name == "src" {
+                    match local_image(value.trim()).and_then(|(m, t)| original_url(&m, &t)) {
+                        Some(url) => el.set_attribute("src", &url.replace('&', "&amp;"))?,
+                        None => {
+                            el.remove();
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    el.set_attribute(&name, &replace_local_refs(&value, original_url))?;
+                }
+            }
+            Ok(())
+        }));
+    // A document too broken for `lol_html` still must not leave with a
+    // local address in it: the plain-text pass is cruder, but complete.
+    rewrite_str(html, settings).unwrap_or_else(|_| replace_local_refs(html, original_url))
+}
+
+/// `(message id, token)` out of an `everyday://mail/img/…` address, in
+/// either shape [`crate::sanitize`] has ever written -- `img/{id}/{token}`,
+/// or the first one, `img/{token}?m={id}`. `None` for anything else,
+/// including a `mail/part/…` address.
+fn local_image(url: &str) -> Option<(String, String)> {
+    let rest = url.strip_prefix(LOCAL_MAIL_REF)?.strip_prefix("img/")?;
+    if let Some((token, query)) = rest.split_once('?') {
+        let id = query.split('&').find_map(|kv| kv.strip_prefix("m="))?;
+        return Some((percent_decode(id), token.to_string()));
+    }
+    let (id, token) = rest.split_once('/')?;
+    Some((percent_decode(id), token.to_string()))
+}
+
+/// Every local address inside `text` -- an attribute value, or a whole
+/// document as the last resort -- replaced with its original, or with
+/// nothing. An address ends at the first character that cannot be part of
+/// one: a quote, a bracket, whitespace or a comma.
+fn replace_local_refs(text: &str, original_url: &dyn Fn(&str, &str) -> Option<String>) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(LOCAL_MAIL_REF) {
+        out.push_str(&rest[..at]);
+        let tail = &rest[at..];
+        let end =
+            tail.find(|c: char| c.is_whitespace() || "\"'()<>,;".contains(c)).unwrap_or(tail.len());
+        let url = &tail[..end];
+        let url = url.strip_suffix("&quot").unwrap_or(url);
+        if let Some(original) = local_image(url).and_then(|(m, t)| original_url(&m, &t)) {
+            out.push_str(&original.replace('&', "&amp;"));
+        }
+        rest = &tail[url.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `%XX` escapes decoded, as [`crate::sanitize`]'s own path segments write
+/// them; anything malformed is kept as it was.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(hex) = s.get(i + 1..i + 3)
+            && let Ok(b) = u8::from_str_radix(hex, 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Sixteen random bytes, hex-encoded, `@` `domain` — see [`build`]'s docs.
 /// `pub(crate)` rather than private: `crate::outbox::send` calls this
 /// directly the first time a `Send` op builds a given draft, so it can
@@ -775,6 +895,41 @@ mod tests {
         assert!(quoted.contains("Alice wrote:"));
         assert!(quoted.contains(r#"<blockquote type="cite">"#));
         assert!(quoted.contains("<p>Original text.</p>"));
+    }
+
+    #[test]
+    fn externalize_points_a_quoted_image_back_at_its_original_address() {
+        let html = r#"<p>Hi</p><blockquote><img src="everyday://mail/img/m%2D1/tok" alt="logo"><img src="everyday://mail/img/tok2?m=m-2"></blockquote>"#;
+        let out = externalize_local_refs(html, |id, token| match (id, token) {
+            ("m-1", "tok") => Some("https://example.com/logo.png?w=1&h=2".into()),
+            ("m-2", "tok2") => Some("https://example.com/b.png".into()),
+            _ => None,
+        });
+        assert!(out.contains(r#"src="https://example.com/logo.png?w=1&amp;h=2""#), "{out}");
+        assert!(out.contains(r#"src="https://example.com/b.png""#), "{out}");
+        assert!(!out.contains("everyday://"), "{out}");
+    }
+
+    #[test]
+    fn externalize_drops_an_image_it_cannot_point_anywhere_real() {
+        let html = r#"<p>a</p><img src="everyday://mail/part/m-1/logo@x"><img src="everyday://mail/img/m-1/gone"><p>b</p>"#;
+        let out = externalize_local_refs(html, |_, _| None);
+        assert_eq!(out, "<p>a</p><p>b</p>");
+    }
+
+    #[test]
+    fn externalize_rewrites_a_background_in_a_style() {
+        let html = r#"<td style="background:url(everyday://mail/img/m-1/tok) no-repeat">x</td>"#;
+        let out = externalize_local_refs(html, |_, _| Some("https://example.com/bg.png".into()));
+        assert!(out.contains("url(https://example.com/bg.png) no-repeat"), "{out}");
+        let gone = externalize_local_refs(html, |_, _| None);
+        assert!(gone.contains("url() no-repeat"), "{gone}");
+    }
+
+    #[test]
+    fn externalize_leaves_html_without_local_addresses_alone() {
+        let html = r#"<p>Hello <a href="https://example.com">there</a></p>"#;
+        assert_eq!(externalize_local_refs(html, |_, _| unreachable!()), html);
     }
 
     #[test]
