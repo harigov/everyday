@@ -155,9 +155,10 @@ use everyday_core::crypto::Cipher;
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{EntryId, TaskId};
 use everyday_core::model::{Entry, EntrySummary};
-use everyday_core::store::{BackendCapabilities, StoreContext, entry_aad};
+use everyday_core::store::{BackendCapabilities, IntegrityJob, StoreContext, entry_aad};
 use pool::{Pool, ReadGuard};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 /// The handful of things this crate cannot answer for a particular database.
@@ -217,6 +218,14 @@ pub trait Driver: schema::VersionStore + Send + Sync {
     /// [`JournalStore::check_integrity`](everyday_core::JournalStore::check_integrity).
     fn check_integrity(&self, _conn: &mut dyn Sql) -> Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// [`Driver::check_integrity`] on a connection of the job's own, never
+    /// one of the pool's. See
+    /// [`JournalStore::background_integrity_check`](everyday_core::JournalStore::background_integrity_check).
+    /// `None`, the default, for a driver with nothing to check.
+    fn background_integrity_check(&self, _cancel: Arc<AtomicBool>) -> Result<Option<IntegrityJob>> {
+        Ok(None)
     }
 
     /// Write a consistent copy of the database into `dir`.

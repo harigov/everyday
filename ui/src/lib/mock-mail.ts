@@ -823,13 +823,16 @@ export function mockListThreadsAcross(
  * has somebody worth cleaning out.
  */
 export function mockInboxSenders(
-  days: number,
+  days: number | null,
   accounts: AccountId[] | null | undefined,
   limit: number | null | undefined,
 ): InboxSender[] {
-  const span = Math.min(365, Math.max(1, Math.round(days)))
   const take = Math.min(50, Math.max(1, limit ?? 20))
-  const since = Date.now() - span * 86_400_000
+  // `null` is all time, as it is to the real command.
+  const since =
+    days === null
+      ? -Infinity
+      : Date.now() - Math.min(365, Math.max(1, Math.round(days))) * 86_400_000
   const inboxes = new Set(
     mailboxes
       .filter((m) => m.role === 'inbox' && (!accounts || accounts.includes(m.accountId)))

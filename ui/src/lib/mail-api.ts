@@ -181,7 +181,7 @@ export const suggestAddresses = (prefix: string, limit?: number): Promise<MailAd
 /** The senders with the most messages still in the Inbox over the last
  *  `days`, most first -- `accounts` `null` for every mail account. */
 export const inboxSenders = (
-  days: number,
+  days: number | null,
   accounts?: AccountId[] | null,
   limit?: number | null,
 ): Promise<InboxSender[]> => api.inboxSenders(days, accounts, limit)

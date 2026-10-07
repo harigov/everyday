@@ -17,12 +17,14 @@ use crate::error::{Error, Result};
 use crate::id::{BlobId, EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::{
-    BackendCapabilities, BackendRegistry, EntryQuery, JournalStore, StoreContext, StoreFactory,
-    StoreStats,
+    BackendCapabilities, BackendRegistry, EntryQuery, IntegrityJob, JournalStore, StoreContext,
+    StoreFactory, StoreStats,
 };
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 // A minimal in-memory backend, so the vault can be tested without
 // depending on a concrete storage crate.
@@ -157,9 +159,54 @@ impl JournalStore for MemStore {
 #[derive(Default)]
 pub struct MemFactory {
     stores: Mutex<BTreeMap<PathBuf, Arc<MemStore>>>,
+    /// Set by [`registry_with_integrity_probe`]; otherwise these stores have
+    /// no integrity check, as a store with nothing on disk should not.
+    probe: Option<Arc<IntegrityProbe>>,
 }
 
-pub struct Handle(Arc<MemStore>);
+/// What a test can see of the integrity checks a vault starts.
+///
+/// Each check it hands out never finishes by itself: it runs until it is
+/// cancelled. So a vault that waited for one would hang, and one that never
+/// stopped one would leave [`IntegrityProbe::stopped`] behind
+/// [`IntegrityProbe::started`].
+#[derive(Default)]
+pub struct IntegrityProbe {
+    started: AtomicUsize,
+    stopped: AtomicUsize,
+}
+
+impl IntegrityProbe {
+    /// Checks the stores were asked for.
+    pub fn started(&self) -> usize {
+        self.started.load(Ordering::SeqCst)
+    }
+
+    /// Checks that ended because they were cancelled.
+    pub fn stopped(&self) -> usize {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
+    fn job(self: &Arc<Self>, cancel: Arc<AtomicBool>) -> IntegrityJob {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let probe = self.clone();
+        Box::new(move || {
+            // Bounded, so a vault that never cancels fails its test rather
+            // than hanging the suite.
+            let give_up = Instant::now() + Duration::from_secs(30);
+            while !cancel.load(Ordering::SeqCst) {
+                if Instant::now() > give_up {
+                    return Err(Error::Invalid("nobody stopped this integrity check".into()));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            probe.stopped.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        })
+    }
+}
+
+pub struct Handle(Arc<MemStore>, Option<Arc<IntegrityProbe>>);
 
 impl JournalStore for Handle {
     fn backend(&self) -> &'static str {
@@ -216,6 +263,9 @@ impl JournalStore for Handle {
     fn stats(&self) -> Result<StoreStats> {
         self.0.stats()
     }
+    fn background_integrity_check(&self, cancel: Arc<AtomicBool>) -> Result<Option<IntegrityJob>> {
+        Ok(self.1.as_ref().map(|probe| probe.job(cancel)))
+    }
 }
 
 impl StoreFactory for Arc<MemFactory> {
@@ -241,7 +291,7 @@ impl StoreFactory for Arc<MemFactory> {
             blobs: Mutex::new(store.blobs.lock().unwrap().clone()),
         });
         g.insert(ctx.root, rebound.clone());
-        Ok(Box::new(Handle(rebound)))
+        Ok(Box::new(Handle(rebound, self.probe.clone())))
     }
 }
 
@@ -249,4 +299,12 @@ pub fn registry() -> Arc<BackendRegistry> {
     let mut reg = BackendRegistry::new();
     reg.register(Arc::new(MemFactory::default()));
     Arc::new(reg)
+}
+
+/// [`registry`], with stores whose integrity checks `probe` can watch.
+pub fn registry_with_integrity_probe() -> (Arc<BackendRegistry>, Arc<IntegrityProbe>) {
+    let probe = Arc::new(IntegrityProbe::default());
+    let mut reg = BackendRegistry::new();
+    reg.register(Arc::new(MemFactory { probe: Some(probe.clone()), ..MemFactory::default() }));
+    (Arc::new(reg), probe)
 }

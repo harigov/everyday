@@ -7,8 +7,31 @@ use crate::error::{Error, Result};
 use crate::id::BlobId;
 use crate::model::Entry;
 use crate::search::{SearchHit, SearchIndex, SearchScope};
-use crate::store::{JournalStore, StoreStats};
+use crate::store::{IntegrityJob, JournalStore, StoreStats};
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::JoinHandle;
+use std::time::Instant;
+
+/// A vault's integrity check, started by its first unlock. See
+/// [`Vault::start_integrity_check`].
+pub(super) struct IntegrityCheck {
+    cancel: Arc<AtomicBool>,
+    /// `None` when there was nothing to wait for: the store had nothing to
+    /// check, or the check could not be started.
+    thread: Option<JoinHandle<()>>,
+}
+
+impl IntegrityCheck {
+    /// Interrupt the check if it is still going, and wait for its thread.
+    fn stop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 
 impl Vault {
     /// Search everything this vault can be searched for.
@@ -62,6 +85,72 @@ impl Vault {
         self.read(|u| u.store.check_integrity())
     }
 
+    /// Check `store`'s structure on a thread of its own, the first time this
+    /// vault is unlocked.
+    ///
+    /// This used to run inside the unlock, and an unlock waited for it. That
+    /// was free for a journal and is not for a vault that keeps mail: the
+    /// check reads every page, and on a 5.6 GB database from a cold disk
+    /// cache that is over twenty seconds of "Unlocking…" for an answer
+    /// nothing was waiting on. The check never decided whether the vault
+    /// opened -- see below -- so the unlock has no reason to wait for it.
+    ///
+    /// Once per opening rather than once per unlock. What it looks for is
+    /// the damage a bad shutdown leaves, and between this process locking a
+    /// vault and unlocking it again there has been no shutdown; reading
+    /// gigabytes again every time the idle timer drops the key would only
+    /// push everything else out of the disk cache.
+    ///
+    /// A bad answer is said loudly and does not refuse anything. A damaged
+    /// vault is precisely the one someone needs to get into -- to export
+    /// what still reads, or to see how much of it survived -- and locking
+    /// them out would turn recoverable damage into total loss. `everyday
+    /// check` reports the same findings on demand.
+    ///
+    /// Locking leaves the check running, since it holds no key and reads
+    /// only the database's structure. Dropping the vault stops it, and so
+    /// does [`Vault::flush`].
+    pub(super) fn start_integrity_check(&self, store: &dyn JournalStore) {
+        let mut slot = self.integrity_check.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_some() {
+            return;
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let thread = match store.background_integrity_check(cancel.clone()) {
+            Ok(Some(job)) => spawn_integrity_check(job, cancel.clone()),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not run the integrity check");
+                None
+            }
+        };
+        *slot = Some(IntegrityCheck { cancel, thread });
+    }
+
+    /// Stop the integrity check if it is still running, and wait for it.
+    /// Not started again until the vault is next opened.
+    pub(super) fn stop_integrity_check(&self) {
+        let mut slot = self.integrity_check.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(check) = slot.as_mut() {
+            check.stop();
+        }
+    }
+
+    /// Move what has been written out of the write-ahead log and into the
+    /// database itself. For a process about to stop -- the shell's close
+    /// handshake, a server shutting down -- and for a backup.
+    ///
+    /// Stops the integrity check first. A checkpoint waits for every reader
+    /// to catch up with the last write, and a check part way through the
+    /// database will not until it has read the rest: the checkpoint sits out
+    /// the store's five-second busy timeout and then gives up without having
+    /// done anything. Whoever is flushing is about to stop, or about to read
+    /// every page for a backup, so the check is not missed.
+    pub fn flush(&self) -> Result<()> {
+        self.stop_integrity_check();
+        self.read(|u| u.store.flush())
+    }
+
     /// Copy the whole vault into `dir`, sealed exactly as it is.
     ///
     /// The result is a vault, not an archive: point `open` at `dir` and it
@@ -82,7 +171,7 @@ impl Vault {
         // behind the back of whoever holds the lock. Skipping it costs a
         // slower snapshot, not a wrong one.
         if self.is_writable() {
-            self.read(|u| u.store.flush())?;
+            self.flush()?;
         }
         self.read(|u| u.store.snapshot(&dir.join(STORE_DIRNAME)))?;
         write_header(dir, &self.header_read().clone())?;
@@ -112,5 +201,39 @@ impl Vault {
     /// Escape hatch for operations that need the raw backend, e.g. import.
     pub fn with_store<T>(&self, f: impl FnOnce(&dyn JournalStore) -> Result<T>) -> Result<T> {
         self.read(|u| f(u.store.as_ref()))
+    }
+}
+
+/// Run `job` on a thread of its own and log what it finds.
+fn spawn_integrity_check(job: IntegrityJob, cancel: Arc<AtomicBool>) -> Option<JoinHandle<()>> {
+    let started = Instant::now();
+    let spawned = std::thread::Builder::new().name("integrity-check".into()).spawn(move || {
+        let result = job();
+        // Stopped because the vault was closed. Whatever came back is about
+        // the interruption, not about the database.
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        match result {
+            Ok(problems) if !problems.is_empty() => {
+                tracing::error!(
+                    count = problems.len(),
+                    first = %problems[0],
+                    "storage integrity check failed -- restore from a backup"
+                );
+            }
+            Ok(_) => tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "storage integrity check passed"
+            ),
+            Err(e) => tracing::warn!(error = %e, "could not run the integrity check"),
+        }
+    });
+    match spawned {
+        Ok(thread) => Some(thread),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not start the integrity check");
+            None
+        }
     }
 }

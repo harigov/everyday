@@ -146,6 +146,31 @@ async fn inbox_senders_counts_what_is_still_in_every_inbox_and_leaves_you_out() 
 }
 
 #[tokio::test]
+async fn inbox_senders_without_a_window_counts_everything_still_in_the_inbox() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc, "me@example.com");
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let archive = seed_mailbox(&svc, account, "Archive", MailboxRole::Archive);
+    seed(&svc, account, inbox, 1, "news@example.com", 2);
+    seed(&svc, account, inbox, 2, "news@example.com", 400);
+    seed(&svc, account, inbox, 3, "old@example.com", 3000);
+    seed(&svc, account, archive, 1, "news@example.com", 900);
+
+    let year = call(&svc, "inbox_senders", json!({ "days": 365 })).await;
+    assert_eq!(emails(&year), ["news@example.com"]);
+    assert_eq!(year[0]["messages"], 1);
+
+    for all_time in [json!({}), json!({ "days": null })] {
+        let senders = call(&svc, "inbox_senders", all_time.clone()).await;
+        assert_eq!(emails(&senders), ["news@example.com", "old@example.com"], "{all_time}");
+        assert_eq!(
+            senders[0]["messages"], 2,
+            "however old, but still only what is in the Inbox: {all_time}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn list_threads_across_merges_every_named_inbox_and_refuses_a_flood() {
     let (svc, _dir) = service();
     let work = seed_account(&svc, "me@example.com");

@@ -35,7 +35,7 @@
 //! makes the opposite choice for the opposite reason.
 
 use everyday_core::error::{Error, Result};
-use everyday_core::store::{JournalStore, StoreContext, StoreFactory};
+use everyday_core::store::{IntegrityJob, JournalStore, StoreContext, StoreFactory};
 use everyday_store_sql::conn::{Connection, Row, Sql, Transaction, Value};
 use everyday_store_sql::dialect::Dialect;
 use everyday_store_sql::schema::VersionStore;
@@ -43,6 +43,7 @@ use everyday_store_sql::{Driver, Media, SqlStore};
 use rusqlite::types::{ToSqlOutput, ValueRef};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const BACKEND_ID: &str = "sqlite";
 pub(crate) const DB_FILENAME: &str = "everyday.db";
@@ -164,13 +165,41 @@ impl Driver for SqliteDriver {
     /// `PRAGMA quick_check`, which is the useful three quarters of
     /// `integrity_check` at a fraction of the cost: it verifies page
     /// structure and record sanity but skips the index-versus-table
-    /// cross-check. That is the right trade for something that runs on
-    /// unlock -- torn pages are what a bad shutdown produces, and they are
-    /// exactly what this catches.
+    /// cross-check. That is the right trade for something that runs every
+    /// time a vault is opened -- torn pages are what a bad shutdown
+    /// produces, and they are exactly what this catches.
+    ///
+    /// A fraction is still every page, though, and that is why it no longer
+    /// runs *in* the unlock: see
+    /// [`SqliteDriver::background_integrity_check`].
     fn check_integrity(&self, conn: &mut dyn Sql) -> Result<Vec<String>> {
-        let rows = conn.query("PRAGMA quick_check", &[])?;
-        // A healthy database answers with the single row "ok".
-        rows.into_iter().map(|r| r.text(0)).filter(|r| !matches!(r, Ok(s) if s == "ok")).collect()
+        quick_check(conn)
+    }
+
+    /// The same `quick_check`, on a connection of its own that `cancel`
+    /// interrupts mid-scan.
+    ///
+    /// Not the write connection, which is where [`Driver::check_integrity`]
+    /// runs and where twenty seconds of reading would hold every save.
+    /// Not a pooled reader either, which belongs to the store and could not
+    /// outlive it. A connection opened here, and moved into the job, can.
+    ///
+    /// Opened now, on the caller's thread, rather than inside the job: a
+    /// path that cannot be opened is then reported to whoever asked, and
+    /// the job never opens anything by name -- which matters if the vault's
+    /// directory is being removed by the time the job's thread gets going.
+    ///
+    /// Stopped through a progress handler rather than `sqlite3_interrupt`,
+    /// because an interrupt sent before the statement starts is cleared when
+    /// it does: a vault closed in the moment after an unlock would wait out
+    /// the whole scan. The flag is read throughout, including between the
+    /// pages of the check itself.
+    fn background_integrity_check(&self, cancel: Arc<AtomicBool>) -> Result<Option<IntegrityJob>> {
+        let conn = connect(&self.db_path)?;
+        conn.progress_handler(CANCEL_CHECK_EVERY, Some(move || cancel.load(Ordering::Relaxed)))
+            .map_err(Error::backend)?;
+        let mut conn = SqliteConn(conn);
+        Ok(Some(Box::new(move || quick_check(&mut conn))))
     }
 
     /// `VACUUM INTO`, plus a copy of the media directory.
@@ -223,6 +252,22 @@ impl VersionStore for SqliteDriver {
         Ok(())
     }
 }
+
+/// Run `PRAGMA quick_check` and keep what is wrong.
+fn quick_check(conn: &mut dyn Sql) -> Result<Vec<String>> {
+    let rows = conn.query("PRAGMA quick_check", &[])?;
+    // A healthy database answers with the single row "ok".
+    rows.into_iter().map(|r| r.text(0)).filter(|r| !matches!(r, Ok(s) if s == "ok")).collect()
+}
+
+/// How often a background integrity check looks at its cancel flag: every
+/// this many b-tree pages of the scan, or virtual-machine steps outside it.
+///
+/// Pages, not bytes. A mail body is mostly overflow pages chained off the
+/// one that holds its row, and the chain is walked between two looks, so a
+/// hundred pages here can be a few megabytes of reading -- tens of
+/// milliseconds from a cold disk, which is how long closing a vault waits.
+const CANCEL_CHECK_EVERY: std::ffi::c_int = 100;
 
 // ---- the driver proper: rusqlite behind the two-method trait -------------
 

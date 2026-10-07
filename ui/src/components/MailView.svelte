@@ -551,7 +551,7 @@
         {/if}
         {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
       </div>
-      {#if preview}<p class="snippet">{preview}</p>{/if}
+      <p class="snippet">{preview}</p>
     </div>
   </button>
 {/snippet}
@@ -1098,9 +1098,12 @@
     background: var(--bg-raised);
   }
   /* Two lines of the message, not one squeezed in beside the subject: enough
-     to tell a question from an announcement without opening either. */
+     to tell a question from an announcement without opening either. Always
+     two lines tall, even for a one-line or empty preview, so every row in
+     the list is the same height. */
   .snippet {
     margin: 2px 0 0;
+    height: calc(2 * 1.4em);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     line-clamp: 2;

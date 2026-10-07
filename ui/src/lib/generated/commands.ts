@@ -297,7 +297,7 @@ export interface Commands {
     result: WrittenText
   }
   inboxSenders: {
-    args: { days: number; accounts?: AccountId[] | null; limit?: number | null }
+    args: { days?: number | null; accounts?: AccountId[] | null; limit?: number | null }
     result: InboxSender[]
   }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }

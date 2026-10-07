@@ -181,7 +181,7 @@ async fn collect_garbage(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> Comman
 async fn flush(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || {
-        let _ = vault.with_store(|s| s.flush());
+        let _ = vault.flush();
         Ok(())
     })
     .await

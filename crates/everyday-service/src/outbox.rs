@@ -66,7 +66,8 @@ use std::time::Duration;
 use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{Draft, DraftState, MailboxRole, Op, OpKind, OpState, OpTarget};
 use everyday_mail::outbox::{
-    ExecContext, Executed, Located, Lookups, Sender, execute, is_retryable,
+    ExecContext, Executed, Located, Lookups, Sender, execute, execute_relocations, is_retryable,
+    relocates,
 };
 use everyday_mail::session::{MailError, MailSession};
 
@@ -77,7 +78,13 @@ use crate::service::{Service, blocking};
 /// one call cannot hold the vault's writer for an unbounded backlog; the
 /// module docs' calling convention is what lets the account task simply
 /// call again when [`DrainReport::pending`] says there is more.
-const DRAIN_BATCH: u32 = 25;
+///
+/// Five hundred rather than the twenty-five it was, because a run of
+/// archives, trashes or moves now goes to the server as one command (see
+/// [`drain_outbox`]), and a page is the longest a run can be. At twenty-five,
+/// Quick Cleanup's thousand-conversation delete was forty moves with a
+/// three-second pause after each.
+const DRAIN_BATCH: u32 = 500;
 
 /// This outbox's own schedule, as a [`crate::retry::RetryPolicy`] -- wraps
 /// [`everyday_core::mail::backoff_for_attempt`] exactly, rather than
@@ -144,106 +151,154 @@ where
         gmail: session.capabilities().gmail,
         packs: svc.packs(),
     };
+    let mut signed_out = false;
 
-    for mut op in ops {
-        report.attempted += 1;
+    // In order, but a run of archives, trashes or moves of one kind --
+    // what a bulk action queues, an op per conversation -- goes to the
+    // server together: one `SELECT` and one command per mailbox rather than
+    // two round trips per conversation, which on a large Gmail account is
+    // about twelve seconds each. Each op still ends in its own state.
+    let mut ops = ops.into_iter().peekable();
+    while let Some(first) = ops.next() {
+        let mut run = vec![first];
+        if runs_together(&run[0]) {
+            while let Some(next) = ops.next_if(|op| runs_together(op) && op.kind == run[0].kind) {
+                run.push(next);
+            }
+        }
+        report.attempted += run.len() as u32;
 
-        op.transition_to(OpState::InFlight)?;
-        persist_op(&vault, &op).await?;
+        for op in &mut run {
+            op.transition_to(OpState::InFlight)?;
+        }
+        persist_ops(&vault, &run).await?;
 
         let mut ctx = ExecContext { session, sender, lookups: &lookups };
-        match execute(&op, &mut ctx).await {
-            Ok(executed) => {
-                // The op's own state is durable *before* `on_success`'s
-                // follow-up writes run, not after: a `Send` or `AppendDraft`
-                // that reached the server has done the one thing this op
-                // promises, and a failure in `on_success` (the draft's own
-                // `save_draft`, say, racing a lock the person's compose
-                // window holds) must not leave the op stuck `InFlight` --
-                // see the module docs' recovery path for what that would
-                // otherwise cost on the very next restart.
-                op.transition_to(OpState::Done)?;
-                persist_op(&vault, &op).await?;
-                report.done += 1;
-                if let Err(e) = on_success(svc, &vault, &op, executed).await {
-                    tracing::warn!(
-                        error = %e,
-                        op = %op.id,
-                        "a mail op completed but its own follow-up write failed"
-                    );
-                }
-            }
-            Err(MailError::Auth(reason)) => {
-                // The credential this op just tried is no longer good --
-                // not a reason to give up on the op itself. A permanently
-                // failed `Send` reverses the draft back to `Editing` (see
-                // `on_permanent_failure`), which is wrong here: the person
-                // already asked for this to be sent, and the moment they
-                // sign back in it should simply go, not need asking again.
-                // So the op stays alive, `Pending` with the ordinary
-                // backoff, while the account itself is moved to
-                // `NeedsSignIn` -- the same state a credential failure at
-                // connect time already produces, just reached from deeper
-                // in an already-open session. See `crate::mailsync::sender`
-                // for the one retry-with-a-fresh-token this crate allows
-                // itself before ever surfacing `Auth` at all.
-                //
-                // `outbox_table`'s delay is read *before* `attempts` is
-                // bumped -- it wraps `backoff_for_attempt`, documented as
-                // 0-indexed ("the first retry, after attempt 0 failed,
-                // waits `RETRY_BACKOFF[0]`"), so reading it after
-                // incrementing would make the very first retry wait the
-                // *second* schedule entry (a minute) instead of the first
-                // (thirty seconds), and every later retry one step further
-                // out than the schedule promises.
-                let backoff = outbox_table().delay_for(op.attempts);
-                op.attempts += 1;
-                op.last_error = Some(reason.clone());
-                op.not_before = svc.now() + backoff;
-                op.transition_to(OpState::Pending)?;
-                persist_op(&vault, &op).await?;
-                mark_account_needs_sign_in(svc, &vault, account, &reason).await;
-                report.retried += 1;
-            }
-            Err(err) if is_retryable(&err) => {
-                // See the `Auth` arm above for why the backoff is read
-                // before `attempts` is bumped.
-                let backoff = outbox_table().delay_for(op.attempts);
-                op.attempts += 1;
-                op.last_error = Some(err.to_string());
-                op.not_before = svc.now() + backoff;
-                op.transition_to(OpState::Pending)?;
-                persist_op(&vault, &op).await?;
-                report.retried += 1;
-            }
-            Err(err) => {
-                op.attempts += 1;
-                let message = err.to_string();
-                op.last_error = Some(message.clone());
-                op.transition_to(OpState::Failed { permanent: true, message })?;
-                persist_op(&vault, &op).await?;
-                if let Err(e) = on_permanent_failure(svc, &vault, &op).await {
-                    // A permanent failure's own reversal is best-effort on
-                    // the same reasoning `on_success`'s follow-up write
-                    // already is, a few lines above: the op itself is
-                    // already durable, and a local storage hiccup while
-                    // reverting it must never propagate up through this
-                    // `?` and take the whole account task down with it --
-                    // see this function's own module docs, and
-                    // `on_permanent_failure`'s, for exactly the crash this
-                    // used to be.
-                    tracing::warn!(
-                        error = %e,
-                        op = %op.id,
-                        "a mail op failed permanently but reverting its local effect failed too"
-                    );
-                }
-                report.failed += 1;
-            }
+        let outcomes = if run.len() == 1 {
+            vec![execute(&run[0], &mut ctx).await]
+        } else {
+            execute_relocations(&run, &mut ctx).await
+        };
+        for (mut op, outcome) in run.into_iter().zip(outcomes) {
+            settle(svc, &vault, account, &mut op, outcome, &mut report, &mut signed_out).await?;
         }
     }
 
     Ok(report)
+}
+
+/// Whether `op` can go to the server in one command with its neighbours:
+/// an archive, trash or move of a whole thread. See
+/// [`everyday_mail::outbox::execute_relocations`].
+fn runs_together(op: &Op) -> bool {
+    relocates(&op.kind) && matches!(op.target, OpTarget::Thread(_))
+}
+
+/// Write down how one op went, and do whatever that outcome asks for.
+///
+/// `signed_out` is set the first time an op finds the credential no longer
+/// good, so a run of five hundred that all found it says so once.
+async fn settle(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    account: AccountId,
+    op: &mut Op,
+    outcome: everyday_mail::session::Result<Executed>,
+    report: &mut DrainReport,
+    signed_out: &mut bool,
+) -> CommandResult<()> {
+    match outcome {
+        Ok(executed) => {
+            // The op's own state is durable *before* `on_success`'s
+            // follow-up writes run, not after: a `Send` or `AppendDraft`
+            // that reached the server has done the one thing this op
+            // promises, and a failure in `on_success` (the draft's own
+            // `save_draft`, say, racing a lock the person's compose
+            // window holds) must not leave the op stuck `InFlight` --
+            // see the module docs' recovery path for what that would
+            // otherwise cost on the very next restart.
+            op.transition_to(OpState::Done)?;
+            persist_op(vault, op).await?;
+            report.done += 1;
+            if let Err(e) = on_success(svc, vault, op, executed).await {
+                tracing::warn!(
+                    error = %e,
+                    op = %op.id,
+                    "a mail op completed but its own follow-up write failed"
+                );
+            }
+        }
+        Err(MailError::Auth(reason)) => {
+            // The credential this op just tried is no longer good --
+            // not a reason to give up on the op itself. A permanently
+            // failed `Send` reverses the draft back to `Editing` (see
+            // `on_permanent_failure`), which is wrong here: the person
+            // already asked for this to be sent, and the moment they
+            // sign back in it should simply go, not need asking again.
+            // So the op stays alive, `Pending` with the ordinary
+            // backoff, while the account itself is moved to
+            // `NeedsSignIn` -- the same state a credential failure at
+            // connect time already produces, just reached from deeper
+            // in an already-open session. See `crate::mailsync::sender`
+            // for the one retry-with-a-fresh-token this crate allows
+            // itself before ever surfacing `Auth` at all.
+            //
+            // `outbox_table`'s delay is read *before* `attempts` is
+            // bumped -- it wraps `backoff_for_attempt`, documented as
+            // 0-indexed ("the first retry, after attempt 0 failed,
+            // waits `RETRY_BACKOFF[0]`"), so reading it after
+            // incrementing would make the very first retry wait the
+            // *second* schedule entry (a minute) instead of the first
+            // (thirty seconds), and every later retry one step further
+            // out than the schedule promises.
+            let backoff = outbox_table().delay_for(op.attempts);
+            op.attempts += 1;
+            op.last_error = Some(reason.clone());
+            op.not_before = svc.now() + backoff;
+            op.transition_to(OpState::Pending)?;
+            persist_op(vault, op).await?;
+            if !std::mem::replace(signed_out, true) {
+                mark_account_needs_sign_in(svc, vault, account, &reason).await;
+            }
+            report.retried += 1;
+        }
+        Err(err) if is_retryable(&err) => {
+            // See the `Auth` arm above for why the backoff is read
+            // before `attempts` is bumped.
+            let backoff = outbox_table().delay_for(op.attempts);
+            op.attempts += 1;
+            op.last_error = Some(err.to_string());
+            op.not_before = svc.now() + backoff;
+            op.transition_to(OpState::Pending)?;
+            persist_op(vault, op).await?;
+            report.retried += 1;
+        }
+        Err(err) => {
+            op.attempts += 1;
+            let message = err.to_string();
+            op.last_error = Some(message.clone());
+            op.transition_to(OpState::Failed { permanent: true, message })?;
+            persist_op(vault, op).await?;
+            if let Err(e) = on_permanent_failure(svc, vault, op).await {
+                // A permanent failure's own reversal is best-effort on
+                // the same reasoning `on_success`'s follow-up write
+                // already is, a few lines above: the op itself is
+                // already durable, and a local storage hiccup while
+                // reverting it must never propagate up through this
+                // `?` and take the whole account task down with it --
+                // see this function's own module docs, and
+                // `on_permanent_failure`'s, for exactly the crash this
+                // used to be.
+                tracing::warn!(
+                    error = %e,
+                    op = %op.id,
+                    "a mail op failed permanently but reverting its local effect failed too"
+                );
+            }
+            report.failed += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Ops of `account`'s left [`OpState::InFlight`] by a crash mid-drain --
@@ -407,6 +462,19 @@ async fn already_sent<S: MailSession>(
         }
     }
     Ok(false)
+}
+
+/// [`persist_op`] for a run of ops, in one trip to the blocking pool.
+async fn persist_ops(vault: &Arc<everyday_core::Vault>, ops: &[Op]) -> CommandResult<()> {
+    let vault = vault.clone();
+    let ops = ops.to_vec();
+    blocking(move || {
+        for op in &ops {
+            vault.update_op(op)?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 async fn persist_op(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult<()> {

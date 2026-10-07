@@ -237,9 +237,13 @@ pub async fn execute<S: MailSession, T: Sender, L: Lookups>(
         OpKind::Unstar => flags(op, ctx, Flags::NONE, Flags::FLAGGED).await.map(|()| Executed::Ok),
         OpKind::Label { label } => label_op(op, ctx, label, true).await.map(|()| Executed::Ok),
         OpKind::Unlabel { label } => label_op(op, ctx, label, false).await.map(|()| Executed::Ok),
-        OpKind::Archive => archive(op, ctx).await.map(|()| Executed::Ok),
-        OpKind::Trash => trash(op, ctx).await.map(|()| Executed::Ok),
-        OpKind::Move { to } => move_op(op, ctx, *to).await.map(|()| Executed::Ok),
+        // One op is a batch of one: see `execute_relocations`.
+        OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => {
+            execute_relocations(std::slice::from_ref(op), ctx)
+                .await
+                .pop()
+                .unwrap_or(Ok(Executed::Ok))
+        }
         // Local only, per the plan's phase 5 section on snooze: nothing on
         // the server has anything called "snoozed", so there is nothing to
         // tell it. The op still exists, and still completes, so the outbox
@@ -265,7 +269,9 @@ async fn locations<S: MailSession, T: Sender, L: Lookups>(
 }
 
 /// The locations an archive, trash or move acts on: every place the
-/// thread's messages live except Sent, Drafts and the destination itself.
+/// thread's messages live except Sent, Drafts and the destination itself --
+/// `excluded`, worked out once by [`execute_relocations`] for every op it
+/// runs.
 ///
 /// Not "every location", because a thread's reply sitting in Sent, or a
 /// draft's own copy, must never be relocated just because the conversation
@@ -276,21 +282,15 @@ async fn locations<S: MailSession, T: Sender, L: Lookups>(
 /// both silently do nothing. On Gmail, where Sent and Drafts are labels over
 /// the one All Mail copy, the exclusion is of those folders' own selected
 /// copies, which is exactly what keeps a sent reply's Sent entry in place.
-async fn locations_to_relocate<S: MailSession, T: Sender, L: Lookups>(
+async fn relocatable<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &ExecContext<'_, S, T, L>,
-    destination: &str,
+    excluded: &[String],
 ) -> Result<Vec<Located>> {
-    let sent = ctx.lookups.special_use(MailboxRole::Sent)?;
-    let drafts = ctx.lookups.special_use(MailboxRole::Drafts)?;
     Ok(locations(op, ctx)
         .await?
         .into_iter()
-        .filter(|loc| {
-            loc.mailbox != destination
-                && sent.as_deref() != Some(loc.mailbox.as_str())
-                && drafts.as_deref() != Some(loc.mailbox.as_str())
-        })
+        .filter(|loc| !excluded.contains(&loc.mailbox))
         .collect())
 }
 
@@ -328,7 +328,7 @@ async fn flags<S: MailSession, T: Sender, L: Lookups>(
 /// keyword. On a non-Gmail account this surfaces
 /// [`MailError::Unsupported`], checked against [`Lookups::is_gmail`] before
 /// this crate ever asks the session to try — the same client-side refusal
-/// [`archive`] and [`trash`] give a missing special-use mailbox, rather than
+/// [`execute_relocations`] gives a missing special-use mailbox, rather than
 /// leaving it to whatever an adapter's own [`MailSession::store_gmail_labels`]
 /// happens to do with a label on a server that never advertised
 /// `X-GM-EXT-1`. The drain loop reads either as permanent.
@@ -355,73 +355,158 @@ async fn label_op<S: MailSession, T: Sender, L: Lookups>(
 
 // ---- archive, trash, move -----------------------------------------------
 
-/// On Gmail, dropping the `\Inbox` label — the message stays in `All Mail`
-/// under every other label it already had, exactly what "archive" means on
-/// that provider. Everywhere else, a `MOVE` into the account's Archive
-/// mailbox, created ahead of time by whatever registers the account (this
-/// crate never creates a mailbox itself); [`MailError::Unsupported`] when
-/// this account has never been seen to have one.
+/// The most uids one archive, trash or move command names. A sequence set
+/// past a server's own line limit -- Dovecot's default is 64 KB -- comes
+/// back `BAD`, which is permanent; the same bound, for the same reason, as
+/// `imap.rs`'s `FLAG_REFETCH_BATCH_SIZE`.
+const RELOCATE_CHUNK: usize = 500;
+
+/// Whether `kind` is one [`execute_relocations`] runs: the three that move
+/// a thread somewhere, which on the server is one command however many
+/// messages it names.
+pub fn relocates(kind: &OpKind) -> bool {
+    matches!(kind, OpKind::Archive | OpKind::Trash | OpKind::Move { .. })
+}
+
+/// Run thread-targeted ops of one relocating kind -- every one a `Trash`,
+/// say, or every one a `Move` to the same mailbox -- as one: a `SELECT` and
+/// a command per source mailbox, for all of them together, rather than per
+/// op. Each op's own outcome comes back, in order.
 ///
-/// Only [`locations_to_relocate`]'s locations are touched — see its own
-/// docs for why a thread's other locations (a reply in Sent, say) must
-/// never be moved or relabelled just because archiving one copy of the
-/// thread happened to enqueue an op against the whole thing.
-async fn archive<S: MailSession, T: Sender, L: Lookups>(
-    op: &Op,
+/// What a bulk action needs. Quick Cleanup's Delete queues an op per
+/// conversation, hundreds at once, and run one at a time each cost two round
+/// trips. On a large Gmail account, where a `SELECT` of All Mail and a
+/// `MOVE` out of it take about six seconds apiece, a thousand conversations
+/// took over three hours to reach the server, and none of them was in Trash
+/// until it had.
+///
+/// What each kind does on the server:
+///
+/// * **Archive**, on Gmail: drop the `\Inbox` label. The message stays in
+///   All Mail under every other label it had, which is what archiving means
+///   there. Everywhere else, a `MOVE` into the account's Archive mailbox --
+///   created ahead of time by whatever registers the account (this crate
+///   never creates a mailbox itself) -- and [`MailError::Unsupported`] when
+///   the account was never seen to have one.
+/// * **Trash**: a `MOVE` into the account's Trash, the same on Gmail and off
+///   it, because Gmail's Trash is a real mailbox rather than a label.
+/// * **Move**: a `MOVE` into the mailbox the op names.
+///
+/// Only [`relocatable`] locations are touched; see its docs for why a
+/// thread's copy in Sent must not move with the rest of it.
+///
+/// Where every op's messages live is resolved first. An op whose lookup
+/// fails gets that failure and is left out of the commands -- a thread
+/// deleted locally since it was queued must not take the others down with
+/// it. A command that fails stops the run: every op whose uids had all gone
+/// in commands that succeeded is done, and the rest get the failure, to be
+/// retried or given up on one by one by the caller. Running a retried op's
+/// uids again is harmless, since a `UID` command skips uids no longer there.
+pub async fn execute_relocations<S: MailSession, T: Sender, L: Lookups>(
+    ops: &[Op],
     ctx: &mut ExecContext<'_, S, T, L>,
-) -> Result<()> {
-    if ctx.lookups.is_gmail() {
-        let inbox_label = [String::from("\\Inbox")];
-        let locs = locations_to_relocate(op, ctx, "").await?;
-        for (mailbox, uids) in group_by_mailbox(locs) {
-            ctx.session.select(&mailbox).await?;
-            ctx.session.store_gmail_labels(&uids, &[], &inbox_label).await?;
+) -> Vec<Result<Executed>> {
+    let Some(first) = ops.first() else { return Vec::new() };
+    if !relocates(&first.kind) || ops.iter().any(|op| op.kind != first.kind) {
+        let mixed = MailError::Protocol("ops run together must be one relocating kind".into());
+        return vec![Err(mixed); ops.len()];
+    }
+
+    // Gmail's archive is a label change in place, so it has no destination
+    // to leave out of the sources.
+    let gmail_archive = matches!(first.kind, OpKind::Archive) && ctx.lookups.is_gmail();
+    let destination = if gmail_archive {
+        None
+    } else {
+        match destination(&first.kind, ctx.lookups) {
+            Ok(dest) => Some(dest),
+            Err(e) => return vec![Err(e); ops.len()],
         }
-        return Ok(());
-    }
-    let Some(dest) = ctx.lookups.special_use(MailboxRole::Archive)? else {
-        return Err(MailError::Unsupported("an Archive mailbox"));
     };
-    for (mailbox, uids) in group_by_mailbox(locations_to_relocate(op, ctx, &dest).await?) {
-        ctx.session.select(&mailbox).await?;
-        ctx.session.move_to(&uids, &dest).await?;
+    let mut excluded = match excluded_sources(ctx.lookups) {
+        Ok(names) => names,
+        Err(e) => return vec![Err(e); ops.len()],
+    };
+    excluded.extend(destination.clone());
+
+    let mut outcomes: Vec<Option<Result<Executed>>> = vec![None; ops.len()];
+    let mut owned: Vec<Vec<Located>> = vec![Vec::new(); ops.len()];
+    let mut by_mailbox: std::collections::BTreeMap<String, UidSet> =
+        std::collections::BTreeMap::new();
+    for (i, op) in ops.iter().enumerate() {
+        match relocatable(op, ctx, &excluded).await {
+            Ok(locations) => {
+                for loc in &locations {
+                    by_mailbox.entry(loc.mailbox.clone()).or_default().insert(loc.uid);
+                }
+                owned[i] = locations;
+            }
+            Err(e) => outcomes[i] = Some(Err(e)),
+        }
     }
-    Ok(())
+
+    let inbox_label = [String::from("\\Inbox")];
+    let mut carried: std::collections::HashSet<(String, Uid)> = std::collections::HashSet::new();
+    let mut failure = None;
+    'mailboxes: for (mailbox, uids) in by_mailbox {
+        if let Err(e) = ctx.session.select(&mailbox).await {
+            failure = Some(e);
+            break;
+        }
+        for chunk in uids.chunks(RELOCATE_CHUNK) {
+            let sent = match &destination {
+                Some(dest) => ctx.session.move_to(&chunk, dest).await,
+                None => ctx.session.store_gmail_labels(&chunk, &[], &inbox_label).await,
+            };
+            if let Err(e) = sent {
+                failure = Some(e);
+                break 'mailboxes;
+            }
+            carried.extend(chunk.iter().map(|uid| (mailbox.clone(), uid)));
+        }
+    }
+
+    outcomes
+        .into_iter()
+        .zip(owned)
+        .map(|(outcome, locations)| {
+            outcome.unwrap_or_else(|| match &failure {
+                Some(e)
+                    if !locations
+                        .iter()
+                        .all(|loc| carried.contains(&(loc.mailbox.clone(), loc.uid))) =>
+                {
+                    Err(e.clone())
+                }
+                _ => Ok(Executed::Ok),
+            })
+        })
+        .collect()
 }
 
-/// A `MOVE` into the account's Trash mailbox — the same shape on Gmail and
-/// off it, because Gmail's own Trash is a real mailbox (unlike Inbox), so
-/// there is no label-only branch here the way [`archive`] needs one. See
-/// [`locations_to_relocate`]'s own docs for why only the source mailbox's
-/// copy moves.
-async fn trash<S: MailSession, T: Sender, L: Lookups>(
-    op: &Op,
-    ctx: &mut ExecContext<'_, S, T, L>,
-) -> Result<()> {
-    let Some(dest) = ctx.lookups.special_use(MailboxRole::Trash)? else {
-        return Err(MailError::Unsupported("a Trash mailbox"));
-    };
-    for (mailbox, uids) in group_by_mailbox(locations_to_relocate(op, ctx, &dest).await?) {
-        ctx.session.select(&mailbox).await?;
-        ctx.session.move_to(&uids, &dest).await?;
+/// Where an archive (off Gmail), a trash or a move sends its messages: the
+/// remote name of the account's Archive or Trash, or of the mailbox a move
+/// names.
+fn destination<L: Lookups>(kind: &OpKind, lookups: &L) -> Result<String> {
+    match kind {
+        OpKind::Archive => lookups
+            .special_use(MailboxRole::Archive)?
+            .ok_or(MailError::Unsupported("an Archive mailbox")),
+        OpKind::Trash => lookups
+            .special_use(MailboxRole::Trash)?
+            .ok_or(MailError::Unsupported("a Trash mailbox")),
+        OpKind::Move { to } => lookups.mailbox_name(*to),
+        _ => Err(MailError::Protocol("not an archive, trash or move".into())),
     }
-    Ok(())
 }
 
-/// See [`locations_to_relocate`]'s own docs for why only the source
-/// mailbox's copy moves -- the same reasoning [`archive`] and [`trash`]
-/// already lean on.
-async fn move_op<S: MailSession, T: Sender, L: Lookups>(
-    op: &Op,
-    ctx: &mut ExecContext<'_, S, T, L>,
-    to: MailboxId,
-) -> Result<()> {
-    let dest = ctx.lookups.mailbox_name(to)?;
-    for (mailbox, uids) in group_by_mailbox(locations_to_relocate(op, ctx, &dest).await?) {
-        ctx.session.select(&mailbox).await?;
-        ctx.session.move_to(&uids, &dest).await?;
-    }
-    Ok(())
+/// The account's Sent and Drafts, by remote name, whichever it has: the
+/// copies [`relocatable`] never moves.
+fn excluded_sources<L: Lookups>(lookups: &L) -> Result<Vec<String>> {
+    Ok([lookups.special_use(MailboxRole::Sent)?, lookups.special_use(MailboxRole::Drafts)?]
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 // ---- sending and drafts -------------------------------------------------
@@ -786,6 +871,10 @@ mod tests {
         /// bare id a test seeded -- standing in for a message a previous
         /// attempt (or another client entirely) already put on the server.
         found_message_ids: HashMap<String, Uid>,
+        /// A mailbox whose `SELECT` fails, and how -- for the batch tests,
+        /// where which ops a failure reaches depends on which mailbox it
+        /// happened in.
+        fail_select: Option<(String, MailError)>,
     }
 
     impl FakeSession {
@@ -808,8 +897,13 @@ mod tests {
         }
 
         async fn select(&mut self, mailbox: &str) -> Result<MailboxState> {
-            self.selected = Some(mailbox.to_string());
             self.calls.push(format!("select {mailbox}"));
+            if let Some((name, err)) = &self.fail_select
+                && name == mailbox
+            {
+                return Err(err.clone());
+            }
+            self.selected = Some(mailbox.to_string());
             Ok(MailboxState::default())
         }
 
@@ -941,6 +1035,9 @@ mod tests {
         drafts: std::cell::RefCell<HashMap<DraftId, Draft>>,
         server_copies: HashMap<DraftId, Located>,
         parents: HashMap<MailMessageId, Vec<u8>>,
+        /// Threads the vault no longer has: looking one up fails, the way a
+        /// thread deleted locally after its op was queued does.
+        gone: std::collections::HashSet<ThreadId>,
     }
 
     impl FakeLookups {
@@ -953,6 +1050,7 @@ mod tests {
                 drafts: std::cell::RefCell::new(HashMap::new()),
                 server_copies: HashMap::new(),
                 parents: HashMap::new(),
+                gone: std::collections::HashSet::new(),
             }
         }
 
@@ -983,6 +1081,9 @@ mod tests {
 
     impl Lookups for FakeLookups {
         fn thread_locations(&self, thread: ThreadId) -> Result<Vec<Located>> {
+            if self.gone.contains(&thread) {
+                return Err(MailError::Protocol("no such thread".into()));
+            }
             Ok(self.thread_locations.get(&thread).cloned().unwrap_or_default())
         }
 
@@ -1268,6 +1369,143 @@ mod tests {
             execute(&op(account, kind, OpTarget::Thread(thread)), &mut ctx).await.unwrap_err();
         assert!(matches!(err, MailError::Unsupported(_)));
         assert!(!is_retryable(&err));
+    }
+
+    // ---- several relocations at once ---------------------------------------
+
+    fn at(mailbox: &str, uid: Uid) -> Located {
+        Located { mailbox: mailbox.into(), uid }
+    }
+
+    fn trashes(account: AccountId, threads: &[ThreadId]) -> Vec<Op> {
+        threads.iter().map(|&t| op(account, OpKind::Trash, OpTarget::Thread(t))).collect()
+    }
+
+    #[tokio::test]
+    async fn several_trashes_go_as_one_select_and_one_move_per_mailbox() {
+        let account = AccountId::new();
+        let (a, b, c) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
+        let lookups = FakeLookups::new(false)
+            .with_thread(a, vec![at("INBOX", 1)])
+            // The person's own reply stays in Sent, as it does for one op.
+            .with_thread(b, vec![at("INBOX", 2), at("Sent", 7)])
+            .with_thread(c, vec![at("Work", 9)])
+            .with_special_use(MailboxRole::Sent, "Sent")
+            .with_special_use(MailboxRole::Trash, "Trash");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcomes = execute_relocations(&trashes(account, &[a, b, c]), &mut ctx).await;
+        assert_eq!(outcomes, vec![Ok(Executed::Ok), Ok(Executed::Ok), Ok(Executed::Ok)]);
+        assert_eq!(
+            session.calls,
+            ["select INBOX", "move_to 1:2 -> Trash", "select Work", "move_to 9 -> Trash"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_run_is_split_so_no_command_outgrows_a_server_line_limit() {
+        let account = AccountId::new();
+        let threads: Vec<ThreadId> = (0..1200).map(|_| ThreadId::new()).collect();
+        let mut lookups = FakeLookups::new(false).with_special_use(MailboxRole::Trash, "Trash");
+        for (uid, &t) in (1..).step_by(2).zip(&threads) {
+            lookups = lookups.with_thread(t, vec![at("INBOX", uid)]);
+        }
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcomes = execute_relocations(&trashes(account, &threads), &mut ctx).await;
+        assert!(outcomes.iter().all(Result::is_ok));
+        assert_eq!(session.calls.iter().filter(|c| c.starts_with("select")).count(), 1);
+        assert_eq!(
+            session.calls.iter().filter(|c| c.starts_with("move_to")).count(),
+            3,
+            "500 + 500 + 200: {:?}",
+            session.calls.iter().map(|c| c.len()).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thread_that_is_gone_fails_alone() {
+        let account = AccountId::new();
+        let (a, b, c) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
+        let mut lookups = FakeLookups::new(false)
+            .with_thread(a, vec![at("INBOX", 1)])
+            .with_thread(c, vec![at("INBOX", 3)])
+            .with_special_use(MailboxRole::Trash, "Trash");
+        lookups.gone.insert(b);
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcomes = execute_relocations(&trashes(account, &[a, b, c]), &mut ctx).await;
+        assert!(outcomes[0].is_ok() && outcomes[2].is_ok(), "{outcomes:?}");
+        assert!(matches!(outcomes[1], Err(MailError::Protocol(_))), "{outcomes:?}");
+        assert_eq!(session.calls, ["select INBOX", "move_to 1,3 -> Trash"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_command_fails_only_the_ops_not_already_carried() {
+        let account = AccountId::new();
+        let (a, b, c) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
+        let lookups = FakeLookups::new(false)
+            .with_thread(a, vec![at("INBOX", 1)])
+            .with_thread(b, vec![at("Work", 9)])
+            // Half carried before the failure: not done.
+            .with_thread(c, vec![at("INBOX", 2), at("Work", 10)])
+            .with_special_use(MailboxRole::Trash, "Trash");
+        let mut session = FakeSession {
+            fail_select: Some(("Work".into(), MailError::Network("reset".into()))),
+            ..FakeSession::default()
+        };
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcomes = execute_relocations(&trashes(account, &[a, b, c]), &mut ctx).await;
+        let network = Err(MailError::Network("reset".into()));
+        assert_eq!(outcomes, vec![Ok(Executed::Ok), network.clone(), network]);
+    }
+
+    #[tokio::test]
+    async fn several_gmail_archives_drop_the_inbox_label_together() {
+        let account = AccountId::new();
+        let (a, b) = (ThreadId::new(), ThreadId::new());
+        let lookups = FakeLookups::new(true)
+            .with_thread(a, vec![at("[Gmail]/All Mail", 4)])
+            .with_thread(b, vec![at("[Gmail]/All Mail", 5)]);
+        let mut session = FakeSession::gmail();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let ops: Vec<Op> =
+            [a, b].iter().map(|&t| op(account, OpKind::Archive, OpTarget::Thread(t))).collect();
+        let outcomes = execute_relocations(&ops, &mut ctx).await;
+        assert!(outcomes.iter().all(Result::is_ok), "{outcomes:?}");
+        assert_eq!(session.calls.len(), 2, "{:?}", session.calls);
+        assert!(session.calls[1].starts_with("store_gmail_labels 4:5"), "{:?}", session.calls);
+    }
+
+    #[tokio::test]
+    async fn ops_of_different_kinds_are_not_run_together() {
+        let account = AccountId::new();
+        let thread = ThreadId::new();
+        let lookups = FakeLookups::new(false)
+            .with_thread(thread, vec![at("INBOX", 1)])
+            .with_special_use(MailboxRole::Trash, "Trash")
+            .with_special_use(MailboxRole::Archive, "Archive");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let ops = [
+            op(account, OpKind::Trash, OpTarget::Thread(thread)),
+            op(account, OpKind::Archive, OpTarget::Thread(thread)),
+        ];
+        let outcomes = execute_relocations(&ops, &mut ctx).await;
+        assert!(outcomes.iter().all(|o| matches!(o, Err(MailError::Protocol(_)))));
+        assert!(session.calls.is_empty(), "{:?}", session.calls);
     }
 
     // ---- trash and move -----------------------------------------------------

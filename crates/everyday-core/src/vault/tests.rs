@@ -183,6 +183,47 @@ fn locking_denies_access_until_unlocked_again() {
 }
 
 #[test]
+fn unlocking_does_not_wait_for_the_integrity_check_and_starts_one_per_opening() {
+    // The probe's checks run until they are cancelled, so an unlock that
+    // waited for one would never return.
+    let dir = tempfile::tempdir().unwrap();
+    let (reg, probe) = crate::testing::registry_with_integrity_probe();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), reg.clone()).unwrap();
+    assert_eq!(probe.started(), 1, "a new vault is checked like any other");
+
+    // The idle timer letting the key go is not a shutdown, and coming back
+    // from it must not read the whole database again.
+    for _ in 0..2 {
+        v.lock();
+        v.unlock(Some("pw")).unwrap();
+    }
+    assert_eq!(probe.started(), 1);
+    assert_eq!(probe.stopped(), 0, "locking leaves the check running");
+
+    drop(v);
+    assert_eq!(probe.stopped(), 1, "closing the vault stops its check, and waits for it");
+
+    let v = Vault::open(dir.path(), reg).unwrap();
+    assert_eq!(probe.started(), 1, "nothing is checked before the key is known");
+    v.unlock(Some("pw")).unwrap();
+    assert_eq!(probe.started(), 2, "a fresh opening is checked again");
+}
+
+#[test]
+fn flushing_stops_the_integrity_check_rather_than_waiting_behind_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (reg, probe) = crate::testing::registry_with_integrity_probe();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), reg).unwrap();
+
+    v.flush().unwrap();
+    assert_eq!(probe.stopped(), 1);
+
+    v.lock();
+    v.unlock(Some("pw")).unwrap();
+    assert_eq!(probe.started(), 1, "not started again until the vault is next opened");
+}
+
+#[test]
 fn an_unencrypted_vault_opens_without_a_password() {
     let dir = tempfile::tempdir().unwrap();
     let reg = registry();

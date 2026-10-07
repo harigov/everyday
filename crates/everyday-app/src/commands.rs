@@ -555,7 +555,7 @@ pub async fn ready_to_close(
         blocking(move || {
             // Best-effort: a checkpoint failing is not a reason to refuse to
             // quit, and the data is committed either way.
-            let _ = vault.with_store(|s| s.flush());
+            let _ = vault.flush();
             vault.lock();
             Ok(())
         })

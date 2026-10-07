@@ -1,6 +1,6 @@
 <script lang="ts">
   // Quick cleanup: who filled the Inbox most over the last week, month,
-  // quarter or year -- counting only what of theirs is still sitting there --
+  // quarter or year, or ever -- counting only what of theirs is still there --
   // and a way to archive or bin all of it, one sender or several at a time.
   //
   // The list is `inbox_senders`' answer as it stands; acting on a sender
@@ -31,15 +31,19 @@
     onclose: () => void
   } = $props()
 
-  const PERIODS: { days: number; label: string; phrase: string }[] = [
-    { days: 7, label: '7 days', phrase: '7 days' },
-    { days: 30, label: '30 days', phrase: '30 days' },
-    { days: 90, label: '90 days', phrase: '90 days' },
-    { days: 365, label: '1 year', phrase: 'year' },
+  /** `days: null` is all time -- everything still in the Inbox, however old,
+   *  which is what clearing out years of newsletters needs. `within` is the
+   *  span in words for the sentences that name it, absent for all time. */
+  const PERIODS: { days: number | null; label: string; within?: string }[] = [
+    { days: 7, label: '7 days', within: 'the last 7 days' },
+    { days: 30, label: '30 days', within: 'the last 30 days' },
+    { days: 90, label: '90 days', within: 'the last 90 days' },
+    { days: 365, label: '1 year', within: 'the last year' },
+    { days: null, label: 'All time' },
   ]
   const TOPS = [10, 20]
 
-  let days = $state(30)
+  let days = $state<number | null>(30)
   let limit = $state(20)
   /** Only ever replaced whole, never edited in place -- `.raw`, as the
    *  store's own `threads` is. */
@@ -93,7 +97,7 @@
     untrack(() => void load(span, top))
   })
 
-  async function load(span: number, top: number, quiet = false) {
+  async function load(span: number | null, top: number, quiet = false) {
     const token = ++generation
     if (!quiet) loading = true
     try {
@@ -202,7 +206,8 @@
     <div>
       <h2 id="mail-cleanup-title">Quick cleanup</h2>
       <p class="lead" id="mail-cleanup-lead">
-        Who filled your inbox most in the last {period.phrase}, counting only what is still there.
+        Who filled your inbox most{period.within ? ` in ${period.within}` : ''}, counting only what
+        is still there.
       </p>
     </div>
     <button class="close" aria-label="Close" onclick={onclose}>
@@ -212,7 +217,7 @@
 
   <div class="controls">
     <div class="segmented" role="group" aria-label="Over the last">
-      {#each PERIODS as p (p.days)}
+      {#each PERIODS as p (p.label)}
         <button
           class="seg"
           class:on={days === p.days}
@@ -286,7 +291,7 @@
       {:else if failed}
         <p class="hint">Could not ask just now. Try another period, or again in a moment.</p>
       {:else if loaded}
-        <p class="hint">Nothing in your inbox from the last {period.phrase}.</p>
+        <p class="hint">Nothing in your inbox{period.within ? ` from ${period.within}` : ''}.</p>
       {/if}
     {:else}
       <ul class="senders" class:stale={loading}>

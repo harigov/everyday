@@ -1413,7 +1413,7 @@ export const api = {
   /** Who sent the most of what is still in the Inbox over the last `days`
    *  (1..365), most first; `accounts` absent or `null` is every mail
    *  account, `limit` defaults to 20 and stops at 50. */
-  inboxSenders: (days: number, accounts?: AccountId[] | null, limit?: number | null) =>
+  inboxSenders: (days: number | null, accounts?: AccountId[] | null, limit?: number | null) =>
     call('inboxSenders', { days, accounts, limit }),
 
   // ── Accounts ───────────────────────────────────────────────────────

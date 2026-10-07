@@ -44,10 +44,16 @@ use everyday_core::store::mail::ThreadFilter;
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
-/// The longest window `inbox_senders` will count, in days: a year. The
-/// count decrypts every message in the window, so the window is what keeps
-/// it bounded -- the same reasoning `insights::LONGEST_WINDOW` gives the
-/// Overview.
+/// The longest window `inbox_senders` will count in days: a year. Past
+/// that, a caller asks for no window at all -- `days` left out -- which
+/// counts every message the Inbox still holds, however old.
+///
+/// The count decrypts every message in the window, which is what the window
+/// used to be for. All time is still bounded, by what a mail store holds
+/// rather than by a date: message records only, not bodies -- about 100 MB
+/// for fifty thousand messages -- and [`MAX_INBOX_THREADS`] on the walk.
+/// Somebody clearing out an Inbox that has been filling for five years
+/// needs the five years.
 const MAX_DAYS: u32 = 365;
 
 /// How many senders a caller gets when it does not say.
@@ -72,8 +78,10 @@ const MAX_INBOX_THREADS: usize = 20_000;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InboxSendersArgs {
-    /// How far back to count, in days, ending now: 1 to `MAX_DAYS`.
-    pub days: u32,
+    /// How far back to count, in days, ending now: 1 to `MAX_DAYS`. Absent
+    /// or `null` counts everything still in the Inbox, however old.
+    #[serde(default)]
+    pub days: Option<u32>,
     /// Whose Inboxes to count. Every account with mail switched on when
     /// absent; an id that names no account counts nothing.
     #[serde(default)]
@@ -89,16 +97,23 @@ async fn inbox_senders(
     _ctx: Ctx,
     args: InboxSendersArgs,
 ) -> CommandResult<Vec<InboxSender>> {
-    if !(1..=MAX_DAYS).contains(&args.days) {
+    if let Some(days) = args.days
+        && !(1..=MAX_DAYS).contains(&days)
+    {
         return Err(CommandError::new(
             codes::INVALID,
-            format!("count between 1 and {MAX_DAYS} days back"),
+            format!(
+                "count between 1 and {MAX_DAYS} days back, or leave the days out for all of it"
+            ),
         ));
     }
     let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT) as usize;
     let vault = svc.require()?;
     let now = svc.now();
-    let since = now - SignedDuration::from_hours(i64::from(args.days) * 24);
+    let since = match args.days {
+        Some(days) => now - SignedDuration::from_hours(i64::from(days) * 24),
+        None => Timestamp::MIN,
+    };
     blocking(move || {
         // A backend with no accounts has no mail either -- see
         // `domains::insights`, which asks the same question first.
@@ -191,7 +206,7 @@ pub static COMMANDS: &[crate::command::Command] = &[command! {
     name: "inbox_senders", scope: Mail, effect: Read,
     args: InboxSendersArgs, returns: "InboxSender[]",
     signature: &[
-        ("days", "number", true),
+        ("days", "number | null", false),
         ("accounts", "AccountId[] | null", false),
         ("limit", "number | null", false),
     ],

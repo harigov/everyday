@@ -585,6 +585,36 @@ fn quick_check_passes_on_a_healthy_database() {
 }
 
 #[test]
+fn a_background_integrity_check_answers_like_the_inline_one_and_stops_when_cancelled() {
+    use std::sync::atomic::AtomicBool;
+
+    let dir = tempfile::tempdir().unwrap();
+    drop(SqliteStore::open(ctx(dir.path(), true)).unwrap());
+    // Enough pages that a cancelled scan has somewhere to stop: the cancel
+    // flag is read every hundred of them, so a near-empty database would
+    // finish before ever looking.
+    raw(dir.path())
+        .execute_batch(
+            "CREATE TABLE filler (b BLOB);
+             WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+             INSERT INTO filler SELECT randomblob(1000) FROM n;",
+        )
+        .unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+    let check = |cancelled: bool| {
+        let job = store
+            .background_integrity_check(Arc::new(AtomicBool::new(cancelled)))
+            .unwrap()
+            .expect("a SQLite store has a check to run");
+        // On a thread of its own, the way a vault runs it.
+        std::thread::spawn(job).join().unwrap()
+    };
+    assert!(check(false).unwrap().is_empty());
+    assert!(check(true).is_err(), "a cancelled check must stop, not answer");
+}
+
+#[test]
 fn a_snapshot_is_a_database_that_opens_on_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();

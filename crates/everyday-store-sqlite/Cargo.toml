@@ -10,7 +10,7 @@ authors.workspace = true
 [dependencies]
 everyday-core.workspace = true
 everyday-store-sql.workspace = true
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
 jiff.workspace = true
 
 [dev-dependencies]

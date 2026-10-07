@@ -214,6 +214,10 @@ pub(super) struct FakeMailSession {
     /// test can keep reading it after handing its own clone of this
     /// session to a spawned task.
     idle_selections: Arc<Mutex<Vec<Option<String>>>>,
+    /// Every `SELECT` and `MOVE` this session (and its clones) sent, in
+    /// order -- what a test counts to see how many round trips the outbox
+    /// took.
+    commands: Arc<Mutex<Vec<String>>>,
 }
 
 impl FakeMailSession {
@@ -223,7 +227,13 @@ impl FakeMailSession {
             selected: None,
             block_idle: false,
             idle_selections: Arc::new(Mutex::new(Vec::new())),
+            commands: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// See [`Self::commands`]'s field docs.
+    pub(super) fn commands(&self) -> Vec<String> {
+        self.commands.lock().unwrap().clone()
     }
 
     pub(super) fn blocking_idle(mut self) -> Self {
@@ -291,6 +301,7 @@ impl MailSession for FakeMailSession {
 
     async fn select(&mut self, mailbox: &str) -> SessionResult<MailboxState> {
         self.selected = Some(mailbox.to_string());
+        self.commands.lock().unwrap().push(format!("select {mailbox}"));
         let server = self.server.lock().unwrap();
         let mb = server
             .mailboxes
@@ -402,6 +413,7 @@ impl MailSession for FakeMailSession {
     /// `archive`/`trash`/`move_to_mailbox` tests here need to see.
     async fn move_to(&mut self, uids: &UidSet, mailbox: &str) -> SessionResult<()> {
         let name = self.selected.clone().expect("select must be called first");
+        self.commands.lock().unwrap().push(format!("move {} {name} -> {mailbox}", uids.len()));
         let mut server = self.server.lock().unwrap();
         let mut moved = Vec::new();
         if let Some(mb) = server.mailboxes.get_mut(&name) {

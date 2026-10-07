@@ -174,23 +174,9 @@ impl Vault {
             StoreContext { root: store_root, cipher: cipher.clone(), settings },
         )?;
 
-        // Check the store before trusting it, but do not refuse to open on a
-        // bad answer. A damaged vault is precisely the one someone needs to
-        // get into -- to export what still reads, or to see how much of it
-        // survived -- and locking them out would turn recoverable damage
-        // into total loss. Say so loudly instead; `everyday check` reports
-        // the same findings on demand.
-        match store.check_integrity() {
-            Ok(problems) if !problems.is_empty() => {
-                tracing::error!(
-                    count = problems.len(),
-                    first = %problems[0],
-                    "storage integrity check failed -- restore from a backup"
-                );
-            }
-            Ok(_) => {}
-            Err(e) => tracing::warn!(error = %e, "could not run the integrity check"),
-        }
+        // Checked beside the unlock rather than in it: the check reads every
+        // page, which for a vault holding mail is gigabytes.
+        self.start_integrity_check(store.as_ref());
 
         let notes = match store.notes() {
             Some(n) => n.all_notes()?,

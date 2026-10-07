@@ -66,7 +66,7 @@ use serde::{Deserialize, Serialize};
 use session::Unlocked;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
 /// Header format version. Bumped only for breaking changes; readers refuse
@@ -162,6 +162,9 @@ pub struct Vault {
     /// process holds it and this vault is therefore read-only. Dropped with
     /// the vault, which is what releases it. See [`crate::lockfile`].
     write_lock: Option<crate::lockfile::VaultLock>,
+    /// The store's integrity check, from the first unlock on; `None` until
+    /// then. See [`Vault::start_integrity_check`].
+    integrity_check: Mutex<Option<maintenance::IntegrityCheck>>,
 }
 
 impl Vault {
@@ -260,6 +263,7 @@ impl Vault {
             // only way to lose the race is two processes creating the same
             // new vault at the same instant.
             write_lock: crate::lockfile::acquire(root)?,
+            integrity_check: Mutex::new(None),
         };
 
         // A backend that cannot be opened must not leave a vault behind.
@@ -370,6 +374,7 @@ impl Vault {
             epoch: Instant::now(),
             key_in_keychain: AtomicBool::new(false),
             write_lock,
+            integrity_check: Mutex::new(None),
         };
         if activate && !encrypted {
             vault.activate(None)?;
@@ -408,6 +413,20 @@ impl Vault {
             stats: guard.as_ref().and_then(|u| u.store.stats().ok()),
             capabilities: guard.as_ref().map(|u| u.store.capabilities()),
         }
+    }
+}
+
+impl Drop for Vault {
+    /// Stop the integrity check, and wait for it, before anything it reads
+    /// can go away.
+    ///
+    /// It holds a connection of its own to this vault's files, so leaving it
+    /// running would leave them open behind a vault that has been closed --
+    /// across a `remove_partial_vault` in [`Vault::create`], say, or a test
+    /// deleting its temporary directory. It stops within a few pages of
+    /// being told to.
+    fn drop(&mut self) {
+        self.stop_integrity_check();
     }
 }
 

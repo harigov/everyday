@@ -5732,7 +5732,7 @@ export const mockInvoke = async <T>(
     case 'inbox_senders':
       requireUnlocked()
       return mockInboxSenders(
-        typeof args.days === 'number' ? args.days : 30,
+        typeof args.days === 'number' ? args.days : null,
         Array.isArray(args.accounts) ? strArray(args.accounts) : null,
         typeof args.limit === 'number' ? args.limit : null,
       ) as T

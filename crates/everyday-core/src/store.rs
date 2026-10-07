@@ -46,6 +46,7 @@ use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 /// What a backend can and cannot do. The UI reads this to hide features a
 /// backend does not support rather than surfacing errors at click time.
@@ -447,6 +448,11 @@ pub fn sort_summaries(rows: &mut [EntrySummary], sort: SortOrder) {
     });
 }
 
+/// A store's integrity check, ready to run somewhere else. See
+/// [`JournalStore::background_integrity_check`]. Answers what
+/// [`JournalStore::check_integrity`] would.
+pub type IntegrityJob = Box<dyn FnOnce() -> Result<Vec<String>> + Send>;
+
 /// Counts shown in the vault info panel.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -786,9 +792,28 @@ pub trait JournalStore: Send + Sync {
     /// An empty vector means healthy. This is about *structural* damage --
     /// a torn page, a broken index -- not about whether the key is right;
     /// a store that cannot decrypt is a different failure with a different
-    /// message. Cheap enough to run on unlock.
+    /// message.
+    ///
+    /// Not cheap: a check worth having reads every page, and a vault that
+    /// keeps mail is gigabytes of them. This is the on-demand form
+    /// (`everyday check`); an unlock starts
+    /// [`JournalStore::background_integrity_check`] and does not wait for it.
     fn check_integrity(&self) -> Result<Vec<String>> {
         Ok(Vec::new())
+    }
+
+    /// [`JournalStore::check_integrity`], packaged to run on a thread of its
+    /// own, and to stop early once `cancel` is set.
+    ///
+    /// The job owns everything it uses -- for a database, a connection of
+    /// its own -- so it holds none of this store's locks while it reads (a
+    /// long check on the write connection would hold every save behind it)
+    /// and none of its key. That is what lets it run beside an unlocked
+    /// vault, and carry on harmlessly if the vault locks before it is done.
+    ///
+    /// `None`, the default, for a store with nothing to check.
+    fn background_integrity_check(&self, _cancel: Arc<AtomicBool>) -> Result<Option<IntegrityJob>> {
+        Ok(None)
     }
 
     /// Write a consistent copy of everything this store holds into `dir`.

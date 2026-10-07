@@ -25,13 +25,15 @@ use everyday_core::store::secrets::SecretStore;
 use everyday_core::store::tasks::TaskStore;
 use everyday_core::store::trackers::TrackerStore;
 use everyday_core::store::{
-    BackendCapabilities, EntryQuery, JournalStore, SortOrder, StoreStats, journal_aad,
+    BackendCapabilities, EntryQuery, IntegrityJob, JournalStore, SortOrder, StoreStats, journal_aad,
 };
 
 use crate::conn::{SqlExt, ToValue, Value, Where};
 use crate::purpose::{forget_purposes, set_purpose};
 use crate::record::Record;
 use crate::{SqlStore, to_us, vals};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 impl Record for Journal {
     const TABLE: &'static str = "journals";
@@ -433,6 +435,10 @@ impl JournalStore for SqlStore {
     fn check_integrity(&self) -> Result<Vec<String>> {
         let mut conn = self.write();
         self.driver.check_integrity(conn.as_mut())
+    }
+
+    fn background_integrity_check(&self, cancel: Arc<AtomicBool>) -> Result<Option<IntegrityJob>> {
+        self.driver.background_integrity_check(cancel)
     }
 
     fn snapshot(&self, dir: &std::path::Path) -> Result<()> {

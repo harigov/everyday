@@ -1566,8 +1566,8 @@
       "args": [
         {
           "name": "days",
-          "required": true,
-          "type": "number"
+          "required": false,
+          "type": "number | null"
         },
         {
           "name": "accounts",

@@ -180,7 +180,7 @@ pub(crate) fn serve(
         running.stop();
         // Give the vault its checkpoint before the process goes.
         if let Some(v) = service.get() {
-            let _ = v.with_store(|s| s.flush());
+            let _ = v.flush();
             v.lock();
         }
         Ok(())

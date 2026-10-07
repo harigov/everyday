@@ -236,6 +236,87 @@ async fn draining_an_archive_moves_the_message_on_the_server_and_completes_the_o
     );
 }
 
+/// Regression: Quick Cleanup's Delete queues a trash op per conversation,
+/// and the drain used to run them one at a time -- a `SELECT` and a `MOVE`
+/// each, which on a large Gmail account came to about twelve seconds a
+/// conversation. A thousand took over three hours to reach the server, and
+/// until each one had, Trash stayed empty. A run of them goes as one move
+/// now, and the next sync finds them all in Trash.
+#[tokio::test]
+async fn a_bulk_delete_goes_to_trash_as_one_move_and_the_next_sync_finds_it_there() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let server = gmail_server();
+    const THREADS: u64 = 40;
+    {
+        let mut s = server.lock().unwrap();
+        for n in 1..=THREADS {
+            s.append(
+                "All Mail",
+                raw_message(
+                    &format!("newsletter-{n}@example.com"),
+                    None,
+                    "The Weekly <weekly@example.com>",
+                    &format!("Issue {n}"),
+                    "01 Jan 2024 10:00:00 +0000",
+                    "x",
+                ),
+                flags_seen(),
+                Some(GmailMeta { thrid: n, msgid: n, labels: vec!["\\Inbox".into()] }),
+            );
+        }
+    }
+
+    let mut session = FakeMailSession::new(server.clone());
+    let statuses = svc.mail_statuses().unwrap();
+    let ctx = SyncContext {
+        vault: &vault,
+        account_id,
+        packs: svc.packs().unwrap(),
+        index: svc.mail_index().unwrap(),
+        statuses: &statuses,
+        attachment_cap_bytes: None,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+        identities: Vec::new(),
+    };
+    let sync = async |session: &mut FakeMailSession| {
+        let mut labels = LabelMailboxes::new(&vault, account_id);
+        let mut threads = ThreadIndex::new();
+        passes::sync_once(&ctx, session, &mut labels, &mut threads).await.unwrap();
+    };
+    sync(&mut session).await;
+
+    let mailbox = |role| {
+        vault.mailboxes(account_id).unwrap().into_iter().find(|m| m.role == role).unwrap().id
+    };
+    let listed = |role| {
+        vault.list_threads(mailbox(role), &ThreadFilter::default(), None, 100).unwrap().threads
+    };
+    let inbox: Vec<_> = listed(MailboxRole::Inbox).iter().map(|t| t.id).collect();
+    assert_eq!(inbox.len(), THREADS as usize);
+
+    let ops = vault.apply_thread_ops(&inbox, OpKind::Trash, Origin::Person).unwrap();
+    let before = session.commands().len();
+    let report =
+        crate::outbox::drain_outbox(&svc, account_id, &mut session, &FakeSender::default())
+            .await
+            .unwrap();
+    assert_eq!((report.done, report.failed), (THREADS as u32, 0), "{report:?}");
+    assert!(ops.iter().all(|op| vault.op(op.id).unwrap().state == OpState::Done));
+    assert_eq!(
+        session.commands()[before..],
+        ["select All Mail".to_string(), format!("move {THREADS} All Mail -> Trash")],
+        "one SELECT and one MOVE for the lot"
+    );
+    assert_eq!(s_message_count(&server, "Trash"), THREADS as usize);
+    assert_eq!(s_message_count(&server, "All Mail"), 0);
+
+    sync(&mut session).await;
+    assert_eq!(listed(MailboxRole::Trash).len(), THREADS as usize, "Trash shows what was deleted");
+    assert!(listed(MailboxRole::Inbox).is_empty(), "and the Inbox does not");
+}
+
 #[tokio::test]
 async fn draining_a_send_appends_the_sent_copy_and_marks_the_draft_sent() {
     let (svc, vault, account_id, _dir) = service_test_env();
