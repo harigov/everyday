@@ -79,7 +79,7 @@ export function messageDateLabel(instant: string, now = new Date()): string {
     d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate()
-  const day = sameDay ? 'Today' : friendlyDate(isoDate(d))
+  const day = sameDay ? 'Today' : friendlyDate(isoDate(d), now)
   return `${day} at ${timeOfDay(d)}`
 }
 

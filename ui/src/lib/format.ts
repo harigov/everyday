@@ -98,17 +98,19 @@ export function daysBetween(a: Date, b: Date): number {
   )
 }
 
-/** "Today", "Yesterday", "Tuesday", or a date — whichever a reader expects. */
-export function friendlyDate(iso: string): string {
+/** "Today", "Yesterday", "Tuesday", or a date — whichever a reader expects.
+ *  Relative to `now`, which a caller that was itself handed a "now" passes
+ *  on, so the answer never mixes its clock with the real one. */
+export function friendlyDate(iso: string, now = new Date()): string {
   const d = startOfDay(iso)
-  const ago = daysBetween(d, new Date())
+  const ago = daysBetween(d, now)
   if (ago === 0) return 'Today'
   if (ago === 1) return 'Yesterday'
   if (ago === -1) return 'Tomorrow'
   if (ago > 1 && ago < 7) {
     return dateFormat({ weekday: 'long' }).format(d)
   }
-  const sameYear = d.getFullYear() === new Date().getFullYear()
+  const sameYear = d.getFullYear() === now.getFullYear()
   return dateFormat({
     day: 'numeric',
     month: 'long',
