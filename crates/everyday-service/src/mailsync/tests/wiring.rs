@@ -775,8 +775,17 @@ async fn a_status_write_does_not_bring_back_a_deleted_account() {
 /// microseconds, far faster than that thread pool can finish a single
 /// `fsync`, and would never see it -- `std::thread::sleep`, not
 /// `tokio::time::sleep`, is what actually waits here.
+///
+/// Five thousand tries -- about five real seconds at most -- where it was
+/// five hundred: half a second covered a first sync's fsyncs and a tantivy
+/// commit on a laptop, but not on a busy CI runner, where these tests then
+/// failed "did not settle" with nothing actually wrong. Waiting longer
+/// proves exactly as much: the virtual clock stays paused throughout (this
+/// task is never idle, so it never auto-advances), so no timer can fire
+/// however long the real wait, and a passing test still returns the moment
+/// `f` holds.
 async fn settle(f: impl Fn() -> bool) {
-    for _ in 0..500 {
+    for _ in 0..5000 {
         if f() {
             return;
         }

@@ -32,7 +32,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use everyday_core::Vault;
-use everyday_core::mail::{Address, ContactBook, Message};
+use everyday_core::id::MailboxId;
+use everyday_core::mail::{Address, ContactBook, MailboxRole, Message};
 use frizbee::{Config, Matcher};
 use jiff::Timestamp;
 
@@ -134,8 +135,11 @@ impl ContactIndex {
     /// names who they write to; anything else names who writes to them.
     /// That holds on Gmail, where nothing is filed in a folder called Sent,
     /// and for mail sent from another client. Drafts are skipped, as the
-    /// header pass skips them, and spam never arrives here at all
-    /// ([`Vault::mail_between`] leaves it out).
+    /// header pass skips them -- by the `\Draft` flag, and by being filed in
+    /// a Drafts folder at all, which is the header pass's own rule and the
+    /// one a draft saved without the flag still meets (see [`filed_in`]) --
+    /// and spam never arrives here at all ([`Vault::mail_between`] leaves it
+    /// out).
     pub fn backfill(&self, vault: &Vault) -> everyday_core::Result<bool> {
         if self.lock().book.backfilled {
             return Ok(false);
@@ -149,11 +153,25 @@ impl ContactIndex {
                 .chain(account.identities.iter().map(|i| &i.address))
                 .map(|a| a.trim().to_ascii_lowercase())
                 .collect();
+            let drafts: Vec<MailboxId> = vault
+                .mailboxes(account.id)?
+                .into_iter()
+                .filter(|m| m.role == MailboxRole::Drafts)
+                .map(|m| m.id)
+                .collect();
             // A year at a time, so a large vault is never decrypted into
             // memory all at once.
             let windows = year_windows(Timestamp::now());
             for pair in windows.windows(2) {
                 for message in vault.mail_between(account.id, pair[0], pair[1])? {
+                    // Only mail from the account itself can be a draft
+                    // naming somebody "written to", so only that pays the
+                    // lookup -- once per sent message, once per vault.
+                    let from_own =
+                        own.iter().any(|o| o.eq_ignore_ascii_case(message.from.email.trim()));
+                    if from_own && filed_in(vault, &message, &drafts)? {
+                        continue;
+                    }
                     count_message(&mut recount, &message, &own);
                 }
             }
@@ -208,6 +226,30 @@ impl ContactIndex {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// Is `message` filed in any of `mailboxes` -- here, the account's Drafts
+/// folders, which the header pass never counts whether or not the server
+/// flagged the message `\Draft`, so the backfill must not either. Without
+/// this the two disagreed: a draft saved without the flag (some clients do)
+/// was skipped live but counted by the first unlock's recount, naming its
+/// recipient as somebody written to.
+///
+/// Asked per message, as it is counted, rather than by listing the Drafts
+/// folders once up front: the recount runs alongside a live sync, and a
+/// list taken before the sync filed a draft would miss it when the draft
+/// itself was read a moment later. A message and its folder membership are
+/// written together, so a message this walk can see is one whose folders it
+/// can see too.
+fn filed_in(
+    vault: &Vault,
+    message: &Message,
+    mailboxes: &[MailboxId],
+) -> everyday_core::Result<bool> {
+    if mailboxes.is_empty() {
+        return Ok(false);
+    }
+    Ok(vault.mail_message_locations(message.id)?.iter().any(|(m, _)| mailboxes.contains(m)))
 }
 
 /// One message's contribution to a recount -- see [`ContactIndex::backfill`].
@@ -329,6 +371,37 @@ mod tests {
             invite: None,
         };
         vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
+    }
+
+    /// The flake behind `the_accounts_own_address_and_its_drafts_are_never_recorded_as_a_contact`:
+    /// a draft filed in Drafts without the `\Draft` flag was skipped by the
+    /// header pass but counted by the recount, naming its recipient as
+    /// somebody written to whenever the recount ran after the sync.
+    #[test]
+    fn backfill_leaves_out_what_is_filed_in_drafts_flag_or_no_flag() {
+        use everyday_core::account::{Account, Provider};
+        use everyday_core::mail::{Mailbox, MailboxRole};
+
+        let (vault, _dir) = env();
+        let account = Account::new(Provider::Custom, "me@example.com");
+        vault.save_account(&account).unwrap();
+        let inbox = Mailbox::new(account.id, "INBOX", MailboxRole::Inbox);
+        vault.save_mailbox(&inbox).unwrap();
+        let drafts = Mailbox::new(account.id, "Drafts", MailboxRole::Drafts);
+        vault.save_mailbox(&drafts).unwrap();
+        let me = Address { name: "Me".into(), email: "me@example.com".into() };
+        let bob = Address { name: "Bob Stone".into(), email: "bob@example.com".into() };
+        let dave = Address { name: "Dave Ng".into(), email: "dave@example.com".into() };
+        stored(&vault, account.id, inbox.id, 1, me.clone(), vec![bob.clone()]);
+        stored(&vault, account.id, drafts.id, 1, me.clone(), vec![dave.clone()]);
+
+        let index = ContactIndex::load(&vault);
+        assert!(index.backfill(&vault).unwrap());
+        assert!(index.has_sent_to("bob@example.com"), "real sent mail still counts");
+        assert!(
+            !index.has_sent_to("dave@example.com"),
+            "a draft in Drafts must not name its recipient, flagged or not"
+        );
     }
 
     /// The regression this exists for: mail synced while the book was never
