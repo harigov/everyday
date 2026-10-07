@@ -55,6 +55,7 @@
   import SettingsView from './components/SettingsView.svelte'
   import ShortcutsHelp from './components/ShortcutsHelp.svelte'
   import TopBar from './components/TopBar.svelte'
+  import WindowControls from './components/WindowControls.svelte'
 
   void app.start()
   // Let the Rust shell speak. Its background work -- refreshing subscribed
@@ -226,6 +227,14 @@
 <ContextMenu />
 
 <div class="app" style="--journal-accent: {accent}">
+  {#if app.screen !== 'main'}
+    <!-- The window's title bar on the screens that have no top bar. Off
+         macOS the window has none of its own, so without this strip the
+         lock screen could be neither moved nor closed. -->
+    <div class="titlebar" data-tauri-drag-region>
+      <WindowControls />
+    </div>
+  {/if}
   {#if app.screen === 'loading'}
     <div class="boot"><div class="mark"><Logo size={40} tile /></div></div>
   {:else if app.screen === 'error'}
@@ -240,8 +249,8 @@
          is open. -->
     <div class="shell">
       <!-- First, above the notices: it is the window's title bar as well as
-           the bar that searches it, and the window controls sit over its
-           left end on macOS. -->
+           the bar that searches it: the window controls sit over its
+           left end on macOS, and are drawn at its right end elsewhere. -->
       <TopBar />
       <Notices />
       <MeetingOfferBanner />
@@ -351,6 +360,21 @@
 <style>
   .app {
     height: 100%;
+  }
+  /* Over the screen rather than above it, so each screen keeps its whole
+     height and centres its card in the window as before. Transparent: the
+     screen's own background runs up to the window's edge. */
+  .titlebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    height: var(--topbar-h);
+    padding-right: var(--sp-2);
   }
   /* A column, so a notice takes the height it needs and the panes take the
      rest -- rather than the notice overlaying the interface or pushing it

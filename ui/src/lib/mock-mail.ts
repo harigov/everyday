@@ -236,6 +236,31 @@ function bodyHtmlFor(from: MailAddress, subject: string, seed: number): string {
   )
 }
 
+/**
+ * A newsletter as one really arrives: laid out in tables and set in the
+ * dark grey its sender chose for a white page, with no page colour of its
+ * own -- the shape that vanished into the dark theme before
+ * `mailview.ts`'s `applyBodyTheme` gave such mail a white page.
+ */
+function newsletterHtmlFor(from: MailAddress, subject: string, seed: number): string {
+  const ink = 'color:#363737'
+  return (
+    `<table role="presentation" width="100%" style="max-width:560px;margin:0 auto"><tr><td>` +
+    `<h1 style="${ink};font-size:30px;line-height:1.2;margin:0 0 12px">${subject}</h1>` +
+    `<table role="presentation" width="100%"><tr>` +
+    `<td style="color:#757575;font-size:13px">${from.name.toUpperCase()}</td>` +
+    `<td align="right"><a href="https://example.com/app" style="${ink};font-size:13px;` +
+    `border:1px solid #e0e0e0;border-radius:4px;padding:8px 14px;text-decoration:none">` +
+    `READ IN APP</a></td></tr></table>` +
+    `<p style="${ink};font-size:17px;line-height:1.6">${pick(SNIPPETS, seed)} next week. ` +
+    `${pick(SNIPPETS, seed + 1)} then.</p>` +
+    `<blockquote style="border-left:4px solid #3aa0d8;margin:0;padding-left:20px;` +
+    `${ink};font-style:italic">${pick(SNIPPETS, seed + 2)} the end of the month.</blockquote>` +
+    `<p style="${ink};font-size:17px;line-height:1.6">${pick(SNIPPETS, seed + 4)} soon.</p>` +
+    `</td></tr></table>`
+  )
+}
+
 /** (i) TODO: a plausible calendar invitation for every seventh message
  *  from a person (never from an automated sender) -- see `types.ts`'s
  *  `MailInvite` for the contract this stands in for until the calendars
@@ -407,7 +432,12 @@ function buildSeed(): Seeded {
         invite: !automated && m === 0 ? inviteFor(i, sender) : null,
       }
       messages.set(msgId, message)
-      bodies.set(msgId, bodyHtmlFor(sender, message.subject, i + m))
+      bodies.set(
+        msgId,
+        category === 'newsletter'
+          ? newsletterHtmlFor(sender, message.subject, i + m)
+          : bodyHtmlFor(sender, message.subject, i + m),
+      )
       if (message.hasAttachments) attachments.set(msgId, attachmentsFor(i))
       msgIds.push(msgId)
     }

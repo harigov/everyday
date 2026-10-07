@@ -14,6 +14,7 @@ const {
   diffAccess,
   accessEqual,
   providerLabel,
+  acknowledgementName,
   isPasswordAuth,
 } = accounts
 
@@ -118,6 +119,32 @@ assert.equal(
   'an unknown endpoint is named by its host',
 )
 assert.equal(providerLabel('not a url'), 'not a url', 'an unparsable value is echoed back')
+
+// ── acknowledgementName ───────────────────────────────────────────────
+//
+// The same table as `acknowledgement_name_is_the_endpoint` in
+// crates/everyday-core/src/agent.rs: the assistant is offered mail only when
+// the stored acknowledgement equals the Rust side's string exactly.
+
+for (const [baseUrl, want] of [
+  [null, 'https://api.openai.com/v1'],
+  ['', 'https://api.openai.com/v1'],
+  ['https://openrouter.ai/api/v1', 'https://openrouter.ai/api/v1'],
+  ['https://openrouter.ai/api/v1/', 'https://openrouter.ai/api/v1'],
+  ['http://localhost:11434/v1//', 'http://localhost:11434/v1'],
+  ['/', 'https://api.openai.com/v1'],
+]) {
+  assert.equal(
+    acknowledgementName(baseUrl),
+    want,
+    `acknowledgementName(${JSON.stringify(baseUrl)})`,
+  )
+}
+assert.notEqual(
+  acknowledgementName(null),
+  providerLabel(null),
+  'what is stored is not what the sentence says',
+)
 
 // ── isPasswordAuth ────────────────────────────────────────────────────
 

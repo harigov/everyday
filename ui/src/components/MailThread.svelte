@@ -23,12 +23,13 @@
     estimateBodyHeight,
     messageDateLabel,
     remoteImagesAllowed,
+    snippetText,
     threadListDate,
   } from '../lib/mail'
   import * as mailApi from '../lib/mail-api'
   import { mail } from '../lib/mail.svelte'
   import {
-    applyDarkOverride,
+    applyBodyTheme,
     applyPlatformOrigin,
     bodyDocument,
     loadBody,
@@ -129,7 +130,7 @@
       )
       const loaded = await loadBody(source)
       bodies.set(message.id, {
-        html: applyPlatformOrigin(applyDarkOverride(loaded.html, isDarkMode())),
+        html: applyPlatformOrigin(applyBodyTheme(loaded.html, isDarkMode())),
         imagesHidden: loaded.imagesHidden,
       })
     } catch {
@@ -235,7 +236,7 @@
                 <span class="cc">· Cc: {formatSenders(message.cc, 4)}</span>{/if}
             </span>
           {:else}
-            <span class="snippet">{message.snippet}</span>
+            <span class="snippet">{snippetText(message.snippet)}</span>
           {/if}
         </span>
         <span class="when">
@@ -653,9 +654,11 @@
      guess clipping the last line instead of scrolling to it.
 
      The card is the page colour -- the same one the message's own document
-     paints behind its text, light theme and dark (`mailview.rs`'s
-     `BASE_STYLE`, and `applyDarkOverride`) -- set into the raised reading
-     pane, so the frame's edge and the card's are one edge. */
+     paints behind plain mail, light theme and dark (`mailview.rs`'s
+     `BASE_STYLE`, and `applyBodyTheme`) -- set into the raised reading
+     pane, so the frame's edge and the card's are one edge. Mail that sets
+     its own colours paints white instead, in either theme, and the card's
+     rounded edge clips that page the same way. */
   .frame-wrap {
     max-height: 70vh;
     overflow-y: auto;

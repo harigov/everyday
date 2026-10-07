@@ -7,6 +7,9 @@
 //! naming a provider that was no longer the one configured. `save_agent_settings`
 //! now clears it on every account that had it set, in the same write, the
 //! moment the endpoint actually changes.
+//!
+//! And giving one has to store that same string: `save_account` refuses an
+//! acknowledgement that names anything other than the configured endpoint.
 
 use std::sync::Arc;
 
@@ -92,4 +95,56 @@ async fn changing_the_providers_endpoint_clears_every_accounts_acknowledgement()
         None,
         "an account that was never acknowledged stays exactly that"
     );
+}
+
+/// `save_account` is how the interface gives an acknowledgement, and the
+/// mail gate only ever matches `acknowledgement_name` -- so a tick that
+/// stores anything else is refused at the moment of ticking rather than
+/// saved, shown ticked, and silently matching nothing. The display name
+/// ("OpenAI") is exactly what the interface used to store.
+#[tokio::test]
+async fn an_acknowledgement_is_saved_only_when_it_names_the_configured_endpoint() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let settings = AgentSettings::default();
+    vault.save_agent_settings(&settings).unwrap();
+    let ack = settings.provider_config.acknowledgement_name();
+    assert_eq!(ack, "https://api.openai.com/v1");
+
+    let mut account = Account::new(Provider::Custom, "me@example.com");
+    account.services.mail = false;
+    account.assistant_provider_acknowledged = Some("OpenAI".into());
+    let refused = svc.call(Ctx::local(), "save_account", json!({ "account": account })).await;
+    let message = refused.expect_err("a display name is not an acknowledgement").to_string();
+    assert!(message.contains("https://api.openai.com/v1"), "{message}");
+    assert!(vault.account(account.id).is_err(), "nothing was saved");
+
+    account.assistant_provider_acknowledged = Some(ack.clone());
+    call(&svc, "save_account", json!({ "account": account })).await;
+    assert_eq!(
+        vault.account(account.id).unwrap().assistant_provider_acknowledged.as_deref(),
+        Some(ack.as_str())
+    );
+}
+
+/// An acknowledgement already stored is not this save's to judge: an
+/// account carrying one from before the interface stored the endpoint can
+/// still have its other settings changed. The gate goes on refusing it until
+/// the box is ticked again.
+#[tokio::test]
+async fn an_acknowledgement_saved_back_unchanged_is_not_refused() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    vault.save_agent_settings(&AgentSettings::default()).unwrap();
+
+    let mut account = Account::new(Provider::Custom, "me@example.com");
+    account.services.mail = false;
+    account.assistant_provider_acknowledged = Some("OpenAI".into());
+    vault.save_account(&account).unwrap();
+
+    account.sync_minutes = Some(30);
+    call(&svc, "save_account", json!({ "account": account })).await;
+    let saved = vault.account(account.id).unwrap();
+    assert_eq!(saved.sync_minutes, Some(30));
+    assert_eq!(saved.assistant_provider_acknowledged.as_deref(), Some("OpenAI"));
 }

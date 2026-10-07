@@ -124,7 +124,9 @@ pub(super) static TOOLS: &[Tool] = &[
                          from:, to:, subject:, has:attachment, is:unread, is:starred, \
                          before:, after:, in:<mailbox>, label:<name>, \"a quoted phrase\", \
                          a leading - to exclude, OR between groups. Free words with no \
-                         keyword search subject and body."
+                         keyword search subject, body and addresses, and every one must \
+                         appear: search for two or three distinctive words (a name, an \
+                         order number), not a whole question."
                     )
                 ),
                 ("limit", number("Most results. Defaults to 25 and is never more than 25.")),

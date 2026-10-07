@@ -138,6 +138,14 @@ export const ICONS = {
 
   close: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
 
+  // The window's own maximise and restore, beside `minus` and `close` in
+  // `WindowControls`: one square, then the same square with a second behind
+  // it -- the glyphs every desktop draws for these two.
+  maximize: '<rect width="14" height="14" x="5" y="5" rx="2"/>',
+  restore:
+    '<rect width="11" height="11" x="5" y="8" rx="2"/>' +
+    '<path d="M8 8V7a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1"/>',
+
   lock:
     '<rect width="16" height="11" x="4" y="10.5" rx="2.5"/>' +
     '<path d="M7.5 10.5V7a4.5 4.5 0 0 1 9 0v3.5"/>',

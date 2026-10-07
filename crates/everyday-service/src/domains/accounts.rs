@@ -163,7 +163,10 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
     let mail_on = account.services.mail;
     blocking({
         let vault = vault.clone();
-        move || Ok(vault.save_account(&account)?)
+        move || {
+            check_acknowledgement(&vault, &account)?;
+            Ok(vault.save_account(&account)?)
+        }
     })
     .await?;
     if mail_on {
@@ -175,6 +178,45 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
         crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
     }
     Ok(())
+}
+
+/// Refuse an assistant acknowledgement this save gives that does not name
+/// the model provider configured right now.
+///
+/// The mail gate offers the assistant an account's mail only when
+/// [`Account::assistant_provider_acknowledged`] equals
+/// `LLMProviderConfig::acknowledgement_name` exactly, and the interface
+/// writes that string itself. It used to write the provider's display name
+/// instead -- "OpenAI" where the gate compared `https://api.openai.com/v1` --
+/// so every acknowledgement anybody gave was stored, shown ticked, and
+/// silently matched nothing: the assistant was never offered mail at all.
+/// Refusing here turns any such disagreement into an error at the moment of
+/// ticking, where somebody can see it. It also catches a form opened before
+/// the provider changed, whose tick would otherwise name a provider nobody
+/// is talking to any more.
+///
+/// Only an acknowledgement this save *gives*: one already stored, saved
+/// back unchanged alongside some other edit, is left to the gate to judge,
+/// so changing an account's sync interval is never refused over it.
+fn check_acknowledgement(
+    vault: &everyday_core::vault::Vault,
+    account: &Account,
+) -> everyday_core::Result<()> {
+    let Some(given) = account.assistant_provider_acknowledged.as_deref() else {
+        return Ok(());
+    };
+    let stored = vault.account(account.id).ok().and_then(|a| a.assistant_provider_acknowledged);
+    if stored.as_deref() == Some(given) {
+        return Ok(());
+    }
+    let current = vault.agent_settings()?.provider_config.acknowledgement_name();
+    if given == current {
+        return Ok(());
+    }
+    Err(everyday_core::Error::Invalid(format!(
+        "the assistant now talks to {current}, not {given}: open the account again and tick \
+         the box for the assistant's provider once more"
+    )))
 }
 
 /// Delete the account: stop its sync task first (a task still writing

@@ -99,9 +99,9 @@ jobs:
           # macOS builds one universal binary rather than two per-arch ones:
           # the runner is arm64 and Rust cross-compiles the x86_64 half for
           # free, which is cheaper than a second job and gives users one DMG.
-          linux='{"name":"linux","os":"ubuntu-22.04","bundles":"deb,rpm,appimage","rust_target":"","bundle_dir":"target/release/bundle"}'
-          macos='{"name":"macos","os":"macos-latest","bundles":"dmg","rust_target":"universal-apple-darwin","bundle_dir":"target/universal-apple-darwin/release/bundle"}'
-          windows='{"name":"windows","os":"windows-latest","bundles":"msi,nsis","rust_target":"","bundle_dir":"target/release/bundle"}'
+          linux='{"name":"linux","os":"ubuntu-22.04","bundles":"deb,rpm,appimage","rust_target":"","bundle_dir":"target/dist/bundle"}'
+          macos='{"name":"macos","os":"macos-latest","bundles":"dmg","rust_target":"universal-apple-darwin","bundle_dir":"target/universal-apple-darwin/dist/bundle"}'
+          windows='{"name":"windows","os":"windows-latest","bundles":"msi,nsis","rust_target":"","bundle_dir":"target/dist/bundle"}'
 
           case "$PLATFORMS" in
             all)     include="[$linux,$macos,$windows]" ;;
@@ -127,7 +127,7 @@ jobs:
     needs: plan
     runs-on: ${{ matrix.os }}
     # A cold Tauri release build is 15-25 minutes, but this workspace bundles
-    # SQLite from C source and the release profile uses LTO with
+    # SQLite from C source and the `dist` profile uses LTO with
     # codegen-units=1, which roughly doubles that on a 4-core runner. 90
     # minutes is generous enough not to trip on a slow runner and short enough
     # that a hung build stops rather than sitting at GitHub's 6-hour ceiling.
@@ -220,7 +220,7 @@ jobs:
         env:
           BUNDLES: ${{ matrix.bundles }}
           RUST_TARGET: ${{ matrix.rust_target }}
-          # linuxdeploy cannot strip a binary the release profile already
+          # linuxdeploy cannot strip a binary the dist profile already
           # stripped, and the runners have no FUSE for it to mount its own
           # AppImage with. Both are no-ops off Linux.
           NO_STRIP: "true"
@@ -231,6 +231,13 @@ jobs:
           if [ -n "$RUST_TARGET" ]; then
             args+=(--target "$RUST_TARGET")
           fi
+          # The `dist` profile, not `release`: `release` is tuned for build
+          # time on a developer's machine, `dist` for what is shipped -- see
+          # the root Cargo.toml. The CLI reads it to find the binary under
+          # target/dist. Two words, not `--profile=dist`: only that spelling
+          # stops the CLI adding a `--release` of its own, which cargo
+          # refuses alongside a `--profile`.
+          args+=(-- --profile dist)
           npx --yes "$TAURI_CLI" "${args[@]}"
 
       # Nothing is signed or notarised: there are no Apple or Authenticode

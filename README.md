@@ -2544,6 +2544,20 @@ make run      # the desktop app, with hot reload
 system of its own: `make run` is `./scripts/dev.sh`, `make test` is
 `./scripts/test.sh`. Use the scripts directly if you prefer them.
 
+### Build it
+
+```sh
+make build    # the app for this machine, optimised, to run in place
+make dist     # the installers, built the way a release builds them
+```
+
+`make build` is the day-to-day one. It builds under the `release` profile,
+which is tuned for build time rather than the last few percent of speed, and
+packs no installers; `make desktop-entry` (below) points the desktop at what
+it builds. `make dist` is what `.github/workflows/release.yml` runs: the
+`dist` profile, with LTO and one codegen unit per crate, and every installer
+the platform makes. It takes several times as long.
+
 ### Test it
 
 ```sh
@@ -3024,8 +3038,8 @@ does at runtime can change that.
 
 Installing the package fixes it:
 
-    make build
-    sudo dpkg -i "target/release/bundle/deb/Every Day_0.1.0_amd64.deb"
+    make dist
+    sudo dpkg -i "target/dist/bundle/deb/Every Day_0.1.0_amd64.deb"
 
 To keep a locally built binary and still get the icon and the right name in
 the dock and the overview:

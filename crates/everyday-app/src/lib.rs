@@ -91,6 +91,33 @@ pub fn run() {
         // default, see `badge.rs`.
         .manage(Badge::default())
         .setup(|app| {
+            // The window, from its entry in `tauri.conf.json` -- marked
+            // `create: false` so that it is built here, where it can be told
+            // to go without the system's title bar everywhere but macOS.
+            //
+            // That bar was a strip of nothing above the interface's own top
+            // bar, which already holds the search field and is where the
+            // window is dragged from, so the interface draws the minimise,
+            // maximise and close buttons at its right end instead -- see
+            // `ui/src/lib/window.svelte.ts`. macOS keeps its decorations:
+            // there the overlay title bar puts the traffic lights over the
+            // top bar's left end, with no strip of its own. Resizing an
+            // undecorated window by its edges is Tauri's own on Linux and
+            // Windows. Built rather than switched off after the fact,
+            // because a window shown with a bar and then stripped of it
+            // flashes the bar at every launch.
+            let config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|w| w.label == "main")
+                .cloned()
+                .ok_or("tauri.conf.json has no main window")?;
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                .decorations(cfg!(target_os = "macos"))
+                .build()?;
+
             let handle = app.handle().clone();
             // The service exists before Tauri does -- `AppState` builds it --
             // but it cannot emit anywhere until there is an app to emit

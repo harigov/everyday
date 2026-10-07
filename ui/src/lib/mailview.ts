@@ -183,13 +183,12 @@ function mockDocument(inner: string): string {
  *
  * Plain mail is drawn transparent and unpadded, so it reads as part of the
  * sheet rather than a card inside it, in the app's own text colours for
- * `dark` -- the same choice `applyDarkOverride` makes for a message body.
- * A styled one -- anything that sets its own colours -- keeps a light card
- * of its own instead, whatever the theme: its sender chose dark text for a
- * light page, and on the app's dark background that text all but vanished.
+ * `dark` -- the same choice `applyBodyTheme` makes for a message body.
+ * A styled one -- see `setsOwnColours` -- keeps a light card of its own
+ * instead, whatever the theme, for the reason given there.
  */
 export function quoteDocument(quotedHtml: string, dark: boolean): string {
-  const styled = /(?:^|[\s;"'])(?:color|background(?:-color)?)\s*:|\bbgcolor\s*=/i.test(quotedHtml)
+  const styled = setsOwnColours(quotedHtml)
   const paper = !dark || styled
   const fg = paper ? '#1c1a17' : '#eceaf0'
   const muted = paper ? '#5f5a52' : '#a9a5b2'
@@ -247,36 +246,75 @@ export async function loadBody(source: MailBodySource): Promise<LoadedMailBody> 
   return { html, imagesHidden: res.headers.get('x-mail-images-hidden') === 'true' }
 }
 
+/** A CSS declaration that colours text or what is behind it. */
+const COLOUR_DECLARATION = /(?:^|[\s;{])(?:color|background(?:-color)?)\s*:/i
+
 /**
- * Give a plain or unstyled message the app's own dark colours when the
- * reader is in dark mode, without touching a sender's own styled HTML.
+ * Whether a sender's markup sets colours of its own: a text colour or a
+ * background in a `style` attribute or a style sheet, or the `bgcolor` and
+ * `<font color>` of mail written before CSS.
  *
- * `mailview.rs`'s `BODY_STYLE` already carries a `@media (prefers-color-scheme:
- * dark)` block for exactly this -- but that media query answers to the
- * *operating system's* preference, never to this application's own
- * light/dark/system switch (`state.svelte.ts`'s `theme`), because the
- * sandboxed frame's `srcdoc` document is a browsing context of its own and a
- * page's CSS cannot ask another document to follow a choice made in it.
- * `color-scheme` as a CSS property does not help either: it changes how form
- * controls and scrollbars are drawn, not whether the `prefers-color-scheme`
- * media feature matches.
+ * Such a message was designed for the page its sender had in mind, which is
+ * nearly always white -- dark grey text, light panels, a logo drawn for a
+ * light background. On the app's dark page it keeps its own dark text and
+ * loses the white behind it, and all but vanishes. A newsletter set in
+ * `#363737` is the usual case.
  *
- * So when this application's *own* dark mode is the one in effect, this
- * duplicates the same colours `mailview.rs` already chose for its dark media
- * query, unconditionally, into a `<style>` appended just before `</head>`.
- * That only ever changes the plain `body`/`summary` rules `BASE_STYLE` sets
- * as defaults -- a sender's own `style=""` or `<style>` block still wins by
- * ordinary CSS specificity, exactly as it already does under the media
- * query, so styled HTML mail keeps reading on its own light card the way
- * Superhuman and Apple Mail both leave it. Only a plain-text message (which
- * carries no styling of its own beyond the `<pre>` this app wraps it in) or
- * an unusually bare HTML one actually changes colour.
+ * Erring towards yes on purpose: a declaration that only colours a border
+ * counts too. A wrong yes costs a plain message drawn on a light page; a
+ * wrong no costs a message nobody can read.
  */
-export function applyDarkOverride(html: string, dark: boolean): string {
-  if (!dark) return html
-  const override =
-    '<style>body{color:#eceaf0;background:#17161a}summary{color:#7d7a86}</style></head>'
-  return html.includes('</head>') ? html.replace('</head>', override) : html
+export function setsOwnColours(html: string): boolean {
+  if (/<[^>]+\s(?:bg)?color\s*=/i.test(html)) return true
+  for (const [, double, single] of html.matchAll(/\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+    if (COLOUR_DECLARATION.test(double ?? single ?? '')) return true
+  }
+  for (const [, sheet] of html.matchAll(/<style\b[^>]*>([^<]*)/gi)) {
+    if (COLOUR_DECLARATION.test(sheet ?? '')) return true
+  }
+  return false
+}
+
+/**
+ * Set a message body's page to this application's theme -- or, for a
+ * message that sets its own colours, to a white page in either theme.
+ *
+ * Three cases, each a `<style>` appended just before `</head>`, after
+ * `mailview.rs`'s `BASE_STYLE`, so it wins over that by order alone while a
+ * sender's own `style=""` or style sheet still wins over it by specificity:
+ *
+ * - **A styled message** (`setsOwnColours`) gets white behind it whatever
+ *   the theme, the page it was designed for -- see that function for what
+ *   happens otherwise. This is what most mail clients do with HTML mail in
+ *   a dark theme, and what `quoteDocument` already did for the quoted part
+ *   of a reply. Its own `prefers-color-scheme: dark` rules are switched off
+ *   too: they answer to the system's setting rather than to this page, and
+ *   would set light text on it.
+ * - **A plain message in the dark theme** -- a plain-text one in the `<pre>`
+ *   this app wraps it in, or bare HTML -- gets the app's own dark colours.
+ * - **A plain message in the light theme** gets the light ones, written out
+ *   rather than left to `BASE_STYLE`, whose dark colours sit behind a
+ *   `prefers-color-scheme` query. That query answers to the operating
+ *   system, never to this application's own light/dark/system switch
+ *   (`state.svelte.ts`'s `theme`): the frame's `srcdoc` document is a
+ *   browsing context of its own, and nothing in it can ask the app which
+ *   theme it chose. So a light app on a dark desktop used to draw plain
+ *   mail on a dark page.
+ */
+export function applyBodyTheme(html: string, dark: boolean): string {
+  const at = html.indexOf('</head>')
+  if (at < 0) return html
+  let body = html.slice(at)
+  let style: string
+  if (setsOwnColours(body)) {
+    body = body.replace(/prefers-color-scheme\s*:\s*dark/gi, 'prefers-color-scheme: none')
+    style = ':root{color-scheme:light}body{color:#1c1a17;background:#ffffff}summary{color:#8b857c}'
+  } else if (dark) {
+    style = ':root{color-scheme:dark}body{color:#eceaf0;background:#17161a}summary{color:#7d7a86}'
+  } else {
+    style = ':root{color-scheme:light}body{color:#1c1a17;background:#f7f6f3}summary{color:#8b857c}'
+  }
+  return `${html.slice(0, at)}<style>${style}</style>${body}`
 }
 
 function escapeAndLinkify(text: string): string {

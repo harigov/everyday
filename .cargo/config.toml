@@ -3,7 +3,9 @@
 # `jobs` caps how many `rustc` processes cargo runs at once. The default is
 # one per core, which on a many-core machine can mean a dozen simultaneous
 # compilations each holding a full crate graph in memory. Capping it trades a
-# little wall-clock for a much lower peak footprint.
+# little wall-clock for a much lower peak footprint. `make build` and
+# `make dist`, which run under no memory ceiling, ask for eight instead --
+# see the Makefile.
 [build]
 jobs = 4
 

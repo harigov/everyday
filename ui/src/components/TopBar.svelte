@@ -8,10 +8,13 @@
   // of whatever is open. The bar is the same field in every app, in the same
   // place, which is the point of having one.
   //
-  // It is also the window's title bar. The window draws its own on macOS
-  // (`titleBarStyle: Overlay`), so the controls sit over this strip's left
-  // end -- nothing of ours is drawn under them -- and the empty stretches of
-  // it are where the window is dragged from.
+  // It is also the window's title bar, and the only one: the empty
+  // stretches of it are where the window is dragged from, and a double
+  // click on one maximises it. On macOS the system draws its controls over
+  // this strip's left end (`titleBarStyle: Overlay`) -- nothing of ours is
+  // drawn under them. Everywhere else the window has no bar of its own, so
+  // its minimise, maximise and close buttons are ours, at the right end --
+  // see `WindowControls.svelte`.
 
   import { app } from '../lib/state.svelte'
   import { keysLabel } from '../lib/keys'
@@ -20,6 +23,7 @@
   import CommandBar from './CommandBar.svelte'
   import Icon from './Icon.svelte'
   import Logo from './Logo.svelte'
+  import WindowControls from './WindowControls.svelte'
 
   const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform ?? '')
 
@@ -62,7 +66,9 @@
     <CommandBar />
   </div>
 
-  <div class="end" data-tauri-drag-region></div>
+  <div class="end" data-tauri-drag-region>
+    <WindowControls />
+  </div>
 </header>
 
 <style>
@@ -70,8 +76,13 @@
     display: grid;
     /* The middle column is the bar's, capped so it reads as a field rather
        than a ruler across a wide window; the two either side share what is
-       left equally, so the bar stays centred on the window. */
-    grid-template-columns: var(--appbar-w) minmax(0, 1fr) minmax(220px, 600px) minmax(0, 1fr);
+       left equally, so the bar stays centred on the window. Neither gives up
+       more than its contents, though: in a narrow window the bar shrinks, or
+       sits a little off centre, rather than sliding under the window's own
+       buttons. */
+    grid-template-columns:
+      var(--appbar-w) minmax(max-content, 1fr) minmax(220px, 600px)
+      minmax(max-content, 1fr);
     align-items: center;
     height: var(--topbar-h);
     flex: none;
@@ -94,6 +105,10 @@
   }
   .side {
     padding-left: var(--sp-2);
+  }
+  .end {
+    justify-content: flex-end;
+    padding-right: var(--sp-2);
   }
 
   .middle {

@@ -72,8 +72,17 @@ pub fn html_to_text(html: &str) -> String {
 /// html2text's own `string_from_read`, taken in its three steps so the
 /// parsed DOM can be corrected before it is laid out: [`strip_invisible`]
 /// and [`drop_zero_rowspans`] both work on the tree html2text renders.
+///
+/// In raw mode, which reads a table as one column of cells, each its own
+/// paragraph, with no borders drawn. HTML mail is laid out in tables -- a
+/// newsletter is usually one table inside another from the first line to
+/// the last -- and drawn as tables, at this width, a message began with a
+/// top border two thousand `─` long. That border was the whole of its
+/// [`snippet`], and a share of every tool's [`model_text`]. Read as a
+/// column, the cells come out in the order a person reads them; a real
+/// table of figures, rarer in mail, loses its grid but not its words.
 fn render_text(html: &str, width: usize) -> Result<String, html2text::Error> {
-    let config = html2text::config::plain();
+    let config = html2text::config::plain().raw_mode(true);
     let dom = config.parse_html(html.as_bytes())?;
     strip_invisible(&dom.document);
     drop_zero_rowspans(&dom.document);
@@ -116,9 +125,18 @@ pub fn html_to_markdown(html: &str) -> String {
 /// Roughly 200 characters for a thread list: collapsed whitespace, quoted
 /// text skipped so replying to a long thread does not bury the new part of
 /// the message under the old one.
+///
+/// Box-drawing characters go with the whitespace. [`html_to_text`] no
+/// longer draws table borders, but a body stored before it stopped still
+/// has them in its text, and a plain-text message can rule itself off with
+/// a line of `─` as well; neither is anything to preview.
 pub fn snippet(text: &str) -> String {
     let visible = remove_ranges(text, &quoted_ranges(text));
-    let collapsed = visible.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = visible
+        .split(|c: char| c.is_whitespace() || ('\u{2500}'..='\u{257F}').contains(&c))
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
     truncate_chars(&collapsed, SNIPPET_TARGET_CHARS)
 }
 
@@ -815,6 +833,36 @@ mod tests {
         assert!(snippet.ends_with('…'));
     }
 
+    fn is_box_drawing(c: char) -> bool {
+        ('\u{2500}'..='\u{257F}').contains(&c)
+    }
+
+    /// A newsletter is one table inside another from top to bottom, and its
+    /// snippet used to be the outer table's top border.
+    #[test]
+    fn a_message_laid_out_in_tables_reads_as_its_words() {
+        let html = r#"<table width="100%"><tr><td>
+            <table><tr><td><p>Pre-war oil flows return</p><p>SIMPLICIUS</p></td>
+            <td><a href="https://example.com/app">READ IN APP</a></td></tr></table>
+            <p style="color:#363737">The conflict over the Strait continues.</p>
+            </td></tr></table>"#;
+        let text = html_to_text(html);
+        assert!(!text.chars().any(is_box_drawing), "{text:?}");
+        assert!(text.contains("The conflict over the Strait continues."), "{text:?}");
+        let snippet = snippet(&text);
+        assert!(snippet.starts_with("Pre-war oil flows return SIMPLICIUS"), "{snippet:?}");
+    }
+
+    /// What a body stored before tables were read as a column still holds,
+    /// and what a plain-text message ruled off with `─` looks like.
+    #[test]
+    fn a_snippet_leaves_out_box_drawing() {
+        let rule = "─".repeat(2_000);
+        let text = format!("{rule}┬{rule}\nPre-war oil flows return│READ IN APP\n{rule}┴{rule}\n");
+        assert_eq!(snippet(&text), "Pre-war oil flows return READ IN APP");
+        assert_eq!(snippet(&rule), "");
+    }
+
     #[test]
     fn model_text_drops_hidden_html_quoted_text_and_a_signature() {
         let parsed = ParsedMessage {
@@ -901,8 +949,10 @@ mod tests {
             "<blockquote>quoted <b>bold</b> <i>italic</i></blockquote><img alt=\"logo\" src=\"x.png\">",
         ] {
             let ours = render_text(html, 2_000).unwrap();
-            let theirs =
-                html2text::config::plain().string_from_read(html.as_bytes(), 2_000).unwrap();
+            let theirs = html2text::config::plain()
+                .raw_mode(true)
+                .string_from_read(html.as_bytes(), 2_000)
+                .unwrap();
             assert_eq!(ours, theirs, "{html}");
         }
     }

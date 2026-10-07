@@ -1452,6 +1452,28 @@ mod tests {
         assert_eq!(cfg.endpoint(), "https://api.openai.com/v1");
     }
 
+    /// The interface writes this string into an account itself
+    /// (`acknowledgementName` in `ui/src/lib/accounts.ts`) and the mail gate
+    /// compares against it, so the two must spell it identically. This is
+    /// the same table that file's test pins; change both or neither.
+    #[test]
+    fn acknowledgement_name_is_the_endpoint() {
+        for (base_url, want) in [
+            (None, "https://api.openai.com/v1"),
+            (Some(""), "https://api.openai.com/v1"),
+            (Some("https://openrouter.ai/api/v1"), "https://openrouter.ai/api/v1"),
+            (Some("https://openrouter.ai/api/v1/"), "https://openrouter.ai/api/v1"),
+            (Some("http://localhost:11434/v1//"), "http://localhost:11434/v1"),
+            (Some("/"), "https://api.openai.com/v1"),
+        ] {
+            let cfg = LLMProviderConfig {
+                provider: Provider::OpenAi,
+                base_url: base_url.map(str::to_string),
+            };
+            assert_eq!(cfg.acknowledgement_name(), want, "{base_url:?}");
+        }
+    }
+
     #[test]
     fn a_local_model_needs_no_api_key() {
         let mut cfg = LLMProviderConfig::default();

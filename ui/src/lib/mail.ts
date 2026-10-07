@@ -30,6 +30,28 @@ import type {
   Thread,
 } from './types'
 
+// ── Previews ───────────────────────────────────────────────────────────
+
+/**
+ * A stored snippet as a row shows it: without the box-drawing characters
+ * an HTML message's layout tables used to leave in it, and empty if that
+ * is all it was.
+ *
+ * Mail synced before `everyday_mail::text::html_to_text` stopped drawing
+ * table borders kept a snippet made of them -- a newsletter laid out in a
+ * table began with its top border, two hundred `─` long -- and a list row
+ * drew that as ruled lines under the subject. The snippet is sealed with
+ * the message, so it is cleaned here, where it is drawn, rather than
+ * waiting on mail that has already been fetched to be fetched again.
+ */
+export function snippetText(snippet: string): string {
+  const text = snippet
+    .replace(/[\u2500-\u257f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return /[\p{L}\p{N}]/u.test(text) ? text : ''
+}
+
 // ── Sender-list formatting ─────────────────────────────────────────────
 
 /**

@@ -25,6 +25,7 @@
   } from '../lib/accounts.svelte'
   import {
     DEFAULT_AGENT_ACCESS,
+    acknowledgementName,
     providerLabel,
     signInArgs,
     validateCustomEndpoint,
@@ -50,6 +51,8 @@
   void agent.loadSettings()
 
   const providerName = $derived(providerLabel(agent.settings?.providerConfig.baseUrl ?? null))
+  /** What a tick is stored as -- see `acknowledgementName`; `providerName` is only what it says. */
+  const providerAck = $derived(acknowledgementName(agent.settings?.providerConfig.baseUrl ?? null))
 
   // Stable for the life of this sheet, so retrying a failed sign-in saves
   // over the same record rather than minting a second one. See
@@ -127,7 +130,7 @@
       services: { ...services },
       assistantAccess,
       mcpAccess,
-      assistantProviderAcknowledged: acknowledged ? providerName : null,
+      assistantProviderAcknowledged: acknowledged ? providerAck : null,
       attachmentCapBytes: null,
       status: { type: 'needsSignIn', reason: 'not yet signed in' },
       lastSyncedAt: null,

@@ -71,16 +71,26 @@ argon2 = { version = "0.6", default-features = false, features = ["alloc", "zero
 chacha20poly1305 = { version = "0.11", features = ["zeroize"] }
 tracing = "0.1"
 
+# What `make build` (a bare `cargo tauri build`) makes: the app you run
+# yourself, optimised, and built for the time it takes. No cross-crate LTO,
+# and cargo's default sixteen codegen units, so each crate's code is
+# generated in parallel and the last link does not re-optimise the whole
+# program. Shipping it is `dist`'s job, below.
 [profile.release]
 opt-level = 3
-lto = "thin"
-codegen-units = 1
 # Unwind, not abort. The supervisor restarts a background task that panics,
 # and mail sync contains a panic in the HTML libraries it hands a stranger's
 # message to; with "abort" neither could run, and one bad email killed the
 # app at the same message on every launch.
 strip = true
 
+# What a release ships: `make dist`, and `.github/workflows/release.yml`.
+# Thin LTO over every crate and one codegen unit each -- what `release`
+# itself used to be, for a binary a little smaller and faster, at several
+# times the build. Under it, `everyday-service` alone took four minutes on
+# one core, and the app crate (whose cdylib is an LTO link of its own) and
+# the final LTO link two to three more each, on every rebuild.
 [profile.dist]
 inherits = "release"
-lto = "fat"
+lto = "thin"
+codegen-units = 1

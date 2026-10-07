@@ -15,6 +15,7 @@
     mailboxDisplayName,
     newestSyncedAt,
     recentActionLine,
+    snippetText,
     snoozedUntilLabel,
     syncInProgress,
     threadListDate,
@@ -505,6 +506,7 @@
 {#snippet threadRow(t: Thread)}
   {@const picked = mail.checked.has(t.id)}
   {@const other = vipSenderFor(t)}
+  {@const preview = snippetText(t.snippet)}
   <button
     class="row list-row"
     class:sel={mail.selectedThread === t.id}
@@ -549,7 +551,7 @@
         {/if}
         {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
       </div>
-      {#if t.snippet}<p class="snippet">{t.snippet}</p>{/if}
+      {#if preview}<p class="snippet">{preview}</p>{/if}
     </div>
   </button>
 {/snippet}

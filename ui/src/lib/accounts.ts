@@ -247,6 +247,30 @@ export function providerLabel(baseUrl: string | null | undefined): string {
   }
 }
 
+/** Where the assistant's requests go when no base URL is set --
+ *  `Provider::OpenAi.default_base_url()` in `crates/everyday-core/src/agent.rs`. */
+const OPENAI_BASE_URL = 'https://api.openai.com/v1'
+
+/**
+ * What `Account.assistantProviderAcknowledged` holds once somebody has said
+ * yes to "your mail will be sent to …": the endpoint the assistant actually
+ * reaches, spelt exactly as `LLMProviderConfig::acknowledgement_name` spells
+ * it in Rust (`crates/everyday-core/src/agent.rs`) -- the base URL with its
+ * trailing slashes taken off, or OpenAI's own when there is none. The
+ * assistant's mail tools, and the mail assistant switches below them, are
+ * offered only on an account whose acknowledgement equals that string.
+ *
+ * Not `providerLabel`, which is what the sentence says. Storing the label
+ * meant no acknowledgement given in this interface ever matched what the
+ * backend compared it with, so the assistant was never offered mail at all,
+ * whatever was ticked. Both sides pin the same examples in a test --
+ * `accounts.test.mjs` here, `acknowledgement_name_is_the_endpoint` there --
+ * so changing one without the other fails.
+ */
+export function acknowledgementName(baseUrl: string | null | undefined): string {
+  return (baseUrl ?? '').replace(/\/+$/, '') || OPENAI_BASE_URL
+}
+
 /** Does this auth method need a password, rather than an OAuth token? */
 export function isPasswordAuth(auth: AuthMethod): auth is { type: 'password'; username: string } {
   return auth.type === 'password'

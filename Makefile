@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build test test-speech test-postgres test-imap test-smtp test-mail test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -54,10 +54,36 @@ ui: $(UI_DIR)/node_modules ## Run the interface alone in a browser, on its mock 
 	@echo "The interface falls back to an in-memory backend. Demo password: everyday"
 	npm --prefix $(UI_DIR) run dev
 
-build: $(UI_DIR)/node_modules ## Build the release desktop app and installers
-	cd $(APP_DIR) && cargo tauri build
+# Where cargo puts what it builds -- CARGO_TARGET_DIR moves it out of the
+# checkout, which `desktop-entry` below looks for too.
+TARGET_DIR := $(or $(CARGO_TARGET_DIR),target)
+
+# Two builds, for two different people. `build` is the app for this machine,
+# run in place (`make desktop-entry` points the desktop at it): optimised
+# under the `release` profile, which is tuned to build quickly, and no
+# installers, which take longer to pack than the app takes to rebuild and
+# which nobody running it in place opens. `dist` is what a release ships --
+# the `dist` profile's LTO and every installer this platform makes, the
+# same command `.github/workflows/release.yml` runs.
+#
+# Both run more compilers at once than .cargo/config.toml's four. That cap
+# is for the builds that run under a memory ceiling (`run`, `test`); these
+# do not, and most of a rebuild is a chain of three crates -- core, service,
+# the app -- each of whose sixteen codegen units waits on a free job. With
+# eight, a rebuild after a change to everyday-core took 160 s rather than
+# 223 s, and peaked at 5.6 GB, under what four jobs had needed under the
+# old profile. `make build JOBS=4` on a machine with less to spare.
+JOBS ?= 8
+
+build: $(UI_DIR)/node_modules ## Build the desktop app to run on this machine
+	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build --no-bundle
 	@echo
-	@echo "Bundles are under target/release/bundle/"
+	@echo "Built $(TARGET_DIR)/release/everyday-app"
+
+dist: $(UI_DIR)/node_modules ## Build the installers the way a release does (slow)
+	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build -- --profile dist
+	@echo
+	@echo "Installers are under $(TARGET_DIR)/dist/bundle/"
 
 test: ## Run the test suite under a memory cap
 	./scripts/test.sh $(ARGS)

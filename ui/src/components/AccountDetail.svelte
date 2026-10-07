@@ -21,6 +21,7 @@
     MAIL_AI_SWITCHES,
     PROVIDER_LABELS,
     SYNC_INTERVALS,
+    acknowledgementName,
     providerLabel,
     statusLabel,
   } from '../lib/accounts'
@@ -47,6 +48,9 @@
 
   const original = $derived(accounts.account(id))
   const providerName = $derived(providerLabel(agent.settings?.providerConfig.baseUrl ?? null))
+  /** What a tick is stored as, and compared with -- see `acknowledgementName`.
+   *  `providerName` is only what the sentence beside the checkbox says. */
+  const providerAck = $derived(acknowledgementName(agent.settings?.providerConfig.baseUrl ?? null))
 
   // ── Calendars ────────────────────────────────────────────────────────
   //
@@ -604,7 +608,7 @@
         assistantAccess={original.assistantAccess}
         mcpAccess={original.mcpAccess}
         {providerName}
-        acknowledged={original.assistantProviderAcknowledged === providerName}
+        acknowledged={original.assistantProviderAcknowledged === providerAck}
         onchange={(caller: AgentCallerKind, access: AgentMailAccess) =>
           void accounts.setAccess(original.id, caller, access)}
         onacknowledge={(ack: boolean) =>
@@ -612,10 +616,14 @@
             .saveAccount(
               $state.snapshot({
                 ...original,
-                assistantProviderAcknowledged: ack ? providerName : null,
+                assistantProviderAcknowledged: ack ? providerAck : null,
               }),
             )
-            .then(() => accounts.refresh())}
+            .then(() => accounts.refresh())
+            .catch((e) => {
+              notice = errorMessage(e)
+              void accounts.refresh()
+            })}
       />
     </section>
 
@@ -628,7 +636,7 @@
         assistant's own tools do.
       </p>
       {#each MAIL_AI_SWITCHES as sw (sw.key)}
-        {@const acknowledged = original.assistantProviderAcknowledged === providerName}
+        {@const acknowledged = original.assistantProviderAcknowledged === providerAck}
         <label class="mailai-row" class:disabled={!acknowledged}>
           <input
             type="checkbox"
