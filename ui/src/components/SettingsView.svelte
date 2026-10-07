@@ -286,23 +286,23 @@
      draws its own aside rather than being handed one. -->
 <aside class="nav">
   <div class="head">
-    <h2>Settings</h2>
+    <h2 class="pane-title">Settings</h2>
     <button class="ghost" onclick={() => panels.closeSettings()} title="Close settings">
       <Icon name="close" size={16} />
     </button>
   </div>
-  <nav class="scroll tabs" aria-label="Settings sections">
+  <nav class="scroll side-nav tabs" aria-label="Settings sections">
     {#each shown as t (t.id)}
       <button
-        class="tab"
-        class:on={tab === t.id}
+        class="side-row tab"
+        class:sel={tab === t.id}
         class:sub={t.sub}
         aria-current={tab === t.id ? 'page' : undefined}
         onclick={() => panels.openSettings(t.id)}
       >
-        <Icon name={t.icon} size={t.sub ? 14 : 16} />
-        <span class="label">{t.label}</span>
-        {#if count(t.id) > 0}<span class="count">{count(t.id)}</span>{/if}
+        <span class="side-icon"><Icon name={t.icon} size={t.sub ? 14 : 16} /></span>
+        <span class="side-text">{t.label}</span>
+        {#if count(t.id) > 0}<span class="side-count strong">{count(t.id)}</span>{/if}
       </button>
     {/each}
   </nav>
@@ -687,16 +687,13 @@
   }
   .head h2 {
     flex: 1;
-    margin: 0;
-    font-size: var(--text-md);
-    font-weight: 650;
   }
   .ghost {
     display: grid;
     place-items: center;
     width: 30px;
     height: 30px;
-    border-radius: var(--radius-sm);
+    border-radius: 50%;
     color: var(--fg-subtle);
   }
   .ghost:hover {
@@ -707,56 +704,20 @@
   /* A rail rather than a strip of tabs across the top: the labels are words
      rather than icons, there is room for a fourth now under Assistant, and
      it is the shape every other app's own nav column already draws in. */
+  /* The rows are every app's sidebar rows -- app.css's "Sidebars" -- so
+     a tab picked here reads the way a folder picked in Mail does. What is
+     Settings' own: the column itself, and the Assistant's sub-sections set
+     in under it, a size smaller. */
   .tabs {
-    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: var(--sp-3);
+    padding-top: var(--sp-3);
   }
-  .tab {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    height: var(--row-h);
-    padding: 0 var(--sp-3);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    color: var(--fg-muted);
-    text-align: left;
-  }
-  .tab:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .tab.on {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 600;
-  }
-  .tab.sub {
-    gap: var(--sp-2);
-    height: calc(var(--row-h) - 4px);
+  .side-row.sub {
+    height: calc(var(--side-row-h) - 4px);
     padding-left: calc(var(--sp-3) + 10px);
     font-size: var(--text-sm);
-  }
-  .label {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-  .count {
-    flex: none;
-    min-width: 18px;
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: var(--accent);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    text-align: center;
   }
 
   /* The page's own flex item, next to `.nav` the way every other app's main

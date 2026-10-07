@@ -390,7 +390,7 @@
   }
 </script>
 
-<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   {#if mailAccounts.length === 0}
     <p class="hint">
       No mail accounts yet. <button class="link" onclick={() => panels.openSettings('accounts')}
@@ -401,16 +401,16 @@
 
   {#snippet mailboxRow(row: Row, nested = false)}
     <button
-      class="row"
+      class="side-row"
       class:sel={row.sel}
       class:nested
       onclick={row.onclick}
       oncontextmenu={(e) => menu.show(e, mailboxMenu(row))}
     >
-      <span class="icon"
+      <span class="side-icon"
         ><Icon name={row.icon} size={16} filled={row.pseudo && row.icon === 'star'} /></span
       >
-      <span class="text">{row.label}</span>
+      <span class="side-text">{row.label}</span>
       {#if row.role === 'drafts' && pendingSends > 0}
         <span
           class="ghost-badge"
@@ -420,7 +420,7 @@
         </span>
       {/if}
       {#if row.count > 0}
-        <span class="count" class:strong={row.role === 'inbox'}>{row.count}</span>
+        <span class="side-count" class:strong={row.role === 'inbox'}>{row.count}</span>
       {/if}
     </button>
   {/snippet}
@@ -442,10 +442,10 @@
 
   {#if unifiedRows.length > 0}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="head" oncontextmenu={(e) => menu.show(e, navMenu())}>
+    <div class="side-head" oncontextmenu={(e) => menu.show(e, navMenu())}>
       <span class="eyebrow">All accounts</span>
       <button
-        class="sync-now"
+        class="side-add sync-now"
         title="Sync every account"
         aria-label="Sync every account"
         onclick={() => void mail.syncAll(mailAccounts.map((a) => a.id))}
@@ -460,7 +460,7 @@
     <!-- With every inbox already above, each account folds to one row --
          its own folders and labels a click away rather than three copies of
          Inbox, Drafts and Sent stacked down the sidebar. -->
-    <div class="head">
+    <div class="side-head">
       <span class="eyebrow">Accounts</span>
     </div>
     {#each mailAccounts as account (account.id)}
@@ -480,11 +480,11 @@
         >
           <span class="chev" class:down={open}><Icon name="chevron" size={12} /></span>
           <span class="acct-dot" style:background={accountColor(account.id, accountIds)}></span>
-          <span class="text">{account.displayName || account.address}</span>
-          {#if !open && inbox > 0}<span class="count strong">{inbox}</span>{/if}
+          <span class="side-text">{account.displayName || account.address}</span>
+          {#if !open && inbox > 0}<span class="side-count strong">{inbox}</span>{/if}
         </button>
         <button
-          class="sync-now"
+          class="side-add sync-now"
           title="Sync now"
           aria-label="Sync {account.displayName || account.address} now"
           onclick={() => void mail.syncNow(account.id)}
@@ -502,10 +502,13 @@
   {:else}
     {#each mailAccounts as account (account.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="head" oncontextmenu={(e) => menu.show(e, tidyMenu(accountItems(account.id)))}>
+      <div
+        class="side-head"
+        oncontextmenu={(e) => menu.show(e, tidyMenu(accountItems(account.id)))}
+      >
         <span class="eyebrow">{account.displayName || account.address}</span>
         <button
-          class="sync-now"
+          class="side-add sync-now"
           title="Sync now"
           aria-label="Sync now"
           onclick={() => void mail.syncNow(account.id)}
@@ -522,118 +525,31 @@
 </nav>
 
 <style>
-  .nav {
-    flex: 1;
-    padding: var(--sp-1) var(--sp-3) var(--sp-4);
-  }
+  /* The rows, headings and counts are the shared sidebar's -- see app.css's
+     "Sidebars". What is Mail's own: a nested account's folders set in under
+     its name, the per-account sync button that shows on hover, and the
+     account rows that fold. */
 
-  .head {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-1);
-    padding: var(--sp-5) var(--sp-3) 6px;
-  }
-  .eyebrow {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 11px;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
-  }
-  .sync-now {
-    flex: none;
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    color: var(--fg-faint);
-    opacity: 0;
-    transition: opacity var(--fast) var(--ease);
-  }
-  .head:hover .sync-now,
-  .account:hover .sync-now,
-  .sync-now:focus-visible {
-    opacity: 1;
-  }
-  .sync-now:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    height: 34px;
-    padding: 0 var(--sp-3);
-    border-radius: var(--radius);
-    font-size: var(--text-base);
-    color: var(--fg-muted);
-    text-align: left;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
   /* An account's own folders, set in under its name. */
-  .row.nested {
+  .side-row.nested {
     padding-left: 30px;
-  }
-  .row:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  /* The open folder: the accent, tinted, the way the open thread in the
-     list beside it is -- the two selections read as one. */
-  .row.sel {
-    background: var(--bg-selected);
-    color: var(--accent);
-    font-weight: 620;
-  }
-  .icon {
-    width: 18px;
-    height: 18px;
-    flex: none;
-    display: grid;
-    place-items: center;
-  }
-  .text {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .count {
-    flex: none;
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    font-variant-numeric: tabular-nums;
-  }
-  /* An inbox's unread count is the number worth seeing at a glance; every
-     other folder's stays quiet beside it. */
-  .count.strong {
-    min-width: 20px;
-    padding: 1px 6px;
-    border-radius: 999px;
-    background: color-mix(in oklab, var(--accent) 14%, transparent);
-    color: var(--accent);
-    font-weight: 650;
-    text-align: center;
-  }
-  .row.sel .count {
-    color: var(--accent);
   }
   .ghost-badge {
     display: flex;
     color: var(--accent);
     opacity: 0.85;
+  }
+
+  /* Sync now, per heading and per account: shown on hover, since every
+     account already syncs on its own and this is the impatient path. */
+  .sync-now {
+    opacity: 0;
+    transition: opacity var(--fast) var(--ease);
+  }
+  .side-head:hover .sync-now,
+  .account:hover .sync-now,
+  .sync-now:focus-visible {
+    opacity: 1;
   }
 
   /* ── An account, folded or not ──────────────────────────────────── */
@@ -654,8 +570,8 @@
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    height: 34px;
-    padding: 0 var(--sp-2) 0 var(--sp-2);
+    height: var(--side-row-h);
+    padding: 0 var(--sp-2);
     font-size: var(--text-base);
     font-weight: 600;
     color: var(--fg);
@@ -696,7 +612,7 @@
   }
 
   .hint {
-    padding: var(--sp-3) var(--sp-2);
+    padding: var(--sp-3);
     color: var(--fg-faint);
     font-size: var(--text-sm);
   }

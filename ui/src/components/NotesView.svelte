@@ -417,7 +417,9 @@
      The journal wraps its editor in a `<main class="main">` that carries
      both; this one is dropped straight into the window's flex row, so
      without them it took its width from its own content -- about half a
-     wide window, with the rest of the row left empty to the right of it. */
+     wide window, with the rest of the row left empty to the right of it.
+     No background of its own: the raised surface every app sits on is
+     App.svelte's. */
   .editor {
     position: relative;
     display: flex;
@@ -425,7 +427,6 @@
     min-width: 0;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-raised);
   }
   .canvas {
     flex: 1;
@@ -482,14 +483,15 @@
     flex: 1;
   }
 
-  /* Quiet until wanted: deleting an entry should be findable, not inviting. */
+  /* Quiet until wanted: deleting an entry should be findable, not inviting.
+     A pill, small, like every other button. */
   .delete {
     display: flex;
     align-items: center;
     gap: 5px;
     height: 22px;
     padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     color: var(--fg-faint);
     font-size: var(--text-xs);
     transition:
@@ -522,7 +524,6 @@
     flex: 1;
     min-width: 0;
     height: 100%;
-    background: var(--bg-raised);
   }
 
   /* ── Prose ───────────────────────────────────────────────────────────

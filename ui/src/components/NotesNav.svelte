@@ -107,21 +107,24 @@
   }}
 />
 
-<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   {#if notes.tags.length > 0}
-    <div class="tags">
-      <button class="chip" class:on={notes.tag === null} onclick={() => void notes.setTag(null)}>
+    <!-- The shared filter bar (app.css's "Filter bars"): one tag at a time,
+         or All, which is the same single choice every other filter row
+         makes. -->
+    <div class="filters tags">
+      <button class="filter" class:on={notes.tag === null} onclick={() => void notes.setTag(null)}>
         All
       </button>
       {#each notes.tags as tag (tag)}
-        <button class="chip" class:on={notes.tag === tag} onclick={() => void notes.setTag(tag)}>
+        <button class="filter" class:on={notes.tag === tag} onclick={() => void notes.setTag(tag)}>
           {tag}
         </button>
       {/each}
     </div>
   {/if}
 
-  <div class="head">
+  <div class="side-head">
     <span class="eyebrow">
       {#if notes.query.trim()}
         {plural(notes.results.length, 'result')}
@@ -131,7 +134,7 @@
     </span>
     {#if meetings.supported}
       <button
-        class="plus"
+        class="side-add"
         title="Record a call"
         aria-label="Record a call"
         onclick={() => (recordSheet = true)}
@@ -139,7 +142,12 @@
         <Icon name="mic" size={15} />
       </button>
     {/if}
-    <button class="plus" title="New note" aria-label="New note" onclick={() => void notes.create()}>
+    <button
+      class="side-add"
+      title="New note"
+      aria-label="New note"
+      onclick={() => void notes.create()}
+    >
       <Icon name="plus" size={15} />
     </button>
   </div>
@@ -166,7 +174,7 @@
     {:else}
       {#each notes.results as hit (hit.id)}
         <button
-          class="row"
+          class="side-row hit"
           class:sel={notes.selected === hit.id}
           onclick={() => void notes.openNote(hit.id)}
         >
@@ -201,7 +209,7 @@
            and a button cannot contain a button. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
-        class="row noterow"
+        class="side-row noterow"
         class:sel={notes.selected === note.id}
         oncontextmenu={(e) => menu.show(e, noteMenu(note))}
       >
@@ -255,7 +263,7 @@
       writes is titled whatever you give it here.
     </p>
     <form
-      class="row"
+      class="record-form"
       onsubmit={(e) => {
         e.preventDefault()
         void startRecordCall()
@@ -281,85 +289,32 @@
 {/if}
 
 <style>
-  .nav {
-    flex: 1;
-    padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
+  /* The heading, its buttons and the rows' hover and selection are the
+     shared sidebar's -- see app.css's "Sidebars". What is the notes app's
+     own: the tag filter's place in a sidebar, rows two lines tall, the pin
+     and the proposed-deletion chip on a row, and the record-a-call sheet. */
 
+  /* The shared filter bar, set a little apart from the heading above. Its
+     track is the sidebar's own sunken colour, so here it takes a shade of
+     the hover tint instead -- otherwise the chips float as loose words. */
   .tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--sp-1);
-    padding: var(--sp-3) var(--sp-1) 0;
-  }
-
-  .chip {
-    padding: 2px var(--sp-2);
-    border-radius: 999px;
-    background: var(--bg-hover);
-    color: var(--fg-muted);
-    font-size: var(--text-xs);
-  }
-
-  .chip:hover {
-    color: var(--fg);
-  }
-
-  .chip.on {
+    margin-top: var(--sp-3);
     background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
   }
 
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-
-  .plus {
-    display: grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-
-  .plus:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-
-  .row {
-    display: flex;
+  /* Two lines -- the title, and a line of the note under it -- so these rows
+     are as tall as what is in them rather than the sidebar's one line. */
+  .side-row.hit {
+    height: auto;
     align-items: flex-start;
-    gap: var(--sp-2);
-    width: 100%;
-    padding: var(--sp-2);
-    border-radius: var(--radius-sm);
-    color: var(--fg-muted);
-    text-align: left;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-
-  .row:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-
-  .row.sel {
-    background: var(--bg-active);
-    color: var(--fg);
+    padding: var(--sp-2) var(--sp-3);
   }
 
   /* The note row proper is a `div`, not a button -- see the template's own
      comment -- so its padding moves to the button inside it and the row
-     itself keeps only the hover and selected backgrounds above. */
-  .row.noterow {
+     itself keeps only the shared row's hover and selected backgrounds. */
+  .side-row.noterow {
+    height: auto;
     padding: 0;
   }
   .rowbody {
@@ -368,7 +323,7 @@
     display: flex;
     align-items: flex-start;
     gap: var(--sp-2);
-    padding: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
     background: none;
     border: none;
     color: inherit;
@@ -380,7 +335,7 @@
     display: flex;
     align-items: center;
     flex: none;
-    padding-right: var(--sp-2);
+    padding-right: var(--sp-3);
   }
 
   .pin {
@@ -405,17 +360,25 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  /* The open note's title takes the accent, as every sidebar's open row's
+     name does. */
+  .side-row.sel .title {
+    color: inherit;
+  }
 
+  /* Its own weight, so the open row's heavier one -- meant for a row's one
+     name -- does not embolden a line of the note's text. */
   .sub {
     overflow: hidden;
     color: var(--fg-faint);
     font-size: var(--text-sm);
+    font-weight: 400;
     white-space: nowrap;
     text-overflow: ellipsis;
   }
 
   .hint {
-    padding: var(--sp-3) var(--sp-2);
+    padding: var(--sp-3);
     color: var(--fg-faint);
     font-size: var(--text-sm);
   }
@@ -427,12 +390,12 @@
     padding-top: var(--sp-2);
   }
 
-  .row {
+  .record-form {
     display: flex;
     gap: var(--sp-2);
     margin-top: var(--sp-3);
   }
-  .row input {
+  .record-form input {
     flex: 1;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);

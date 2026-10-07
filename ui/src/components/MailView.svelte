@@ -354,9 +354,9 @@
 
 <section class="list">
   <div class="top">
-    <div class="titles">
-      <span class="heading">{heading}</span>
-      {#if unreadLine}<span class="subline">{unreadLine}</span>{/if}
+    <div class="pane-titles">
+      <span class="pane-title">{heading}</span>
+      {#if unreadLine}<span class="pane-sub">{unreadLine}</span>{/if}
     </div>
     <button
       class="plus"
@@ -391,37 +391,39 @@
     <MailScheduled accountId={mail.viewingScheduledFor} />
   {:else}
     {#if showTabs && !mail.searchQuery.trim()}
-      <!-- One chip per category, the open one named and the rest an icon
-           with its count -- six labelled tabs and their counts are wider
-           than the list column, and wrapped onto two rows they read as a
-           paragraph rather than a control. Every chip is still named, in
-           its title and to assistive technology. -->
-      <div class="tabs" role="tablist" aria-label="Mail categories">
-        {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
-          {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
-          {@const on = mail.category === tab.key}
-          <button
-            class="chip"
-            role="tab"
-            aria-selected={on}
-            aria-label={tab.label}
-            class:sel={on}
-            title={count.threads > 0
-              ? `${tab.label}: ${plural(count.threads, 'conversation')}, ${count.unread.toLocaleString()} unread`
-              : tab.label}
-            onclick={() => mail.setCategory(tab.key)}
-          >
-            <Icon name={TAB_ICONS[tab.key ?? 'all']} size={15} />
-            {#if on}<span class="chip-label">{tab.label}</span>{/if}
-            {#if count.threads > 0 && !on}
-              <span class="badge" class:has-unread={count.unread > 0}
-                >{compactCount(count.threads)}</span
-              >
-            {:else if count.threads > 0}
-              <span class="chip-count">{compactCount(count.threads)}</span>
-            {/if}
-          </button>
-        {/each}
+      <!-- The shared filter bar (app.css's "Filter bars"), as Todo's and the
+           library's are: the open category named, the rest an icon and its
+           count -- six labelled tabs and their counts are wider than the
+           list column, and wrapped onto two rows they read as a paragraph
+           rather than a control. Every chip is still named, in its title
+           and to assistive technology, and its count turns the accent when
+           anything under it is unread. -->
+      <div class="tabs">
+        <div class="filters" role="tablist" aria-label="Mail categories">
+          {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
+            {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
+            {@const on = mail.category === tab.key}
+            <button
+              class="filter"
+              role="tab"
+              aria-selected={on}
+              aria-label={tab.label}
+              class:on
+              title={count.threads > 0
+                ? `${tab.label}: ${plural(count.threads, 'conversation')}, ${count.unread.toLocaleString()} unread`
+                : tab.label}
+              onclick={() => mail.setCategory(tab.key)}
+            >
+              <Icon name={TAB_ICONS[tab.key ?? 'all']} size={15} />
+              {#if on}<span>{tab.label}</span>{/if}
+              {#if count.threads > 0}
+                <span class="n" class:has-unread={count.unread > 0}
+                  >{compactCount(count.threads)}</span
+                >
+              {/if}
+            </button>
+          {/each}
+        </div>
       </div>
     {/if}
 
@@ -504,7 +506,7 @@
   {@const picked = mail.checked.has(t.id)}
   {@const other = vipSenderFor(t)}
   <button
-    class="row"
+    class="row list-row"
     class:sel={mail.selectedThread === t.id}
     class:checked={picked}
     class:unread={t.unreadCount > 0}
@@ -565,27 +567,27 @@
     <div class="bulk">
       <h2>{plural(mail.checked.size, 'conversation')} selected</h2>
       <div class="bulk-actions">
-        <button class="bulk-btn" onclick={() => void mail.archiveMany(mail.targets)}>
+        <button class="btn btn-outline" onclick={() => void mail.archiveMany(mail.targets)}>
           <Icon name="layers" size={14} /> Archive <kbd>E</kbd>
         </button>
-        <button class="bulk-btn" onclick={() => void mail.trashMany(mail.targets)}>
+        <button class="btn btn-outline" onclick={() => void mail.trashMany(mail.targets)}>
           <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
         </button>
         {#if pickedThreads.some((t) => t.unreadCount > 0)}
-          <button class="bulk-btn" onclick={() => void mail.markReadMany(mail.targets)}>
+          <button class="btn btn-outline" onclick={() => void mail.markReadMany(mail.targets)}>
             <Icon name="check" size={14} /> Mark read <kbd>I</kbd>
           </button>
         {:else}
-          <button class="bulk-btn" onclick={() => void mail.markUnreadMany(mail.targets)}>
+          <button class="btn btn-outline" onclick={() => void mail.markUnreadMany(mail.targets)}>
             <Icon name="check" size={14} /> Mark unread <kbd>U</kbd>
           </button>
         {/if}
         {#if !inSnoozedView}
-          <button class="bulk-btn" onclick={() => (mail.wantsSnooze = mail.targets)}>
+          <button class="btn btn-outline" onclick={() => (mail.wantsSnooze = mail.targets)}>
             <Icon name="clock" size={14} /> Snooze… <kbd>H</kbd>
           </button>
         {/if}
-        <button class="bulk-btn" onclick={(e) => menu.show(e, bulkMenu())}> More… </button>
+        <button class="btn btn-outline" onclick={(e) => menu.show(e, bulkMenu())}> More… </button>
       </div>
       <p class="bulk-hint">
         Shift-click picks a run of threads, {navigator.userAgent.includes('Mac')
@@ -607,7 +609,7 @@
       <!-- The toolbar: what to do with this thread, grouped the way the
            hands reach for it -- answer it, put it away, mark it -- each group
            one pill, so a row of twelve icons reads as three decisions. -->
-      <div class="toolbar" role="toolbar" aria-label="Thread actions">
+      <div class="thread-toolbar" role="toolbar" aria-label="Thread actions">
         <button
           class="tool back"
           onclick={() => mail.closeThread()}
@@ -823,39 +825,15 @@
     flex: none;
     display: flex;
     flex-direction: column;
-    /* The raised surface, a step lighter than the sidebar beside it: the
-       list and the reading pane are the page, the sidebar the margin. */
-    background: var(--bg-raised);
     border-right: 1px solid var(--border);
   }
   .top {
     display: flex;
     align-items: center;
     gap: 2px;
-    min-height: 64px;
+    min-height: var(--header-h);
     padding: var(--sp-2) var(--sp-3) var(--sp-1) var(--sp-5);
     flex: none;
-  }
-  .titles {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .heading {
-    font-size: var(--text-lg);
-    font-weight: 680;
-    letter-spacing: -0.015em;
-    line-height: var(--leading-tight);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .subline {
-    font-size: var(--text-xs);
-    color: var(--fg-subtle);
-    font-variant-numeric: tabular-nums;
   }
   .plus {
     display: grid;
@@ -929,72 +907,34 @@
     background: var(--bg-hover);
   }
 
-  /* ── The category chips ─────────────────────────────────────────── */
+  /* ── The category filter ────────────────────────────────────────── */
 
+  /* The shared bar, spread across the column: six chips share its width
+     rather than wrapping, the unchosen ones narrowed to an icon and a
+     count. */
   .tabs {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-    padding: var(--sp-1) var(--sp-4) var(--sp-3);
     flex: none;
+    padding: var(--sp-1) var(--sp-4) var(--sp-3);
   }
-  .chip {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
+  .tabs .filters {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+  }
+  .tabs .filter {
+    flex: 1 1 auto;
     justify-content: center;
-    gap: 6px;
-    min-width: 40px;
-    height: 32px;
-    padding: 0 11px;
-    border-radius: 999px;
-    background: var(--bg-sunken);
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    font-weight: 600;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
+    gap: 5px;
+    padding: 0 6px;
   }
-  .chip:hover {
-    background: var(--bg-active);
-    color: var(--fg);
+  .tabs .filter.on {
+    padding: 0 var(--sp-3);
   }
-  .chip.sel {
-    padding: 0 14px;
-    background: var(--accent);
-    color: var(--fg-on-accent);
-    box-shadow: var(--shadow-sm);
+  .tabs .filter .n.has-unread {
+    color: var(--accent);
+    font-weight: 650;
   }
-  .chip-count {
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-    opacity: 0.85;
-  }
-  /* An unchosen chip's count, pinned to its corner the way an app icon's
-     is: grey when everything under it is read, the accent when anything
-     is not. */
-  .badge {
-    position: absolute;
-    top: -5px;
-    right: -5px;
-    min-width: 17px;
-    height: 17px;
-    padding: 0 4px;
-    border-radius: 999px;
-    border: 2px solid var(--bg-raised);
-    background: var(--fg-faint);
-    color: var(--bg-raised);
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 13px;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-  }
-  .badge.has-unread {
-    background: var(--accent);
-    color: var(--fg-on-accent);
+  .tabs .filter.on .n.has-unread {
+    color: inherit;
   }
 
   /* ── Rows ───────────────────────────────────────────────────────── */
@@ -1018,19 +958,13 @@
     color: var(--fg-faint);
   }
 
-  /* A card inset from the column's edges, so the selection reads as a
-     thing picked up rather than a stripe painted across the list. */
+  /* Each row is the shared `.list-row` card (app.css's "Lists"); what is
+     here is the thread row's own layout inside it. */
   .row {
-    position: relative;
     display: flex;
     align-items: flex-start;
     gap: var(--sp-3);
-    width: calc(100% - var(--sp-4));
-    margin: 0 var(--sp-2);
     padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
-    border-radius: var(--radius-lg);
-    text-align: left;
-    transition: background var(--fast) var(--ease);
   }
   /* The hairline between rows, starting under the text rather than the
      avatar -- the column of faces stays one unbroken edge. */
@@ -1042,12 +976,6 @@
     bottom: 0;
     height: 1px;
     background: var(--border);
-  }
-  .row:hover {
-    background: var(--bg-hover);
-  }
-  .row.sel {
-    background: var(--bg-selected);
   }
   .row.sel::after,
   .row:hover::after {
@@ -1202,7 +1130,6 @@
     min-width: 360px;
     display: flex;
     flex-direction: column;
-    background: var(--bg-raised);
   }
   .thread-head {
     display: flex;
@@ -1210,8 +1137,9 @@
     flex: none;
   }
   /* Wraps rather than clips: on a narrow window the third group drops to a
-     second line instead of losing its last button off the edge. */
-  .toolbar {
+     second line instead of losing its last button off the edge. Its own
+     name, not the shared `.toolbar`, which is the filter bars' row. */
+  .thread-toolbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -1402,22 +1330,6 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: var(--sp-2);
-  }
-  .bulk-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    height: 36px;
-    padding: 0 var(--sp-4) 0 var(--sp-3);
-    border: 1px solid var(--border-strong);
-    border-radius: 999px;
-    background: var(--bg-raised);
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--fg);
-  }
-  .bulk-btn:hover {
-    background: var(--bg-hover);
   }
   .bulk kbd {
     padding: 0 4px;

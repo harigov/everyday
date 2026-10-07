@@ -373,13 +373,13 @@
 
           {#if isLast}
             <div class="actions">
-              <button class="btn" onclick={() => mail.reply(message.id, false)}>
+              <button class="btn btn-outline" onclick={() => mail.reply(message.id, false)}>
                 <Icon name="reply" size={15} /> Reply
               </button>
-              <button class="btn" onclick={() => mail.reply(message.id, true)}>
+              <button class="btn btn-outline" onclick={() => mail.reply(message.id, true)}>
                 <Icon name="reply-all" size={15} /> Reply all
               </button>
-              <button class="btn" onclick={() => mail.forward(message.id)}>
+              <button class="btn btn-outline" onclick={() => mail.forward(message.id)}>
                 <Icon name="forward" size={15} /> Forward
               </button>
               <!-- Quick replies and "Write with AI…", in the same row as the
@@ -677,24 +677,5 @@
     align-items: center;
     gap: var(--sp-2);
     padding-top: var(--sp-4);
-  }
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    height: 34px;
-    padding: 0 var(--sp-4) 0 var(--sp-3);
-    border: 1px solid var(--border-strong);
-    border-radius: 999px;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    color: var(--fg-muted);
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .btn:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
   }
 </style>

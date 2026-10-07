@@ -157,7 +157,7 @@
 <div class="wrap" style="--depth: {depth}">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="row"
+    class="row list-row"
     class:sel={todo.selectedTask === task.id}
     class:done={task.status === 'done'}
     class:cancelled={task.status === 'cancelled'}
@@ -394,20 +394,18 @@
     padding-left: calc(var(--depth) * 28px);
   }
 
+  /* The card, its hover and the open one's tint are the shared `.list-row`
+     in app.css. Not its inset, though: `TaskList` already pads the column,
+     which is what lines a task up with the capture line and the section
+     headings above it, and a second inset on top would push every row in
+     past both. */
   .row {
-    position: relative;
     display: flex;
     align-items: flex-start;
     gap: var(--sp-2);
-    border-radius: var(--radius-sm);
+    width: auto;
+    margin-inline: 0;
     padding: var(--sp-2) var(--sp-2);
-    transition: background var(--fast) var(--ease);
-  }
-  .row:hover {
-    background: var(--bg-hover);
-  }
-  .row.sel {
-    background: var(--bg-selected);
   }
 
   /* In the gutter to the left of the tick, so showing it moves nothing. */

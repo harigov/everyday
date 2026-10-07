@@ -75,39 +75,42 @@
   }
 </script>
 
-<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <button
-    class="row new"
+    class="side-row new"
     onclick={() => void agent.startThread()}
     disabled={agent.busy || !agent.ready}
   >
-    <span class="icon"><Icon name="plus" /></span>
-    <span class="text">New conversation</span>
+    <span class="side-icon"><Icon name="plus" /></span>
+    <span class="side-text">New conversation</span>
   </button>
 
   {#if (app.supportsRoutines && assistant.unseen > 0) || (app.supportsProposals && proposals.unseen > 0)}
-    <div class="head"><span class="eyebrow">While you were away</span></div>
+    <div class="side-head"><span class="eyebrow">While you were away</span></div>
+    <!-- Badged counts: these rows are here only because something is
+         unseen, and they are the app bar's count broken down -- the number
+         somebody pressed Assistant to find. -->
     {#if app.supportsRoutines && assistant.unseen > 0}
-      <button class="row" onclick={() => assistant.setPane('runs')}>
-        <span class="icon"><Icon name="inbox" /></span>
-        <span class="text">What it did</span>
-        <span class="count">{assistant.unseen}</span>
+      <button class="side-row" onclick={() => assistant.setPane('runs')}>
+        <span class="side-icon"><Icon name="inbox" /></span>
+        <span class="side-text">What it did</span>
+        <span class="side-count strong">{assistant.unseen}</span>
       </button>
     {/if}
     {#if app.supportsProposals && proposals.unseen > 0}
-      <button class="row" onclick={() => assistant.setPane('proposals')}>
-        <span class="icon"><Icon name="tick" /></span>
-        <span class="text">Waiting for you</span>
-        <span class="count">{proposals.unseen}</span>
+      <button class="side-row" onclick={() => assistant.setPane('proposals')}>
+        <span class="side-icon"><Icon name="tick" /></span>
+        <span class="side-text">Waiting for you</span>
+        <span class="side-count strong">{proposals.unseen}</span>
       </button>
     {/if}
   {/if}
 
   {#each groups as group (group.label)}
-    <div class="head"><span class="eyebrow">{group.label}</span></div>
+    <div class="side-head"><span class="eyebrow">{group.label}</span></div>
     {#each group.threads as thread (thread.id)}
       <button
-        class="row"
+        class="side-row"
         class:sel={thread.id === agent.conversationId}
         onclick={() => void agent.openThread(thread.id)}
         oncontextmenu={(e) => {
@@ -116,9 +119,7 @@
         }}
         title={thread.title || 'Untitled'}
       >
-        <span class="text">
-          <span class="name">{thread.title || 'Untitled'}</span>
-        </span>
+        <span class="side-text">{thread.title || 'Untitled'}</span>
       </button>
     {/each}
   {:else}
@@ -127,9 +128,9 @@
 </nav>
 
 <footer class="foot">
-  <button class="row" onclick={() => assistant.setPane('routines')}>
-    <span class="icon"><Icon name="clock" size={15} /></span>
-    <span class="text">Routines and memory</span>
+  <button class="side-row" onclick={() => assistant.setPane('routines')}>
+    <span class="side-icon"><Icon name="clock" size={15} /></span>
+    <span class="side-text">Routines and memory</span>
   </button>
 </footer>
 
@@ -146,98 +147,40 @@
 {/if}
 
 <style>
-  .nav {
-    flex: 1;
-    padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
+  /* The headings, rows, counts and selection are the shared sidebar's --
+     see app.css's "Sidebars". What is the assistant's own: the New row, and
+     the foot under the list. */
 
-  .head {
-    display: flex;
-    align-items: center;
-    padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    width: 100%;
-    min-height: var(--row-h);
-    padding: var(--sp-1) var(--sp-2);
-    border-radius: var(--radius-sm);
-    color: var(--fg-muted);
-    font-size: var(--text-base);
-    text-align: left;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-
-  .row:hover:not(:disabled) {
-    background: var(--bg-hover);
+  /* New conversation: the one row here that makes something rather than
+     going somewhere, so it is drawn in full ink rather than the rows'
+     muted grey. */
+  .side-row.new {
     color: var(--fg);
+    font-weight: 550;
   }
-
-  .row:disabled {
+  /* Not while a reply is still coming in, or before there is a model to
+     talk to -- and no hover then, which would say it could be pressed. */
+  .side-row.new:disabled {
     opacity: 0.5;
-  }
-
-  .row.sel {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
-  }
-
-  .row.new {
-    color: var(--fg);
-    font-weight: 550;
-  }
-
-  .icon {
-    display: grid;
-    flex: none;
-    place-items: center;
-    width: 16px;
-    height: 16px;
-  }
-
-  .text {
-    display: grid;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .name {
-    overflow: hidden;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .count {
-    flex: none;
-    min-width: 18px;
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: var(--accent);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    text-align: center;
+    background: none;
   }
 
   .hint {
-    padding: var(--sp-4) var(--sp-2);
+    padding: var(--sp-4) var(--sp-3);
     color: var(--fg-faint);
     font-size: var(--text-sm);
   }
 
+  /* Under the list rather than in it, and quieter than it: the way into
+     Settings, not one of the conversations. Inset by the same amount as the
+     list above, so its row lines up with theirs. */
   .foot {
     flex: none;
-    padding: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
     border-top: 1px solid var(--border);
   }
 
-  .foot .row {
+  .foot .side-row {
     color: var(--fg-subtle);
     font-size: var(--text-sm);
   }

@@ -95,7 +95,7 @@
   /* Every header across every app. It was written as a bare `46px` in
      eight stylesheets, which is how a row of headings drifts out of
      alignment the first time one of them is adjusted. */
-  --header-h: 54px;
+  --header-h: 60px;
 
   /* The strip across the top of the window: the sidebar's fold button and
      the bar that searches and does things. Also the title bar -- on macOS
@@ -105,6 +105,9 @@
   /* One row in a sidebar, a menu or a list. Set here for the same reason as
      the header: the same target size in every app should be one number. */
   --row-h: 32px;
+  /* A sidebar's own rows -- `.side-row` in app.css -- a little taller than a
+     menu's: they are where every app starts, and are aimed at all day. */
+  --side-row-h: 34px;
 
   /* The floating assistant button, and the room anything in the bottom
      right-hand corner has to leave for it. A token rather than three

@@ -153,7 +153,7 @@
   }
 </script>
 
-<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <!-- ── The small month ─────────────────────────────────────────────── -->
   <!-- `isOn` below: `calendar.days` in month view is `monthGrid` -- the same
        42 days this very mini month draws -- so every day came back "on" and
@@ -177,12 +177,12 @@
   />
 
   <!-- ── Subscribed calendars ────────────────────────────────────────── -->
-  <div class="head">
+  <div class="side-head">
     <span class="eyebrow">Calendars</span>
     <div class="headtools">
       {#if anySubscribed}
         <button
-          class="plus"
+          class="side-add"
           class:spin={calendar.syncing}
           title="Refresh all calendars"
           aria-label="Refresh all calendars"
@@ -192,7 +192,7 @@
         </button>
       {/if}
       <button
-        class="plus"
+        class="side-add"
         title="Add a calendar"
         aria-label="Add a calendar"
         onclick={() => (adding = true)}
@@ -205,7 +205,7 @@
   {#snippet calendarRow(cal: CalendarInfo)}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="row"
+      class="side-row"
       class:hidden={!cal.visible}
       class:failed={!!cal.lastError}
       oncontextmenu={(e) => menu.show(e, calendarMenu(cal))}
@@ -219,7 +219,11 @@
       >
         <span class="swatch" aria-hidden="true"></span>
       </button>
-      <button class="text" title={originLabel(cal)} onclick={() => calendar.toggleVisible(cal.id)}>
+      <button
+        class="side-text"
+        title={originLabel(cal)}
+        onclick={() => calendar.toggleVisible(cal.id)}
+      >
         <span class="cname">{cal.name}</span>
         <span class="cmeta">
           {#if cal.lastError}
@@ -286,29 +290,22 @@
 {/if}
 
 <style>
-  /* The same metrics as the other navs: one sidebar, many apps, and a
-     row that changed height when you switched would read as three programs. */
-  .nav {
-    flex: 1;
-    padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
+  /* The rows, the heading and its buttons are the shared sidebar's -- see
+     "Sidebars" in app.css: one sidebar, many apps, and a row that changed
+     height when you switched would read as three programs. What is the
+     calendar's own: a row two lines tall, its colour swatch, the refresh
+     that spins, and the address heading over an account's calendars. */
 
   /* The small month itself is `MiniMonth.svelte`'s own styling now; see
      there for its layout. */
 
   /* ── The calendar list ──────────────────────────────────────────────── */
 
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
   /* One per account with calendar calendars on it -- a lighter touch than
-     `.head`'s, since it is a sub-grouping rather than a new section. */
+     `.side-head`'s, since it is a sub-grouping rather than a new section. */
   .account-group {
     display: block;
-    padding: var(--sp-3) var(--sp-2) var(--sp-1);
+    padding: var(--sp-3) var(--sp-3) var(--sp-1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -318,19 +315,7 @@
     align-items: center;
     gap: 2px;
   }
-  .plus {
-    width: 20px;
-    height: 20px;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-  .plus:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .plus.spin {
+  .side-add.spin {
     animation: turn 1.1s linear infinite;
     color: var(--accent);
   }
@@ -340,20 +325,19 @@
     }
   }
 
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    min-height: var(--row-h);
-    padding: 0 var(--sp-1) 0 2px;
-    border-radius: var(--radius-sm);
+  /* Two lines tall -- the name, and under it how many events or why it
+     could not be refreshed -- so the shared row's fixed height gives way to
+     a minimum. Both ends are buttons whose glyphs sit inset in their own
+     hit areas, so the row's padding is trimmed by about that much: the
+     swatch and the refresh icon then line up with the other sidebars'
+     icons and counts, and the name with their names. */
+  .side-row {
+    height: auto;
+    min-height: var(--side-row-h);
+    padding-inline: var(--sp-2);
   }
-  .row:hover {
-    background: var(--bg-hover);
-  }
-  .row.hidden .cname,
-  .row.hidden .cmeta {
+  .side-row.hidden .cname,
+  .side-row.hidden .cmeta {
     opacity: 0.45;
   }
 
@@ -374,28 +358,22 @@
     background: var(--dot);
     transition: background var(--fast) var(--ease);
   }
-  .row.hidden .swatch {
+  .side-row.hidden .swatch {
     background: transparent;
   }
 
-  .text {
-    flex: 1;
-    min-width: 0;
+  /* The name takes the row's own size and colour, hover included; the line
+     under it is quieter. */
+  .side-text {
     display: flex;
     flex-direction: column;
-    gap: 0;
     padding: 3px 0;
     text-align: left;
   }
   .cname {
-    font-size: var(--text-base);
-    color: var(--fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-  .row:hover .cname {
-    color: var(--fg);
   }
   .cmeta {
     display: flex;
@@ -409,7 +387,7 @@
     color: var(--danger);
     display: flex;
   }
-  .row.failed .cmeta {
+  .side-row.failed .cmeta {
     color: var(--danger);
   }
 
@@ -419,11 +397,11 @@
     flex: none;
     display: grid;
     place-items: center;
-    border-radius: var(--radius-sm);
+    border-radius: 50%;
     color: var(--fg-faint);
     opacity: 0;
   }
-  .row:hover .mini-action {
+  .side-row:hover .mini-action {
     opacity: 1;
   }
   .mini-action:hover {
@@ -431,8 +409,10 @@
     color: var(--fg);
   }
 
+  /* Set in as far as the heading above, so the lines start where its word
+     does. */
   .blank {
-    padding: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-faint);

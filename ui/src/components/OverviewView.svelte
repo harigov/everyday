@@ -184,11 +184,11 @@
 
 <div class="overview">
   <header class="bar">
-    <div class="titles">
-      <h1>Overview</h1>
-      <span class="sub">
+    <div class="pane-titles">
+      <h1 class="pane-title">Overview</h1>
+      <span class="pane-sub">
         {#if weekly}{weekLabel}{/if}
-        {#if overview.loading}· loading…{/if}
+        {#if overview.loading}{#if weekly}·{/if} loading…{/if}
       </span>
     </div>
 
@@ -219,11 +219,11 @@
 
       {#if weekly}
         <div class="week-nav">
-          <button aria-label="The week before" onclick={() => overview.goWeek(-1)}>
+          <button class="step" aria-label="The week before" onclick={() => overview.goWeek(-1)}>
             <span class="prev"><Icon name="chevron" size={14} /></span>
           </button>
           <button onclick={() => overview.goWeek(0)} disabled={overview.thisWeek}>Today</button>
-          <button aria-label="The week after" onclick={() => overview.goWeek(1)}>
+          <button class="step" aria-label="The week after" onclick={() => overview.goWeek(1)}>
             <span class="next"><Icon name="chevron" size={14} /></span>
           </button>
         </div>
@@ -352,11 +352,13 @@
 </div>
 
 <style>
+  /* The page colour, unlike the other apps: its cards are raised and need it to stand on. */
   .overview {
     display: flex;
     flex: 1;
     min-width: 0;
     flex-direction: column;
+    background: var(--bg);
   }
 
   .bar {
@@ -367,25 +369,6 @@
     min-height: var(--header-h);
     padding: 0 var(--sp-4);
     border-bottom: 1px solid var(--border);
-  }
-
-  .titles {
-    display: flex;
-    align-items: baseline;
-    gap: var(--sp-2);
-    flex: 1;
-    min-width: 0;
-  }
-
-  h1 {
-    margin: 0;
-    font-size: var(--text-lg);
-    font-weight: 600;
-  }
-
-  .sub {
-    color: var(--fg-faint);
-    font-size: var(--text-sm);
   }
 
   .tools {
@@ -527,11 +510,16 @@
     display: grid;
     place-items: center;
     height: 28px;
-    min-width: 28px;
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
+    padding: 0 var(--sp-3);
+    border-radius: 999px;
     color: var(--fg-muted);
     font-size: var(--text-sm);
+  }
+  /* The two arrows are round, as an icon on its own is everywhere; Today
+     beside them is a pill like every other worded button. */
+  .week-nav .step {
+    width: 28px;
+    padding: 0;
   }
   .week-nav button:hover:not(:disabled) {
     background: var(--bg-hover);

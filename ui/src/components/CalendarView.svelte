@@ -111,13 +111,15 @@
         >
           <span class="back"><Icon name="chevron" size={15} /></span>
         </button>
-        <button class="today" title="Jump to today (T)" onclick={() => calendar.goToday()}
+        <button class="btn btn-outline" title="Jump to today (T)" onclick={() => calendar.goToday()}
           >Today</button
         >
         <button class="step" title="Next (→)" aria-label="Next" onclick={() => calendar.step(1)}>
           <Icon name="chevron" size={15} />
         </button>
-        <h1 class="heading">{heading}</h1>
+        <div class="pane-titles">
+          <h1 class="pane-title">{heading}</h1>
+        </div>
       </div>
 
       <div class="tools">
@@ -218,18 +220,23 @@
     flex: none;
   }
 
+  /* Stretched, so the heading inside it has all the room the view switch
+     leaves and is cut short only when there is genuinely none. */
   .nav {
+    flex: 1;
     display: flex;
     align-items: center;
     gap: var(--sp-1);
     min-width: 0;
   }
+  /* Round, like every other small icon button in a header; "Today" between
+     them is the shared outlined `.btn`. */
   .step {
     width: 26px;
     height: 26px;
     display: grid;
     place-items: center;
-    border-radius: var(--radius-sm);
+    border-radius: 50%;
     color: var(--fg-subtle);
   }
   .step:hover {
@@ -241,28 +248,8 @@
     rotate: 180deg;
   }
 
-  .today {
-    height: 26px;
-    padding: 0 var(--sp-2);
-    margin: 0 2px;
-    border-radius: var(--radius-sm);
-    font-size: var(--text-sm);
-    font-weight: 550;
-    color: var(--fg-subtle);
-  }
-  .today:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-
-  .heading {
+  .pane-titles {
     margin-left: var(--sp-2);
-    font-size: var(--text-md);
-    font-weight: 620;
-    letter-spacing: -0.008em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .tools {
@@ -272,11 +259,12 @@
     flex: none;
   }
 
+  /* A pill of round buttons, like the filter chips under it. */
   .views {
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     background: var(--bg-active);
   }
 
@@ -285,7 +273,7 @@
     height: 22px;
     display: grid;
     place-items: center;
-    border-radius: 4px;
+    border-radius: 999px;
     color: var(--fg-subtle);
     transition:
       background var(--fast) var(--ease),

@@ -360,11 +360,18 @@
     flex-direction: column;
     height: 100%;
   }
+  /* The raised surface, under every app at once: the list and the page are
+     what is being read, a step lighter than the app bar and the sidebar,
+     which are sunken -- the margin around the page, not more page. Set here
+     rather than by each view, which is how four apps ended up on the page
+     colour and two on the raised one. The Overview alone puts the page
+     colour back, behind cards that need something to stand on. */
   .panes {
     position: relative;
     display: flex;
     flex: 1;
     min-height: 0;
+    background: var(--bg-raised);
   }
 
   /* Where a folded sidebar is found again: a strip of the app's left edge,

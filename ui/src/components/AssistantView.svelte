@@ -59,7 +59,9 @@
 <main class="main" class:floating={dog} style="--thread-top: {dog ? STAGE_H : 0}px">
   <header class="head">
     <div class="side left">
-      <h1 {title}>{title}</h1>
+      <div class="pane-titles">
+        <h1 class="pane-title" {title}>{title}</h1>
+      </div>
     </div>
     {#if dog}
       <div class="stage">
@@ -119,13 +121,14 @@
 </main>
 
 <style>
+  /* No background of its own: the raised surface every app sits on is
+     App.svelte's, and the floating header's fade below is drawn in it. */
   .main {
     position: relative;
     display: flex;
     flex: 1;
     flex-direction: column;
     min-width: 0;
-    background: var(--bg-raised);
   }
 
   .head {
@@ -204,27 +207,14 @@
     text-overflow: ellipsis;
   }
 
-  h1 {
-    min-width: 0;
-    overflow: hidden;
-    font-size: var(--text-lg);
-    font-weight: 600;
-    white-space: nowrap;
-    text-overflow: ellipsis;
-  }
-
-  .head .btn {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
+  /* Round, as an icon on its own is everywhere now that the text buttons
+     beside it are pills. */
   .ghost {
     display: grid;
     place-items: center;
     width: 30px;
     height: 30px;
-    border-radius: var(--radius-sm);
+    border-radius: 50%;
     color: var(--fg-subtle);
   }
   .ghost:hover {

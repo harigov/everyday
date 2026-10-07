@@ -204,18 +204,23 @@
   const overdue = $derived(todo.stats?.overdue ?? 0)
 </script>
 
-<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   {#each SMART as item (item.label)}
-    <button class="row" class:sel={selected(item.scope)} onclick={() => todo.setScope(item.scope)}>
-      <span class="icon" class:today={item.icon === 'sun'}><Icon name={item.icon} size={15} /></span
+    <button
+      class="side-row"
+      class:sel={selected(item.scope)}
+      onclick={() => todo.setScope(item.scope)}
+    >
+      <span class="side-icon" class:today={item.icon === 'sun'}
+        ><Icon name={item.icon} size={15} /></span
       >
-      <span class="text">{item.label}</span>
+      <span class="side-text">{item.label}</span>
       {#if item.scope.kind === 'today' && due > 0}
-        <span class="count" class:late={overdue > 0}>{due}</span>
+        <span class="side-count strong" class:late={overdue > 0}>{due}</span>
       {:else if item.scope.kind === 'inbox' && todo.openCount(null) > 0}
-        <span class="count">{todo.openCount(null)}</span>
+        <span class="side-count">{todo.openCount(null)}</span>
       {:else if item.scope.kind === 'all' && todo.stats}
-        <span class="count">{todo.stats.openTasks}</span>
+        <span class="side-count">{todo.stats.openTasks}</span>
       {/if}
     </button>
   {/each}
@@ -225,10 +230,10 @@
        this week, and then what any of it is for. They came from the Overview,
        which was a report on the work rather than the place it is done. -->
   {#if app.supportsOverview}
-    <div class="head">
+    <div class="side-head">
       <span class="eyebrow">Goals</span>
       <button
-        class="plus"
+        class="side-add"
         title="Roles, in Settings"
         aria-label="Set up your roles"
         onclick={() => panels.openSettings('profile')}
@@ -236,26 +241,28 @@
         <Icon name="settings" size={14} />
       </button>
     </div>
-    <button class="row" class:sel={goalSelected(null)} onclick={() => openGoal(null)}>
-      <span class="icon"><Icon name="target" size={15} /></span>
-      <span class="text">What this is all for</span>
-      {#if openGoals > 0}<span class="count">{openGoals}</span>{/if}
+    <button class="side-row" class:sel={goalSelected(null)} onclick={() => openGoal(null)}>
+      <span class="side-icon"><Icon name="target" size={15} /></span>
+      <span class="side-text">What this is all for</span>
+      {#if openGoals > 0}<span class="side-count">{openGoals}</span>{/if}
     </button>
     {#each goalRows as { goal, role } (goal.id)}
       {@const measure = targets.headline(goal.id)}
       {@const words = measure ? describeProgress(measure.tracker, measure.progress) : null}
+      <!-- The role's colour is set on the whole row rather than on its dot,
+           because the meter in place of the dot is drawn in it too. -->
       <button
-        class="row"
+        class="side-row"
         class:sel={goalSelected(goal.id)}
         class:paused={goal.status === 'paused'}
-        style="--dot: {role.color}"
+        style:--dot={role.color}
         onclick={() => openGoal(goal.id)}
         title="{role.name} · {goal.title}"
       >
-        <span class="icon">
+        <span class="side-icon">
           {#if role.icon}{role.icon}{:else}<Icon name="target" size={14} />{/if}
         </span>
-        <span class="text">{goal.title}</span>
+        <span class="side-text">{goal.title}</span>
         {#if words}
           <!-- Its first target, this period: a fill in the role's colour and
                the numbers beside it, so the bar is never the only reading.
@@ -269,19 +276,19 @@
             <span class="gtrack"
               ><span class="gfill" style="width: {Math.min(1, words.ratio) * 100}%"></span></span
             >
-            <span class="count">{words.short}</span>
+            <span class="side-count">{words.short}</span>
           </span>
         {:else}
-          <span class="dot" aria-hidden="true"></span>
+          <span class="side-dot" aria-hidden="true"></span>
         {/if}
       </button>
     {/each}
   {/if}
 
-  <div class="head">
+  <div class="side-head">
     <span class="eyebrow">Projects</span>
     <button
-      class="plus"
+      class="side-add"
       title="New project"
       aria-label="New project"
       onclick={() => (creating = true)}
@@ -293,7 +300,7 @@
   {#each todo.liveProjects as p (p.id)}
     {#if renaming?.id === p.id}
       <input
-        class="new"
+        class="side-new"
         aria-label="Project name"
         bind:value={renameDraft}
         use:focusOnMount
@@ -305,18 +312,17 @@
       />
     {:else}
       <button
-        class="row"
+        class="side-row"
         class:sel={selected({ kind: 'project', id: p.id })}
         class:paused={p.status === 'paused'}
-        style="--dot: {p.color}"
         onclick={() => todo.setScope({ kind: 'project', id: p.id })}
         oncontextmenu={(e) => menu.show(e, projectMenu(p))}
         title={p.notes || p.name}
       >
-        <span class="icon">{p.icon}</span>
-        <span class="text">{p.name}</span>
-        {#if todo.openCount(p.id) > 0}<span class="count">{todo.openCount(p.id)}</span>{/if}
-        <span class="dot" aria-hidden="true"></span>
+        <span class="side-icon">{p.icon}</span>
+        <span class="side-text">{p.name}</span>
+        {#if todo.openCount(p.id) > 0}<span class="side-count">{todo.openCount(p.id)}</span>{/if}
+        <span class="side-dot" style:--dot={p.color} aria-hidden="true"></span>
       </button>
     {/if}
   {/each}
@@ -327,7 +333,7 @@
 
   {#if creating}
     <input
-      class="new"
+      class="side-new"
       placeholder="Project name"
       bind:value={draft}
       use:focusOnMount
@@ -343,7 +349,7 @@
   {/if}
 
   {#if todo.stats && todo.stats.loggedMinutes > 0}
-    <div class="head"><span class="eyebrow">Time</span></div>
+    <div class="side-head"><span class="eyebrow">Time</span></div>
     <p class="logged">
       {Math.round(todo.stats.loggedMinutes / 60)}h logged across
       {todo.stats.blocks}
@@ -363,88 +369,26 @@
 {/if}
 
 <style>
-  /* Deliberately the same metrics as the journal nav: the two apps share a
-     sidebar, and a row that changed height when you switched would read as
-     two applications rather than one. */
-  .nav {
-    flex: 1;
-    padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
+  /* The rows, headings, counts and the new-project field are the shared
+     sidebar's -- see "Sidebars" in app.css. Deliberately: every app shares
+     the one sidebar, and a row that changed height when you switched would
+     read as two applications rather than one. What is the todo app's own:
+     the sun's colour, an overdue count, a goal's meter, a paused row and
+     the time tally at the foot. */
 
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-  .plus {
-    width: 20px;
-    height: 20px;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-  .plus:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    width: 100%;
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    color: var(--fg-muted);
-    text-align: left;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .row:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .row.sel {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
-  }
-  /* A paused project or goal is still there, just not shouting. */
-  .row.paused .text {
-    opacity: 0.6;
-  }
-
-  .icon {
-    width: 16px;
-    height: 16px;
-    flex: none;
-    display: grid;
-    place-items: center;
-    font-size: var(--text-sm);
-    line-height: 1;
-  }
-  .icon.today {
+  .side-icon.today {
     color: #e0a92b;
   }
-  .text {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .count {
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    font-variant-numeric: tabular-nums;
-  }
-  /* Something has already slipped, which is worth a colour. */
-  .count.late {
+  /* Something has already slipped, which is worth a colour -- and the
+     danger colour wins over the accent the badge would otherwise wear, open
+     or not. */
+  .side-count.strong.late {
+    background: color-mix(in oklab, var(--danger) 14%, transparent);
     color: var(--danger);
+  }
+  /* A paused project or goal is still there, just not shouting. */
+  .side-row.paused .side-text {
+    opacity: 0.6;
   }
 
   .gmeter {
@@ -476,38 +420,16 @@
     background: color-mix(in oklab, var(--danger) 22%, transparent);
   }
 
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--dot);
-    flex: none;
-    opacity: 0.85;
-  }
-
-  .new {
-    width: 100%;
-    height: var(--row-h);
-    margin-top: 2px;
-    padding: 0 var(--sp-2);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--bg-raised);
-    font-size: var(--text-base);
-    user-select: text;
-  }
-  .new:focus {
-    outline: none;
-  }
-
+  /* Set in by the rows' own padding, so the lines start where the rows'
+     icons do. */
   .blank {
-    padding: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3);
     font-size: var(--text-sm);
     line-height: var(--leading-normal);
     color: var(--fg-faint);
   }
   .logged {
-    padding: 0 var(--sp-2);
+    padding: 0 var(--sp-3);
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }

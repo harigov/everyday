@@ -179,36 +179,36 @@
   {:else if app.section === 'mail'}
     <MailNav />
   {:else}
-    <nav class="scroll nav">
+    <nav class="scroll side-nav">
       <button
-        class="row"
+        class="side-row"
         class:sel={app.selectedJournal === null && !app.showStarredOnly}
         onclick={() => {
           app.showStarredOnly = false
           void app.selectJournal(null)
         }}
       >
-        <span class="icon"><Icon name="layers" /></span>
-        <span class="text">All entries</span>
-        <span class="count">{total}</span>
+        <span class="side-icon"><Icon name="layers" /></span>
+        <span class="side-text">All entries</span>
+        <span class="side-count">{total}</span>
       </button>
 
       <button
-        class="row"
+        class="side-row"
         class:sel={app.showStarredOnly}
         onclick={() => {
           app.showStarredOnly = true
           void app.selectJournal(null)
         }}
       >
-        <span class="icon star"><Icon name="star" size={15} filled /></span>
-        <span class="text">Starred</span>
+        <span class="side-icon star"><Icon name="star" size={15} filled /></span>
+        <span class="side-text">Starred</span>
       </button>
 
-      <div class="head">
+      <div class="side-head">
         <span class="eyebrow">Journals</span>
         <button
-          class="plus"
+          class="side-add"
           title="New journal"
           aria-label="New journal"
           onclick={() => (creating = true)}
@@ -220,9 +220,8 @@
       {#each app.journals as j (j.id)}
         <div class="slot">
           <button
-            class="row"
+            class="side-row"
             class:sel={app.selectedJournal === j.id && !app.showStarredOnly}
-            style="--dot: {j.color}"
             onclick={() => {
               app.showStarredOnly = false
               void app.selectJournal(j.id)
@@ -230,9 +229,9 @@
             oncontextmenu={(e) => menu.show(e, journalMenu(j))}
             title={j.description || j.name}
           >
-            <span class="icon">{j.icon}</span>
-            <span class="text">{j.name}</span>
-            <span class="dot" aria-hidden="true"></span>
+            <span class="side-icon">{j.icon}</span>
+            <span class="side-text">{j.name}</span>
+            <span class="side-dot" style:--dot={j.color} aria-hidden="true"></span>
           </button>
           <button
             class="cog"
@@ -247,7 +246,7 @@
 
       {#if creating}
         <input
-          class="new"
+          class="side-new"
           placeholder="Journal name"
           bind:value={draft}
           use:focusOnMount
@@ -325,70 +324,27 @@
     }
   }
 
-  .nav {
-    flex: 1;
-    padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
-
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-  .plus {
-    width: 20px;
-    height: 20px;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-  .plus:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-
-  .row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    width: 100%;
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    color: var(--fg-muted);
-    text-align: left;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .row:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .row.sel {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
-  }
+  /* The journal's rows, headings and counts are the shared sidebar's -- see
+     app.css's "Sidebars". What is the journal's own: the starred row's star,
+     and the settings button laid over each journal's row. */
 
   /* The settings button rides on top of the row rather than inside it: a
-     row is a button, and a button inside a button is not a thing HTML has. */
+     row is a button, and a button inside a button is not a thing HTML has.
+     Round and the size of the heading's add button, and centred exactly
+     where the row's dot is, which it covers while the row is hovered. */
   .slot {
     position: relative;
   }
   .cog {
     position: absolute;
     top: 50%;
-    right: 4px;
+    right: var(--sp-1);
     transform: translateY(-50%);
     display: grid;
     place-items: center;
-    width: 20px;
-    height: 20px;
-    border-radius: var(--radius-sm);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
     color: var(--fg-faint);
     background: var(--bg-active);
     opacity: 0;
@@ -402,53 +358,7 @@
     color: var(--fg);
   }
 
-  /* Holds an inline icon for the fixed rows and an emoji for user journals,
-     so it is a centred box of a known size rather than a run of text. */
-  .icon {
-    width: 16px;
-    height: 16px;
-    flex: none;
-    display: grid;
-    place-items: center;
-    font-size: var(--text-sm);
-    line-height: 1;
-  }
   .star {
     color: #e0a92b;
-  }
-  .text {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .count {
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    font-variant-numeric: tabular-nums;
-  }
-
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--dot);
-    flex: none;
-    opacity: 0.85;
-  }
-
-  .new {
-    width: 100%;
-    height: var(--row-h);
-    margin-top: 2px;
-    padding: 0 var(--sp-2);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--bg-raised);
-    font-size: var(--text-base);
-    user-select: text;
-  }
-  .new:focus {
-    outline: none;
   }
 </style>

@@ -80,10 +80,6 @@
 
   const heading = $derived(app.showStarredOnly ? 'Starred' : (app.journal?.name ?? 'All entries'))
 
-  function colorOf(id: string): string {
-    return app.journals.find((j) => j.id === id)?.color ?? 'var(--accent)'
-  }
-
   /**
    * Where an entry can be filed instead.
    *
@@ -184,7 +180,9 @@
 
 <section class="list">
   <header class="top">
-    <h1 class="heading">{heading}</h1>
+    <div class="pane-titles">
+      <h1 class="pane-title">{heading}</h1>
+    </div>
     <button
       class="new icon"
       class:on={showCalendar}
@@ -237,13 +235,12 @@
         </div>
         {#each app.results as hit (hit.id)}
           <button
-            class="row"
+            class="row list-row"
             class:sel={app.selectedEntry === hit.id}
             data-row={hit.id}
             onclick={() => app.openEntry(hit.id)}
             oncontextmenu={(e) => menu.show(e, hitMenu(hit))}
           >
-            <span class="bar" style="background: {colorOf(hit.journalId)}"></span>
             <div class="body">
               <div class="title">{hit.title || 'Untitled entry'}</div>
               <div class="snippet">
@@ -285,14 +282,12 @@
           {:else}
             {@const row: EntrySummary = (r as Extract<EntryRow, { kind: 'entry' }>).entry}
             <button
-              class="row"
+              class="row list-row"
               class:sel={app.selectedEntry === row.id}
               data-row={row.id}
               onclick={() => app.openEntry(row.id)}
               oncontextmenu={(e) => menu.show(e, entryMenu(row))}
             >
-              <span class="bar" style="background: {colorOf(row.journalId)}"></span>
-
               <div class="cal" aria-hidden="true">
                 <span class="dow">{weekdayShort(row.localDate)}</span>
                 <span class="dom">{dayNumber(row.localDate)}</span>
@@ -340,12 +335,13 @@
 {/if}
 
 <style>
+  /* No background of its own: it stands on the raised surface `App.svelte`
+     lays under every app, as the page beside it does. */
   .list {
     width: var(--list-w);
     flex: none;
     display: flex;
     flex-direction: column;
-    background: var(--bg-panel);
     border-right: 1px solid var(--border);
   }
 
@@ -357,24 +353,18 @@
     padding: 0 var(--sp-3) 0 var(--sp-4);
     flex: none;
   }
-  .heading {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-md);
-    font-weight: 620;
-    letter-spacing: -0.008em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  /* Round, the size of Mail's list-header buttons. */
   .new {
-    width: 30px;
-    height: 30px;
+    width: 34px;
+    height: 34px;
     flex: none;
     display: grid;
     place-items: center;
-    border-radius: var(--radius-sm);
+    border-radius: 50%;
     color: var(--fg-muted);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
   }
   .new:hover {
     background: var(--bg-hover);
@@ -398,36 +388,14 @@
     padding: var(--sp-4) var(--sp-4) var(--sp-2);
   }
 
+  /* The card, its hover and the open one's tint are `.list-row`'s -- see
+     app.css's "Lists". This is only what sits inside it. */
   .row {
-    position: relative;
     display: flex;
     gap: var(--sp-3);
     align-items: flex-start;
-    width: 100%;
     padding: var(--sp-3) var(--sp-4);
-    text-align: left;
     color: inherit;
-    transition: background var(--fast) var(--ease);
-  }
-  .row:hover {
-    background: var(--bg-hover);
-  }
-  .row.sel {
-    background: var(--bg-selected);
-  }
-
-  .bar {
-    position: absolute;
-    left: 0;
-    top: 6px;
-    bottom: 6px;
-    width: 2px;
-    border-radius: 0 2px 2px 0;
-    opacity: 0;
-    transition: opacity var(--fast) var(--ease);
-  }
-  .row.sel .bar {
-    opacity: 1;
   }
 
   .cal {

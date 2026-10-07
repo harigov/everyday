@@ -98,19 +98,22 @@
   <main class="todo">
     <div class="pane">
       <header class="top">
-        <h1 class="heading">
-          {#if todo.project}<span class="mark">{todo.project.icon}</span>{/if}
-          {#if counted > 0}
-            <ProgressPie
-              {done}
-              total={counted}
-              size={15}
-              color={todo.accent}
-              title="{done} of {counted} done"
-            />
-          {/if}
-          {heading}
-        </h1>
+        <div class="pane-titles">
+          <h1 class="pane-title">
+            {#if todo.project}<span class="mark">{todo.project.icon}</span>{/if}
+            {#if counted > 0}
+              <ProgressPie
+                {done}
+                total={counted}
+                size={15}
+                color={todo.accent}
+                title="{done} of {counted} done"
+              />
+            {/if}
+            {heading}
+          </h1>
+          <span class="pane-sub">{summary}</span>
+        </div>
 
         <div class="tools">
           {#if todo.boardable}
@@ -210,7 +213,6 @@
           {#if todo.narrowed}
             <button class="clear" onclick={() => todo.clearFilters()}>Clear</button>
           {/if}
-          <span class="summary">{summary}</span>
         </div>
       </div>
 
@@ -251,17 +253,12 @@
     padding: 0 var(--sp-4);
     flex: none;
   }
-  .heading {
+  /* The heading's size is the shared `.pane-title`'s; on its line, before
+     the name, sit a project's own mark and the dial of how much is done. */
+  .pane-title {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    min-width: 0;
-    font-size: var(--text-md);
-    font-weight: 620;
-    letter-spacing: -0.008em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .mark {
     font-size: var(--text-base);
@@ -275,11 +272,13 @@
     flex: none;
   }
 
+  /* Round, like every other small control in a header now, and a pill
+     around them like the filter chips'. */
   .views {
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     background: var(--bg-active);
   }
   .view {
@@ -287,7 +286,7 @@
     height: 22px;
     display: grid;
     place-items: center;
-    border-radius: 4px;
+    border-radius: 999px;
     color: var(--fg-subtle);
     transition:
       background var(--fast) var(--ease),
@@ -304,9 +303,9 @@
 
   .select {
     height: 26px;
-    padding: 0 var(--sp-1);
+    padding: 0 var(--sp-2);
     border: none;
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     background: none;
     font-size: var(--text-sm);
     color: var(--fg-subtle);
@@ -321,15 +320,13 @@
   }
 
   /* `.toolbar`'s ends carry more than most of the shared filter bar's other
-     callers: two `<select>`s on the left, a status line that can run to
-     three figures on the right. Its `.toolbar-end` sets `min-width: 0` so
+     callers: two `<select>`s on the left, and a Clear button on the right
+     while anything is narrowed. Its `.toolbar-end` sets `min-width: 0` so
      the centred chips always win any argument over space, which at a
-     narrow window left both ends with nowhere to shrink to -- the selects
-     painted straight over the filter chips instead of wrapping below them,
-     and the status line was squeezed into a column a few characters wide
-     and wrapped line by line rather than word by word. Restoring a real
-     minimum on both ends and letting the row wrap is what lets each one
-     drop to a line of its own instead. */
+     narrow window left the selects with nowhere to shrink to -- they
+     painted straight over the filter chips instead of wrapping below them.
+     Restoring a real minimum on both ends and letting the row wrap is what
+     lets each one drop to a line of its own instead. */
   .toolbar {
     flex-wrap: wrap;
   }
@@ -345,7 +342,7 @@
   .clear {
     height: 26px;
     padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     font-size: var(--text-sm);
     color: var(--fg-subtle);
     white-space: nowrap;
@@ -353,22 +350,6 @@
   .clear:hover {
     background: var(--bg-hover);
     color: var(--fg);
-  }
-
-  /* `.toolbar-end.right` is always the same width as the left end (see the
-     centring comment on `.toolbar-end` in app.css), not the width its own
-     content needs -- so at a narrow window this line is often squeezed well
-     below what "N open · N overdue · N estimated" needs. Wrapping onto a
-     second line keeps every count readable; truncating it with an ellipsis
-     would silently hide whichever one ran out of room first. */
-  .summary {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-    white-space: normal;
   }
 
   /* Visually hidden, still announced. */

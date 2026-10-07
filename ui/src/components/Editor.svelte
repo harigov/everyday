@@ -363,12 +363,13 @@
     cursor: default;
   }
 
+  /* No background of its own, here or on `.empty`: the page stands on the
+     raised surface `App.svelte` lays under every app. */
   .editor {
     position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-raised);
   }
   .canvas {
     flex: 1;
@@ -499,7 +500,6 @@
   .empty {
     display: flex;
     height: 100%;
-    background: var(--bg-raised);
   }
 
   /* ── Prose ───────────────────────────────────────────────────────────

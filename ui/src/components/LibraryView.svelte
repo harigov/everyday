@@ -119,9 +119,9 @@
 <div class="library" style="--tint: {library.accent}">
   <div class="main">
     <header class="bar">
-      <div class="titles">
-        <h1>{heading}</h1>
-        <span class="sub">
+      <div class="pane-titles">
+        <h1 class="pane-title">{heading}</h1>
+        <span class="pane-sub">
           {plural(library.items.length, 'item')}
           {#if library.loading}· loading…{/if}
         </span>
@@ -296,7 +296,7 @@
           {#each library.items as row (row.id)}
             {@const kind = library.kindOf(row)}
             <button
-              class="row"
+              class="row list-row"
               class:sel={library.selected === row.id}
               data-row={row.id}
               onclick={() => void library.open(row.id)}
@@ -350,12 +350,13 @@
 {/if}
 
 <style>
+  /* No background of its own: it stands on the raised surface `App.svelte`
+     lays under every app. */
   .library {
     display: flex;
     flex: 1;
     min-width: 0;
     min-height: 0;
-    background: var(--bg);
   }
   .main {
     display: flex;
@@ -374,54 +375,34 @@
     padding: 0 var(--sp-4);
     border-bottom: 1px solid var(--border);
   }
-  .titles {
-    display: flex;
-    align-items: baseline;
-    gap: var(--sp-2);
-    min-width: 0;
-  }
-  h1 {
-    margin: 0;
-    font-size: var(--text-md);
-    font-weight: 650;
-    letter-spacing: -0.01em;
-    color: var(--fg);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .sub {
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    white-space: nowrap;
-  }
 
-  /* First of the header's controls since the search moved to the bar at
-     the top of the window, so it is what pushes them to the right. */
+  /* A pill, like the view switch beside it and the chips under it, and as
+     tall as the switch. */
   .sort {
-    margin-left: auto;
-    height: 28px;
-    padding: 0 var(--sp-2);
+    height: 34px;
+    padding: 0 var(--sp-3);
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     background: var(--bg-raised);
     font-size: var(--text-sm);
     color: var(--fg-muted);
   }
 
+  /* Two round buttons in a pill, 34px tall overall like Mail's list-header
+     buttons. */
   .views {
     display: flex;
     gap: 2px;
     padding: 2px;
-    border-radius: var(--radius-sm);
+    border-radius: 999px;
     background: var(--bg-active);
   }
   .view {
     display: grid;
     place-items: center;
-    width: 24px;
-    height: 22px;
-    border-radius: 3px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
     color: var(--fg-subtle);
   }
   .view.on {
@@ -588,25 +569,36 @@
     gap: var(--sp-5) var(--sp-4);
   }
 
+  /* Pulled out by exactly the inset `.list-row` gives each card (see
+     app.css's "Lists"), so a card's edge lines up with the covers' in the
+     grid view and the text inside it stays where it always was. */
   .rows {
     display: flex;
     flex-direction: column;
+    margin-inline: calc(var(--sp-2) * -1);
   }
   .row {
     display: flex;
     align-items: center;
     gap: var(--sp-3);
-    width: 100%;
     padding: var(--sp-2) var(--sp-2);
-    border-radius: var(--radius-sm);
-    border-bottom: 1px solid var(--border);
-    text-align: left;
   }
-  .row:hover {
-    background: var(--bg-hover);
+  /* The hairline between rows, starting under the title rather than the
+     cover -- the column of covers stays one unbroken edge -- and clear of
+     the card's rounded corners. Hidden under a hovered or open card, whose
+     own tint does the separating. */
+  .row::after {
+    content: '';
+    position: absolute;
+    left: calc(var(--sp-2) + 34px + var(--sp-3));
+    right: var(--sp-2);
+    bottom: 0;
+    height: 1px;
+    background: var(--border);
   }
-  .row.sel {
-    background: var(--bg-selected);
+  .row:hover::after,
+  .row.sel::after {
+    opacity: 0;
   }
   .thumb {
     display: block;

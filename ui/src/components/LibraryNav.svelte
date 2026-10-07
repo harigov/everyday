@@ -207,9 +207,9 @@
   }
 </script>
 
-<nav class="scroll nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
   <button
-    class="row"
+    class="side-row"
     class:sel={library.shelf === null && !library.favouritesOnly}
     title="Everything — {stats?.items ?? 0} {stats?.items === 1 ? 'item' : 'items'}"
     onclick={() => {
@@ -217,26 +217,31 @@
       void library.selectShelf(null)
     }}
   >
-    <span class="icon"><Icon name="layers" /></span>
-    <span class="text">Everything</span>
-    {#if openEverywhere > 0}<span class="count">{openEverywhere}</span>{/if}
+    <span class="side-icon"><Icon name="layers" /></span>
+    <span class="side-text">Everything</span>
+    {#if openEverywhere > 0}<span class="side-count">{openEverywhere}</span>{/if}
   </button>
 
   <button
-    class="row"
+    class="side-row"
     class:sel={library.favouritesOnly}
     onclick={() => {
       library.favouritesOnly = true
       void library.selectShelf(null)
     }}
   >
-    <span class="icon star"><Icon name="star" size={15} filled /></span>
-    <span class="text">Favourites</span>
+    <span class="side-icon star"><Icon name="star" size={15} filled /></span>
+    <span class="side-text">Favourites</span>
   </button>
 
-  <div class="head">
+  <div class="side-head">
     <span class="eyebrow">Shelves</span>
-    <button class="plus" title="New shelf" aria-label="New shelf" onclick={() => (creating = true)}>
+    <button
+      class="side-add"
+      title="New shelf"
+      aria-label="New shelf"
+      onclick={() => (creating = true)}
+    >
       <Icon name="plus" size={15} />
     </button>
   </div>
@@ -244,9 +249,8 @@
   {#each library.visibleKinds as kind (kind.id)}
     {@const count = counts.get(kind.id)}
     <button
-      class="row"
+      class="side-row"
       class:sel={library.shelf === kind.id && !library.favouritesOnly}
-      style="--dot: {kind.color}"
       onclick={() => {
         library.favouritesOnly = false
         void library.selectShelf(kind.id)
@@ -254,21 +258,21 @@
       oncontextmenu={(e) => menu.show(e, shelfMenu(kind))}
       title="{kind.name} — {kind.items} {kind.items === 1 ? 'item' : 'items'}"
     >
-      <span class="icon">{kind.icon}</span>
-      <span class="text">{kind.name}</span>
+      <span class="side-icon">{kind.icon}</span>
+      <span class="side-text">{kind.name}</span>
       <!-- What is still ahead of you, not the total: a shelf of four hundred
            read books is not four hundred things to do something about. The
            total is in the tooltip, where it belongs. -->
       {#if count && count.open > 0}
-        <span class="count">{count.open}</span>
+        <span class="side-count">{count.open}</span>
       {/if}
-      <span class="dot" aria-hidden="true"></span>
+      <span class="side-dot" style:--dot={kind.color} aria-hidden="true"></span>
     </button>
   {/each}
 
   {#if creating}
     <input
-      class="new"
+      class="side-new"
       placeholder="Shelf name"
       bind:value={draft}
       use:focusOnMount
@@ -284,20 +288,19 @@
   {/if}
 
   {#if hidden.length > 0}
-    <div class="head">
+    <div class="side-head">
       <span class="eyebrow">Hidden</span>
     </div>
     {#each hidden as kind (kind.id)}
       <button
-        class="row muted"
-        style="--dot: {kind.color}"
+        class="side-row muted"
         title="{kind.name} — hidden, {kind.items} {kind.items === 1 ? 'item' : 'items'} still on it"
         onclick={() => library.saveShelf({ ...shelfOnly(kind), visible: true })}
         oncontextmenu={(e) => menu.show(e, shelfMenu(kind))}
       >
-        <span class="icon">{kind.icon}</span>
-        <span class="text">{kind.name}</span>
-        {#if kind.items > 0}<span class="count">{kind.items}</span>{/if}
+        <span class="side-icon">{kind.icon}</span>
+        <span class="side-text">{kind.name}</span>
+        {#if kind.items > 0}<span class="side-count">{kind.items}</span>{/if}
         <span class="reveal"><Icon name="hidden" size={13} /></span>
       </button>
     {/each}
@@ -332,33 +335,13 @@
 {/if}
 
 <style>
-  .nav {
-    flex: 1;
-    padding: var(--sp-2) var(--sp-2) var(--sp-4);
-  }
-
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-5) var(--sp-2) var(--sp-2);
-  }
-  .plus {
-    width: 20px;
-    height: 20px;
-    display: grid;
-    place-items: center;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
-  }
-  .plus:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
+  /* The rows, headings and counts are the shared sidebar's -- see app.css's
+     "Sidebars". What is the library's own: the Favourites row's star, the
+     hidden shelves at the foot and the tally under them. */
 
   /* A hidden shelf is still a shelf: legible, one click from coming back,
      and never mistaken for a live one. */
-  .row.muted {
+  .side-row.muted {
     opacity: 0.55;
   }
 
@@ -370,81 +353,15 @@
     color: var(--fg-faint);
   }
 
-  .row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-    width: 100%;
-    height: var(--row-h);
-    padding: 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    color: var(--fg-muted);
-    text-align: left;
-    transition:
-      background var(--fast) var(--ease),
-      color var(--fast) var(--ease);
-  }
-  .row:hover {
-    background: var(--bg-hover);
-    color: var(--fg);
-  }
-  .row.sel {
-    background: var(--bg-active);
-    color: var(--fg);
-    font-weight: 550;
-  }
-
-  .icon {
-    width: 16px;
-    height: 16px;
-    flex: none;
-    display: grid;
-    place-items: center;
-    font-size: var(--text-sm);
-    line-height: 1;
-  }
   .star {
     color: #e0a92b;
   }
-  .text {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .count {
-    font-size: var(--text-xs);
-    color: var(--fg-faint);
-    font-variant-numeric: tabular-nums;
-  }
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--dot);
-    flex: none;
-    opacity: 0.85;
-  }
 
-  .new {
-    width: 100%;
-    height: var(--row-h);
-    margin-top: 2px;
-    padding: 0 var(--sp-2);
-    border: 1px solid var(--accent);
-    border-radius: var(--radius-sm);
-    background: var(--bg-raised);
-    font-size: var(--text-base);
-    user-select: text;
-  }
-  .new:focus {
-    outline: none;
-  }
-
+  /* Set in by the rows' own padding, so the lines start where the shelf
+     names' icons do. */
   .tally {
     margin-top: var(--sp-6);
-    padding: var(--sp-3) var(--sp-2) 0;
+    padding: var(--sp-3) var(--sp-3) 0;
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;

@@ -216,13 +216,16 @@
       justify-content: flex-end;
     }
   }
+  /* Small pills, the shape every button in the app now takes -- these are
+     answers to a question, compact enough to sit inside the row they ask
+     about. */
   .answers > button {
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    padding: 2px var(--sp-2);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    padding: 2px 10px 2px var(--sp-2);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
     background: var(--bg-raised);
     color: var(--fg-muted);
     font: inherit;

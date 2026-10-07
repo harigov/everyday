@@ -472,11 +472,11 @@
         minute: '2-digit',
       })}"
     >
-      <button class="btn" onclick={() => calendar.stopTimer()}>Stop</button>
+      <button class="btn btn-outline" onclick={() => calendar.stopTimer()}>Stop</button>
     </StatTile>
   {:else}
     <StatTile value="Nothing" note="No timer is running.">
-      <button class="btn" onclick={() => calendar.startTimer({ type: 'adhoc' })}>
+      <button class="btn btn-outline" onclick={() => calendar.startTimer({ type: 'adhoc' })}>
         Start one
       </button>
     </StatTile>

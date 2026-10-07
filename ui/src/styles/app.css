@@ -146,6 +146,9 @@ button {
 
 /* ── Shared primitives ─────────────────────────────────────────────────── */
 
+/* Pills, everywhere: the filter bars, the chips and the mail toolbar were
+   already round, and a square-cornered button beside them read as a field
+   or a stray box rather than as one of the same family of controls. */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -153,7 +156,7 @@ button {
   gap: var(--sp-2);
   height: 34px;
   padding: 0 var(--sp-4);
-  border-radius: var(--radius-sm);
+  border-radius: 999px;
   font-size: var(--text-base);
   font-weight: 500;
   color: var(--fg-muted);
@@ -209,7 +212,7 @@ button {
    paragraph above once it is visibly a button rather than a line of text
    wearing a button's padding. */
 .btn-outline {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
 }
 .btn-outline:hover {
   border-color: var(--border-strong);
@@ -297,6 +300,195 @@ textarea.field {
   border: none;
 }
 
+/* ── Sidebars ──────────────────────────────────────────────────────────
+   Every app's sidebar is the same few things -- a heading with an add
+   button, then rows of an icon, a name and a count, sometimes a dot in the
+   thing's own colour, and an inline field for naming a new one -- and every
+   app used to draw its own copy. Six copies drifted: the same grey selection
+   everywhere until Mail's became the accent, row heights a pixel apart,
+   headings padded three ways. One set, here, is the whole of it; a
+   component keeps only what is genuinely its own (a goal's meter, a
+   calendar's swatch) in its scoped styles.
+
+   The open row is tinted in the accent -- the same tint as the app bar's own
+   button for the app on screen and as the open item in the list beside it,
+   so the three selections read as one path: this app, this place in it,
+   this thing. */
+
+.side-nav {
+  flex: 1;
+  padding: var(--sp-1) var(--sp-3) var(--sp-4);
+}
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: var(--sp-5) var(--sp-3) 6px;
+}
+.side-head .eyebrow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The heading's own small round button: add a journal, a shelf, a
+   project. Always shown -- it is the only way in to making one. */
+.side-add {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--fg-faint);
+  transition:
+    background var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+.side-add:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.side-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: var(--side-row-h);
+  padding: 0 var(--sp-3);
+  border-radius: var(--radius);
+  font-size: var(--text-base);
+  color: var(--fg-muted);
+  text-align: left;
+  transition:
+    background var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+.side-row:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.side-row.sel {
+  background: var(--bg-selected);
+  color: var(--accent);
+  font-weight: 620;
+}
+/* A centred box of a known size, for an inline icon or an emoji alike. */
+.side-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  font-size: var(--text-sm);
+  line-height: 1;
+}
+.side-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-count {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.side-row.sel .side-count {
+  color: var(--accent);
+}
+/* The one count per sidebar worth seeing at a glance -- the inbox's
+   unread, today's tasks -- drawn as a badge; every other stays quiet. */
+.side-count.strong {
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-weight: 650;
+  text-align: center;
+}
+/* A thing's own colour -- a journal's, a shelf's, a project's -- set as
+   `--dot` on the element. */
+.side-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot, var(--fg-faint));
+  opacity: 0.85;
+}
+/* The inline field a new journal, shelf or project is named in, standing
+   exactly where its row will appear. */
+.side-new {
+  width: 100%;
+  height: var(--side-row-h);
+  margin-top: 2px;
+  padding: 0 var(--sp-3);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  font-size: var(--text-base);
+  user-select: text;
+}
+.side-new:focus {
+  outline: none;
+}
+
+/* ── Lists ─────────────────────────────────────────────────────────────
+   One row of the list beside the sidebar: a thread, an entry, a task, an
+   item. A card inset from the column's edges, so the open one reads as a
+   thing picked up rather than a stripe painted across the list. Layout
+   inside the row stays each list's own. */
+
+.list-row {
+  position: relative;
+  width: calc(100% - var(--sp-4));
+  margin-inline: var(--sp-2);
+  border-radius: var(--radius-lg);
+  text-align: left;
+  transition: background var(--fast) var(--ease);
+}
+.list-row:hover {
+  background: var(--bg-hover);
+}
+.list-row.sel {
+  background: var(--bg-selected);
+}
+
+/* ── Pane headings ─────────────────────────────────────────────────────
+   The name over a list or a page -- "All inboxes", "Today", "Everything" --
+   and the one quiet line under it that says how much is there. Sized once,
+   here, so moving between apps never changes how loud the heading is. */
+
+.pane-titles {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pane-title {
+  font-size: var(--text-lg);
+  font-weight: 680;
+  letter-spacing: -0.015em;
+  line-height: var(--leading-tight);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-sub {
+  font-size: var(--text-xs);
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── The app bar ───────────────────────────────────────────────────────
    Shared by every app and by the two buttons under them, which are not apps
    at all. They look the same on purpose: a column of identical targets is
@@ -362,6 +554,10 @@ textarea.field {
   justify-content: flex-end;
 }
 
+/* Rounded to the chips' own curve -- half a 28px chip plus the 3px of
+   padding -- rather than fully round: identical on one line, and when a
+   long row wraps (a sidebar's tags, a narrow pane) the track stays a
+   rounded box around its chips instead of a lozenge they poke out of. */
 .filters {
   display: flex;
   align-items: center;
@@ -369,7 +565,7 @@ textarea.field {
   flex-wrap: wrap;
   gap: 2px;
   padding: 3px;
-  border-radius: 999px;
+  border-radius: 17px;
   background: var(--bg-sunken);
 }
 .filter {
