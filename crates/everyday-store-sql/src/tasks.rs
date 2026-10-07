@@ -266,11 +266,25 @@ impl TaskStore for SqlStore {
         self.upsert(b)
     }
 
+    fn put_blocks(&self, blocks: &[TimeBlock]) -> Result<()> {
+        self.upsert_many(blocks)
+    }
+
     fn delete_block(&self, id: BlockId) -> Result<()> {
+        self.delete_blocks(&[id])
+    }
+
+    fn delete_blocks(&self, ids: &[BlockId]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
         let mut conn = self.write();
         let mut tx = conn.begin()?;
-        tx.execute("DELETE FROM time_blocks WHERE id = ?1", &vals![id.to_string()])?;
-        forget_purposes(tx.as_mut(), RecordKind::Block, &[id.to_string()])?;
+        let ids: Vec<String> = ids.iter().map(ToString::to_string).collect();
+        for id in &ids {
+            tx.execute("DELETE FROM time_blocks WHERE id = ?1", &vals![id.clone()])?;
+        }
+        forget_purposes(tx.as_mut(), RecordKind::Block, &ids)?;
         tx.commit()?;
         Ok(())
     }

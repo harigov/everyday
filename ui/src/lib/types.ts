@@ -1080,9 +1080,25 @@ export interface TimeBlock {
    * project's — see `Purpose`.
    */
   purpose?: Purpose | null
+  /** Set on every block of a repeating series, the first included. */
+  series?: BlockSeries | null
   createdAt: string
   updatedAt: string
 }
+
+/**
+ * What ties a repeating block to the rest of its series. A repeat of your
+ * own is written out as one block per occurrence, two years ahead; each is
+ * still a block in its own right.
+ */
+export interface BlockSeries {
+  /** Shared by every block in the series: the id of the one it was made from. */
+  id: BlockId
+  rule: Recurrence
+}
+
+/** Which blocks of a series a deletion means, counting from the one picked. */
+export type SeriesScope = 'following' | 'all'
 
 /** Which project's tasks to look at. "Inbox" is tasks with no project. */
 export type ProjectScope =
@@ -1203,13 +1219,25 @@ export interface Calendar {
    * calendar is work, and its forty meetings are not each yours to file.
    */
   roleId?: RoleId | null
+  /**
+   * Where new events go when nobody names a calendar. At most one calendar
+   * has it; none means this computer's own time blocks. Moved only by
+   * `set_default_calendar` -- `save_calendar` keeps whatever is stored.
+   */
+  isDefault: boolean
+  /** The account's server will not let this account write to it. */
+  readOnly: boolean
   createdAt: string
   updatedAt: string
 }
 
+/** Whether a new event can go on a calendar, and if not, why not. */
+export type CalendarAccess = 'writable' | 'readOnly' | 'needsSignIn'
+
 /** A calendar plus how many events are held for it. */
 export interface CalendarInfo extends Calendar {
   events: number
+  access: CalendarAccess
 }
 
 /** One calendar an account offers, before anyone subscribes to it. */
@@ -1218,6 +1246,8 @@ export interface RemoteCalendar {
   name: string
   color?: string | null
   source: AccountCalendarSource
+  /** Whether this account may put events on it. */
+  writable: boolean
 }
 
 /** A remote calendar, and whether this vault already subscribes to it. */
@@ -1228,9 +1258,87 @@ export interface RemoteCalendarInfo extends RemoteCalendar {
 
 export type EventStatus = 'confirmed' | 'tentative' | 'cancelled'
 
+/** How often a repeat comes round. Mirrors `everyday-core`'s `recurrence`. */
+export type Frequency = 'daily' | 'weekly' | 'monthly' | 'yearly'
+
 /**
- * One occurrence on a subscribed calendar. Read-only, always: nothing in
- * this application writes back to the server an event came from.
+ * A day a repeat falls on, spelled out. Not `Weekday`, which is a routine's
+ * three-letter `'mon'`: the two cross different wires and say so.
+ */
+export type RecurrenceDay =
+  'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
+
+/**
+ * How an event repeats:
+ *
+ *   daily                                   every N days
+ *   weekly + weekdays                       every N weeks on these days (none: the start's day)
+ *   monthly                                 every N months on the start's date
+ *   monthly + weekOfMonth + one weekday     "the second Tuesday", -1 for "the last"
+ *   yearly                                  every N years on the start's date
+ *
+ * Ended by at most one of `count` and `until`; neither is forever.
+ */
+export interface Recurrence {
+  frequency: Frequency
+  interval: number
+  weekdays?: RecurrenceDay[]
+  weekOfMonth?: number | null
+  count?: number | null
+  /** `YYYY-MM-DD`, inclusive, in the event's own zone. */
+  until?: string | null
+}
+
+/** Where a guest's answer to an invitation stands. */
+export type AttendeeResponse = 'accepted' | 'tentative' | 'declined' | 'needsAction'
+
+/** One guest, by address. `response` is read, never written. */
+export interface Attendee {
+  email: string
+  name: string
+  response?: AttendeeResponse | null
+}
+
+/**
+ * An event as somebody means it to be: what to put on an account's calendar,
+ * or what to change one to. All-day runs midnight to midnight in `tz`.
+ */
+export interface EventDraft {
+  title: string
+  description: string
+  location: string
+  /** RFC 3339 instants. */
+  start: string
+  end: string
+  allDay: boolean
+  /** IANA zone the times are meant in -- what a repeat is anchored to. */
+  tz: string
+  attendees: Attendee[]
+  recurrence?: Recurrence | null
+}
+
+/** Which part of a repeating event a change or a deletion means. */
+export type EventScope = 'occurrence' | 'series'
+
+/** An account calendar's event, read fresh from its server to be changed. */
+export interface EditableEvent {
+  eventId: EventId
+  calendarId: CalendarId
+  /** This occurrence, with the series' rule in `recurrence` when it repeats. */
+  draft: EventDraft
+  /** Part of a series: a change or a deletion must say which `EventScope`. */
+  recurring: boolean
+  /** The series repeats in a way `Recurrence` cannot hold; its rule is read-only here. */
+  customRecurrence: boolean
+  /** This account organised it (or nobody did): only then may it be changed here. */
+  own: boolean
+  organizer: string
+}
+
+/**
+ * One occurrence on a subscribed or account calendar. Never edited in
+ * place: a change to an account calendar's event goes to its server, and
+ * the calendar's sync brings it back.
  */
 export interface CalendarEvent {
   id: EventId
@@ -1277,6 +1385,8 @@ export interface SyncReport {
   skipped: number
   /** The name the publisher gives the calendar, if it offered one. */
   feedName?: string | null
+  /** Whether an account calendar's server said, in passing, it can be written. */
+  writable?: boolean | null
 }
 
 /** A provider, and where in that product the secret address is found. */
@@ -2749,6 +2859,8 @@ export interface QuickEventDraft {
   start: string | null
   end: string | null
   location: string
+  /** "every Tuesday", "daily": how it repeats, when the sentence said. */
+  recurrence?: Recurrence | null
 }
 
 /** A number found in a sentence, against a tracker that may not exist yet. */

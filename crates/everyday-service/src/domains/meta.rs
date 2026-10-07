@@ -335,14 +335,26 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
             format!("{} is not available on this vault", args.name),
         ));
     }
-    if matches!(tool.effect, tools::Effect::Destructive | tools::Effect::Outward)
+    // This call's own effect rather than the tool's: `create_event` is a
+    // write until it has guests on it, and then it sends invitations. See
+    // `tools::effect_for`.
+    let effect = {
+        let vault = vault.clone();
+        let name = args.name.clone();
+        let arguments = args.arguments.clone();
+        blocking(move || {
+            let tz = system_tz();
+            let today = local_date_in(jiff::Timestamp::now(), &tz);
+            let ctx = tools::ToolContext::new(&vault, today, &tz);
+            Ok(tools::effect_for(&ctx, &name, &arguments).unwrap_or(tool.effect))
+        })
+        .await?
+    };
+    if matches!(effect, tools::Effect::Destructive | tools::Effect::Outward)
         && !args.confirm_destructive
     {
-        let verb = if tool.effect == tools::Effect::Outward {
-            "sends something"
-        } else {
-            "deletes something"
-        };
+        let verb =
+            if effect == tools::Effect::Outward { "sends something" } else { "deletes something" };
         return Err(CommandError::new(
             codes::CONFIRM_REQUIRED,
             format!("{} {verb}; call it again with confirmDestructive", args.name),
@@ -395,6 +407,8 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
                 origin,
             )
         };
+        // The same writer `agent::run_tool` hands the chat assistant.
+        let calendar_writer = crate::domains::calendars::ToolCalendarWriter::new(svc.clone());
         // `unattended` stays the default `false`: a script, a palette entry
         // or MCP, never a scheduled run, which goes through `agent::run_turn`
         // instead. `assistant_provider` stays unset too -- only the chat
@@ -409,7 +423,8 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
             .with_mail_search(mail_index.as_deref())
             .with_mail_rate_limit(&rate_limit)
             .with_after_mail_write(&after_mail_write)
-            .with_invite_responder(&invite_responder);
+            .with_invite_responder(&invite_responder)
+            .with_calendar_writer(&calendar_writer);
         if let Some(caller) = caller {
             ctx = ctx.with_caller(caller);
         }

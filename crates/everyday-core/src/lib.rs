@@ -104,6 +104,7 @@ pub mod proposal;
 pub mod purpose;
 pub mod quick;
 pub mod record;
+pub mod recurrence;
 pub mod richtext;
 pub mod routine;
 #[cfg(feature = "schema")]

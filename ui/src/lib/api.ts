@@ -32,8 +32,10 @@ import type {
   Entry,
   EntryId,
   EntryQuery,
+  EventDraft,
   EventId,
   EventQuery,
+  EventScope,
   Goal,
   GoalId,
   GoalQuery,
@@ -75,6 +77,7 @@ import type {
   Recording,
   RecordingId,
   RecordingQuery,
+  Recurrence,
   Role,
   RoleId,
   Routine,
@@ -84,6 +87,7 @@ import type {
   SearchKind,
   SearchRequest,
   SearchResult,
+  SeriesScope,
   ShareStatus,
   ShellNotification,
   Skill,
@@ -861,6 +865,18 @@ export const api = {
   }) => call('newBlock', opts),
   saveBlock: (block: TimeBlock) => call('saveBlock', { block }),
   deleteBlock: (id: BlockId) => call('deleteBlock', { id }),
+  /**
+   * Save `block` as the first of a repeating series -- or, with `null`, as
+   * one that stops repeating here -- and write the rest of it out, two
+   * years ahead. Every *later* block of whatever series it was already in
+   * is replaced, which is also how "apply this change to the following
+   * ones" is said: the same call, with the rule it already has. Answers
+   * every block written, `block` first.
+   */
+  saveBlockSeries: (block: TimeBlock, recurrence: Recurrence | null) =>
+    call('saveBlockSeries', { block, recurrence }),
+  /** Delete `id` and the blocks of its series after it, or the whole series. */
+  deleteBlockSeries: (id: BlockId, scope: SeriesScope) => call('deleteBlockSeries', { id, scope }),
 
   /** Every tag in the task domain with its usage count, most used first. */
   taskTags: () => call('taskTags', {}),
@@ -868,9 +884,13 @@ export const api = {
 
   // ── The calendar domain ────────────────────────────────────────────
   //
-  // Subscribed calendars and their events. Time *you* schedule is a time
-  // block and goes through the task commands above -- there is deliberately
-  // no second way to store an appointment.
+  // Subscribed calendars and their events, and the two ways an appointment
+  // of your own is written. On this computer it is a time block, through
+  // the task commands above. On an account's calendar -- Google, Microsoft,
+  // a CalDAV server -- it is written to that server by `createEvent` and its
+  // siblings below, and comes back the way every other event does: through
+  // the calendar's own sync. Nothing here edits a stored event in place;
+  // the server's copy is the event, and this vault's is a reading of it.
 
   calendars: () => call('listCalendars', {}),
   saveCalendar: (calendar: Calendar) => call('saveCalendar', { calendar }),
@@ -898,6 +918,34 @@ export const api = {
 
   events: (query: EventQuery) => call('listEvents', { query }),
   event: (id: EventId) => call('getEvent', { id }),
+
+  /**
+   * Where new events go when nobody names a calendar: one of an account's
+   * writable calendars, or `null` for this computer's own time blocks.
+   * `saveCalendar` keeps whatever is stored for this, so it is moved only
+   * here -- and the list has to be read again afterwards to see it moved.
+   */
+  setDefaultCalendar: (id: CalendarId | null) => call('setDefaultCalendar', { id }),
+  /**
+   * Put a new event on an account's calendar. A network call, and one that
+   * sends invitations when the draft has guests. Answers the event as the
+   * calendar's sync brought it back, or `null` when the server took it and
+   * the sync has not caught up yet -- a refresh a moment later finds it.
+   */
+  createEvent: (calendarId: CalendarId, draft: EventDraft) =>
+    call('createEvent', { calendarId, draft }),
+  /**
+   * An account calendar's event read fresh from its server, ready to be
+   * changed: the full description, guests by address and answer, and the
+   * series' rule. What the stored copy holds is a reading for the grid and
+   * is not enough to write back from.
+   */
+  loadEvent: (id: EventId) => call('loadEvent', { id }),
+  /** Change one occurrence, or the whole series. The calendar syncs afterwards. */
+  updateEvent: (id: EventId, draft: EventDraft, scope: EventScope) =>
+    call('updateEvent', { id, draft, scope }),
+  /** Delete one occurrence, or the whole series. Guests are sent a cancellation. */
+  deleteEvent: (id: EventId, scope: EventScope) => call('deleteEvent', { id, scope }),
 
   /** The providers the add sheet offers, with where to find each address. */
   calendarProviders: () => call('calendarProviders', {}),
@@ -1476,8 +1524,13 @@ export const api = {
    * of the flow above -- see `crates/everyday-service/src/domains/
    * accounts.rs`'s module doc for the hand-off this closes.
    */
-  attachOauthSignIn: (id: AccountId, signInId: string, clientSecret?: string) =>
-    call('attachOauthSignIn', { id, signInId, clientSecret }),
+  /**
+   * `scopes` are the ones the sign-in asked for, recorded on the account --
+   * what tells "signed in to read calendars" apart from "signed in to write
+   * them" afterwards, and so whether its calendars can take a new event.
+   */
+  attachOauthSignIn: (id: AccountId, signInId: string, clientSecret?: string, scopes?: string[]) =>
+    call('attachOauthSignIn', { id, signInId, clientSecret, scopes }),
 }
 
 /**

@@ -14,9 +14,10 @@ use crate::ctx::Ctx;
 use crate::error::CommandResult;
 use crate::service::{Service, blocking};
 use everyday_core::model::{system_tz, today_local};
+use everyday_core::recurrence::Recurrence;
 use everyday_core::store::tasks::{BlockQuery, TaskQuery};
 use everyday_core::task::{
-    BlockKind, BlockSubject, Project, Task, TaskStats, TaskStatus, TimeBlock,
+    BlockKind, BlockSubject, Project, SeriesScope, Task, TaskStats, TaskStatus, TimeBlock,
 };
 use everyday_core::{BlockId, ProjectId, TaskId};
 use serde::{Deserialize, Serialize};
@@ -92,6 +93,22 @@ pub struct NewBlock {
 #[serde(rename_all = "camelCase")]
 pub struct SaveBlock {
     pub block: TimeBlock,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveBlockSeries {
+    pub block: TimeBlock,
+    /// How it repeats from here on; `None` stops it repeating.
+    #[serde(default)]
+    pub recurrence: Option<Recurrence>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteBlockSeries {
+    pub id: BlockId,
+    pub scope: SeriesScope,
 }
 
 #[derive(Deserialize)]
@@ -193,6 +210,25 @@ async fn save_block(svc: Arc<Service>, _ctx: Ctx, args: SaveBlock) -> CommandRes
 
 async fn delete_block(svc: Arc<Service>, _ctx: Ctx, args: BlockRef) -> CommandResult<()> {
     svc.on_vault(move |vault| vault.delete_block(args.id)).await
+}
+
+/// Save a block as the start of a repeating series -- or stop one repeating
+/// -- and write the rest of the series out after it. See
+/// [`everyday_core::vault::Vault::save_block_series`] for what is replaced.
+async fn save_block_series(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SaveBlockSeries,
+) -> CommandResult<Vec<TimeBlock>> {
+    svc.on_vault(move |vault| vault.save_block_series(&args.block, args.recurrence.as_ref())).await
+}
+
+async fn delete_block_series(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: DeleteBlockSeries,
+) -> CommandResult<Vec<BlockId>> {
+    svc.on_vault(move |vault| vault.delete_block_series(args.id, args.scope)).await
 }
 
 /// Every tag used anywhere in the task domain, most used first.
@@ -319,6 +355,22 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: BlockRef, returns: "void",
         signature: &[("id", "BlockId", true)],
         run: delete_block,
+    },
+    command! {
+        name: "save_block_series", scope: Tasks, effect: Write,
+        change: Block / Updated,
+        id: |a: &SaveBlockSeries| Some(a.block.id.to_string()),
+        args: SaveBlockSeries, returns: "TimeBlock[]",
+        signature: &[("block", "TimeBlock", true), ("recurrence", "Recurrence | null", false)],
+        run: save_block_series,
+    },
+    command! {
+        name: "delete_block_series", scope: Tasks, effect: Destructive,
+        change: Block / Deleted,
+        id: |a: &DeleteBlockSeries| Some(a.id.to_string()),
+        args: DeleteBlockSeries, returns: "BlockId[]",
+        signature: &[("id", "BlockId", true), ("scope", "SeriesScope", true)],
+        run: delete_block_series,
     },
     command! {
         name: "task_tags", scope: Tasks, effect: Read,

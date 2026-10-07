@@ -15,23 +15,37 @@
 //!
 //! # Seeding over plain HTTP, not through this crate
 //!
-//! `accountcal` is read-only by design -- see `docs/plans/mail.md`'s "read
-//! only, like every calendar here" -- so it has no PUT, MKCALENDAR or DELETE
-//! of its own to seed a test fixture with. This file uses a bare `reqwest`
-//! client with HTTP Basic to create the collection and its events directly,
-//! exactly as a person's own CalDAV client would have, before ever calling
-//! into `accountcal::caldav`. That is also what makes the incremental half
-//! of this test meaningful: the *changes* between the first and second sync
-//! are made the same way, outside this crate, and `accountcal::caldav::sync`
-//! is asked to notice them on its own.
+//! The sync tests seed their fixtures with a bare `reqwest` client and HTTP
+//! Basic, creating the collection and its events directly, exactly as a
+//! person's own CalDAV client would have, before ever calling into
+//! `accountcal::caldav`. `accountcal` can write events now, but it has no
+//! MKCALENDAR -- nothing here makes calendars -- and seeding from outside is
+//! what makes the incremental half of those tests mean something: the
+//! *changes* between the first and second sync are made the same way,
+//! outside this crate, and `accountcal::caldav::sync` is asked to notice them
+//! on its own, the way it has to notice a change made on a phone.
+//!
+//! # Writing through this crate
+//!
+//! The last test is the other direction: events made, read back, moved,
+//! renamed and deleted through `accountcal`'s own public writes -- the
+//! entry points the interface calls -- and checked only by what the sync each
+//! write finishes with brought back into the vault, which is the only place
+//! the interface ever reads an event from. What it proves that the unit
+//! tests in `caldav_write.rs` cannot is the conversation: that a real server
+//! takes the `PUT`s, honours `If-Match` with the etag a multiget handed back,
+//! and stores overrides and `EXDATE`s in a form the sync reads back as the
+//! occurrences meant.
 
 #[allow(dead_code)]
 mod support;
 
 use everyday_core::account::{Account, AccountSecret, AuthMethod, Provider};
-use everyday_core::calendar::{AccountCalendarSource, Calendar};
+use everyday_core::calendar::{AccountCalendarSource, Calendar, Event, EventDraft, EventScope};
+use everyday_core::id::CalendarId;
+use everyday_core::recurrence::{Frequency, Recurrence};
 use everyday_core::store::calendars::EventQuery;
-use everyday_service::accountcal::caldav;
+use everyday_service::accountcal::{self, caldav};
 
 fn env_or_skip(name: &str) -> Option<String> {
     std::env::var(name).ok()
@@ -357,4 +371,164 @@ async fn an_unending_recurring_event_is_reexpanded_once_its_window_marker_goes_s
         Some(first_expanded_through),
         "the marker must be caught back up to the current window, not left at the rewound date"
     );
+}
+
+/// Every event the vault holds for `calendar`, earliest first.
+fn listed(vault: &everyday_core::Vault, calendar: CalendarId) -> Vec<Event> {
+    let mut events = vault
+        .events(&EventQuery { calendar_id: Some(calendar), ..Default::default() })
+        .expect("list_events");
+    events.sort_by_key(|event| event.start);
+    events
+}
+
+/// `(start, title)` for each event, for an assertion's message.
+fn titled(events: &[Event]) -> Vec<(jiff::Timestamp, &str)> {
+    events.iter().map(|event| (event.start, event.title.as_str())).collect()
+}
+
+/// The write half, end to end: a weekly meeting made, read back for
+/// editing, one occurrence moved, the series renamed, one occurrence
+/// deleted and then the whole series -- see the module doc's "Writing
+/// through this crate". The dates are a week from whenever this runs, so
+/// every occurrence sits inside the sync's window however long from now
+/// that is.
+#[tokio::test]
+async fn creates_changes_and_deletes_events_on_a_real_caldav_server() {
+    let Some(base_url) = env_or_skip("EVERYDAY_TEST_CALDAV_URL") else {
+        eprintln!("skipping: set EVERYDAY_TEST_CALDAV=1 and run `make test-caldav`");
+        return;
+    };
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let user = std::env::var("EVERYDAY_TEST_CALDAV_USER").unwrap_or_else(|_| "everyday".into());
+    let pass = std::env::var("EVERYDAY_TEST_CALDAV_PASS").unwrap_or_else(|_| "testpass".into());
+    let fixture = Fixture {
+        base_url: base_url.clone(),
+        user: user.clone(),
+        pass: pass.clone(),
+        client: reqwest::Client::new(),
+    };
+    let cal_path = format!("/{user}/writecal/");
+    fixture.mkcalendar(&cal_path, "Write Calendar").await;
+
+    let (svc, _dir) = support::vault::service(Some("pw"));
+    let vault = svc.require().expect("vault is open");
+    let mut account = Account::new(Provider::Custom, format!("{user}@example.com"));
+    account.caldav = Some(base_url);
+    account.auth = AuthMethod::Password { username: user.clone() };
+    // `accountcal`'s writes check this before anything else; the sync tests
+    // above call `caldav::sync` directly and never needed it.
+    account.services.calendar = true;
+    vault.save_account(&account).expect("save_account");
+    vault
+        .save_account_secret(
+            account.id,
+            &AccountSecret { password: Some(pass), ..Default::default() },
+        )
+        .expect("save_account_secret");
+
+    let remotes = caldav::discover(&svc, &vault, &account).await.expect("discover succeeds");
+    let remote = remotes
+        .iter()
+        .find(|r| r.name == "Write Calendar")
+        .unwrap_or_else(|| panic!("did not find the seeded calendar among {remotes:?}"));
+    let calendar = Calendar::from_account(
+        account.id,
+        account.provider,
+        remote.source,
+        remote.remote_id.clone(),
+        remote.name.clone(),
+    );
+    vault.save_calendar(&calendar).expect("save_calendar");
+
+    // Four Mondays -- or whatever weekday a week from today is -- at nine in
+    // New York.
+    let ny = jiff::tz::TimeZone::get("America/New_York").unwrap();
+    let day = jiff::Zoned::now()
+        .with_time_zone(ny.clone())
+        .date()
+        .checked_add(jiff::Span::new().days(7))
+        .unwrap();
+    let at =
+        |hour: i8, minute: i8| day.at(hour, minute, 0, 0).to_zoned(ny.clone()).unwrap().timestamp();
+    let draft = EventDraft {
+        title: "Planning".into(),
+        description: "Budget, then hiring; nothing else".into(),
+        location: "Room 2".into(),
+        start: at(9, 0),
+        end: at(9, 30),
+        all_day: false,
+        tz: "America/New_York".into(),
+        attendees: Vec::new(),
+        recurrence: Some(Recurrence { count: Some(4), ..Recurrence::every(Frequency::Weekly) }),
+    };
+    let first = accountcal::create_event(&svc, &vault, calendar.id, &draft)
+        .await
+        .expect("create_event")
+        .expect("the sync after the write must bring the first occurrence back");
+    let made = listed(&vault, calendar.id);
+    assert_eq!(made.len(), 4, "four weekly occurrences: {:?}", titled(&made));
+    assert!(made.iter().all(|event| event.title == "Planning"));
+
+    // Read back for editing, it is the draft that was written.
+    let editable = accountcal::load_event(&svc, &vault, &first).await.expect("load_event");
+    assert!(editable.recurring && editable.own && !editable.custom_recurrence);
+    assert_eq!(editable.draft.description, draft.description);
+    assert_eq!(editable.draft.location, draft.location);
+    assert_eq!(editable.draft.recurrence, draft.recurrence);
+    assert_eq!((editable.draft.start, editable.draft.end), (draft.start, draft.end));
+
+    // The second occurrence alone: an hour later, and renamed.
+    let second = made[1].clone();
+    let mut moved = accountcal::load_event(&svc, &vault, &second).await.expect("load second").draft;
+    moved.title = "Planning (moved)".into();
+    moved.start = second.start.checked_add(jiff::SignedDuration::from_hours(1)).unwrap();
+    moved.end = second.end.checked_add(jiff::SignedDuration::from_hours(1)).unwrap();
+    accountcal::update_event(&svc, &vault, &second, &moved, EventScope::Occurrence)
+        .await
+        .expect("move one occurrence");
+    let after_move = listed(&vault, calendar.id);
+    assert_eq!(
+        after_move.len(),
+        4,
+        "a moved occurrence takes its own slot's place: {:?}",
+        titled(&after_move)
+    );
+    assert!(after_move.iter().any(|e| e.title == "Planning (moved)" && e.start == moved.start));
+    assert!(!after_move.iter().any(|e| e.start == second.start));
+
+    // The whole series renamed, from its first occurrence. The moved one
+    // keeps the change that was made to it alone.
+    let mut renamed = editable.draft.clone();
+    renamed.title = "Weekly planning".into();
+    let first_now = after_move.iter().find(|e| e.start == first.start).unwrap().clone();
+    accountcal::update_event(&svc, &vault, &first_now, &renamed, EventScope::Series)
+        .await
+        .expect("rename the series");
+    let after_rename = listed(&vault, calendar.id);
+    assert_eq!(after_rename.len(), 4, "{:?}", titled(&after_rename));
+    assert_eq!(
+        after_rename.iter().filter(|e| e.title == "Weekly planning").count(),
+        3,
+        "{:?}",
+        titled(&after_rename)
+    );
+    assert!(after_rename.iter().any(|e| e.title == "Planning (moved)" && e.start == moved.start));
+
+    // The third occurrence deleted on its own.
+    let third =
+        after_rename.iter().filter(|e| e.title == "Weekly planning").nth(1).unwrap().clone();
+    accountcal::delete_event(&svc, &vault, &third, EventScope::Occurrence)
+        .await
+        .expect("delete one occurrence");
+    let after_delete = listed(&vault, calendar.id);
+    assert_eq!(after_delete.len(), 3, "{:?}", titled(&after_delete));
+    assert!(!after_delete.iter().any(|e| e.start == third.start));
+
+    // And the series, resource and all.
+    accountcal::delete_event(&svc, &vault, &after_delete[0], EventScope::Series)
+        .await
+        .expect("delete the series");
+    let after_all = listed(&vault, calendar.id);
+    assert!(after_all.is_empty(), "nothing of the series may survive: {:?}", titled(&after_all));
 }

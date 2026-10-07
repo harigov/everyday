@@ -22,6 +22,7 @@ pub fn run_task_suite(store: &dyn TaskStore) {
     deleting_a_task_takes_its_subtrees_with_it(store);
     deleting_a_project_takes_its_tasks_with_it(store);
     time_blocks_round_trip_and_query_by_day(store);
+    a_series_of_blocks_is_written_and_removed_in_one_go(store);
     deleting_a_task_removes_its_time_blocks(store);
     task_stats_reflect_contents(store);
     unicode_survives_a_task_round_trip(store);
@@ -423,6 +424,45 @@ fn time_blocks_round_trip_and_query_by_day(store: &dyn TaskStore) {
 
     store.delete_block(errand.id).unwrap();
     assert!(store.get_block(errand.id).is_err());
+
+    task_cleanup(store);
+}
+
+fn a_series_of_blocks_is_written_and_removed_in_one_go(store: &dyn TaskStore) {
+    // What a repeating block of your own is on disk: a block per
+    // occurrence, written together and, when it is cut short, deleted
+    // together -- with the series riding along on every one.
+    let base = "2026-06-15T07:00:00Z".parse::<Timestamp>().unwrap();
+    let head = TimeBlock::new(BlockSubject::Adhoc, base, 60, "UTC");
+    let rule = crate::recurrence::Recurrence::every(crate::recurrence::Frequency::Daily);
+    let series: Vec<TimeBlock> = (0..5)
+        .map(|day| {
+            let mut b = head.clone();
+            if day > 0 {
+                b.id = BlockId::new();
+            }
+            b.start = base + jiff::SignedDuration::from_hours(24 * day);
+            b.end = b.start + jiff::SignedDuration::from_hours(1);
+            b.local_date = date(2026, 6, 15 + day as i8);
+            b.series = Some(crate::task::BlockSeries { id: head.id, rule: rule.clone() });
+            b
+        })
+        .collect();
+    store.put_blocks(&series).unwrap();
+    assert_eq!(store.list_blocks(&BlockQuery::default()).unwrap().len(), 5);
+    assert_eq!(
+        store.get_block(series[3].id).unwrap(),
+        series[3],
+        "a block in a series must round-trip with its series"
+    );
+
+    let following: Vec<BlockId> = series[2..].iter().map(|b| b.id).collect();
+    store.delete_blocks(&following).unwrap();
+    let left = store.list_blocks(&BlockQuery::default()).unwrap();
+    assert_eq!(left.iter().map(|b| b.id).collect::<Vec<_>>(), vec![series[0].id, series[1].id]);
+    // Deleting what is already gone is a no-op, as it is for one block.
+    store.delete_blocks(&following).expect("deleting missing blocks must be a no-op");
+    store.delete_blocks(&[]).expect("deleting nothing must be a no-op");
 
     task_cleanup(store);
 }

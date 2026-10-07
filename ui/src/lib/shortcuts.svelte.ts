@@ -925,9 +925,11 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   },
   {
     id: 'calendar:book-now',
-    label: 'Set an hour aside',
+    // "New event", not "Set an hour aside": it goes to the default calendar,
+    // which may be an account's, where it is a meeting rather than an hour.
+    label: 'New event',
     group: 'Calendar',
-    keywords: ['book', 'time', 'schedule'],
+    keywords: ['book', 'time', 'schedule', 'event', 'meeting', 'hour'],
     icon: 'calendar',
     tray: true,
     when: () => app.screen === 'main' && app.supportsCalendar,

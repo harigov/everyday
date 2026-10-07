@@ -121,6 +121,18 @@
       ]
     },
     {
+      "command": "save_block_series",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "block",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_role",
       "events": [
         {
@@ -645,6 +657,18 @@
       ]
     },
     {
+      "command": "set_default_calendar",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "calendar",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_meeting_settings",
       "events": [
         {
@@ -954,6 +978,10 @@
       "reason": "OAuth: cancels the sign-in begin_oauth_sign_in above needs"
     },
     {
+      "name": "create_event",
+      "reason": "writes to an account calendar's server over the network"
+    },
+    {
       "name": "download_speech_model",
       "reason": "a real ~40MB network download"
     },
@@ -1008,6 +1036,10 @@
     {
       "name": "sync_due_calendars",
       "reason": "refreshes every subscribed calendar from its remote source"
+    },
+    {
+      "name": "update_event",
+      "reason": "writes to an account calendar's server over the network"
     }
   ],
   "tools": [

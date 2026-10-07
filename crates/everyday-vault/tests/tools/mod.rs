@@ -6,6 +6,7 @@
 #[path = "../support/mod.rs"]
 mod support;
 
+mod calendar;
 mod journals;
 mod library;
 mod memory;
@@ -160,6 +161,7 @@ fn the_catalogue_marks_exactly_the_tools_the_confirmation_gate_must_catch() {
             "delete_project",
             "delete_task",
             "delete_time_block",
+            "delete_event",
             "delete_item",
             "delete_log",
             "delete_reading",

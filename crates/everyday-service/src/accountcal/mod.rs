@@ -6,11 +6,23 @@
 //! (`everyday-core`) names which account and which of the account's own
 //! calendars a [`Calendar`](everyday_core::calendar::Calendar) mirrors; this
 //! module is everything that reaches the network to fill it in.
-//! `domains::calendars` calls exactly two functions here --
-//! [`discover`], to list what an account offers and let somebody tick the
-//! ones they want, and [`sync`], to bring one already-subscribed account
-//! calendar's events up to date -- and knows nothing about CalDAV, the
-//! Google Calendar API or Microsoft Graph beyond that split.
+//! `domains::calendars` calls [`discover`], to list what an account offers
+//! and let somebody tick the ones they want, [`sync`], to bring one
+//! already-subscribed account calendar's events up to date, and the four
+//! writes -- [`create_event`], [`load_event`], [`update_event`] and
+//! [`delete_event`] -- and knows nothing about CalDAV, the Google Calendar
+//! API or Microsoft Graph beyond that split.
+//!
+//! # Writing
+//!
+//! A write goes to the server and stops there. Nothing here edits an
+//! [`Event`] row to match: once the server has said yes, the calendar's own
+//! [`sync`] runs and brings the change back exactly the way it would bring
+//! back one made on a phone -- one path into the vault for every change,
+//! whoever made it, which is what keeps the incremental sync's bookkeeping
+//! (sync tokens, etags, deterministic ids) honest. Each source's writes live
+//! in a child module of its own (`google_write.rs`, `graph_write.rs`,
+//! `caldav_write.rs`), beside the reading half whose helpers they share.
 //!
 //! # Three sources, one shape
 //!
@@ -74,7 +86,10 @@ use std::time::Duration;
 
 use everyday_core::Vault;
 use everyday_core::account::{Account, Provider};
-use everyday_core::calendar::{AccountCalendarSource, Calendar, CalendarOrigin, SyncReport};
+use everyday_core::calendar::{
+    AccountCalendarSource, Calendar, CalendarOrigin, EditableEvent, Event, EventDraft, EventScope,
+    SyncReport,
+};
 use everyday_core::id::{CalendarId, EventId};
 use everyday_core::store::calendars::EventQuery;
 use serde::{Deserialize, Serialize};
@@ -99,6 +114,16 @@ pub struct RemoteCalendar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     pub source: AccountCalendarSource,
+    /// Whether this account may put events on it: Google's `accessRole` of
+    /// `owner` or `writer`, Graph's `canEdit`. A CalDAV collection says
+    /// nothing either way that is cheap to ask, and answers true -- the
+    /// server's refusal of the first write is what tells the truth there.
+    #[serde(default = "yes")]
+    pub writable: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// A boxed, `Send` future -- hand-rolled the same way
@@ -127,6 +152,58 @@ pub trait CalendarProvider: Send + Sync {
         account: &'a Account,
         calendar: &'a Calendar,
     ) -> BoxFuture<'a, CommandResult<SyncReport>>;
+
+    /// Put a new event -- repeat rule, guests and all -- on `calendar`.
+    /// Guests are invited by the server itself, the way that server
+    /// invites anybody: Google and Graph by their own mail, a CalDAV server
+    /// that schedules implicitly (iCloud, Fastmail) by its.
+    fn create<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        draft: &'a EventDraft,
+    ) -> BoxFuture<'a, CommandResult<()>>;
+
+    /// Read `event` back from the server as it stands now, with what
+    /// changing it needs -- the full description, every guest by address,
+    /// the series' rule. See [`EditableEvent`].
+    fn load<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a Event,
+    ) -> BoxFuture<'a, CommandResult<EditableEvent>>;
+
+    /// Change `event` -- just this occurrence, or its whole series -- to
+    /// match `draft`. Guests added are invited, guests removed are told, and
+    /// the rest hear about the change, all by the server.
+    #[allow(clippy::too_many_arguments)]
+    fn update<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a Event,
+        draft: &'a EventDraft,
+        scope: EventScope,
+    ) -> BoxFuture<'a, CommandResult<()>>;
+
+    /// Delete `event`, or its whole series. Its guests are told it was
+    /// cancelled, by the server.
+    fn delete<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a Event,
+        scope: EventScope,
+    ) -> BoxFuture<'a, CommandResult<()>>;
 }
 
 /// The [`CalendarProvider`] for one of the three sources -- the single
@@ -222,6 +299,18 @@ pub async fn sync(
     let result = provider_for(source).sync(svc, vault, &account, calendar).await;
     note_if_credential_is_bad(svc, vault, &account, &result).await;
 
+    // A provider that learned in passing whether this account may write here
+    // -- Google says so on every page of `events.list` -- keeps the calendar
+    // picker honest without a discovery call of its own.
+    if let Ok(SyncReport { writable: Some(writable), .. }) = &result {
+        let vault = vault.clone();
+        let id = calendar.id;
+        let read_only = !*writable;
+        if let Err(e) = blocking(move || Ok(vault.set_calendar_read_only(id, read_only)?)).await {
+            tracing::warn!(%id, error = %e, "could not record whether a calendar is writable");
+        }
+    }
+
     // Only a genuine, permission-shaped failure (`FORBIDDEN`, already
     // handled above by moving the account to `NeedsSignIn`) skips the
     // calendar's own `last_error`: the account view already says so, in a
@@ -235,6 +324,169 @@ pub async fn sync(
         record_failure(vault, calendar.id, &e.message).await;
     }
     result
+}
+
+/// The account a calendar reads from, and the calendar itself, once both
+/// have been checked fit to write to -- the gate every write below passes
+/// first, so none of the three sources has to repeat it.
+async fn writable_target(
+    vault: &Arc<Vault>,
+    calendar_id: CalendarId,
+) -> CommandResult<(Calendar, Account, AccountCalendarSource)> {
+    let vault = vault.clone();
+    let (calendar, account) = blocking(move || {
+        let calendar = vault.calendar(calendar_id)?;
+        let account = match calendar.origin.account_id() {
+            Some(id) => Some(vault.account(id)?),
+            None => None,
+        };
+        Ok((calendar, account))
+    })
+    .await?;
+    let (Some(account), CalendarOrigin::Account { source, .. }) = (account, &calendar.origin)
+    else {
+        return Err(CommandError::new(
+            codes::INVALID,
+            format!(
+                "{} is a subscribed calendar, and nothing can be added to one from here",
+                calendar.name
+            ),
+        ));
+    };
+    let source = *source;
+    if calendar.read_only {
+        return Err(CommandError::new(
+            codes::INVALID,
+            format!("{} does not let {} change it", calendar.name, account.address),
+        ));
+    }
+    if !account.services.calendar {
+        return Err(CommandError::new(
+            codes::INVALID,
+            format!("calendar is switched off for {}", account.address),
+        ));
+    }
+    if !account.can_write_calendars() {
+        return Err(CommandError::new(
+            codes::FORBIDDEN,
+            format!(
+                "{} was signed in to read its calendars only. Sign in to it again from Settings \
+                 \u{2192} Accounts to let Every Day add and change events.",
+                account.address
+            ),
+        ));
+    }
+    Ok((calendar, account, source))
+}
+
+/// Bring a calendar back in line after a write landed. A failure here is
+/// logged rather than returned: the write itself worked, and the next
+/// background sync will pick it up regardless.
+async fn resync_after_write(svc: &Arc<Service>, vault: &Arc<Vault>, calendar_id: CalendarId) {
+    let latest = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.calendar(calendar_id)?)).await
+    };
+    match latest {
+        Ok(calendar) => {
+            if let Err(e) = sync(svc, vault, &calendar).await {
+                tracing::info!(%calendar_id, error = %e, "a calendar did not resync after a write");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(%calendar_id, error = %e, "a written calendar could not be read back")
+        }
+    }
+}
+
+/// A write's failure, with the account moved to `NeedsSignIn` when the
+/// server refused the credential outright. A 403 on a write is *not* that
+/// -- reading may still work perfectly well -- so the sources answer one
+/// with another code, and only a refused credential lands here as
+/// `FORBIDDEN`. (The scope check in [`writable_target`] answers `FORBIDDEN`
+/// too, but before any request is made, so it never reaches this.)
+async fn after_write<T>(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    result: CommandResult<T>,
+) -> CommandResult<T> {
+    note_if_credential_is_bad(svc, vault, account, &result).await;
+    result
+}
+
+/// Put `draft` on `calendar_id`, then sync it so the new event is on the
+/// grid. Answers the new event's first occurrence when the sync found it --
+/// `None` when the server took it but the sync has not brought it back yet,
+/// which the caller treats as "refresh later", not as a failure.
+pub async fn create_event(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    calendar_id: CalendarId,
+    draft: &EventDraft,
+) -> CommandResult<Option<Event>> {
+    let mut draft = draft.clone();
+    draft.validate()?;
+    let (calendar, account, source) = writable_target(vault, calendar_id).await?;
+    let result = provider_for(source).create(svc, vault, &account, &calendar, &draft).await;
+    after_write(svc, vault, &account, result).await?;
+    resync_after_write(svc, vault, calendar_id).await;
+
+    let vault = vault.clone();
+    let day = draft.start_date();
+    blocking(move || {
+        let found = vault.events(&EventQuery {
+            calendar_id: Some(calendar_id),
+            from: Some(day),
+            to: Some(day),
+            ..Default::default()
+        })?;
+        Ok(found.into_iter().find(|e| e.start == draft.start && e.title == draft.title))
+    })
+    .await
+}
+
+/// Read one event fresh from its server, ready to be changed.
+pub async fn load_event(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    event: &Event,
+) -> CommandResult<EditableEvent> {
+    let (calendar, account, source) = writable_target(vault, event.calendar_id).await?;
+    let result = provider_for(source).load(svc, vault, &account, &calendar, event).await;
+    after_write(svc, vault, &account, result).await
+}
+
+/// Change one event, or its whole series, then sync its calendar.
+pub async fn update_event(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    event: &Event,
+    draft: &EventDraft,
+    scope: EventScope,
+) -> CommandResult<()> {
+    let mut draft = draft.clone();
+    draft.validate()?;
+    let (calendar, account, source) = writable_target(vault, event.calendar_id).await?;
+    let result =
+        provider_for(source).update(svc, vault, &account, &calendar, event, &draft, scope).await;
+    after_write(svc, vault, &account, result).await?;
+    resync_after_write(svc, vault, event.calendar_id).await;
+    Ok(())
+}
+
+/// Delete one event, or its whole series, then sync its calendar.
+pub async fn delete_event(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    event: &Event,
+    scope: EventScope,
+) -> CommandResult<()> {
+    let (calendar, account, source) = writable_target(vault, event.calendar_id).await?;
+    let result = provider_for(source).delete(svc, vault, &account, &calendar, event, scope).await;
+    after_write(svc, vault, &account, result).await?;
+    resync_after_write(svc, vault, event.calendar_id).await;
+    Ok(())
 }
 
 async fn record_failure(vault: &Arc<Vault>, id: CalendarId, why: &str) {

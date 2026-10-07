@@ -143,6 +143,7 @@
       "color": "#c2410c",
       "createdAt": "2023-11-14T22:13:38Z",
       "id": "00000000-0000-0000-0000-000000000010",
+      "isDefault": false,
       "name": "Fixture Calendar 1",
       "origin": {
         "account_id": "00000000-0000-0000-0000-00000000000f",
@@ -152,6 +153,7 @@
         "type": "account"
       },
       "provider": "other",
+      "readOnly": false,
       "refreshMinutes": 60,
       "roleId": "00000000-0000-0000-0000-000000000001",
       "updatedAt": "2023-11-14T22:13:38Z",

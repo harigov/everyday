@@ -79,6 +79,10 @@ fn every_update_tool_is_covered_by_a_partial_patch_test() {
         "update_skill",
         "update_reading",
         "update_profile",
+        // Checked in `tools/calendar.rs`'s
+        // `an_update_names_only_what_changes_and_a_new_rule_means_the_series`,
+        // beside the fake server it needs to load the event from.
+        "update_event",
     ];
     for tool in tools::catalog() {
         if tool.name.starts_with("update_") {

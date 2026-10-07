@@ -7,15 +7,24 @@
 // What makes this store different from its siblings: it is the only one that
 // *reads across* domains. The grid draws five things at once —
 //
-//   external events    other people's calendars, read-only          (calendar)
+//   events             account calendars and subscribed feeds       (calendar)
 //   planned blocks     what you intend to do                             (task)
 //   actual blocks      what you did                                      (task)
 //   tasks              drawn on the day they are due                     (task)
 //   journal entries    a mark on the days you wrote something         (journal)
 //
-// — and only one of them is new. That is the whole design: a calendar is a
-// *view* over records that already existed, not a fourth place to put an
-// appointment. Everything here that writes, writes a `TimeBlock`.
+// — and only one of them is new. That is still most of the design: a
+// calendar is a *view* over records that already existed, not a fourth place
+// to keep an appointment.
+//
+// What changed is where an appointment of your own can live. On this
+// computer it is a `TimeBlock`, and everything here that writes locally
+// writes one. On an account's calendar -- Google, Microsoft, a CalDAV server
+// -- it is written to *that server* (`saveDraft`, `saveEdit`, `deleteEvent`)
+// and comes back the way every event does, through the calendar's own sync.
+// Nothing here edits a stored event in place: the server's copy is the
+// event, and the vault's is a reading of it. Which of the two a new event
+// becomes is the default calendar's say -- see `newEvent`.
 
 import { api } from './api'
 import { SvelteMap } from 'svelte/reactivity'
@@ -25,6 +34,7 @@ import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
 import { pref } from './prefs'
 import { edited, proposals, recordAs } from './proposals.svelte'
+import { carryRule, dayIn, midnightIn } from './recurrence'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { latest } from './store/latest'
 import { optimisticPatch } from './store/optimistic-patch'
@@ -51,18 +61,25 @@ import {
 } from './time'
 import type {
   AccountId,
+  BlockId,
   BlockKind,
   BlockSubject,
   CalendarEvent,
   CalendarId,
   CalendarInfo,
+  EditableEvent,
   EntrySummary,
+  EventDraft,
+  EventId,
+  EventScope,
   Project,
   ProjectId,
   Proposal,
   ProposalId,
   Reading,
+  Recurrence,
   RoleId,
+  SeriesScope,
   Task,
   TaskId,
   TimeBlock,
@@ -184,8 +201,50 @@ function readTimer(): Timer | null {
   }
 }
 
-/** What the detail panel is showing. */
-export type Selection = { kind: 'block'; id: string } | { kind: 'event'; id: string } | null
+/** The machine's own zone: what a new event is quoted in unless it came with one. */
+function localZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone
+}
+
+/**
+ * What the detail panel is showing.
+ *
+ * `draft` is a new event not yet written anywhere -- see `NewEvent`. It has
+ * no id because there is no record behind it yet, and leaving it (Escape, a
+ * click on something else) is how it is thrown away.
+ */
+export type Selection =
+  { kind: 'block'; id: string } | { kind: 'event'; id: string } | { kind: 'draft' } | null
+
+/**
+ * A new event being written, before it exists anywhere.
+ *
+ * Held in the store rather than in the editor, because two things draw it:
+ * the editor in the rail, and the grid, which shows it as a dashed slot at
+ * the time it would take -- and dragging that slot moves the draft's times,
+ * which the editor then reads back.
+ */
+export interface NewEvent {
+  /** The account calendar it will be written to; `null` is this computer's own time. */
+  calendarId: CalendarId | null
+  draft: EventDraft
+  /**
+   * A block of your own this draft is moving onto an account calendar. It
+   * is deleted once the event has landed there and not before, so a save
+   * that fails -- or a draft that is cancelled -- loses nothing.
+   */
+  fromBlock?: BlockId
+}
+
+/**
+ * An account calendar's event being changed, from the moment its server is
+ * asked for it. `draft` is the editor's working copy; `event.draft` is what
+ * the server said, kept apart so "was the repeat changed?" has an answer.
+ */
+export type EventEdit =
+  | { id: EventId; status: 'loading' }
+  | { id: EventId; status: 'failed'; error: string }
+  | { id: EventId; status: 'ready'; event: EditableEvent; draft: EventDraft }
 
 class CalendarState {
   // ── what is on screen ────────────────────────────────────────────────
@@ -225,7 +284,11 @@ class CalendarState {
    */
   readings = $state<Reading[]>([])
 
-  selection = $state<Selection>(null)
+  #selection = $state<Selection>(null)
+  /** The new event open in the rail and drawn on the grid. See `NewEvent`. */
+  draft = $state<NewEvent | null>(null)
+  /** The account event open for changing, if one is. See `EventEdit`. */
+  editing = $state<EventEdit | null>(null)
   /**
    * The pending `block` proposal open in the rail, by id -- not the
    * `Proposal` itself, for the reason `todo`'s `#selectedProposalId` gives:
@@ -287,6 +350,10 @@ class CalendarState {
    * close theirs.
    */
   #generation = latest()
+  /** Has the calendar list been read since the last unlock? See `loadCalendars`. */
+  #calendarsKnown = false
+  /** Bumped by every lock, so a read that set off before one cannot land after it. */
+  #locks = 0
 
   constructor() {
     app.onLock(() => this.reset())
@@ -303,6 +370,26 @@ class CalendarState {
     // `proposals.svelte.ts` -- so the store that just gained a block tells
     // itself to reload.
     proposals.onAccepted('block', () => this.refresh())
+  }
+
+  /**
+   * What the rail is showing.
+   *
+   * A setter rather than a plain field because moving it is also how an
+   * unsaved draft and an open edit are let go. Every way of looking at
+   * something else -- a click on another slot, Escape, a menu's "Show
+   * details", a lock -- is already an assignment here, and a draft that
+   * survived them would go on being drawn on the grid beside whatever had
+   * replaced it in the rail, waiting to be saved by nobody.
+   */
+  get selection(): Selection {
+    return this.#selection
+  }
+
+  set selection(next: Selection) {
+    this.#selection = next
+    if (next?.kind !== 'draft') this.draft = null
+    if (next?.kind !== 'event' || next.id !== this.editing?.id) this.editing = null
   }
 
   reset() {
@@ -329,6 +416,8 @@ class CalendarState {
     this.selection = null
     this.#selectedProposalId = null
     this.syncNote = null
+    this.#calendarsKnown = false
+    this.#locks += 1
     // The timer is deliberately *not* cleared: it is a note to self held in
     // local storage, it names no decrypted content, and a lock taken during
     // a working session should not silently throw away what you were doing.
@@ -450,6 +539,7 @@ class CalendarState {
         // guaranteed they landed in the order they were asked for.
         if (!isCurrent()) return
         this.calendars = calendars
+        this.#calendarsKnown = true
         this.events = events
         this.blocks = blocks
         this.dueTasks = dueTasks
@@ -458,7 +548,11 @@ class CalendarState {
         this.entryDays = new Set(entries.map((e: EntrySummary) => e.localDate))
         this.readings = readings
         // A selection that has scrolled out of the window is not a selection.
-        if (this.selection && !this.selected) this.selection = null
+        // A draft has nothing to scroll out of: it is not stored, and paging
+        // to check another day before saving it is a thing people do.
+        if (this.selection && this.selection.kind !== 'draft' && !this.selected) {
+          this.selection = null
+        }
       },
       { setLoading: (v) => (this.loading = v), onError: (e) => handle(e) },
     )
@@ -521,6 +615,29 @@ class CalendarState {
   /** The calendar an event came from, for its colour and its name. */
   calendarOf(id: CalendarId): CalendarInfo | null {
     return this.calendars.find((c) => c.id === id) ?? null
+  }
+
+  /** The account calendars a new event can be written to right now. */
+  get writableCalendars(): CalendarInfo[] {
+    return this.calendars.filter((c) => c.access === 'writable')
+  }
+
+  /**
+   * Where a new event goes when nobody says: an account calendar, or `null`
+   * for this computer's own time blocks.
+   *
+   * Only a calendar that can still be written to counts. One whose account
+   * has lost the permission keeps its flag on disk -- signing in again
+   * should put things back as they were -- but until then a new event goes
+   * here, to this computer, rather than to a request bound to fail.
+   */
+  get defaultCalendar(): CalendarInfo | null {
+    return this.calendars.find((c) => c.isDefault && c.access === 'writable') ?? null
+  }
+
+  /** The colour a calendar choice is drawn in: its own, or the accent for this computer. */
+  colorOfCalendar(id: CalendarId | null): string {
+    return (id ? this.calendarOf(id)?.color : null) ?? 'var(--accent)'
   }
 
   projectOf(id: ProjectId | null | undefined): Project | null {
@@ -824,10 +941,11 @@ class CalendarState {
   // ── the selection ────────────────────────────────────────────────────
 
   get selected(): TimeBlock | CalendarEvent | null {
-    if (!this.selection) return null
-    return this.selection.kind === 'block'
-      ? (this.blocks.find((b) => b.id === this.selection!.id) ?? null)
-      : (this.events.find((e) => e.id === this.selection!.id) ?? null)
+    const selection = this.selection
+    if (!selection || selection.kind === 'draft') return null
+    return selection.kind === 'block'
+      ? (this.blocks.find((b) => b.id === selection.id) ?? null)
+      : (this.events.find((e) => e.id === selection.id) ?? null)
   }
 
   /**
@@ -917,12 +1035,14 @@ class CalendarState {
   // ── writing ──────────────────────────────────────────────────────────
 
   /**
-   * Book time.
+   * Book time on this computer.
    *
-   * The single write this app makes. Dragging a task onto Tuesday afternoon,
-   * clicking an empty slot, and starting the timer are all this call with
-   * different arguments, which is what keeps "the calendar has one kind of
-   * record" true rather than aspirational.
+   * The one way a block of your own is made. Dragging a task onto Tuesday
+   * afternoon, stopping the timer, "this is what happened", and a new event
+   * when no account calendar is the default are all this call with
+   * different arguments -- which is what keeps "your own time is one kind
+   * of record" true rather than aspirational. An account calendar's event
+   * is not this: see `newEvent`.
    */
   async book(opts: {
     subject: BlockSubject
@@ -992,13 +1112,20 @@ class CalendarState {
    * Book what a sentence describes.
    *
    * The quick model reads "lunch with Sam Thursday 1pm at the usual place";
-   * everything after that is the ordinary `book`. Answers null and does
+   * everything after that is an ordinary write. Answers null and does
    * nothing when the sentence names no date -- an appointment with no day is
    * not an appointment, and guessing today would put somebody's Thursday
    * lunch on a Tuesday.
    *
+   * Where it is written is the default calendar's say, as for every other
+   * new event, with one difference: an account calendar's event is written
+   * straight away rather than opened as a draft. A sentence typed into the
+   * command bar is already the whole of what was meant -- the editor would
+   * only be asking for it again -- and a note saying where it went is how
+   * the person finds out, since they may not be looking at the calendar.
+   *
    * An hour when no end was given, because that is what `bookNow` assumes too
-   * and a block of unknown length has to be drawn as something.
+   * and an event of unknown length has to be drawn as something.
    *
    * The booking happens *before* the view moves, which is the opposite of the
    * obvious order and the only one that works. `goto` fires an unawaited
@@ -1007,7 +1134,7 @@ class CalendarState {
    * grid and clears the selection that was just made. Booking first means the
    * refresh reads it back from storage, which is where it already is.
    */
-  async bookFromSentence(line: string): Promise<TimeBlock | null> {
+  async bookFromSentence(line: string): Promise<TimeBlock | CalendarEvent | null> {
     /** `HH:MM` to minutes since midnight. The core already validated it. */
     const clockMinutes = (clock: string): number => {
       const [h = '0', m = '0'] = clock.split(':')
@@ -1028,31 +1155,77 @@ class CalendarState {
       return null
     }
     await this.start()
+    const date = draft.date
     const start = draft.start ? clockMinutes(draft.start) : 9 * 60
     // `end` without `start` cannot say how long anything is -- "by 8am
     // Thursday" would be measured against the 09:00 default and come out
     // negative. The core drops that pairing, and this is the second guard.
     const span = draft.end && draft.start ? clockMinutes(draft.end) - start : 0
     const minutes = span > 0 ? span : 60
-    const block = await this.book({
-      subject: { type: 'adhoc' },
-      day: draft.date,
-      startMinutes: start,
-      minutes,
-      kind: 'planned',
-      title: draft.location ? `${draft.title} — ${draft.location}` : draft.title,
-    })
-    if (block && !this.days.includes(draft.date)) this.goto(draft.date)
-    return block
+    const rule = draft.recurrence ?? null
+
+    const target = this.defaultCalendar
+    if (!target) {
+      const block = await this.book({
+        subject: { type: 'adhoc' },
+        day: date,
+        startMinutes: start,
+        minutes,
+        kind: 'planned',
+        title: draft.location ? `${draft.title} — ${draft.location}` : draft.title,
+      })
+      // "Every Tuesday" written as a block makes the series from it -- the
+      // same call the Repeat field in the rail makes afterwards.
+      if (block && rule) await this.repeatBlock(block.id, rule)
+      if (block && !this.days.includes(date)) this.goto(date)
+      return block
+    }
+
+    const event: EventDraft = {
+      title: draft.title,
+      description: '',
+      location: draft.location,
+      start: instantAt(date, start),
+      end: instantAt(date, start + minutes),
+      allDay: false,
+      tz: localZone(),
+      attendees: [],
+      recurrence: rule,
+    }
+    try {
+      const created = await api.createEvent(target.id, event)
+      notify.success(`Added to ${target.name}`, {
+        body: created ? `“${created.title}”` : `“${draft.title}” will appear once it has synced.`,
+        reach: 'app',
+      })
+      // Moved before the reload rather than through `goto`, whose own
+      // reload is not awaited -- the selection below has to land after the
+      // event is in `events`, or the reload would clear it as out of range.
+      if (!this.days.includes(date)) {
+        this.anchor = date
+        this.syncNote = null
+      }
+      await this.refresh()
+      if (created) this.selection = { kind: 'event', id: created.id }
+      return created
+    } catch (e) {
+      if (isLocked(e)) {
+        await app.lock()
+        return null
+      }
+      notify.error(`Could not add it to ${target.name}`, { body: errorMessage(e), reach: 'app' })
+      return null
+    }
   }
 
   /**
-   * Set an hour aside, starting on the next quarter. What Ctrl/Cmd N does.
+   * A new hour-long event, starting on the next quarter. What Ctrl/Cmd N does.
    *
    * The same key that starts an entry in the journal and a task in the todo
-   * app: begin the next thing. Here that is time on the calendar, and the
-   * view moves to today if it was somewhere else, because booking an hour
-   * you cannot see is indistinguishable from nothing happening.
+   * app: begin the next thing. Here that is a new event -- a block, or a
+   * draft on the default calendar, as `newEvent` decides -- and the view
+   * moves to today if it was somewhere else, because a new hour you cannot
+   * see is indistinguishable from nothing happening.
    */
   async bookNow() {
     // The tray can ask for this a frame after the view mounted, with the
@@ -1065,13 +1238,412 @@ class CalendarState {
     // `goto`'s refresh would otherwise overwrite `blocks` with a query that
     // predates the save. Rare here, because the view is usually already on
     // today -- which is exactly why it would have been found late.
-    await this.book({
-      subject: { type: 'adhoc' },
-      day: todayIso(),
-      startMinutes: start,
-      minutes: DEFAULT_BLOCK_MINUTES,
-    })
+    await this.newEvent({ day: todayIso(), startMinutes: start, minutes: DEFAULT_BLOCK_MINUTES })
     if (!this.days.includes(todayIso())) this.goto(todayIso())
+  }
+
+  // ── new events ───────────────────────────────────────────────────────
+
+  /**
+   * Start a new event at a time. Every "new event" gesture the grid has is
+   * this: a click or a drag on empty time, "New event here", Ctrl/Cmd N.
+   *
+   * Where it goes is the default calendar's business, and the two answers
+   * behave differently on purpose. This computer's time is a block, written
+   * at once and selected, exactly as it always was -- a block is fifteen
+   * seconds to make again and the rail edits it in place. An account
+   * calendar's event is *not* written yet, because writing it is a request
+   * to a server that may send invitations to other people: it opens as a
+   * draft, drawn on the grid and edited in the rail, and nothing leaves the
+   * machine until Save.
+   *
+   * Not for scheduling a task, logging what happened or the timer: those
+   * are records of your own time and stay blocks whatever the default is.
+   */
+  async newEvent(opts: {
+    day: string
+    startMinutes: number
+    minutes: number
+    allDay?: boolean
+    title?: string
+  }): Promise<void> {
+    const target = this.defaultCalendar
+    if (!target) {
+      await this.book({
+        subject: { type: 'adhoc' },
+        day: opts.day,
+        startMinutes: opts.startMinutes,
+        minutes: opts.minutes,
+        title: opts.title,
+      })
+      return
+    }
+    const tz = localZone()
+    const minutes = Math.max(MIN_BLOCK_MINUTES, Math.round(opts.minutes))
+    this.openDraft(target.id, {
+      title: opts.title ?? '',
+      description: '',
+      location: '',
+      start: opts.allDay ? midnightIn(opts.day, tz) : instantAt(opts.day, opts.startMinutes),
+      end: opts.allDay
+        ? midnightIn(addDays(opts.day, 1), tz)
+        : instantAt(opts.day, opts.startMinutes + minutes),
+      allDay: !!opts.allDay,
+      tz,
+      attendees: [],
+      recurrence: null,
+    })
+  }
+
+  /** Open `draft` in the rail as a new event bound for `calendarId`. */
+  openDraft(calendarId: CalendarId | null, draft: EventDraft, fromBlock?: BlockId) {
+    this.#selectedProposalId = null
+    // Selection first: the setter lets go of whatever draft was open before,
+    // and this one must not be let go with it.
+    this.selection = { kind: 'draft' }
+    this.draft = fromBlock ? { calendarId, draft, fromBlock } : { calendarId, draft }
+  }
+
+  /**
+   * Change the open draft. Replaced rather than mutated, so the slot on the
+   * grid and the fields in the rail redraw from the same one assignment.
+   */
+  patchDraft(changes: Partial<EventDraft>) {
+    if (!this.draft) return
+    this.draft.draft = { ...this.draft.draft, ...changes }
+  }
+
+  /** Send the open draft somewhere else: another account calendar, or this computer. */
+  setDraftCalendar(id: CalendarId | null) {
+    const open = this.draft
+    if (!open) return
+    open.calendarId = id
+    // This computer has nowhere to draw an all-day block of its own -- the
+    // band over the grid holds other people's days -- so one moved here
+    // becomes the first hour of the working day instead of vanishing.
+    if (id === null && open.draft.allDay) {
+      const day = dayIn(open.draft.start, open.draft.tz)
+      this.patchDraft({
+        allDay: false,
+        start: instantAt(day, 9 * 60),
+        end: instantAt(day, 10 * 60),
+      })
+    }
+  }
+
+  /** Move the draft on the grid, keeping its length and what its repeat meant. */
+  moveDraft(day: string, startMinutes: number) {
+    const open = this.draft
+    if (!open || open.draft.allDay) return
+    const length = minutesBetween(open.draft.start, open.draft.end)
+    this.patchDraft({
+      start: instantAt(day, startMinutes),
+      end: instantAt(day, startMinutes + length),
+      recurrence: carryRule(open.draft.recurrence, isoDate(new Date(open.draft.start)), day),
+    })
+  }
+
+  /** Change the draft's length, holding its start. */
+  resizeDraft(minutes: number) {
+    const open = this.draft
+    if (!open || open.draft.allDay) return
+    const length = Math.max(MIN_BLOCK_MINUTES, Math.round(minutes))
+    this.patchDraft({
+      end: new Date(Date.parse(open.draft.start) + length * 60_000).toISOString(),
+    })
+  }
+
+  /** Throw the open draft away. Nothing was written, so nothing is undone. */
+  cancelDraft() {
+    if (this.selection?.kind === 'draft') this.selection = null
+    this.draft = null
+  }
+
+  /**
+   * Write the open draft, and answer why not if it could not be.
+   *
+   * The failure is *returned*, for the editor to show beside its Save
+   * button, rather than raised over the window: a server that refused a
+   * guest's address is answered by fixing the address, and a banner that
+   * closed the draft would lose everything typed into it.
+   */
+  async saveDraft(): Promise<string | null> {
+    const open = this.draft
+    if (!open) return null
+    const draft = $state.snapshot(open.draft)
+    const { calendarId, fromBlock } = open
+    /** Is that draft still the one in the rail -- nobody has moved on since Save? */
+    const current = () => this.draft === open
+
+    try {
+      if (calendarId === null) {
+        const block = await this.#writeLocally(draft)
+        await this.refreshBlocks()
+        if (current()) this.selection = { kind: 'block', id: block.id }
+        return null
+      }
+
+      const created = await api.createEvent(calendarId, draft)
+      // Only now that the event is on the server: a failed save above has
+      // returned already, and the block it came from is still there.
+      if (fromBlock) await this.#retireBlock(fromBlock, !!draft.recurrence)
+      await this.refresh()
+      if (current()) this.#selectWritten(created, calendarId, draft)
+      return null
+    } catch (e) {
+      if (isLocked(e)) {
+        await app.lock()
+        return null
+      }
+      return errorMessage(e)
+    }
+  }
+
+  /**
+   * A draft bound for this computer, as the block it becomes.
+   *
+   * Written directly rather than through `book`, which reports its own
+   * failures over the whole window; this one belongs beside the editor's
+   * Save button. A block has no field for a place, so a location rides in
+   * the title, where `bookFromSentence` has always put one.
+   */
+  async #writeLocally(draft: EventDraft): Promise<TimeBlock> {
+    const block = await api.newBlock({
+      subject: { type: 'adhoc' },
+      start: draft.start,
+      minutes: minutesBetween(draft.start, draft.end),
+      kind: 'planned',
+    })
+    const title = draft.title.trim()
+    const place = draft.location.trim()
+    block.title = place ? `${title} — ${place}` : title
+    block.notes = draft.description
+    if (draft.recurrence) await api.saveBlockSeries(block, draft.recurrence)
+    else await api.saveBlock(block)
+    void todo.refreshStats()
+    return block
+  }
+
+  /**
+   * Delete the block a draft was moved from, now that the event has landed.
+   *
+   * A block in a series that the draft carried on repeating takes the rest
+   * of its series with it -- the repeat moved to the account calendar, and
+   * leaving the copies here would put every later one on the grid twice.
+   * A failure is reported but not unwound: the event is already on the
+   * server, and the leftover block is one press of Delete to tidy.
+   */
+  async #retireBlock(id: BlockId, repeats: boolean) {
+    const block = this.blocks.find((b) => b.id === id)
+    try {
+      if (block?.series && repeats) await api.deleteBlockSeries(id, 'following')
+      else await api.deleteBlock(id)
+      this.#saves.forget(id)
+      void todo.refreshStats()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /**
+   * Select the event a write just made.
+   *
+   * The server's answer when it gave one. When it did not -- the write
+   * landed but the calendar's sync has not brought it back yet -- the
+   * nearest thing on the grid with the same calendar, start and title, and
+   * failing that a line under the sidebar saying it is on its way, rather
+   * than a rail that silently goes blank.
+   */
+  #selectWritten(created: CalendarEvent | null, calendarId: CalendarId, draft: EventDraft) {
+    const title = draft.title.trim()
+    const found =
+      created ??
+      this.events.find(
+        (e) =>
+          e.calendarId === calendarId &&
+          e.title.trim() === title &&
+          Date.parse(e.start) === Date.parse(draft.start),
+      ) ??
+      null
+    if (found && this.events.some((e) => e.id === found.id)) {
+      this.selection = { kind: 'event', id: found.id }
+      return
+    }
+    this.selection = null
+    const name = this.calendarOf(calendarId)?.name ?? 'the calendar'
+    this.syncNote = `Saved to ${name}. It will appear here once it has synced.`
+  }
+
+  /**
+   * Move a block of your own onto an account's calendar.
+   *
+   * Not a write, yet: it opens the block as a draft bound for that calendar,
+   * filled in from it, so guests and a description can be added before
+   * anything is sent. The block is deleted only once the event has landed --
+   * see `NewEvent.fromBlock` -- so cancelling leaves it exactly as it was.
+   */
+  async moveBlockToCalendar(id: BlockId, calendarId: CalendarId) {
+    // Pending edits first, so the draft is filled in from what was typed a
+    // second ago and not from what was last saved.
+    await this.flush()
+    const block = this.blocks.find((b) => b.id === id)
+    if (!block) return
+    this.openDraft(
+      calendarId,
+      {
+        title: block.title,
+        description: block.notes,
+        location: '',
+        start: block.start,
+        end: block.end,
+        allDay: block.allDay,
+        tz: block.tz || localZone(),
+        attendees: [],
+        recurrence: block.series ? $state.snapshot(block.series.rule) : null,
+      },
+      block.id,
+    )
+  }
+
+  // ── changing an account calendar's events ────────────────────────────
+
+  /**
+   * Open an account calendar's event for changing.
+   *
+   * Read fresh from its server first. The stored copy is a reading for the
+   * grid -- guests as display names, no rule, a description the feed may
+   * have shortened -- and writing back from it would drop whatever it does
+   * not hold. The rail shows the wait and, if the server will not answer,
+   * why.
+   */
+  async editEvent(id: EventId) {
+    this.selection = { kind: 'event', id }
+    this.editing = { id, status: 'loading' }
+    try {
+      const event = await api.loadEvent(id)
+      if (this.editing?.id !== id) return
+      this.editing = { id, status: 'ready', event, draft: structuredClone(event.draft) }
+    } catch (e) {
+      if (isLocked(e)) return void (await app.lock())
+      if (this.editing?.id !== id) return
+      this.editing = { id, status: 'failed', error: errorMessage(e) }
+    }
+  }
+
+  /** Change the event open for editing. Replaced, like `patchDraft`. */
+  patchEdit(changes: Partial<EventDraft>) {
+    const open = this.editing
+    if (open?.status !== 'ready') return
+    open.draft = { ...open.draft, ...changes }
+  }
+
+  /** Close the editor without writing anything. The event stays selected. */
+  cancelEdit() {
+    this.editing = null
+  }
+
+  /**
+   * Write the change, to this occurrence or the whole series. Answers why
+   * not, for the editor to show -- see `saveDraft`.
+   */
+  async saveEdit(scope: EventScope): Promise<string | null> {
+    const open = this.editing
+    if (open?.status !== 'ready') return null
+    const draft = $state.snapshot(open.draft)
+    const calendarId = open.event.calendarId
+    try {
+      await api.updateEvent(open.id, draft, scope)
+    } catch (e) {
+      if (isLocked(e)) {
+        await app.lock()
+        return null
+      }
+      return errorMessage(e)
+    }
+    if (this.editing === open) this.editing = null
+    await this.refresh()
+    // A change to a series can come back as occurrences with new ids, in
+    // which case the reload has dropped the selection; the one that was
+    // being looked at is found again by where it now is.
+    if (this.selection === null) this.#selectWritten(null, calendarId, draft)
+    return null
+  }
+
+  /**
+   * An event as its server has it, or `null` when the server will not say.
+   * Asked before deleting one, for whether it is part of a series.
+   */
+  async loadEditable(id: EventId): Promise<EditableEvent | null> {
+    const open = this.editing
+    if (open?.id === id && open.status === 'ready') return open.event
+    try {
+      return await api.loadEvent(id)
+    } catch (e) {
+      await quietly(e)
+      return null
+    }
+  }
+
+  /**
+   * Delete an account calendar's event -- this occurrence, or its series.
+   * Its guests are sent a cancellation by the server. Answers why not, for
+   * the rail to show beside the button that asked.
+   */
+  async deleteEvent(id: EventId, scope: EventScope): Promise<string | null> {
+    try {
+      await api.deleteEvent(id, scope)
+    } catch (e) {
+      if (isLocked(e)) {
+        await app.lock()
+        return null
+      }
+      return errorMessage(e)
+    }
+    if (this.selection?.kind === 'event' && this.selection.id === id) this.selection = null
+    this.events = this.events.filter((e) => e.id !== id)
+    await this.refresh()
+    return null
+  }
+
+  // ── where new events go ──────────────────────────────────────────────
+
+  /**
+   * Choose where new events go: an account calendar that will take them,
+   * or `null` for this computer's own time blocks.
+   *
+   * Moved on screen first, so "New events go to" in the sidebar changes
+   * the moment it is picked; then read back, because the backend is what
+   * guarantees at most one calendar holds the flag, and `saveCalendar`
+   * deliberately cannot move it.
+   */
+  async setDefaultCalendar(id: CalendarId | null) {
+    for (const c of this.calendars) c.isDefault = c.id === id
+    try {
+      await api.setDefaultCalendar(id)
+      this.calendars = await api.calendars()
+    } catch (e) {
+      await handle(e, () => this.refresh())
+    }
+  }
+
+  /**
+   * The calendar list on its own, once per unlock.
+   *
+   * For the command bar, whose "Book" row names the calendar it will write
+   * to and which can be opened before the calendar app ever has been. Free
+   * once the app has loaded, which reads the list too.
+   */
+  async loadCalendars() {
+    if (this.#calendarsKnown || !app.supportsCalendar) return
+    this.#calendarsKnown = true
+    const locks = this.#locks
+    try {
+      const calendars = await api.calendars()
+      if (locks === this.#locks) this.calendars = calendars
+    } catch (e) {
+      this.#calendarsKnown = false
+      await quietly(e)
+    }
   }
 
   /** Book a planned block for a task, defaulting to its own estimate. */
@@ -1200,6 +1772,60 @@ class CalendarState {
       onSuccess: () => void todo.refreshStats(),
       rollback: () => this.refreshBlocks(),
     })
+  }
+
+  // ── repeating blocks ─────────────────────────────────────────────────
+  //
+  // A repeat of your own is written out as one block per occurrence, two
+  // years ahead, each a block in its own right that can be moved or deleted
+  // alone -- see `BlockSeries`. What ties them is `series`, and the two
+  // commands below are the only ways to act on more than one at once.
+
+  /**
+   * Make a block repeat, change how it repeats from here on, or stop it.
+   *
+   * Pending edits to it are written first: the series is copied from the
+   * block as the backend holds it, and a title typed a second ago and not
+   * yet saved would otherwise be the one thing every copy lacked.
+   */
+  async repeatBlock(id: BlockId, rule: Recurrence | null) {
+    await this.flush()
+    const block = this.blocks.find((b) => b.id === id)
+    if (!block) return
+    try {
+      await api.saveBlockSeries($state.snapshot(block), rule ? $state.snapshot(rule) : null)
+      await this.refreshBlocks()
+      void todo.refreshStats()
+    } catch (e) {
+      await handle(e, () => this.refreshBlocks())
+    }
+  }
+
+  /**
+   * Carry this block's changes -- its title, notes, time of day, length --
+   * onto every later block of its series. The same call as making the
+   * series, with the rule it already has: the later copies are replaced by
+   * fresh ones made from this one.
+   */
+  async applyToFollowing(id: BlockId) {
+    const rule = this.blocks.find((b) => b.id === id)?.series?.rule
+    if (rule) await this.repeatBlock(id, $state.snapshot(rule))
+  }
+
+  /** Delete a block and the rest of its series after it, or the whole series. */
+  async deleteBlockSeries(id: BlockId, scope: SeriesScope) {
+    // Written before, not forgotten: a save still queued for one of these
+    // and sent after the delete would put it back.
+    await this.flush()
+    try {
+      const gone = new Set(await api.deleteBlockSeries(id, scope))
+      for (const doomed of gone) this.#saves.forget(doomed)
+      this.blocks = this.blocks.filter((b) => !gone.has(b.id))
+      if (this.selection?.kind === 'block' && gone.has(this.selection.id)) this.selection = null
+      void todo.refreshStats()
+    } catch (e) {
+      await handle(e, () => this.refreshBlocks())
+    }
   }
 
   /** Turn a plan into a record, or back. What "I actually did this" is. */

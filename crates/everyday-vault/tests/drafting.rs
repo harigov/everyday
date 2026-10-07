@@ -282,6 +282,13 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     // Who somebody is, typed in Settings -- changed when they say so, never
     // on a dream's guess.
     "update_profile",
+    // An event on an account's calendar is not a record this vault holds,
+    // so a proposal would have nothing to save when it was accepted -- and
+    // one with guests would send invitations from a dream. A dream that
+    // wants to suggest time uses `create_time_block`, which is proposable.
+    "create_event",
+    "update_event",
+    "delete_event",
 ];
 
 /// The two tools that write a real `Draft` while drafting and gain a linked

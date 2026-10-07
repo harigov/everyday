@@ -234,7 +234,10 @@ export async function beginAccountSignIn(
   const begun = await api.beginOauthSignIn(args)
   const finished = (async () => {
     const awaited = await api.awaitOauthSignIn(begun.signInId)
-    await api.attachOauthSignIn(id, awaited.tokensSavedUnder, args.clientSecret)
+    // The scopes go with the tokens: a sign-in that asked for calendar write
+    // access is the only way the account learns it has it, and so the only
+    // way its calendars stop saying "sign in again" in the calendar app.
+    await api.attachOauthSignIn(id, awaited.tokensSavedUnder, args.clientSecret, [...args.scopes])
   })()
   return {
     url: begun.url,

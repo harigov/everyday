@@ -24,7 +24,8 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::account::{
-    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, Preset, Provider,
+    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Preset,
+    Provider,
 };
 use everyday_core::id::AccountId;
 use serde::{Deserialize, Serialize};
@@ -108,6 +109,11 @@ pub struct AttachOAuthSignIn {
     /// has to outlive the moment it hands its tokens over.
     #[serde(default)]
     pub client_secret: Option<String>,
+    /// The scopes the sign-in asked for, recorded on the account once it
+    /// succeeds -- what tells "signed in to read calendars" apart from
+    /// "signed in to write them" afterwards. Empty leaves them as they were.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -333,6 +339,19 @@ async fn attach_oauth_sign_in(
                 secret.client_secret = args.client_secret;
             }
             vault.save_account_secret(args.id, &secret)?;
+            // A fresh consent is the only moment the account's grant can
+            // have widened -- "sign in again to allow calendar access" asks
+            // for more than the account had -- so this is where the record
+            // learns it. Added to, never narrowed: a provider may hand back
+            // a token for one resource's scopes only (Microsoft does, for
+            // IMAP beside Graph), and the grant itself covers both.
+            if let AuthMethod::OAuth { scopes, .. } = &mut account.auth {
+                for scope in &args.scopes {
+                    if !scopes.contains(scope) {
+                        scopes.push(scope.clone());
+                    }
+                }
+            }
             account.status = AccountStatus::Ok;
             account.updated_at = now;
             vault.save_account(&account)?;
@@ -415,6 +434,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("id", "AccountId", true),
             ("signInId", "string", true),
             ("clientSecret", "string", false),
+            ("scopes", "string[]", false),
         ],
         run: attach_oauth_sign_in,
     },

@@ -97,6 +97,12 @@ struct GraphCalendarListItem {
     is_default: bool,
     #[serde(rename = "hexColor")]
     hex_color: Option<String>,
+    /// Whether this account may add and change events here: false on a
+    /// colleague's calendar shared for reading, true on every one of the
+    /// account's own. Absent reads as true, the way a CalDAV collection's
+    /// silence does -- the first refused write is what tells the truth then.
+    #[serde(rename = "canEdit")]
+    can_edit: Option<bool>,
 }
 
 pub async fn discover(
@@ -110,6 +116,7 @@ pub async fn discover(
         .value
         .into_iter()
         .map(|item| RemoteCalendar {
+            writable: item.can_edit.unwrap_or(true),
             remote_id: if item.is_default { PRIMARY.to_string() } else { item.id },
             name: item.name,
             // Graph's "named colour" (`lightBlue`, `auto`, ...) is not a hex
@@ -557,7 +564,60 @@ impl super::CalendarProvider for GraphProvider {
     ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
         Box::pin(sync(svc, vault, account, calendar))
     }
+
+    fn create<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        draft: &'a everyday_core::calendar::EventDraft,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::create(svc, vault, account, calendar, draft))
+    }
+
+    fn load<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+    ) -> super::BoxFuture<'a, CommandResult<everyday_core::calendar::EditableEvent>> {
+        Box::pin(write::load(svc, vault, account, calendar, event))
+    }
+
+    fn update<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+        draft: &'a everyday_core::calendar::EventDraft,
+        scope: everyday_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::update(svc, vault, account, calendar, event, draft, scope))
+    }
+
+    fn delete<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+        scope: everyday_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::delete(svc, vault, account, calendar, event, scope))
+    }
 }
+
+/// Creating, changing and deleting events -- see `accountcal`'s module doc,
+/// "Writing". A child module rather than a sibling, so it shares this
+/// file's private request helpers instead of having them re-exported.
+#[path = "graph_write.rs"]
+mod write;
 
 #[cfg(test)]
 mod tests {
@@ -788,7 +848,10 @@ mod tests {
     // ---- finding 1: a full delta after a 410 must compute its own
     // deletions, for the primary calendar too --------------------------
 
-    fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
+    /// `pub(super)` so the writing half's own tests (`graph_write.rs`) build
+    /// on the same one -- see `google.rs`'s `test_vault` for why it is not
+    /// simply shared with `tests/support/vault.rs`.
+    pub(super) fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let config = everyday_core::VaultConfig {
             name: "Test".into(),

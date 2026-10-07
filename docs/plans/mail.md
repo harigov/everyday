@@ -874,7 +874,12 @@ use.
 - **A built-in client ID.** Bring your own until someone decides to pay for
   verification.
 - **Writing to calendars.** Creating and moving events is its own plan. RSVP
-  by email is in because it is a mail feature.
+  by email is in because it is a mail feature. (Since delivered, October
+  2026: an account's calendar takes new events, changes and deletions --
+  repeats, guests and descriptions included -- through its own server, and
+  the README's "New events, and where they go" says how. The rows here are
+  still never edited in place: a write goes to the server and the sync brings
+  it back.)
 - **Contacts as an app.** Addresses are learned from headers for
   autocomplete; CardDAV waits.
 - **Mail in export and import.** The server is the backup; `everyday-transfer`

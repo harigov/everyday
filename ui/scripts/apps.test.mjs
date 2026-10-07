@@ -181,7 +181,7 @@ const EXPECTED_TRAY_ROWS = [
   {
     id: 'calendar:book-now',
     keys: null,
-    label: 'Set an hour aside',
+    label: 'New event',
     group: 'Calendar',
     tray: true,
   },
@@ -229,7 +229,7 @@ const EXPECTED_TRAY_MENUS = {
     { id: 'todo:goals', label: 'Goals' },
   ],
   Calendar: [
-    { id: 'calendar:book-now', label: 'Set an hour aside' },
+    { id: 'calendar:book-now', label: 'New event' },
     { id: 'calendar:timer', label: 'Track time' },
   ],
   Library: [{ id: 'library:add', label: 'Add to library' }],

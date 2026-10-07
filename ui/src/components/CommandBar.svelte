@@ -119,11 +119,15 @@
     }
     // An appointment written as a sentence. A row rather than a parse: no
     // request is made until somebody picks this, which is what keeps
-    // "nothing is looked up unless you ask" true here too.
+    // "nothing is looked up unless you ask" true here too. It names the
+    // calendar it will land on when that is an account's, because from
+    // here it is written straight to that server -- invitations and all --
+    // with no editor in between to see it in first.
     if (app.supportsCalendar && quickState.enabled('calendar.parse')) {
+      const target = calendar.defaultCalendar
       rows.push({
         kind: 'capture',
-        label: `Book: ${typed}`,
+        label: target ? `Book on ${target.name}: ${typed}` : `Book: ${typed}`,
         icon: 'calendar',
         hint: 'reads the date and time from the sentence',
         run: () => calendar.bookFromSentence(typed),
@@ -183,6 +187,13 @@
     untrack(() => {
       if (mode !== null) before = search?.query ?? null
     })
+  })
+
+  // The "Book" row names the calendar it would write to, which the calendar
+  // store only knows once it has listed them -- and the bar can be opened
+  // long before the calendar app ever has been. One read per unlock.
+  $effect(() => {
+    if (open && app.supportsCalendar) void calendar.loadCalendars()
   })
 
   // Keep the highlight inside the list as it shortens under typing; without

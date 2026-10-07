@@ -548,8 +548,49 @@ pub struct TimeBlock {
     /// lands under looking after yourself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub purpose: Option<Purpose>,
+    /// Set on every block of a repeating series, the first one included.
+    /// See [`BlockSeries`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series: Option<BlockSeries>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+/// What ties a repeating block of your own time to the rest of its series.
+///
+/// A repeat of your own is written out as one block per occurrence, ahead of
+/// time -- see [`crate::vault::Vault::save_block_series`] -- for the reason
+/// a subscribed calendar's recurrence is expanded at sync rather than at
+/// draw time: the grid, the reports and the "where did the week go" totals
+/// are all date-range scans over blocks, and not one of them should need a
+/// recurrence engine to answer. The cost is that a series is many rows;
+/// this is what lets them be found and changed together.
+///
+/// Each occurrence is still a block in its own right: moved, renamed, logged
+/// as done, or deleted on its own without touching the others.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct BlockSeries {
+    /// Shared by every block in the series: the id of the block it was made
+    /// from. Only a name for the group -- that block can be deleted and the
+    /// series still holds together.
+    pub id: BlockId,
+    /// How it repeats, kept on every occurrence so any one of them can say
+    /// so without looking up the others.
+    pub rule: crate::recurrence::Recurrence,
+}
+
+/// Which blocks of a repeating series a deletion means, counting from the
+/// one it was asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum SeriesScope {
+    /// This block and every later one; the earlier ones stay.
+    Following,
+    /// Every block in the series, before and after.
+    All,
 }
 
 impl TimeBlock {
@@ -571,6 +612,7 @@ impl TimeBlock {
             notes: String::new(),
             tags: Vec::new(),
             purpose: None,
+            series: None,
             created_at: now,
             updated_at: now,
         }

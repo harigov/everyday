@@ -664,7 +664,7 @@
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "description": "A calendar you have subscribed to.\n\nAlways read-only. Nothing this application does ever writes back to the\nserver it came from, and the interface says so where you add one, because\nan app that silently declines to publish your changes is worse than one\nthat never offered.",
+    "description": "A calendar you have subscribed to.\n\nA feed or a file is read-only, and the interface says so where you add\none, because an app that silently declines to publish your changes is\nworse than one that never offered. An account's calendar can take new\nevents and changes, unless its server says otherwise -- see\n[`Calendar::read_only`].",
     "properties": {
       "accountSync": {
         "$ref": "#/$defs/AccountSyncCursor",
@@ -685,6 +685,11 @@
       "id": {
         "format": "uuid",
         "type": "string"
+      },
+      "isDefault": {
+        "default": false,
+        "description": "Where new events go when nobody names a calendar: the grid, the\ncommand bar and the assistant all read it. At most one calendar has\nit set -- [`crate::vault::Vault::set_default_calendar`] keeps it that\nway -- and none means this computer's own time blocks.",
+        "type": "boolean"
       },
       "lastError": {
         "description": "Why the last sync failed, if it did. Kept on the record rather than\nraised as a dialog: a feed that is down is a state to display beside\nthe calendar, not an error to interrupt someone with.",
@@ -708,6 +713,11 @@
       },
       "provider": {
         "$ref": "#/$defs/CalendarProvider"
+      },
+      "readOnly": {
+        "default": false,
+        "description": "The account's server said this calendar cannot be written to --\nsomebody else's calendar shared with you to read, a holidays\ncalendar. Only ever set on an account calendar; a feed or a file is\nread-only by its origin and never needs it. Learned at discovery and\non each sync where the provider says so for free.",
+        "type": "boolean"
       },
       "refreshMinutes": {
         "default": 60,
@@ -4043,6 +4053,25 @@
           }
         ]
       },
+      "BlockSeries": {
+        "description": "What ties a repeating block of your own time to the rest of its series.\n\nA repeat of your own is written out as one block per occurrence, ahead of\ntime -- see [`crate::vault::Vault::save_block_series`] -- for the reason\na subscribed calendar's recurrence is expanded at sync rather than at\ndraw time: the grid, the reports and the \"where did the week go\" totals\nare all date-range scans over blocks, and not one of them should need a\nrecurrence engine to answer. The cost is that a series is many rows;\nthis is what lets them be found and changed together.\n\nEach occurrence is still a block in its own right: moved, renamed, logged\nas done, or deleted on its own without touching the others.",
+        "properties": {
+          "id": {
+            "description": "Shared by every block in the series: the id of the block it was made\nfrom. Only a name for the group -- that block can be deleted and the\nseries still holds together.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "rule": {
+            "$ref": "#/$defs/Recurrence",
+            "description": "How it repeats, kept on every occurrence so any one of them can say\nso without looking up the others."
+          }
+        },
+        "required": [
+          "id",
+          "rule"
+        ],
+        "type": "object"
+      },
       "BlockSubject": {
         "description": "What a block of time was spent on.\n\n`Adhoc` is not a placeholder: a calendar has to hold the dentist\nappointment as well as the work, and giving it a home here means the\ncalendar does not need its own storage layer when it arrives.",
         "oneOf": [
@@ -4172,6 +4201,16 @@
             "type": "string"
           }
         ]
+      },
+      "Frequency": {
+        "description": "How often a repeat comes round, before [`Recurrence::interval`] stretches\nit.",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly",
+          "yearly"
+        ],
+        "type": "string"
       },
       "MediaKind": {
         "enum": [
@@ -4698,6 +4737,59 @@
           }
         ]
       },
+      "Recurrence": {
+        "description": "How an event repeats.\n\nFour shapes cover what a person picks from a calendar's \"Repeat\" menu,\nand this holds exactly those:\n\n```text\n  daily                          every N days\n  weekly   + weekdays            every N weeks, on these days (none: the start's own day)\n  monthly                        every N months, on the start's day of the month\n  monthly  + week_of_month + 1 weekday   \"the second Tuesday\", \"the last Friday\"\n  yearly                         every N years, on the start's date\n```\n\nEnded by at most one of `count` or `until`; neither is forever.",
+        "properties": {
+          "count": {
+            "description": "Stop after this many occurrences, the first included.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "frequency": {
+            "$ref": "#/$defs/Frequency"
+          },
+          "interval": {
+            "default": 1,
+            "description": "Every how many `frequency`s: 2 with `weekly` is every other week.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "until": {
+            "description": "The last day an occurrence may fall on, inclusive, in the event's own\nzone.",
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "weekOfMonth": {
+            "description": "`monthly` only: which week of the month -- 1 to 4, or -1 for the\nlast -- with exactly one entry in `weekdays`.",
+            "format": "int8",
+            "maximum": 127,
+            "minimum": -128,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "weekdays": {
+            "description": "`weekly`: the days it falls on. `monthly` with `week_of_month`: the\none day that week names. Empty otherwise.",
+            "items": {
+              "$ref": "#/$defs/Weekday"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "frequency"
+        ],
+        "type": "object"
+      },
       "Routine": {
         "description": "Standing work.",
         "properties": {
@@ -5033,6 +5125,17 @@
             ],
             "description": "What this hour was *for*. `None` falls through to the task's, then\nthe project's — see [`crate::purpose`] for the chain. An `Adhoc`\nblock with a purpose set directly is how the dentist appointment\nlands under looking after yourself."
           },
+          "series": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BlockSeries"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set on every block of a repeating series, the first one included.\nSee [`BlockSeries`]."
+          },
           "start": {
             "format": "date-time",
             "type": "string"
@@ -5097,7 +5200,7 @@
               "days": {
                 "default": [],
                 "items": {
-                  "$ref": "#/$defs/Weekday"
+                  "$ref": "#/$defs/Weekday2"
                 },
                 "type": "array"
               },
@@ -5174,6 +5277,19 @@
         ]
       },
       "Weekday": {
+        "description": "A day of the week, spelled out.\n\nIts own type rather than `jiff`'s, because this one crosses the wire --\nto the interface and to a model -- and `\"monday\"` is a better word to put\nin front of either than whatever a time library's serde happens to say.",
+        "enum": [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+          "sunday"
+        ],
+        "type": "string"
+      },
+      "Weekday2": {
         "description": "A day of the week, in the spelling the wire uses.\n\nOurs rather than [`jiff::civil::Weekday`]'s so that the stored spelling is\nthis application's decision and cannot change under us with a dependency\nbump. The conversion is the only place the two meet.",
         "enum": [
           "mon",
@@ -6493,6 +6609,25 @@
           }
         ]
       },
+      "BlockSeries": {
+        "description": "What ties a repeating block of your own time to the rest of its series.\n\nA repeat of your own is written out as one block per occurrence, ahead of\ntime -- see [`crate::vault::Vault::save_block_series`] -- for the reason\na subscribed calendar's recurrence is expanded at sync rather than at\ndraw time: the grid, the reports and the \"where did the week go\" totals\nare all date-range scans over blocks, and not one of them should need a\nrecurrence engine to answer. The cost is that a series is many rows;\nthis is what lets them be found and changed together.\n\nEach occurrence is still a block in its own right: moved, renamed, logged\nas done, or deleted on its own without touching the others.",
+        "properties": {
+          "id": {
+            "description": "Shared by every block in the series: the id of the block it was made\nfrom. Only a name for the group -- that block can be deleted and the\nseries still holds together.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "rule": {
+            "$ref": "#/$defs/Recurrence",
+            "description": "How it repeats, kept on every occurrence so any one of them can say\nso without looking up the others."
+          }
+        },
+        "required": [
+          "id",
+          "rule"
+        ],
+        "type": "object"
+      },
       "BlockSubject": {
         "description": "What a block of time was spent on.\n\n`Adhoc` is not a placeholder: a calendar has to hold the dentist\nappointment as well as the work, and giving it a home here means the\ncalendar does not need its own storage layer when it arrives.",
         "oneOf": [
@@ -6545,6 +6680,16 @@
           }
         ]
       },
+      "Frequency": {
+        "description": "How often a repeat comes round, before [`Recurrence::interval`] stretches\nit.",
+        "enum": [
+          "daily",
+          "weekly",
+          "monthly",
+          "yearly"
+        ],
+        "type": "string"
+      },
       "Purpose": {
         "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
         "oneOf": [
@@ -6583,6 +6728,72 @@
             "type": "object"
           }
         ]
+      },
+      "Recurrence": {
+        "description": "How an event repeats.\n\nFour shapes cover what a person picks from a calendar's \"Repeat\" menu,\nand this holds exactly those:\n\n```text\n  daily                          every N days\n  weekly   + weekdays            every N weeks, on these days (none: the start's own day)\n  monthly                        every N months, on the start's day of the month\n  monthly  + week_of_month + 1 weekday   \"the second Tuesday\", \"the last Friday\"\n  yearly                         every N years, on the start's date\n```\n\nEnded by at most one of `count` or `until`; neither is forever.",
+        "properties": {
+          "count": {
+            "description": "Stop after this many occurrences, the first included.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "frequency": {
+            "$ref": "#/$defs/Frequency"
+          },
+          "interval": {
+            "default": 1,
+            "description": "Every how many `frequency`s: 2 with `weekly` is every other week.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "until": {
+            "description": "The last day an occurrence may fall on, inclusive, in the event's own\nzone.",
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "weekOfMonth": {
+            "description": "`monthly` only: which week of the month -- 1 to 4, or -1 for the\nlast -- with exactly one entry in `weekdays`.",
+            "format": "int8",
+            "maximum": 127,
+            "minimum": -128,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "weekdays": {
+            "description": "`weekly`: the days it falls on. `monthly` with `week_of_month`: the\none day that week names. Empty otherwise.",
+            "items": {
+              "$ref": "#/$defs/Weekday"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "frequency"
+        ],
+        "type": "object"
+      },
+      "Weekday": {
+        "description": "A day of the week, spelled out.\n\nIts own type rather than `jiff`'s, because this one crosses the wire --\nto the interface and to a model -- and `\"monday\"` is a better word to put\nin front of either than whatever a time library's serde happens to say.",
+        "enum": [
+          "monday",
+          "tuesday",
+          "wednesday",
+          "thursday",
+          "friday",
+          "saturday",
+          "sunday"
+        ],
+        "type": "string"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -6627,6 +6838,17 @@
           }
         ],
         "description": "What this hour was *for*. `None` falls through to the task's, then\nthe project's — see [`crate::purpose`] for the chain. An `Adhoc`\nblock with a purpose set directly is how the dentist appointment\nlands under looking after yourself."
+      },
+      "series": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/BlockSeries"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Set on every block of a repeating series, the first one included.\nSee [`BlockSeries`]."
       },
       "start": {
         "format": "date-time",

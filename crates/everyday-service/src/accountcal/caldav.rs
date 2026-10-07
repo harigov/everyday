@@ -248,6 +248,7 @@ pub async fn discover(
             name,
             color,
             source: AccountCalendarSource::CalDav,
+            writable: true,
         });
     }
     Ok(out)
@@ -685,9 +686,20 @@ fn events_from_ics(
     // Lenient in the same spirit as `everyday_core::ics::parse`: a resource
     // that does not parse as a calendar at all contributes nothing rather
     // than failing the whole sync over one bad `.ics`.
-    let Ok(parsed) = calcard::icalendar::ICalendar::parse(ics) else {
+    let Ok(mut parsed) = calcard::icalendar::ICalendar::parse(ics) else {
         return (Vec::new(), 0, false);
     };
+    // calcard pairs an override with the occurrence it replaces by
+    // `(SEQUENCE, RECURRENCE-ID)`, not by `RECURRENCE-ID` alone -- so an
+    // override whose `SEQUENCE` differs from its master's, which is what an
+    // Apple or Google client writes when it moves one occurrence of a series,
+    // is never matched: the occurrence is drawn where it was *and* where it
+    // went. One resource holds one `UID`, so its `SEQUENCE`s say nothing
+    // here worth keeping; dropping them before expanding makes every
+    // override meet the occurrence it names. Nothing below reads them.
+    for component in &mut parsed.components {
+        component.entries.retain(|e| e.name != calcard::icalendar::ICalendarProperty::Sequence);
+    }
     let recurring = is_recurring(&parsed);
     let tz: calcard::common::timezone::Tz =
         default_tz.parse().unwrap_or(calcard::common::timezone::Tz::Floating);
@@ -934,7 +946,60 @@ impl super::CalendarProvider for CalDavProvider {
     ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
         Box::pin(sync(svc, vault, account, calendar))
     }
+
+    fn create<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        draft: &'a everyday_core::calendar::EventDraft,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::create(svc, vault, account, calendar, draft))
+    }
+
+    fn load<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+    ) -> super::BoxFuture<'a, CommandResult<everyday_core::calendar::EditableEvent>> {
+        Box::pin(write::load(svc, vault, account, calendar, event))
+    }
+
+    fn update<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+        draft: &'a everyday_core::calendar::EventDraft,
+        scope: everyday_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::update(svc, vault, account, calendar, event, draft, scope))
+    }
+
+    fn delete<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+        scope: everyday_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::delete(svc, vault, account, calendar, event, scope))
+    }
 }
+
+/// Creating, changing and deleting events -- see `accountcal`'s module doc,
+/// "Writing". A child module rather than a sibling, so it shares this
+/// file's private request helpers instead of having them re-exported.
+#[path = "caldav_write.rs"]
+mod write;
 
 #[cfg(test)]
 mod tests {
@@ -1077,6 +1142,36 @@ mod tests {
             after_dst.start.as_second() % 86_400,
             "09:00 local before and after the DST change must be different UTC instants"
         );
+    }
+
+    #[test]
+    fn an_override_with_its_own_sequence_replaces_its_occurrence_rather_than_doubling_it() {
+        // Three weekly stand-ups; the second moved an hour later by a client
+        // that bumped SEQUENCE on the override alone.
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\n\
+            BEGIN:VEVENT\r\nUID:standup@example.com\r\nSEQUENCE:0\r\n\
+            DTSTART:20261005T090000Z\r\nDTEND:20261005T093000Z\r\n\
+            RRULE:FREQ=WEEKLY;COUNT=3\r\nSUMMARY:Standup\r\nEND:VEVENT\r\n\
+            BEGIN:VEVENT\r\nUID:standup@example.com\r\nSEQUENCE:2\r\n\
+            RECURRENCE-ID:20261012T090000Z\r\n\
+            DTSTART:20261012T100000Z\r\nDTEND:20261012T103000Z\r\n\
+            SUMMARY:Standup (moved)\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let window = (jiff::civil::date(2026, 1, 1), jiff::civil::date(2027, 1, 1));
+        let (events, _, recurring) = events_from_ics(
+            ics,
+            CalendarId::new(),
+            "/cal/standup.ics",
+            "UTC",
+            window,
+            jiff::Timestamp::now(),
+        );
+        assert!(recurring);
+        assert_eq!(events.len(), 3, "three stand-ups, not four: {events:#?}");
+        let moved: Vec<_> =
+            events.iter().filter(|e| e.local_date == jiff::civil::date(2026, 10, 12)).collect();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].title, "Standup (moved)");
+        assert_eq!(moved[0].start, "2026-10-12T10:00:00Z".parse::<jiff::Timestamp>().unwrap());
     }
 
     #[test]

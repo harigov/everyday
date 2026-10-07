@@ -5,6 +5,11 @@
   // The mini month is not decoration. It is the only place in the app that
   // shows a whole month while you are looking at a week, and a dot under a
   // day is the cheapest possible answer to "is there anything on then".
+  //
+  // Under the list, one line says where a new event goes -- this computer's
+  // own time, or an account calendar -- because the answer changes what a
+  // click on empty time does, and a setting that changes a gesture has to
+  // be where the gesture's results are looked at, not three screens away.
 
   import { calendar } from '../lib/calendar.svelte'
   import { accounts } from '../lib/accounts.svelte'
@@ -12,7 +17,14 @@
   import { relativeTime } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
-  import { colourItems, dayMenu, purposeItems } from '../lib/menus'
+  import {
+    accountLabel,
+    calendarChoiceItems,
+    colourItems,
+    dayMenu,
+    purposeItems,
+  } from '../lib/menus'
+  import { panels } from '../lib/panels.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import AddCalendar from './AddCalendar.svelte'
@@ -57,6 +69,44 @@
     if (cal.lastError) return cal.lastError
     if (cal.lastSyncedAt) return `Refreshed ${relativeTime(cal.lastSyncedAt)}`
     return 'Not refreshed yet'
+  }
+
+  /** The row's tooltip: where it came from, and what it can take. */
+  function rowTitle(cal: CalendarInfo): string {
+    const origin = originLabel(cal)
+    if (cal.access === 'needsSignIn') {
+      return `${origin}. Sign in to ${accountLabel(cal) ?? 'its account'} again to add events here.`
+    }
+    if (cal.isDefault && cal.access === 'writable') return `${origin}. New events go here.`
+    return origin
+  }
+
+  /**
+   * Is there anywhere but this computer a new event could go? Only then is
+   * "New events go to" worth a line: with feeds alone there is one answer,
+   * and a choice of one is noise.
+   */
+  const canChoose = $derived(
+    calendar.calendars.some((c) => c.origin.type === 'account' && c.access !== 'readOnly'),
+  )
+  const target = $derived(calendar.defaultCalendar)
+  /**
+   * The default calendar on disk whose account can no longer write to it.
+   * New events go to this computer meanwhile -- `defaultCalendar` will not
+   * hand out a calendar a save would fail on -- and this says why, rather
+   * than letting the choice look as if it had quietly reset itself.
+   */
+  const stale = $derived(
+    calendar.calendars.find((c) => c.isDefault && c.access === 'needsSignIn') ?? null,
+  )
+
+  function pickDefault(e: MouseEvent) {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    menu.showAt(
+      box.left,
+      box.bottom + 4,
+      calendarChoiceItems(target?.id ?? null, (id) => calendar.setDefaultCalendar(id)),
+    )
   }
 
   async function remove() {
@@ -115,6 +165,17 @@
         icon: 'refresh',
         disabled: calendar.syncing,
         run: () => calendar.syncOne(cal.id),
+      },
+      // Said as what it does, not ticked -- see the first row's note.
+      cal.access === 'writable' && {
+        label: cal.isDefault ? 'Stop using for new events' : 'Use for new events',
+        icon: 'star',
+        run: () => calendar.setDefaultCalendar(cal.isDefault ? null : cal.id),
+      },
+      cal.access === 'needsSignIn' && {
+        label: 'Sign in again to add events…',
+        icon: 'lock',
+        run: () => panels.openSettings('accounts'),
       },
       {
         label: 'Colour',
@@ -221,16 +282,21 @@
       </button>
       <button
         class="side-text"
-        title={originLabel(cal)}
+        title={rowTitle(cal)}
         onclick={() => calendar.toggleVisible(cal.id)}
       >
         <span class="cname">{cal.name}</span>
         <span class="cmeta">
           {#if cal.lastError}
             <span class="warn"><Icon name="alert" size={11} weight={2} /></span>
+          {:else if cal.access === 'needsSignIn'}
+            <span class="lockmark"><Icon name="lock" size={10} weight={2} /></span>
           {/if}
           {cal.events}
           {cal.events === 1 ? 'event' : 'events'}
+          {#if cal.isDefault && cal.access === 'writable'}
+            <span class="deftag">Default</span>
+          {/if}
         </span>
       </button>
       {#if cal.origin.type !== 'file'}
@@ -260,10 +326,37 @@
     {/each}
   {/each}
 
+  {#if canChoose}
+    <!-- A sentence with the choice in it, rather than a labelled field: it
+         is read far more often than it is changed, and "New events go to
+         Work" is the whole of what it has to say. -->
+    <div class="newgo">
+      <span>New events go to</span>
+      <button class="newpick" title="Choose where new events are saved" onclick={pickDefault}>
+        <span
+          class="newdot"
+          style="--dot: {calendar.colorOfCalendar(target?.id ?? null)}"
+          aria-hidden="true"
+        ></span>
+        <span class="newname">{target?.name ?? 'This computer'}</span>
+        <span class="newchev" aria-hidden="true"><Icon name="chevron" size={11} /></span>
+      </button>
+    </div>
+    {#if stale}
+      <p class="blank quiet">
+        {stale.name} needs you to sign in to {accountLabel(stale) ?? 'its account'} again before events
+        can be added to it; until then they stay on this computer.
+        <button class="textlink" onclick={() => panels.openSettings('accounts')}>
+          Open Accounts
+        </button>
+      </p>
+    {/if}
+  {/if}
+
   {#if calendar.calendars.length === 0}
     <p class="blank">
-      Nothing subscribed. Add the secret address of a Google, Outlook or Apple calendar and its
-      events appear here, read-only, beside your own time.
+      Nothing subscribed. Add the secret address of a Google, Outlook or Apple calendar -- or one of
+      a signed-in account's own calendars -- and its events appear here beside your own time.
     </p>
   {/if}
 
@@ -389,6 +482,72 @@
   }
   .side-row.failed .cmeta {
     color: var(--danger);
+  }
+  .lockmark {
+    display: flex;
+  }
+  /* The calendar new events go to: said in the accent, quietly, so it can
+     be found in a list of six without competing with the names. */
+  .deftag {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* "New events go to [Work]" -- the sentence in the sidebar's quiet voice,
+     the choice in it a small pill like the app's other buttons. */
+  .newgo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px var(--sp-2);
+    padding: var(--sp-4) var(--sp-3) var(--sp-1);
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+  }
+  .newpick {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    height: 24px;
+    padding: 0 var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-raised);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    transition:
+      border-color var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .newpick:hover {
+    border-color: var(--border-strong);
+    color: var(--fg);
+  }
+  .newdot {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dot);
+  }
+  .newname {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .newchev {
+    display: flex;
+    rotate: 90deg;
+    color: var(--fg-faint);
+  }
+  .textlink {
+    color: var(--accent);
+    font-size: inherit;
+  }
+  .textlink:hover {
+    text-decoration: underline;
   }
 
   .mini-action {

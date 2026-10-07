@@ -99,10 +99,12 @@ macro_rules! tool {
             run: $run,
             describe: $describe,
             build: $build,
+            outward_when: None,
         }
     };
 }
 
+mod calendar;
 mod conversations;
 mod journals;
 mod library;
@@ -372,6 +374,20 @@ pub struct Tool {
     /// rather than running it or silently doing nothing. See [`Built`] and
     /// `docs/plans/dreaming.md`.
     build: Option<fn(&ToolContext<'_>, &Args<'_>) -> Result<Built>>,
+    /// When a call to an otherwise [`Effect::Write`] or
+    /// [`Effect::Destructive`] tool reaches somebody outside the vault after
+    /// all -- and so must be confirmed the way an [`Effect::Outward`] one is.
+    ///
+    /// For a tool whose reach depends on its arguments rather than on what
+    /// it is: `create_event` on the person's own calendar changes only their
+    /// calendar, but the same call with guests on it has a server email each
+    /// of them an invitation the moment it runs. Making every event
+    /// `Outward` would put a card in front of "block out Friday afternoon";
+    /// leaving it `Write` would send invitations nobody looked at. This is
+    /// the third way: [`effect_for`] answers `Outward` for exactly the calls
+    /// that reach people, and the gates in chat and MCP read that rather
+    /// than [`Tool::effect`]. `None` for every tool whose effect is fixed.
+    outward_when: Option<fn(&ToolContext<'_>, &Args<'_>) -> bool>,
 }
 
 /// What a tool's builder produced, on its way to becoming a
@@ -492,6 +508,36 @@ pub type InviteResponder<'a> = dyn Fn(
     ) -> Result<()>
     + 'a;
 
+/// The calendar tools' way out to an account's server, behind
+/// [`ToolContext::calendar_writer`].
+///
+/// `everyday-core` has no way to reach the network -- see the crate docs --
+/// so `create_event` and its siblings cannot talk to Google, Graph or a
+/// CalDAV server themselves. The service implements this over the very same
+/// functions its own `create_event`, `load_event`, `update_event` and
+/// `delete_event` commands call, so a tool and a person's own click run
+/// identical code, the way [`InviteResponder`] already does for answering an
+/// invitation. Each method blocks until the server has answered: a tool body
+/// already runs on a blocking thread.
+pub trait CalendarWriter {
+    /// Put `draft` on an account's calendar. Answers the new event's first
+    /// occurrence once the calendar has synced it back, if it has.
+    fn create(
+        &self,
+        calendar: crate::id::CalendarId,
+        draft: &crate::calendar::EventDraft,
+    ) -> Result<Option<crate::calendar::Event>>;
+    /// Read one event fresh from its server, ready to be changed.
+    fn load(&self, event: crate::id::EventId) -> Result<crate::calendar::EditableEvent>;
+    fn update(
+        &self,
+        event: crate::id::EventId,
+        draft: &crate::calendar::EventDraft,
+        scope: crate::calendar::EventScope,
+    ) -> Result<()>;
+    fn delete(&self, event: crate::id::EventId, scope: crate::calendar::EventScope) -> Result<()>;
+}
+
 /// Everything a tool needs that is not one of its arguments.
 pub struct ToolContext<'a> {
     pub vault: &'a Vault,
@@ -565,6 +611,12 @@ pub struct ToolContext<'a> {
     /// the tool refuses with "not available right now" rather than
     /// panicking on a missing hook.
     pub invite_responder: Option<&'a InviteResponder<'a>>,
+    /// How `create_event`, `update_event` and `delete_event` reach an
+    /// account's calendar -- see [`CalendarWriter`]. `None` for a test or a
+    /// caller with nothing wired up, in which case those tools still put an
+    /// event on this computer and refuse an account's calendar with "not
+    /// available right now" rather than panicking on a missing hook.
+    pub calendar_writer: Option<&'a dyn CalendarWriter>,
     /// Set when this call is part of work nobody asked for -- today, a dream.
     ///
     /// While it is set, a `Write` or `Destructive` tool builds its record and
@@ -637,6 +689,7 @@ impl<'a> ToolContext<'a> {
             mail_rate_limit: None,
             after_mail_write: None,
             invite_responder: None,
+            calendar_writer: None,
             drafting: None,
         }
     }
@@ -697,6 +750,13 @@ impl<'a> ToolContext<'a> {
     /// through. See [`ToolContext::invite_responder`].
     pub fn with_invite_responder(mut self, responder: &'a InviteResponder<'a>) -> Self {
         self.invite_responder = Some(responder);
+        self
+    }
+
+    /// How the calendar tools reach an account's server. See
+    /// [`ToolContext::calendar_writer`].
+    pub fn with_calendar_writer(mut self, writer: &'a dyn CalendarWriter) -> Self {
+        self.calendar_writer = Some(writer);
         self
     }
 
@@ -1142,6 +1202,7 @@ fn all() -> &'static [Tool] {
             notes::TOOLS,
             tasks::TOOLS,
             time::TOOLS,
+            calendar::TOOLS,
             library::TOOLS,
             trackers::TOOLS,
             purpose::TOOLS,
@@ -1228,6 +1289,19 @@ pub fn describe(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<
     let tool = find(name)?;
     let describe = tool.describe?;
     describe(ctx, &Args::new(tool.name, arguments))
+}
+
+/// What this particular call does, which is the tool's own [`Effect`]
+/// unless [`Tool::outward_when`] says these arguments reach somebody
+/// outside the vault -- in which case [`Effect::Outward`], whatever the tool
+/// usually is. What every confirmation gate reads, rather than
+/// [`Tool::effect`], so the card appears for exactly the calls that need
+/// one. `None` when `name` is not a tool.
+pub fn effect_for(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Option<Effect> {
+    let tool = find(name)?;
+    let reaches_people =
+        tool.outward_when.is_some_and(|reaches| reaches(ctx, &Args::new(tool.name, arguments)));
+    Some(if reaches_people { Effect::Outward } else { tool.effect })
 }
 
 /// Run one tool call.
@@ -1533,7 +1607,7 @@ mod tests {
     #[test]
     fn every_outward_tool_can_name_who_it_reaches() {
         for tool in catalog() {
-            if tool.effect == Effect::Outward {
+            if tool.effect == Effect::Outward || tool.outward_when.is_some() {
                 assert!(
                     tool.describe.is_some(),
                     "{} reaches somebody outside the vault and has no describe fn, so its \
@@ -1780,6 +1854,7 @@ mod tests {
             mail_rate_limit: None,
             after_mail_write: None,
             invite_responder: None,
+            calendar_writer: None,
             drafting: None,
         };
         // `delete_entry` is a `Destructive` tool with no `build` -- see

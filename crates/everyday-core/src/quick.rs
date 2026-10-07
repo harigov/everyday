@@ -717,12 +717,28 @@ pub struct EventDraft {
     pub end: Option<String>,
     #[serde(default)]
     pub location: String,
+    /// How it repeats, when the sentence said -- "every Monday", "daily
+    /// until the end of term". The model answers it as `repeat`, which reads
+    /// better in a prompt; it goes out as `recurrence`, the name the rest of
+    /// the calendar uses.
+    #[serde(default, alias = "repeat", skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<crate::recurrence::Recurrence>,
 }
 
 impl EventDraft {
     pub fn clamp(&mut self) -> bool {
         self.title = self.title.trim().to_string();
         self.location = self.location.trim().to_string();
+        // A rule the model half-filled is dropped rather than repaired into
+        // something nobody said; the appointment itself still stands. Both
+        // ends given is the one slip worth forgiving: the count is the
+        // stricter reading.
+        if let Some(rule) = &mut self.recurrence
+            && rule.count.is_some()
+        {
+            rule.until = None;
+        }
+        self.recurrence = self.recurrence.take().filter(|r| r.validate().is_ok());
         self.date = self.date.take().filter(|d| is_iso_date(d));
         self.start = self.start.take().filter(|t| is_clock(t));
         self.end = self.end.take().filter(|t| is_clock(t));
@@ -752,9 +768,27 @@ fn event_schema() -> Value {
             "date": { "type": ["string", "null"], "description": "YYYY-MM-DD." },
             "start": { "type": ["string", "null"], "description": "HH:MM." },
             "end": { "type": ["string", "null"], "description": "HH:MM. Null unless a duration or end time was given." },
-            "location": { "type": "string" }
+            "location": { "type": "string" },
+            "repeat": {
+                "type": ["object", "null"],
+                "description": "Null unless the sentence says it repeats: every Monday, daily, each month, every other week.",
+                "properties": {
+                    "frequency": { "type": "string", "enum": ["daily", "weekly", "monthly", "yearly"] },
+                    "interval": { "type": "integer", "description": "1 unless 'every other' (2) or 'every 3'." },
+                    "weekdays": {
+                        "type": "array",
+                        "items": { "type": "string", "enum": ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] },
+                        "description": "Weekly: the days named. Empty if none were."
+                    },
+                    "weekOfMonth": { "type": ["integer", "null"], "description": "Monthly by weekday only: 1-4, or -1 for 'the last'." },
+                    "count": { "type": ["integer", "null"], "description": "Only if a number of times was said." },
+                    "until": { "type": ["string", "null"], "description": "YYYY-MM-DD, only if an end was said." }
+                },
+                "required": ["frequency", "interval", "weekdays", "weekOfMonth", "count", "until"],
+                "additionalProperties": false
+            }
         },
-        "required": ["title", "date", "start", "end", "location"],
+        "required": ["title", "date", "start", "end", "location", "repeat"],
         "additionalProperties": false,
     })
 }
@@ -1120,7 +1154,8 @@ pub static CALENDAR_PARSE: QuickJob = QuickJob {
     default_on: true,
     system: "You turn one sentence into one appointment. Give an end time \
             only when a duration or an end was stated. Never invent a date the \
-            sentence does not imply.",
+            sentence does not imply. If it repeats, the date is the first time \
+            it happens, and repeat says how it goes on; otherwise repeat is null.",
     schema: event_schema,
 };
 
@@ -1853,6 +1888,7 @@ mod tests {
             start: Some("13:00".into()),
             end: Some("12:00".into()),
             location: " the usual place ".into(),
+            recurrence: None,
         };
         assert!(draft.clamp());
         assert_eq!(draft.end, None, "a block of negative height is not a block");
@@ -1861,6 +1897,35 @@ mod tests {
         // No date is not an appointment.
         let mut undated = EventDraft { title: "Lunch".into(), ..Default::default() };
         assert!(!undated.clamp());
+    }
+
+    #[test]
+    fn a_repeat_the_model_read_is_kept_and_one_it_garbled_is_dropped() {
+        // What the model answers: `repeat`, with every key present because
+        // the schema is strict.
+        let answer = serde_json::json!({
+            "title": "Gym", "date": "2026-10-05", "start": "07:00", "end": null,
+            "location": "",
+            "repeat": {
+                "frequency": "weekly", "interval": 1, "weekdays": ["monday", "thursday"],
+                "weekOfMonth": null, "count": null, "until": "2026-12-31"
+            }
+        });
+        let mut draft: EventDraft = serde_json::from_value(answer).unwrap();
+        assert!(draft.clamp());
+        let rule = draft.recurrence.clone().expect("a weekly repeat");
+        assert_eq!(rule.weekdays.len(), 2);
+        // ...and it goes out under the calendar's own name for it.
+        let wire = serde_json::to_value(&draft).unwrap();
+        assert!(wire.get("recurrence").is_some() && wire.get("repeat").is_none());
+
+        let mut garbled = draft.clone();
+        garbled.recurrence = Some(crate::recurrence::Recurrence {
+            week_of_month: Some(2),
+            ..crate::recurrence::Recurrence::every(crate::recurrence::Frequency::Daily)
+        });
+        assert!(garbled.clamp(), "the appointment still stands");
+        assert_eq!(garbled.recurrence, None);
     }
 
     #[test]

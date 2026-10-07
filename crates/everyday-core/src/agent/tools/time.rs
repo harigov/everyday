@@ -1,10 +1,10 @@
-//! Calendars read from elsewhere, and the time somebody sets aside or
+//! Events on the calendars here, and the time somebody sets aside or
 //! records for themselves.
 //!
-//! The calendar domain is the smallest one on purpose: other people's time
-//! is read-only here, and a person's own is already a [`TimeBlock`] --
-//! [`crate::task`]'s domain, not a storage layer of this one's own. This
-//! file is where both kinds of time meet a model.
+//! A person's own time is already a [`TimeBlock`] -- [`crate::task`]'s
+//! domain, not a storage layer of this one's own -- and this file is where it
+//! meets a model, beside the events it reads. Putting an *event* on a
+//! calendar, and changing one, is [`super::calendar`]'s.
 
 use serde_json::{Value, json};
 
@@ -32,9 +32,10 @@ pub(super) static TOOLS: &[Tool] = &[
             ],
             &[]
         ),
-        "Calendar events in a date window, from subscribed calendars. These are \
-         read-only: this app subscribes to other people's feeds and cannot write \
-         to them. To schedule your own time, use create_time_block.",
+        "Calendar events in a date window, from every calendar here: subscribed feeds \
+         and each signed-in account's calendars. Each says which calendar it is on and \
+         whether it can be changed; change one with update_event or delete_event. Your own \
+         planned time is not here -- that is list_time_blocks.",
         run_list_events
     ),
     tool!(
@@ -80,7 +81,9 @@ pub(super) static TOOLS: &[Tool] = &[
             &["date", "start_time", "end_time"]
         ),
         "Set aside time for a task, or record time that was spent. Give exactly one \
-         of task_id, project_id or label to say what the time is for.",
+         of task_id, project_id or label to say what the time is for. For an appointment \
+         or a meeting -- anything the person calls an event -- use create_event instead, \
+         which puts it on their default calendar.",
         run_create_block,
         None,
         Some(build_create_block)
@@ -144,21 +147,34 @@ fn run_list_events(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let (from, to) = args.window(ctx, Window::Ahead(7))?;
     let mut rows = ctx.vault.events(&EventQuery::between(from, to))?;
     rows.truncate(args.limit() as usize);
+    // One read of the calendar list for the whole answer, so each row can
+    // say where it lives and whether it can be changed without a lookup per
+    // event.
+    let calendars = ctx.vault.calendars().unwrap_or_default();
+    let calendar_of = |id| calendars.iter().find(|c| c.id == id);
     Ok(json!({
         "count": rows.len(),
         "from": from.to_string(),
         "to": to.to_string(),
         "events": rows
             .iter()
-            .map(|e| json!({
-                "id": e.id.to_string(),
-                "title": e.title,
-                "date": e.local_date.to_string(),
-                "all_day": e.all_day,
-                "starts": e.start.to_string(),
-                "ends": e.end.to_string(),
-                "location": e.location,
-            }))
+            .map(|e| {
+                let calendar = calendar_of(e.calendar_id);
+                json!({
+                    "id": e.id.to_string(),
+                    "title": e.title,
+                    "date": e.local_date.to_string(),
+                    "all_day": e.all_day,
+                    "starts": e.start.to_string(),
+                    "ends": e.end.to_string(),
+                    "location": e.location,
+                    "calendar": calendar.map(|c| c.name.clone()),
+                    "calendar_id": e.calendar_id.to_string(),
+                    "can_change": calendar.is_some_and(|c| c.takes_new_events()),
+                    "organizer": e.organizer,
+                    "attendees": e.attendees,
+                })
+            })
             .collect::<Vec<_>>(),
     }))
 }

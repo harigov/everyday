@@ -14,7 +14,10 @@
 import { DEFAULT_COLORS, colorName } from './colors'
 import { SEP, tidyMenu, type MenuItem } from './menu'
 import { app } from './state.svelte'
+import { accounts } from './accounts.svelte'
 import { calendar, DEFAULT_BLOCK_MINUTES, type Slot } from './calendar.svelte'
+import { panels } from './panels.svelte'
+import { matchPreset, presetsFor } from './recurrence'
 import { library } from './library.svelte'
 import { tracking } from './tracking.svelte'
 import { purpose, samePurpose } from './purpose.svelte'
@@ -24,7 +27,17 @@ import { formatMinutes, friendlyDate } from './format'
 import { MAX_STARS, fromStars, stars } from './rating'
 import { STATUS_LABELS, PRIORITY_LABELS } from './labels'
 import { ITEM_STATUSES, PRIORITIES, TASK_STATUSES } from './types'
-import type { CalendarEvent, Item, Purpose, Reading, Task, TimeBlock, Tracker } from './types'
+import type {
+  CalendarEvent,
+  CalendarId,
+  CalendarInfo,
+  Item,
+  Purpose,
+  Reading,
+  Task,
+  TimeBlock,
+  Tracker,
+} from './types'
 
 /**
  * The palette, as a submenu.
@@ -213,16 +226,97 @@ export function taskMenu(task: Task, hooks: TaskMenuHooks): MenuItem[] {
   ])
 }
 
+/** The address an account calendar belongs to, for telling two "Calendar"s apart. */
+export function accountLabel(cal: CalendarInfo): string | undefined {
+  if (cal.origin.type !== 'account') return undefined
+  return accounts.account(cal.origin.accountId)?.address
+}
+
+/**
+ * Where a new event can go, as a menu: this computer first, then every
+ * account calendar.
+ *
+ * Written once for the three places that ask -- "New events go to" in the
+ * sidebar, a new event's Calendar field, and a block's in the rail -- so
+ * they cannot disagree about what is on offer. A calendar whose account has
+ * to be signed in to again is listed and greyed rather than left out:
+ * missing, it reads as a bug; greyed, with the reason beside it, it says
+ * what to do. One that can only ever be read -- a feed, or a shared
+ * calendar without edit rights -- is not offered at all.
+ */
+export function calendarChoiceItems(
+  current: CalendarId | null,
+  choose: (id: CalendarId | null) => unknown,
+  opts: { local?: boolean } = {},
+): MenuItem[] {
+  const offered = calendar.calendars.filter(
+    (c) => c.origin.type === 'account' && c.access !== 'readOnly',
+  )
+  return tidyMenu([
+    opts.local !== false && {
+      label: 'This computer',
+      icon: 'monitor',
+      hint: 'your own time',
+      checked: current === null,
+      run: () => choose(null),
+    },
+    SEP,
+    ...offered.map((c): MenuItem =>
+      c.access === 'writable'
+        ? {
+            label: c.name,
+            dot: c.color,
+            hint: accountLabel(c),
+            checked: current === c.id,
+            run: () => choose(c.id),
+          }
+        : { label: c.name, dot: c.color, hint: 'sign in again', disabled: true },
+    ),
+  ])
+}
+
+/**
+ * How a block repeats, as a submenu: the same presets the rail's Repeat
+ * field offers, for the same start, with the one in force ticked.
+ *
+ * "Custom…" opens the block in the rail, where an interval and an ending
+ * have room to be chosen; a menu of every combination would be a list
+ * nobody could read.
+ */
+function repeatItems(block: TimeBlock): MenuItem[] {
+  const current = matchPreset(block.series?.rule ?? null, block.start, block.tz)
+  return tidyMenu([
+    ...presetsFor(block.start, block.tz).map((preset): MenuItem => ({
+      label: preset.label,
+      checked: current === preset.key,
+      // Picking the one already in force writes nothing: re-making a
+      // series from itself would replace two years of blocks for no change.
+      run: () => {
+        if (current !== preset.key) void calendar.repeatBlock(block.id, preset.rule)
+      },
+    })),
+    SEP,
+    {
+      label: 'Custom…',
+      checked: current === 'custom',
+      run: () => (calendar.selection = { kind: 'block', id: block.id }),
+    },
+  ])
+}
+
 /**
  * A block of time, on either grid.
  *
  * Deleting does not ask. It matches Backspace on a selected block, which has
  * never asked either: a block is a fifteen-second thing to make again, and
  * the dialog is reserved for the deletions that take a subtree with them.
+ * One of a series offers the three answers as a submenu instead -- choosing
+ * one *is* the answer, so there is still nothing to confirm.
  */
 export function blockMenu(block: TimeBlock): MenuItem[] {
   const planned = block.kind === 'planned'
   const minutes = minutesBetween(block.start, block.end)
+  const destinations = calendar.writableCalendars
   return tidyMenu([
     {
       label: 'Show details',
@@ -256,6 +350,14 @@ export function blockMenu(block: TimeBlock): MenuItem[] {
       items: purposeItems(block.purpose, (purpose) => calendar.patch(block.id, { purpose })),
     },
     SEP,
+    // Only a plan repeats: a record of time spent happened once.
+    planned && {
+      label: 'Repeat',
+      icon: 'refresh',
+      hint: block.series ? 'repeats' : undefined,
+      items: repeatItems(block),
+    },
+    SEP,
     {
       label: 'Move to tomorrow',
       icon: 'calendar',
@@ -266,8 +368,49 @@ export function blockMenu(block: TimeBlock): MenuItem[] {
           offsetInDay(block.start, block.localDate),
         ),
     },
+    // Your own appointment, put where other people can see it. A block of
+    // work on a task stays yours; only an ad-hoc one is offered the move.
+    block.subject.type === 'adhoc' &&
+      destinations.length > 0 && {
+        label: 'Move to a calendar',
+        icon: 'share',
+        items: destinations.map((c): MenuItem => ({
+          label: c.name,
+          dot: c.color,
+          hint: accountLabel(c),
+          run: () => calendar.moveBlockToCalendar(block.id, c.id),
+        })),
+      },
     SEP,
-    { label: 'Delete', icon: 'trash', danger: true, run: () => calendar.removeBlock(block.id) },
+    block.series
+      ? {
+          label: 'Delete',
+          icon: 'trash',
+          danger: true,
+          items: [
+            { label: 'Only this one', run: () => calendar.removeBlock(block.id) },
+            {
+              label: 'This and the ones after it',
+              run: () => calendar.deleteBlockSeries(block.id, 'following'),
+            },
+            {
+              label: 'Every one in the series',
+              danger: true,
+              run: () => calendar.deleteBlockSeries(block.id, 'all'),
+            },
+          ],
+        }
+      : { label: 'Delete', icon: 'trash', danger: true, run: () => calendar.removeBlock(block.id) },
+  ])
+}
+
+/**
+ * The new event not saved yet, on either grid. There is one thing to do to
+ * it from here: let it go. Saving belongs to the rail, where its fields are.
+ */
+export function draftMenu(): MenuItem[] {
+  return tidyMenu([
+    { label: 'Discard this event', icon: 'trash', danger: true, run: () => calendar.cancelDraft() },
   ])
 }
 
@@ -290,12 +433,15 @@ export function runningMenu(): MenuItem[] {
 }
 
 /**
- * Somebody else's event.
+ * An event on a calendar: a feed's, or an account's.
  *
- * Nothing here writes to it, because nothing in this application writes to a
- * subscribed calendar. What it offers instead is the two things you would
- * otherwise do by hand: put the same hour in your own record, and start the
- * clock because the meeting has started.
+ * A feed's is never written to -- it is a copy of somebody else's calendar,
+ * and editing it here would not reach the people in the room. An account
+ * calendar's can be, through its server, and "Edit…" opens it in the rail
+ * for that; deleting asks there too, because a repeating event has to say
+ * which of it is meant. What every event offers besides is the two things
+ * you would otherwise do by hand: put the same hour in your own record, and
+ * start the clock because the meeting has started.
  */
 export function eventMenu(event: CalendarEvent): MenuItem[] {
   const cal = calendar.calendarOf(event.calendarId)
@@ -304,6 +450,16 @@ export function eventMenu(event: CalendarEvent): MenuItem[] {
       label: 'Show details',
       icon: 'list',
       run: () => (calendar.selection = { kind: 'event', id: event.id }),
+    },
+    cal?.access === 'writable' && {
+      label: 'Edit…',
+      icon: 'pencil',
+      run: () => calendar.editEvent(event.id),
+    },
+    cal?.access === 'needsSignIn' && {
+      label: 'Sign in again to change it…',
+      icon: 'lock',
+      run: () => panels.openSettings('accounts'),
     },
     SEP,
     !event.allDay && {
@@ -391,16 +547,25 @@ function dayItems(iso: string): MenuItem[] {
   ]
 }
 
-/** The empty grid, at the minute the pointer was over. */
+/**
+ * The empty grid, at the minute the pointer was over.
+ *
+ * The new-event rows say where the event will go when that is an account
+ * calendar, because there it opens as a draft to be saved rather than
+ * appearing at once -- and "why did nothing appear" should be answered
+ * before it is asked.
+ */
 export function timeMenu(iso: string, startMinutes: number): MenuItem[] {
-  const aside = (minutes: number): MenuItem => ({
-    label: `Set ${formatMinutes(minutes)} aside here`,
-    icon: 'clock',
-    run: () => calendar.book({ subject: { type: 'adhoc' }, day: iso, startMinutes, minutes }),
+  const target = calendar.defaultCalendar
+  const fresh = (label: string, minutes: number): MenuItem => ({
+    label,
+    icon: 'plus',
+    hint: target?.name ?? formatMinutes(minutes),
+    run: () => calendar.newEvent({ day: iso, startMinutes, minutes }),
   })
   return tidyMenu([
-    aside(DEFAULT_BLOCK_MINUTES),
-    aside(30),
+    fresh('New event here', DEFAULT_BLOCK_MINUTES),
+    fresh('New half-hour event here', 30),
     {
       label: 'Track time from now',
       icon: 'play',
@@ -417,15 +582,11 @@ export function dayMenu(iso: string): MenuItem[] {
     ...dayItems(iso),
     SEP,
     {
-      label: 'Set an hour aside at 9:00',
-      icon: 'clock',
+      label: 'New event at 9:00',
+      icon: 'plus',
+      hint: calendar.defaultCalendar?.name,
       run: () =>
-        calendar.book({
-          subject: { type: 'adhoc' },
-          day: iso,
-          startMinutes: 9 * 60,
-          minutes: DEFAULT_BLOCK_MINUTES,
-        }),
+        calendar.newEvent({ day: iso, startMinutes: 9 * 60, minutes: DEFAULT_BLOCK_MINUTES }),
     },
   ])
 }

@@ -42,11 +42,25 @@
 //! right shape — and it is the only shape that keeps working when the app is
 //! a binary someone built themselves rather than a product with a client id.
 //!
-//! The trade is honest and worth stating: the sync is one-way. Events you
-//! create here are yours and stay here; they do not appear on your work
-//! calendar. See `docs` on [`Calendar`] for what the interface says about it.
+//! A feed's sync is one-way, and that trade is worth stating. Events you
+//! create on the grid stay here as time blocks unless you pick one of an
+//! account's own calendars for them instead.
+//!
+//! # Writing to a calendar that signs in
+//!
+//! An account calendar -- Google's API, Microsoft Graph, or CalDAV -- is the
+//! one kind this application writes back to. It does so only at the
+//! person's say-so: an [`EventDraft`] goes to the server, and the calendar's
+//! own sync brings the result back as [`Event`] rows like any other. The
+//! rows are still never edited in place. The server is the record, and
+//! keeping it that way is what keeps "refetch the calendar" safe.
+//!
+//! [`Calendar::is_default`] marks the one calendar new events go to when
+//! nobody says otherwise. With none marked, they go to this computer, as
+//! time blocks.
 
 use crate::id::{AccountId, CalendarId, EventId, RoleId};
+use crate::recurrence::Recurrence;
 use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
 use serde::{Deserialize, Serialize};
@@ -278,10 +292,11 @@ impl CalendarOrigin {
 
 /// A calendar you have subscribed to.
 ///
-/// Always read-only. Nothing this application does ever writes back to the
-/// server it came from, and the interface says so where you add one, because
-/// an app that silently declines to publish your changes is worse than one
-/// that never offered.
+/// A feed or a file is read-only, and the interface says so where you add
+/// one, because an app that silently declines to publish your changes is
+/// worse than one that never offered. An account's calendar can take new
+/// events and changes, unless its server says otherwise -- see
+/// [`Calendar::read_only`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -322,6 +337,19 @@ pub struct Calendar {
     /// so a calendar sealed before this field existed still deserialises.
     #[serde(default)]
     pub account_sync: AccountSyncCursor,
+    /// Where new events go when nobody names a calendar: the grid, the
+    /// command bar and the assistant all read it. At most one calendar has
+    /// it set -- [`crate::vault::Vault::set_default_calendar`] keeps it that
+    /// way -- and none means this computer's own time blocks.
+    #[serde(default)]
+    pub is_default: bool,
+    /// The account's server said this calendar cannot be written to --
+    /// somebody else's calendar shared with you to read, a holidays
+    /// calendar. Only ever set on an account calendar; a feed or a file is
+    /// read-only by its origin and never needs it. Learned at discovery and
+    /// on each sync where the provider says so for free.
+    #[serde(default)]
+    pub read_only: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -360,6 +388,8 @@ impl Calendar {
             last_error: None,
             role_id: None,
             account_sync: AccountSyncCursor::default(),
+            is_default: false,
+            read_only: false,
             created_at: now,
             updated_at: now,
         }
@@ -380,6 +410,8 @@ impl Calendar {
             last_error: None,
             role_id: None,
             account_sync: AccountSyncCursor::default(),
+            is_default: false,
+            read_only: false,
             created_at: now,
             updated_at: now,
         }
@@ -418,6 +450,8 @@ impl Calendar {
             last_error: None,
             role_id: None,
             account_sync: AccountSyncCursor::default(),
+            is_default: false,
+            read_only: false,
             created_at: now,
             updated_at: now,
         }
@@ -426,6 +460,14 @@ impl Calendar {
     pub fn with_color(mut self, color: impl Into<String>) -> Self {
         self.color = color.into();
         self
+    }
+
+    /// Can a new event be put on this calendar? Only an account's own, and
+    /// only one its server has not said is read-only. Whether the account's
+    /// sign-in also allows it is a question about the account, not the
+    /// calendar -- see [`crate::account::Account::can_write_calendars`].
+    pub fn takes_new_events(&self) -> bool {
+        matches!(self.origin, CalendarOrigin::Account { .. }) && !self.read_only
     }
 
     /// The URL to fetch, normalised, or an explanation of why there is none.
@@ -654,6 +696,268 @@ impl Event {
     }
 }
 
+/// One person on an event's guest list, by address.
+///
+/// The address is what a server invites; the name is only what to call
+/// them. `response` is where their answer stands, when the server says --
+/// it is read, never written: answering is the guest's business, not the
+/// organiser's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Attendee {
+    pub email: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<crate::mail::AttendeeResponse>,
+}
+
+impl Attendee {
+    pub fn new(email: impl Into<String>) -> Self {
+        Self { email: email.into(), name: String::new(), response: None }
+    }
+
+    /// The address, lower-cased and trimmed, for comparing two lists:
+    /// `Sam@Example.com` and `sam@example.com ` are one guest.
+    pub fn key(&self) -> String {
+        self.email.trim().to_ascii_lowercase()
+    }
+
+    /// Does this look like something a server could send an invitation to?
+    /// Deliberately loose -- one `@` with something either side and no
+    /// spaces -- because the server is the real judge, and a stricter test
+    /// here would only refuse addresses that work.
+    pub fn looks_valid(&self) -> bool {
+        let email = self.email.trim();
+        match email.split_once('@') {
+            Some((local, domain)) => {
+                !local.is_empty()
+                    && !domain.is_empty()
+                    && !domain.contains('@')
+                    && !email.chars().any(char::is_whitespace)
+            }
+            None => false,
+        }
+    }
+}
+
+/// An event as somebody means it to be: what to put on an account's
+/// calendar, or what to change one to.
+///
+/// Not an [`Event`]. An event is one occurrence a server told us about; a
+/// draft is the whole of what is being asked for, repeat rule and guest list
+/// included, and it is what goes over the wire to Google, Graph or a CalDAV
+/// server. Nothing stores one.
+///
+/// Times are instants, like everywhere else in this crate. `tz` says which
+/// wall clock they are meant on, which is what a repeat is anchored to:
+/// "every Monday at nine" keeps meaning nine across a change of clocks.
+/// An all-day draft runs from midnight of its first day to midnight after
+/// its last, in `tz`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct EventDraft {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub location: String,
+    pub start: Timestamp,
+    pub end: Timestamp,
+    #[serde(default)]
+    pub all_day: bool,
+    /// IANA zone.
+    pub tz: String,
+    #[serde(default)]
+    pub attendees: Vec<Attendee>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurrence: Option<Recurrence>,
+}
+
+/// How many guests one event may be sent to from here -- a ceiling against
+/// a runaway paste or a model in a loop, not a statement about meetings.
+pub const MAX_GUESTS: usize = 100;
+
+impl EventDraft {
+    fn zone(&self) -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get(&self.tz).unwrap_or(jiff::tz::TimeZone::UTC)
+    }
+
+    /// The wall-clock start, in `tz`.
+    pub fn local_start(&self) -> jiff::civil::DateTime {
+        self.start.to_zoned(self.zone()).datetime()
+    }
+
+    /// The wall-clock end, in `tz`.
+    pub fn local_end(&self) -> jiff::civil::DateTime {
+        self.end.to_zoned(self.zone()).datetime()
+    }
+
+    /// The first day, in `tz`.
+    pub fn start_date(&self) -> Date {
+        self.local_start().date()
+    }
+
+    /// For an all-day draft, the day *after* its last -- the exclusive end
+    /// every calendar API wants. Never earlier than the day after the start,
+    /// so a draft whose end was left at its start is still one day long.
+    pub fn end_date_exclusive(&self) -> Date {
+        let start = self.start_date();
+        let end = self.local_end();
+        // An end at exactly midnight already is the exclusive day; any later
+        // time on a day means that day is included.
+        let mut day = end.date();
+        if end.time() != jiff::civil::Time::midnight() {
+            day = day.tomorrow().unwrap_or(day);
+        }
+        day.max(start.tomorrow().unwrap_or(start))
+    }
+
+    /// Length in whole minutes.
+    pub fn minutes(&self) -> u32 {
+        let secs = self.end.as_second() - self.start.as_second();
+        u32::try_from(secs.max(0) / 60).unwrap_or(u32::MAX)
+    }
+
+    /// Tidy what a person typed -- trim the title, drop blank and repeated
+    /// guests -- and refuse what no calendar would take.
+    pub fn validate(&mut self) -> crate::Result<()> {
+        self.title = self.title.trim().to_string();
+        if self.title.is_empty() {
+            return Err(crate::Error::Invalid("an event needs a title".into()));
+        }
+        if jiff::tz::TimeZone::get(&self.tz).is_err() {
+            return Err(crate::Error::Invalid(format!("{:?} is not a time zone", self.tz)));
+        }
+        if self.all_day {
+            // Normalise to midnights, so every writer sees the same shape.
+            let zone = self.zone();
+            let first = self.start_date();
+            let after = self.end_date_exclusive();
+            let at = |d: Date| {
+                zone.to_ambiguous_zoned(d.to_datetime(jiff::civil::Time::midnight()))
+                    .earlier()
+                    .map(|z| z.timestamp())
+            };
+            self.start = at(first).map_err(|e| crate::Error::Invalid(e.to_string()))?;
+            self.end = at(after).map_err(|e| crate::Error::Invalid(e.to_string()))?;
+        } else if self.end <= self.start {
+            return Err(crate::Error::Invalid("an event has to end after it starts".into()));
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut kept = Vec::with_capacity(self.attendees.len());
+        for mut guest in std::mem::take(&mut self.attendees) {
+            guest.email = guest.email.trim().to_string();
+            guest.name = guest.name.trim().to_string();
+            if guest.email.is_empty() {
+                continue;
+            }
+            if !guest.looks_valid() {
+                return Err(crate::Error::Invalid(format!(
+                    "{:?} is not an email address a calendar can invite",
+                    guest.email
+                )));
+            }
+            if seen.insert(guest.key()) {
+                kept.push(guest);
+            }
+        }
+        if kept.len() > MAX_GUESTS {
+            return Err(crate::Error::Invalid(format!(
+                "an event can be sent to at most {MAX_GUESTS} guests from here"
+            )));
+        }
+        self.attendees = kept;
+        if let Some(rule) = &self.recurrence {
+            rule.validate()?;
+            if let Some(until) = rule.until
+                && until < self.start_date()
+            {
+                return Err(crate::Error::Invalid(
+                    "a repeat cannot end before the event first happens".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Which part of a repeating event a change or a deletion means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum EventScope {
+    /// Just the occurrence that was picked -- and the whole event, when it
+    /// does not repeat at all.
+    #[default]
+    Occurrence,
+    /// Every occurrence: the series itself.
+    Series,
+}
+
+impl EventScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EventScope::Occurrence => "occurrence",
+            EventScope::Series => "series",
+        }
+    }
+}
+
+/// An event on an account calendar, read fresh from its server so it can be
+/// changed.
+///
+/// Read on demand rather than kept on [`Event`]: a change has to be made
+/// against what the server holds *now*, guest list and description
+/// included -- Graph only ever syncs a description's first lines, and
+/// neither API's sync says what a series' rule is -- and a change made
+/// against a copy from an hour ago is how somebody else's edit gets undone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct EditableEvent {
+    pub event_id: EventId,
+    pub calendar_id: CalendarId,
+    /// This occurrence as the server has it, with the series' rule in
+    /// `recurrence` when it repeats and that rule fits a [`Recurrence`].
+    pub draft: EventDraft,
+    /// Part of a repeating series: a change or a deletion has to say which
+    /// [`EventScope`] it means.
+    pub recurring: bool,
+    /// The series repeats in a way [`Recurrence`] cannot hold -- "the last
+    /// weekday of the month" -- so its rule can only be changed where it
+    /// was made. Everything else about it can still be changed here.
+    #[serde(default)]
+    pub custom_recurrence: bool,
+    /// The calendar's own account organised it, or nobody did. Only then
+    /// may its time, its title and its guests be changed here: an
+    /// invitation from somebody else is theirs to move.
+    pub own: bool,
+    /// Who organised it, as the server names them -- for the sentence that
+    /// says who can change it when `own` is false.
+    #[serde(default)]
+    pub organizer: String,
+}
+
+/// Whether new events can go on a calendar, and if not, why not -- what the
+/// calendar picker and the assistant's `list_calendars` both say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum CalendarAccess {
+    /// An account calendar that takes new events and changes.
+    Writable,
+    /// A feed, a file, or an account calendar its server will not let this
+    /// account write to.
+    ReadOnly,
+    /// An account calendar the account was signed in to *read* only: a
+    /// fresh sign-in, asking for the calendar-writing permission, is what
+    /// it needs.
+    NeedsSignIn,
+}
+
 /// What one sync did, for the line the interface shows afterwards.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -667,6 +971,12 @@ pub struct SyncReport {
     /// The name the feed calls itself, if it offered one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub feed_name: Option<String>,
+    /// Whether an account calendar's server said, in passing, that this
+    /// account may write to it -- Google's `events.list` answers with the
+    /// caller's access role on every page. `None` when the sync did not
+    /// learn it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writable: Option<bool>,
 }
 
 #[cfg(test)]

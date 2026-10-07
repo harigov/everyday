@@ -201,6 +201,45 @@ than from storage, so a running timer is not a write every second.
 The calendar also knows about the journal: a day you wrote something on
 carries a small mark, in the week header and in the month cell.
 
+### New events, and where they go
+
+A new event goes to **the default calendar**. Out of the box that is this
+computer: the event is a planned block of your own time, exactly as above.
+Choose one of an account's calendars instead — *New events go to* at the
+foot of the calendar list, or *Use for new events* on a calendar's own menu
+— and from then on a click or a drag on empty grid opens an event for that
+calendar, the command bar's **Book:** row puts the sentence there, and the
+assistant's `create_event` does too. Each of them can still name another
+calendar for one event. The choice is kept in the vault, not the window, so
+the assistant, the command bar and every open window agree on it.
+
+An event on an account's calendar has what an invitation needs:
+
+- **A repeat** — every day, every weekday, every week on the days you pick,
+  every month on a date or on "the second Tuesday", every year — ending
+  never, on a day, or after a number of times. Google and CalDAV are sent an
+  `RRULE`, Graph its own `patternedRecurrence`, and the server expands the
+  series, which comes back through the calendar's sync like anything else.
+- **Guests**, added and removed by address. The server invites them — Google
+  and Microsoft by their own mail, iCloud and Fastmail by CalDAV scheduling
+  — and tells them when the event moves or is cancelled.
+- **A description** and a location, as plain text.
+
+Changing an event reads it fresh from its server first — the whole
+description, every guest by address, the series' rule — rather than
+trusting what the last sync left, so a change made on a phone in the
+meantime is not quietly undone. A repeating event asks whether a change
+means this occurrence or the whole series, and an event somebody else
+organised says it is theirs to change.
+
+A repeat on this computer is written out as one block per occurrence, two
+years ahead — the same reach an account calendar's sync has — so the grid
+and the reports stay date-range scans with no recurrence engine near them.
+Each block is still yours to move or delete on its own; *Apply changes to
+following* rewrites the rest of the series from the block you are on, and
+deleting one asks whether you mean it, the rest from there, or all of them.
+Guests need a server to invite them, so an event on this computer has none.
+
 ### Other people's calendars
 
 Google, Outlook and Apple all publish a calendar as an
@@ -215,8 +254,9 @@ Subscriptions rather than accounts, by default. There is no OAuth client
 registered with a vendor, no redirect server, no token to refresh and no
 scope that could grow later — which is the only arrangement that keeps
 working for an application that is a binary you built yourself rather than a
-product with a client id. The honest trade: **the sync is one way.** Events
-you create here are yours and stay here.
+product with a client id. The honest trade: **a feed is one way.** Nothing
+you do here reaches it; for a calendar you can add events to, sign in to its
+account instead.
 
 ### Calendars that sign in
 
@@ -241,18 +281,33 @@ and kept current with an etag diff or, where the server advertises it, the
 RFC 6578 `sync-collection` REPORT this application writes by hand, because
 `libdav` does not implement that one request.
 
-Every one of these is read-only, exactly like a feed: nothing here ever
-writes an event back to the server it came from. Recurrence is still
-expanded once, at sync, but through a different reader than a plain feed's —
+Unlike a feed, these can be written to — see [New events, and where they
+go](#new-events-and-where-they-go) — but never by editing the copy here. A
+change goes to the server, and once the server has said yes the calendar's
+own sync brings it back, exactly as it would bring back one made on a phone:
+one way into the vault for every change, whoever made it, which is what
+keeps the sync's tokens, etags and ids honest. Google is written with
+`events.insert` and `patch` (`sendUpdates=all`, so guests hear), Graph with
+`/me/events`, and CalDAV with a `PUT` guarded by the resource's etag, so an
+event changed on the server since the last sync is refused rather than
+overwritten. A calendar its server says this account cannot change —
+somebody else's, shared to read; a holidays calendar — is marked read-only
+and never offered for a new event. An account signed in before events could
+be written holds a read-only grant, and asks to be signed in again, once,
+for the wider one: `calendar.events` beside `calendar.readonly` for Google,
+`Calendars.ReadWrite` for Microsoft — still not the all-powerful `calendar`
+scope, which could delete or reshare a whole calendar.
+
+Recurrence is still expanded once, at sync, but through a different reader
+than a plain feed's —
 `calcard`'s own engine, because CalDAV and Graph hand back `RRULE`-bearing
 events and delta pages rather than one static document, and a second,
 hand-rolled expander for that shape would be the DST-boundary risk the
 [assistant's two-model section](#a-second-model-for-the-small-jobs) warns
 about elsewhere, just doubled. An invitation that arrives in **mail** —
 accept, tentative, decline — sends its reply as an ordinary email back to
-whoever organised it; it does not write to the calendar API at all, which is
-what keeps every calendar in this section read-only without making RSVP a
-missing feature.
+whoever organised it, rather than through the calendar API: it works the
+same for a calendar this application can write to and one it cannot.
 
 Some care went into a feed's parts that are easy to get wrong:
 
@@ -821,9 +876,9 @@ HTML: it answers in plain text, which is escaped here.
 A calendar invitation inside a message draws its own banner above it —
 accept, tentative, decline — parsed with `calcard`, the same reader an
 [account calendar](#calendars-that-sign-in) uses. Answering sends an
-ordinary email reply back to whoever organised it; it never reaches into a
-calendar to write there, which is what keeps every calendar this
-application draws read-only without making RSVP a missing feature.
+ordinary email reply back to whoever organised it rather than reaching
+into a calendar to write there, so it works the same whether or not the
+invitation's calendar is one this application can write to.
 
 ## Notifications
 
@@ -1619,8 +1674,9 @@ Once an account allows it (see [What agents may do](#what-agents-may-do)),
 the assistant can search mail, list and read threads, draft a reply or a new
 message, mark things read, label, move, snooze and archive — each the same
 kind of write a person's own action is, recorded against the same undo
-window and shown on the thread as its doing. **Sending, and answering a
-calendar invitation, are always confirmed in chat** — there is no setting
+window and shown on the thread as its doing. **Sending, answering a
+calendar invitation, and putting an event with guests on a calendar are
+always confirmed in chat** — there is no setting
 that sends without asking, and the confirmation card names the recipients,
 the subject and the first lines of the body before anything leaves. A
 scheduled routine can read, triage and draft exactly the same way, and is
@@ -2793,7 +2849,7 @@ area (Windows) or the system tray (Linux), without going to the window first:
   ─────────────────
   Add a task
   ─────────────────
-  Set an hour aside
+  New event
   ☐ Track time
   ─────────────────
   Add to library

@@ -48,14 +48,23 @@
 //! [`codes::NETWORK`] or [`codes::RATE_LIMITED`], both of which `mod.rs`'s
 //! `sync` reads as an ordinary failure to record on the calendar, leaving
 //! the account alone.
+//!
+//! # Writing
+//!
+//! Creating, changing and deleting events is the child module
+//! `google_write.rs`, which shares this file's token, id encoding and
+//! rate-limit reading. Whether a calendar takes writes at all is read here,
+//! though: Google's `accessRole` -- on `calendarList.list` for [`discover`],
+//! and repeated on every page of `events.list`, which is how [`sync`] keeps
+//! a calendar's `read_only` current without asking again.
 
 use std::sync::Arc;
 
 use everyday_core::Vault;
 use everyday_core::account::Account;
 use everyday_core::calendar::{
-    AccountCalendarSource, AccountSyncCursor, Calendar, CalendarOrigin, Event, EventStatus,
-    SyncReport,
+    AccountCalendarSource, AccountSyncCursor, Calendar, CalendarOrigin, Event, EventDraft,
+    EventStatus, SyncReport,
 };
 use everyday_core::id::CalendarId;
 use serde::Deserialize;
@@ -89,6 +98,23 @@ struct CalendarListItem {
     #[serde(default)]
     #[serde(rename = "backgroundColor")]
     background_color: Option<String>,
+    /// `owner`, `writer`, `reader` or `freeBusyReader` -- this account's own
+    /// standing on the calendar, and the whole of what [`writable_role`]
+    /// reads. Empty when Google left it out, which reads as "not writable":
+    /// a calendar picker that offered one Google would refuse is worse than
+    /// one that waits for the next sync to say otherwise.
+    #[serde(default)]
+    #[serde(rename = "accessRole")]
+    access_role: String,
+}
+
+/// Does Google's `accessRole` let this account put events on the calendar?
+/// `owner` and `writer` do; `reader` and `freeBusyReader` -- a colleague's
+/// shared calendar, a public holiday calendar -- do not. The same word
+/// arrives in two places, `calendarList.list` for [`discover`] and every
+/// page of `events.list` for [`sync`], and both read it through here.
+fn writable_role(role: &str) -> bool {
+    matches!(role, "owner" | "writer")
 }
 
 pub async fn discover(
@@ -103,6 +129,7 @@ pub async fn discover(
         .items
         .into_iter()
         .map(|item| RemoteCalendar {
+            writable: writable_role(&item.access_role),
             remote_id: item.id,
             name: item.summary_override.filter(|s| !s.is_empty()).unwrap_or(item.summary),
             color: item.background_color,
@@ -119,6 +146,13 @@ struct EventsResponse {
     next_page_token: Option<String>,
     #[serde(rename = "nextSyncToken")]
     next_sync_token: Option<String>,
+    /// This account's standing on the calendar being listed -- the same
+    /// word `calendarList.list` carries, repeated on every page, so a sync
+    /// learns that a calendar was shared read-only (or made writable) since
+    /// it was first ticked without a discovery call of its own. See
+    /// [`writable_role`].
+    #[serde(rename = "accessRole")]
+    access_role: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -208,12 +242,12 @@ async fn sync_with_base(
     let token = bearer(svc, vault, account).await?;
     let encoded = urlencoding_light(remote_id);
 
-    let (events, next_token, full_resync_window) = match &calendar.account_sync.token {
+    let (events, next_token, access_role, full_resync_window) = match &calendar.account_sync.token {
         Some(sync_token) => {
             match list_events(base, &encoded, &token, IncrementalOrFull::Incremental(sync_token))
                 .await
             {
-                Ok(pages) => (pages.0, pages.1, None),
+                Ok(pages) => (pages.0, pages.1, pages.2, None),
                 Err(e) if e.code == codes::CONFLICT => {
                     // Google's 410 Gone: the token is too old. Start over with a
                     // bounded window, same as a first sync.
@@ -225,7 +259,7 @@ async fn sync_with_base(
                         IncrementalOrFull::Windowed(window.0, window.1),
                     )
                     .await?;
-                    (pages.0, pages.1, Some(window))
+                    (pages.0, pages.1, pages.2, Some(window))
                 }
                 Err(e) => return Err(e),
             }
@@ -239,7 +273,7 @@ async fn sync_with_base(
                 IncrementalOrFull::Windowed(window.0, window.1),
             )
             .await?;
-            (pages.0, pages.1, Some(window))
+            (pages.0, pages.1, pages.2, Some(window))
         }
     };
 
@@ -276,7 +310,14 @@ async fn sync_with_base(
 
     let vault = vault.clone();
     let id = calendar.id;
-    blocking(move || Ok(vault.sync_account_calendar(id, &upsert, &remove_ids, cursor)?)).await
+    let mut report =
+        blocking(move || Ok(vault.sync_account_calendar(id, &upsert, &remove_ids, cursor)?))
+            .await?;
+    // Said in passing on every page; `accountcal::sync` turns it into the
+    // calendar's own `read_only`, so a calendar shared read-only after it was
+    // ticked stops being offered for new events without a rediscovery.
+    report.writable = access_role.as_deref().map(writable_role);
+    Ok(report)
 }
 
 enum IncrementalOrFull<'a> {
@@ -285,8 +326,9 @@ enum IncrementalOrFull<'a> {
 }
 
 /// Page through `events.list` until Google stops handing back a
-/// `nextPageToken`, returning every item across every page and the final
-/// `nextSyncToken`.
+/// `nextPageToken`, returning every item across every page, the final
+/// `nextSyncToken`, and the `accessRole` the pages named (the last one, should
+/// it somehow change mid-list).
 ///
 /// `base` is [`API`] in production and a mock server's own address under
 /// test -- see this module's tests -- so the paging loop, the 410 fallback
@@ -296,10 +338,11 @@ async fn list_events(
     calendar_id: &str,
     token: &str,
     mode: IncrementalOrFull<'_>,
-) -> CommandResult<(Vec<GoogleEvent>, Option<String>)> {
+) -> CommandResult<(Vec<GoogleEvent>, Option<String>, Option<String>)> {
     let mut items = Vec::new();
     let mut page_token: Option<String> = None;
     let mut next_sync_token = None;
+    let mut access_role = None;
     loop {
         let mut url =
             format!("{base}/calendars/{calendar_id}/events?singleEvents=true&maxResults=250");
@@ -326,12 +369,15 @@ async fn list_events(
         if page.next_sync_token.is_some() {
             next_sync_token = page.next_sync_token;
         }
+        if page.access_role.is_some() {
+            access_role = page.access_role;
+        }
         page_token = page.next_page_token;
         if page_token.is_none() {
             break;
         }
     }
-    Ok((items, next_sync_token))
+    Ok((items, next_sync_token, access_role))
 }
 
 fn to_event(
@@ -399,6 +445,90 @@ fn to_event(
 
 fn zone_or_utc(tz: &str) -> jiff::tz::TimeZone {
     jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+/// Where an event starts, on the wall clock of the draft being saved: a day
+/// for an all-day event, a date and a time for a timed one. What
+/// [`draft_for_series`] compares an occurrence and its series' first
+/// occurrence by.
+///
+/// Lives here rather than in either writing module because both use it:
+/// Google and Graph move a series the same way, and only how each reads a
+/// start off the wire differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LocalStart {
+    Day(jiff::civil::Date),
+    At(jiff::civil::DateTime),
+}
+
+impl LocalStart {
+    pub(super) fn date(self) -> jiff::civil::Date {
+        match self {
+            LocalStart::Day(day) => day,
+            LocalStart::At(at) => at.date(),
+        }
+    }
+}
+
+/// `draft`, moved from the occurrence somebody was looking at onto the
+/// series' own first occurrence -- the times a whole-series change has to
+/// write to the series itself.
+///
+/// The editor shows one occurrence: the third Monday's standup, say. Its
+/// draft says when *that* occurrence should be. But Google and Graph both
+/// keep a series' time on the series itself, as its first occurrence, and
+/// writing the third Monday's date there would quietly drop the first two.
+/// So what is written is the *move*: however far the occurrence went
+/// (`draft` against `occurrence`), the series' first occurrence (`first`)
+/// goes the same distance, and the length is the draft's own.
+///
+/// The move is measured on the wall clock in the draft's zone, not as an
+/// absolute duration, so dragging Saturday's occurrence to Monday across a
+/// change of clocks still moves the series by exactly two days, nine o'clock
+/// staying nine o'clock. An all-day event moves by whole days. Changing
+/// between the two -- a timed series made all-day, or the reverse -- moves
+/// the series by the days the occurrence moved and takes the draft's own
+/// time of day, which is the only reading either change has.
+///
+/// When nothing moved -- only the title changed, or the guests -- the shift
+/// is nothing and the series keeps its own times. And because the shift is
+/// measured from where the occurrence is *now*, one that was moved on its own
+/// some time ago does not drag the whole series after it when its title is
+/// changed "for every event".
+pub(super) fn draft_for_series(
+    draft: &EventDraft,
+    first: LocalStart,
+    occurrence: LocalStart,
+) -> CommandResult<EventDraft> {
+    let bad = |e: jiff::Error| {
+        CommandError::new(codes::INVALID, format!("the series could not be moved there: {e}"))
+    };
+    let zone = zone_or_utc(&draft.tz);
+    let length = draft.end.duration_since(draft.start);
+    let mut moved = draft.clone();
+    match (first, occurrence, draft.all_day) {
+        (LocalStart::At(first), LocalStart::At(occurrence), false) => {
+            let shift = draft.local_start().duration_since(occurrence);
+            let start = first.checked_add(shift).map_err(bad)?.to_zoned(zone).map_err(bad)?;
+            moved.start = start.timestamp();
+            moved.end = moved.start.checked_add(length).map_err(bad)?;
+        }
+        (first, occurrence, all_day) => {
+            let days = occurrence.date().duration_until(draft.start_date());
+            let day = first.date().checked_add(days).map_err(bad)?;
+            if all_day {
+                let span = draft.start_date().duration_until(draft.end_date_exclusive());
+                let after = day.checked_add(span).map_err(bad)?;
+                moved.start = day.to_zoned(zone.clone()).map_err(bad)?.timestamp();
+                moved.end = after.to_zoned(zone).map_err(bad)?.timestamp();
+            } else {
+                let at = day.to_datetime(draft.local_start().time());
+                moved.start = at.to_zoned(zone).map_err(bad)?.timestamp();
+                moved.end = moved.start.checked_add(length).map_err(bad)?;
+            }
+        }
+    }
+    Ok(moved)
 }
 
 fn rfc3339_start(d: jiff::civil::Date) -> String {
@@ -507,10 +637,14 @@ fn is_rate_limit_reason(body: &[u8]) -> bool {
 
 /// Percent-encode the handful of characters a Google calendar id can
 /// contain that are not already URL-safe -- chiefly `@` in a personal
-/// address used as a calendar id. Not a general-purpose encoder: this
-/// application never puts arbitrary text here, only what `discover` itself
-/// already read back from Google.
-fn urlencoding_light(s: &str) -> String {
+/// address used as a calendar id, and `#` in a subscribed one
+/// (`en.usa#holiday@group.v.calendar.google.com`), which left bare would end
+/// the path and turn the rest into a fragment no server ever sees. Not a
+/// general-purpose encoder: this application never puts arbitrary text here,
+/// only ids a server itself already handed back. `pub(super)` because
+/// `graph.rs`'s writes address an event or a calendar by Graph's own id the
+/// same way.
+pub(super) fn urlencoding_light(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
@@ -547,7 +681,60 @@ impl super::CalendarProvider for GoogleProvider {
     ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
         Box::pin(sync(svc, vault, account, calendar))
     }
+
+    fn create<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        draft: &'a everyday_core::calendar::EventDraft,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::create(svc, vault, account, calendar, draft))
+    }
+
+    fn load<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+    ) -> super::BoxFuture<'a, CommandResult<everyday_core::calendar::EditableEvent>> {
+        Box::pin(write::load(svc, vault, account, calendar, event))
+    }
+
+    fn update<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+        draft: &'a everyday_core::calendar::EventDraft,
+        scope: everyday_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::update(svc, vault, account, calendar, event, draft, scope))
+    }
+
+    fn delete<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a everyday_core::calendar::Event,
+        scope: everyday_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::delete(svc, vault, account, calendar, event, scope))
+    }
 }
+
+/// Creating, changing and deleting events -- see `accountcal`'s module doc,
+/// "Writing". A child module rather than a sibling, so it shares this
+/// file's private request helpers instead of having them re-exported.
+#[path = "google_write.rs"]
+mod write;
 
 #[cfg(test)]
 mod tests {
@@ -580,12 +767,14 @@ mod tests {
                                 "start": {"dateTime": "2026-09-14T09:00:00Z"},
                                 "end": {"dateTime": "2026-09-14T09:30:00Z"}}],
                             "nextPageToken": "page-2",
+                            "accessRole": "reader",
                         }))
                         .into_response()
                     } else {
                         Json(serde_json::json!({
                             "items": [{"id": "evt-2", "status": "cancelled"}],
                             "nextSyncToken": "fresh-token",
+                            "accessRole": "reader",
                         }))
                         .into_response()
                     }
@@ -603,7 +792,7 @@ mod tests {
     #[tokio::test]
     async fn paging_collects_every_page_and_hands_back_the_final_sync_token() {
         let (base, _calls) = mock_events_list().await;
-        let (items, sync_token) =
+        let (items, sync_token, access_role) =
             list_events(&base, "cal-1", "tok", IncrementalOrFull::Incremental("first-sync"))
                 .await
                 .expect("both pages answer");
@@ -612,6 +801,9 @@ mod tests {
         assert_eq!(items[1].id, "evt-2");
         assert_eq!(items[1].status, "cancelled", "a cancelled item is a deletion, not an event");
         assert_eq!(sync_token.as_deref(), Some("fresh-token"));
+        assert_eq!(access_role.as_deref(), Some("reader"));
+        assert!(!writable_role("reader") && !writable_role("freeBusyReader"));
+        assert!(writable_role("owner") && writable_role("writer"));
     }
 
     #[tokio::test]
@@ -630,8 +822,9 @@ mod tests {
     /// up -- the same shape `tests/support/vault.rs` builds for the
     /// integration tests, reproduced here (rather than shared with it)
     /// because that module is only reachable from `tests/*.rs`, not from a
-    /// unit test compiled into this crate itself.
-    fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
+    /// unit test compiled into this crate itself. `pub(super)` so the writing
+    /// half's own tests (`google_write.rs`) build on the same one.
+    pub(super) fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let config = everyday_core::VaultConfig {
             name: "Test".into(),

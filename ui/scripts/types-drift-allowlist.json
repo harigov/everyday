@@ -37,6 +37,18 @@
   },
   {
     "type": "Calendar",
+    "field": "isDefault",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Calendar",
+    "field": "readOnly",
+    "kind": "optionality",
+    "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."
+  },
+  {
+    "type": "Calendar",
     "field": "refreshMinutes",
     "kind": "optionality",
     "reason": "serde(default) without skip_serializing_if relaxes *deserialising* an older sealed record; the field is still always serialised, so types.ts is right to leave it required. schemars marks every #[serde(default)] field optional in the generated schema regardless of skip_serializing_if, which is where this diverges -- see the note atop crates/everyday-core/src/schema.rs."

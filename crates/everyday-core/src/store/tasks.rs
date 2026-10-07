@@ -338,7 +338,27 @@ pub trait TaskStore: Send + Sync {
 
     fn put_block(&self, block: &TimeBlock) -> Result<()>;
 
+    /// Write several blocks as one operation -- a repeating series, written
+    /// out ahead of time. Same contract as [`TaskStore::put_tasks`]: the
+    /// default loops, and a backend that can be transactional should
+    /// override it and be so.
+    fn put_blocks(&self, blocks: &[TimeBlock]) -> Result<()> {
+        for b in blocks {
+            self.put_block(b)?;
+        }
+        Ok(())
+    }
+
     fn delete_block(&self, id: BlockId) -> Result<()>;
+
+    /// Delete several blocks as one operation -- what is left of a repeating
+    /// series. The default loops; see [`TaskStore::put_blocks`].
+    fn delete_blocks(&self, ids: &[BlockId]) -> Result<()> {
+        for id in ids {
+            self.delete_block(*id)?;
+        }
+        Ok(())
+    }
 
     // ---- housekeeping ---------------------------------------------------
 

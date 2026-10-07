@@ -10,7 +10,8 @@
   //
   //   planned   a translucent wash, dashed left rail    -- an intention
   //   actual    a solid fill, solid left rail           -- a record
-  //   event     a hairline outline, tinted ground       -- somebody else's
+  //   event     a hairline outline, tinted ground       -- a calendar's
+  //   new       dashed all round, raised                -- not saved yet
   //
   // Overlapping things are packed into lanes by `packLanes`, so two clashing
   // meetings each take half the column and an unrelated one later in the day
@@ -22,15 +23,18 @@
   import {
     calendarTaskMenu,
     dayMenu,
+    draftMenu,
     eventMenu,
     readingMenu,
     slotMenu,
     timeMenu,
   } from '../lib/menus'
+  import { dayIn } from '../lib/recurrence'
   import {
     MIN_BLOCK_MINUTES,
     SNAP_MINUTES,
     minutesOfDay,
+    offsetInDay,
     packLanes,
     snap,
     todayIso,
@@ -85,6 +89,8 @@
          */
         proposal?: Proposal
         ghostBlock?: TimeBlock
+        /** Set when it is the unsaved new event: the drop moves the draft. */
+        draft?: true
       }
     | {
         mode: 'resize'
@@ -93,6 +99,7 @@
         start: number
         end: number
         from: { length: number }
+        draft?: true
       }
     | null
   let drag = $state<Drag>(null)
@@ -174,8 +181,14 @@
     menu.show(e, slotMenu(slot))
   }
 
-  /** The draft rectangle, if a gesture is in flight on `iso`. */
-  function draftOn(iso: string): { top: number; height: number; label: string } | null {
+  /**
+   * The draft rectangle, if a gesture is in flight on `iso` -- in the colour
+   * of the calendar the result will land on, so a drag on empty time says
+   * before it is let go whether it is making a block or a Work event.
+   */
+  function draftOn(
+    iso: string,
+  ): { top: number; height: number; label: string; color: string } | null {
     if (!drag || drag.day !== iso) return null
     const [from, to] =
       drag.mode === 'create'
@@ -184,11 +197,69 @@
           ? [drag.start, drag.start + drag.length]
           : [drag.start, drag.end]
     const height = Math.max(((to - from) / 60) * HOUR, (MIN_BLOCK_MINUTES / 60) * HOUR)
+    const color =
+      drag.mode === 'create'
+        ? calendar.colorOfCalendar(calendar.defaultCalendar?.id ?? null)
+        : drag.draft
+          ? calendar.colorOfCalendar(calendar.draft?.calendarId ?? null)
+          : 'var(--accent)'
     return {
       top: (from / 60) * HOUR,
       height,
       label: `${clockOf(from)} – ${clockOf(Math.max(to, from + MIN_BLOCK_MINUTES))}`,
+      color,
     }
+  }
+
+  interface Pending {
+    start: number
+    end: number
+    top: number
+    height: number
+    color: string
+    title: string
+    time: string
+  }
+
+  /**
+   * The new event not saved yet, where it falls in `iso`'s column -- or
+   * nothing while it is the thing being dragged, when the gesture's own
+   * rectangle stands in for it.
+   *
+   * Not a `Slot`, and not packed into lanes with the rest. It is the one
+   * thing on the grid being edited, drawn over whatever it would clash with
+   * so the clash is visible; packing it would halve the meeting beside it
+   * for the length of an edit that may yet be cancelled.
+   */
+  function pendingOn(iso: string): Pending | null {
+    const open = calendar.draft
+    if (!open || open.draft.allDay) return null
+    if (drag && drag.mode !== 'create' && drag.draft) return null
+    const start = offsetInDay(open.draft.start, iso)
+    const end = offsetInDay(open.draft.end, iso)
+    if (end <= 0 || start >= 24 * 60) return null
+    const from = Math.max(0, start)
+    const to = Math.min(24 * 60, Math.max(end, start + MIN_BLOCK_MINUTES))
+    return {
+      start: from,
+      end: to,
+      top: (from / 60) * HOUR,
+      height: Math.max(((to - from) / 60) * HOUR, (MIN_BLOCK_MINUTES / 60) * HOUR),
+      color: calendar.colorOfCalendar(open.calendarId),
+      title: open.draft.title.trim() || 'New event',
+      time: `${clockOf(from)} – ${clockOf(to)}`,
+    }
+  }
+
+  /** Does the unsaved all-day event cover `iso`? For the band over the grid. */
+  function pendingAllDayOn(iso: string): boolean {
+    const open = calendar.draft
+    if (!open?.draft.allDay) return false
+    const first = dayIn(open.draft.start, open.draft.tz)
+    // The end is the midnight *after* the last day, so a moment before it
+    // is on the last day itself.
+    const last = dayIn(new Date(Date.parse(open.draft.end) - 1).toISOString(), open.draft.tz)
+    return first <= iso && iso <= (last < first ? first : last)
   }
 
   // ── gestures ───────────────────────────────────────────────────────────
@@ -264,6 +335,39 @@
     }
   }
 
+  /**
+   * The unsaved new event, picked up: moved, or stretched from its bottom
+   * edge -- the same two gestures a block answers to, so the draft's time
+   * can be set by hand on the grid as well as by typing in the rail.
+   */
+  function onPendingPointerDown(e: PointerEvent, iso: string, at: Pending) {
+    e.stopPropagation()
+    if (e.button !== 0) return
+    const el = (e.currentTarget as HTMLElement).parentElement!
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    drag =
+      box.bottom - e.clientY <= RESIZE_GRIP
+        ? {
+            mode: 'resize',
+            id: 'draft',
+            day: iso,
+            start: at.start,
+            end: at.end,
+            from: { length: at.end - at.start },
+            draft: true,
+          }
+        : {
+            mode: 'move',
+            id: 'draft',
+            day: iso,
+            start: at.start,
+            length: Math.max(MIN_BLOCK_MINUTES, at.end - at.start),
+            grabbed: minutesAt(el, e.clientY) - at.start,
+            from: { day: iso, start: at.start },
+            draft: true,
+          }
+  }
+
   function onColumnPointerMove(e: PointerEvent, iso: string) {
     if (!drag) return
     const column = e.currentTarget as HTMLElement
@@ -287,21 +391,26 @@
     if (gesture.mode === 'create') {
       const from = Math.min(gesture.from, gesture.to)
       const to = Math.max(gesture.from, gesture.to)
+      const click = to - from <= SNAP_MINUTES
+      // A click away from an unsaved event puts it down, the way a click
+      // outside any editor does; a drag still means "a new one, here".
+      if (click && calendar.draft) {
+        calendar.cancelDraft()
+        return
+      }
       // A click rather than a drag: give it a sensible hour rather than the
       // fifteen minutes the pointer technically covered.
-      const minutes = to - from <= SNAP_MINUTES ? DEFAULT_BLOCK_MINUTES : to - from
-      await calendar.book({
-        subject: { type: 'adhoc' },
-        day: gesture.day,
-        startMinutes: from,
-        minutes,
-      })
+      const minutes = click ? DEFAULT_BLOCK_MINUTES : to - from
+      // A block, or a draft on the default calendar -- `newEvent` decides.
+      await calendar.newEvent({ day: gesture.day, startMinutes: from, minutes })
     } else if (gesture.mode === 'move') {
       // Only if it actually moved. A plain click on a block selects it, and
       // that must not queue a write of identical values -- which would bump
       // `updatedAt` on every glance and make "recently changed" meaningless.
       if (gesture.day !== gesture.from.day || gesture.start !== gesture.from.start) {
-        if (gesture.proposal && gesture.ghostBlock) {
+        if (gesture.draft) {
+          calendar.moveDraft(gesture.day, gesture.start)
+        } else if (gesture.proposal && gesture.ghostBlock) {
           // A ghost has nothing on disk to move -- dragging it *is* accepting
           // it, at the time it was dropped.
           await calendar.acceptGhostMove(
@@ -315,7 +424,8 @@
         }
       }
     } else if (gesture.end - gesture.start !== gesture.from.length) {
-      calendar.resizeBlock(gesture.id, gesture.end - gesture.start)
+      if (gesture.draft) calendar.resizeDraft(gesture.end - gesture.start)
+      else calendar.resizeBlock(gesture.id, gesture.end - gesture.start)
     }
   }
 
@@ -412,6 +522,16 @@
     <div class="bandgutter">All day</div>
     {#each days as iso (iso)}
       <div class="bandcell">
+        {#if pendingAllDayOn(iso)}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <span
+            class="chip pendingchip"
+            style="--c: {calendar.colorOfCalendar(calendar.draft?.calendarId ?? null)}"
+            title="Not saved yet"
+            oncontextmenu={(e) => menu.show(e, draftMenu())}
+            >{calendar.draft?.draft.title.trim() || 'New event'}</span
+          >
+        {/if}
         {#each calendar.allDayOn(iso) as event (event.id)}
           {@const cal = calendar.calendarOf(event.calendarId)}
           <button
@@ -473,6 +593,7 @@
 
       {#each days as iso (iso)}
         {@const draft = draftOn(iso)}
+        {@const pending = pendingOn(iso)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="col"
@@ -584,8 +705,37 @@
             </span>
           {/each}
 
+          {#if pending}
+            <!-- The new event, before Save. Its own pointer handler, so a
+                 press on it moves it rather than starting another one under
+                 it; and its own menu, since the column's would offer to make
+                 a second. -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="pending"
+              class:tight={pending.height < ONE_LINE}
+              style="top: {pending.top}px; height: {pending.height}px; --c: {pending.color}"
+              title="Not saved yet"
+              onpointerdown={(e) => onPendingPointerDown(e, iso, pending)}
+              oncontextmenu={(e) => menu.show(e, draftMenu())}
+            >
+              {#if pending.height < TWO_LINES}
+                <span class="slottitle"
+                  >{pending.title} <span class="slottime">{clockOf(pending.start)}</span></span
+                >
+              {:else}
+                <span class="slottime">{pending.time}</span>
+                <span class="slottitle">{pending.title}</span>
+              {/if}
+              <span class="handle"></span>
+            </div>
+          {/if}
+
           {#if draft}
-            <div class="draft" style="top: {draft.top}px; height: {draft.height}px">
+            <div
+              class="draft"
+              style="top: {draft.top}px; height: {draft.height}px; --c: {draft.color}"
+            >
               {draft.label}
             </div>
           {/if}
@@ -1017,14 +1167,55 @@
     align-items: flex-start;
     padding: 3px 6px;
     border-radius: 5px;
-    background: color-mix(in oklab, var(--accent) 16%, var(--bg-raised));
-    border: 1px dashed var(--accent);
-    color: var(--accent);
+    background: color-mix(in oklab, var(--c, var(--accent)) 16%, var(--bg-raised));
+    border: 1px dashed var(--c, var(--accent));
+    color: var(--c, var(--accent));
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
     font-weight: 550;
     pointer-events: none;
     z-index: 5;
+  }
+
+  /* A new event, not saved yet: dashed all the way round in the colour of
+     the calendar it is bound for, and raised over the column. It is the one
+     thing on the grid being edited, and the dashes are the same promise a
+     planned block's rail makes -- this is an intention, not yet a fact on
+     anybody's calendar. */
+  .pending {
+    position: absolute;
+    left: 0;
+    right: 2px;
+    z-index: 5;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 2px 5px 2px 7px;
+    border-radius: 5px;
+    border: 1.5px dashed var(--c);
+    background: color-mix(in oklab, var(--c) 14%, var(--bg-raised));
+    color: color-mix(in oklab, var(--c) 70%, var(--fg));
+    font-size: var(--text-xs);
+    line-height: 1.25;
+    box-shadow: var(--shadow);
+    cursor: grab;
+  }
+  .pending.tight {
+    padding-block: 0;
+    justify-content: center;
+  }
+  .pending.tight .slottitle {
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  /* The same, for an all-day one in the band. */
+  .chip.pendingchip {
+    background: color-mix(in oklab, var(--c) 10%, transparent);
+    border: 1px dashed var(--c);
+    border-left-width: 2px;
+    cursor: default;
   }
 
   /* Where a dragged task would land. */

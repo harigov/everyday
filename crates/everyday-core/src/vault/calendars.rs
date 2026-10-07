@@ -17,6 +17,7 @@ use crate::error::{Error, Result};
 use crate::id::{AccountId, CalendarId, EventId};
 use crate::record::RecordKind;
 use crate::store::calendars::{CalendarStore, EventQuery};
+use crate::timestamped::Timestamped;
 
 impl Vault {
     /// Does this vault's backend store subscribed calendars?
@@ -36,6 +37,15 @@ impl Vault {
         self.with_calendars(|c| c.get_calendar(id))
     }
 
+    /// Save a calendar's settings -- its name, colour, visibility, role.
+    ///
+    /// Two fields are kept as stored rather than taken from `calendar`:
+    /// [`Calendar::is_default`], which only [`Vault::set_default_calendar`]
+    /// moves, and [`Calendar::read_only`], which only the account's server
+    /// decides. Both are facts a caller holding a copy from a minute ago
+    /// could otherwise put back the way they were -- a sidebar toggling a
+    /// calendar's visibility from a list it loaded before the default moved
+    /// would leave two calendars each claiming to be it.
     pub fn save_calendar(&self, calendar: &Calendar) -> Result<()> {
         self.writable()?;
         if calendar.name.trim().is_empty() {
@@ -48,8 +58,78 @@ impl Vault {
         if calendar.origin.url().is_some() {
             calendar.fetch_url()?;
         }
-        self.with_calendars(|c| c.put_calendar(calendar))?;
+        let mut calendar = calendar.clone();
+        match self.calendar(calendar.id) {
+            Ok(stored) => {
+                calendar.is_default = stored.is_default;
+                calendar.read_only = stored.read_only;
+            }
+            // A new calendar starts as neither: being made the default is a
+            // separate choice, and read-only is the server's to say.
+            Err(Error::NotFound { .. }) => calendar.is_default = false,
+            Err(e) => return Err(e),
+        }
+        self.with_calendars(|c| c.put_calendar(&calendar))?;
         self.wrote(RecordKind::Calendar, calendar.id);
+        Ok(())
+    }
+
+    /// The calendar new events go to when nobody names one, if it is one
+    /// they can still go to. `None` means this computer's own time blocks --
+    /// both when nothing was chosen and when the chosen calendar has since
+    /// turned read-only or gone.
+    pub fn default_calendar(&self) -> Result<Option<Calendar>> {
+        Ok(self.calendars()?.into_iter().find(|c| c.is_default && c.takes_new_events()))
+    }
+
+    /// Make `id` the calendar new events go to, or -- with `None` -- send
+    /// them to this computer's own time blocks. Clears the mark from every
+    /// other calendar in the same pass, so there is never more than one.
+    pub fn set_default_calendar(&self, id: Option<CalendarId>) -> Result<()> {
+        self.writable()?;
+        let calendars = self.calendars()?;
+        if let Some(id) = id {
+            let target = calendars
+                .iter()
+                .find(|c| c.id == id)
+                .ok_or_else(|| Error::not_found("calendar", id))?;
+            if !target.takes_new_events() {
+                return Err(Error::Invalid(format!(
+                    "{} cannot take new events, so it cannot be where they go",
+                    target.name
+                )));
+            }
+        }
+        for mut calendar in calendars {
+            let want = Some(calendar.id) == id;
+            if calendar.is_default != want {
+                calendar.is_default = want;
+                calendar.touch();
+                self.with_calendars(|c| c.put_calendar(&calendar))?;
+                self.wrote(RecordKind::Calendar, calendar.id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Record what an account's server said about whether this account may
+    /// write to the calendar. A no-op when nothing changed, so a sync that
+    /// learns the same answer every hour writes nothing for it.
+    pub fn set_calendar_read_only(&self, id: CalendarId, read_only: bool) -> Result<()> {
+        self.writable()?;
+        let mut calendar = self.calendar(id)?;
+        if calendar.read_only == read_only {
+            return Ok(());
+        }
+        calendar.read_only = read_only;
+        // A calendar that can no longer take events cannot be where they
+        // go; leaving the mark would only make `default_calendar` skip it.
+        if read_only {
+            calendar.is_default = false;
+        }
+        calendar.touch();
+        self.with_calendars(|c| c.put_calendar(&calendar))?;
+        self.wrote(RecordKind::Calendar, id);
         Ok(())
     }
 
@@ -129,6 +209,7 @@ impl Vault {
             events: events.len() as u64,
             skipped,
             feed_name: feed.name,
+            writable: None,
         })
     }
 
@@ -193,6 +274,7 @@ impl Vault {
             events: upsert.len() as u64,
             skipped: 0,
             feed_name: None,
+            writable: None,
         })
     }
 }

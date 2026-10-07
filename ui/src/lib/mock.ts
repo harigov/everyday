@@ -24,8 +24,13 @@ import type {
   BlockSubject,
   Bootstrap,
   Calendar,
+  CalendarAccess,
   CalendarEvent,
   CalendarInfo,
+  EditableEvent,
+  EventDraft,
+  EventScope,
+  Recurrence,
   BalanceReport,
   MeetingActivity,
   MailAgentOriginKind,
@@ -110,6 +115,7 @@ import type {
 } from './types'
 import { DEFAULT_COLORS } from './colors'
 import { addDays, isoDate } from './time'
+import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
 import { DIGEST_MARKER, ordinal } from './dream'
 import type { Draft, ImproveMode, MailCategory } from './types'
 import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
@@ -1714,6 +1720,11 @@ const blocks: TimeBlock[] = [
 // against an empty page. One of them is deliberately in a failed state: a
 // feed that cannot be reached is a thing the sidebar has to say well, and it
 // is hard to get right if you never see it.
+//
+// Beside them, two account calendars that can be written to -- Fastmail's
+// over CalDAV, and Google's "Work" -- so a new event has somewhere to go
+// other than this computer. None is the default to begin with: new events
+// are blocks until somebody chooses otherwise, as in a fresh vault.
 
 const calendars: CalendarInfo[] = [
   {
@@ -1726,9 +1737,12 @@ const calendars: CalendarInfo[] = [
     visible: true,
     refreshMinutes: 60,
     lastSyncedAt: iso(0),
+    isDefault: false,
+    readOnly: false,
     createdAt: iso(30),
     updatedAt: iso(0),
     events: 0,
+    access: 'readOnly',
   },
   {
     id: 'c-holidays',
@@ -1740,9 +1754,12 @@ const calendars: CalendarInfo[] = [
     refreshMinutes: 1440,
     lastSyncedAt: iso(3),
     lastError: 'there is no calendar at that address any more. It may have been revoked.',
+    isDefault: false,
+    readOnly: false,
     createdAt: iso(60),
     updatedAt: iso(0),
     events: 0,
+    access: 'readOnly',
   },
   // An account calendar (phase 6): read from `acct-fastmail`'s own CalDAV
   // collection rather than a pasted URL, so `CalendarNav` has something to
@@ -1762,11 +1779,78 @@ const calendars: CalendarInfo[] = [
     visible: true,
     refreshMinutes: 60,
     lastSyncedAt: iso(0),
+    isDefault: false,
+    readOnly: false,
     createdAt: iso(10),
     updatedAt: iso(0),
     events: 0,
+    access: 'writable',
+  },
+  // Google's own calendar, read and written over the Calendar API with the
+  // account's OAuth sign-in -- and the one whose events can be opened in the
+  // editor with guests, a description and a repeat.
+  {
+    id: 'c-google-work',
+    name: 'Work',
+    color: '#c2410c',
+    origin: {
+      type: 'account',
+      accountId: 'acct-google',
+      remoteId: 'primary',
+      remoteName: 'me@gmail.com',
+      source: 'google',
+    },
+    provider: 'google',
+    visible: true,
+    refreshMinutes: 15,
+    lastSyncedAt: iso(0),
+    isDefault: false,
+    readOnly: false,
+    createdAt: iso(20),
+    updatedAt: iso(0),
+    events: 0,
+    access: 'writable',
   },
 ]
+
+/**
+ * Scopes that let an account write to its calendars -- mirrors
+ * `Account::can_write_calendars` in `everyday-core`. An OAuth account signed
+ * in before calendar writing existed has only the read scope, and its
+ * calendars answer `needsSignIn` until it signs in again.
+ */
+const CALENDAR_WRITE_SCOPES = [
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/calendar',
+  'Calendars.ReadWrite',
+  'https://graph.microsoft.com/Calendars.ReadWrite',
+]
+
+/** Whether a new event can go on `c` -- `access_of` in the calendars domain. */
+function mockCalendarAccess(c: Calendar): CalendarAccess {
+  if (c.origin.type !== 'account' || c.readOnly) return 'readOnly'
+  const accountId = c.origin.accountId
+  const account = accounts.find((a) => a.id === accountId)
+  if (!account) return 'readOnly'
+  const needsScope = account.provider === 'google' || account.provider === 'microsoft'
+  if (
+    needsScope &&
+    account.auth.type === 'oAuth' &&
+    !account.auth.scopes.some((s) => CALENDAR_WRITE_SCOPES.includes(s))
+  ) {
+    return 'needsSignIn'
+  }
+  return 'writable'
+}
+
+/** A calendar as `list_calendars` answers it: counted, and with its access worked out. */
+function calendarInfo(c: Calendar): CalendarInfo {
+  return {
+    ...c,
+    events: events.filter((e) => e.calendarId === c.id).length,
+    access: mockCalendarAccess(c),
+  }
+}
 
 /**
  * Every calendar `acct-fastmail` offers over CalDAV, discovery-shaped --
@@ -1780,6 +1864,7 @@ const fastmailRemoteCalendars: RemoteCalendarInfo[] = [
     name: 'Home',
     color: '#9333ea',
     source: 'calDav',
+    writable: true,
     subscribed: true,
     calendarId: 'c-fastmail-home',
   },
@@ -1788,10 +1873,43 @@ const fastmailRemoteCalendars: RemoteCalendarInfo[] = [
     name: 'Work',
     color: '#0f766e',
     source: 'calDav',
+    writable: true,
     subscribed: false,
     calendarId: null,
   },
 ]
+
+/**
+ * What `acct-google` offers: its own calendar, subscribed above as "Work",
+ * and a family calendar somebody shared with it read-only -- the shape a
+ * picker has to leave out of "where can a new event go".
+ */
+const googleRemoteCalendars: RemoteCalendarInfo[] = [
+  {
+    remoteId: 'primary',
+    name: 'Work',
+    color: '#c2410c',
+    source: 'google',
+    writable: true,
+    subscribed: true,
+    calendarId: 'c-google-work',
+  },
+  {
+    remoteId: 'family0123@group.calendar.google.com',
+    name: 'Family',
+    color: '#15803d',
+    source: 'google',
+    writable: false,
+    subscribed: false,
+    calendarId: null,
+  },
+]
+
+/** Each account's discoverable calendars, by account id. */
+const remoteCalendarsOf: Record<string, RemoteCalendarInfo[]> = {
+  'acct-fastmail': fastmailRemoteCalendars,
+  'acct-google': googleRemoteCalendars,
+}
 
 // ── Accounts ──────────────────────────────────────────────────────────────
 //
@@ -1816,9 +1934,15 @@ const accounts: AccountView[] = [
       clientId: 'demo-app.apps.googleusercontent.com',
       authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
       tokenUrl: 'https://oauth2.googleapis.com/token',
-      scopes: ['https://mail.google.com/'],
+      // Signed in since calendar writing arrived, so its calendars can take
+      // a new event. Drop the last scope to see them ask to sign in again.
+      scopes: [
+        'https://mail.google.com/',
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
     },
-    services: { mail: true, calendar: false },
+    services: { mail: true, calendar: true },
     assistantAccess: {
       read: true,
       draft: true,
@@ -1901,7 +2025,10 @@ const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
       authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
       tokenUrl: 'https://oauth2.googleapis.com/token',
       mailScopes: ['https://mail.google.com/'],
-      calendarScopes: ['https://www.googleapis.com/auth/calendar.readonly'],
+      calendarScopes: [
+        'https://www.googleapis.com/auth/calendar.readonly',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
     },
     needsClientSecret: true,
     appPasswordHelpUrl: null,
@@ -1920,7 +2047,7 @@ const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
         'https://outlook.office.com/SMTP.Send',
         'offline_access',
       ],
-      calendarScopes: ['Calendars.Read'],
+      calendarScopes: ['Calendars.ReadWrite'],
     },
     needsClientSecret: false,
     appPasswordHelpUrl: null,
@@ -2143,6 +2270,229 @@ const events: CalendarEvent[] = [
       events.push(eventAt(id('focus'), 'c-work', -back, 16, 90, 'Focus time'))
     }
   }
+}
+
+// ── Writing to an account calendar ───────────────────────────────────────
+//
+// The real backend writes to Google, Graph or CalDAV and lets the calendar's
+// sync bring the result back as occurrences. The mock has no server, so it
+// writes the occurrences itself -- twelve weeks of them for a repeat, which
+// is more than the grid shows at once -- and keeps what it was asked for
+// beside them, because an occurrence row has no room for a guest's address,
+// their answer or the rule, and `load_event` has to hand all three back.
+
+/** What a series was written from, and whose it is. */
+interface MockSeries {
+  calendarId: string
+  draft: EventDraft
+  organizer: string
+  /** This account organised it -- only then may it be changed. */
+  own: boolean
+}
+const mockSeries = new Map<string, MockSeries>()
+/** Which series each written occurrence belongs to, by event id. */
+const seriesOfEvent = new Map<string, string>()
+/** A change made to one occurrence alone, by event id. */
+const occurrenceEdits = new Map<string, EventDraft>()
+let mockSeriesCounter = 0
+let mockEventCounter = 0
+/** How far ahead the mock writes a repeat -- the real backend reaches two years. */
+const MOCK_SERIES_DAYS = 84
+
+/** The fields of an occurrence that come from what was asked for. */
+function eventFields(draft: EventDraft, start: Date, end: Date) {
+  return {
+    title: draft.title.trim(),
+    description: draft.description,
+    location: draft.location,
+    start: start.toISOString(),
+    end: end.toISOString(),
+    localDate: isoDate(start),
+    // An all-day event ends at the midnight after its last day.
+    endDate: isoDate(draft.allDay ? new Date(end.getTime() - 1) : end),
+    tz: draft.tz,
+    allDay: draft.allDay,
+    // As a feed gives them: a name where there is one, the address where not.
+    attendees: draft.attendees.map((a) => a.name || a.email),
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+/** Take a series off the calendar: its occurrences, and what it was written from. */
+function dropMockSeries(key: string) {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const id = events[i]!.id
+    if (seriesOfEvent.get(id) !== key) continue
+    events.splice(i, 1)
+    seriesOfEvent.delete(id)
+    occurrenceEdits.delete(id)
+  }
+  mockSeries.delete(key)
+}
+
+/** Write `series` out as occurrences, replacing whatever it had before. */
+function writeMockSeries(key: string, series: MockSeries): CalendarEvent[] {
+  dropMockSeries(key)
+  mockSeries.set(key, series)
+  const { draft } = series
+  const first = new Date(draft.start)
+  const length = Date.parse(draft.end) - first.getTime()
+  const firstDay = isoDate(first)
+  const days = draft.recurrence
+    ? expandDays(draft.recurrence, firstDay, addDays(firstDay, MOCK_SERIES_DAYS), 200)
+    : [firstDay]
+  const written: CalendarEvent[] = []
+  for (const d of days) {
+    const [y = 1970, m = 1, dd = 1] = d.split('-').map(Number)
+    // The same wall-clock time on each day, across a change of clocks.
+    const start = new Date(first)
+    start.setFullYear(y, m - 1, dd)
+    const event: CalendarEvent = {
+      id: `ev-w-${++mockEventCounter}`,
+      calendarId: series.calendarId,
+      uid: `${key}@${start.toISOString()}`,
+      ...eventFields(draft, start, new Date(start.getTime() + length)),
+      status: 'confirmed',
+      organizer: series.organizer,
+      url: '',
+      busy: true,
+    }
+    events.push(event)
+    seriesOfEvent.set(event.id, key)
+    written.push(event)
+  }
+  return written
+}
+
+/** An event the mock did not write, read back as the draft that would have made it. */
+function draftOfEvent(e: CalendarEvent): EventDraft {
+  return {
+    title: e.title,
+    description: e.description,
+    location: e.location,
+    start: e.start,
+    end: e.end,
+    allDay: e.allDay,
+    tz: e.tz,
+    attendees: (e.attendees ?? []).flatMap((raw) => {
+      const angled = /^(.*?)\s*<([^<>]+)>$/.exec(raw.trim())
+      if (angled) return [{ email: angled[2]!, name: angled[1]!.trim() }]
+      return raw.includes('@') ? [{ email: raw.trim(), name: '' }] : []
+    }),
+    recurrence: null,
+  }
+}
+
+/** The account calendar `id`, if a new event or a change may be written to it. */
+function writableTarget(id: string): { calendar: CalendarInfo; address: string } {
+  const calendar = calendars.find((c) => c.id === id)
+  if (!calendar) throw new VaultError('not_found', `calendar ${id} not found`)
+  const access = mockCalendarAccess(calendar)
+  if (access === 'needsSignIn') {
+    throw new VaultError('invalid', 'sign in to this account again to change its calendar')
+  }
+  if (access === 'readOnly' || calendar.origin.type !== 'account') {
+    throw new VaultError('invalid', `“${calendar.name}” cannot be written to from here`)
+  }
+  const accountId = calendar.origin.accountId
+  const address = accounts.find((a) => a.id === accountId)?.address ?? ''
+  return { calendar, address }
+}
+
+/** What `EventDraft::validate` refuses, refused the same way. */
+function checkMockDraft(draft: EventDraft) {
+  if (!draft.title.trim()) throw new VaultError('invalid', 'an event needs a title')
+  if (!draft.allDay && Date.parse(draft.end) <= Date.parse(draft.start)) {
+    throw new VaultError('invalid', 'an event has to end after it starts')
+  }
+  for (const guest of draft.attendees) {
+    if (!/^[^\s@]+@[^\s@]+$/.test(guest.email.trim())) {
+      throw new VaultError(
+        'invalid',
+        `"${guest.email}" is not an email address a calendar can invite`,
+      )
+    }
+  }
+  if (draft.recurrence?.until && draft.recurrence.until < isoDate(new Date(draft.start))) {
+    throw new VaultError('invalid', 'a repeat cannot end before the event first happens')
+  }
+  // A server that does not answer, on request: a title with "fail" in it is
+  // refused, so the editor's inline error can be seen without a network.
+  if (/\bfail\b/i.test(draft.title)) {
+    throw new VaultError('network', 'Google Calendar did not answer. Nothing was saved.')
+  }
+}
+
+// Google's "Work", seeded through the same writer `create_event` uses: a
+// weekly sync with guests who have answered three different ways, a lunch
+// with a place, and somebody else's meeting -- which the editor must refuse
+// to change, and say why.
+{
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const draftAt = (
+    daysAhead: number,
+    hour: number,
+    minute: number,
+    minutes: number,
+    fields: Partial<EventDraft>,
+  ): EventDraft => {
+    const start = new Date()
+    start.setDate(start.getDate() + daysAhead)
+    start.setHours(hour, minute, 0, 0)
+    return {
+      title: '',
+      description: '',
+      location: '',
+      start: start.toISOString(),
+      end: new Date(start.getTime() + minutes * 60_000).toISOString(),
+      allDay: false,
+      tz,
+      attendees: [],
+      recurrence: null,
+      ...fields,
+    }
+  }
+  const syncDay = new Date()
+  syncDay.setDate(syncDay.getDate() - 14)
+  writeMockSeries('mock-seed-sync', {
+    calendarId: 'c-google-work',
+    organizer: 'me@gmail.com',
+    own: true,
+    draft: draftAt(-14, 10, 0, 30, {
+      title: 'Team sync',
+      description: 'What moved, what is stuck, and who can help.',
+      location: 'https://meet.google.com/abc-defg-hij',
+      attendees: [
+        { email: 'priya@example.com', name: 'Priya Raman', response: 'accepted' },
+        { email: 'marcus.webb@example.com', name: 'Marcus Webb', response: 'tentative' },
+        { email: 'nadia@example.com', name: 'Nadia Osei', response: 'declined' },
+      ],
+      recurrence: { frequency: 'weekly', interval: 1, weekdays: [weekdayOf(isoDate(syncDay))] },
+    }),
+  })
+  writeMockSeries('mock-seed-lunch', {
+    calendarId: 'c-google-work',
+    organizer: 'me@gmail.com',
+    own: true,
+    draft: draftAt(2, 12, 30, 60, {
+      title: 'Lunch with Ana',
+      location: 'Café Rosa',
+      attendees: [{ email: 'ana@example.com', name: 'Ana Ferreira', response: 'accepted' }],
+    }),
+  })
+  writeMockSeries('mock-seed-review', {
+    calendarId: 'c-google-work',
+    organizer: 'Priya Raman',
+    own: false,
+    draft: draftAt(1, 15, 0, 60, {
+      title: 'Quarterly review',
+      description: 'Numbers first, then the plan for next quarter.',
+      attendees: [
+        { email: 'priya@example.com', name: 'Priya Raman', response: 'accepted' },
+        { email: 'me@gmail.com', name: '', response: 'needsAction' },
+      ],
+    }),
+  })
 }
 
 /**
@@ -4217,6 +4567,83 @@ export const mockInvoke = async <T>(
       )
       return undefined as T
 
+    // Mirrors `Vault::save_block_series`: the block becomes the head of a
+    // series, every later block of the series it was already in is
+    // replaced, and the copies are written out -- twelve weeks of them here,
+    // where the real one writes two years.
+    case 'save_block_series': {
+      requireUnlocked()
+      const block = structuredClone(args.block as TimeBlock)
+      const rule = (args.recurrence as Recurrence | null | undefined) ?? null
+      if (rule && block.kind !== 'planned') {
+        throw new VaultError(
+          'invalid',
+          'only a plan can repeat -- a record of time spent happened once',
+        )
+      }
+      const stored = blocks.find((b) => b.id === block.id)
+      const old = stored?.series ?? block.series ?? null
+      const from = stored && stored.start < block.start ? stored.start : block.start
+      if (old) {
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          const b = blocks[i]!
+          if (b.id !== block.id && b.series?.id === old.id && b.start >= from) blocks.splice(i, 1)
+        }
+      }
+      const now = new Date().toISOString()
+      const head: TimeBlock = {
+        ...block,
+        updatedAt: now,
+        series: rule ? { id: block.id, rule: structuredClone(rule) } : null,
+      }
+      const written: TimeBlock[] = [head]
+      if (rule) {
+        const first = new Date(head.start)
+        const length = Date.parse(head.end) - first.getTime()
+        const through = addDays(head.localDate, MOCK_SERIES_DAYS)
+        for (const d of expandDays(rule, head.localDate, through, 200).slice(1)) {
+          const [y = 1970, m = 1, dd = 1] = d.split('-').map(Number)
+          const start = new Date(first)
+          start.setFullYear(y, m - 1, dd)
+          written.push({
+            ...structuredClone(head),
+            id: `b-${nextId++}`,
+            start: start.toISOString(),
+            end: new Date(start.getTime() + length).toISOString(),
+            localDate: d,
+            kind: 'planned',
+            createdAt: now,
+            updatedAt: now,
+          })
+        }
+      }
+      const at = blocks.findIndex((b) => b.id === head.id)
+      if (at >= 0) blocks[at] = head
+      else blocks.push(head)
+      blocks.push(...written.slice(1))
+      return structuredClone(written) as T
+    }
+
+    // Mirrors `Vault::delete_block_series`: from this block on, or all of
+    // it -- and a block that does not repeat is refused, not deleted alone.
+    case 'delete_block_series': {
+      requireUnlocked()
+      const block = blocks.find((b) => b.id === args.id)
+      if (!block) throw new VaultError('not_found', `block ${str(args.id)} not found`)
+      const series = block.series
+      if (!series) throw new VaultError('invalid', 'that block does not repeat')
+      const all = args.scope === 'all'
+      const doomed = blocks
+        .filter(
+          (b) => b.series?.id === series.id && (all || b.start >= block.start || b.id === block.id),
+        )
+        .map((b) => b.id)
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        if (doomed.includes(blocks[i]!.id)) blocks.splice(i, 1)
+      }
+      return doomed as T
+    }
+
     case 'task_tags': {
       requireUnlocked()
       const counts = new Map<string, number>()
@@ -4265,18 +4692,135 @@ export const mockInvoke = async <T>(
 
     case 'list_calendars':
       requireUnlocked()
-      return calendars.map((c) => ({
-        ...c,
-        events: events.filter((e) => e.calendarId === c.id).length,
-      })) as T
+      return calendars.map(calendarInfo) as T
 
     case 'save_calendar': {
       requireUnlocked()
       const c = args.calendar as Calendar
       const i = calendars.findIndex((x) => x.id === c.id)
-      const withCount = { ...c, events: events.filter((e) => e.calendarId === c.id).length }
+      // The default and the read-only flag are the backend's to keep:
+      // `set_default_calendar` and discovery move them, a save does not.
+      const kept = calendars[i]
+      const withCount = calendarInfo({
+        ...c,
+        isDefault: kept?.isDefault ?? false,
+        readOnly: kept?.readOnly ?? false,
+      })
       if (i >= 0) calendars[i] = withCount
       else calendars.push(withCount)
+      return undefined as T
+    }
+
+    case 'set_default_calendar': {
+      requireUnlocked()
+      const id = (args.id as string | null | undefined) ?? null
+      if (id !== null) {
+        const chosen = calendars.find((c) => c.id === id)
+        if (!chosen) throw new VaultError('not_found', `calendar ${id} not found`)
+        if (mockCalendarAccess(chosen) !== 'writable') {
+          throw new VaultError(
+            'invalid',
+            'new events can only go to a calendar this account can write to',
+          )
+        }
+      }
+      for (const c of calendars) c.isDefault = c.id === id
+      return undefined as T
+    }
+
+    case 'create_event': {
+      requireUnlocked()
+      const { calendar, address } = writableTarget(str(args.calendarId))
+      const draft = structuredClone(args.draft as EventDraft)
+      checkMockDraft(draft)
+      const written = writeMockSeries(`mock-series-${++mockSeriesCounter}`, {
+        calendarId: calendar.id,
+        draft,
+        organizer: address,
+        own: true,
+      })
+      return (written[0] ? structuredClone(written[0]) : null) as T
+    }
+
+    case 'load_event': {
+      requireUnlocked()
+      const event = events.find((e) => e.id === args.id)
+      if (!event) throw new VaultError('not_found', `event ${str(args.id)} not found`)
+      const { address } = writableTarget(event.calendarId)
+      const key = seriesOfEvent.get(event.id)
+      const series = key ? mockSeries.get(key) : undefined
+      const base = occurrenceEdits.get(event.id) ?? series?.draft ?? draftOfEvent(event)
+      const rule = series?.draft.recurrence ?? null
+      return {
+        eventId: event.id,
+        calendarId: event.calendarId,
+        draft: { ...structuredClone(base), start: event.start, end: event.end, recurrence: rule },
+        recurring: !!rule,
+        customRecurrence: false,
+        own: series ? series.own : !event.organizer || event.organizer === address,
+        organizer: series?.organizer ?? event.organizer,
+      } satisfies EditableEvent as T
+    }
+
+    case 'update_event': {
+      requireUnlocked()
+      const event = events.find((e) => e.id === args.id)
+      if (!event) throw new VaultError('not_found', `event ${str(args.id)} not found`)
+      const { address } = writableTarget(event.calendarId)
+      const draft = structuredClone(args.draft as EventDraft)
+      checkMockDraft(draft)
+      const scope = (args.scope as EventScope | undefined) ?? 'occurrence'
+      const key = seriesOfEvent.get(event.id)
+      const series = key ? mockSeries.get(key) : undefined
+      if (!key || !series) {
+        // One the mock was seeded with rather than wrote: adopted as a
+        // series of its own, so the next load reads back what this said.
+        events.splice(events.indexOf(event), 1)
+        writeMockSeries(`mock-series-${++mockSeriesCounter}`, {
+          calendarId: event.calendarId,
+          draft,
+          organizer: event.organizer || address,
+          own: true,
+        })
+        return undefined as T
+      }
+      if (scope === 'series' || !series.draft.recurrence) {
+        // The whole series, kept on the day it began: this occurrence's new
+        // clock time and length move every one of them.
+        const length = Date.parse(draft.end) - Date.parse(draft.start)
+        const start = new Date(series.draft.recurrence ? series.draft.start : draft.start)
+        if (series.draft.recurrence) {
+          const moved = new Date(draft.start)
+          start.setHours(moved.getHours(), moved.getMinutes(), 0, 0)
+        }
+        writeMockSeries(key, {
+          ...series,
+          draft: {
+            ...draft,
+            start: start.toISOString(),
+            end: new Date(start.getTime() + length).toISOString(),
+          },
+        })
+      } else {
+        Object.assign(event, eventFields(draft, new Date(draft.start), new Date(draft.end)))
+        occurrenceEdits.set(event.id, draft)
+      }
+      return undefined as T
+    }
+
+    case 'delete_event': {
+      requireUnlocked()
+      const event = events.find((e) => e.id === args.id)
+      if (!event) throw new VaultError('not_found', `event ${str(args.id)} not found`)
+      writableTarget(event.calendarId)
+      const key = seriesOfEvent.get(event.id)
+      if (key && args.scope === 'series') {
+        dropMockSeries(key)
+      } else {
+        events.splice(events.indexOf(event), 1)
+        seriesOfEvent.delete(event.id)
+        occurrenceEdits.delete(event.id)
+      }
       return undefined as T
     }
 
@@ -4285,6 +4829,9 @@ export const mockInvoke = async <T>(
       const id = args.id as string
       const i = calendars.findIndex((c) => c.id === id)
       if (i >= 0) calendars.splice(i, 1)
+      for (const [key, series] of mockSeries) {
+        if (series.calendarId === id) dropMockSeries(key)
+      }
       for (let j = events.length - 1; j >= 0; j--) {
         if (events[j]!.calendarId === id) events.splice(j, 1)
       }
@@ -4359,9 +4906,12 @@ export const mockInvoke = async <T>(
         visible: true,
         refreshMinutes: cmd === 'import_calendar' ? 0 : 60,
         lastSyncedAt: new Date().toISOString(),
+        isDefault: false,
+        readOnly: false,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         events: 0,
+        access: 'readOnly',
       }
       calendars.push(added)
       return added as T
@@ -4370,8 +4920,11 @@ export const mockInvoke = async <T>(
     case 'sync_calendar':
     case 'sync_due_calendars': {
       requireUnlocked()
+      // One calendar by id when one was named -- an account's as well as a
+      // feed's -- or every feed on the timer.
+      const named = cmd === 'sync_calendar' ? str(args.id) : ''
       const reports: SyncReport[] = calendars
-        .filter((c) => c.origin.type === 'url' && !c.lastError)
+        .filter((c) => (named ? c.id === named : c.origin.type === 'url') && !c.lastError)
         .map((c) => ({
           calendarId: c.id,
           events: events.filter((e) => e.calendarId === c.id).length,
@@ -4578,19 +5131,17 @@ export const mockInvoke = async <T>(
     case 'list_account_calendars': {
       requireUnlocked()
       const accountId = str(args.account)
-      // Only `acct-fastmail` has calendar switched on in this mock's seed
-      // data; every other account offers nothing to discover, the same
-      // honest answer `accountcal::discover` gives for an account whose
-      // calendar service is off.
-      if (accountId !== 'acct-fastmail') return [] as T
-      return fastmailRemoteCalendars as T
+      // An account with calendar switched off, or one the mock never seeded,
+      // offers nothing to discover -- the same honest answer
+      // `accountcal::discover` gives for an account whose calendar is off.
+      return (remoteCalendarsOf[accountId] ?? []) as T
     }
 
     case 'subscribe_account_calendar': {
       requireUnlocked()
       const accountId = str(args.account)
       const remoteId = str(args.remoteId)
-      const remote = fastmailRemoteCalendars.find((r) => r.remoteId === remoteId)
+      const remote = (remoteCalendarsOf[accountId] ?? []).find((r) => r.remoteId === remoteId)
       if (!remote) throw new VaultError('not_found', 'that calendar is no longer offered')
       const added: CalendarInfo = {
         id: `c-${Math.random().toString(36).slice(2, 8)}`,
@@ -4603,14 +5154,21 @@ export const mockInvoke = async <T>(
           remoteName: remote.name,
           source: remote.source,
         },
-        provider: 'other',
+        provider:
+          remote.source === 'google' ? 'google' : remote.source === 'graph' ? 'outlook' : 'other',
         visible: true,
         refreshMinutes: 60,
         lastSyncedAt: new Date().toISOString(),
+        isDefault: false,
+        // What discovery said: a calendar shared without edit rights stays
+        // read-only however the account is signed in.
+        readOnly: !remote.writable,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         events: 0,
+        access: 'readOnly',
       }
+      added.access = mockCalendarAccess(added)
       calendars.push(added)
       remote.subscribed = true
       remote.calendarId = added.id
@@ -5151,12 +5709,30 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const line = (args.line as string | undefined) ?? ''
       if (line.includes('nothing')) return null as T
+      // Enough of the grammar for a repeat to be tried from the command bar:
+      // "every tuesday", "daily", "weekly". An "every Tuesday" begins on the
+      // next Tuesday, today included.
+      const weekly = WEEKDAYS.find((d) => new RegExp(`\\bevery\\s+${d}`, 'i').test(line))
+      const recurrence: Recurrence | null = weekly
+        ? { frequency: 'weekly', interval: 1, weekdays: [weekly] }
+        : /\b(daily|every day)\b/i.test(line)
+          ? { frequency: 'daily', interval: 1 }
+          : /\b(weekly|every week)\b/i.test(line)
+            ? { frequency: 'weekly', interval: 1 }
+            : null
+      let date = day(0)
+      if (weekly) {
+        const at = new Date()
+        while (weekdayOf(isoDate(at)) !== weekly) at.setDate(at.getDate() + 1)
+        date = isoDate(at)
+      }
       return {
         title: line.trim() || 'Lunch',
-        date: day(0),
+        date,
         start: '13:00',
         end: '14:00',
         location: '',
+        recurrence,
       } as T
     }
 
@@ -5695,6 +6271,14 @@ export const mockInvoke = async <T>(
       oauthSignIns.delete(str(args.signInId))
       account.signedIn = true
       account.status = { type: 'ok' }
+      // What the sign-in asked for joins what the account had -- never
+      // narrowed, as in the real command. A sign-in that asked for calendar
+      // writing is what turns its calendars from "sign in again" to writable.
+      if (account.auth.type === 'oAuth') {
+        for (const scope of strArray(args.scopes)) {
+          if (!account.auth.scopes.includes(scope)) account.auth.scopes.push(scope)
+        }
+      }
       return undefined as T
     }
 

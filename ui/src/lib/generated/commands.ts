@@ -34,12 +34,15 @@ import type {
   DeclineReason,
   Draft,
   DraftId,
+  EditableEvent,
   Entry,
   EntryId,
   EntryQuery,
   EntrySummary,
+  EventDraft,
   EventId,
   EventQuery,
+  EventScope,
   ExportChunk,
   ExportHandle,
   Goal,
@@ -115,6 +118,7 @@ import type {
   Recording,
   RecordingId,
   RecordingQuery,
+  Recurrence,
   RemoteCalendarInfo,
   RemoteImageSettings,
   ReplySuggestions,
@@ -133,6 +137,7 @@ import type {
   SearchMailResult,
   SearchRequest,
   SearchResult,
+  SeriesScope,
   Skill,
   SkillId,
   SourceInfo,
@@ -192,7 +197,7 @@ export interface Commands {
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
   archive: { args: { threads: ThreadId[] }; result: Op[] }
   attachOauthSignIn: {
-    args: { id: AccountId; signInId: string; clientSecret?: string }
+    args: { id: AccountId; signInId: string; clientSecret?: string; scopes?: string[] }
     result: void
   }
   awaitOauthSignIn: { args: { signInId: string }; result: AwaitedSignIn }
@@ -227,13 +232,16 @@ export interface Commands {
   collectGarbage: { args: Record<string, never>; result: number }
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
+  createEvent: { args: { calendarId: CalendarId; draft: EventDraft }; result: CalendarEvent | null }
   declineProposal: { args: { id: ProposalId; reason?: DeclineReason | null }; result: Proposal }
   deleteAccount: { args: { id: AccountId }; result: void }
   deleteAllVoiceprints: { args: Record<string, never>; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
+  deleteBlockSeries: { args: { id: BlockId; scope: SeriesScope }; result: BlockId[] }
   deleteCalendar: { args: { id: CalendarId }; result: void }
   deleteConversation: { args: { id: ConversationId }; result: void }
   deleteEntry: { args: { id: EntryId }; result: void }
+  deleteEvent: { args: { id: EventId; scope?: EventScope }; result: void }
   deleteGoal: { args: { id: GoalId }; result: void }
   deleteItem: { args: { id: ItemId }; result: void }
   deleteJournal: { args: { id: JournalId }; result: void }
@@ -356,6 +364,7 @@ export interface Commands {
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   listVoiceprints: { args: Record<string, never>; result: VoiceprintInfo[] }
+  loadEvent: { args: { id: EventId }; result: EditableEvent }
   lock: { args: Record<string, never>; result: VaultStatus }
   logReading: {
     args: {
@@ -484,6 +493,10 @@ export interface Commands {
   saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
   saveBlock: { args: { block: TimeBlock }; result: void }
+  saveBlockSeries: {
+    args: { block: TimeBlock; recurrence?: Recurrence | null }
+    result: TimeBlock[]
+  }
   saveCalendar: { args: { calendar: Calendar }; result: void }
   saveDraft: { args: { draft: Draft }; result: void }
   saveEntry: { args: { entry: Entry; expect?: string | null }; result: void }
@@ -538,6 +551,7 @@ export interface Commands {
   }
   setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
+  setDefaultCalendar: { args: { id?: CalendarId | null }; result: void }
   setForgetKey: { args: { seconds: number }; result: void }
   setItemProgress: {
     args: { id: ItemId; position: number; total?: number | null; log: boolean }
@@ -578,6 +592,7 @@ export interface Commands {
   unseenRuns: { args: Record<string, never>; result: number }
   unsnooze: { args: { threads: ThreadId[] }; result: void }
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
+  updateEvent: { args: { id: EventId; draft: EventDraft; scope?: EventScope }; result: void }
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
   weather: { args: { place?: string | null }; result: WeatherReport }
@@ -611,13 +626,16 @@ export const COMMAND_NAMES = {
   collectGarbage: 'collect_garbage',
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
+  createEvent: 'create_event',
   declineProposal: 'decline_proposal',
   deleteAccount: 'delete_account',
   deleteAllVoiceprints: 'delete_all_voiceprints',
   deleteBlock: 'delete_block',
+  deleteBlockSeries: 'delete_block_series',
   deleteCalendar: 'delete_calendar',
   deleteConversation: 'delete_conversation',
   deleteEntry: 'delete_entry',
+  deleteEvent: 'delete_event',
   deleteGoal: 'delete_goal',
   deleteItem: 'delete_item',
   deleteJournal: 'delete_journal',
@@ -701,6 +719,7 @@ export const COMMAND_NAMES = {
   listTools: 'list_tools',
   listTrackers: 'list_trackers',
   listVoiceprints: 'list_voiceprints',
+  loadEvent: 'load_event',
   lock: 'lock',
   logReading: 'log_reading',
   lookupMetadata: 'lookup_metadata',
@@ -775,6 +794,7 @@ export const COMMAND_NAMES = {
   saveAccountPassword: 'save_account_password',
   saveAgentSettings: 'save_agent_settings',
   saveBlock: 'save_block',
+  saveBlockSeries: 'save_block_series',
   saveCalendar: 'save_calendar',
   saveDraft: 'save_draft',
   saveEntry: 'save_entry',
@@ -809,6 +829,7 @@ export const COMMAND_NAMES = {
   setAgentAccess: 'set_agent_access',
   setAgentKey: 'set_agent_key',
   setAutoLock: 'set_auto_lock',
+  setDefaultCalendar: 'set_default_calendar',
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
@@ -846,6 +867,7 @@ export const COMMAND_NAMES = {
   unseenRuns: 'unseen_runs',
   unsnooze: 'unsnooze',
   unstar: 'unstar',
+  updateEvent: 'update_event',
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
   weather: 'weather',
@@ -889,13 +911,16 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'collect_garbage',
   'confirm_tool_call',
   'conversation_messages',
+  'create_event',
   'decline_proposal',
   'delete_account',
   'delete_all_voiceprints',
   'delete_block',
+  'delete_block_series',
   'delete_calendar',
   'delete_conversation',
   'delete_entry',
+  'delete_event',
   'delete_goal',
   'delete_item',
   'delete_journal',
@@ -979,6 +1004,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_tools',
   'list_trackers',
   'list_voiceprints',
+  'load_event',
   'lock',
   'log_reading',
   'lookup_metadata',
@@ -1053,6 +1079,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account_password',
   'save_agent_settings',
   'save_block',
+  'save_block_series',
   'save_calendar',
   'save_draft',
   'save_entry',
@@ -1086,6 +1113,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_agent_key',
   'set_auto_lock',
+  'set_default_calendar',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
@@ -1123,6 +1151,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'unseen_runs',
   'unsnooze',
   'unstar',
+  'update_event',
   'vault_stats',
   'verify_password',
   'weather',
@@ -1154,13 +1183,16 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'clear_agent_key',
   'collect_garbage',
   'confirm_tool_call',
+  'create_event',
   'decline_proposal',
   'delete_account',
   'delete_all_voiceprints',
   'delete_block',
+  'delete_block_series',
   'delete_calendar',
   'delete_conversation',
   'delete_entry',
+  'delete_event',
   'delete_goal',
   'delete_item',
   'delete_journal',
@@ -1213,6 +1245,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account_password',
   'save_agent_settings',
   'save_block',
+  'save_block_series',
   'save_calendar',
   'save_draft',
   'save_entry',
@@ -1243,6 +1276,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_agent_key',
   'set_auto_lock',
+  'set_default_calendar',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
@@ -1265,6 +1299,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'unlock',
   'unsnooze',
   'unstar',
+  'update_event',
   'verify_password',
 ])
 
@@ -1280,13 +1315,16 @@ export const CHANGE_KINDS = {
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
   clear_agent_key: 'settings',
+  create_event: 'event',
   decline_proposal: 'proposal',
   delete_account: 'account',
   delete_all_voiceprints: 'voiceprint',
   delete_block: 'block',
+  delete_block_series: 'block',
   delete_calendar: 'calendar',
   delete_conversation: 'conversation',
   delete_entry: 'entry',
+  delete_event: 'event',
   delete_goal: 'goal',
   delete_item: 'item',
   delete_journal: 'journal',
@@ -1328,6 +1366,7 @@ export const CHANGE_KINDS = {
   save_account_password: 'account',
   save_agent_settings: 'settings',
   save_block: 'block',
+  save_block_series: 'block',
   save_calendar: 'calendar',
   save_draft: 'draft',
   save_entry: 'entry',
@@ -1358,6 +1397,7 @@ export const CHANGE_KINDS = {
   set_agent_access: 'account',
   set_agent_key: 'settings',
   set_auto_lock: 'settings',
+  set_default_calendar: 'calendar',
   set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
@@ -1377,6 +1417,7 @@ export const CHANGE_KINDS = {
   unlabel: 'thread',
   unsnooze: 'thread',
   unstar: 'thread',
+  update_event: 'event',
 } as const
 
 /**

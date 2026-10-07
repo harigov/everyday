@@ -105,6 +105,119 @@
       "title": "Create entry"
     },
     {
+      "domain": "calendars",
+      "effect": "write",
+      "name": "create_event",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "all_day": {
+            "description": "A whole-day event, with no times.",
+            "type": "boolean"
+          },
+          "attendees": {
+            "description": "Email addresses of people to invite. The calendar's server emails each of them an invitation as soon as this runs, so only include people the person asked to invite. Only possible on an account's calendar, not on this computer.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "calendar_id": {
+            "description": "Which calendar, from list_calendars: an id, or this_computer. Leave it out to use the default calendar -- which is what the person means unless they name another.",
+            "type": "string"
+          },
+          "date": {
+            "description": "The day it starts. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Notes or an agenda, shown with the event.",
+            "type": "string"
+          },
+          "end_date": {
+            "description": "The last day of an all-day event that runs several days. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "end_time": {
+            "description": "End, as HH:MM. Defaults to an hour after start_time.",
+            "type": "string"
+          },
+          "location": {
+            "description": "Where it is: a place, a room, or a call link.",
+            "type": "string"
+          },
+          "repeat": {
+            "additionalProperties": false,
+            "description": "How the event repeats. Leave it out for a one-off.",
+            "properties": {
+              "count": {
+                "description": "Stop after this many times. Leave out, with until, to repeat indefinitely.",
+                "type": "integer"
+              },
+              "frequency": {
+                "description": "How often it comes round.",
+                "enum": [
+                  "daily",
+                  "weekly",
+                  "monthly",
+                  "yearly"
+                ],
+                "type": "string"
+              },
+              "interval": {
+                "description": "Every how many: 2 with weekly is every other week. Defaults to 1.",
+                "type": "integer"
+              },
+              "until": {
+                "description": "The last day it may happen. Format: YYYY-MM-DD.",
+                "type": "string"
+              },
+              "week_of_month": {
+                "description": "Monthly only: 1 to 4, or -1 for the last -- as in 'the second Tuesday' (2, with weekdays [tuesday]). Leave out for the same date every month.",
+                "type": "integer"
+              },
+              "weekdays": {
+                "description": "Weekly: the days it falls on (leave out for the start's own day; monday to friday for every weekday). Monthly with week_of_month: the one day.",
+                "items": {
+                  "enum": [
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "frequency"
+            ],
+            "type": "object"
+          },
+          "start_time": {
+            "description": "Start, as HH:MM in 24-hour time. Required unless all_day.",
+            "type": "string"
+          },
+          "title": {
+            "description": "What the event is called.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "date"
+        ],
+        "type": "object"
+      },
+      "scope": "calendars",
+      "sensitivity": "ordinary",
+      "title": "Create event"
+    },
+    {
       "domain": "purpose",
       "effect": "write",
       "name": "create_goal",
@@ -615,6 +728,35 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "Delete entry"
+    },
+    {
+      "domain": "calendars",
+      "effect": "destructive",
+      "name": "delete_event",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "description": "The event, from list_events.",
+            "type": "string"
+          },
+          "scope": {
+            "description": "For a repeating event: occurrence deletes only this one, series deletes every one. Defaults to occurrence.",
+            "enum": [
+              "occurrence",
+              "series"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "type": "object"
+      },
+      "scope": "calendars",
+      "sensitivity": "ordinary",
+      "title": "Delete event"
     },
     {
       "domain": "purpose",
@@ -1132,6 +1274,20 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "List accounts"
+    },
+    {
+      "domain": "calendars",
+      "effect": "read",
+      "name": "list_calendars",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "calendars",
+      "sensitivity": "ordinary",
+      "title": "List calendars"
     },
     {
       "domain": "journals",
@@ -2581,6 +2737,129 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "Update entry"
+    },
+    {
+      "domain": "calendars",
+      "effect": "write",
+      "name": "update_event",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "add_attendees": {
+            "description": "Email addresses to invite. Each is emailed an invitation by the calendar's server.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "date": {
+            "description": "Move it to this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "description": {
+            "description": "Replace the description with this.",
+            "type": "string"
+          },
+          "end_time": {
+            "description": "New end, as HH:MM.",
+            "type": "string"
+          },
+          "event_id": {
+            "description": "The event, from list_events.",
+            "type": "string"
+          },
+          "location": {
+            "description": "Replace the location with this.",
+            "type": "string"
+          },
+          "remove_attendees": {
+            "description": "Email addresses to take off the guest list. They are told.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "repeat": {
+            "additionalProperties": false,
+            "description": "Make it repeat like this, replacing any rule it had.",
+            "properties": {
+              "count": {
+                "description": "Stop after this many times. Leave out, with until, to repeat indefinitely.",
+                "type": "integer"
+              },
+              "frequency": {
+                "description": "How often it comes round.",
+                "enum": [
+                  "daily",
+                  "weekly",
+                  "monthly",
+                  "yearly"
+                ],
+                "type": "string"
+              },
+              "interval": {
+                "description": "Every how many: 2 with weekly is every other week. Defaults to 1.",
+                "type": "integer"
+              },
+              "until": {
+                "description": "The last day it may happen. Format: YYYY-MM-DD.",
+                "type": "string"
+              },
+              "week_of_month": {
+                "description": "Monthly only: 1 to 4, or -1 for the last -- as in 'the second Tuesday' (2, with weekdays [tuesday]). Leave out for the same date every month.",
+                "type": "integer"
+              },
+              "weekdays": {
+                "description": "Weekly: the days it falls on (leave out for the start's own day; monday to friday for every weekday). Monthly with week_of_month: the one day.",
+                "items": {
+                  "enum": [
+                    "monday",
+                    "tuesday",
+                    "wednesday",
+                    "thursday",
+                    "friday",
+                    "saturday",
+                    "sunday"
+                  ],
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "frequency"
+            ],
+            "type": "object"
+          },
+          "scope": {
+            "description": "For a repeating event: occurrence changes only this one, series changes every one. Defaults to occurrence. Changing how it repeats always means series.",
+            "enum": [
+              "occurrence",
+              "series"
+            ],
+            "type": "string"
+          },
+          "start_time": {
+            "description": "New start, as HH:MM in 24-hour time.",
+            "type": "string"
+          },
+          "stop_repeating": {
+            "description": "Make a repeating event a one-off.",
+            "type": "boolean"
+          },
+          "title": {
+            "description": "A new title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id"
+        ],
+        "type": "object"
+      },
+      "scope": "calendars",
+      "sensitivity": "ordinary",
+      "title": "Update event"
     },
     {
       "domain": "purpose",

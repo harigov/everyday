@@ -230,6 +230,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("begin_oauth_sign_in", "OAuth: a loopback redirect to a real provider"),
     ("begin_recording", "refuses unless the transcriber's speech kit is genuinely on disk"),
     ("cancel_oauth_sign_in", "OAuth: cancels the sign-in begin_oauth_sign_in above needs"),
+    ("create_event", "writes to an account calendar's server over the network"),
     ("download_speech_model", "a real ~40MB network download"),
     ("enrol_voice", "needs the speech/voice model kit to embed real audio"),
     ("fetch_attachment", "needs a message's raw bytes from a real synced pack"),
@@ -244,6 +245,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("sync_account", "starts a supervised sync task against a real mail server"),
     ("sync_calendar", "refreshes one calendar from its remote source"),
     ("sync_due_calendars", "refreshes every subscribed calendar from its remote source"),
+    ("update_event", "writes to an account calendar's server over the network"),
 ];
 
 fn today() -> String {
@@ -323,7 +325,14 @@ async fn every_offline_write_announces_what_was_written_down() {
         json!({ "subject": { "type": "adhoc" }, "start": Timestamp::now().to_string(), "minutes": 30 }),
     )
     .await;
-    run(&svc, &h, "save_block", json!({ "block": block })).await;
+    run(&svc, &h, "save_block", json!({ "block": block.clone() })).await;
+    run(
+        &svc,
+        &h,
+        "save_block_series",
+        json!({ "block": block, "recurrence": { "frequency": "daily", "count": 3 } }),
+    )
+    .await;
 
     // ---- purpose: roles and goals ---------------------------------------
     let role = call(&svc, &h, "new_role", json!({ "name": "Homeowner" })).await;
@@ -556,6 +565,9 @@ async fn every_offline_write_announces_what_was_written_down() {
     let calendar_id = calendar["id"].clone();
     calendar["color"] = json!("#112233");
     run(&svc, &h, "save_calendar", json!({ "calendar": calendar })).await;
+    // A file calendar cannot take new events, so the default it can be set
+    // to here is this computer's own blocks -- the same write either way.
+    run(&svc, &h, "set_default_calendar", json!({ "id": null })).await;
 
     // ---- meetings -----------------------------------------------------------
     let meeting_settings = MeetingSettings { enabled: false, ..Default::default() };

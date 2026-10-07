@@ -21,7 +21,11 @@ use crate::error::{CommandError, CommandResult, codes};
 use crate::events::Notification;
 use crate::feeds;
 use crate::service::{Service, blocking};
-use everyday_core::calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, SyncReport};
+use everyday_core::account::Account;
+use everyday_core::calendar::{
+    Calendar, CalendarAccess, CalendarOrigin, CalendarProvider, EditableEvent, Event, EventDraft,
+    EventScope, SyncReport,
+};
 use everyday_core::model::{system_tz, today_local};
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::{AccountId, CalendarId, EventId, Vault};
@@ -41,6 +45,26 @@ pub struct CalendarInfo {
     #[serde(flatten)]
     pub calendar: Calendar,
     pub events: u64,
+    /// Whether a new event can go on it -- a fact about the calendar *and*
+    /// its account's sign-in together, worked out once here rather than by
+    /// every picker that offers it.
+    pub access: CalendarAccess,
+}
+
+/// Whether new events can go on `calendar`, given the accounts it might
+/// belong to.
+pub(crate) fn access_of(calendar: &Calendar, accounts: &[Account]) -> CalendarAccess {
+    let CalendarOrigin::Account { account_id, .. } = &calendar.origin else {
+        return CalendarAccess::ReadOnly;
+    };
+    if calendar.read_only {
+        return CalendarAccess::ReadOnly;
+    }
+    match accounts.iter().find(|a| a.id == *account_id) {
+        Some(account) if !account.can_write_calendars() => CalendarAccess::NeedsSignIn,
+        Some(_) => CalendarAccess::Writable,
+        None => CalendarAccess::ReadOnly,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -112,6 +136,38 @@ pub struct SyncDue {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct DefaultCalendar {
+    /// `None` sends new events to this computer's own time blocks.
+    #[serde(default)]
+    pub id: Option<CalendarId>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateEvent {
+    pub calendar_id: CalendarId,
+    pub draft: EventDraft,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateEvent {
+    pub id: EventId,
+    pub draft: EventDraft,
+    #[serde(default)]
+    pub scope: EventScope,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteEvent {
+    pub id: EventId,
+    #[serde(default)]
+    pub scope: EventScope,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Subscribe {
     pub name: String,
     pub url: String,
@@ -134,16 +190,170 @@ async fn list_calendars(
 ) -> CommandResult<Vec<CalendarInfo>> {
     let vault = svc.require()?;
     blocking(move || {
+        let calendars = vault.calendars()?;
+        // Only read when some calendar is an account's -- a vault of feeds
+        // alone has no accounts to decrypt, and a backend without the
+        // accounts domain at all must still list its calendars.
+        let accounts = if calendars.iter().any(|c| c.origin.account_id().is_some()) {
+            vault.accounts().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mut out = Vec::new();
-        for calendar in vault.calendars()? {
+        for calendar in calendars {
             // The count is a `COUNT(*)` over a clear index column, so listing
             // four calendars decrypts four records and nothing else.
             let events = vault.event_count(calendar.id).unwrap_or(0);
-            out.push(CalendarInfo { calendar, events });
+            let access = access_of(&calendar, &accounts);
+            out.push(CalendarInfo { calendar, events, access });
         }
         Ok(out)
     })
     .await
+}
+
+/// Choose where new events go: one of an account's calendars, or -- with no
+/// id -- this computer's own time blocks.
+async fn set_default_calendar(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: DefaultCalendar,
+) -> CommandResult<()> {
+    svc.on_vault(move |vault| vault.set_default_calendar(args.id)).await
+}
+
+/// Put a new event on one of an account's calendars, and sync it back.
+///
+/// Answers the event as the sync stored it, so the interface can select it;
+/// `None` when the server took it but the sync has not brought it back yet.
+async fn create_event(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: CreateEvent,
+) -> CommandResult<Option<Event>> {
+    let vault = svc.require()?;
+    accountcal::create_event(&svc, &vault, args.calendar_id, &args.draft).await
+}
+
+/// Read an account calendar's event fresh from its server, to be changed.
+async fn load_event(svc: Arc<Service>, _ctx: Ctx, args: EventRef) -> CommandResult<EditableEvent> {
+    let vault = svc.require()?;
+    let event = stored_event(&vault, args.id).await?;
+    accountcal::load_event(&svc, &vault, &event).await
+}
+
+async fn update_event(svc: Arc<Service>, _ctx: Ctx, args: UpdateEvent) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let event = stored_event(&vault, args.id).await?;
+    accountcal::update_event(&svc, &vault, &event, &args.draft, args.scope).await
+}
+
+async fn delete_event(svc: Arc<Service>, _ctx: Ctx, args: DeleteEvent) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let event = stored_event(&vault, args.id).await?;
+    accountcal::delete_event(&svc, &vault, &event, args.scope).await
+}
+
+async fn stored_event(vault: &Arc<Vault>, id: EventId) -> CommandResult<Event> {
+    let vault = vault.clone();
+    blocking(move || Ok(vault.event(id)?)).await
+}
+
+/// The assistant's way to an account's calendar -- [`everyday_core::agent::
+/// tools::CalendarWriter`], over exactly the functions the four commands
+/// above call, so `create_event` from chat and a click in the calendar run
+/// the same code.
+///
+/// A tool body runs on the blocking pool (see `agent::run_tool` and
+/// `meta::run_tool`), and these are async, so each call blocks this thread
+/// on the runtime that dispatched it. Errors become the core's own type on
+/// the way out, the way `domains::mail::respond_to_invite_for_tool`'s do,
+/// because the hook answers inside the core.
+pub(crate) struct ToolCalendarWriter {
+    svc: Arc<Service>,
+    runtime: tokio::runtime::Handle,
+}
+
+impl ToolCalendarWriter {
+    /// Built on the blocking thread a tool is about to run on, which has the
+    /// runtime's context entered -- `Handle::current` finds it there.
+    pub(crate) fn new(svc: Arc<Service>) -> Self {
+        Self { svc, runtime: tokio::runtime::Handle::current() }
+    }
+
+    fn vault(&self) -> everyday_core::error::Result<Arc<Vault>> {
+        self.svc.require().map_err(to_core_error)
+    }
+
+    fn event(&self, id: EventId) -> everyday_core::error::Result<(Arc<Vault>, Event)> {
+        let vault = self.vault()?;
+        let event = vault.event(id)?;
+        Ok((vault, event))
+    }
+
+    /// Tell every open window the calendar moved, the way the commands'
+    /// own `change:` rows would -- a tool call has no command row of its
+    /// own to raise one. `written` in `agent.rs` raises the event change;
+    /// this is the calendar list, whose counts moved too.
+    fn changed(&self, id: Option<EventId>) {
+        self.svc.events().changed(crate::events::Change {
+            kind: crate::events::Kind::Event,
+            op: crate::events::Op::Updated,
+            id: id.map(|id| id.to_string()),
+            ids: Vec::new(),
+            origin: None,
+        });
+    }
+}
+
+fn to_core_error(e: CommandError) -> everyday_core::error::Error {
+    everyday_core::error::Error::Invalid(e.message)
+}
+
+impl everyday_core::agent::tools::CalendarWriter for ToolCalendarWriter {
+    fn create(
+        &self,
+        calendar: CalendarId,
+        draft: &EventDraft,
+    ) -> everyday_core::error::Result<Option<Event>> {
+        let vault = self.vault()?;
+        let created = self
+            .runtime
+            .block_on(accountcal::create_event(&self.svc, &vault, calendar, draft))
+            .map_err(to_core_error)?;
+        self.changed(created.as_ref().map(|e| e.id));
+        Ok(created)
+    }
+
+    fn load(&self, id: EventId) -> everyday_core::error::Result<EditableEvent> {
+        let (vault, event) = self.event(id)?;
+        self.runtime
+            .block_on(accountcal::load_event(&self.svc, &vault, &event))
+            .map_err(to_core_error)
+    }
+
+    fn update(
+        &self,
+        id: EventId,
+        draft: &EventDraft,
+        scope: EventScope,
+    ) -> everyday_core::error::Result<()> {
+        let (vault, event) = self.event(id)?;
+        self.runtime
+            .block_on(accountcal::update_event(&self.svc, &vault, &event, draft, scope))
+            .map_err(to_core_error)?;
+        self.changed(Some(id));
+        Ok(())
+    }
+
+    fn delete(&self, id: EventId, scope: EventScope) -> everyday_core::error::Result<()> {
+        let (vault, event) = self.event(id)?;
+        self.runtime
+            .block_on(accountcal::delete_event(&self.svc, &vault, &event, scope))
+            .map_err(to_core_error)?;
+        self.changed(Some(id));
+        Ok(())
+    }
 }
 
 async fn save_calendar(svc: Arc<Service>, _ctx: Ctx, args: SaveCalendar) -> CommandResult<()> {
@@ -390,7 +600,7 @@ async fn add_calendar(
     }
 
     match apply_feed(vault, id, text).await {
-        Ok(report) => Ok(CalendarInfo { calendar: vault.calendar(id)?, events: report.events }),
+        Ok(report) => Ok(info_after_adding(vault, id, report.events)?),
         Err(e) => {
             // Nothing added: see `subscribe_calendar`. Undoing the save is safe
             // because nothing else can have pointed at it yet.
@@ -452,6 +662,32 @@ async fn list_account_calendars(
         let vault = vault.clone();
         blocking(move || Ok(vault.account_calendars(account_id)?)).await?
     };
+    // Discovery is also the cheapest moment to learn whether each calendar
+    // already here can still be written to -- a shared calendar whose owner
+    // took away edit rights since it was subscribed to.
+    {
+        let updates: Vec<(CalendarId, bool)> = existing
+            .iter()
+            .filter_map(|c| match &c.origin {
+                CalendarOrigin::Account { remote_id, .. } => remotes
+                    .iter()
+                    .find(|r| r.remote_id == *remote_id)
+                    .filter(|r| r.writable == c.read_only)
+                    .map(|r| (c.id, !r.writable)),
+                _ => None,
+            })
+            .collect();
+        if !updates.is_empty() && vault.is_writable() {
+            let vault = vault.clone();
+            blocking(move || {
+                for (id, read_only) in updates {
+                    vault.set_calendar_read_only(id, read_only)?;
+                }
+                Ok(())
+            })
+            .await?;
+        }
+    }
     Ok(remotes
         .into_iter()
         .map(|remote| {
@@ -507,11 +743,16 @@ async fn subscribe_account_calendar(
     {
         let vault = vault.clone();
         let calendar = calendar.clone();
-        blocking(move || Ok(vault.save_calendar(&calendar)?)).await?;
+        let read_only = !remote.writable;
+        blocking(move || {
+            vault.save_calendar(&calendar)?;
+            Ok(vault.set_calendar_read_only(calendar.id, read_only)?)
+        })
+        .await?;
     }
 
     match accountcal::sync(&svc, &vault, &calendar).await {
-        Ok(report) => Ok(CalendarInfo { calendar: vault.calendar(id)?, events: report.events }),
+        Ok(report) => Ok(info_after_adding(&vault, id, report.events)?),
         Err(e) => {
             // See `subscribe_calendar`: nothing added is the honest answer
             // to a first sync that did not work, and undoing the save is
@@ -521,6 +762,21 @@ async fn subscribe_account_calendar(
             Err(e)
         }
     }
+}
+
+/// A calendar just added, as `list_calendars` would describe it.
+fn info_after_adding(
+    vault: &Arc<Vault>,
+    id: CalendarId,
+    events: u64,
+) -> CommandResult<CalendarInfo> {
+    let calendar = vault.calendar(id)?;
+    let accounts = match calendar.origin.account_id() {
+        Some(account) => vec![vault.account(account)?],
+        None => Vec::new(),
+    };
+    let access = access_of(&calendar, &accounts);
+    Ok(CalendarInfo { calendar, events, access })
 }
 
 /// The providers the "add a calendar" sheet offers, with where to find the
@@ -559,6 +815,47 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: CalendarRef, returns: "void",
         signature: &[("id", "CalendarId", true)],
         run: delete_calendar,
+    },
+    command! {
+        name: "set_default_calendar", scope: Calendars, effect: Write,
+        change: Calendar / Updated,
+        id: |a: &DefaultCalendar| a.id.map(|id| id.to_string()),
+        args: DefaultCalendar, returns: "void",
+        signature: &[("id", "CalendarId | null", false)],
+        run: set_default_calendar,
+    },
+    command! {
+        name: "create_event", scope: Calendars, effect: Write,
+        change: Event / Created,
+        args: CreateEvent, returns: "CalendarEvent | null",
+        signature: &[("calendarId", "CalendarId", true), ("draft", "EventDraft", true)],
+        run: create_event,
+    },
+    command! {
+        name: "load_event", scope: Calendars, effect: Read,
+        args: EventRef, returns: "EditableEvent",
+        signature: &[("id", "EventId", true)],
+        run: load_event,
+    },
+    command! {
+        name: "update_event", scope: Calendars, effect: Write,
+        change: Event / Updated,
+        id: |a: &UpdateEvent| Some(a.id.to_string()),
+        args: UpdateEvent, returns: "void",
+        signature: &[
+            ("id", "EventId", true),
+            ("draft", "EventDraft", true),
+            ("scope", "EventScope", false),
+        ],
+        run: update_event,
+    },
+    command! {
+        name: "delete_event", scope: Calendars, effect: Destructive,
+        change: Event / Deleted,
+        id: |a: &DeleteEvent| Some(a.id.to_string()),
+        args: DeleteEvent, returns: "void",
+        signature: &[("id", "EventId", true), ("scope", "EventScope", false)],
+        run: delete_event,
     },
     command! {
         name: "list_events", scope: Calendars, effect: Read,

@@ -658,7 +658,7 @@ impl AgentHook for ConfirmGate {
             // `web_search` sends its query to a search engine, so a title
             // lifted out of a stranger's mail is the same way out.
             let tainted_search = (name == WEB_SEARCH || name == LOOK_UP_ITEM) && mail_read;
-            must_confirm(tools::find(&name).map(|t| t.effect), self.enabled, tainted_search)
+            must_confirm(self.effect_of(&name, &arguments), self.enabled, tainted_search)
         };
         let Some(kind) = kind else {
             (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
@@ -881,6 +881,18 @@ impl ConfirmGate {
     /// Falls back to nothing rather than to an id: a card that says "delete
     /// project" with no subject asks somebody to think, and one that says
     /// "delete 0192f8b2-..." asks them to guess.
+    /// What this call does -- the tool's own effect, unless its arguments
+    /// reach somebody outside the vault after all (`create_event` with
+    /// guests), in which case `Outward`. See
+    /// [`everyday_core::agent::tools::effect_for`]. Read from the vault
+    /// alone, like [`Self::describe`]: the gate must answer without a
+    /// network round trip.
+    fn effect_of(&self, name: &str, arguments: &Value) -> Option<Effect> {
+        let ctx =
+            ToolContext::new(&self.vault, self.today, &self.tz).with_unattended(self.unattended);
+        tools::effect_for(&ctx, name, arguments)
+    }
+
     fn describe(&self, name: &str, arguments: &Value) -> String {
         // A confirmation card only ever reads a record to name it --
         // `describe_send_draft` reads the draft's own recipients and
@@ -1778,6 +1790,11 @@ async fn run_tool(
                 service.notify_mail_write(account);
             }
         };
+        // See `everyday_core::agent::tools::CalendarWriter`: the same
+        // functions a click in the calendar calls, for `create_event` and its
+        // siblings to reach an account's server through. Built before the
+        // closure below takes `service` for its own.
+        let calendar_writer = crate::domains::calendars::ToolCalendarWriter::new(service.clone());
         // See `agent::tools::mail`'s `respond_to_invite` and
         // `everyday_core::agent::tools::InviteResponder`'s own doc: the
         // core cannot build an iTIP reply itself, so this closure is the
@@ -1801,6 +1818,7 @@ async fn run_tool(
             .with_mail_rate_limit(&rate_limit)
             .with_after_mail_write(&after_mail_write)
             .with_invite_responder(&invite_responder)
+            .with_calendar_writer(&calendar_writer)
             .with_drafting(meta.drafting.clone());
         tools::dispatch(&ctx, name, &arguments)
     })
@@ -1927,6 +1945,15 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
             // `Domain::Agent` holds more than memories now; these are the
             // writes in it that are not one.
             "create_skill" | "update_skill" | "delete_skill" => Kind::Skill,
+            // An event on this computer is a time block; on an account's
+            // calendar it is an event. The tool's own answer says which.
+            "create_event" | "update_event" | "delete_event" => {
+                if entry.saved_kind.as_deref() == Some("time block") {
+                    Kind::Block
+                } else {
+                    Kind::Event
+                }
+            }
             // What `save_profile`'s own command row raises.
             "update_profile" => Kind::Settings,
             _ => match tool.domain {

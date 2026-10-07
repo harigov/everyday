@@ -50,6 +50,7 @@ mod tz;
 mod write;
 
 pub use read::{events_for, parse};
+pub(crate) use rrule::occurrences;
 pub use rrule::parse_rrule;
 pub use tz::{WINDOWS_ZONES, resolve_tzid};
 pub use write::Ics;

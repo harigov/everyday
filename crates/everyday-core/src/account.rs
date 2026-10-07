@@ -123,8 +123,16 @@ impl Provider {
                     // management -- Google has no narrower IMAP-only scope,
                     // unlike Microsoft's split between IMAP and SMTP.
                     mail_scopes: vec!["https://mail.google.com/".into()],
+                    // Two, because neither covers the other's half:
+                    // `calendar.readonly` lists the account's calendars
+                    // (`calendarList.list`, which `calendar.events` cannot
+                    // reach), and `calendar.events` writes events without
+                    // being able to delete or reshare a whole calendar --
+                    // the narrowest pair that does what the calendar app
+                    // does, rather than the all-powerful `calendar` scope.
                     calendar_scopes: vec![
                         "https://www.googleapis.com/auth/calendar.readonly".into(),
+                        GOOGLE_CALENDAR_WRITE_SCOPE.into(),
                     ],
                 }),
                 needs_client_secret: true,
@@ -149,8 +157,10 @@ impl Provider {
                     ],
                     // Graph's calendar scope, not Outlook's IMAP-style one --
                     // the calendar is read over Graph even on an account
-                    // whose mail is read over IMAP. See phase 6.
-                    calendar_scopes: vec!["Calendars.Read".into()],
+                    // whose mail is read over IMAP. See phase 6. ReadWrite
+                    // rather than Read since events can be made here; it
+                    // includes reading.
+                    calendar_scopes: vec![MICROSOFT_CALENDAR_WRITE_SCOPE.into()],
                 }),
                 // A desktop app registers with Entra ID as a public client, which
                 // has no secret; PKCE is what stands in for one.
@@ -496,7 +506,37 @@ pub struct Account {
     pub updated_at: Timestamp,
 }
 
+/// The Google scope that lets events be written -- requested with calendar.
+pub const GOOGLE_CALENDAR_WRITE_SCOPE: &str = "https://www.googleapis.com/auth/calendar.events";
+/// Microsoft Graph's equivalent.
+pub const MICROSOFT_CALENDAR_WRITE_SCOPE: &str = "Calendars.ReadWrite";
+
 impl Account {
+    /// Did this account's sign-in ask for permission to write events?
+    ///
+    /// An account signed in before calendars could be written to holds a
+    /// read-only grant, and Google or Graph would refuse the first write
+    /// with a 403 that says nothing useful -- so this is checked first, and
+    /// the answer becomes "sign in again" instead. A password (CalDAV) is
+    /// all-or-nothing and always answers yes, and so does an OAuth account
+    /// on a provider this application has no preset scopes for: what it
+    /// may do is between its owner and their server.
+    pub fn can_write_calendars(&self) -> bool {
+        let AuthMethod::OAuth { scopes, .. } = &self.auth else {
+            return true;
+        };
+        let wanted: &[&str] = match self.provider {
+            Provider::Google => {
+                &[GOOGLE_CALENDAR_WRITE_SCOPE, "https://www.googleapis.com/auth/calendar"]
+            }
+            Provider::Microsoft => {
+                &[MICROSOFT_CALENDAR_WRITE_SCOPE, "https://graph.microsoft.com/Calendars.ReadWrite"]
+            }
+            _ => return true,
+        };
+        scopes.iter().any(|s| wanted.contains(&s.as_str()))
+    }
+
     /// A new account for `address` on `provider`, filled in from its preset
     /// and not yet signed in.
     ///

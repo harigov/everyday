@@ -82,7 +82,7 @@ pub fn parse_rrule(value: &str) -> Rrule {
 /// Walks candidate days forward from the seed rather than generating a
 /// closed form. That is slower and very much clearer, and the cost is
 /// bounded twice over: by the window, and by [`EXPANSION_CAP`].
-pub(super) fn occurrences(
+pub(crate) fn occurrences(
     seed: DateTime,
     rule: &Rrule,
     window: (DateTime, DateTime),
