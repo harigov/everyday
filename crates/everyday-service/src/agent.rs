@@ -1873,6 +1873,11 @@ pub struct Turn {
     /// argument (see [`tools::Tool::parameters_for`]) and `web_search` is not
     /// offered at all -- see [`build`].
     pub drafting: Option<Drafting>,
+    /// Set when this turn arrived through a chat link rather than the rail:
+    /// somebody writing from another device, who can see nothing of this
+    /// application's screen. See [`crate::chat`] and
+    /// [`Service::chat_turn`](crate::service::Service::chat_turn).
+    pub via: Option<everyday_core::chat::Via>,
 }
 
 /// What a turn did, for a caller that has to write it down.
@@ -1981,6 +1986,35 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
     out
 }
 
+/// What the model is told about a turn that arrived through a chat, in place
+/// of a description of the screen.
+///
+/// Says the three things it cannot infer and would otherwise get wrong: that
+/// there is no screen to point at, that the app's own links lead nowhere from
+/// where they are reading, and how long a reply should be -- a phone's
+/// notification shows the first line or two. `service` is the chat service's
+/// name as a person says it ("Matrix"), from [`everyday_core::chat::Via`].
+fn chat_context(service: &str) -> String {
+    format!(
+        "They are writing to you from {service} on another device, not in this app: they \
+         cannot see its screen, and links into the app will not open there. Keep replies \
+         short; Markdown is fine."
+    )
+}
+
+/// Whether a destructive call stops to ask, given what the person's settings
+/// say and where the turn came from.
+///
+/// A turn from a chat always asks, whatever `confirm_destructive` says on the
+/// desktop. That setting is a decision about a desk -- somebody who has
+/// turned it off has said they would rather the assistant just got on with
+/// it while they are watching -- and a phone is a likelier thing to lose, to
+/// leave unlocked or to have borrowed. The answer is a message in the same
+/// chat, so it costs a tap.
+fn confirms_destructive(setting: bool, via: Option<&everyday_core::chat::Via>) -> bool {
+    setting || via.is_some()
+}
+
 /// Run one turn: send what was typed, stream what comes back, write it down.
 ///
 /// The person's message is persisted *before* the model is called, so a
@@ -2008,6 +2042,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         channel,
         unattended,
         drafting,
+        via,
     } = turn;
 
     // Stoppable from the first moment, and for exactly as long as this
@@ -2019,9 +2054,15 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
 
     let (settings, key) = vault.agent_credentials()?;
 
-    // The thread exists before the first message goes into it.
+    // The thread exists before the first message goes into it -- marked with
+    // the chat it arrived through, if it did, so the history can say where it
+    // came from and the chat can find it again.
     if vault.conversation(conversation).is_err() {
-        vault.save_conversation(&Conversation { id: conversation, ..Conversation::new() })?;
+        vault.save_conversation(&Conversation {
+            id: conversation,
+            via: via.clone(),
+            ..Conversation::new()
+        })?;
     }
 
     let asked = VaultMessage::user(conversation, prompt.clone());
@@ -2063,6 +2104,12 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
          rather than putting it all in your reply."
             .to_string()
     });
+    // Or, for somebody writing from a chat, where they are -- which is not
+    // here. Nothing is "open" for them to be looking at, so whatever a caller
+    // said was on screen is not described either: telling the model about a
+    // screen its reader cannot see would only invite it to point at things.
+    let from_chat = via.as_ref().map(|v| chat_context(&v.service));
+    let on_screen = if via.is_some() { None } else { on_screen };
     // Otherwise, what they have open -- described here rather than by the
     // interface, against the vault and through the same mail gate the tools
     // use, under the very caller and provider those tools will run as.
@@ -2081,7 +2128,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         _ => None,
     };
     let screen_quotes_mail = described.as_ref().is_some_and(|d| d.quotes_mail);
-    let context = unattended_context.or(described.map(|d| d.text));
+    let context = unattended_context.or(from_chat).or(described.map(|d| d.text));
 
     let unattended_run = unattended.is_some();
     // A dream may write at most one note for real -- see `ConfirmGate`'s own
@@ -2103,7 +2150,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         pending: pending.clone(),
         issued: issued.clone(),
         channel: channel.clone(),
-        enabled: settings.confirm_destructive,
+        enabled: confirms_destructive(settings.confirm_destructive, via.as_ref()),
         unattended: unattended.is_some(),
         vault: vault.clone(),
         today: settings.now().date(),
@@ -2523,6 +2570,43 @@ mod tests {
     fn an_ordinary_read_or_write_is_never_gated() {
         assert_eq!(must_confirm(Some(Effect::Write), true, false), None);
         assert_eq!(must_confirm(Some(Effect::Read), true, false), None);
+    }
+
+    // ---- chat turns --------------------------------------------------------
+
+    fn via() -> everyday_core::chat::Via {
+        everyday_core::chat::Via {
+            link: everyday_core::ChatLinkId::new(),
+            service: "Matrix".into(),
+            chat: "!room:example.org".into(),
+        }
+    }
+
+    #[test]
+    fn a_chat_turn_is_told_where_the_person_is_writing_from() {
+        let said = chat_context("Matrix");
+        assert!(said.starts_with("They are writing to you from Matrix on another device"));
+        assert!(said.contains("cannot see its screen"));
+        assert!(said.contains("links into the app will not open there"));
+        assert!(said.contains("Keep replies short; Markdown is fine."));
+        assert!(chat_context("Signal").contains("from Signal on"), "named after the service");
+    }
+
+    #[test]
+    fn a_chat_turn_confirms_destructive_calls_whatever_the_setting_says() {
+        assert!(confirms_destructive(true, None));
+        assert!(!confirms_destructive(false, None), "the desktop's own choice is still honoured");
+        assert!(confirms_destructive(false, Some(&via())), "a phone always asks");
+        assert!(confirms_destructive(true, Some(&via())));
+        // ...and that is what reaches the gate's own decision.
+        assert_eq!(
+            must_confirm(
+                Some(Effect::Destructive),
+                confirms_destructive(false, Some(&via())),
+                false
+            ),
+            Some("destructive")
+        );
     }
 
     // ---- must_confirm_fetch / provenance ----------------------------------

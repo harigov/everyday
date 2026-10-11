@@ -38,6 +38,7 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   memory: 'what the assistant remembers about them',
   proposals: 'the proposals waiting for them to accept or decline',
   skills: "the assistant's skills",
+  chat: 'the Chat tab, where the assistant is reached from a chat app',
   meetings: 'the Meetings tab',
   data: 'the Data tab, import and export',
   vault: 'the Vault tab',

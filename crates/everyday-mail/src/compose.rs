@@ -304,10 +304,10 @@ pub fn reply_headers(parent: &ParsedMessage) -> (Option<String>, Vec<String>) {
         Vec::new()
     };
 
-    if let Some(id) = &parent.message_id {
-        if !references.contains(id) {
-            references.push(id.clone());
-        }
+    if let Some(id) = &parent.message_id
+        && !references.contains(id)
+    {
+        references.push(id.clone());
     }
 
     (in_reply_to, references)

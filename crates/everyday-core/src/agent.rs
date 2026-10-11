@@ -952,6 +952,10 @@ pub struct Conversation {
     /// out of a list of conversations somebody actually had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<crate::id::RoutineRunId>,
+    /// The chat this thread arrived through, if somebody started it from
+    /// another device rather than in the rail. See [`crate::chat`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<crate::chat::Via>,
 }
 
 impl Conversation {
@@ -963,6 +967,7 @@ impl Conversation {
             created_at: now,
             updated_at: now,
             run_id: None,
+            via: None,
         }
     }
 

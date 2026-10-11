@@ -223,15 +223,15 @@ pub(crate) fn find_voiceprint(
 ) -> Option<Voiceprint> {
     let (name, email) = identify::parse_attendee(attendee);
     let usable = voiceprints.iter().filter(|v| v.model == embedding_model);
-    if let Some(email) = &email {
-        if let Some(v) = usable.clone().find(|v| v.email.as_deref() == Some(email.as_str())) {
-            return Some(v.clone());
-        }
+    if let Some(email) = &email
+        && let Some(v) = usable.clone().find(|v| v.email.as_deref() == Some(email.as_str()))
+    {
+        return Some(v.clone());
     }
-    if let Some(name) = &name {
-        if let Some(v) = usable.clone().find(|v| v.name.eq_ignore_ascii_case(name)) {
-            return Some(v.clone());
-        }
+    if let Some(name) = &name
+        && let Some(v) = usable.clone().find(|v| v.name.eq_ignore_ascii_case(name))
+    {
+        return Some(v.clone());
     }
     None
 }
@@ -334,24 +334,25 @@ pub(crate) async fn identify_stage(
         let has_hints = system.iter().any(|s| s.speaker_hint.is_some());
         let embeddable =
             system.iter().filter(|s| s.end_ms.saturating_sub(s.start_ms) >= MIN_EMBED_MS).count();
-        if !has_hints && embeddable < 2 {
-            if let Some(kit) = &kit {
-                let kit = kit.clone();
-                let source_for_dia = source.clone();
-                let chunks_for_dia = chunks.clone();
-                let mut system_for_dia = system.clone();
-                system = blocking(move || {
-                    diarise_hints(
-                        &kit,
-                        source_for_dia.as_ref(),
-                        id,
-                        &chunks_for_dia,
-                        &mut system_for_dia,
-                    );
-                    Ok(system_for_dia)
-                })
-                .await?;
-            }
+        if !has_hints
+            && embeddable < 2
+            && let Some(kit) = &kit
+        {
+            let kit = kit.clone();
+            let source_for_dia = source.clone();
+            let chunks_for_dia = chunks.clone();
+            let mut system_for_dia = system.clone();
+            system = blocking(move || {
+                diarise_hints(
+                    &kit,
+                    source_for_dia.as_ref(),
+                    id,
+                    &chunks_for_dia,
+                    &mut system_for_dia,
+                );
+                Ok(system_for_dia)
+            })
+            .await?;
         }
     }
 

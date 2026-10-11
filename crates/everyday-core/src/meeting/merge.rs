@@ -64,11 +64,11 @@ pub fn similarity(a: &str, b: &str) -> f32 {
     }
     let mut overlap = 0;
     for t in &tb {
-        if let Some(c) = counts.get_mut(t.as_str()) {
-            if *c > 0 {
-                *c -= 1;
-                overlap += 1;
-            }
+        if let Some(c) = counts.get_mut(t.as_str())
+            && *c > 0
+        {
+            *c -= 1;
+            overlap += 1;
         }
     }
     overlap as f32 / ta.len().min(tb.len()) as f32

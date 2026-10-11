@@ -1527,10 +1527,8 @@ fn clear_stale_slot(app: &Option<AppHandle>, recording_id: RecordingId) {
     // already under way by the time this runs, the tray is already telling
     // the truth about *that* one, and resetting it here would wrongly say
     // "not recording" out from under a capture that genuinely still is.
-    if stale {
-        if let Some(tray) = app.try_state::<crate::tray::Tray>() {
-            let _ = tray.set_recording(app, None);
-        }
+    if stale && let Some(tray) = app.try_state::<crate::tray::Tray>() {
+        let _ = tray.set_recording(app, None);
     }
 }
 

@@ -593,10 +593,10 @@ fn looks_like_tracking_pixel(el: &Element) -> bool {
     if declarations.get("visibility") == Some("hidden") {
         return true;
     }
-    if let Some(opacity) = declarations.get("opacity") {
-        if crate::css_decl::opacity_is_effectively_zero(opacity) {
-            return true;
-        }
+    if let Some(opacity) = declarations.get("opacity")
+        && crate::css_decl::opacity_is_effectively_zero(opacity)
+    {
+        return true;
     }
 
     // A tracking pixel sized entirely through its style rather than its

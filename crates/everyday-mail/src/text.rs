@@ -457,10 +457,10 @@ fn is_invisible_style(style: &str) -> bool {
     if matches!(declarations.get("visibility"), Some("hidden") | Some("collapse")) {
         return true;
     }
-    if let Some(opacity) = declarations.get("opacity") {
-        if crate::css_decl::opacity_is_effectively_zero(opacity) {
-            return true;
-        }
+    if let Some(opacity) = declarations.get("opacity")
+        && crate::css_decl::opacity_is_effectively_zero(opacity)
+    {
+        return true;
     }
     if declarations.get("font-size").is_some_and(crate::css_decl::is_zero_length) {
         return true;
@@ -490,10 +490,9 @@ fn is_invisible_style(style: &str) -> bool {
     if let (Some(color), Some(background)) = (
         declarations.get("color"),
         declarations.get("background-color").or_else(|| declarations.get("background")),
-    ) {
-        if crate::css_decl::colours_equal(color, background) {
-            return true;
-        }
+    ) && crate::css_decl::colours_equal(color, background)
+    {
+        return true;
     }
 
     // `position:absolute` paired with a drastic negative offset is the
@@ -544,10 +543,10 @@ fn is_zero_area_clip(value: Option<&str>) -> bool {
         }
     }
 
-    if let Some(inner) = compact.strip_prefix("inset(").and_then(|s| s.strip_suffix(')')) {
-        if inner == "50%" {
-            return true;
-        }
+    if let Some(inner) = compact.strip_prefix("inset(").and_then(|s| s.strip_suffix(')'))
+        && inner == "50%"
+    {
+        return true;
     }
 
     false

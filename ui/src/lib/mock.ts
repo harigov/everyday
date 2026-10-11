@@ -118,6 +118,8 @@ import { addDays, blockKindFor, isoDate, minutesBetween } from './time'
 import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
 import { DIGEST_MARKER, ordinal } from './dream'
 import type { Draft, ImproveMode, MailCategory } from './types'
+import type { ChatLink, ChatLinkView, ChatState, ChatStatus } from './types'
+import { sameAccount, validateLink } from './chat'
 import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
 import {
   mockAllowRemoteImagesOnce,
@@ -2104,6 +2106,37 @@ const MAIL_PROVIDER_PRESETS: MailProviderInfo[] = [
 /** Password secrets the mock has been given, keyed by account id -- what
  *  `has_password` and `signed_in` are computed from after `save_account_password`. */
 const accountPasswords = new Map<string, string>([['acct-fastmail', 'hunter2-demo']])
+
+// ── Chat links ───────────────────────────────────────────────────────────
+//
+// The assistant as a Matrix bot -- docs/plans/chat.md. Empty to begin with,
+// so Settings → Chat opens on its "add a bot" state.
+//
+// A real link signs in on its own task and reports when it gets there; the
+// mock has no task, and no timers (a `setTimeout` at module load would keep
+// the test runner's process alive). So a link just saved reads `connecting`
+// once, and `chat_links` -- which the open panel calls every few seconds --
+// settles whatever it finds connecting to `online` as it answers. The
+// password is dropped at the same moment, the way a real one is once a
+// session exists.
+
+const chatLinks: ChatLinkView[] = []
+/** Ids of the links the next `chat_links` will move from connecting to online. */
+const chatSettling = new Set<string>()
+
+function chatStatus(state: ChatState, detail: string): ChatStatus {
+  return { state, detail, since: new Date().toISOString() }
+}
+
+function settleChatLinks() {
+  for (const view of chatLinks) {
+    if (!chatSettling.delete(view.link.id)) continue
+    const m = view.link.service
+    view.signedIn = true
+    view.hasPassword = false
+    view.status = chatStatus('online', `Signed in as ${m.userId}. Talking to ${m.owner}.`)
+  }
+}
 
 /** Each seeded account's sync progress, as `sync_status` reads it back --
  *  both already settled at rest, the shape an account looks like once its
@@ -6132,6 +6165,76 @@ export const mockInvoke = async <T>(
     case 'account_presets':
       requireUnlocked()
       return structuredClone(MAIL_PROVIDER_PRESETS) as T
+
+    // ── Chat links -- docs/plans/chat.md ────────────────────────────
+
+    case 'chat_links': {
+      requireUnlocked()
+      settleChatLinks()
+      return structuredClone(chatLinks) as T
+    }
+
+    case 'new_chat_link': {
+      requireUnlocked()
+      const now = new Date().toISOString()
+      const link: ChatLink = {
+        id: `chat-${nextId++}`,
+        enabled: true,
+        service: { kind: 'matrix', homeserver: '', userId: '', owner: '' },
+        freshAfterMinutes: 360,
+        createdAt: now,
+        updatedAt: now,
+      }
+      return link as T
+    }
+
+    case 'save_chat_link': {
+      requireUnlocked()
+      const link = args.link as ChatLink
+      // The core's own check, in the core's words, so the form's error path
+      // can be exercised without a server.
+      const problem = validateLink(link)
+      if (problem) throw new VaultError('invalid', problem)
+      const password =
+        typeof args.password === 'string' && args.password !== '' ? args.password : null
+      const at = chatLinks.findIndex((v) => v.link.id === link.id)
+      const before = at >= 0 ? chatLinks[at] : undefined
+      // A bot on a different server or account starts again from nothing.
+      const kept = before !== undefined && sameAccount(before.link, link)
+      const saved: ChatLink = {
+        ...link,
+        createdAt: before?.link.createdAt ?? link.createdAt,
+        updatedAt: new Date().toISOString(),
+      }
+      const signedIn = kept && before.signedIn
+      const hasPassword = password !== null || (kept && before.hasPassword)
+      chatSettling.delete(saved.id)
+      let status: ChatStatus
+      if (!saved.enabled) {
+        status = chatStatus('off', 'Switched off.')
+      } else if (!signedIn && !hasPassword) {
+        status = chatStatus('needsSignIn', 'No password to sign in with.')
+      } else if (signedIn && password === null) {
+        status = chatStatus('connecting', 'Reconnecting…')
+        chatSettling.add(saved.id)
+      } else {
+        status = chatStatus('connecting', `Signing in as ${saved.service.userId}…`)
+        chatSettling.add(saved.id)
+      }
+      const view: ChatLinkView = { link: saved, status, signedIn, hasPassword }
+      if (at >= 0) chatLinks[at] = view
+      else chatLinks.push(view)
+      return structuredClone(view) as T
+    }
+
+    case 'remove_chat_link': {
+      requireUnlocked()
+      const id = str(args.id)
+      const at = chatLinks.findIndex((v) => v.link.id === id)
+      if (at >= 0) chatLinks.splice(at, 1)
+      chatSettling.delete(id)
+      return undefined as T
+    }
 
     case 'save_account_password': {
       requireUnlocked()

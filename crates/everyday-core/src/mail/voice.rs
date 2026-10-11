@@ -699,7 +699,7 @@ fn median(mut values: Vec<u32>) -> u32 {
     }
     values.sort_unstable();
     let mid = values.len() / 2;
-    if values.len() % 2 == 0 {
+    if values.len().is_multiple_of(2) {
         ((values[mid - 1] as u64 + values[mid] as u64) / 2) as u32
     } else {
         values[mid]

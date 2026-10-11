@@ -180,6 +180,10 @@ typed_id!(ThreadId, "thread");
 typed_id!(DraftId, "draft");
 typed_id!(OpId, "op");
 
+// A `ChatLinkId` names one bot account on a chat service through which its
+// owner reaches the assistant from another device. See `crate::chat`.
+typed_id!(ChatLinkId, "chat_link");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into
@@ -213,7 +217,7 @@ impl BlobId {
             return Err(crate::Error::Invalid(format!("{s:?} is not a blob id")));
         }
         let mut out = [0u8; 32];
-        for (i, chunk) in s.as_bytes().chunks_exact(2).enumerate() {
+        for (i, chunk) in s.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let hi = (chunk[0] as char).to_digit(16).unwrap() as u8;
             let lo = (chunk[1] as char).to_digit(16).unwrap() as u8;
             out[i] = hi << 4 | lo;

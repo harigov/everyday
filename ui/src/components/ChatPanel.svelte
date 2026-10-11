@@ -24,6 +24,7 @@
   // worst of the three.
 
   import { agent } from '../lib/agent.svelte'
+  import { viaTitle } from '../lib/chat'
   import { lookOf } from '../lib/companion'
   import { panels } from '../lib/panels.svelte'
   import { pref } from '../lib/prefs'
@@ -248,6 +249,9 @@
               }}
             >
               <span class="threadtitle">{thread.title || 'Untitled'}</span>
+              {#if thread.via}
+                <span class="count" title={viaTitle(thread.via)}>{thread.via.service}</span>
+              {/if}
               <span class="count">{thread.messages}</span>
             </button>
             <button

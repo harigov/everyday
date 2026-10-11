@@ -276,11 +276,13 @@ pub(super) fn to_hex(bytes: &[u8]) -> String {
 }
 
 pub(super) fn from_hex(s: &str) -> Result<Vec<u8>> {
-    if s.len() % 2 != 0 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::Invalid("vault header contains malformed hex".into()));
     }
     Ok(s.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| {
             let hi = (c[0] as char).to_digit(16).unwrap() as u8;
             let lo = (c[1] as char).to_digit(16).unwrap() as u8;

@@ -82,6 +82,7 @@ pub mod agent;
 pub mod air_quality;
 pub mod blobstore;
 pub mod calendar;
+pub mod chat;
 pub mod completable;
 pub mod crypto;
 pub mod dream;
@@ -133,10 +134,10 @@ pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatu
 pub use completable::Completable;
 pub use error::{Error, Result};
 pub use id::{
-    AccountId, BlobId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId,
-    ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
-    SkillId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    AccountId, BlobId, BlockId, CalendarId, ChatLinkId, ConversationId, DraftId, EntryId, EventId,
+    GoalId, ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId,
+    NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId,
+    RoutineRunId, SkillId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,

@@ -444,6 +444,108 @@ fn the_idle_timeout_is_suspended_while_the_key_is_in_the_keychain() {
 }
 
 #[test]
+fn the_idle_timeout_is_suspended_while_a_chat_link_is_switched_on() {
+    // The bot answers a phone, which is used when nobody is at this machine,
+    // so the key it needs must outlast the timeout while any link is on --
+    // and the timeout stored in the header must be neither read nor changed
+    // by that, so it applies again the moment the last link goes off.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+    v.set_forget_key(1).unwrap();
+    v.set_kept_for_chat(true);
+    v.touch();
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    assert_eq!(v.seconds_until_forget_key(), None, "nothing to count down while a link is on");
+    assert!(!v.forget_key_if_idle(), "must not lock under a bot that is waiting for a message");
+    assert!(v.is_unlocked());
+
+    // Independent of the keychain's flag: neither one clears the other.
+    v.set_key_in_keychain(true);
+    v.set_key_in_keychain(false);
+    assert_eq!(v.seconds_until_forget_key(), None, "the chat link still needs the key");
+
+    // What `reconcile` does when the last link is switched off.
+    v.set_kept_for_chat(false);
+    assert!(v.seconds_until_forget_key().is_some(), "the stored timeout applies again");
+    assert!(v.forget_key_if_idle(), "and the vault was idle for longer than it");
+    assert!(!v.is_unlocked());
+}
+
+#[test]
+fn locking_by_hand_still_locks_a_vault_a_chat_link_is_keeping_open() {
+    // The flag only suspends the *timer*. "Lock" is a decision somebody made,
+    // and it stops the bot like everything else; `lock` never asks the flag.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+    v.set_forget_key(60).unwrap();
+    v.set_kept_for_chat(true);
+    assert!(v.is_unlocked());
+
+    v.lock();
+    assert!(!v.is_unlocked());
+    assert_eq!(v.seconds_until_forget_key(), None, "locked: no key left to forget");
+}
+
+#[test]
+fn a_chat_link_that_cannot_work_is_refused_before_it_is_stored() {
+    use crate::chat::{ChatLink, ChatService, ChatSettings, MatrixLink};
+
+    // Validation comes before the store is reached, so this holds on the
+    // in-memory backend, which has nowhere to put a link at all.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+
+    // A new link has nothing filled in yet, which is not a link.
+    let blank = ChatSettings { links: vec![ChatLink::new_matrix()] };
+    let err = v.save_chat_settings(&blank).unwrap_err();
+    assert_eq!(err.code(), "invalid", "got {err}");
+
+    // The bot cannot be the person it answers.
+    let mut same = ChatLink::new_matrix();
+    same.service = ChatService::Matrix(MatrixLink {
+        homeserver: "http://127.0.0.1:6167".into(),
+        user_id: "@me:example.org".into(),
+        owner: "@me:example.org".into(),
+    });
+    let err = v.save_chat_settings(&ChatSettings { links: vec![same.clone()] }).unwrap_err();
+    assert_eq!(err.code(), "invalid", "got {err}");
+
+    // Nor may one link be listed twice.
+    let mut good = same;
+    good.service = ChatService::Matrix(MatrixLink {
+        homeserver: "http://127.0.0.1:6167".into(),
+        user_id: "@everyday:example.org".into(),
+        owner: "@me:example.org".into(),
+    });
+    let err = v.save_chat_settings(&ChatSettings { links: vec![good.clone(), good] }).unwrap_err();
+    assert_eq!(err.code(), "invalid", "got {err}");
+}
+
+#[test]
+fn chat_links_need_a_backend_that_stores_the_assistant() {
+    use crate::chat::{ChatSecret, ChatSettings};
+    use crate::id::ChatLinkId;
+
+    // The in-memory backend is journals only. Saving a link there says so
+    // rather than appearing to work and forgetting it, and so do the reads
+    // and the secrets that would go with it.
+    let dir = tempfile::tempdir().unwrap();
+    let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();
+    let link = ChatLinkId::new();
+
+    for err in [
+        v.chat_settings().unwrap_err(),
+        v.save_chat_settings(&ChatSettings::default()).unwrap_err(),
+        v.chat_secret(link).unwrap_err(),
+        v.save_chat_secret(link, &ChatSecret::default()).unwrap_err(),
+        v.delete_chat_secret(link).unwrap_err(),
+    ] {
+        assert_eq!(err.code(), "unsupported", "got {err}");
+    }
+}
+
+#[test]
 fn a_person_defers_the_forgetting_and_a_read_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let v = Vault::create(dir.path(), cfg(Some("pw")), registry()).unwrap();

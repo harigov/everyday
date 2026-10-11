@@ -139,6 +139,9 @@ pub struct Service {
     /// This session's short memory of one place's forecast -- see
     /// [`crate::weather_cache`].
     weather_cache: WeatherCache,
+    /// The chat links' runner and the last status each reported. See
+    /// [`crate::chat`].
+    pub(crate) chat: crate::chat::ChatHub,
 }
 
 impl Default for Service {
@@ -173,6 +176,7 @@ impl Service {
             ),
             clock: RwLock::new(clock),
             meetings: MeetingRuntime::default(),
+            chat: crate::chat::ChatHub::default(),
             weather_cache: WeatherCache::new(),
         }
     }
@@ -502,6 +506,18 @@ impl Service {
         // very first poll, and both must already answer `Some`.
         self.open_mail(&vault);
         self.supervisor().restart_registered();
+        // Chat links, last of the supervised tasks, because it has the final
+        // say: `restart_registered` brings back every task that was stopped
+        // by the lock, including one whose link has since been switched off
+        // or removed (the supervisor cannot forget a factory), and
+        // `reconcile` stops those again and starts whichever the settings
+        // ask for that nothing has registered yet. Only a process that holds
+        // the vault's write claim does it, the way mail's account tasks are
+        // registered: a reply the bot sends is a write, and a second window
+        // that merely reads must not answer the same phone.
+        if vault.is_writable() {
+            crate::chat::reconcile(self, &vault);
+        }
         // A recording stuck in `Stage::Recording` with nothing left to
         // capture it -- the app quit, the machine slept through a lock,
         // this is a fresh process -- is found and moved on here, the same
@@ -629,6 +645,12 @@ impl Service {
         // must start exactly as promptly as everything else does.
         if vault.is_unlocked() {
             self.open_mail(&vault);
+            // Chat links likewise -- see `crate::chat::reconcile`. A no-op
+            // until a runner is installed, which the shells do after setting
+            // the vault; `set_chat_runner` reconciles again then.
+            if vault.is_writable() {
+                crate::chat::reconcile(self, &vault);
+            }
         }
         vault
     }
@@ -940,23 +962,46 @@ impl Service {
             unattended: None,
             // Only a dream drafts. This is somebody typing in the rail.
             drafting: None,
+            // Typed in the rail, not sent from a chat.
+            via: None,
         })
         .await?;
-        let origin = ctx.caller.origin().map(str::to_string);
-        // What its tools wrote, before the thread itself. The assistant reaches
-        // the vault directly rather than back through here, so these are writes
-        // nothing else on this path can see -- and the list a person asked it
-        // to add a task to is open in front of them.
-        for (kind, ids) in turned.wrote {
+        self.announce_turn(&turned, args.conversation_id, ctx.caller.origin().map(str::to_string));
+        Ok(())
+    }
+
+    /// Say what a finished assistant turn did, to everyone who did not do it.
+    ///
+    /// The tail of a turn, shared by [`Service::send_message`] (somebody
+    /// typing in the rail) and [`Service::chat_turn`] (somebody writing from
+    /// a phone) because it is the half of a turn that must not differ between
+    /// them: both are the assistant writing into a vault with a window open
+    /// in front of somebody, and a window refreshes from what it is told.
+    /// `origin` is the only thing that does -- the caller's own for the rail,
+    /// `"chat"` for a chat -- so a window can tell a write it made from one
+    /// made on its behalf.
+    ///
+    /// What its tools wrote comes first, then the thread itself. The
+    /// assistant reaches the vault directly rather than back through
+    /// [`Service::call`], so these are writes nothing else on this path can
+    /// see -- and the list a person asked it to add a task to is open in front
+    /// of them.
+    pub(crate) fn announce_turn(
+        &self,
+        turned: &crate::agent::Turned,
+        conversation: everyday_core::ConversationId,
+        origin: Option<String>,
+    ) {
+        for (kind, ids) in &turned.wrote {
             // One or the other, never both -- `Change`'s own contract, and
             // the same split every `command!` row with a `change:` makes
             // between its `id` and `ids` forms.
-            let (id, ids) = match ids.len() {
-                1 => (Some(ids.into_iter().next().expect("len 1")), Vec::new()),
-                _ => (None, ids),
+            let (id, ids) = match ids.as_slice() {
+                [only] => (Some(only.clone()), Vec::new()),
+                _ => (None, ids.clone()),
             };
             self.events().changed(crate::events::Change {
-                kind,
+                kind: *kind,
                 op: crate::events::Op::Updated,
                 id,
                 ids,
@@ -966,11 +1011,10 @@ impl Service {
         self.events().changed(crate::events::Change {
             kind: crate::events::Kind::Conversation,
             op: crate::events::Op::Updated,
-            id: Some(args.conversation_id.to_string()),
+            id: Some(conversation.to_string()),
             ids: Vec::new(),
             origin,
         });
-        Ok(())
     }
 
     // ---- bytes ----------------------------------------------------------

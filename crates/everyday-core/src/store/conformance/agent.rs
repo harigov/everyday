@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::agent::{MemoryOrigin, Skill};
-use crate::id::SkillId;
+use crate::chat::{ChatLink, ChatService, ChatSettings, MatrixLink, Via};
+use crate::id::{ChatLinkId, SkillId};
 
 /// The assistant half of the suite. Called by [`run_all`] when the backend
 /// has an [`AgentStore`]; public so a backend under construction can run it
@@ -15,8 +16,10 @@ pub fn run_agent_suite(store: &dyn AgentStore) {
 
     agent_starts_unconfigured(store);
     settings_round_trip(store);
+    chat_settings_round_trip_and_stand_apart_from_the_assistants(store);
     the_key_is_stored_apart_from_the_settings(store);
     conversation_crud(store);
+    a_conversation_remembers_the_chat_it_arrived_through(store);
     missing_agent_records_are_not_found(store);
     messages_come_back_in_the_order_they_were_written(store);
     a_streamed_message_can_be_rewritten_in_place(store);
@@ -43,6 +46,7 @@ fn agent_cleanup(store: &dyn AgentStore) {
     }
     store.delete_secret().unwrap();
     store.put_settings(&AgentSettings::default()).unwrap();
+    store.put_chat_settings(&ChatSettings::default()).unwrap();
 }
 
 fn agent_starts_unconfigured(store: &dyn AgentStore) {
@@ -51,6 +55,11 @@ fn agent_starts_unconfigured(store: &dyn AgentStore) {
     assert!(!s.has_key, "no key has been stored");
     assert!(!store.has_secret().unwrap());
     assert!(store.secret().unwrap().is_none());
+    assert_eq!(
+        store.chat_settings().unwrap(),
+        ChatSettings::default(),
+        "a backend with no chat record must report no links, not an error"
+    );
     assert!(store.list_conversations(&ConversationQuery::default()).unwrap().is_empty());
     assert!(store.list_memories().unwrap().is_empty());
     assert!(store.list_skills().unwrap().is_empty());
@@ -94,6 +103,91 @@ fn settings_round_trip(store: &dyn AgentStore) {
 
     store.put_settings(&AgentSettings::default()).unwrap();
     assert!(!store.settings().unwrap().enabled, "settings must be replaceable, not merged");
+}
+
+/// A Matrix link with every field set to something other than its default,
+/// so a field a backend forgot to keep shows up as a difference.
+fn matrix_link(owner: &str) -> ChatLink {
+    ChatLink {
+        enabled: true,
+        service: ChatService::Matrix(MatrixLink {
+            homeserver: "http://127.0.0.1:6167".into(),
+            user_id: "@everyday:example.org".into(),
+            owner: owner.into(),
+        }),
+        fresh_after_minutes: 90,
+        ..ChatLink::new_matrix()
+    }
+}
+
+/// The chat links come back exactly as saved -- every link, in order, with
+/// its switch and its quiet period -- a second save replaces them rather than
+/// adding to them, and the record is its own: saving the assistant's
+/// settings leaves it alone and saving it leaves theirs alone, so the two
+/// singleton rows cannot be mistaken for one another.
+fn chat_settings_round_trip_and_stand_apart_from_the_assistants(store: &dyn AgentStore) {
+    assert_eq!(store.chat_settings().unwrap(), ChatSettings::default());
+    assert!(!store.chat_settings().unwrap().any_enabled());
+
+    let mut switched_off = matrix_link("@sam:example.org");
+    switched_off.enabled = false;
+    // Zero means "never start afresh", which is not the default, and is the
+    // value most likely to be lost by a field that treats zero as absent.
+    switched_off.fresh_after_minutes = 0;
+    let first = ChatSettings { links: vec![matrix_link("@alex:example.org"), switched_off] };
+    store.put_chat_settings(&first).unwrap();
+    assert_eq!(store.chat_settings().unwrap(), first, "every link, in order, every field");
+    assert!(store.chat_settings().unwrap().any_enabled());
+
+    // Saving twice must update rather than accumulate.
+    store.put_chat_settings(&first).unwrap();
+    assert_eq!(store.chat_settings().unwrap().links.len(), 2);
+
+    let second = ChatSettings { links: vec![matrix_link("@robin:example.org")] };
+    store.put_chat_settings(&second).unwrap();
+    assert_eq!(store.chat_settings().unwrap(), second, "links must be replaced, not merged");
+
+    // The assistant's own settings are another row, sealed under other data.
+    store.put_settings(&AgentSettings { enabled: true, ..Default::default() }).unwrap();
+    assert_eq!(store.chat_settings().unwrap(), second, "the assistant's settings are another row");
+    store.put_chat_settings(&ChatSettings::default()).unwrap();
+    assert!(store.settings().unwrap().enabled, "the chats' settings are not the assistant's");
+    assert!(store.chat_settings().unwrap().links.is_empty(), "and none is a real answer");
+
+    store.put_settings(&AgentSettings::default()).unwrap();
+}
+
+/// A conversation started from a chat says which one, and keeps saying so
+/// through every later write -- the relay finds a chat's current conversation
+/// by scanning for this, so a store that dropped it on the second save would
+/// quietly start a new conversation for every message.
+fn a_conversation_remembers_the_chat_it_arrived_through(store: &dyn AgentStore) {
+    let via =
+        Via { link: ChatLinkId::new(), service: "Matrix".into(), chat: "!room:example.org".into() };
+    let chat = Conversation {
+        title: "From my phone".into(),
+        via: Some(via.clone()),
+        ..Conversation::new()
+    };
+    store.put_conversation(&chat).unwrap();
+    assert_eq!(store.get_conversation(chat.id).unwrap().via, Some(via.clone()));
+
+    // Rewritten, as every turn does when it bumps `updated_at`.
+    let mut later = store.get_conversation(chat.id).unwrap();
+    later.updated_at = Timestamp::now();
+    store.put_conversation(&later).unwrap();
+    assert_eq!(store.get_conversation(chat.id).unwrap().via, Some(via.clone()));
+
+    // A thread somebody typed at the desk has no `via`, and a chat is not a
+    // routine run: the filter that hides a week of morning briefs keeps it.
+    let desk = seeded_conversation(store, "At the desk");
+    let listed = store.list_conversations(&ConversationQuery::chats(10)).unwrap();
+    let find = |id: ConversationId| listed.iter().find(|c| c.id == id);
+    assert_eq!(find(chat.id).expect("a chat is not a routine run").via, Some(via));
+    assert_eq!(find(desk.id).expect("listed beside it").via, None);
+
+    store.delete_conversation(chat.id).unwrap();
+    store.delete_conversation(desk.id).unwrap();
 }
 
 /// The credential must not be reachable through the settings, and

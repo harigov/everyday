@@ -465,6 +465,17 @@
     },
     {
       "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "chat_links",
+      "orScope": null,
+      "returns": "ChatLinkView[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
       "changes": {
         "kind": "settings",
         "op": "updated"
@@ -2632,6 +2643,17 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "new_chat_link",
+      "orScope": null,
+      "returns": "ChatLink",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "new_conversation",
       "orScope": null,
       "returns": "Conversation",
@@ -3478,6 +3500,26 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "ChatLinkId"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "destructive",
+      "name": "remove_chat_link",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "messageId",
           "required": true,
           "type": "MailMessageId"
@@ -3781,6 +3823,31 @@
       "orScope": null,
       "returns": "void",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "link",
+          "required": true,
+          "type": "ChatLink"
+        },
+        {
+          "name": "password",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_chat_link",
+      "orScope": null,
+      "returns": "ChatLinkView",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

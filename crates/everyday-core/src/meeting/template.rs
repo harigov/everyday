@@ -268,10 +268,10 @@ pub fn details_block(facts: &Facts) -> String {
     if !facts.present.is_empty() {
         lines.push(format!("- **Spoke:** {}", facts.present.join(", ")));
     }
-    if let Some(event) = &facts.event {
-        if !event.join_url.is_empty() {
-            lines.push(format!("- **Join link:** {}", event.join_url));
-        }
+    if let Some(event) = &facts.event
+        && !event.join_url.is_empty()
+    {
+        lines.push(format!("- **Join link:** {}", event.join_url));
     }
     lines.join("\n")
 }

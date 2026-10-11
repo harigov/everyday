@@ -886,6 +886,31 @@
     "type": "object"
   },
   "Conversation": {
+    "$defs": {
+      "Via": {
+        "description": "The chat a conversation arrived through.",
+        "properties": {
+          "chat": {
+            "description": "The chat on that service: a Matrix room id.",
+            "type": "string"
+          },
+          "link": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "service": {
+            "description": "The service's name, for \"via Matrix\" in the history list -- copied\nhere so the label outlives the link.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "link",
+          "service",
+          "chat"
+        ],
+        "type": "object"
+      }
+    },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "A titled thread.",
     "properties": {
@@ -913,6 +938,17 @@
         "description": "Bumped on every message, so the history list sorts by recency of use\nrather than of creation.",
         "format": "date-time",
         "type": "string"
+      },
+      "via": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Via"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The chat this thread arrived through, if somebody started it from\nanother device rather than in the rail. See [`crate::chat`]."
       }
     },
     "required": [

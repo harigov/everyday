@@ -28,6 +28,9 @@ import type {
   CalendarId,
   CalendarInfo,
   CategoryCount,
+  ChatLink,
+  ChatLinkId,
+  ChatLinkView,
   Conversation,
   ConversationId,
   ConversationSummary,
@@ -228,6 +231,7 @@ export interface Commands {
   cancelTurn: { args: { conversationId: ConversationId }; result: boolean }
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
+  chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
   clearAgentKey: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
@@ -402,6 +406,7 @@ export interface Commands {
     args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
     result: TimeBlock
   }
+  newChatLink: { args: Record<string, never>; result: ChatLink }
   newConversation: { args: Record<string, never>; result: Conversation }
   newDraft: {
     args: {
@@ -472,6 +477,7 @@ export interface Commands {
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
   recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
+  removeChatLink: { args: { id: ChatLinkId }; result: void }
   respondToInvite: {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
     result: void
@@ -498,6 +504,7 @@ export interface Commands {
     result: TimeBlock[]
   }
   saveCalendar: { args: { calendar: Calendar }; result: void }
+  saveChatLink: { args: { link: ChatLink; password?: string | null }; result: ChatLinkView }
   saveDraft: { args: { draft: Draft }; result: void }
   saveEntry: { args: { entry: Entry; expect?: string | null }; result: void }
   saveEntryForce: { args: { entry: Entry }; result: void }
@@ -622,6 +629,7 @@ export const COMMAND_NAMES = {
   cancelTurn: 'cancel_turn',
   categoryCounts: 'category_counts',
   changePassword: 'change_password',
+  chatLinks: 'chat_links',
   clearAgentKey: 'clear_agent_key',
   collectGarbage: 'collect_garbage',
   confirmToolCall: 'confirm_tool_call',
@@ -735,6 +743,7 @@ export const COMMAND_NAMES = {
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
   newBlock: 'new_block',
+  newChatLink: 'new_chat_link',
   newConversation: 'new_conversation',
   newDraft: 'new_draft',
   newEntry: 'new_entry',
@@ -782,6 +791,7 @@ export const COMMAND_NAMES = {
   readImport: 'read_import',
   rebuildMailIndex: 'rebuild_mail_index',
   recategorizeMail: 'recategorize_mail',
+  removeChatLink: 'remove_chat_link',
   respondToInvite: 'respond_to_invite',
   retryRecording: 'retry_recording',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
@@ -796,6 +806,7 @@ export const COMMAND_NAMES = {
   saveBlock: 'save_block',
   saveBlockSeries: 'save_block_series',
   saveCalendar: 'save_calendar',
+  saveChatLink: 'save_chat_link',
   saveDraft: 'save_draft',
   saveEntry: 'save_entry',
   saveEntryForce: 'save_entry_force',
@@ -907,6 +918,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_turn',
   'category_counts',
   'change_password',
+  'chat_links',
   'clear_agent_key',
   'collect_garbage',
   'confirm_tool_call',
@@ -1020,6 +1032,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'move_to_mailbox',
   'name_speaker',
   'new_block',
+  'new_chat_link',
   'new_conversation',
   'new_draft',
   'new_entry',
@@ -1067,6 +1080,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'read_import',
   'rebuild_mail_index',
   'recategorize_mail',
+  'remove_chat_link',
   'respond_to_invite',
   'retry_recording',
   'revoke_remote_image_allowance',
@@ -1081,6 +1095,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_block',
   'save_block_series',
   'save_calendar',
+  'save_chat_link',
   'save_draft',
   'save_entry',
   'save_entry_force',
@@ -1235,6 +1250,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'poll_auto_lock',
   'rebuild_mail_index',
   'recategorize_mail',
+  'remove_chat_link',
   'respond_to_invite',
   'retry_recording',
   'revoke_remote_image_allowance',
@@ -1247,6 +1263,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_block',
   'save_block_series',
   'save_calendar',
+  'save_chat_link',
   'save_draft',
   'save_entry',
   'save_entry_force',
@@ -1359,6 +1376,7 @@ export const CHANGE_KINDS = {
   move_to_mailbox: 'thread',
   name_speaker: 'transcript',
   new_draft: 'draft',
+  remove_chat_link: 'settings',
   retry_recording: 'recording',
   revoke_remote_image_allowance: 'settings',
   run_routine: 'routineRun',
@@ -1368,6 +1386,7 @@ export const CHANGE_KINDS = {
   save_block: 'block',
   save_block_series: 'block',
   save_calendar: 'calendar',
+  save_chat_link: 'settings',
   save_draft: 'draft',
   save_entry: 'entry',
   save_entry_force: 'entry',

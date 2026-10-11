@@ -591,7 +591,7 @@ async fn append_recording_chunk(
             return Err(CommandError::new(codes::INVALID, "pcm must be an even number of bytes"));
         }
         let samples: Vec<i16> =
-            bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+            bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
         spool::append(&svc, args.id, args.track, args.seq, args.start_ms, &samples)
     })
     .await

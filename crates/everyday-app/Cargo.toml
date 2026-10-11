@@ -25,6 +25,7 @@ everyday-vault.workspace = true
 # docs/plans/meeting-notes.md and `everyday-service`'s own feature doc.
 everyday-service = { workspace = true, features = ["speech"] }
 everyday-server.workspace = true
+everyday-chat.workspace = true
 # Chunks of an archive arrive from the service base64'd inside JSON; the
 # shell decodes them straight into the file the user picked.
 base64 = "0.22"

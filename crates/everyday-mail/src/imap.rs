@@ -567,12 +567,11 @@ impl MailSession for ImapSession {
             let Some(resp) = session.read_response().await.map_err(classify_io)? else {
                 return Err(MailError::Network("connection closed during APPEND".into()));
             };
-            if let ImapResponse::Done { tag, status, code, information } = resp.parsed() {
-                if *tag == id {
-                    status_result(status, code.as_ref(), information.as_deref())
-                        .map_err(classify)?;
-                    return Ok(append_uid(code.as_ref()));
-                }
+            if let ImapResponse::Done { tag, status, code, information } = resp.parsed()
+                && *tag == id
+            {
+                status_result(status, code.as_ref(), information.as_deref()).map_err(classify)?;
+                return Ok(append_uid(code.as_ref()));
             }
         }
     }
@@ -1272,7 +1271,7 @@ fn decode_modified_base64(chars: &[u8]) -> Vec<u16> {
             bytes.push(((bits >> nbits) & 0xFF) as u8);
         }
     }
-    bytes.chunks_exact(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect()
+    bytes.as_chunks::<2>().0.iter().map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect()
 }
 
 /// IMAP string-literal quoting, matching `async-imap`'s own private `quote!`

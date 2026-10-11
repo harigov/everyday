@@ -862,10 +862,10 @@ fn year_from_text(text: &str) -> Option<i16> {
     let mut rest = text;
     while let Some(start) = rest.find(|c: char| c.is_ascii_digit()) {
         let digits: String = rest[start..].chars().take_while(char::is_ascii_digit).collect();
-        if digits.len() == 4 {
-            if let Some(year) = digits.parse::<i64>().ok().and_then(to_year) {
-                return Some(year);
-            }
+        if digits.len() == 4
+            && let Some(year) = digits.parse::<i64>().ok().and_then(to_year)
+        {
+            return Some(year);
         }
         rest = &rest[start + digits.len()..];
     }
