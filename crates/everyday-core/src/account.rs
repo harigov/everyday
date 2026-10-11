@@ -537,6 +537,36 @@ impl Account {
         scopes.iter().any(|s| wanted.contains(&s.as_str()))
     }
 
+    /// Note a fresh consent's scopes on the account: `requested` is what the
+    /// sign-in asked for, `granted` the token response's own `scope` field.
+    ///
+    /// Added to, never narrowed: a provider may hand back a token for one
+    /// resource's scopes only (Microsoft does, for IMAP beside Graph), and
+    /// the grant itself covers both. Google is the exception that has to be
+    /// believed: its consent page gives every permission its own checkbox,
+    /// so "Continue" with the calendar boxes left empty answers with a token
+    /// for mail alone -- and recording what was *asked* for would make every
+    /// calendar look writable to a server that refuses each write. There, a
+    /// requested scope counts only when `granted` names it.
+    pub fn record_granted_scopes(&mut self, requested: &[String], granted: Option<&str>) {
+        let provider = self.provider;
+        let AuthMethod::OAuth { scopes, .. } = &mut self.auth else {
+            return;
+        };
+        let granted: Option<Vec<&str>> = match (provider, granted) {
+            (Provider::Google, Some(g)) => Some(g.split_whitespace().collect()),
+            _ => None,
+        };
+        for scope in requested {
+            if granted.as_ref().is_some_and(|g| !g.contains(&scope.as_str())) {
+                continue;
+            }
+            if !scopes.contains(scope) {
+                scopes.push(scope.clone());
+            }
+        }
+    }
+
     /// A new account for `address` on `provider`, filled in from its preset
     /// and not yet signed in.
     ///
@@ -778,6 +808,52 @@ mod tests {
         assert_eq!(a.caldav.as_deref(), Some("https://caldav.fastmail.com"));
         assert!(matches!(a.auth, AuthMethod::Password { .. }), "fastmail has no oauth preset");
         assert!(matches!(a.status, AccountStatus::NeedsSignIn { .. }));
+    }
+
+    fn oauth_scopes(a: &Account) -> Vec<String> {
+        match &a.auth {
+            AuthMethod::OAuth { scopes, .. } => scopes.clone(),
+            AuthMethod::Password { .. } => panic!("an oauth account"),
+        }
+    }
+
+    fn google_calendar_scopes() -> Vec<String> {
+        let mut wanted = vec!["https://mail.google.com/".to_string()];
+        wanted.extend(Provider::Google.preset().oauth.unwrap().calendar_scopes);
+        wanted
+    }
+
+    #[test]
+    fn google_records_only_the_scopes_its_consent_page_granted() {
+        let mut a = Account::new(Provider::Google, "me@gmail.com");
+        // The calendar checkboxes left empty: Google answers for mail alone.
+        a.record_granted_scopes(&google_calendar_scopes(), Some("https://mail.google.com/"));
+        assert_eq!(oauth_scopes(&a), vec!["https://mail.google.com/".to_string()]);
+        assert!(!a.can_write_calendars());
+
+        // Ticked this time, in whatever order Google lists them.
+        a.record_granted_scopes(
+            &google_calendar_scopes(),
+            Some(
+                "https://www.googleapis.com/auth/calendar.events https://mail.google.com/ \
+                 https://www.googleapis.com/auth/calendar.readonly",
+            ),
+        );
+        assert!(a.can_write_calendars());
+        assert_eq!(oauth_scopes(&a).len(), 3);
+    }
+
+    #[test]
+    fn a_missing_scope_field_or_another_provider_records_what_was_asked() {
+        let mut a = Account::new(Provider::Google, "me@gmail.com");
+        a.record_granted_scopes(&google_calendar_scopes(), None);
+        assert!(a.can_write_calendars(), "no `scope` in the answer means the request stood");
+
+        // Microsoft answers with one resource's scopes; Graph's are not in it.
+        let mut m = Account::new(Provider::Microsoft, "me@outlook.com");
+        let asked = vec![MICROSOFT_CALENDAR_WRITE_SCOPE.to_string()];
+        m.record_granted_scopes(&asked, Some("https://outlook.office.com/IMAP.AccessAsUser.All"));
+        assert!(m.can_write_calendars());
     }
 
     #[test]

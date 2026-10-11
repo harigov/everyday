@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities granted to the Every Day window. Deliberately narrow: the webview has no network permission at all and its content security policy allows no outbound connection, so nothing it renders -- an entry, a task, an event fetched from a subscribed calendar, or a book cover downloaded into the vault -- can cause a request. Every socket in the application is opened by the Rust shell through src/http.rs, only for a calendar feed the user pasted in or a metadata lookup they asked for, and none of it is reachable from here.",
+  "description": "Capabilities granted to the Every Day window. Deliberately narrow: the webview has no network permission at all and its content security policy allows no outbound connection, so nothing it renders -- an entry, a task, an event fetched from a subscribed calendar, or a book cover downloaded into the vault -- can cause a request. Every socket in the application is opened by the Rust shell through src/http.rs, only for a calendar feed the user pasted in or a metadata lookup they asked for, and none of it is reachable from here. The one thing it may ask the shell to open is an https:// link in the system browser -- an OAuth sign-in page, chiefly; opener:allow-open-url carries no scope of its own, and without this one every URL is refused.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -14,7 +14,10 @@
     "dialog:allow-save",
     "dialog:allow-message",
     "dialog:allow-confirm",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    },
     "notification:default"
   ]
 }

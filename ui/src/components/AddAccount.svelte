@@ -44,6 +44,7 @@
   import AgentAccessGrid from './AgentAccessGrid.svelte'
   import OAuthSetupGuide from './OAuthSetupGuide.svelte'
   import Icon from './Icon.svelte'
+  import SignInLink from './SignInLink.svelte'
 
   let { onclose }: { onclose: () => void } = $props()
 
@@ -204,11 +205,6 @@
     phase = 'cancelled'
   }
 
-  async function copyUrl() {
-    if (!signIn) return
-    await navigator.clipboard.writeText(signIn.url)
-  }
-
   async function submitPassword() {
     const err = addressError()
     if (err) {
@@ -256,16 +252,16 @@
       {#if phase === 'waiting'}
         <p class="hint">
           {#if openedInBrowser}
-            Finish signing in in the browser window that just opened.
+            Finish signing in in the browser window that just opened. If none did, open the link
+            below.
           {:else}
             This build cannot open a browser itself. Open the link below and finish signing in
             there.
           {/if}
         </p>
-        {#if signIn && !openedInBrowser}
+        {#if signIn}
           <div class="url-row">
-            <code class="link">{signIn.url}</code>
-            <button class="btn" onclick={copyUrl}>Copy</button>
+            <SignInLink url={signIn.url} />
           </div>
         {/if}
         <div class="sheet-row">
@@ -596,18 +592,6 @@
     margin-bottom: var(--sp-3);
   }
   .url-row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
     margin-bottom: var(--sp-3);
-  }
-  .link {
-    flex: 1;
-    overflow-wrap: anywhere;
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
-    background: var(--bg-sunken);
-    padding: 0.4rem 0.5rem;
-    border-radius: 4px;
   }
 </style>
