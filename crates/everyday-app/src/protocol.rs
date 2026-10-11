@@ -47,6 +47,20 @@
 //! message's MIME parts, most importantly -- silently finds nothing rather
 //! than the part that is actually there.
 //!
+//! # `everyday://news/…`
+//!
+//! Two more, for the Feed, dispatched the same way: `everyday://news/body/{story}`
+//! and `everyday://news/img/{story}/{token}`, answered by
+//! [`everyday_service::news::view`]. A story's body is drawn in the same
+//! sandboxed `srcdoc` frame as a message's, so everything said below about
+//! that frame holds for it too; what differs is only where the answer comes
+//! from, and the one header -- `X-News-Images-Hidden`, `1` or `0` -- that
+//! tells the interface a source has its pictures switched off.
+//!
+//! A newsletter story's body is mail's own, drawn by
+//! [`everyday_service::mailview`] on this route's behalf; its pictures are
+//! addressed to `mail/img/…` and never reach `news/img/…`.
+//!
 //! ## Why `frame-src` had to change for this, and to exactly this
 //!
 //! `tauri.conf.json`'s CSP originally set `frame-src 'none'`: nothing this
@@ -93,7 +107,7 @@
 //! still leaves the other two standing.
 
 use everyday_core::BlobId;
-use everyday_core::id::MailMessageId;
+use everyday_core::id::{MailMessageId, StoryId};
 use everyday_core::media;
 use tauri::http::{Request, Response, StatusCode, header};
 use tauri::{Manager, Runtime};
@@ -117,6 +131,15 @@ pub fn handle<R: Runtime>(
     if mail_path(&request).is_some() {
         tauri::async_runtime::spawn(async move {
             responder.respond(serve_mail(session, &request).await);
+        });
+        return;
+    }
+
+    // `everyday://news/…`, the Feed's two, are told apart from a blob the
+    // same way and for the same reason.
+    if news_path(&request).is_some() {
+        tauri::async_runtime::spawn(async move {
+            responder.respond(serve_news(session, &request).await);
         });
         return;
     }
@@ -499,6 +522,160 @@ fn respond_bytes(
         .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "could not build a response"))
 }
 
+// ---- news ------------------------------------------------------------------
+
+/// Which of the two `news/…` addresses a request named, with the story id
+/// already parsed.
+#[derive(Debug)]
+enum NewsRoute {
+    /// `news/body/{story}`.
+    Body(StoryId),
+    /// `news/img/{story}/{token}`.
+    Img(StoryId, String),
+}
+
+/// The `body/…` or `img/…` remainder of a news address, in whichever of its
+/// two shapes this platform's webview produced -- or `None` for a request
+/// that is not a news address at all. See [`mail_path`] for why there are two.
+fn news_path(request: &Request<Vec<u8>>) -> Option<String> {
+    let path = request.uri().path().trim_start_matches('/');
+    if request.uri().host() == Some("news") {
+        return Some(path.to_string());
+    }
+    path.strip_prefix("news/").map(str::to_string)
+}
+
+/// Parses `request`'s path into a [`NewsRoute`], with every segment
+/// percent-decoded exactly once, as [`parse_mail_route`] does. A pure
+/// function of the request, so a test can drive it with the address the
+/// sanitiser writes into a body.
+fn parse_news_route(request: &Request<Vec<u8>>) -> Option<NewsRoute> {
+    let path = news_path(request)?;
+    let mut segments = path.split('/');
+    match (segments.next(), segments.next(), segments.next(), segments.next()) {
+        (Some("body"), Some(story), None, None) => {
+            StoryId::parse(&percent_decode(story)).ok().map(NewsRoute::Body)
+        }
+        (Some("img"), Some(story), Some(token), None) => {
+            let story = StoryId::parse(&percent_decode(story)).ok()?;
+            Some(NewsRoute::Img(story, percent_decode(token)))
+        }
+        _ => None,
+    }
+}
+
+async fn serve_news(
+    session: Option<SessionHandle>,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let Some(route) = parse_news_route(request) else {
+        return error(StatusCode::BAD_REQUEST, "not a news address");
+    };
+    match session {
+        Some(SessionHandle::Local(service)) => serve_news_local(&service, route).await,
+        Some(SessionHandle::Remote(remote)) => serve_news_remote(&remote, route).await,
+        None => error(StatusCode::INTERNAL_SERVER_ERROR, "application state is missing"),
+    }
+}
+
+async fn serve_news_local(
+    service: &std::sync::Arc<everyday_service::Service>,
+    route: NewsRoute,
+) -> Response<Vec<u8>> {
+    let Some(vault) = service.get() else {
+        return error(StatusCode::NOT_FOUND, "no vault is open");
+    };
+    // The same rule the blob and mail routes enforce.
+    if !vault.is_unlocked() {
+        return error(StatusCode::FORBIDDEN, "vault is locked");
+    }
+
+    match route {
+        NewsRoute::Body(id) => {
+            let v = vault.clone();
+            // Off the async runtime's threads, on `serve_mail_local`'s reasoning.
+            let result = everyday_service::blocking(move || {
+                everyday_service::news::view::body_document(&v, id)
+            })
+            .await;
+            match result {
+                Ok(doc) => respond_news_body(doc),
+                Err(e) => error_from(&e),
+            }
+        }
+        NewsRoute::Img(story, token) => {
+            let client = match everyday_service::http::public_client() {
+                Ok(c) => c,
+                Err(e) => return error_from(&e),
+            };
+            match everyday_service::news::view::image(&vault, client, story, &token).await {
+                // Never cached, as mail's are not: a pixel answered while a
+                // source had its pictures off must not shadow the real one
+                // once they are switched on.
+                Ok(served) => respond_bytes(
+                    served.content_type,
+                    served.bytes,
+                    served.attachment,
+                    served.filename,
+                    "no-store",
+                ),
+                Err(e) => error_from(&e),
+            }
+        }
+    }
+}
+
+async fn serve_news_remote(
+    remote: &std::sync::Arc<crate::remote::Remote>,
+    route: NewsRoute,
+) -> Response<Vec<u8>> {
+    match route {
+        NewsRoute::Body(id) => match remote.client.news_body(&id.to_string()).await {
+            Ok(body) => respond_news_body(everyday_service::mailview::BodyDocument {
+                html: body.html,
+                images_hidden: body.images_hidden,
+            }),
+            Err(e) => {
+                tracing::warn!(%id, error = %e, "could not read a remote story body");
+                error_from(&e)
+            }
+        },
+        NewsRoute::Img(story, token) => {
+            match remote.client.news_image(&story.to_string(), &token).await {
+                Ok(served) => respond_bytes(
+                    served.content_type,
+                    served.bytes,
+                    served.attachment,
+                    served.filename,
+                    "no-store",
+                ),
+                Err(e) => error_from(&e),
+            }
+        }
+    }
+}
+
+/// The `news/body` response both paths build identically -- see
+/// `everyday-server/src/routes.rs`'s `get_news_body` for the HTTP twin.
+///
+/// [`respond_body`]'s, with the Feed's own header. It carries CORS headers for
+/// the reason that function's doc gives: the interface's `fetch()` of this
+/// address is a cross-origin request, and without
+/// `Access-Control-Expose-Headers` it could not read `X-News-Images-Hidden`
+/// to know whether to offer to show the pictures.
+fn respond_news_body(doc: everyday_service::mailview::BodyDocument) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("x-content-type-options", "nosniff")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(header::ACCESS_CONTROL_EXPOSE_HEADERS, "x-news-images-hidden")
+        .header("x-news-images-hidden", if doc.images_hidden { "1" } else { "0" })
+        .body(doc.html.into_bytes())
+        .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "could not build a response"))
+}
+
 fn error_from(e: &everyday_service::error::CommandError) -> Response<Vec<u8>> {
     use everyday_service::error::codes;
     let status = match e.code.as_str() {
@@ -676,5 +853,95 @@ mod mail_route_tests {
     #[test]
     fn an_unrecognised_host_path_is_refused() {
         assert!(parse_mail_route(&request("everyday://mail/nonsense")).is_none());
+    }
+}
+
+#[cfg(test)]
+mod news_route_tests {
+    use super::*;
+
+    fn request(uri: &str) -> Request<Vec<u8>> {
+        Request::builder().uri(uri).body(Vec::new()).expect("a test URI is always well formed")
+    }
+
+    #[test]
+    fn a_body_route_round_trips_through_the_story_id() {
+        let story = StoryId::new();
+        let uri = format!("everyday://news/body/{story}");
+        let route = parse_news_route(&request(&uri)).expect("a recognised news route");
+        assert!(matches!(route, NewsRoute::Body(id) if id == story));
+    }
+
+    #[test]
+    fn an_image_route_carries_its_story_and_its_token() {
+        let story = StoryId::new();
+        let uri = format!("everyday://news/img/{story}/9f2c0a");
+        let route = parse_news_route(&request(&uri)).expect("a recognised news route");
+        match route {
+            NewsRoute::Img(id, token) => {
+                assert_eq!(id, story);
+                assert_eq!(token, "9f2c0a");
+            }
+            other => panic!("expected Img, got {other:?}"),
+        }
+    }
+
+    /// Where a custom scheme has no host of its own to ride, `news` is the
+    /// first path segment -- the shape `mail_path` documents.
+    #[test]
+    fn the_windows_shape_of_the_address_parses_too() {
+        let story = StoryId::new();
+        let uri = format!("http://everyday.localhost/news/img/{story}/abc");
+        let route = parse_news_route(&request(&uri)).expect("a recognised news route");
+        assert!(matches!(route, NewsRoute::Img(id, token) if id == story && token == "abc"));
+        let uri = format!("http://everyday.localhost/news/body/{story}");
+        let route = parse_news_route(&request(&uri));
+        assert!(matches!(route, Some(NewsRoute::Body(id)) if id == story));
+    }
+
+    #[test]
+    fn a_token_is_percent_decoded_once() {
+        let story = StoryId::new();
+        let uri = format!("everyday://news/img/{story}/a%2Fb");
+        match parse_news_route(&request(&uri)) {
+            Some(NewsRoute::Img(_, token)) => assert_eq!(token, "a/b"),
+            other => panic!("expected Img, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn what_is_not_a_news_address_is_refused() {
+        assert!(parse_news_route(&request("everyday://news/nonsense")).is_none());
+        assert!(parse_news_route(&request("everyday://news/body/not-an-id")).is_none());
+        assert!(parse_news_route(&request("everyday://news/body")).is_none());
+        let story = StoryId::new();
+        let extra = format!("everyday://news/body/{story}/extra");
+        assert!(parse_news_route(&request(&extra)).is_none());
+        // Mail's addresses are not news's, and the reverse.
+        assert!(parse_news_route(&request(&format!("everyday://mail/body/{story}"))).is_none());
+        assert!(news_path(&request("everyday://localhost/0123abcd")).is_none());
+    }
+
+    #[test]
+    fn the_body_response_says_whether_pictures_are_hidden() {
+        for (hidden, header_value) in [(true, "1"), (false, "0")] {
+            let response = respond_news_body(everyday_service::mailview::BodyDocument {
+                html: "<p>hi</p>".into(),
+                images_hidden: hidden,
+            });
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers().get("x-news-images-hidden").and_then(|v| v.to_str().ok()),
+                Some(header_value)
+            );
+            // Readable by the interface's own `fetch()`.
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
+                    .and_then(|v| v.to_str().ok()),
+                Some("x-news-images-hidden")
+            );
+        }
     }
 }

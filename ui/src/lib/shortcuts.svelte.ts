@@ -32,6 +32,7 @@
 import { agent } from './agent.svelte'
 import { APPS } from './apps'
 import { calendar } from './calendar.svelte'
+import { feed } from './feed.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
 import { library } from './library.svelte'
 import { mailboxDisplayName, mailboxHasTabs, unifiedMailboxId } from './mail'
@@ -268,6 +269,7 @@ export const GROUPS = [
   'Calendar',
   'Library',
   'Mail',
+  'Feed',
   'Overview',
   'Assistant',
   'Vault',
@@ -347,6 +349,13 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('mail'),
     run: () => app.setSection('mail'),
+  },
+  {
+    keys: 'g f',
+    label: 'Feed',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('feed'),
+    run: () => app.setSection('feed'),
   },
   {
     keys: 'g o',
@@ -884,6 +893,114 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => mailwrite.chooseSuggestion(2),
   },
 
+  // ── Feed ────────────────────────────────────────────────────────────
+  //
+  // One departure from `docs/plans/feed.md`'s table, for the reason Mail's
+  // section above gives for `Shift+U`: `chordOf` never records Shift on a
+  // printable key, so `Shift+A` is the chord `a` -- already the assistant's,
+  // declared earlier and so always the one `match` picks -- and a row spelt
+  // `shift+a` could never be reached by a live press. "Mark everything in
+  // view read" is `m` here.
+  //
+  // `c` is already "Start the next thing" for every app, and that is "add a
+  // feed" here (`apps.ts`); its row below is the same key said under this
+  // app's own heading, so the help sheet lists it where somebody looks.
+  {
+    keys: 'j',
+    label: 'The story below',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')(),
+    run: () => void feed.move(1),
+  },
+  {
+    keys: 'k',
+    label: 'The story above',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')(),
+    run: () => void feed.move(-1),
+  },
+  {
+    keys: 'Enter',
+    label: 'Open the story',
+    group: 'Feed',
+    // Not while a button, link or chip has focus: Enter belongs to that
+    // control, and taking it here would re-open the story instead of
+    // pressing Save or switching the filter.
+    when: () => anywhere() && inApp('feed')() && !!feed.selected && !focusIsControl(),
+    run: () => void feed.open(feed.selected!),
+  },
+  {
+    keys: 'o',
+    label: 'Open the story',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')(),
+    // With nothing open yet it opens the first, which is what `j` does.
+    run: () => void (feed.selected ? feed.open(feed.selected) : feed.move(1)),
+  },
+  {
+    keys: 'Escape',
+    label: 'Back to the list',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')() && !!feed.selected,
+    run: () => feed.close(),
+  },
+  {
+    keys: 'v',
+    label: 'Open the original',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')() && !!feed.selected,
+    run: () => void feed.openOriginal(feed.selected!),
+  },
+  {
+    keys: 's',
+    label: 'Save the story',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')() && !!feed.selected,
+    run: () => void feed.toggleSaved(feed.selected!),
+  },
+  {
+    keys: 'u',
+    label: 'Mark unread',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')() && !!feed.selected,
+    run: () => void feed.markRead([feed.selected!], false),
+  },
+  {
+    keys: 'i',
+    label: 'Mark read',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')() && !!feed.selected,
+    run: () => void feed.markRead([feed.selected!], true),
+  },
+  {
+    keys: 'm',
+    label: 'Mark everything in view read',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')(),
+    run: () => void feed.markAllRead(),
+  },
+  {
+    keys: 'l',
+    label: 'Add to the library',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')() && !!feed.selected && app.supportsLibrary,
+    run: () => void feed.addToLibrary(feed.selected!),
+  },
+  {
+    keys: 'r',
+    label: 'Refresh',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')(),
+    run: () => void feed.refresh(),
+  },
+  {
+    keys: 'c',
+    label: 'Add a feed',
+    group: 'Feed',
+    when: () => anywhere() && inApp('feed')(),
+    run: () => feed.openAdd(),
+  },
+
   // ── Quick actions ───────────────────────────────────────────────────
   //
   // The rows the tray offers as well, and the ones that have no shortcut at
@@ -1055,6 +1172,31 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     },
   },
   {
+    id: 'feed:add',
+    label: 'Add a feed',
+    group: 'Feed',
+    keywords: ['follow', 'rss', 'subscribe', 'newsletter', 'hacker news', 'site'],
+    icon: 'plus',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsNews,
+    run: async () => {
+      if (await app.goTo('feed')) feed.openAdd()
+    },
+  },
+  {
+    id: 'feed:refresh',
+    label: 'Refresh feeds',
+    group: 'Feed',
+    keywords: ['fetch', 'update', 'news', 'check', 'rss'],
+    icon: 'refresh',
+    tray: true,
+    // Asking the network is a thing you do on your way past; the window has
+    // nothing to show for it until you look.
+    raise: false,
+    when: () => app.screen === 'main' && app.supportsNews,
+    run: () => void feed.refresh(),
+  },
+  {
     id: 'assistant:runs',
     label: 'What the assistant did',
     group: 'Assistant',
@@ -1215,6 +1357,7 @@ function create() {
     calendar,
     library,
     mail,
+    feed,
     overview,
     assistant,
     agent,

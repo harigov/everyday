@@ -23,6 +23,8 @@ pub mod mailview;
 pub mod mailwrite;
 pub mod meetings;
 pub mod meta;
+pub mod news;
+pub mod newsmail;
 pub mod notes;
 pub mod proposals;
 pub mod purpose;
@@ -75,6 +77,8 @@ pub fn catalog() -> &'static [&'static Command] {
             mailview::COMMANDS,
             mailsync::COMMANDS,
             mailwrite::COMMANDS,
+            news::COMMANDS,
+            newsmail::COMMANDS,
             meetings::COMMANDS,
             notes::COMMANDS,
             trackers::COMMANDS,

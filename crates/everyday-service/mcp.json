@@ -1090,6 +1090,47 @@
       "title": "Find address"
     },
     {
+      "domain": "news",
+      "effect": "write",
+      "name": "follow_source",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "folder": {
+            "description": "A folder to file it under in the Feed's sidebar.",
+            "type": "string"
+          },
+          "hacker_news": {
+            "description": "Follow a Hacker News list instead of an address: front (the front page), show (Show HN), ask (Ask HN) or top (every story above min_points, newest first).",
+            "enum": [
+              "front",
+              "show",
+              "ask",
+              "top"
+            ],
+            "type": "string"
+          },
+          "min_points": {
+            "description": "Hacker News only: leave out anything with fewer points than this. For top it is the whole definition, and defaults to 100.",
+            "type": "integer"
+          },
+          "title": {
+            "description": "What to call it. Defaults to the site's host name, or Hacker News's own name for the list.",
+            "type": "string"
+          },
+          "url": {
+            "description": "The feed's own address (RSS, Atom or JSON Feed), starting with https://. Give this or hacker_news.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Follow source"
+    },
+    {
       "domain": "agent",
       "effect": "destructive",
       "name": "forget",
@@ -1540,6 +1581,20 @@
       "title": "List memories"
     },
     {
+      "domain": "news",
+      "effect": "read",
+      "name": "list_news_sources",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "List news sources"
+    },
+    {
       "domain": "notes",
       "effect": "read",
       "name": "list_notes",
@@ -1752,6 +1807,41 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "List skills"
+    },
+    {
+      "domain": "news",
+      "effect": "read",
+      "name": "list_stories",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "saved_only": {
+            "description": "Only stories the person saved, read or not.",
+            "type": "boolean"
+          },
+          "since": {
+            "description": "Only stories published on or after this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "source_id": {
+            "description": "Only this source. From list_news_sources.",
+            "type": "string"
+          },
+          "unread_only": {
+            "description": "Only stories not yet read. On by default, except when saved_only is set.",
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "List stories"
     },
     {
       "domain": "tasks",
@@ -2021,6 +2111,36 @@
       "title": "Mark read"
     },
     {
+      "domain": "news",
+      "effect": "write",
+      "name": "mark_stories_read",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "description": "Story ids, from list_stories. At most 500.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source_id": {
+            "description": "Instead of ids: a source, from list_news_sources, to mark everything in it read up to up_to.",
+            "type": "string"
+          },
+          "up_to": {
+            "description": "With source_id: mark stories published up to here. A day (YYYY-MM-DD) means through the end of it, in the person's time zone; a full time (2026-10-11T07:00:00Z) is taken exactly. Leave it out for everything that has arrived.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Mark stories read"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "mark_unread",
@@ -2128,6 +2248,27 @@
       "title": "Read skill"
     },
     {
+      "domain": "news",
+      "effect": "read",
+      "name": "read_story",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Story id, from list_stories.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Read story"
+    },
+    {
       "domain": "mail",
       "effect": "read",
       "name": "read_thread",
@@ -2224,6 +2365,31 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Run routine"
+    },
+    {
+      "domain": "news",
+      "effect": "write",
+      "name": "save_story",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Story id, from list_stories.",
+            "type": "string"
+          },
+          "saved": {
+            "description": "False to unsave it. Defaults to true.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Save story"
     },
     {
       "domain": "journals",
@@ -2593,6 +2759,27 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Trash thread"
+    },
+    {
+      "domain": "news",
+      "effect": "destructive",
+      "name": "unfollow_source",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "description": "Id from list_news_sources.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id"
+        ],
+        "type": "object"
+      },
+      "scope": "news",
+      "sensitivity": "ordinary",
+      "title": "Unfollow source"
     },
     {
       "domain": "mail",

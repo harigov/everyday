@@ -1,0 +1,85 @@
+{
+  "hits": [
+    {
+      "created_at": "2026-10-11T07:41:04.000Z",
+      "title": "Rust 2.0 will not happen, say maintainers",
+      "url": "https://blog.rust-example.org/2026/10/no-rust-2/?utm_source=hn&ref=front",
+      "author": "ferris",
+      "points": 412,
+      "story_text": null,
+      "comment_text": null,
+      "num_comments": 180,
+      "story_id": null,
+      "story_title": null,
+      "story_url": null,
+      "parent_id": null,
+      "created_at_i": 1791704464,
+      "_tags": ["story", "author_ferris", "story_41990001", "front_page"],
+      "objectID": "41990001",
+      "_highlightResult": {
+        "title": {
+          "value": "Rust 2.0 will not happen, say maintainers",
+          "matchLevel": "none",
+          "matchedWords": []
+        },
+        "url": {
+          "value": "https://blog.rust-example.org/2026/10/no-rust-2/?utm_source=hn&ref=front",
+          "matchLevel": "none",
+          "matchedWords": []
+        },
+        "author": { "value": "ferris", "matchLevel": "none", "matchedWords": [] }
+      }
+    },
+    {
+      "created_at": "2026-10-11T09:12:30.000Z",
+      "title": "Ask HN: How do you keep a reading list small?",
+      "url": null,
+      "author": "quillfeather",
+      "points": 87,
+      "story_text": "<p>I follow far too many feeds and read none of them.<p>What has worked for you? I&#x27;d rather not use a tool that nags.",
+      "comment_text": null,
+      "num_comments": 64,
+      "story_id": null,
+      "story_title": null,
+      "story_url": null,
+      "parent_id": null,
+      "created_at_i": 1791709950,
+      "_tags": ["story", "author_quillfeather", "story_41990002", "ask_hn"],
+      "objectID": "41990002"
+    },
+    {
+      "created_at": "2026-10-10T22:05:51.000Z",
+      "title": "  Launch HN:   Tiny   Reader (YC S26)  ",
+      "author": "dang2",
+      "points": null,
+      "story_text": null,
+      "num_comments": null,
+      "created_at_i": 1791669951,
+      "_tags": ["story", "author_dang2", "story_41990003"],
+      "objectID": "41990003"
+    },
+    {
+      "created_at": "2026-10-11T09:30:00.000Z",
+      "title": null,
+      "url": null,
+      "author": "someone",
+      "points": null,
+      "story_text": null,
+      "comment_text": "<p>Not a story: a comment that matched.",
+      "num_comments": null,
+      "story_id": 41990001,
+      "created_at_i": 1791711000,
+      "_tags": ["comment", "author_someone", "story_41990001"],
+      "objectID": "41990004"
+    }
+  ],
+  "nbHits": 4,
+  "page": 0,
+  "nbPages": 1,
+  "hitsPerPage": 30,
+  "exhaustiveNbHits": true,
+  "exhaustiveTypo": true,
+  "query": "",
+  "params": "tags=front_page&hitsPerPage=30",
+  "processingTimeMS": 2
+}

@@ -503,6 +503,18 @@ class AppState {
   }
 
   /**
+   * Can this vault run the Feed?
+   *
+   * One capability. The app needs nothing from another domain to be useful:
+   * a feed on a web page, or Hacker News, is read with no account anywhere.
+   * Newsletters are the one thing that does -- they are mail -- and are
+   * offered on `supportsMail` as well, in the Feed's own store, not here.
+   */
+  get supportsNews(): boolean {
+    return this.status?.capabilities?.news === true
+  }
+
+  /**
    * Is this section available on the vault that is open?
    *
    * Reads `apps.ts`'s registry rather than a switch of its own: that used to

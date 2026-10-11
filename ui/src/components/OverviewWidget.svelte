@@ -27,6 +27,8 @@
   import { tracking } from '../lib/tracking.svelte'
   import { notes as noteStore } from '../lib/notes.svelte'
   import { mail as mailStore } from '../lib/mail.svelte'
+  import { feed } from '../lib/feed.svelte'
+  import { folderUnread, topStories } from '../lib/feed'
   import {
     MAIL_KINDS,
     columnUnit,
@@ -41,7 +43,7 @@
   import { formatValue } from '../lib/tracker'
   import { aqiTier, byTimeOrLast, weatherIcon, type Widget } from '../lib/dashboard'
   import { panels } from '../lib/panels.svelte'
-  import type { Proposal, WeatherCurrent, WeatherDay } from '../lib/types'
+  import type { Proposal, Story, WeatherCurrent, WeatherDay } from '../lib/types'
   import BalanceBars from './BalanceBars.svelte'
   import ColumnChart from './ColumnChart.svelte'
   import HabitHeatmap from './HabitHeatmap.svelte'
@@ -444,6 +446,58 @@
     }
     return `${count} · about ${formatMinutes((meetNow.minutes / days) * 7)} a week`
   })
+
+  // ── Reading ──────────────────────────────────────────────────────────
+  //
+  // The Feed's unread, read from the sources and the newest twenty unread
+  // stories the Overview fetched when the card went on the page. The counts are
+  // the sidebar's own; the three stories are picked from the twenty -- Hacker
+  // News by points, everything else newest first -- see `topStories`.
+
+  const readingTotal = $derived(overview.newsSources.reduce((n, s) => n + s.unread, 0))
+  const readingFolders = $derived(folderUnread(overview.newsSources))
+  /** A folder table says nothing when everything is unfiled: it would be the total again. */
+  const showFolders = $derived(
+    readingFolders.length > 1 || (readingFolders.length === 1 && readingFolders[0]!.name !== ''),
+  )
+  const readingTop = $derived(topStories(overview.newsStories, overview.newsSources))
+
+  const readingWaiting = $derived(
+    !app.supportsNews
+      ? 'This vault does not keep a feed.'
+      : overview.loading
+        ? 'Looking at what is unread…'
+        : 'Nothing followed yet.',
+  )
+
+  const folderRows = $derived(
+    readingFolders.map((f) => ({
+      id: f.name || 'unfiled',
+      name: f.label,
+      value: f.unread,
+      cells: [f.unread.toLocaleString()],
+      onpick: () => void openFeedFolder(f.name),
+      pickLabel: `Open ${f.label} in the Feed`,
+    })),
+  )
+
+  /** What goes beside a story's title: its points on Hacker News, else how long ago. */
+  function readingMeta(story: Story): string {
+    return story.score !== null && story.score !== undefined
+      ? `▲ ${story.score.toLocaleString()}`
+      : relativeTime(story.publishedAt)
+  }
+
+  async function openFeedFolder(name: string) {
+    if (!(await app.goTo('feed'))) return
+    await feed.select({ kind: 'folder', name })
+  }
+
+  /** Open the Feed on a story. The view starts its store as it mounts. */
+  async function openStory(id: string) {
+    if (!(await app.goTo('feed'))) return
+    await feed.open(id)
+  }
 
   /** "16 km/h W, gusts 27": one string, so the template cannot space it wrongly. */
   function windLine(cur: WeatherCurrent, unit: string): string {
@@ -911,6 +965,40 @@
     />
   {/if}
 
+  <!-- ── Reading ───────────────────────────────────────────────────── -->
+{:else if widget.type === 'reading'}
+  {#if overview.newsSources.length === 0}
+    <p class="dim">{readingWaiting}</p>
+  {:else}
+    <StatTile
+      value={readingTotal.toLocaleString()}
+      note={readingTotal > 0
+        ? `unread in ${plural(overview.newsSources.length, 'source')}`
+        : 'unread — you are all caught up'}
+    />
+    {#if showFolders}
+      <RankTable
+        head="Folder"
+        columns={['Unread']}
+        rows={folderRows}
+        limit={rankRows}
+        empty="Nothing unread."
+      />
+    {/if}
+    {#if readingTop.length > 0}
+      <ul class="plain top-stories">
+        {#each readingTop as story (story.id)}
+          <li>
+            <button class="notelink" onclick={() => void openStory(story.id)}>
+              <span class="nname">{story.title || 'Untitled'}</span>
+              <span class="dim">{readingMeta(story)}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
+
   <!-- ── What you have written ─────────────────────────────────────── -->
 {:else if widget.type === 'writing'}
   <StatTile
@@ -1191,6 +1279,11 @@
   }
   .notelink:hover {
     background: var(--bg-hover);
+  }
+  /* The stories under the folder table, set apart from it the way a footnote
+     is from a figure. */
+  .top-stories {
+    margin-top: var(--sp-3);
   }
   .nname {
     flex: 1;

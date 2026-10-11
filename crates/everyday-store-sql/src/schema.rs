@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -102,6 +102,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v11(d),
         v12(d),
         v13(d),
+        v14(d),
     ]
 }
 
@@ -1301,6 +1302,90 @@ fn v13(d: Dialect) -> Vec<String> {
              data        {blob} NOT NULL
          )"
     )]
+}
+
+/// Version 14: the Feed -- the sources somebody follows, what the refresher
+/// learned about each, the stories they brought, and those stories' bodies.
+/// See `docs/plans/feed.md` and `everyday_core::news`.
+///
+/// Additive, like every step since 7. Four tables, because four things here
+/// are written by different hands at different rates:
+///
+/// - `news_sources` is what a person chose, and nothing a refresh learns is
+///   ever written to it. In the clear: nothing but its order and the two
+///   timestamps every table carries. Its address is sealed with its name --
+///   a private feed's address is a bearer credential, as a calendar's is.
+/// - `news_fetch` is what the refresher learned, keyed by its source, apart
+///   so that a rename made while a fetch is in flight cannot be overwritten
+///   by the fetch. In the clear: when it is next due, which is what the
+///   refresher sleeps until, and nothing else.
+/// - `news_stories` is the light half of each story. In the clear: which
+///   source it came from, a *keyed* hash of its address (so the column
+///   cannot be checked against a list of known addresses), when it was
+///   published, whether it is read, saved or expired, and -- for a
+///   newsletter -- which mail message it is, so its read state can be read
+///   through that message's `flags` rather than kept twice.
+/// - `news_bodies` is what each story said, read only when it is opened. In
+///   the clear: nothing but which story it belongs to.
+///
+/// The unique `(source_id, dedupe_key)` index is what makes a refresh
+/// idempotent: an insert that collides is a story already stored.
+fn v14(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_sources (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_fetch (
+                 source_id  TEXT    PRIMARY KEY NOT NULL,
+                 next_us    {int} NOT NULL,
+                 data       {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS news_fetch_by_due ON news_fetch (next_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_stories (
+                 id               TEXT    PRIMARY KEY NOT NULL,
+                 source_id        TEXT    NOT NULL,
+                 dedupe_key       TEXT    NOT NULL,
+                 published_us     {int} NOT NULL,
+                 is_read          {boolean} NOT NULL DEFAULT {f},
+                 saved            {boolean} NOT NULL DEFAULT {f},
+                 expired          {boolean} NOT NULL DEFAULT {f},
+                 mail_message_id  TEXT,
+                 created_us       {int} NOT NULL,
+                 data             {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS news_stories_by_source_key
+             ON news_stories (source_id, dedupe_key)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_source
+             ON news_stories (source_id, expired, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_time ON news_stories (expired, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_unread
+             ON news_stories (expired, is_read, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_saved ON news_stories (saved, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_key ON news_stories (dedupe_key)".into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_mail ON news_stories (mail_message_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_bodies (
+                 story_id  TEXT    PRIMARY KEY NOT NULL,
+                 data      {blob} NOT NULL
+             )"
+        ),
+    ]
 }
 
 #[cfg(test)]

@@ -112,6 +112,9 @@ pub fn sniff_mime(bytes: &[u8]) -> &'static str {
         b if at(b, 0, &[0xFF, 0xD8, 0xFF]) => "image/jpeg",
         b if at(b, 0, b"GIF87a") || at(b, 0, b"GIF89a") => "image/gif",
         b if at(b, 0, b"RIFF") && at(b, 8, b"WEBP") => "image/webp",
+        // A site's icon, more often than not: `favicon.ico` is still where
+        // most of them are.
+        b if at(b, 0, &[0, 0, 1, 0]) => "image/x-icon",
         b if at(b, 4, b"ftypavif") => "image/avif",
         b if at(b, 4, b"ftypheic") || at(b, 4, b"ftypmif1") => "image/heic",
         b if at(b, 0, b"<svg") || at(b, 0, b"<?xml") => "image/svg+xml",
@@ -233,6 +236,7 @@ mod tests {
         assert_eq!(sniff_mime(&[0xFF, 0xD8, 0xFF, 0xE0]), "image/jpeg");
         assert_eq!(sniff_mime(b"GIF89a......."), "image/gif");
         assert_eq!(sniff_mime(b"RIFF____WEBPVP8 "), "image/webp");
+        assert_eq!(sniff_mime(&[0, 0, 1, 0, 1, 0, 16, 16]), "image/x-icon");
         assert_eq!(sniff_mime(b"____ftypavif........"), "image/avif");
         assert_eq!(sniff_mime(b"____ftypisom........"), "video/mp4");
         assert_eq!(sniff_mime(b"____ftypqt  ........"), "video/quicktime");

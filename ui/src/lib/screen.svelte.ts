@@ -13,6 +13,7 @@
 
 import { APPS, type AppDeps, type AppSearch } from './apps'
 import { calendar } from './calendar.svelte'
+import { feed } from './feed.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
 import { notes } from './notes.svelte'
@@ -23,7 +24,7 @@ import { app } from './state.svelte'
 import { todo } from './todo.svelte'
 import type { OnScreenApp } from './types'
 
-const deps: AppDeps = { app, notes, todo, calendar, library, mail, overview }
+const deps: AppDeps = { app, notes, todo, calendar, library, mail, feed, overview }
 
 /** Each Settings tab, as the model is told it. Not the drawn labels, which
  *  live with their icons in `SettingsView.svelte`; these only need to say

@@ -10,6 +10,7 @@ mod calendar;
 mod journals;
 mod library;
 mod memory;
+mod news;
 mod notes;
 mod partial_patch;
 mod purpose;
@@ -169,6 +170,7 @@ fn the_catalogue_marks_exactly_the_tools_the_confirmation_gate_must_catch() {
             "delete_routine",
             "forget",
             "delete_skill",
+            "unfollow_source",
         ]
     );
 }

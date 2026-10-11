@@ -300,6 +300,7 @@ fn kinds_of(part: &str) -> &'static [Kind] {
         "trackers" => &[Kind::Tracker, Kind::Reading],
         "purpose" => &[Kind::Role, Kind::Goal],
         "assistant" => &[Kind::Conversation, Kind::Routine, Kind::Memory],
+        "feed" => &[Kind::NewsSource, Kind::Story],
         _ => &[Kind::Settings],
     }
 }

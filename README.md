@@ -1,7 +1,7 @@
 # Every Day
 
-A private journal, a notebook, a todo app, a calendar, a library, a place
-where they all add up, and an assistant that works while you are not looking —
+A private journal, a notebook, a todo app, a calendar, a library, a reader
+for the sites and newsletters you follow, a place where they all add up, and an assistant that works while you are not looking —
 for macOS, Linux and Windows. Rich text with photos and video, projects and
 tasks on a list or a board, a calendar that knows where your week went, a
 shelf for everything you mean to read and watch and cook, standing
@@ -47,10 +47,10 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Eight apps, one vault
+## Nine apps, one vault
 
 A bar down the left edge switches between **Overview**, **Notes**, **Todo**,
-**Calendar**, **Library**, **Mail**, **Assistant** and **Journal**
+**Calendar**, **Library**, **Mail**, **Feed**, **Assistant** and **Journal**
 (`Ctrl/Cmd J` cycles); right-clicking one of them offers what that app can
 start from a standing stop — the same actions the tray offers, from the same
 registration. They share a vault, a password and a lock; they share nothing
@@ -62,7 +62,7 @@ point of both.
 The order is the order of a day rather than the order they were built in. The
 Overview is first because it is the page you arrive at and it is now made of
 whatever cards its owner put on it; the journal is last because it is the one
-app you go to on purpose, with something already in mind to write. The five in
+app you go to on purpose, with something already in mind to write. The six in
 between are the ones you dip into all day.
 
 The bar sits outside the sidebar because it is not any one app's navigation:
@@ -879,6 +879,66 @@ accept, tentative, decline — parsed with `calcard`, the same reader an
 ordinary email reply back to whoever organised it rather than reaching
 into a calendar to write there, so it works the same whether or not the
 invitation's calendar is one this application can write to.
+
+## The feed
+
+A reader for what you have chosen to follow, read from the top until there is
+nothing left. Three kinds of source, and one that is not:
+
+- **Web feeds** — RSS 0.9x, 1.0 and 2.0, Atom and JSON Feed, through one
+  lenient parser. That is more than blogs: Substack, Ghost and Buttondown
+  newsletters publish one, and so do YouTube channels, Mastodon and Bluesky
+  profiles, GitHub releases, Lobsters and most news sites. The site's
+  address is enough: the feed is found from the page, and named by its own
+  title rather than the page's word for it ("Atom" is not a name).
+- **Hacker News** — the front page, Show HN, Ask HN, or everything above a
+  number of points, through Algolia's API: one request for a whole list, with
+  points and comment counts, and no key.
+- **Newsletters from Mail** — a sender you pick from the ones already in
+  your Newsletters tab. Nothing is copied: the story points at the message,
+  is drawn through mail's own route under mail's own picture rules, and its
+  read state *is* the message's, so reading it here marks it read there and
+  on the server. A source can keep its issues out of the inbox, archiving
+  each one as it arrives — the one thing the Feed does that reaches outside
+  the vault, so it is off until you turn it on. Following a sender also files
+  them under Newsletters in Mail, unless you had already said otherwise.
+- **Not Reddit.** Reddit stopped serving its public JSON in May 2026, stops
+  RSS on 13 November 2026, and is closing its public API to anybody who has
+  not registered a paid client. An application that works with no account
+  and no key has nothing to build there. A Reddit `.rss` address pasted in
+  is a feed like any other until the day it stops answering.
+
+**The refresher lives in the service**, not a window — one supervised task
+for every source, stopped when the vault locks and started again when it
+opens, and running under `everyday serve` too. Each request is conditional
+(`If-None-Match`, `If-Modified-Since`), so a feed that has not changed costs
+a `304`. How often a source is asked is a pure function with a table of cases
+beside it: an hour by default, stretched towards half the gap between its
+recent posts so a monthly blog is asked four times a day, never sooner than a
+server's `Cache-Control`, `<ttl>` or `Retry-After`, doubling after each
+failure up to a day, and jittered so a hundred sources imported at once do
+not all fire on the same minute for ever. A failure says so once per outage,
+and a source that has failed for thirty days pauses itself.
+
+**What arrives is kept on this computer.** A story's body — the feed's
+content, or its description when that is where the whole post is — is
+sanitised once, as it arrives, by the same pass that sanitises mail, and
+drawn in the same sandboxed frame. Pictures load when a story is opened,
+through the app's own protocol and into the blob store, never linked, and
+each source has a switch for them. **Fetch the full article** pulls the
+linked page through a Readability port for a feed that publishes only a
+teaser, and a source can do it for every story. News expires and saving
+keeps it: a read story goes after thirty days and an unread one after ninety
+unless you say otherwise, a saved one stays, and the long-term home for
+anything worth keeping is the library's Articles shelf, one keystroke away.
+
+The assistant can list and read stories — every word of which reaches it
+marked as a publisher's writing, never an instruction — follow a site,
+unfollow one, and mark things read; following an address it composed itself
+asks first, as reading a page does. A morning digest needs nothing new: it is
+a routine. "Every weekday at seven, read what is new in my Feed and leave me a
+note with the five worth my time." And everything you follow leaves as OPML,
+which every other reader opens.
 
 ## Notifications
 
@@ -2194,6 +2254,17 @@ year, the finish date, and a log row's date and event. So the file says that
 somebody rated eleven things highly in March and never what any of them
 were.
 
+The Feed seals what you follow as the calendar seals what it subscribes to:
+a feed's address, its name, its folder and every word of every story. A
+private feed's address — a paid newsletter's, a Patreon's — is a bearer
+credential. What is clear is which source a story came from, when it was
+published, whether it has been read or saved, and a *keyed* hash of its
+address, which is what makes a refresh idempotent and folds one article
+arriving from two places into one row — keyed by a subkey of the vault's own,
+so the column cannot be checked against a list of known addresses. The file
+says that somebody follows twenty-three sources and read forty stories on
+Tuesday, and never what any of them were.
+
 The readings table goes furthest of all: the **value** is a clear column too.
 That is the trade the whole tracking domain is built on — a year of readings
 is thousands of rows whose entire purpose is to be summed, averaged and
@@ -2705,7 +2776,7 @@ with what the platform or the webview has already taken.
 
 | | |
 |---|---|
-| `G` then `J` / `N` / `T` / `C` / `L` / `M` / `O` / `A` | journal, notes, todo, calendar, library, mail, overview, assistant |
+| `G` then `J` / `N` / `T` / `C` / `L` / `M` / `F` / `O` / `A` | journal, notes, todo, calendar, library, mail, feed, overview, assistant |
 | `C` | start the next thing — an entry, a note, the task capture line, an hour set aside, the "add to shelf" field, a goal, a conversation |
 | `/` | the bar at the top: search this app |
 | `A` | the assistant's rail — or, in the Assistant app, its message box |
@@ -2733,7 +2804,12 @@ star, `U`/`I` to mark unread or read, `H` to snooze, `!` to mark priority,
 `2`, `3` to take a suggested reply, `Tab`/`Shift Tab` to change category, and `G` then `I`/`S`/`D`/`U` for Inbox, Starred, Drafts and Sent —
 `W` rather than the plan's `A` for reply all, because `A` already opens the
 assistant, and `G` `U` rather than `G` `T` for Sent, because `G` `T` is
-already Todo.
+already Todo. In the Feed: `J`/`K` for the story below and above, `Enter` or
+`O` to open one, `Escape` back to the list, `V` for the original in the
+browser, `S` to save, `U`/`I` to mark unread or read, `M` to mark everything in
+view read (with an undo), `L` to put it in the library, `R` to refresh, and
+`C` to follow something new — `M` rather than `Shift A`, because a printable
+key's Shift is not part of its chord and `A` already opens the assistant.
 
 **A letter is a letter while you are typing in a field.** Only the chords
 with a modifier in them fire from inside an input, which is why they exist.
@@ -2987,9 +3063,9 @@ instead.
 The core, the SQL backend and both its drivers, the vault lifecycle, search,
 the media pipeline, notes, the todo app, the calendar, the library, tracking,
 roles and goals, accounts, mail, calendars that sign in, the assistant's
-routines, and the CLI are implemented and tested — 1,404 tests, plus the
+routines, the Feed, and the CLI are implemented and tested — 1,404 tests, plus the
 shared backend conformance suite (run against SQLite always and against a
-real Postgres server on demand, and covering all twelve domains)
+real Postgres server on demand, and covering all thirteen domains)
 and twenty-seven dependency-free interface suites: the quick-add grammar,
 the quick-track grammar, the calendar's grid arithmetic, conflict handling,
 notifications, the library, the tracking arithmetic, the streak and balance

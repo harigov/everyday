@@ -36,6 +36,7 @@ import type { library as librarySingleton } from './library.svelte'
 import type { notes as notesSingleton } from './notes.svelte'
 import type { calendar as calendarSingleton } from './calendar.svelte'
 import type { mail as mailSingleton } from './mail.svelte'
+import type { feed as feedSingleton } from './feed.svelte'
 import type { overview as overviewSingleton } from './overview.svelte'
 import type { assistant as assistantSingleton } from './assistant.svelte'
 import type { agent as agentSingleton } from './agent.svelte'
@@ -47,6 +48,7 @@ type LibraryLike = typeof librarySingleton
 type NotesLike = typeof notesSingleton
 type CalendarLike = typeof calendarSingleton
 type MailLike = typeof mailSingleton
+type FeedLike = typeof feedSingleton
 type OverviewLike = typeof overviewSingleton
 type AssistantLike = typeof assistantSingleton
 type AgentLike = typeof agentSingleton
@@ -64,6 +66,7 @@ export const APP_ORDER = [
   'calendar',
   'library',
   'mail',
+  'feed',
   'assistant',
   'journal',
 ] as const
@@ -78,6 +81,7 @@ export interface AppDeps {
   calendar: CalendarLike
   library: LibraryLike
   mail: MailLike
+  feed: FeedLike
   overview: OverviewLike
 }
 
@@ -103,6 +107,7 @@ export interface AccentDeps {
   app: AppLike
   todo: TodoLike
   library: LibraryLike
+  feed: FeedLike
 }
 
 /** What `shortcuts.svelte.ts`'s "start the next thing" needs from every
@@ -114,6 +119,7 @@ export interface CreateDeps {
   calendar: CalendarLike
   library: LibraryLike
   mail: MailLike
+  feed: FeedLike
   overview: OverviewLike
   assistant: AssistantLike
   /** The conversation, which is what the Assistant app starts a new one of. */
@@ -229,6 +235,22 @@ export const APPS: Record<Section, AppModule> = {
       placeholder: 'Search mail',
       query: d.mail.searchQuery,
       set: (q) => d.mail.setSearchQuery(q),
+    }),
+  },
+  feed: {
+    section: 'feed',
+    label: 'Feed',
+    icon: 'rss',
+    supported: (app) => app.supportsNews,
+    accent: (d) => d.feed.accent,
+    // Following something is the one thing a feed reader has to be told; the
+    // rest arrives by itself.
+    create: (d) => d.feed.openAdd(),
+    onScreen: (d) => d.feed.showing,
+    search: (d) => ({
+      placeholder: 'Search the Feed',
+      query: d.feed.query,
+      set: (q) => d.feed.setQuery(q),
     }),
   },
   assistant: {

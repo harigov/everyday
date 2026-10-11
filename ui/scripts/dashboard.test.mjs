@@ -269,10 +269,26 @@ check(
 // The whole catalogue at once is still a handful of queries, not one per card.
 // Twelve since the weather card, whose one need is a forecast rather than
 // another read of the vault; fourteen since the mail and meeting cards, which
-// share two reads between eight of them.
+// share two reads between eight of them; fifteen since the Feed's, whose two
+// reads are one need.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 14,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 15,
+)
+// The Feed's card asks for the Feed and for nothing else, so a page with it on
+// does not also pay for a tracker window, and a page without it pays nothing
+// for the Feed.
+check('the reading card asks only for the feed', [...needsOf(addWidget([], 'reading'))], ['news'])
+check(
+  'a page without it asks nothing of the feed',
+  [...needsOf(defaultLayout())].includes('news'),
+  false,
+)
+ok('the reading card has a size it offers', WIDGETS.reading.sizes.includes(WIDGETS.reading.size))
+check(
+  'a stored page keeps the reading card',
+  ids(parseLayout(JSON.stringify([{ id: 'r', type: 'reading', size: 'large' }]))),
+  ['r'],
 )
 
 // ── mail and meeting windows ───────────────────────────────────────────

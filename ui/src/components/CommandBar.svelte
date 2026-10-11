@@ -36,6 +36,7 @@
   import { APPS } from '../lib/apps'
   import { calendar } from '../lib/calendar.svelte'
   import { headingOf, keyOf, rankActions, type Row } from '../lib/commandbar'
+  import { feed } from '../lib/feed.svelte'
   import { keysLabel } from '../lib/keys'
   import { library } from '../lib/library.svelte'
   import { notify } from '../lib/notify.svelte'
@@ -81,9 +82,38 @@
   const needle = $derived(value.trim())
   const appName = $derived(panels.settings !== null ? 'Settings' : APPS[app.section].label)
 
+  /**
+   * Does the text read as a web address, rather than as a sentence with one
+   * in it? Only a whole address is offered as something to follow.
+   */
+  function looksLikeAddress(text: string): boolean {
+    if (!/^https?:\/\/\S+$/i.test(text)) return false
+    try {
+      return new URL(text).host !== ''
+    } catch {
+      return false
+    }
+  }
+
   /** What to do with the text when it is not the name of anything. */
   function captures(typed: string): Row[] {
     const rows: Row[] = []
+    // First, so it is the one capture a search offers: pasting an address is
+    // nearly always to follow it, and "Add a task: https://…" is the other
+    // reading. A row rather than a guess -- nothing is looked up until it is
+    // chosen, and the add sheet opens with the address in it to find the
+    // feed at, since most pages that have one are not themselves it.
+    if (app.supportsNews && looksLikeAddress(typed)) {
+      rows.push({
+        kind: 'capture',
+        label: `Follow ${typed}`,
+        icon: 'rss',
+        hint: 'finds its feed',
+        run: async () => {
+          if (await app.goTo('feed')) feed.follow(typed)
+        },
+      })
+    }
     if (app.supportsTasks) {
       const parsed = parseQuickAdd(typed)
       rows.push({

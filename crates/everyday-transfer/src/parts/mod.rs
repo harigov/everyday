@@ -13,6 +13,7 @@ pub mod doc;
 pub mod index;
 pub mod journal;
 pub mod library;
+pub mod news;
 pub mod notes;
 pub mod purpose;
 pub mod tasks;

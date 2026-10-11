@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Q&amp;A &amp;amp; <![CDATA[<b>Friends</b>]]></title>
+    <link>https://qa.example/</link>
+    <description>Questions.</description>
+    <item>
+      <title>Tom &amp;amp; Jerry&#8217;s &lt;em&gt;big&lt;/em&gt; day&nbsp;out &#x2013; part&amp;nbsp;2</title>
+      <link>https://qa.example/tom-and-jerry</link>
+      <guid>https://qa.example/tom-and-jerry</guid>
+      <pubDate>Tue, 06 Oct 2026 08:00:00 GMT</pubDate>
+      <description>Plain.</description>
+    </item>
+    <item>
+      <title><![CDATA[<span class="x">Markup</span> in a <a href="https://x.example/">title</a>]]></title>
+      <link>https://qa.example/markup</link>
+      <guid>https://qa.example/markup</guid>
+      <pubDate>Tue, 06 Oct 2026 07:00:00 GMT</pubDate>
+      <description>Plain.</description>
+    </item>
+    <item>
+      <title>
+        A title
+        over two lines
+      </title>
+      <link>https://qa.example/two-lines</link>
+      <guid>https://qa.example/two-lines</guid>
+      <pubDate>Tue, 06 Oct 2026 06:00:00 GMT</pubDate>
+      <description>Plain.</description>
+    </item>
+  </channel>
+</rss>

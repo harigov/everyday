@@ -62,6 +62,10 @@
 //! | `mail_contacts` (singleton) | that a contact index exists, for address autocomplete -- every address and name it has seen stays sealed |
 //! | `chat_settings` (singleton) | that chat links exist -- every homeserver, account and owner stays sealed |
 //! | `mail_category_rules` (`account_id`) | that one account has sealed corrections outranking the rules `categorize` runs at sync -- never what they are |
+//! | news source `sort_order`, `created_us`, `updated_us` | how many sources are followed and when they were added -- never a name, an address or a folder |
+//! | `news_fetch` (`source_id`, `next_us`) | when each source is next asked for news -- never what it said last time |
+//! | news story `source_id`, `dedupe_key`, `published_us`, `is_read`, `saved`, `expired`, `mail_message_id` | how many stories each source brought, when, and which were read or saved; the key is a *keyed* hash, so it cannot be matched against a list of known addresses; and which mail message a newsletter story is -- never a title, an address or a word of one |
+//! | `news_bodies` (`story_id`) | that a story's body has been kept -- nothing about it |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -137,6 +141,7 @@ mod journals;
 mod library;
 pub mod mail;
 mod meetings;
+mod news;
 mod notes;
 pub mod packs;
 mod pool;

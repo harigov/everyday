@@ -145,6 +145,29 @@ fn library_domain_aad_labels_are_pinned() {
     );
 }
 
+// ---- the feed -------------------------------------------------------------
+
+#[test]
+fn news_domain_aad_labels_are_pinned() {
+    assert_eq!(
+        store::news::source_aad(id::<NewsSourceId>()),
+        b"everyday.news_source.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::news::story_aad(id::<StoryId>()),
+        b"everyday.story.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::news::story_body_aad(id::<StoryId>()),
+        b"everyday.story_body.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::news::fetch_state_aad(id::<NewsSourceId>()),
+        b"everyday.news_fetch.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(everyday_core::news::NEWS_KEY_LABEL, "everyday.news.key.v1");
+}
+
 // ---- mail -----------------------------------------------------------------
 
 #[test]

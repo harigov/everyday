@@ -347,6 +347,39 @@ impl RemoteClient {
         Self::mail_bytes_from(response).await
     }
 
+    /// A story's rendered body and whether its source holds pictures back:
+    /// the remote counterpart of `everyday_service::news::view::body_document`,
+    /// from `/v1/news/body/{story}`. The same pair a mail body is, so it comes
+    /// back as one.
+    pub async fn news_body(&self, story: &str) -> CommandResult<MailBody> {
+        let response = self
+            .request(reqwest::Method::GET, &format!("/v1/news/body/{story}"))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_body()
+            .await?;
+        let images_hidden = response
+            .headers()
+            .get("x-news-images-hidden")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "1");
+        let html = response.text().await.map_err(transport)?;
+        Ok(MailBody { html, images_hidden })
+    }
+
+    /// One picture from a story's body, from `/v1/news/img/{story}/{token}`.
+    pub async fn news_image(&self, story: &str, token: &str) -> CommandResult<MailBytes> {
+        let response = self
+            .request(reqwest::Method::GET, &format!("/v1/news/img/{story}/{token}"))
+            .send()
+            .await
+            .map_err(transport)?
+            .error_for_body()
+            .await?;
+        Self::mail_bytes_from(response).await
+    }
+
     async fn mail_bytes_from(response: reqwest::Response) -> CommandResult<MailBytes> {
         let content_type = response
             .headers()

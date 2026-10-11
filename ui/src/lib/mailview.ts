@@ -163,7 +163,8 @@ function mockDocument(inner: string): string {
     `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: https: http:; style-src 'unsafe-inline'">` +
     `<base target="_blank">` +
     `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.6}` +
-    `pre{white-space:pre-wrap;overflow-wrap:break-word;font-family:inherit;margin:0}</style>` +
+    `pre{white-space:pre-wrap;overflow-wrap:break-word;font-family:inherit;margin:0}` +
+    `img,video{max-width:100%;height:auto}</style>` +
     `</head><body>${inner}</body></html>`
   )
 }

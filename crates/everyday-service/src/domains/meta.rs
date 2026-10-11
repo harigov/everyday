@@ -216,6 +216,7 @@ pub fn scope_of(domain: tools::Domain) -> Scope {
         // a transcript is every word several people said, and a client
         // that reads a diary has no business inheriting a way to read one.
         tools::Domain::Meetings => Scope::Meetings,
+        tools::Domain::News => Scope::News,
     }
 }
 

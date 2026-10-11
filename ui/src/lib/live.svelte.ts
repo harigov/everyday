@@ -20,6 +20,7 @@
 import { onChange, onLockState, onPalette } from './api'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
+import { feed } from './feed.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
 import { assistant } from './assistant.svelte'
@@ -92,6 +93,11 @@ export const RELOAD = {
   // finishing or failing a call. One target for both kinds; see
   // `meetings.svelte.ts`'s own `liveRefresh`.
   meetings: () => meetings.liveRefresh(),
+  // A source followed or changed, or a story arrived or was read elsewhere.
+  // Both halves, since the sidebar's counts and the list move together; the
+  // list reloads over what it has and keeps the open story in its place, so
+  // a refresh landing mid-read does not take the pane's footing away.
+  feed: () => Promise.all([feed.refreshSources(), feed.reload()]),
 } satisfies Record<string, () => Promise<unknown> | void>
 
 /**
@@ -216,6 +222,11 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // is not disruptive enough to interrupt for -- the same call `conversation`
   // and `memory` above make.
   transcript: null,
+  // What somebody follows, and what it brought. A background refresh raises
+  // one `story` change with no id for the whole pass -- "reload the list", as
+  // a mail sync does -- so there is nothing to patch in place and no applier.
+  newsSource: 'feed',
+  story: 'feed',
 }
 
 /**

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="1.0">
+  <head><title>Feedly Cloud</title></head>
+  <body>
+    <outline type="rss" text="Alpha" title="Alpha" xmlUrl="https://alpha.example/feed" htmlUrl="https://alpha.example"/>
+    <outline type="rss" text="Beta" title="Beta" xmlUrl="https://beta.example/rss"/>
+    <outline type="link" text="Not a feed" url="https://notafeed.example/"/>
+  </body>
+</opml>

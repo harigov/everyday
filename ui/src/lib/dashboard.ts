@@ -112,6 +112,13 @@ export const NEEDS = [
   'mail',
   /** A window of calendar events, counted -- the same arrangement as `mail`. */
   'meetings',
+  /**
+   * What is unread in the Feed: every source with its count, and the newest
+   * unread stories to pick a few from. Two reads, but one need, since neither
+   * means anything without the other -- a count with no story to open, or a
+   * story with no source to say whose it is.
+   */
+  'news',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -436,6 +443,15 @@ export const WIDGETS = {
     size: 'small',
     sizes: ['small', 'medium'],
     needs: ['library'],
+  },
+  reading: {
+    label: 'Reading',
+    note: 'What is unread in the Feed, folder by folder, and the few stories to open first.',
+    group: 'Everything else',
+    icon: 'rss',
+    size: 'medium',
+    sizes: ['medium', 'large'],
+    needs: ['news'],
   },
   writing: {
     label: 'What you have written',

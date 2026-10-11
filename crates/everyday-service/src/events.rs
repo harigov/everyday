@@ -193,6 +193,11 @@ pub enum Kind {
     Transcript,
     /// A voice the meetings feature can recognise.
     Voiceprint,
+    /// Something followed in the Feed.
+    NewsSource,
+    /// A story in the Feed. A refresh raises one with no id, meaning
+    /// "reload the list", as a mail sync pass does for threads.
+    Story,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
     /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --
@@ -250,6 +255,8 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Recording => Ok(RecordKind::Recording),
             Kind::Transcript => Ok(RecordKind::Transcript),
             Kind::Voiceprint => Ok(RecordKind::Voiceprint),
+            Kind::NewsSource => Ok(RecordKind::NewsSource),
+            Kind::Story => Ok(RecordKind::Story),
             // Not a record: the vault's own settings.
             Kind::Settings => Err(()),
             // Not a record: a supervisor task's status.
@@ -296,6 +303,8 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::Recording => Ok(Kind::Recording),
             RecordKind::Transcript => Ok(Kind::Transcript),
             RecordKind::Voiceprint => Ok(Kind::Voiceprint),
+            RecordKind::NewsSource => Ok(Kind::NewsSource),
+            RecordKind::Story => Ok(Kind::Story),
             // Folded into `Kind::Thread` -- see this impl's docs.
             RecordKind::MailMessage | RecordKind::Op => Err(()),
             // Folded into `Kind::Conversation` -- see this impl's docs.
@@ -461,7 +470,7 @@ mod tests {
     //! the docs on those impls name.
     use super::*;
 
-    const RECORD_KINDS: [Kind; 27] = [
+    const RECORD_KINDS: [Kind; 29] = [
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
@@ -489,13 +498,15 @@ mod tests {
         Kind::Recording,
         Kind::Transcript,
         Kind::Voiceprint,
+        Kind::NewsSource,
+        Kind::Story,
     ];
 
     #[test]
     fn every_record_backed_change_kind_round_trips_through_record_kind() {
         for kind in RECORD_KINDS {
             let record = RecordKind::try_from(kind).unwrap_or_else(|()| {
-                panic!("{kind:?} is one of the 27 record-backed kinds and should convert")
+                panic!("{kind:?} is one of the 29 record-backed kinds and should convert")
             });
             assert_eq!(Kind::try_from(record), Ok(kind), "{kind:?}");
         }

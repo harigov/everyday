@@ -66,6 +66,8 @@ const KINDS = [
   'account',
   'thread',
   'draft',
+  'newsSource',
+  'story',
   'recording',
   'voiceprint',
   'transcript',
@@ -105,6 +107,13 @@ assert.deepEqual(new Set(targetsFor(['task', 'item'])), new Set(['todo', 'librar
 assert.deepEqual(targetsFor(['conversation', 'memory']), [])
 assert.deepEqual(targetsFor(['conversation', 'task']), ['todo'])
 assert.deepEqual(targetsFor(['transcript']), [])
+
+// What is followed and what it brought are one store's: a first refresh of a
+// new source raises both, and the sidebar's counts and the list move
+// together. A background pass raises a `story` change with no id -- "reload
+// the list" -- so there is no applier, and the whole store is what reloads.
+assert.deepEqual(targetsFor(['newsSource', 'story']), ['feed'])
+assert.deepEqual(targetsFor(['story'], true), ['feed'], 'the Overview does not redraw for news')
 
 // A recording and a voiceprint share the one `meetings` target -- a call
 // finishing (or failing) in the background, and a voice learned or forgotten,

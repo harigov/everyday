@@ -39,6 +39,7 @@ mod lifecycle;
 mod mail;
 mod maintenance;
 mod meetings;
+mod news;
 mod notes;
 mod profile;
 mod proposals;
