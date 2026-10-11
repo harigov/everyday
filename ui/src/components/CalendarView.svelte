@@ -1,13 +1,11 @@
 <script lang="ts">
   // The calendar app's main pane: a header, a grid, and the rail beside it.
   //
-  // The header carries three controls and no more. Which days (‹ today ›),
-  // how many (day / week / month), and which of plan and record to draw —
-  // that last one being the only control here that another calendar
-  // application would not have, and the reason this one is worth using.
+  // The header carries two controls and no more: which days (‹ today ›)
+  // and how many (day / week / month), the same two every calendar has.
 
   import { onMount } from 'svelte'
-  import { calendar, type Layer, type View } from '../lib/calendar.svelte'
+  import { calendar, type View } from '../lib/calendar.svelte'
   import { dateFormat, dayHeading, formatMinutes, monthYear } from '../lib/format'
   import { proposals } from '../lib/proposals.svelte'
   import Icon from './Icon.svelte'
@@ -36,12 +34,6 @@
     { id: 'day', label: 'Day', icon: 'day', key: 'D' },
     { id: 'week', label: 'Week', icon: 'week', key: 'W' },
     { id: 'month', label: 'Month', icon: 'month', key: 'M' },
-  ]
-
-  const LAYERS: { id: Layer; label: string; title: string }[] = [
-    { id: 'both', label: 'Both', title: 'Plans and what actually happened' },
-    { id: 'planned', label: 'Plan', title: 'Only what you meant to do' },
-    { id: 'actual', label: 'Record', title: 'Only what you actually did' },
   ]
 
   /** What the header calls the window on screen. */
@@ -74,16 +66,10 @@
    *  behind the totals, are the ones long enough to need it) only ever
    *  falls at a `·`, never inside "2h 30m" or "10 events". */
   const summary = $derived.by(() => {
-    let planned = 0
-    let logged = 0
-    for (const iso of calendar.days) {
-      const t = calendar.totalsOn(iso)
-      planned += t.planned
-      logged += t.logged
-    }
+    let booked = 0
+    for (const iso of calendar.days) booked += calendar.minutesOn(iso)
     const bits: string[] = []
-    if (planned > 0) bits.push(`${formatMinutes(planned)} planned`.replace(/ /g, '\u00a0'))
-    if (logged > 0) bits.push(`${formatMinutes(logged)} logged`.replace(/ /g, '\u00a0'))
+    if (booked > 0) bits.push(`${formatMinutes(booked)} booked`.replace(/ /g, '\u00a0'))
     const meetings = calendar.events.length
     if (meetings > 0) {
       bits.push(`${meetings}\u00a0${meetings === 1 ? 'event' : 'events'}`)
@@ -140,32 +126,11 @@
       </div>
     </header>
 
-    <!-- Plan and record, as the chips every other app narrows its list with.
-         They were a segmented control in the top right corner, which is
-         where each app used to put its own idea of a filter --
-         so the same job looked like three different controls depending on
-         which app you were in. The row is centred on the pane and the
-         summary is pushed to its edge; see `.toolbar` in `app.css`.
-
-         The control no other calendar has, either way. Plan and record are
-         separate rows in storage precisely so this toggle can exist. -->
+    <!-- The window's totals, under the header. There used to be a set of
+         Both / Plan / Record chips here; a block is an event like any other
+         now, and what counts as time spent is decided by the clock -- see
+         `Vault::settle_blocks`. -->
     <div class="toolbar">
-      <div class="toolbar-end"></div>
-
-      <div class="filters" role="group" aria-label="Show">
-        {#each LAYERS as l (l.id)}
-          <button
-            class="filter"
-            class:on={calendar.layer === l.id}
-            title={l.title}
-            aria-pressed={calendar.layer === l.id}
-            onclick={() => (calendar.layer = l.id)}
-          >
-            {l.label}
-          </button>
-        {/each}
-      </div>
-
       <div class="toolbar-end right">
         <span class="summary">{summary}</span>
         {#if calendar.syncNote}<span class="note">{calendar.syncNote}</span>{/if}
@@ -297,14 +262,9 @@
   .summary {
     /* Was `nowrap` + ellipsis, which in week/month view (more days, so
        longer totals and an event count on top) clipped the count itself --
-       Bug: "10 eve…" with no way to read the rest. The empty `.toolbar-end`
-       on the other side of `.filters` (there solely to balance it, see
-       above) claims its own equal share of the row as the window narrows,
-       whether or not it has anything to show, which is what left the
-       summary short of room before the row itself ran out of it. Wrapping
-       the text instead of this `div` taking less space is the smaller
-       change: the toolbar grows a second line precisely when the summary
-       needs one, rather than needing a sizing rule of its own.
+       Bug: "10 eve…" with no way to read the rest. Wrapping instead, the
+       toolbar grows a second line precisely when the summary needs one,
+       rather than needing a sizing rule of its own.
        `min-width: 0` is what lets a flex item wrap at all instead of
        holding its one-line width regardless of what it is given. */
     flex: 1;

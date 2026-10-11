@@ -9,8 +9,8 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Built, Tool, ToolContext, Window, day, done, limit_arg, load_by_id, one_of,
-    resolve_purpose, run_delete, schema, text,
+    Args, Built, Tool, ToolContext, Window, day, done, limit_arg, load_by_id, resolve_purpose,
+    run_delete, schema, text,
 };
 use crate::error::Result;
 use crate::id::{BlockId, ProjectId, TaskId};
@@ -51,8 +51,9 @@ pub(super) static TOOLS: &[Tool] = &[
             ],
             &[]
         ),
-        "Blocks of time in a window: planned ones (what you set aside) and actual \
-         ones (what it took). The way to answer 'how long did that take'.",
+        "Blocks of time in a window. One whose end has passed is time spent (kind \
+         actual); one still ahead is time set aside (planned). The way to answer 'how \
+         long did that take'.",
         run_list_blocks
     ),
     tool!(
@@ -67,21 +68,16 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("task_id", text("Which task this is time for.")),
                 ("project_id", text("Or which project, if it is not one task.")),
                 ("label", text("Or a free-text label, if it is neither.")),
-                (
-                    "kind",
-                    one_of(
-                        "planned (setting time aside) or actual (recording what it took). Defaults to planned.",
-                        &["planned", "actual"]
-                    )
-                ),
                 ("notes", text("Anything worth noting.")),
                 ("goal_id", text("File it under this goal, from list_goals.")),
                 ("role_id", text("Or under this role directly, from list_roles.")),
             ],
             &["date", "start_time", "end_time"]
         ),
-        "Set aside time for a task, or record time that was spent. Give exactly one \
-         of task_id, project_id or label to say what the time is for. For an appointment \
+        "Set aside time for a task, or record time that was spent: a block counts as \
+         time spent once its end has passed, so recording is booking it in the past. \
+         Give exactly one of task_id, project_id or label to say what the time is for. \
+         For an appointment \
          or a meeting -- anything the person calls an event -- use create_event instead, \
          which puts it on their default calendar.",
         run_create_block,
@@ -305,19 +301,14 @@ fn block_from_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<(TimeBlock,
         .ok_or_else(|| args.bad("give one of `task_id`, `project_id` or `label`"))?;
     let name = subject_name(ctx, &subject, label.as_deref())?;
 
-    let kind = match args.opt_str("kind") {
-        Some("actual") => BlockKind::Actual,
-        Some("planned") | None => BlockKind::Planned,
-        Some(other) => {
-            return Err(args.bad(format!("`kind` must be planned or actual, got {other:?}")));
-        }
-    };
-
     let (start_ts, end_ts) = block_timestamps(args, ctx.tz, date, start, end)?;
     let minutes = u32::try_from((end_ts.as_second() - start_ts.as_second()) / 60).unwrap_or(0);
 
     let mut block = TimeBlock::new(subject, start_ts, minutes, ctx.tz);
-    block.kind = kind;
+    // The vault settles this from the clock on save; said here too so the
+    // proposal a drafting run shows is already the right one.
+    block.kind =
+        if end_ts <= jiff::Timestamp::now() { BlockKind::Actual } else { BlockKind::Planned };
     block.title = label.unwrap_or_default().to_string();
     block.notes = args.opt_str("notes").unwrap_or_default().to_string();
     block.purpose = resolve_purpose(ctx, args)?;

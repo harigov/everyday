@@ -24,8 +24,7 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::account::{
-    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Preset,
-    Provider,
+    Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, Preset, Provider,
 };
 use everyday_core::id::AccountId;
 use serde::{Deserialize, Serialize};
@@ -342,16 +341,9 @@ async fn attach_oauth_sign_in(
             // A fresh consent is the only moment the account's grant can
             // have widened -- "sign in again to allow calendar access" asks
             // for more than the account had -- so this is where the record
-            // learns it. Added to, never narrowed: a provider may hand back
-            // a token for one resource's scopes only (Microsoft does, for
-            // IMAP beside Graph), and the grant itself covers both.
-            if let AuthMethod::OAuth { scopes, .. } = &mut account.auth {
-                for scope in &args.scopes {
-                    if !scopes.contains(scope) {
-                        scopes.push(scope.clone());
-                    }
-                }
-            }
+            // learns it. See `record_granted_scopes` for why Google's own
+            // answer is believed over what was asked for.
+            account.record_granted_scopes(&args.scopes, tokens.scope.as_deref());
             account.status = AccountStatus::Ok;
             account.updated_at = now;
             vault.save_account(&account)?;

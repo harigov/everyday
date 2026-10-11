@@ -11,7 +11,7 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
-  import type { BlockKind, Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
+  import type { Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
   import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
@@ -25,7 +25,6 @@
   let booking = $state(false)
   let bookStart = $state('')
   let bookMinutes = $state(30)
-  let bookKind = $state<BlockKind>('actual')
   let tagDraft = $state('')
 
   // ── breaking it down, and sizing it ──────────────────────────────────
@@ -86,7 +85,7 @@
 
   async function book() {
     if (!bookStart || bookMinutes <= 0) return
-    await todo.addBlock(bookStart, bookMinutes, bookKind)
+    await todo.addBlock(bookStart, bookMinutes)
     booking = false
   }
 
@@ -341,10 +340,6 @@
               aria-label="Minutes"
               bind:value={bookMinutes}
             />
-            <select class="pick" aria-label="Kind" bind:value={bookKind}>
-              <option value="actual">Actually spent</option>
-              <option value="planned">Planned</option>
-            </select>
           </div>
           <div class="bookrow">
             <button class="btn" onclick={() => (booking = false)}>Cancel</button>
@@ -642,7 +637,7 @@
     display: flex;
     color: var(--fg-faint);
   }
-  /* Logged time is the record; planned time is only an intention. */
+  /* Time that has passed counts as logged; time ahead is only planned. */
   .kind.actual {
     color: #15803d;
   }

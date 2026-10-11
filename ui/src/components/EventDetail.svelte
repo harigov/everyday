@@ -264,8 +264,9 @@
       oncontextmenu={(e) => menu.show(e, blockMenu(block))}
     >
       <header class="phead">
-        <span class="kind {block.kind}">
-          {block.kind === 'actual' ? 'What happened' : 'Planned'}
+        <span class="kind">
+          <span class="cdot" aria-hidden="true"></span>
+          This computer
         </span>
         <button
           class="x"
@@ -329,37 +330,34 @@
         </div>
       {/if}
 
-      {#if block.kind === 'planned'}
-        <!-- Only a plan repeats: a record of time spent happened once. -->
-        <div class="setting">
-          <label class="lbl" for="repeat-{block.id}">Repeat</label>
-          {#key block.id}
-            <RepeatField
-              id="repeat-{block.id}"
-              value={block.series?.rule ?? null}
-              start={block.start}
-              tz={block.tz}
-              confirm
-              onchange={(rule: Recurrence | null) => calendar.repeatBlock(block.id, rule)}
-            />
-          {/key}
-          {#if block.series}
-            <p class="series">
-              <Icon name="refresh" size={12} />
-              <span>{describeRecurrence(block.series.rule, block.start, block.tz)}</span>
-            </p>
-            <!-- Each block of a series is its own record, so an edit here
+      <div class="setting">
+        <label class="lbl" for="repeat-{block.id}">Repeat</label>
+        {#key block.id}
+          <RepeatField
+            id="repeat-{block.id}"
+            value={block.series?.rule ?? null}
+            start={block.start}
+            tz={block.tz}
+            confirm
+            onchange={(rule: Recurrence | null) => calendar.repeatBlock(block.id, rule)}
+          />
+        {/key}
+        {#if block.series}
+          <p class="series">
+            <Icon name="refresh" size={12} />
+            <span>{describeRecurrence(block.series.rule, block.start, block.tz)}</span>
+          </p>
+          <!-- Each block of a series is its own record, so an edit here
                  stays here until it is carried forward on purpose. -->
-            <button
-              class="btn btn-outline small"
-              title="Make the blocks after this one match it"
-              onclick={() => calendar.applyToFollowing(block.id)}
-            >
-              Apply changes to following
-            </button>
-          {/if}
-        </div>
-      {/if}
+          <button
+            class="btn btn-outline small"
+            title="Make the blocks after this one match it"
+            onclick={() => calendar.applyToFollowing(block.id)}
+          >
+            Apply changes to following
+          </button>
+        {/if}
+      </div>
 
       {#if block.subject.type === 'task'}
         {@const task = calendar.taskOf(block.subject.id)}
@@ -387,19 +385,6 @@
       ></textarea>
 
       <div class="actions">
-        {#if block.kind === 'planned'}
-          <!-- Two rows rather than one edited row. The pair is the point:
-               a plan overwritten by its outcome cannot be compared with it. -->
-          <button class="btn" onclick={() => calendar.logAsDone(block.id)}>
-            <Icon name="tick" size={14} weight={2} />
-            This is what happened
-          </button>
-        {:else}
-          <button class="btn" onclick={() => calendar.toggleKind(block.id)}>
-            <Icon name="clock" size={14} />
-            Make it a plan again
-          </button>
-        {/if}
         <button class="btn btn-ghost-danger" onclick={() => askDeleteBlock(block)}>
           <Icon name="trash" size={14} />
           Delete
@@ -692,9 +677,6 @@
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--c);
-  }
-  .kind.planned {
-    opacity: 0.85;
   }
   .cdot {
     width: 7px;

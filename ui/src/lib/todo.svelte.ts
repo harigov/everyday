@@ -24,7 +24,7 @@ import { latest } from './store/latest'
 import { optimisticPatch } from './store/optimistic-patch'
 import { optimisticRemove } from './store/optimistic-remove'
 import { guardedRefresh } from './store/refresh'
-import { addDays, todayIso } from './time'
+import { addDays, blockKindFor, todayIso } from './time'
 import { parseQuickAdd } from './quickadd'
 import {
   ORDER_STEP,
@@ -41,7 +41,6 @@ import {
   type Zone,
 } from './tasklist'
 import type {
-  BlockKind,
   Priority,
   Project,
   ProjectId,
@@ -967,9 +966,11 @@ class TodoState {
    * Book time against the open task.
    *
    * `start` is a local `YYYY-MM-DDTHH:MM` as an `<input type=datetime-local>`
-   * produces it; the core resolves the zone and the day it is filed under.
+   * produces it; the core resolves the zone and the day it is filed under,
+   * and whether it is a plan or time spent -- by the clock, the same as
+   * every block.
    */
-  async addBlock(start: string, minutes: number, kind: BlockKind) {
+  async addBlock(start: string, minutes: number) {
     const id = this.selectedTask
     if (!id) return
     try {
@@ -977,7 +978,7 @@ class TodoState {
         subject: { type: 'task', id },
         start: new Date(start).toISOString(),
         minutes,
-        kind,
+        kind: blockKindFor(new Date(start).toISOString(), minutes),
       })
       await api.saveBlock(block)
       this.detailBlocks = [...this.detailBlocks, block].sort((a, b) =>

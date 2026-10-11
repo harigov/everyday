@@ -22,7 +22,7 @@
 
   let note = $state('')
 
-  /** The planned block or event covering this minute, if there is one. */
+  /** The block or event covering this minute, if there is one. */
   const current = $derived.by(() => {
     const now = minutesOfDay(new Date(calendar.now))
     const iso = todayIso()
@@ -30,10 +30,9 @@
       calendar
         .slotsOn(iso)
         .filter((s) => !s.live && s.start <= now && s.end > now)
-        // A plan you made beats a meeting somebody else booked: if both are
+        // A block you made beats a meeting somebody else booked: if both are
         // on, the one you chose is the better guess at what you are doing.
-        .sort((a, b) => (a.kind === 'planned' ? -1 : 0) - (b.kind === 'planned' ? -1 : 0))[0] ??
-      null
+        .sort((a, b) => (a.kind === 'block' ? -1 : 0) - (b.kind === 'block' ? -1 : 0))[0] ?? null
     )
   })
 
@@ -75,7 +74,7 @@
     return timeOfDay(new Date(timer.since))
   })
 
-  const loggedToday = $derived(calendar.totalsOn(todayIso()).logged)
+  const loggedToday = $derived(calendar.spentOn(todayIso()))
 </script>
 
 <section class="track" class:on={!!running}>

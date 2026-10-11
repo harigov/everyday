@@ -5,9 +5,11 @@
 // # Why `tauri-plugin-opener` and not a loopback plugin of its own
 //
 // `everyday-app`'s Cargo.toml already carries `tauri-plugin-opener`, granted
-// exactly one permission (`opener:allow-open-url`) in
+// exactly one permission (`opener:allow-open-url`, scoped to `https://*`) in
 // `crates/everyday-app/capabilities/default.json` -- nothing here adds a new
-// capability, it uses one that was already narrow. The loopback that catches
+// capability, it uses one that was already narrow. The scope is not
+// optional: the permission alone enables the command but allows no URL, and
+// every call then fails as if there were no shell at all. The loopback that catches
 // the browser's *answer* is a different concern entirely: see
 // `crates/everyday-mail/src/oauth/loopback.rs`'s module doc for why that is
 // a plain `TcpListener` rather than a Tauri plugin. This file is only the

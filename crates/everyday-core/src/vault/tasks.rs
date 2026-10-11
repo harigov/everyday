@@ -119,12 +119,125 @@ impl Vault {
         self.with_tasks(|t| t.get_block(id))
     }
 
+    /// Save `block`, with its [`BlockKind`] decided by the clock rather
+    /// than by the caller -- see [`Vault::settle_blocks`].
     pub fn save_block(&self, block: &TimeBlock) -> Result<()> {
         self.writable()?;
         block.validate()?;
-        self.with_tasks(|t| t.put_block(block))?;
+        let mut block = block.clone();
+        self.settle(std::slice::from_mut(&mut block), jiff::Timestamp::now())?;
+        self.with_tasks(|t| t.put_block(&block))?;
         self.wrote(RecordKind::Block, block.id);
         Ok(())
+    }
+
+    /// Bring every block's [`BlockKind`] in line with the clock: a block
+    /// whose end has passed is time spent, one that has not started yet is
+    /// a plan. Answers how many changed.
+    ///
+    /// The calendar draws no difference between the two -- an hour on it
+    /// is an hour on it, the way every other calendar treats one -- so
+    /// "what did I spend my time on" can only be "whatever was on the
+    /// calendar, once it happened". The kind is still stored, because that
+    /// is what goals, the Overview and a task's logged time add up, and a
+    /// stored kind keeps every one of those sums a plain query.
+    ///
+    /// One exception: a plan that has ended but overlaps a record of the
+    /// same thing stays a plan, uncounted. That record is the timer's
+    /// account of the same hour, or the copy the old "This is what
+    /// happened" button made, and counting both would count the hour twice.
+    /// Delete the record and the plan counts again, at the next settle.
+    ///
+    /// `since` bounds how far back to look. The minute scheduler passes the
+    /// last couple of days, since only blocks that have just ended can have
+    /// changed; unlocking passes `None`, once, to settle the whole history.
+    pub fn settle_blocks(
+        &self,
+        now: jiff::Timestamp,
+        since: Option<jiff::civil::Date>,
+    ) -> Result<usize> {
+        self.writable()?;
+        let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+        let (yesterday, tomorrow) = (
+            today.checked_sub(jiff::Span::new().days(1)).unwrap_or(today),
+            today.checked_add(jiff::Span::new().days(1)).unwrap_or(today),
+        );
+        let ended = BlockQuery {
+            from: since,
+            to: Some(tomorrow),
+            kind: Some(BlockKind::Planned),
+            ..Default::default()
+        };
+        let ahead = BlockQuery {
+            from: Some(yesterday),
+            kind: Some(BlockKind::Actual),
+            ..Default::default()
+        };
+        let mut blocks: Vec<TimeBlock> = self
+            .blocks(&ended)?
+            .into_iter()
+            .filter(|b| b.end <= now)
+            .chain(self.blocks(&ahead)?.into_iter().filter(|b| b.start > now))
+            .collect();
+        let changed = self.settle(&mut blocks, now)?;
+        let changed: Vec<TimeBlock> = changed.into_iter().map(|i| blocks[i].clone()).collect();
+        if changed.is_empty() {
+            return Ok(0);
+        }
+        self.with_tasks(|t| t.put_blocks(&changed))?;
+        for b in &changed {
+            self.wrote(RecordKind::Block, b.id);
+        }
+        Ok(changed.len())
+    }
+
+    /// Set each block's kind from `now`, in memory; answers the indices
+    /// that changed. See [`Vault::settle_blocks`] for the rule.
+    fn settle(&self, blocks: &mut [TimeBlock], now: jiff::Timestamp) -> Result<Vec<usize>> {
+        // The records an ended plan could be a duplicate of: those on disk
+        // around the plans in question, and any in `blocks` itself.
+        let ended_plans = || blocks.iter().filter(|b| b.kind == BlockKind::Planned && b.end <= now);
+        let from = ended_plans().map(|b| b.local_date).min();
+        let to = ended_plans().map(|b| b.local_date).max();
+        let mut records: Vec<TimeBlock> = match (from, to) {
+            (Some(from), Some(to)) => self.blocks(&BlockQuery {
+                from: from.checked_sub(jiff::Span::new().days(1)).ok(),
+                to: to.checked_add(jiff::Span::new().days(1)).ok(),
+                kind: Some(BlockKind::Actual),
+                ..Default::default()
+            })?,
+            _ => Vec::new(),
+        };
+        records.retain(|r| !blocks.iter().any(|b| b.id == r.id));
+        records.extend(blocks.iter().filter(|b| b.kind == BlockKind::Actual).cloned());
+
+        let mut changed = Vec::new();
+        for (i, b) in blocks.iter_mut().enumerate() {
+            let kind = if b.start > now {
+                BlockKind::Planned
+            } else if b.end > now {
+                // Under way: whatever it was, until it ends.
+                b.kind
+            } else if b.kind == BlockKind::Planned
+                && records.iter().any(|r| {
+                    r.id != b.id
+                        && r.subject == b.subject
+                        && (b.subject != crate::task::BlockSubject::Adhoc || r.title == b.title)
+                        && r.start < b.end
+                        && b.start < r.end
+                })
+            {
+                BlockKind::Planned
+            } else {
+                BlockKind::Actual
+            };
+            if kind != b.kind {
+                b.kind = kind;
+                b.updated_at = now;
+                changed.push(i);
+            }
+        }
+        Ok(changed)
     }
 
     pub fn delete_block(&self, id: BlockId) -> Result<()> {
@@ -147,8 +260,8 @@ impl Vault {
     ///
     /// Occurrences are written [`BLOCK_SERIES_DAYS`] ahead of `block` and no
     /// further -- see [`crate::task::BlockSeries`] for why a repeat of your
-    /// own is rows rather than a rule. Every one of them is a plan: an hour
-    /// that has not happened yet cannot be a record of what did.
+    /// own is rows rather than a rule. Each one's kind is settled by the
+    /// clock, the same as [`Vault::save_block`]'s.
     ///
     /// Answers every block written, `block` first.
     pub fn save_block_series(
@@ -160,11 +273,6 @@ impl Vault {
         block.validate()?;
         if let Some(rule) = rule {
             rule.validate()?;
-            if block.kind != BlockKind::Planned {
-                return Err(Error::Invalid(
-                    "only a plan can repeat -- a record of time spent happened once".into(),
-                ));
-            }
         }
 
         // Whatever series this block is in *on disk* is the one whose later
@@ -217,6 +325,9 @@ impl Vault {
                 written.push(copy);
             }
         }
+        // A series started in the past has members that have already
+        // happened, and the head itself may have.
+        self.settle(&mut written, now)?;
 
         self.with_tasks(|t| {
             t.delete_blocks(&doomed)?;

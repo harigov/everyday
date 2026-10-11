@@ -48,6 +48,7 @@ import {
   SNAP_MINUTES,
   addDays,
   addMonths,
+  blockKindFor,
   daysFrom,
   instantAt,
   isoDate,
@@ -62,7 +63,6 @@ import {
 import type {
   AccountId,
   BlockId,
-  BlockKind,
   BlockSubject,
   CalendarEvent,
   CalendarId,
@@ -104,9 +104,6 @@ const viewPref = pref<View | null>(
   null,
 )
 
-/** Which of the two halves of a time block the grid is showing. */
-export type Layer = 'both' | 'planned' | 'actual'
-
 /**
  * Anything the grid can draw in a time slot, reduced to what drawing needs.
  *
@@ -124,7 +121,7 @@ export type Layer = 'both' | 'planned' | 'actual'
  */
 export interface Slot {
   key: string
-  kind: 'planned' | 'actual' | 'event' | 'reading'
+  kind: 'block' | 'event' | 'reading'
   title: string
   subtitle: string
   color: string
@@ -251,7 +248,6 @@ class CalendarState {
   view = $state<View>('week')
   /** The day the view is anchored on, `YYYY-MM-DD`. */
   anchor = $state<string>(todayIso())
-  layer = $state<Layer>('both')
   weekStart = $state<number>(localeWeekStart())
 
   // ── what has been loaded for it ──────────────────────────────────────
@@ -689,13 +685,9 @@ class CalendarState {
     const dayStart = 0
     const dayEnd = 24 * 60
 
-    if (this.layer !== 'actual') out.push(...this.blockSlots(iso, 'planned'))
-    if (this.layer !== 'planned') out.push(...this.blockSlots(iso, 'actual'))
+    out.push(...this.blockSlots(iso))
     out.push(...this.ghostBlockSlots(iso))
-    // A reading is a record of something that happened, so it belongs with
-    // the record layer and disappears under Plan. That falls out of what the
-    // toggle already means rather than being a rule of its own.
-    if (this.layer !== 'planned') out.push(...this.readingSlots(iso))
+    out.push(...this.readingSlots(iso))
     const live = this.liveSlot(iso)
     if (live) out.push(live)
 
@@ -767,7 +759,6 @@ class CalendarState {
    * severity, a habit ticked at the moment it happened.
    */
   marksOn(iso: string): Mark[] {
-    if (this.layer === 'planned') return []
     const drawn = this.drawnTrackers
     const out: Mark[] = []
     for (const reading of this.readings) {
@@ -793,7 +784,6 @@ class CalendarState {
    * nothing about the minute it was typed.
    */
   untimedMarksOn(iso: string): Mark[] {
-    if (this.layer === 'planned') return []
     const drawn = this.drawnTrackers
     return this.readings
       .filter((r) => r.localDate === iso && !r.at && drawn.has(r.trackerId))
@@ -809,10 +799,10 @@ class CalendarState {
       })
   }
 
-  private blockSlots(iso: string, kind: BlockKind): Slot[] {
+  private blockSlots(iso: string): Slot[] {
     const out: Slot[] = []
     for (const block of this.blocks) {
-      if (block.kind !== kind || block.allDay) continue
+      if (block.allDay) continue
       const start = offsetInDay(block.start, iso)
       const end = offsetInDay(block.end, iso)
       // Clipped to this column, so a block running past midnight appears at
@@ -820,7 +810,7 @@ class CalendarState {
       if (end <= 0 || start >= 24 * 60) continue
       out.push({
         key: `block:${block.id}`,
-        kind,
+        kind: 'block',
         title: this.titleOfBlock(block),
         subtitle: this.subtitleOfBlock(block),
         color: this.colorOfBlock(block),
@@ -838,9 +828,7 @@ class CalendarState {
    *
    * Drawn through the same `Slot` shape as a real block -- packed into the
    * same lanes, coloured the way the block's subject would be -- so nothing
-   * about the grid's layout has to know a ghost is not yet real. Only the
-   * layer toggle is respected the way `blockSlots` respects it: a plan
-   * proposed for a day already has the shape of `Layer` to answer to.
+   * about the grid's layout has to know a ghost is not yet real.
    */
   private ghostBlockSlots(iso: string): Slot[] {
     const out: Slot[] = []
@@ -848,14 +836,12 @@ class CalendarState {
       if (p.payload.type !== 'create') continue
       const block = recordAs(p, 'block')
       if (!block || block.allDay) continue
-      if (this.layer === 'planned' && block.kind !== 'planned') continue
-      if (this.layer === 'actual' && block.kind !== 'actual') continue
       const start = offsetInDay(block.start, iso)
       const end = offsetInDay(block.end, iso)
       if (end <= 0 || start >= 24 * 60) continue
       out.push({
         key: `proposal:${p.id}`,
-        kind: block.kind,
+        kind: 'block',
         title: this.titleOfBlock(block),
         subtitle: this.subtitleOfBlock(block),
         color: this.colorOfBlock(block),
@@ -877,13 +863,13 @@ class CalendarState {
    */
   private liveSlot(iso: string): Slot | null {
     const timer = this.timer
-    if (!timer || this.layer === 'planned') return null
+    if (!timer) return null
     const start = offsetInDay(timer.since, iso)
     const end = start + Math.max(0, (this.tick - Date.parse(timer.since)) / 60_000)
     if (end <= 0 || start >= 24 * 60) return null
     return {
       key: 'live',
-      kind: 'actual',
+      kind: 'block',
       title: timer.title || this.titleOfSubject(timer.subject),
       subtitle: 'Tracking now',
       color: this.colorOfSubject(timer.subject),
@@ -920,22 +906,30 @@ class CalendarState {
     return this.entryDays.has(iso)
   }
 
-  /** Minutes booked on `iso`, split by plan and record. For the day header. */
-  totalsOn(iso: string): { planned: number; logged: number } {
-    let planned = 0
-    let logged = 0
+  /** Minutes booked on `iso`, for the day header. */
+  minutesOn(iso: string): number {
+    return this.#sumOn(iso, () => true)
+  }
+
+  /**
+   * Minutes of `iso` that count as time spent: blocks the vault has
+   * settled as such (see `blockKindFor`), and the timer. For the rail's tally.
+   */
+  spentOn(iso: string): number {
+    return this.#sumOn(iso, (b) => b.kind === 'actual')
+  }
+
+  #sumOn(iso: string, counts: (b: TimeBlock) => boolean): number {
+    let minutes = 0
     for (const b of this.blocks) {
-      if (b.localDate !== iso) continue
-      const mins = minutesBetween(b.start, b.end)
-      if (b.kind === 'actual') logged += mins
-      else planned += mins
+      if (b.localDate === iso && !b.allDay && counts(b)) minutes += minutesBetween(b.start, b.end)
     }
     // Whatever is running counts towards its day as it happens, or the
-    // header would read "nothing logged" through an afternoon of solid work.
+    // header would read "nothing" through an afternoon of solid work.
     if (this.timer && isoDate(new Date(this.timer.since)) === iso) {
-      logged += this.runningMinutes
+      minutes += this.runningMinutes
     }
-    return { planned, logged }
+    return minutes
   }
 
   // ── the selection ────────────────────────────────────────────────────
@@ -963,12 +957,10 @@ class CalendarState {
         : this.view === 'week'
           ? `the week ${from} to ${to}`
           : `the month ${this.anchor.slice(0, 7)}`
-    const layer =
-      this.layer === 'planned' ? ', plans only' : this.layer === 'actual' ? ', time spent only' : ''
     const picked = this.selected
     const kind = this.selection?.kind
     return {
-      view: view + layer,
+      view,
       open:
         picked && kind === 'block'
           ? seen('block', picked.id, picked.title)
@@ -1049,16 +1041,17 @@ class CalendarState {
     day: string
     startMinutes: number
     minutes: number
-    kind?: BlockKind
     title?: string
     select?: boolean
   }): Promise<TimeBlock | null> {
     try {
+      const start = instantAt(opts.day, opts.startMinutes)
+      const minutes = Math.max(0, Math.round(opts.minutes))
       const block = await api.newBlock({
         subject: opts.subject,
-        start: instantAt(opts.day, opts.startMinutes),
-        minutes: Math.max(0, Math.round(opts.minutes)),
-        kind: opts.kind ?? 'planned',
+        start,
+        minutes,
+        kind: blockKindFor(start, minutes),
       })
       if (opts.title) block.title = opts.title
       await api.saveBlock(block)
@@ -1171,7 +1164,6 @@ class CalendarState {
         day: date,
         startMinutes: start,
         minutes,
-        kind: 'planned',
         title: draft.location ? `${draft.title} — ${draft.location}` : draft.title,
       })
       // "Every Tuesday" written as a block makes the series from it -- the
@@ -1412,7 +1404,7 @@ class CalendarState {
       subject: { type: 'adhoc' },
       start: draft.start,
       minutes: minutesBetween(draft.start, draft.end),
-      kind: 'planned',
+      kind: blockKindFor(draft.start, minutesBetween(draft.start, draft.end)),
     })
     const title = draft.title.trim()
     const place = draft.location.trim()
@@ -1828,37 +1820,10 @@ class CalendarState {
     }
   }
 
-  /** Turn a plan into a record, or back. What "I actually did this" is. */
-  toggleKind(id: string) {
-    const block = this.blocks.find((b) => b.id === id)
-    if (!block) return
-    this.patch(id, { kind: block.kind === 'planned' ? 'actual' : 'planned' })
-  }
-
-  /**
-   * Copy a planned block into an actual one covering the same slot.
-   *
-   * The common case at the end of a session: it went roughly to plan. Two
-   * rows rather than one edited row, because the point of the pair is that
-   * they can be compared, and a plan overwritten by its outcome cannot be.
-   */
-  async logAsDone(id: string) {
-    const block = this.blocks.find((b) => b.id === id)
-    if (!block || block.kind !== 'planned') return
-    await this.book({
-      subject: $state.snapshot(block.subject),
-      day: block.localDate,
-      startMinutes: offsetInDay(block.start, block.localDate),
-      minutes: minutesBetween(block.start, block.end),
-      kind: 'actual',
-      title: block.title,
-    })
-  }
-
   // ── the timer ────────────────────────────────────────────────────────
   //
-  // "What am I doing right now" is a note in local storage, and *one* actual
-  // time block written when you stop. Not a block written on start and
+  // "What am I doing right now" is a note in local storage, and *one* time
+  // block written when you stop. Not a block written on start and
   // closed on stop, which is the obvious design and is wrong in two ways:
   //
   //   * closing the window mid-session leaves a zero-length block on disk
@@ -1912,7 +1877,6 @@ class CalendarState {
       day: isoDate(since),
       startMinutes: since.getHours() * 60 + since.getMinutes(),
       minutes,
-      kind: 'actual',
       title: timer.title,
       select: false,
     })
@@ -1963,13 +1927,12 @@ class CalendarState {
    *
    * The right-hand rail's list, and the thing you drag onto the grid.
    * Deliberately not "every open task": a plan you have already made is not
-   * a thing to be nagged about, so anything with a planned block in view
-   * drops off the list the moment it is scheduled.
+   * a thing to be nagged about, so anything with a block in view drops off
+   * the list the moment it is scheduled.
    */
   get unscheduled(): Task[] {
     const booked = new Set(
       this.blocks
-        .filter((b) => b.kind === 'planned')
         .map((b) => (b.subject.type === 'task' ? b.subject.id : null))
         .filter(Boolean) as TaskId[],
     )

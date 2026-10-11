@@ -159,6 +159,16 @@ export function minutesBetween(start: string, end: string): number {
   return Math.max(0, Math.round((Date.parse(end) - Date.parse(start)) / 60_000))
 }
 
+/**
+ * Plan or time spent, by the clock: a block whose end has passed is time
+ * spent. The vault settles this itself on every save (`Vault::settle_blocks`
+ * has the one exception); said here as well so a new block's local copy
+ * agrees from the start.
+ */
+export function blockKindFor(start: string, minutes: number): 'planned' | 'actual' {
+  return Date.parse(start) + minutes * 60_000 <= Date.now() ? 'actual' : 'planned'
+}
+
 /** Do two half-open intervals share any instant? Touching does not count. */
 export function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
   return aStart < bEnd && bStart < aEnd

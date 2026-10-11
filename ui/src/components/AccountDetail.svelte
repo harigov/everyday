@@ -40,6 +40,7 @@
   import AgentAccessGrid from './AgentAccessGrid.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import SignInLink from './SignInLink.svelte'
 
   let { id, onclose }: { id: AccountId; onclose: () => void } = $props()
 
@@ -264,14 +265,21 @@
   let signIn = $state<OAuthSignInHandle | null>(null)
   let openedInBrowser = $state(true)
   /**
-   * Scopes asked for on top of the account's own, for a sign-in triggered
-   * from the calendar section below rather than the "Sign in again" button
-   * -- see the plan's "scopes are asked for when a service is switched on,
-   * not all at once." Cleared by the ordinary `startSignIn`, so a ticket
-   * once raised for calendar access does not silently attach itself to
-   * every later re-sign-in too.
+   * Scopes asked for on top of the account's own -- the preset's calendar
+   * scopes, whenever calendar is switched on for the saved record. See the
+   * plan's "scopes are asked for when a service is switched on, not all at
+   * once." Both "Sign in again" and the calendar section's own button ask
+   * for them: the calendar app's "sign in again to change events here"
+   * sends people to whichever button they see first, and one that quietly
+   * re-asked only for the account's old read-only grant left every
+   * calendar exactly as locked as before.
    */
   let extraScopes = $state<string[]>([])
+
+  function calendarScopesToAsk(): string[] {
+    if (!original?.services.calendar) return []
+    return accounts.preset(original.provider)?.oauth?.calendarScopes ?? []
+  }
 
   async function runOAuthSignIn() {
     if (!original || original.auth.type !== 'oAuth') return
@@ -309,7 +317,7 @@
 
   function startSignIn() {
     if (!original) return
-    extraScopes = []
+    extraScopes = calendarScopesToAsk()
     if (original.auth.type === 'oAuth') {
       const preset = accounts.preset(original.provider)
       clientSecretInput = ''
@@ -575,20 +583,30 @@
       {:else if signInPhase === 'waiting'}
         <p class="hint">
           {#if openedInBrowser}
-            Finish signing in in the browser window that just opened.
+            Finish signing in in the browser window that just opened. If none did, open this link:
           {:else if signIn}
             This build cannot open a browser itself. Open this link and finish signing in there:
           {/if}
         </p>
-        {#if signIn && !openedInBrowser}
-          <code class="link">{signIn.url}</code>
+        {#if signIn}
+          <SignInLink url={signIn.url} />
         {/if}
         <div class="sheet-row">
           <span class="spacer"></span>
           <button class="btn" onclick={cancelSignIn}>Cancel</button>
         </div>
       {:else if signInPhase === 'success'}
-        <p class="hint">Signed in.</p>
+        {#if original.services.calendar && calendarScopesMissing}
+          <p class="error">
+            Signed in, but without permission to change calendars. The consent page gives each
+            permission its own checkbox -- sign in again and tick the calendar ones too.
+          </p>
+          <div>
+            <button class="btn" onclick={startSignIn}>Sign in again</button>
+          </div>
+        {:else}
+          <p class="hint">Signed in.</p>
+        {/if}
       {:else if signInPhase === 'cancelled'}
         <p class="hint">Cancelled.</p>
         <div>
@@ -880,16 +898,6 @@
   .notice {
     font-size: var(--text-sm);
     color: var(--fg-muted);
-  }
-
-  .link {
-    display: block;
-    overflow-wrap: anywhere;
-    font-size: var(--text-xs);
-    color: var(--fg-muted);
-    background: var(--bg-sunken);
-    padding: 0.4rem 0.5rem;
-    border-radius: 4px;
   }
 
   .mailai-row {

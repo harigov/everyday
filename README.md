@@ -3,8 +3,8 @@
 A private journal, a notebook, a todo app, a calendar, a library, a place
 where they all add up, and an assistant that works while you are not looking —
 for macOS, Linux and Windows. Rich text with photos and video, projects and
-tasks on a list or a board, your week with the plan and the record side by
-side, a shelf for everything you mean to read and watch and cook, standing
+tasks on a list or a board, a calendar that knows where your week went, a
+shelf for everything you mean to read and watch and cook, standing
 work the assistant does on a schedule and leaves for you to read, storage on
 this computer or on a Postgres server you choose, encryption you actually hold
 the key to, and a door out of it: every app writes itself to Markdown,
@@ -154,32 +154,32 @@ blocks** pointing at it, each either *planned* or *actual*:
 ```
 Project ──┬── Task ──┬── Task (subtask)
           │          │
-          └──────────┴── TimeBlock   planned, and what actually happened
+          └──────────┴── TimeBlock   planned while ahead, actual once it ends
 ```
 
-Keeping plan and record as separate rows is what makes "where did my time
-go" answerable at all — one field overwriting the other cannot be compared
-with itself. A block can also point at a project, or at nothing (a dentist
-appointment), which is the shape a calendar needs.
+Which one is decided by the clock, not by you: a block whose end has passed
+is time spent, and goals, the Overview and a task's logged time add those up.
+The vault settles it on every save and once a minute after
+(`Vault::settle_blocks`). The one exception is a plan that overlaps a record
+of the same thing — the timer's session, say — which stays uncounted so the
+hour is not counted twice. A block can also point at a project, or at nothing
+(a dentist appointment), which is the shape a calendar needs.
 
 ## The calendar
 
-Day, week and month, with four things drawn on the same grid and told apart
+Day, week and month, with three things drawn on the same grid and told apart
 by weight rather than by colour — colour is already spoken for, it says which
 project or which calendar something belongs to.
 
 ```
-  planned block   a wash, dashed rail     you meant to do this
-  actual block    solid fill, solid rail  you did
+  block           solid fill, solid rail  your own time, past or ahead
   event           outlined, tinted        somebody else's calendar
   task            an outlined chip        due that day, not booked
 ```
 
-A header toggle draws **Plan**, **Record**, or both, and that toggle is the
-reason the storage looks the way it does. It is not a filter bolted on
-afterwards: `TimeBlock` has had a planned/actual split since the todo app
-shipped, precisely so that "two hours booked, forty minutes actually spent"
-would be a comparison rather than a lost field.
+A block looks the same before and after it happens, the way an event does in
+every other calendar; there is no plan/record toggle. See "Where the time
+went" for how a block becomes time spent.
 
 Scheduling is dragging. Open tasks with nothing booked against them sit in a
 rail on the right; drag one onto Tuesday afternoon and it becomes a planned
@@ -1084,8 +1084,7 @@ Only a quantity measured in time has a length — a 500 mg dose is a moment
 however it is measured — so those are the only readings drawn as rectangles.
 Everything else is a mark, which is also why they do not go through the lane
 packer: a dose does not clash with your ten o'clock. Readings are records of
-what happened, so the header's **Record** toggle shows them and **Plan** hides
-them, which falls out of what that control already means.
+what happened, drawn beside your blocks.
 
 The honest limit: a reading is not a `TimeBlock`. It cannot be dragged, and it
 does not count towards "where did my time go" — that is still what booking
@@ -2948,8 +2947,7 @@ menu: one panel in the window, opened by whichever row was clicked.
   entry      star · pin · which journal it is filed under · what it is for
   project    open · rename · colour · status · what it is for
   task       status · priority · deadline · project · a subtask
-  block      "this is what happened" · plan or record · track it now ·
-             what that hour was for
+  block      track it now · repeat · what that hour was for
   event      set the same hour aside in your own record
   item       status · rating · favourite · what it is for — in the shelf's
              own words, so a restaurant offers "Been" where a book offers

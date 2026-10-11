@@ -29,7 +29,8 @@ fn a_time_block_is_placed_at_the_wall_clock_time_it_was_given() {
     );
     assert_eq!(blocks["count"], 1);
     assert_eq!(blocks["blocks"][0]["minutes"], 90);
-    assert_eq!(blocks["blocks"][0]["kind"], "planned");
+    // A day that has passed: the hour counts as time spent.
+    assert_eq!(blocks["blocks"][0]["kind"], "actual");
     assert_eq!(blocks["blocks"][0]["for"]["task_id"], task_id);
 }
 

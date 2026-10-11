@@ -2,16 +2,16 @@
   // The day and week grid: hours down the side, days across the top, and
   // everything that happens in them drawn in between.
   //
-  // Three kinds of thing share the grid and are told apart by weight rather
+  // The kinds of thing that share the grid are told apart by weight rather
   // than by colour, because colour is already spoken for -- it says which
-  // project or which calendar something belongs to, and a scheme that also
-  // used it for "planned versus done" would have nothing left to say either
-  // with.
+  // project or which calendar something belongs to.
   //
-  //   planned   a translucent wash, dashed left rail    -- an intention
-  //   actual    a solid fill, solid left rail           -- a record
+  //   block     a solid fill, solid left rail           -- your own time
   //   event     a hairline outline, tinted ground       -- a calendar's
   //   new       dashed all round, raised                -- not saved yet
+  //
+  // Whether a block was a plan or time spent is not drawn: no calendar
+  // draws that, and the clock decides it anyway (`Vault::settle_blocks`).
   //
   // Overlapping things are packed into lanes by `packLanes`, so two clashing
   // meetings each take half the column and an unrelated one later in the day
@@ -483,7 +483,7 @@
   <div class="head">
     <div class="corner"></div>
     {#each days as iso (iso)}
-      {@const totals = calendar.totalsOn(iso)}
+      {@const booked = calendar.minutesOn(iso)}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="dayhead"
@@ -508,10 +508,8 @@
               <Icon name="quote" size={11} weight={2} />
             </span>
           {/if}
-          {#if totals.logged > 0}
-            <span class="tally logged" title="Time logged">{formatMinutes(totals.logged)}</span>
-          {:else if totals.planned > 0}
-            <span class="tally" title="Time planned">{formatMinutes(totals.planned)}</span>
+          {#if booked > 0}
+            <span class="tally" title="Time booked">{formatMinutes(booked)}</span>
           {/if}
         </div>
       </div>
@@ -848,10 +846,6 @@
     font-variant-numeric: tabular-nums;
     color: var(--fg-faint);
   }
-  .tally.logged {
-    color: var(--fg-subtle);
-    font-weight: 550;
-  }
 
   /* ── The all-day band ───────────────────────────────────────────────── */
 
@@ -1091,25 +1085,12 @@
     pointer-events: auto;
   }
 
-  /* An intention: a wash, and a dashed rail. Deliberately lighter than the
-     record beside it -- a plan is a claim about the future, and it should
-     not look as settled as something that actually happened. */
-  .slot.planned {
-    background: color-mix(in oklab, var(--c) 13%, var(--bg-raised));
-    color: color-mix(in oklab, var(--c) 62%, var(--fg));
-    border-left: 3px dashed var(--c);
-    cursor: grab;
-  }
-
-  /* A record: solid, and heavier. */
-  .slot.actual {
-    background: color-mix(in oklab, var(--c) 26%, var(--bg-raised));
-    color: color-mix(in oklab, var(--c) 74%, var(--fg));
+  /* Your own time: solid, past or future alike. */
+  .slot.block {
+    background: color-mix(in oklab, var(--c) 22%, var(--bg-raised));
+    color: color-mix(in oklab, var(--c) 72%, var(--fg));
     border-left: 3px solid var(--c);
     cursor: grab;
-  }
-  .slot.actual .slottitle {
-    font-weight: 620;
   }
 
   /* Somebody else's: outlined rather than filled, so a busy work calendar
@@ -1179,8 +1160,7 @@
 
   /* A new event, not saved yet: dashed all the way round in the colour of
      the calendar it is bound for, and raised over the column. It is the one
-     thing on the grid being edited, and the dashes are the same promise a
-     planned block's rail makes -- this is an intention, not yet a fact on
+     thing on the grid being edited, and the dashes say this is not yet a fact on
      anybody's calendar. */
   .pending {
     position: absolute;

@@ -269,7 +269,7 @@ class OverviewState {
    * A timer started twenty minutes ago has no block behind it yet, so the
    * query above cannot see it -- and a card reading "nothing recorded" part
    * way through an afternoon of solid work is the one number here that would
-   * be read as broken. The same correction `calendar.totalsOn` makes.
+   * be read as broken. The same correction `calendar.minutesOn` makes.
    */
   get recordedToday(): { logged: number; planned: number } {
     const { logged, planned } = this.bookedToday
