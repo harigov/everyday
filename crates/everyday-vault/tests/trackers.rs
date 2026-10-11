@@ -270,8 +270,10 @@ mod derived {
         let (mon, tue) = (date(2026, 9, 21), date(2026, 9, 22));
         for b in [
             block(&scales, mon, 7, 30, BlockKind::Actual),
+            // The plan that session was booked from: it has passed, but the
+            // record above already counts the same half hour.
+            block(&scales, mon, 7, 30, BlockKind::Planned),
             block(&scales, mon, 20, 15, BlockKind::Actual),
-            block(&scales, tue, 7, 40, BlockKind::Planned),
             block(&run, tue, 8, 50, BlockKind::Actual),
         ] {
             v.save_block(&b).unwrap();
@@ -292,7 +294,7 @@ mod derived {
         assert_eq!(
             days_of(&v, &time, mon, tue),
             vec![(mon, 45.0)],
-            "Monday's two blocks, and neither a planned hour nor another goal's run"
+            "Monday's two blocks, and neither the plan behind one of them nor another goal's run"
         );
 
         // Filed under the role instead, it counts every goal under it.

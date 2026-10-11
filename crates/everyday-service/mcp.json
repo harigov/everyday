@@ -587,14 +587,6 @@
             "description": "File it under this goal, from list_goals.",
             "type": "string"
           },
-          "kind": {
-            "description": "planned (setting time aside) or actual (recording what it took). Defaults to planned.",
-            "enum": [
-              "planned",
-              "actual"
-            ],
-            "type": "string"
-          },
           "label": {
             "description": "Or a free-text label, if it is neither.",
             "type": "string"

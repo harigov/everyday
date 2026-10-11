@@ -112,3 +112,84 @@ fn the_vault_rejects_tasks_that_would_be_unusable() {
     assert!(vault.tasks(&Default::default()).unwrap().is_empty());
     assert!(vault.blocks(&Default::default()).unwrap().is_empty());
 }
+
+mod settling_blocks {
+    //! A block's kind follows the clock -- see `Vault::settle_blocks`.
+
+    use super::*;
+    use everyday_core::Vault;
+    use everyday_core::task::{BlockKind, BlockSubject, TimeBlock};
+    use jiff::{SignedDuration, Timestamp};
+
+    fn vault() -> (Vault, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let v = create(dir.path(), VaultConfig { password: None, ..Default::default() }).unwrap();
+        (v, dir)
+    }
+
+    fn block(subject: BlockSubject, hours_from_now: i64, minutes: u32) -> TimeBlock {
+        let start = Timestamp::now() + SignedDuration::from_hours(hours_from_now);
+        TimeBlock::new(subject, start, minutes, "UTC")
+    }
+
+    fn kind(v: &Vault, b: &TimeBlock) -> BlockKind {
+        v.block(b.id).unwrap().kind
+    }
+
+    #[test]
+    fn saving_decides_plan_or_time_spent_by_the_clock() {
+        let (v, _dir) = vault();
+        let past = block(BlockSubject::Adhoc, -3, 60);
+        let mut ahead = block(BlockSubject::Adhoc, 3, 60);
+        ahead.kind = BlockKind::Actual;
+        v.save_block(&past).unwrap();
+        v.save_block(&ahead).unwrap();
+        assert_eq!(kind(&v, &past), BlockKind::Actual, "an hour that has ended is time spent");
+        assert_eq!(kind(&v, &ahead), BlockKind::Planned, "an hour still ahead is a plan");
+    }
+
+    #[test]
+    fn a_plan_that_ends_becomes_time_spent_at_the_next_settle() {
+        let (v, _dir) = vault();
+        let b = block(BlockSubject::Adhoc, 1, 60);
+        v.save_block(&b).unwrap();
+        assert_eq!(kind(&v, &b), BlockKind::Planned);
+
+        let later = Timestamp::now() + SignedDuration::from_hours(3);
+        assert_eq!(v.settle_blocks(later, None).unwrap(), 1);
+        assert_eq!(kind(&v, &b), BlockKind::Actual);
+        assert_eq!(v.settle_blocks(later, None).unwrap(), 0, "nothing left to change");
+    }
+
+    #[test]
+    fn a_plan_with_a_record_of_the_same_hour_is_not_counted_twice() {
+        let (v, _dir) = vault();
+        let task = everyday_core::task::Task::new("Write the report");
+        v.save_task(&task).unwrap();
+        let subject = BlockSubject::Task { id: task.id };
+
+        // The old "This is what happened": a record, and the plan it was
+        // copied from, of the same hour that has now passed.
+        let mut record = block(subject, -3, 60);
+        record.kind = BlockKind::Actual;
+        let mut plan = record.clone();
+        plan.id = everyday_core::id::BlockId::new();
+        plan.kind = BlockKind::Planned;
+        v.save_block(&record).unwrap();
+        v.save_block(&plan).unwrap();
+        // Something else, overlapping but on another subject, still counts.
+        let other = block(BlockSubject::Adhoc, -3, 30);
+        v.save_block(&other).unwrap();
+
+        let now = Timestamp::now();
+        v.settle_blocks(now, None).unwrap();
+        assert_eq!(kind(&v, &record), BlockKind::Actual);
+        assert_eq!(kind(&v, &plan), BlockKind::Planned, "the record already counts this hour");
+        assert_eq!(kind(&v, &other), BlockKind::Actual);
+
+        // Without the record, the plan is all there is to go on.
+        v.delete_block(record.id).unwrap();
+        v.settle_blocks(now, None).unwrap();
+        assert_eq!(kind(&v, &plan), BlockKind::Actual);
+    }
+}

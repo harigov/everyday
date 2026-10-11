@@ -145,6 +145,40 @@ pub async fn tick(service: &Arc<Service>) {
         .await;
     }
 
+    // Time blocks that have just ended become time spent -- see
+    // `Vault::settle_blocks`. The calendar draws plans and records alike,
+    // so this, not a button, is what moves an hour from one to the other.
+    {
+        let vault = vault.clone();
+        let service = service.clone();
+        let now = service.now();
+        let _ = blocking(move || {
+            if vault.supports_tasks() {
+                let this = Arc::as_ptr(&vault) as usize;
+                let whole = *SETTLED_VAULT.lock().unwrap() != this;
+                let since = if whole {
+                    None
+                } else {
+                    let today = now.to_zoned(jiff::tz::TimeZone::UTC).date();
+                    today.checked_sub(jiff::Span::new().days(2)).ok()
+                };
+                match vault.settle_blocks(now, since) {
+                    Ok(changed) => {
+                        if whole {
+                            *SETTLED_VAULT.lock().unwrap() = this;
+                        }
+                        if changed > 0 {
+                            service.events().changed(Change::new(Kind::Block, Op::Updated));
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "could not settle ended time blocks"),
+                }
+            }
+            Ok(())
+        })
+        .await;
+    }
+
     // The two model-assisted mail features that run unasked, on their own
     // schedule rather than a tool call's -- see `crate::mailai`'s module
     // docs for why neither is a tool, and why each keeps its own per-minute
@@ -1164,6 +1198,11 @@ fn pretty_minutes(seconds: i64) -> String {
     }
     format!("{} days", (hours + 12) / 24)
 }
+
+/// The vault whose whole history of time blocks has been settled this
+/// process, by address. Every later tick only looks back two days:
+/// nothing older can have just ended.
+static SETTLED_VAULT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 
 /// Close whatever a pending proposal's own clock, or an event only mail can
 /// raise, has already decided -- called from `tick`, beside

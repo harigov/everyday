@@ -114,7 +114,7 @@ import type {
   Skill,
 } from './types'
 import { DEFAULT_COLORS } from './colors'
-import { addDays, isoDate } from './time'
+import { addDays, blockKindFor, isoDate, minutesBetween } from './time'
 import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
 import { DIGEST_MARKER, ordinal } from './dream'
 import type { Draft, ImproveMode, MailCategory } from './types'
@@ -207,6 +207,13 @@ const PASSWORD = 'everyday'
  * rather than a loud one. Narrow, and fall back when the shape is not what
  * was expected.
  */
+/** A copy of `b` with its kind set by the clock, as the vault does on save. */
+function settled(b: TimeBlock): TimeBlock {
+  const copy = structuredClone(b)
+  copy.kind = blockKindFor(copy.start, minutesBetween(copy.start, copy.end))
+  return copy
+}
+
 function str(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback
 }
@@ -4552,10 +4559,12 @@ export const mockInvoke = async <T>(
 
     case 'save_block': {
       requireUnlocked()
-      const b = args.block as TimeBlock
+      // The vault decides plan or time spent by the clock; this mirrors the
+      // rule without `Vault::settle_blocks`' overlap exception.
+      const b = settled(args.block as TimeBlock)
       const i = blocks.findIndex((x) => x.id === b.id)
-      if (i >= 0) blocks[i] = structuredClone(b)
-      else blocks.push(structuredClone(b))
+      if (i >= 0) blocks[i] = b
+      else blocks.push(b)
       return undefined as T
     }
 
@@ -4575,12 +4584,6 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const block = structuredClone(args.block as TimeBlock)
       const rule = (args.recurrence as Recurrence | null | undefined) ?? null
-      if (rule && block.kind !== 'planned') {
-        throw new VaultError(
-          'invalid',
-          'only a plan can repeat -- a record of time spent happened once',
-        )
-      }
       const stored = blocks.find((b) => b.id === block.id)
       const old = stored?.series ?? block.series ?? null
       const from = stored && stored.start < block.start ? stored.start : block.start
@@ -4596,7 +4599,7 @@ export const mockInvoke = async <T>(
         updatedAt: now,
         series: rule ? { id: block.id, rule: structuredClone(rule) } : null,
       }
-      const written: TimeBlock[] = [head]
+      const written: TimeBlock[] = [settled(head)]
       if (rule) {
         const first = new Date(head.start)
         const length = Date.parse(head.end) - first.getTime()
@@ -4611,15 +4614,15 @@ export const mockInvoke = async <T>(
             start: start.toISOString(),
             end: new Date(start.getTime() + length).toISOString(),
             localDate: d,
-            kind: 'planned',
+            kind: blockKindFor(start.toISOString(), length / 60_000),
             createdAt: now,
             updatedAt: now,
           })
         }
       }
       const at = blocks.findIndex((b) => b.id === head.id)
-      if (at >= 0) blocks[at] = head
-      else blocks.push(head)
+      if (at >= 0) blocks[at] = written[0]!
+      else blocks.push(written[0]!)
       blocks.push(...written.slice(1))
       return structuredClone(written) as T
     }

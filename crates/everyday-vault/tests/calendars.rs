@@ -186,7 +186,7 @@ fn an_account_signed_in_to_read_calendars_cannot_write_them() {
 fn a_repeating_block_is_written_ahead_and_can_be_changed_or_cut_short_from_any_point() {
     use everyday_core::recurrence::{Frequency, Recurrence, Weekday};
     use everyday_core::store::tasks::BlockQuery;
-    use everyday_core::task::{BlockSubject, SeriesScope, TimeBlock};
+    use everyday_core::task::{BlockKind, BlockSubject, SeriesScope, TimeBlock};
 
     let dir = tempfile::tempdir().unwrap();
     let vault = create(dir.path(), VaultConfig { password: None, ..Default::default() }).unwrap();
@@ -258,8 +258,13 @@ fn a_repeating_block_is_written_ahead_and_can_be_changed_or_cut_short_from_any_p
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].id, head.id);
 
-    // Only a plan repeats.
-    let mut done = TimeBlock::new(BlockSubject::Adhoc, start, 30, "UTC");
-    done.kind = everyday_core::task::BlockKind::Actual;
-    assert!(vault.save_block_series(&done, Some(&rule)).is_err());
+    // A series may start from an hour that has already passed: what has
+    // happened of it is time spent, and the rest is still a plan.
+    let earlier = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(73);
+    let past = TimeBlock::new(BlockSubject::Adhoc, earlier, 30, "UTC");
+    let daily = Recurrence { count: Some(6), ..Recurrence::every(Frequency::Daily) };
+    let written = vault.save_block_series(&past, Some(&daily)).unwrap();
+    let spent = written.iter().filter(|b| b.kind == BlockKind::Actual).count();
+    assert_eq!(spent, 4, "73, 49, 25 and 1 hours ago");
+    assert_eq!(written.len() - spent, 2);
 }

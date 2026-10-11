@@ -34,7 +34,7 @@
     label: string
     time: string
     color: string
-    kind: 'planned' | 'actual' | 'event' | 'task' | 'reading'
+    kind: 'block' | 'event' | 'task' | 'reading'
     muted?: boolean
     /** A pending proposal rather than a real record -- drawn as a small ghost chip. */
     ghost?: boolean
@@ -325,10 +325,8 @@
     text-decoration: line-through;
   }
 
-  /* The dot carries the whole visual language at this size: filled for a
-     record, hollow for a plan, ringed for somebody else's calendar. Four
-     shapes in six pixels is more than a month cell can spare, so the rest of
-     the distinction is left to the day view. */
+  /* The dot carries the whole visual language at this size: filled for
+     your own time, ringed for somebody else's calendar, square for a task. */
   .dot {
     width: 6px;
     height: 6px;
@@ -336,7 +334,7 @@
     border-radius: 50%;
     border: 1.5px solid var(--c);
   }
-  .row.actual .dot {
+  .row.block .dot {
     background: var(--c);
   }
   .row.event .dot {

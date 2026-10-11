@@ -314,7 +314,6 @@ function repeatItems(block: TimeBlock): MenuItem[] {
  * one *is* the answer, so there is still nothing to confirm.
  */
 export function blockMenu(block: TimeBlock): MenuItem[] {
-  const planned = block.kind === 'planned'
   const minutes = minutesBetween(block.start, block.end)
   const destinations = calendar.writableCalendars
   return tidyMenu([
@@ -325,16 +324,6 @@ export function blockMenu(block: TimeBlock): MenuItem[] {
       run: () => (calendar.selection = { kind: 'block', id: block.id }),
     },
     SEP,
-    planned && {
-      label: 'This is what happened',
-      icon: 'tick',
-      run: () => calendar.logAsDone(block.id),
-    },
-    {
-      label: planned ? 'Make it a record' : 'Make it a plan again',
-      icon: 'clock',
-      run: () => calendar.toggleKind(block.id),
-    },
     {
       label: 'Track time on it now',
       icon: 'play',
@@ -350,8 +339,7 @@ export function blockMenu(block: TimeBlock): MenuItem[] {
       items: purposeItems(block.purpose, (purpose) => calendar.patch(block.id, { purpose })),
     },
     SEP,
-    // Only a plan repeats: a record of time spent happened once.
-    planned && {
+    {
       label: 'Repeat',
       icon: 'refresh',
       hint: block.series ? 'repeats' : undefined,
