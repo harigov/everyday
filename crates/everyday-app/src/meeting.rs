@@ -331,10 +331,10 @@ async fn try_begin(
 /// untouched. See [`begin_headless`]'s own doc, "A slot can also go stale
 /// on its own", for why this check exists at all.
 fn reclaim_if_ended(slot: &mut Option<CaptureSlot>) {
-    if matches!(slot, Some(CaptureSlot::Recording(h)) if h.ended_on_its_own()) {
-        if let Some(CaptureSlot::Recording(handle)) = slot.take() {
-            handle.reclaim();
-        }
+    if matches!(slot, Some(CaptureSlot::Recording(h)) if h.ended_on_its_own())
+        && let Some(CaptureSlot::Recording(handle)) = slot.take()
+    {
+        handle.reclaim();
     }
 }
 

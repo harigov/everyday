@@ -19,7 +19,7 @@ UI_DIR  := ui
 ARGS ?=
 
 .DEFAULT_GOAL := help
-.PHONY: help setup run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
+.PHONY: help setup run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav test-matrix lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
 	@echo "Every Day -- make <target>"
@@ -218,6 +218,30 @@ test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in D
 	status=$$?; \
 	docker rm -f everyday-caldavtest >/dev/null; \
 	rm -f $$tmp_htpasswd; \
+	exit $$status
+
+test-matrix: ## Run the chat bot end to end against a throwaway Conduit in Docker
+	@docker rm -f everyday-matrixtest >/dev/null 2>&1 || true
+	@docker run -d --rm --name everyday-matrixtest \
+		-p 127.0.0.1:16167:6167 \
+		-e CONDUIT_SERVER_NAME=chat-test.localhost \
+		-e CONDUIT_DATABASE_PATH=/var/lib/matrix-conduit/ \
+		-e CONDUIT_DATABASE_BACKEND=rocksdb \
+		-e CONDUIT_PORT=6167 -e CONDUIT_ADDRESS=0.0.0.0 \
+		-e CONDUIT_ALLOW_REGISTRATION=true -e CONDUIT_ALLOW_FEDERATION=false \
+		-e CONDUIT_ALLOW_CHECK_FOR_UPDATES=false -e CONDUIT_TRUSTED_SERVERS='[]' \
+		-e CONDUIT_CONFIG='' \
+		--tmpfs /var/lib/matrix-conduit:rw,size=512m \
+		matrixconduit/matrix-conduit:v0.10.12 >/dev/null; \
+	echo "waiting for Conduit..."; \
+	for i in $$(seq 1 60); do \
+		curl -sf -o /dev/null http://127.0.0.1:16167/_matrix/client/versions && break; \
+		sleep 1; \
+	done; \
+	EVERYDAY_TEST_MATRIX_URL=http://127.0.0.1:16167 \
+		cargo test -p everyday-chat --test matrix_live -- --nocapture; \
+	status=$$?; \
+	docker rm -f everyday-matrixtest >/dev/null; \
 	exit $$status
 
 # `everyday-service`'s own end-to-end suite

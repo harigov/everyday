@@ -11,6 +11,7 @@
 pub mod accounts;
 pub mod assistant;
 pub mod calendars;
+pub mod chat;
 pub mod insights;
 pub mod journals;
 pub mod library;
@@ -87,6 +88,7 @@ pub fn catalog() -> &'static [&'static Command] {
             web::COMMANDS,
             weather::COMMANDS,
             assistant::COMMANDS,
+            chat::COMMANDS,
             quick::COMMANDS,
             meta::COMMANDS,
         ]

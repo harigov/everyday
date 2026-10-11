@@ -363,24 +363,58 @@ impl Vault {
         self.key_in_keychain.store(on, Ordering::Relaxed);
     }
 
-    /// Seconds until the key is dropped for idleness, or `None` if that is
-    /// disabled, the vault is already locked, or its key is being kept in
-    /// this computer's keychain.
+    /// Record whether a chat link is switched on, so the idle timer below
+    /// leaves the key alone for it.
     ///
-    /// That last case is what makes signing in to the computer count as
+    /// The bot answers a phone, and a phone is used exactly when nobody is at
+    /// this machine: a vault that dropped its key after a quiet spell would
+    /// meet every message sent from the sofa with a locked vault. So while any
+    /// link is on, the key is kept past `forget_key_seconds`, the way it is
+    /// when the keychain holds it. Set by `everyday_service::chat::reconcile`
+    /// -- on unlock, and after every save or removal of a link -- from
+    /// [`ChatSettings::any_enabled`](crate::chat::ChatSettings::any_enabled);
+    /// never computed in here, where reading the links would cost a store
+    /// round trip every few seconds.
+    ///
+    /// Nothing else about locking changes. The window's own screen lock is a
+    /// different timer, on the interface, and still hides the window when it
+    /// fires; the bot does not need the window. And an explicit lock still
+    /// stops everything, bot included, because it calls [`Vault::lock`]
+    /// directly and never asks this flag: someone who locked a vault by hand
+    /// meant it. The bot starts again when the vault is next unlocked. See
+    /// `docs/plans/chat.md`, "The idle timer does not stop the bot".
+    pub fn set_kept_for_chat(&self, on: bool) {
+        self.kept_for_chat.store(on, Ordering::Relaxed);
+    }
+
+    /// Seconds until the key is dropped for idleness, or `None` if that is
+    /// disabled, the vault is already locked, its key is being kept in this
+    /// computer's keychain, or a chat link needs it.
+    ///
+    /// The keychain case is what makes signing in to the computer count as
     /// unlocking: a vault whose key the keychain already holds will have it
     /// back the moment the machine starts, so a timer that forgot it while
     /// idle would only make the assistant's routines wait for somebody to
     /// notice and unlock it again -- the exact gap `autounlock` exists to
     /// close. This is the key alone; the window's screen timer is suspended on
     /// the same condition by the interface, which knows it as `opensItself`
-    /// (see `startLockTimers` in `ui/src/lib/state.svelte.ts`). Explicitly
-    /// locking the vault -- Ctrl/Cmd+L on through to the tray -- always works
-    /// regardless of this flag, because none of those call this method at
-    /// all; they call [`Vault::lock`] directly.
+    /// (see `startLockTimers` in `ui/src/lib/state.svelte.ts`).
+    ///
+    /// The chat case is the same promise made for a different reason: the bot
+    /// is only useful while nobody is at the machine, so the key it needs may
+    /// not go on a timer. It suspends *only* this one. The screen timer is
+    /// still the interface's to run, and the window still hides what it was
+    /// showing; only the vault behind it stays open. Explicitly locking the
+    /// vault -- Ctrl/Cmd+L on through to the tray -- always works regardless
+    /// of either flag, because none of those call this method at all; they
+    /// call [`Vault::lock`] directly.
     pub fn seconds_until_forget_key(&self) -> Option<u64> {
         let timeout = self.header_read().forget_key_seconds;
-        if timeout == 0 || !self.is_unlocked() || self.key_in_keychain.load(Ordering::Relaxed) {
+        if timeout == 0
+            || !self.is_unlocked()
+            || self.key_in_keychain.load(Ordering::Relaxed)
+            || self.kept_for_chat.load(Ordering::Relaxed)
+        {
             return None;
         }
         // Saturating, because the two loads are a moment apart and the

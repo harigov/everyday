@@ -11,11 +11,11 @@
 //! learns from this domain is that a conversation happened, when, and how
 //! many turns it took.
 //!
-//! The two singleton tables are the other thing worth knowing about. Both
-//! hold exactly one row, pinned by a `CHECK` in the schema rather than by
-//! convention here, so a bug that tried to write a second configuration
-//! fails at the database instead of leaving two and reading whichever came
-//! back first.
+//! The three singleton tables -- the settings, the API key, and the chat
+//! links -- are the other thing worth knowing about. Each holds exactly one
+//! row, pinned by a `CHECK` in the schema rather than by convention here, so
+//! a bug that tried to write a second configuration fails at the database
+//! instead of leaving two and reading whichever came back first.
 //!
 //! # Three tables that keep their own `INSERT`
 //!
@@ -28,11 +28,12 @@
 //! always rewrites every column [`Record::columns`] names.
 
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message, Skill};
+use everyday_core::chat::ChatSettings;
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{ConversationId, MemoryId, MessageId, SkillId};
 use everyday_core::store::agent::{
-    AgentStore, ConversationQuery, conversation_aad, memory_aad, message_aad, secret_aad,
-    settings_aad, skill_aad,
+    AgentStore, ConversationQuery, chat_settings_aad, conversation_aad, memory_aad, message_aad,
+    secret_aad, settings_aad, skill_aad,
 };
 
 use crate::conn::{SqlExt, ToValue, Value};
@@ -118,6 +119,34 @@ impl AgentStore for SqlStore {
         let data = self.seal(&settings_aad(), settings)?;
         self.write().execute(
             "INSERT INTO agent_settings (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
+    // ---- chat links -----------------------------------------------------
+
+    fn chat_settings(&self) -> Result<ChatSettings> {
+        let sealed = self.read().sealed("SELECT data FROM chat_settings WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&chat_settings_aad(), &sealed),
+            // Never configured. No links is a real answer -- the assistant
+            // answers nobody -- the same argument `settings` makes for
+            // returning the default rather than an `Option`.
+            None => Ok(ChatSettings::default()),
+        }
+    }
+
+    fn put_chat_settings(&self, settings: &ChatSettings) -> Result<()> {
+        // Validated here as well as in `Vault::save_chat_settings`, as
+        // `put_settings` does: a link that gets this far unchecked is stored
+        // for the next unlock to trip over, in a row nothing else can read
+        // around.
+        settings.validate()?;
+        let data = self.seal(&chat_settings_aad(), settings)?;
+        self.write().execute(
+            "INSERT INTO chat_settings (id, data) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET data = ?1",
             &vals![data],
         )?;

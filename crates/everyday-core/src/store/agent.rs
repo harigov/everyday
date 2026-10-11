@@ -39,6 +39,7 @@
 //! travels the other way. See the [`agent`](crate::agent) module docs.
 
 use crate::agent::{AgentSettings, Conversation, Memory, Message, Skill};
+use crate::chat::ChatSettings;
 use crate::error::Result;
 use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
 use serde::{Deserialize, Serialize};
@@ -128,6 +129,31 @@ pub trait AgentStore: Send + Sync {
     fn settings(&self) -> Result<AgentSettings>;
 
     fn put_settings(&self, settings: &AgentSettings) -> Result<()>;
+
+    // ---- chat links -----------------------------------------------------
+
+    /// Every chat link, or [`ChatSettings::default`] -- none -- if none was
+    /// ever saved.
+    ///
+    /// Here rather than in a store of their own because a chat link is the
+    /// assistant reaching somebody's phone: it is meaningless on a backend
+    /// that cannot hold the assistant, and wanted on every one that can. The
+    /// same argument as [`AgentStore::settings`] for never returning an
+    /// `Option`: a vault that has never opened Settings → Chat has a
+    /// perfectly good answer to "which chats does the assistant answer", and
+    /// it is none.
+    ///
+    /// Only the links themselves are kept here. What a link signs in with is
+    /// a [`ChatSecret`](crate::chat::ChatSecret) in the
+    /// [`SecretStore`](super::secrets::SecretStore), and which conversation a
+    /// chat has reached is on the conversation, as
+    /// [`Conversation::via`].
+    fn chat_settings(&self) -> Result<ChatSettings>;
+
+    /// Replace every chat link at once. Sealed under its own associated
+    /// data, [`chat_settings_aad`], so the row cannot be made to decrypt as
+    /// the assistant's own settings or the reverse.
+    fn put_chat_settings(&self, settings: &ChatSettings) -> Result<()>;
 
     // ---- the credential -------------------------------------------------
 
@@ -259,10 +285,29 @@ pub fn secret_aad() -> Vec<u8> {
     b"everyday.agent-secret.v1".to_vec()
 }
 
+/// Associated data for the chat links record: constant, for the reason
+/// [`settings_aad`] is, and distinct from it and from [`secret_aad`] so that
+/// none of the three singleton rows can stand in for another.
+pub fn chat_settings_aad() -> Vec<u8> {
+    b"everyday.chat-settings.v1".to_vec()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::id::RoutineRunId;
+
+    #[test]
+    fn the_three_singleton_rows_are_sealed_under_different_data() {
+        // The property the comments on `settings_aad` claim: swapping one
+        // singleton's ciphertext into another's row must fail to open.
+        let all = [settings_aad(), secret_aad(), chat_settings_aad()];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
+    }
 
     #[test]
     fn chats_only_keeps_threads_with_no_run_behind_them() {

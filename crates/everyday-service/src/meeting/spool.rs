@@ -171,7 +171,7 @@ pub fn read_chunk(
             format!("{} held an odd number of bytes", path.display()),
         ));
     }
-    Ok(bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
+    Ok(bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
 }
 
 /// Delete a recording's whole spool directory. Not an error if there is
@@ -648,14 +648,12 @@ fn sweep_orphaned_spool(vault: &Vault) {
             Ok(recording) => matches!(recording.stage, Stage::Done),
             Err(_) => true,
         };
-        if orphaned {
-            if let Err(e) = remove_audio(vault, id) {
-                tracing::warn!(
-                    recording = %id,
-                    error = %e,
-                    "meeting spool: could not remove an orphaned spool directory"
-                );
-            }
+        if orphaned && let Err(e) = remove_audio(vault, id) {
+            tracing::warn!(
+                recording = %id,
+                error = %e,
+                "meeting spool: could not remove an orphaned spool directory"
+            );
         }
     }
 }

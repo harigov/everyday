@@ -101,6 +101,11 @@ pub(crate) fn serve(
         let supervisor =
             std::sync::Arc::new(everyday_service::supervisor::Supervisor::new(service.events()));
         service.set_supervisor(supervisor.clone());
+        // Chat links, on the supervisor just installed: a machine under a desk
+        // is exactly where a phone's questions should be answered from. If
+        // the vault is already open and unlocked (`--keychain`), this starts
+        // every switched-on link straight away; otherwise unlocking does.
+        service.set_chat_runner(std::sync::Arc::new(everyday_chat::Runner));
 
         // The local socket as well, always. It is how `everyday new` writes
         // through a running server instead of coming up read-only beside it,

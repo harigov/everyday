@@ -30,6 +30,7 @@
 mod accounts;
 mod agent;
 mod calendars;
+mod chat;
 mod header;
 mod journal;
 mod keys;
@@ -158,6 +159,13 @@ pub struct Vault {
     /// below polls every few seconds. See [`Vault::set_key_in_keychain`] and
     /// `everyday_vault::autounlock`'s module doc for who sets it and why.
     key_in_keychain: AtomicBool,
+    /// Whether a chat link is switched on, and so whether the key has to
+    /// outlast the idle timeout for the bot to keep answering. `false` until
+    /// the service says otherwise after it unlocks the vault and reads the
+    /// links; the same kind of cached bit as `key_in_keychain`, for the same
+    /// reason -- the idle timer polls every few seconds and must not read a
+    /// settings record to decide. See [`Vault::set_kept_for_chat`].
+    kept_for_chat: AtomicBool,
     /// The exclusive write claim on this directory, or `None` if another
     /// process holds it and this vault is therefore read-only. Dropped with
     /// the vault, which is what releases it. See [`crate::lockfile`].
@@ -257,6 +265,7 @@ impl Vault {
             last_activity_ms: AtomicU64::new(0),
             epoch: Instant::now(),
             key_in_keychain: AtomicBool::new(false),
+            kept_for_chat: AtomicBool::new(false),
             // A vault nobody could write to is not worth creating, so unlike
             // `open` this does not fall back to read-only. In practice it is
             // always ours: `create` refused an existing vault above, and the
@@ -373,6 +382,7 @@ impl Vault {
             last_activity_ms: AtomicU64::new(0),
             epoch: Instant::now(),
             key_in_keychain: AtomicBool::new(false),
+            kept_for_chat: AtomicBool::new(false),
             write_lock,
             integrity_check: Mutex::new(None),
         };

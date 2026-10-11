@@ -152,10 +152,10 @@ fn present_in_order(transcript: &Transcript) -> Vec<String> {
     let mut present = Vec::new();
     let mut seen = HashSet::new();
     for seg in &transcript.segments {
-        if seen.insert(seg.speaker) {
-            if let Some(s) = transcript.speaker(seg.speaker) {
-                present.push(s.label.clone());
-            }
+        if seen.insert(seg.speaker)
+            && let Some(s) = transcript.speaker(seg.speaker)
+        {
+            present.push(s.label.clone());
         }
     }
     present
@@ -688,7 +688,7 @@ async fn enrol_voice(
         return Err(CommandError::new(codes::INVALID, "the recording is not 16-bit PCM"));
     }
     let samples: Vec<i16> =
-        bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
 
     let kit = speech::speech_kit()?;
     let embedding = blocking({

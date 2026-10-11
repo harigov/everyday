@@ -24,6 +24,8 @@ import type {
   CalendarId,
   CaptureStatus,
   ChangeEvent,
+  ChatLink,
+  ChatLinkId,
   Connected,
   Connection,
   ConversationId,
@@ -1531,6 +1533,27 @@ export const api = {
    */
   attachOauthSignIn: (id: AccountId, signInId: string, clientSecret?: string, scopes?: string[]) =>
     call('attachOauthSignIn', { id, signInId, clientSecret, scopes }),
+
+  // ── Chat links ─────────────────────────────────────────────────────
+  //
+  // The assistant as a bot on a chat service -- see `docs/plans/chat.md`.
+  // Like an account, a link's secrets (the bot's password, its session)
+  // never come back: a view says only whether each is there.
+
+  /** Every link, each with where it stands right now. */
+  chatLinks: () => call('chatLinks', {}),
+  /** A fresh, switched-on Matrix link with nothing filled in. Not saved. */
+  newChatLink: () => call('newChatLink', {}),
+  /**
+   * Create or update a link, and restart it so the change takes effect at
+   * once. `password` is the bot's, given once to sign in; `null` or absent
+   * keeps whatever sign-in the link already has. Rejects with the server's
+   * own message when the link is invalid.
+   */
+  saveChatLink: (link: ChatLink, password?: string | null) =>
+    call('saveChatLink', { link, password }),
+  /** Stop a link and forget it, its sign-in and what it kept on this machine. */
+  removeChatLink: (id: ChatLinkId) => call('removeChatLink', { id }),
 }
 
 /**

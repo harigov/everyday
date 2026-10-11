@@ -268,7 +268,7 @@ impl pipeline::AudioSource for FileAudio {
     fn read_chunk(&self, id: RecordingId, track: Track, seq: u32) -> CommandResult<Vec<i16>> {
         let bytes = std::fs::read(self.path(id, track, seq))
             .map_err(|e| everyday_service::error::CommandError::new("io", e.to_string()))?;
-        Ok(bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
+        Ok(bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]])).collect())
     }
 
     fn remove_audio(&self, id: RecordingId) -> CommandResult<()> {

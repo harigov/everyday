@@ -13,6 +13,7 @@ members = [
     "crates/everyday-cli",
     "crates/everyday-mail",
     "crates/everyday-mailindex",
+    "crates/everyday-chat",
     "crates/everyday-app",
 ]
 
@@ -34,12 +35,13 @@ default-members = [
     "crates/everyday-cli",
     "crates/everyday-mail",
     "crates/everyday-mailindex",
+    "crates/everyday-chat",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.96"
 license = "MIT"
 authors = ["Every Day contributors"]
 
@@ -55,6 +57,7 @@ everyday-service = { path = "crates/everyday-service" }
 everyday-server = { path = "crates/everyday-server" }
 everyday-mail = { path = "crates/everyday-mail" }
 everyday-mailindex = { path = "crates/everyday-mailindex" }
+everyday-chat = { path = "crates/everyday-chat" }
 
 tauri = "2"
 tauri-build = "2"

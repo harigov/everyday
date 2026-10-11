@@ -287,16 +287,16 @@ impl Supervisor {
         // there to update rather than racing this function to create it.
         let generation = {
             let mut tasks = self.0.tasks.lock().unwrap();
-            if let Some(entry) = tasks.get_mut(&key) {
-                if entry.handle.is_some() {
-                    // Already running (or between resolving and `finish`
-                    // clearing its handle -- see `Entry::rerun_requested`'s
-                    // own doc for that exact window). Ask it to run again
-                    // once it is done, rather than starting a second
-                    // attempt underneath it.
-                    entry.rerun_requested = true;
-                    return;
-                }
+            if let Some(entry) = tasks.get_mut(&key)
+                && entry.handle.is_some()
+            {
+                // Already running (or between resolving and `finish`
+                // clearing its handle -- see `Entry::rerun_requested`'s
+                // own doc for that exact window). Ask it to run again
+                // once it is done, rather than starting a second
+                // attempt underneath it.
+                entry.rerun_requested = true;
+                return;
             }
             let generation = tasks.get(&key).map_or(0, |e| e.generation.wrapping_add(1));
             tasks.insert(

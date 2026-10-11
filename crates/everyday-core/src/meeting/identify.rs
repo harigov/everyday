@@ -248,10 +248,10 @@ fn nearest_owned_position(pos: usize, owners: &[Option<usize>]) -> Option<usize>
             return Some(owner);
         }
         let right = pos + delta;
-        if right < n {
-            if let Some(owner) = owners[right] {
-                return Some(owner);
-            }
+        if right < n
+            && let Some(owner) = owners[right]
+        {
+            return Some(owner);
         }
         if left.is_none() && right >= n {
             return None;
@@ -370,19 +370,19 @@ pub fn fold_into(voiceprint: &mut Voiceprint, centroid: &[f32], params: Params) 
         }
     }
 
-    if let Some((i, score)) = nearest {
-        if score >= params.match_threshold {
-            let n = voiceprint.samples as f32;
-            let merged: Vec<f32> = voiceprint.centroids[i]
-                .iter()
-                .zip(centroid)
-                .map(|(existing, new)| (existing * n + new) / (n + 1.0))
-                .collect();
-            voiceprint.centroids[i] = normalise(&merged);
-            voiceprint.samples += 1;
-            voiceprint.touch();
-            return;
-        }
+    if let Some((i, score)) = nearest
+        && score >= params.match_threshold
+    {
+        let n = voiceprint.samples as f32;
+        let merged: Vec<f32> = voiceprint.centroids[i]
+            .iter()
+            .zip(centroid)
+            .map(|(existing, new)| (existing * n + new) / (n + 1.0))
+            .collect();
+        voiceprint.centroids[i] = normalise(&merged);
+        voiceprint.samples += 1;
+        voiceprint.touch();
+        return;
     }
 
     if voiceprint.centroids.len() >= super::MAX_CENTROIDS {
@@ -410,16 +410,16 @@ pub fn parse_attendee(attendee: &str) -> (Option<String>, Option<String>) {
         return (None, None);
     }
 
-    if let Some(lt) = s.find('<') {
-        if let Some(gt_rel) = s[lt..].find('>') {
-            let email_part = s[lt + 1..lt + gt_rel].trim();
-            let name_part = s[..lt].trim().trim_matches('"').trim();
-            let email = email_part.strip_prefix("mailto:").unwrap_or(email_part).trim();
-            return (
-                if name_part.is_empty() { None } else { Some(name_part.to_string()) },
-                if email.is_empty() { None } else { Some(email.to_ascii_lowercase()) },
-            );
-        }
+    if let Some(lt) = s.find('<')
+        && let Some(gt_rel) = s[lt..].find('>')
+    {
+        let email_part = s[lt + 1..lt + gt_rel].trim();
+        let name_part = s[..lt].trim().trim_matches('"').trim();
+        let email = email_part.strip_prefix("mailto:").unwrap_or(email_part).trim();
+        return (
+            if name_part.is_empty() { None } else { Some(name_part.to_string()) },
+            if email.is_empty() { None } else { Some(email.to_ascii_lowercase()) },
+        );
     }
 
     if let Some(rest) = s.strip_prefix("mailto:") {

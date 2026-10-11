@@ -60,6 +60,7 @@
 //! | op `account_id`, `state`, `origin`, `not_before_us`, `thread_id` | that something is queued to reach a server, its outcome, who asked (the *kind* only), when it may run, and which thread it acts on (so a thread can show its own recent actions) -- never a message, a draft, or the op's own sealed `target` |
 //! | `mail_remote_image_settings` (singleton) | that a standing remote-image allow-list exists -- every sender and domain on it stays sealed |
 //! | `mail_contacts` (singleton) | that a contact index exists, for address autocomplete -- every address and name it has seen stays sealed |
+//! | `chat_settings` (singleton) | that chat links exist -- every homeserver, account and owner stays sealed |
 //! | `mail_category_rules` (`account_id`) | that one account has sealed corrections outranking the rules `categorize` runs at sync -- never what they are |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all

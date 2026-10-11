@@ -38,6 +38,9 @@ export type SettingsTab =
   // from Settings, never drawn in the Assistant app's own nav -- so it gets
   // its own branch in `SettingsView.svelte` rather than joining `Pane`.
   | 'skills'
+  // The assistant reached from a chat app on another device -- bot accounts
+  // on a server the person runs, listed and edited in `ChatLinksPanel`.
+  | 'chat'
   | 'meetings'
   | 'data'
   | 'vault'

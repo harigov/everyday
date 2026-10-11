@@ -619,6 +619,21 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "set_agent_key", json!({ "key": "sk-test-key" })).await;
     run(&svc, &h, "clear_agent_key", json!({})).await;
+
+    // ---- chat links ---------------------------------------------------------
+    //
+    // Switched off, and with no runner installed on this service, so saving
+    // and removing one only ever writes settings: nothing is started or
+    // stopped, and so no `backgroundTask` change races this capture the way
+    // a mail account's sync task would.
+    let mut chat_link = call(&svc, &h, "new_chat_link", json!({})).await;
+    chat_link["enabled"] = json!(false);
+    chat_link["service"]["homeserver"] = json!("http://127.0.0.1:6167");
+    chat_link["service"]["userId"] = json!("@everyday:example.org");
+    chat_link["service"]["owner"] = json!("@owner:example.org");
+    run(&svc, &h, "save_chat_link", json!({ "link": chat_link, "password": "bot-password" })).await;
+    run(&svc, &h, "remove_chat_link", json!({ "id": chat_link["id"] })).await;
+
     run(&svc, &h, "set_quick_job", json!({ "name": "todo.parse", "on": true })).await;
 
     let mut memory = call(&svc, &h, "new_memory", json!({})).await;

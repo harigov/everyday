@@ -118,7 +118,7 @@ fn body_text(rng: &mut Rng, target_bytes: usize) -> String {
 }
 
 fn synthetic_doc(rng: &mut Rng, i: usize, base: Timestamp) -> MailDoc {
-    let account = if i % 5 == 0 { "work" } else { "personal" };
+    let account = if i.is_multiple_of(5) { "work" } else { "personal" };
     let mailbox = match i % 4 {
         0 => "archive",
         1 => "sent",
@@ -147,11 +147,11 @@ fn synthetic_doc(rng: &mut Rng, i: usize, base: Timestamp) -> MailDoc {
         cc: String::new(),
         subject,
         body_text: body_text(rng, body_len),
-        labels: if i % 11 == 0 { vec!["travel".to_string()] } else { vec![] },
+        labels: if i.is_multiple_of(11) { vec!["travel".to_string()] } else { vec![] },
         date,
-        has_attachment: i % 7 == 0,
-        unread: i % 3 == 0,
-        starred: i % 29 == 0,
+        has_attachment: i.is_multiple_of(7),
+        unread: i.is_multiple_of(3),
+        starred: i.is_multiple_of(29),
     }
 }
 

@@ -543,7 +543,7 @@ impl FilePackStore {
     }
 
     fn account_dir(&self, account: &str) -> PathBuf {
-        self.root.join(blake3::hash(account.as_bytes()).to_hex().to_string())
+        self.root.join(blake3::hash(account.as_bytes()).to_hex().as_str())
     }
 
     /// Every pack that exists for an account, oldest first. `PackId`s are

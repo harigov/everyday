@@ -104,10 +104,8 @@ fn first_meeting_link(text: &str) -> Option<String> {
             None => true,
             Some(c) => !(c.is_alphanumeric() || matches!(c, '.' | '-' | '@' | '/')),
         };
-        if boundary {
-            if let Some(link) = bare_host_token(rest) {
-                return Some(link);
-            }
+        if boundary && let Some(link) = bare_host_token(rest) {
+            return Some(link);
         }
     }
     None
@@ -197,15 +195,15 @@ fn bare_host_token(rest: &str) -> Option<String> {
 /// always, for CalDAV and a subscribed feed, because their own `uid`
 /// already carries a stable base this strips down to.
 pub fn series_key(uid: &str) -> String {
-    if let Some(idx) = uid.rfind('@') {
-        if uid[idx + 1..].parse::<jiff::civil::DateTime>().is_ok() {
-            return uid[..idx].to_string();
-        }
+    if let Some(idx) = uid.rfind('@')
+        && uid[idx + 1..].parse::<jiff::civil::DateTime>().is_ok()
+    {
+        return uid[..idx].to_string();
     }
-    if let Some(idx) = uid.rfind('#') {
-        if uid[idx + 1..].parse::<jiff::Timestamp>().is_ok() {
-            return uid[..idx].to_string();
-        }
+    if let Some(idx) = uid.rfind('#')
+        && uid[idx + 1..].parse::<jiff::Timestamp>().is_ok()
+    {
+        return uid[..idx].to_string();
     }
     uid.to_string()
 }

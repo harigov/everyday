@@ -58,6 +58,7 @@
   import AccountsPanel from './AccountsPanel.svelte'
   import AgentPanel from './AgentPanel.svelte'
   import AssistantPanes from './AssistantPanes.svelte'
+  import ChatLinksPanel from './ChatLinksPanel.svelte'
   import DataPanel from './DataPanel.svelte'
   import MeetingsPanel from './MeetingsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
@@ -130,6 +131,11 @@
     // it apart from `Pane`.
     { id: 'skills', label: 'Skills', icon: 'book', sub: true },
     { id: 'proposals', label: PANE_LABELS.proposals, icon: 'tick', sub: true },
+    // The assistant, reached from a phone. Not indented under Assistant with
+    // the panes above: those are what it does, and this is how it is reached
+    // -- bot accounts on a server the person runs, much as Accounts holds
+    // mailboxes.
+    { id: 'chat', label: 'Chat', icon: 'globe' },
     { id: 'meetings', label: 'Meetings', icon: 'mic' },
     { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
@@ -150,11 +156,14 @@
   // The assistant tabs are not offered on a backend that cannot store a
   // conversation, for the same reason the rail is not: an empty tab that
   // explains why it is empty is worse than no tab. The panes under it follow
-  // what the vault can hold, as they did in the app. Meetings rides the
-  // notes capability -- see `meetings.svelte.ts`'s own `supported`.
+  // what the vault can hold, as they did in the app. Chat is the assistant's
+  // too -- the bot answers through it. Meetings rides the notes capability --
+  // see `meetings.svelte.ts`'s own `supported`.
   const shown = $derived(
     TABS.filter(
-      (t) => (t.id !== 'assistant' && t.id !== 'skills' && !isPane(t.id)) || agent.supported,
+      (t) =>
+        (t.id !== 'assistant' && t.id !== 'skills' && t.id !== 'chat' && !isPane(t.id)) ||
+        agent.supported,
     )
       .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
@@ -320,6 +329,8 @@
       <AssistantPanes pane={tab} />
     {:else if tab === 'skills'}
       <SkillsPanel />
+    {:else if tab === 'chat'}
+      <ChatLinksPanel />
     {:else if tab === 'meetings'}
       <MeetingsPanel />
     {:else if tab === 'profile'}

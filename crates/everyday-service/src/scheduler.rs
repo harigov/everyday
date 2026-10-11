@@ -991,6 +991,7 @@ async fn resume(
         channel: Arc::new(|_: AgentEvent| {}),
         unattended: Some(run.id),
         drafting,
+        via: None,
     };
 
     let mut wrote = Vec::new();

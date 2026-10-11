@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -88,7 +88,21 @@ pub fn migrate(
 
 /// Every migration step, in order. Index 0 is version 1.
 pub fn steps(d: Dialect) -> Vec<Vec<String>> {
-    vec![v1(d), v2(d), v3(d), v4(d), v5(d), v6(d), v7(d), v8(d), v9(d), v10(d), v11(d), v12(d)]
+    vec![
+        v1(d),
+        v2(d),
+        v3(d),
+        v4(d),
+        v5(d),
+        v6(d),
+        v7(d),
+        v8(d),
+        v9(d),
+        v10(d),
+        v11(d),
+        v12(d),
+        v13(d),
+    ]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.
@@ -1259,6 +1273,31 @@ fn v12(d: Dialect) -> Vec<String> {
              id          TEXT    PRIMARY KEY NOT NULL,
              created_us  {int} NOT NULL,
              updated_us  {int} NOT NULL,
+             data        {blob} NOT NULL
+         )"
+    )]
+}
+
+/// Version 13: chat -- the links through which the assistant answers a chat
+/// service, so a phone can reach it. See `docs/plans/chat.md` and
+/// `everyday_core::chat`.
+///
+/// One table, and it is `meeting_settings` (`v10`, above) again: a singleton
+/// pinned to one row by a `CHECK`, holding every link as a single sealed
+/// record. Nothing is in the clear -- not a homeserver's address, not the
+/// account the bot signs in as, not whose messages it answers -- because the
+/// only question ever asked of it is "all of them", on unlock and when
+/// somebody opens Settings → Chat, and neither can use an index. What a link
+/// signs in with is not here at all: it is sealed per link in `record_secrets`
+/// (`v9`), under the owner kind `"chat"`. And which chat a conversation came
+/// from is no new column on `conversations` either, for the reason `run_id`
+/// is not one: it is read only after the row is open, and the history list
+/// opens every row for its title anyway.
+fn v13(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS chat_settings (
+             id          {int} PRIMARY KEY CHECK (id = 1),
              data        {blob} NOT NULL
          )"
     )]

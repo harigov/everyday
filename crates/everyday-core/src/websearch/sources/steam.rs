@@ -111,16 +111,16 @@ pub(crate) fn merge_steam_detail(result: &mut SearchResult, body: &str) -> Resul
     }
     // Metacritic's, out of a hundred, and credited to them — see
     // `SearchResult::rating_source`.
-    if let Some(score) = data.pointer("/metacritic/score").and_then(Value::as_f64) {
-        if let Some(rating) = normalize_rating(score, 100.0) {
-            result.rating = Some(rating);
-            result.rating_source = "Metacritic".to_string();
-            result.rating_url = data
-                .pointer("/metacritic/url")
-                .and_then(Value::as_str)
-                .and_then(|u| http_url(u).ok())
-                .unwrap_or_default();
-        }
+    if let Some(score) = data.pointer("/metacritic/score").and_then(Value::as_f64)
+        && let Some(rating) = normalize_rating(score, 100.0)
+    {
+        result.rating = Some(rating);
+        result.rating_source = "Metacritic".to_string();
+        result.rating_url = data
+            .pointer("/metacritic/url")
+            .and_then(Value::as_str)
+            .and_then(|u| http_url(u).ok())
+            .unwrap_or_default();
     }
     Ok(())
 }

@@ -153,6 +153,11 @@ pub fn run() {
             service.set_supervisor(std::sync::Arc::new(
                 everyday_service::supervisor::Supervisor::new(service.events()),
             ));
+            // Chat links -- the assistant as a bot on the person's own Matrix
+            // server -- run as supervised tasks too, so they are installed
+            // after the supervisor they will be registered on. Nothing starts
+            // until a vault is unlocked; see `everyday_service::chat`.
+            service.set_chat_runner(std::sync::Arc::new(everyday_chat::Runner));
             // Keeps the tray's optional "current/next meeting" line current
             // between whatever else would rebuild it -- a calendar sync
             // (`events::WindowSink::changed`), a lock

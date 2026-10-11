@@ -16,6 +16,7 @@
   import { threadGroups } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import { assistant } from '../lib/assistant.svelte'
+  import { viaTitle } from '../lib/chat'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { panels } from '../lib/panels.svelte'
@@ -120,6 +121,13 @@
         title={thread.title || 'Untitled'}
       >
         <span class="side-text">{thread.title || 'Untitled'}</span>
+        <!-- A thread somebody started from a chat app rather than in the
+             rail. The sidebar's own muted count style is the whole of the
+             marker: it says where the thread came from, not that it needs
+             anything. -->
+        {#if thread.via}
+          <span class="side-count" title={viaTitle(thread.via)}>{thread.via.service}</span>
+        {/if}
       </button>
     {/each}
   {:else}

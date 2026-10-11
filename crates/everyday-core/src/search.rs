@@ -820,7 +820,7 @@ mod tests {
             .map(|i| entry(jid, &format!("title{i:04}"), &format!("heron body{i:04}")))
             .collect();
         let mut idx = SearchIndex::build(&entries, &[]);
-        let doomed = |i: usize| i % 2 == 0;
+        let doomed = |i: usize| i.is_multiple_of(2);
         for (_, e) in entries.iter().enumerate().filter(|(i, _)| doomed(*i)) {
             idx.remove(e.id);
         }

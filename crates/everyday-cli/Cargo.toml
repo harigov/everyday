@@ -17,6 +17,7 @@ everyday-vault.workspace = true
 everyday-service.workspace = true
 everyday-transfer.workspace = true
 everyday-server.workspace = true
+everyday-chat.workspace = true
 # For `expected_headers`: the pipe mirrors the same `_meta` fields into
 # headers that `everyday-server` validates, and must derive them the exact
 # same way rather than growing a second implementation of the rule to drift

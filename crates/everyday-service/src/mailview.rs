@@ -254,11 +254,11 @@ fn split_by_ranges<'a>(text: &'a str, ranges: &[(u32, u32)]) -> Vec<Segment<'a>>
 
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (a, b) in cuts.drain(..) {
-        if let Some(last) = merged.last_mut() {
-            if a <= last.1 {
-                last.1 = last.1.max(b);
-                continue;
-            }
+        if let Some(last) = merged.last_mut()
+            && a <= last.1
+        {
+            last.1 = last.1.max(b);
+            continue;
         }
         merged.push((a, b));
     }

@@ -50,6 +50,7 @@ export type RecordingId = string
 export type TranscriptId = string
 export type VoiceprintId = string
 export type TemplateId = string
+export type ChatLinkId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -2942,11 +2943,87 @@ export interface Conversation {
   title: string
   createdAt: string
   updatedAt: string
+  /** The chat this thread arrived through, when somebody started it from
+   *  another device rather than in the rail. Absent for every other
+   *  conversation -- the Rust side leaves it off the wire entirely. */
+  via?: Via | null
 }
 
 /** A thread in the history list, with how long it is. */
 export interface ConversationSummary extends Conversation {
   messages: number
+}
+
+// ── Chat links ───────────────────────────────────────────────────────────
+//
+// The assistant, reached from a chat app on another device -- see
+// `docs/plans/chat.md` and `everyday_core::chat`. A link is one bot account
+// on one chat service, and the one person it answers.
+
+/** The chat a conversation arrived through. */
+export interface Via {
+  link: ChatLinkId
+  /** The service's name as a person would say it ("Matrix"), copied onto the
+   *  conversation so the label outlives the link. */
+  service: string
+  /** The chat on that service: a Matrix room id. */
+  chat: string
+}
+
+/** One bot account on one chat service, and the one person it answers. */
+export interface ChatLink {
+  id: ChatLinkId
+  /** Off stops the bot without forgetting how it signs in. */
+  enabled: boolean
+  service: ChatService
+  /** Quiet this many minutes and the next message starts a fresh
+   *  conversation. Zero means never. */
+  freshAfterMinutes: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** Which service a link is on, tagged by `kind` -- Matrix is the only one so
+ *  far, and its fields sit beside the tag rather than under it. */
+export type ChatService = { kind: 'matrix' } & MatrixLink
+
+/** A bot account on a Matrix homeserver. */
+export interface MatrixLink {
+  /** Where the homeserver's client API answers, used exactly as given. */
+  homeserver: string
+  /** The bot's own account: `@everyday:example.org`. */
+  userId: string
+  /** The one person it answers. Anybody else's messages and invitations are
+   *  ignored, whatever room they arrive in. */
+  owner: string
+}
+
+export const CHAT_STATES = ['off', 'connecting', 'online', 'needsSignIn', 'failing'] as const
+/**
+ * Where a link stands, in a word. `needsSignIn` is the sign-in missing or
+ * refused -- nothing else will happen until a password is given; `failing`
+ * is something going wrong that is being retried.
+ */
+export type ChatState = (typeof CHAT_STATES)[number]
+
+/** Where a link stands, for the settings pane. */
+export interface ChatStatus {
+  state: ChatState
+  /** One sentence somebody can act on. May be empty. */
+  detail: string
+  since: string
+}
+
+/** What `chat_links` answers for each link: the record, where it stands, and
+ *  what it holds. The password and the session themselves never leave the
+ *  vault -- the interface is told only whether each is there. */
+export interface ChatLinkView {
+  link: ChatLink
+  status: ChatStatus
+  /** The bot has a session, so it needs no password to start. */
+  signedIn: boolean
+  /** A password is stored, waiting to be used to sign in. */
+  hasPassword: boolean
 }
 
 export interface Memory {
