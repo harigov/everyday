@@ -3136,6 +3136,220 @@
     "title": "Memory",
     "type": "object"
   },
+  "NewsSource": {
+    "$defs": {
+      "BlobId": {
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "type": "string"
+      },
+      "HnList": {
+        "description": "Which Hacker News list a source follows.",
+        "oneOf": [
+          {
+            "const": "front",
+            "description": "The front page, as it stands at each refresh.",
+            "type": "string"
+          },
+          {
+            "const": "show",
+            "description": "Show HN.",
+            "type": "string"
+          },
+          {
+            "const": "ask",
+            "description": "Ask HN.",
+            "type": "string"
+          },
+          {
+            "const": "top",
+            "description": "Every story above `min_points`, newest first: the \"best of, as it\nhappens\" list people build out of hnrss.org.",
+            "type": "string"
+          }
+        ]
+      },
+      "Retention": {
+        "description": "How long a source's stories are kept, in days.\n\nNews expires and saving keeps it: a saved story is never expired, and\neverything else goes once it is older than this. What is left of an\nexpired story is a tombstone -- see [`Story::expired`].",
+        "properties": {
+          "readDays": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unreadDays": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "readDays",
+          "unreadDays"
+        ],
+        "type": "object"
+      },
+      "SourceKind": {
+        "description": "Where a source's stories come from.",
+        "oneOf": [
+          {
+            "description": "RSS 0.9x, 1.0 and 2.0, Atom, and JSON Feed, at this address. The\naddress is sealed with the rest of the record: a private feed's\naddress -- a paid newsletter's, a Patreon's -- is a bearer credential,\nexactly as a calendar's secret address is.",
+            "properties": {
+              "type": {
+                "const": "web",
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "url"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Hacker News, through Algolia's API: one request for a whole list, with\npoints and comment counts, and no key.",
+            "properties": {
+              "list": {
+                "$ref": "#/$defs/HnList"
+              },
+              "minPoints": {
+                "default": 0,
+                "description": "Leave out anything with fewer points than this. Zero keeps\neverything; [`HnList::Top`] uses it as its whole definition.",
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "hackerNews",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "list"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Newsletters already arriving in Mail, from one sender. Fetches\nnothing: its stories point at messages the mail engine already\nstored, and their read state *is* the message's.\n\nMatched by sender address alone. A stored message keeps no memory of\nthe `List-Id` it arrived with (see `mail::categorize`), and one sender\nis what a person picks from the list of who writes to them anyway.",
+            "properties": {
+              "sender": {
+                "description": "The sender's address, lower-cased.",
+                "type": "string"
+              },
+              "type": {
+                "const": "mail",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "sender"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "Something a person chose to follow.",
+    "properties": {
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "folder": {
+        "default": "",
+        "description": "The sidebar folder this sits under. Empty means none. A sealed string\nrather than a record of its own: there are tens of sources, they are\ndecrypted together, and a folder table would be a second thing to\nkeep in step for nothing.",
+        "type": "string"
+      },
+      "fullText": {
+        "default": false,
+        "description": "Fetch the linked page and extract the article for every new story,\nrather than only when somebody asks. For feeds that publish a summary\nand nothing else.",
+        "type": "boolean"
+      },
+      "icon": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/BlobId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The site's icon, downloaded once into the blob store when the source\nwas added -- never a URL the webview loads."
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "images": {
+        "default": true,
+        "description": "Load a story's pictures when it is opened. On by default for a web\nfeed and Hacker News: the publisher already sees every refresh, so the\nread-receipt argument that keeps mail's pictures off is weaker here.\nA mail-backed source ignores it and follows mail's own rules.",
+        "type": "boolean"
+      },
+      "keepOutOfInbox": {
+        "default": false,
+        "description": "Mail-backed sources only: archive each new issue on arrival, so it\nlives in the Feed and not the inbox. The one thing this app does that\nreaches outside the vault, so it is off until somebody turns it on.",
+        "type": "boolean"
+      },
+      "kind": {
+        "$ref": "#/$defs/SourceKind"
+      },
+      "mute": {
+        "default": [],
+        "description": "Words that drop a story whose title contains one, case-insensitively.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "paused": {
+        "default": false,
+        "description": "Stop asking. A source that has failed for thirty days in a row pauses\nitself; a person can pause one too.",
+        "type": "boolean"
+      },
+      "retention": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Retention"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "How long this source's stories are kept. `None` is\n[`Retention::default`]."
+      },
+      "siteUrl": {
+        "default": "",
+        "description": "The site the feed belongs to, for \"open the site\". Empty when the feed\ndid not say.",
+        "type": "string"
+      },
+      "sortOrder": {
+        "default": 0,
+        "format": "int64",
+        "type": "integer"
+      },
+      "title": {
+        "description": "What the sidebar calls it. Filled from the feed's own title when it is\nadded, and the person's from then on: the refresher never writes it.",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "kind",
+      "title",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "NewsSource",
+    "type": "object"
+  },
   "Note": {
     "$defs": {
       "Attachment": {
@@ -6281,6 +6495,159 @@
       "updatedAt"
     ],
     "title": "Skill",
+    "type": "object"
+  },
+  "Story": {
+    "$defs": {
+      "Also": {
+        "description": "Another source a stored story also arrived from.",
+        "properties": {
+          "comments": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "discussionUrl": {
+            "default": "",
+            "type": "string"
+          },
+          "score": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sourceId": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sourceId"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One thing that arrived: the light half, enough to draw a row.",
+    "properties": {
+      "also": {
+        "default": [],
+        "description": "The other sources this same story arrived from after it was first\nstored -- \"also on Hacker News, 412 points\".",
+        "items": {
+          "$ref": "#/$defs/Also"
+        },
+        "type": "array"
+      },
+      "author": {
+        "default": "",
+        "type": "string"
+      },
+      "comments": {
+        "description": "Hacker News comment count.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "discussionUrl": {
+        "default": "",
+        "description": "Where the conversation about it is. Empty when there is none.",
+        "type": "string"
+      },
+      "expired": {
+        "default": false,
+        "description": "Expired: a tombstone, kept so the feed cannot bring it back as new.\nNever returned by a list.",
+        "type": "boolean"
+      },
+      "fetchedAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "hasBody": {
+        "default": false,
+        "description": "A body row exists: the feed carried content, or an article was\nextracted.",
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "imageUrl": {
+        "default": "",
+        "description": "A lead picture the feed named, if it named one. Never loaded by the\nwebview directly; see `everyday-service::news`.",
+        "type": "string"
+      },
+      "key": {
+        "description": "The keyed hash of the story's canonical address (or its guid, when it\nhas no address) -- see [`crate::Vault::news_key`]. What makes a\nrefresh idempotent, and what collapses the same article arriving from\ntwo sources into one row. Hex.",
+        "type": "string"
+      },
+      "mailMessage": {
+        "description": "Newsletters: the message this story is. Its body is drawn through\nmail's own route, and its read state is the message's seen flag.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "publishedAt": {
+        "description": "When the publisher says it was published, or when it was first seen\nif the publisher did not say.",
+        "format": "date-time",
+        "type": "string"
+      },
+      "read": {
+        "default": false,
+        "description": "Read. Filled by the store from its clear column (or, for a mail-backed\nstory, from the message's flags) on every read; the sealed copy is not\nauthoritative. See [`crate::store::news::NewsStore::set_read`].",
+        "type": "boolean"
+      },
+      "saved": {
+        "default": false,
+        "description": "Saved: kept past expiry. Filled from the clear column, like `read`.",
+        "type": "boolean"
+      },
+      "score": {
+        "description": "Hacker News points.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "sourceId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "summary": {
+        "default": "",
+        "description": "Plain text, at most [`SUMMARY_CHARS`] characters.",
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "url": {
+        "default": "",
+        "description": "The article itself. Empty for an Ask HN post, which has no link.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "sourceId",
+      "key",
+      "title",
+      "publishedAt",
+      "fetchedAt"
+    ],
+    "title": "Story",
     "type": "object"
   },
   "Task": {

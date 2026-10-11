@@ -23,6 +23,8 @@ export type PrefKey =
   | 'everyday.library.view'
   | 'everyday.library.capture'
   | 'everyday.library.enrich'
+  | 'everyday.feed.filter'
+  | 'everyday.feed.folders.closed'
   | 'everyday.journal.calendar'
   | 'everyday.overview.layout'
   | 'everyday.tray'

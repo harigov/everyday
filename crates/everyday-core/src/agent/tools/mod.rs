@@ -114,6 +114,7 @@ mod library;
 pub(crate) mod mail;
 mod meetings;
 mod memory;
+mod news;
 mod notes;
 mod proposals;
 mod purpose;
@@ -190,13 +191,16 @@ pub enum Domain {
     /// a recording or names a speaker, both of which need the pipeline
     /// `everyday_service::meeting` owns.
     Meetings,
+    /// The Feed: what somebody follows, and the stories it brings -- see
+    /// `agent::tools::news`.
+    News,
 }
 
 impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 11] = [
+    pub const ALL: [Domain; 12] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -208,6 +212,7 @@ impl Domain {
         Domain::Agent,
         Domain::Mail,
         Domain::Meetings,
+        Domain::News,
     ];
 
     /// Can this vault serve the domain, and may a model be shown it at all?
@@ -227,6 +232,7 @@ impl Domain {
                 Domain::Agent => vault.supports_agent(),
                 Domain::Mail => vault.supports_mail() && vault.supports_accounts(),
                 Domain::Meetings => vault.supports_meetings(),
+                Domain::News => vault.supports_news(),
             }
     }
 
@@ -273,7 +279,12 @@ impl Domain {
             // all -- is a guarantee this catalogue does not carry in the
             // first place: no tool here returns one, or a `voiceprint_id`,
             // or anything an embedding could be reconstructed from.
-            | Domain::Meetings => Sensitivity::Ordinary,
+            | Domain::Meetings
+            // Stories are strangers' words, like mail, and are handed to the
+            // model under `untrusted_text` for the same reason; but nothing
+            // here discloses anything about the person beyond what they
+            // follow, and summarising what arrived is the point.
+            | Domain::News => Sensitivity::Ordinary,
         }
     }
 }
@@ -314,6 +325,7 @@ impl TryFrom<RecordKind> for Domain {
             RecordKind::Recording | RecordKind::Transcript | RecordKind::Voiceprint => {
                 Ok(Domain::Meetings)
             }
+            RecordKind::NewsSource | RecordKind::Story => Ok(Domain::News),
             // Proposed work, not a domain a tool list is offered for.
             RecordKind::Proposal => Err(()),
         }
@@ -1213,6 +1225,7 @@ fn all() -> &'static [Tool] {
             skills::TOOLS,
             mail::TOOLS,
             meetings::TOOLS,
+            news::TOOLS,
         ]
         .concat()
     })
@@ -1552,6 +1565,8 @@ mod tests {
             (RecordKind::Recording, Domain::Meetings),
             (RecordKind::Transcript, Domain::Meetings),
             (RecordKind::Voiceprint, Domain::Meetings),
+            (RecordKind::NewsSource, Domain::News),
+            (RecordKind::Story, Domain::News),
         ] {
             assert_eq!(Domain::try_from(kind), Ok(domain), "{kind:?}");
         }
@@ -1668,7 +1683,9 @@ mod tests {
     #[test]
     fn every_tool_that_deletes_says_so() {
         for tool in catalog() {
-            let deletes = tool.name.starts_with("delete_") || tool.name == "forget";
+            let deletes = tool.name.starts_with("delete_")
+                || tool.name == "forget"
+                || tool.name == "unfollow_source";
             assert_eq!(
                 deletes,
                 tool.effect == Effect::Destructive,

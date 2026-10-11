@@ -1,0 +1,29 @@
+{
+  "version": "https://jsonfeed.org/version/1.1",
+  "title": "Weeknotes",
+  "home_page_url": "https://weeknotes.example/",
+  "feed_url": "https://weeknotes.example/feed.json",
+  "description": "A week, written down.",
+  "authors": [{ "name": "Sam Ito" }],
+  "items": [
+    {
+      "id": "2026-41",
+      "url": "https://weeknotes.example/2026/41/",
+      "title": "Week 41",
+      "content_html": "<p>Shipped the <strong>importer</strong>.</p>",
+      "summary": "Shipped the importer.",
+      "date_published": "2026-10-09T17:00:00Z",
+      "authors": [{ "name": "Jo Park" }],
+      "attachments": [
+        { "url": "https://weeknotes.example/img/41.png", "mime_type": "image/png" }
+      ]
+    },
+    {
+      "id": "2026-40",
+      "url": "/2026/40/",
+      "title": "Week 40",
+      "content_text": "Rested.\n\nRead a lot.",
+      "date_published": "2026-10-02T17:00:00+00:00"
+    }
+  ]
+}

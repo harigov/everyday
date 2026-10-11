@@ -336,6 +336,16 @@ export const ICONS = {
   // is the tray a thing lands in rather than the thing itself.
   mail: '<rect width="18" height="14" x="3" y="5" rx="2.5"/>' + '<path d="m4 7 8 6 8-6"/>',
 
+  // ── Feed ───────────────────────────────────────────────────────────────
+
+  // Lucide's "rss": two arcs spreading from a dot, the mark every feed reader
+  // and every browser's address bar has used for twenty years. Drawn from
+  // Lucide's own geometry rather than redrawn, for the reason the header
+  // gives -- people already know this shape.
+  rss:
+    '<path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/>' +
+    '<circle cx="5" cy="19" r="1"/>',
+
   /** Lucide's "users": the Overview's people widgets. */
   people:
     '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>' +

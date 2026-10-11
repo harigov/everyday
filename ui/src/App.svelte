@@ -16,6 +16,7 @@
   import './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
   import './lib/mail.svelte'
+  import { feed } from './lib/feed.svelte'
   import { assistant } from './lib/assistant.svelte'
   import { proposals } from './lib/proposals.svelte'
   import { purpose } from './lib/purpose.svelte'
@@ -40,6 +41,7 @@
   import CalendarView from './components/CalendarView.svelte'
   import LibraryView from './components/LibraryView.svelte'
   import MailView from './components/MailView.svelte'
+  import FeedView from './components/FeedView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import AssistantView from './components/AssistantView.svelte'
   import LockScreen from './components/LockScreen.svelte'
@@ -149,7 +151,7 @@
   // used to be a chain of ternaries with a fallback on the end, which had
   // grown a clause per app and quietly gave any new one the *journal's*
   // accent, which is the one answer that is wrong everywhere.
-  const accent = $derived(APPS[app.section].accent({ app, todo, library }))
+  const accent = $derived(APPS[app.section].accent({ app, todo, library, feed }))
 
   // Each app's sidebar folds on its own -- see `sidebar.svelte.ts` -- and a
   // peek belongs to the app it was raised over, so changing app (or opening
@@ -299,6 +301,8 @@
             <LibraryView />
           {:else if app.section === 'mail'}
             <MailView />
+          {:else if app.section === 'feed'}
+            <FeedView />
           {:else if app.section === 'overview'}
             <OverviewView />
           {:else}

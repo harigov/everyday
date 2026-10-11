@@ -104,7 +104,7 @@ pub struct BodyDocument {
 /// document may embed this one as `srcdoc` at all -- that is the other half
 /// of the platform research this constant's neighbours in `protocol.rs`
 /// document.
-const CSP: &str = "default-src 'none'; img-src everyday: http://everyday.localhost data:; \
+pub(crate) const CSP: &str = "default-src 'none'; img-src everyday: http://everyday.localhost data:; \
      style-src 'unsafe-inline'; font-src data:";
 
 /// The style every rendered body starts from. Deliberately plain CSS baked
@@ -546,7 +546,7 @@ const REMOTE_IMAGE_USER_AGENT: &str = "Mozilla/5.0";
 const PLACEHOLDER_PNG_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAIAAAUAAen63NgAAAAASUVORK5CYII=";
 
-fn placeholder_pixel() -> PartResponse {
+pub(crate) fn placeholder_pixel() -> PartResponse {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(PLACEHOLDER_PNG_BASE64)
@@ -667,7 +667,7 @@ async fn remote_image_inner(
     Ok(PartResponse { content_type, bytes, attachment: false, filename: None })
 }
 
-async fn fetch_remote_image(
+pub(crate) async fn fetch_remote_image(
     client: &reqwest::Client,
     url: &str,
     allow_loopback: bool,

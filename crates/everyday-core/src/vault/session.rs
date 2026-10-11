@@ -62,6 +62,9 @@ pub(super) enum Domain {
     /// Meeting notes: recordings, transcripts and voiceprints -- see
     /// [`crate::meeting`] and [`crate::store::meetings`].
     Meetings,
+    /// The Feed: sources, stories and their bodies -- see [`crate::news`]
+    /// and [`crate::store::news`].
+    News,
 }
 
 impl Domain {
@@ -82,6 +85,7 @@ impl Domain {
             Domain::Accounts => "accounts (this vault's backend stores journals only)",
             Domain::Mail => "mail (this vault's backend stores journals only)",
             Domain::Meetings => "meeting notes (this vault's backend stores journals only)",
+            Domain::News => "a feed (this vault's backend stores journals only)",
         }
     }
 }
@@ -284,5 +288,6 @@ mod tests {
             Domain::Meetings.to_string(),
             "meeting notes (this vault's backend stores journals only)"
         );
+        assert_eq!(Domain::News.to_string(), "a feed (this vault's backend stores journals only)");
     }
 }

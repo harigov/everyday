@@ -32,6 +32,7 @@ mod journal;
 mod library;
 mod mail;
 mod meetings;
+mod news;
 mod notes;
 mod proposals;
 mod purpose;
@@ -46,6 +47,7 @@ pub use calendars::run_calendar_suite;
 pub use library::run_library_suite;
 pub use mail::run_mail_suite;
 pub use meetings::run_meeting_suite;
+pub use news::run_news_suite;
 pub use notes::run_note_suite;
 pub use proposals::run_proposal_suite;
 pub use purpose::run_purpose_suite;
@@ -220,6 +222,14 @@ pub fn run_all(store: &dyn JournalStore) {
             mail::garbage_collection_learns_about_mail_attachments(store);
         }
         None => eprintln!("backend {name:?} stores no mail; skipping the mail suite"),
+    }
+
+    // And the Feed, after mail, on the same terms again. Handed the whole
+    // journal store because a newsletter story's read state is its mail
+    // message's, read through a join the suite has to set a message up for.
+    match store.news() {
+        Some(_) => run_news_suite(store),
+        None => eprintln!("backend {name:?} stores no feed; skipping the news suite"),
     }
 
     journal::cleanup(store);

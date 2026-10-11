@@ -37,6 +37,8 @@ import type {
   MailProviderInfo,
   MailSyncProgress,
   MeetingSettings,
+  NewSource,
+  NewsSource,
   RecordingQuery,
   EventQuery,
   Goal,
@@ -82,6 +84,7 @@ import type {
   Reading,
   ReadingQuery,
   SearchHit,
+  StoryQuery,
   Task,
   TaskQuery,
   TaskStats,
@@ -121,6 +124,25 @@ import type { Draft, ImproveMode, MailCategory } from './types'
 import type { ChatLink, ChatLinkView, ChatState, ChatStatus } from './types'
 import { sameAccount, validateLink } from './chat'
 import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
+import {
+  mockAddNewsSource,
+  mockDeleteNewsSource,
+  mockDiscoverFeeds,
+  mockExportOpml,
+  mockFetchFullArticle,
+  mockGetStory,
+  mockImportOpml,
+  mockListNewsSources,
+  mockListStories,
+  mockMarkAllStoriesRead,
+  mockMarkStoriesRead,
+  mockNewsletterSenders,
+  mockRefreshNews,
+  mockSaveNewsSource,
+  mockSaveStories,
+  mockStoryBody,
+  mockStoryForLibrary,
+} from './mock-feed'
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
@@ -3748,6 +3770,7 @@ function status(): VaultStatus {
           agent: true,
           accounts: true,
           mail: true,
+          news: true,
         }
       : undefined,
   }
@@ -6606,6 +6629,116 @@ export const mockInvoke = async <T>(
         )
       }
       return undefined as T
+    }
+
+    // ── The Feed -- docs/plans/feed.md ─────────────────────────────────
+    //
+    // `mock-feed.ts` holds the sources and stories and does the work; these
+    // only narrow what arrived over the bridge, as the mail cases above do.
+    // A story's body is not a command in the real build -- it is fetched from
+    // `everyday://news/body/{id}`, which a browser tab cannot answer -- so
+    // `mock_story_body` is the mock's own stand-in, called by name from
+    // `feed.svelte.ts` and never generated into the surface.
+
+    case 'list_news_sources':
+      requireUnlocked()
+      return mockListNewsSources() as T
+    case 'discover_feeds':
+      requireUnlocked()
+      return mockDiscoverFeeds(str(args.url)) as T
+    case 'add_news_source':
+      requireUnlocked()
+      return mockAddNewsSource(args.source as NewSource) as T
+    case 'save_news_source':
+      requireUnlocked()
+      mockSaveNewsSource(args.source as NewsSource)
+      return undefined as T
+    case 'delete_news_source':
+      requireUnlocked()
+      mockDeleteNewsSource(str(args.id))
+      return undefined as T
+    case 'list_stories':
+      requireUnlocked()
+      return mockListStories((args.query as StoryQuery | undefined) ?? {}) as T
+    case 'get_story':
+      requireUnlocked()
+      return mockGetStory(str(args.id)) as T
+    case 'mark_stories_read':
+      requireUnlocked()
+      mockMarkStoriesRead(strArray(args.ids), Boolean(args.read))
+      return undefined as T
+    case 'mark_all_stories_read':
+      requireUnlocked()
+      return mockMarkAllStoriesRead(strArray(args.sources), str(args.upTo)) as T
+    case 'save_stories':
+      requireUnlocked()
+      mockSaveStories(strArray(args.ids), Boolean(args.saved))
+      return undefined as T
+    case 'refresh_news':
+      requireUnlocked()
+      return mockRefreshNews(typeof args.source === 'string' ? args.source : null) as T
+    case 'fetch_full_article':
+      requireUnlocked()
+      return mockFetchFullArticle(str(args.id)) as T
+    case 'import_opml':
+      requireUnlocked()
+      return mockImportOpml(str(args.xml)) as T
+    case 'export_opml':
+      requireUnlocked()
+      return mockExportOpml() as T
+    case 'newsletter_senders':
+      requireUnlocked()
+      return mockNewsletterSenders(typeof args.days === 'number' ? args.days : 90) as T
+    case 'mock_story_body':
+      requireUnlocked()
+      return mockStoryBody(str(args.id)) as T
+
+    // An Articles item on the library's shelf, made the way the library's
+    // own `add_item` makes one. The mock library has no Articles shelf until
+    // somebody sends a story to it, so the first one creates it.
+    case 'add_story_to_library': {
+      requireUnlocked()
+      const fromStory = mockStoryForLibrary(str(args.id))
+      let shelf = kinds.find((k) => k.slug === 'article')
+      if (!shelf) {
+        shelf = {
+          id: 'k-article',
+          slug: 'article',
+          name: 'Articles',
+          singular: 'Article',
+          icon: '\u{1f4f0}',
+          color: '#0369a1',
+          verbs: verbs('To read', 'Reading', 'Read', 'read'),
+          fields: [
+            field('url', 'Address', 'text'),
+            field('author', 'Author', 'text'),
+            field('publication', 'Publication', 'text'),
+          ],
+          source: 'none',
+          progressUnit: '',
+          sortOrder: kinds.length,
+          builtin: true,
+          visible: true,
+          revision: 1,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          items: 0,
+          open: 0,
+        }
+        kinds.push(shelf)
+      }
+      const item = seedItem({
+        kindId: shelf.id,
+        title: fromStory.title,
+        creator: fromStory.author,
+        summary: fromStory.summary,
+        facts: { url: fromStory.url },
+        links: fromStory.url ? [{ label: 'Article', url: fromStory.url }] : [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      })
+      items.unshift(item)
+      return item.id as T
     }
 
     // ── Meeting notes -- docs/plans/meeting-notes.md ────────────────────

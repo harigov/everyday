@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"
+     xmlns:content="http://purl.org/rss/1.0/modules/content/"
+     xmlns:dc="http://purl.org/dc/elements/1.1/"
+     xmlns:media="http://search.yahoo.com/mrss/"
+     xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>The Quiet Compiler</title>
+    <link>https://quiet.example/</link>
+    <description>Notes on small programs.</description>
+    <language>en</language>
+    <ttl>90</ttl>
+    <atom:link href="https://quiet.example/feed.xml" rel="self" type="application/rss+xml"/>
+    <item>
+      <title>Why small programs win</title>
+      <link>https://quiet.example/posts/small-programs/?utm_source=rss&amp;utm_medium=feed</link>
+      <guid isPermaLink="false">quiet-2026-10-08</guid>
+      <pubDate>Thu, 08 Oct 2026 09:30:00 +0000</pubDate>
+      <dc:creator>Priya Raman</dc:creator>
+      <description>&lt;p&gt;A short teaser.&lt;/p&gt;</description>
+      <content:encoded><![CDATA[<p>The <em>full</em> article, with a <a href="/posts/other">relative link</a>.</p><img src="/img/small.png" alt="">]]></content:encoded>
+      <media:content url="https://quiet.example/img/small.png" medium="image" type="image/png"/>
+      <media:thumbnail url="https://quiet.example/img/small-thumb.png" width="120" height="80"/>
+    </item>
+    <item>
+      <title>Notes from the week</title>
+      <link>https://quiet.example/posts/notes-week-41</link>
+      <guid isPermaLink="true">https://quiet.example/posts/notes-week-41</guid>
+      <pubDate>Mon, 05 Oct 2026 07:00:00 GMT</pubDate>
+      <author>editor@quiet.example (Quentin Hale)</author>
+      <description>Seven links and a half-finished thought.</description>
+      <enclosure url="/img/week41.jpg" length="48211" type="image/jpeg"/>
+    </item>
+    <item>
+      <title>Episode 12: the sound of compilers</title>
+      <link>https://quiet.example/episodes/12</link>
+      <guid>https://quiet.example/episodes/12</guid>
+      <pubDate>Fri, 02 Oct 2026 06:00:00 GMT</pubDate>
+      <description>Forty minutes on build times.</description>
+      <enclosure url="https://quiet.example/audio/12.mp3" length="38211000" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>

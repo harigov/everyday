@@ -29,9 +29,9 @@ use everyday_core::agent::{
 use everyday_core::calendar::{AccountCalendarSource, Calendar, Event, EventStatus};
 use everyday_core::id::{
     AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
-    JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, TaskId,
-    TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId, NoteId,
+    OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, StoryId,
+    TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 use everyday_core::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
 use everyday_core::mail::{
@@ -40,6 +40,9 @@ use everyday_core::mail::{
 };
 use everyday_core::meeting::{Recording, Stage, Transcript, Voiceprint};
 use everyday_core::model::{Attachment, Entry, Journal, Location, MediaKind};
+use everyday_core::news::{
+    BodyOrigin, FetchState, HnList, NewsImage, NewsSource, SourceKind, Story, StoryBody,
+};
 use everyday_core::note::Note;
 use everyday_core::packstore::PackRef;
 use everyday_core::proposal::{Payload, Proposal, ProposedRecord};
@@ -580,6 +583,60 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         updated_at: clock.next(),
     };
     vault.save_voiceprint(&voiceprint).unwrap();
+
+    // ---- the feed: two sources, what was learned, a story and its body ----
+
+    let source_id: NewsSourceId = ids.next();
+    let mut source = NewsSource::new(
+        SourceKind::Web { url: format!("https://fixture-{tag}.example/feed.xml") },
+        format!("Fixture feed {tag}"),
+    );
+    source.id = source_id;
+    source.folder = "Fixtures".into();
+    source.site_url = format!("https://fixture-{tag}.example");
+    source.mute = vec!["sponsored".into()];
+    source.created_at = clock.next();
+    source.updated_at = source.created_at;
+    vault.save_news_source(&source).unwrap();
+
+    let hn_id: NewsSourceId = ids.next();
+    let mut hn =
+        NewsSource::new(SourceKind::HackerNews { list: HnList::Top, min_points: 100 }, "HN");
+    hn.id = hn_id;
+    hn.created_at = clock.next();
+    hn.updated_at = hn.created_at;
+    vault.save_news_source(&hn).unwrap();
+
+    let mut state = FetchState::new(source.id);
+    state.etag = Some(format!("\"fixture-{tag}\""));
+    state.last_ok = Some(clock.next());
+    state.interval_minutes = 60;
+    state.next_at = clock.next();
+    vault.save_news_fetch_state(&state).unwrap();
+
+    let story_id: StoryId = ids.next();
+    let key = vault.news_key(&format!("https://fixture-{tag}.example/posts/1")).unwrap();
+    let mut story = Story::new(source.id, key, format!("Fixture story {tag}"), clock.next());
+    story.id = story_id;
+    story.fetched_at = clock.next();
+    story.url = format!("https://fixture-{tag}.example/posts/1");
+    story.author = "Fixture Author".into();
+    story.summary = format!("The fixture story for generation {tag}.");
+    story.score = Some(128);
+    story.has_body = true;
+    let body = StoryBody {
+        story_id,
+        html: format!("<p>The whole of fixture story {tag}.</p>"),
+        text: format!("The whole of fixture story {tag}."),
+        origin: BodyOrigin::Feed,
+        images: vec![NewsImage {
+            token: format!("fixture-token-{tag}"),
+            url: format!("https://fixture-{tag}.example/a.png"),
+            cached_blob: None,
+        }],
+    };
+    vault.insert_stories(&[(story.clone(), Some(body))]).unwrap();
+    vault.set_stories_saved(&[story.id], true).unwrap();
 
     // ---- profile: the vault-wide singleton --------------------------------
 

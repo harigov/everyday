@@ -84,6 +84,8 @@ const UNTITLED: Record<ShownKind, string> = {
   thread: '(no subject)',
   message: 'A message',
   draft: 'A new message',
+  newsSource: 'A source',
+  story: 'An untitled story',
 }
 
 /** The most `send_message` will carry of each list -- the service reads no

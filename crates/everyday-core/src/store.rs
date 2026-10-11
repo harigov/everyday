@@ -35,6 +35,7 @@ use crate::store::calendars::CalendarStore;
 use crate::store::library::LibraryStore;
 use crate::store::mail::MailStore;
 use crate::store::meetings::MeetingStore;
+use crate::store::news::NewsStore;
 use crate::store::notes::NoteStore;
 use crate::store::proposals::ProposalStore;
 use crate::store::purpose::PurposeStore;
@@ -175,6 +176,14 @@ pub struct Capabilities {
     /// gives.
     #[serde(default)]
     pub meetings: bool,
+    /// Backend implements [`news::NewsStore`], so the sources somebody
+    /// follows and the stories they bring have somewhere to live.
+    ///
+    /// False hides the Feed app, on the library's terms: nothing in it reads
+    /// another domain's records except a newsletter's message, and the Feed
+    /// offers newsletters only when `mail` is true as well.
+    #[serde(default)]
+    pub news: bool,
 }
 
 /// The facts about a backend that [`Capabilities`]' domain flags cannot
@@ -514,6 +523,7 @@ pub trait JournalStore: Send + Sync {
             accounts: self.accounts().is_some(),
             mail: self.mail().is_some(),
             meetings: self.meetings().is_some(),
+            news: self.news().is_some(),
         }
     }
 
@@ -655,6 +665,14 @@ pub trait JournalStore: Send + Sync {
     /// [`meetings`](crate::store::meetings) for what stays in the clear on a
     /// recording and why the settings are a singleton like the assistant's.
     fn meetings(&self) -> Option<&dyn MeetingStore> {
+        None
+    }
+
+    /// Storage for the Feed, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`news`](crate::store::news) for the rules an implementation keeps.
+    fn news(&self) -> Option<&dyn NewsStore> {
         None
     }
 
@@ -894,6 +912,13 @@ pub trait JournalStore: Send + Sync {
         if let Some(mail) = self.mail() {
             live.extend(mail.attachment_blob_refs()?);
         }
+        // And the Feed: a source's icon and every picture a story's body was
+        // shown with, each cached into the blob store the first time it was
+        // drawn. Missing this walk would make the first sweep after a day
+        // take every favicon in the sidebar.
+        if let Some(news) = self.news() {
+            live.extend(news.blob_refs()?);
+        }
         let mut removed = 0;
         for id in self.list_blobs()? {
             if live.contains(&id) {
@@ -1006,6 +1031,7 @@ pub mod calendars;
 pub mod library;
 pub mod mail;
 pub mod meetings;
+pub mod news;
 pub mod notes;
 pub mod proposals;
 pub mod purpose;

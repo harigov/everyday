@@ -29,7 +29,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use everyday_core::BlobId;
-use everyday_core::id::MailMessageId;
+use everyday_core::id::{MailMessageId, StoryId};
 use everyday_service::ctx::{Caller, Ctx, Scope};
 use everyday_service::error::CommandError;
 use everyday_service::{PROTOCOL, Service};
@@ -128,6 +128,8 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         // `everyday-mail::sanitize` started writing the new shape still
         // resolves. See `get_mail_image_legacy`'s own docs.
         .route("/v1/mail/img/{token}", get(get_mail_image_legacy))
+        .route("/v1/news/body/{story}", get(get_news_body))
+        .route("/v1/news/img/{story}/{token}", get(get_news_image))
         .route("/v1/events", get(events))
         .layer(axum::extract::DefaultBodyLimit::max(Service::MAX_ATTACHMENT_BYTES))
         .with_state((server, transport))
@@ -645,6 +647,75 @@ fn mail_bytes_response(
         .map_err(|e| CommandError::new("internal", e.to_string()).into())
 }
 
+// ---- news: a rendered story, a picture ------------------------------------
+//
+// The twins of `everyday-app/src/protocol.rs`'s `everyday://news/…` routes,
+// over HTTP, calling straight into `everyday_service::news::view`. Like
+// mail's they check their scope explicitly rather than relying on a command
+// table, because they are not commands: a story's body is written by a
+// stranger, and the pictures inside it are fetched on a client's behalf.
+
+async fn get_news_body(
+    State((server, transport)): Ctxt,
+    Path(story): Path<String>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::News)?;
+    let story =
+        StoryId::parse(&story).map_err(|_| CommandError::new("invalid", "not a story id"))?;
+
+    let vault = server.service.require()?;
+    // A newsletter's body is a message's, drawn by mail. A client that may
+    // read the Feed is not for that reason one that may read mail.
+    let mail_backed = {
+        let vault = vault.clone();
+        everyday_service::blocking(move || Ok(vault.story(story)?.mail_message.is_some())).await?
+    };
+    if mail_backed {
+        ctx.require(Scope::Mail)?;
+    }
+    let doc = everyday_service::blocking(move || {
+        everyday_service::news::view::body_document(&vault, story)
+    })
+    .await?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        // Decided fresh every time, as mail's is: whether pictures are hidden
+        // changes when a person switches them on.
+        .header(header::CACHE_CONTROL, "no-store")
+        .header("x-content-type-options", "nosniff")
+        // Read by the interface's `fetch()` of this address, never by anything
+        // inside the sandboxed frame. See `protocol.rs`'s `respond_news_body`.
+        .header("x-news-images-hidden", if doc.images_hidden { "1" } else { "0" })
+        .body(axum::body::Body::from(doc.html))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+/// `/v1/news/img/{story}/{token}`: a picture from a story's body, from the
+/// vault when it was fetched before and from the public internet when it was
+/// not -- never from a private address.
+async fn get_news_image(
+    State((server, transport)): Ctxt,
+    Path((story, token)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer<Response> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::News)?;
+    let story =
+        StoryId::parse(&story).map_err(|_| CommandError::new("invalid", "not a story id"))?;
+
+    let vault = server.service.require()?;
+    let client = everyday_service::http::public_client()?;
+    let served = everyday_service::news::view::image(&vault, client, story, &token).await?;
+    // Never cached, for the reason `get_mail_image` gives.
+    mail_bytes_response(served, "no-store")
+}
+
 // ---- events --------------------------------------------------------------
 
 /// Everything the service says, as it says it.
@@ -1008,5 +1079,118 @@ mod mail_route_tests {
             response.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
             Some("image/png")
         );
+    }
+}
+
+/// The Feed's two routes, driven through the real [`Router`] the way
+/// `mail_route_tests` drives mail's: a routing bug -- a path shape that does
+/// not match the table, an extractor reading the wrong segment -- is what
+/// they would catch.
+#[cfg(test)]
+mod news_route_tests {
+    use super::*;
+    use everyday_core::VaultConfig;
+    use everyday_core::news::{BodyOrigin, NewsImage, NewsSource, SourceKind, Story, StoryBody};
+    use tower::ServiceExt;
+
+    /// A vault with one web source with pictures switched `images`, and one
+    /// story under it with a body naming a picture.
+    fn seeded(images: bool) -> (tempfile::TempDir, Arc<Service>, StoryId) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = everyday_vault::create(dir.path(), VaultConfig::default()).unwrap();
+
+        let mut source =
+            NewsSource::new(SourceKind::Web { url: "https://blog.example/feed".into() }, "Blog");
+        source.images = images;
+        vault.save_news_source(&source).unwrap();
+
+        let mut story = Story::new(
+            source.id,
+            vault.news_key("https://blog.example/post").unwrap(),
+            "A post",
+            jiff::Timestamp::now(),
+        );
+        story.summary = "The summary".into();
+        let body = StoryBody {
+            story_id: story.id,
+            html: "<p>Hello</p><img src=\"everyday://news/img/s/tok\">".into(),
+            text: String::new(),
+            origin: BodyOrigin::Feed,
+            images: vec![NewsImage {
+                token: "tok".into(),
+                url: "https://cdn.example.com/a.png".into(),
+                cached_blob: None,
+            }],
+        };
+        let id = story.id;
+        vault.insert_stories(&[(story, Some(body))]).unwrap();
+
+        let service = Arc::new(Service::new());
+        service.set(vault);
+        (dir, service, id)
+    }
+
+    fn socket_router(service: Arc<Service>) -> (Router, tempfile::TempDir) {
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Registry::open(config_dir.path().join("devices.json")).unwrap());
+        let broadcaster = Arc::new(Broadcaster::new());
+        let server =
+            Server::new(service, registry, broadcaster, "Test".into(), String::new(), false);
+        (router(server, Transport::Socket), config_dir)
+    }
+
+    async fn get(router: Router, path: &str) -> Response {
+        router
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("x-everyday-protocol", PROTOCOL.to_string())
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    fn header_of<'a>(response: &'a Response, name: &str) -> Option<&'a str> {
+        response.headers().get(name).and_then(|v| v.to_str().ok())
+    }
+
+    #[tokio::test]
+    async fn the_body_route_serves_the_document_and_says_whether_pictures_are_hidden() {
+        for (images, hidden) in [(true, "0"), (false, "1")] {
+            let (_dir, service, story) = seeded(images);
+            let (router, _config_dir) = socket_router(service);
+            let response = get(router, &format!("/v1/news/body/{story}")).await;
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(header_of(&response, "content-type"), Some("text/html; charset=utf-8"));
+            assert_eq!(header_of(&response, "x-news-images-hidden"), Some(hidden));
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let html = String::from_utf8(bytes.to_vec()).unwrap();
+            assert!(html.contains("<p>Hello</p>"), "{html}");
+            assert!(html.contains("Content-Security-Policy"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_picture_the_source_hides_is_the_placeholder_pixel() {
+        let (_dir, service, story) = seeded(false);
+        let (router, _config_dir) = socket_router(service);
+        let response = get(router, &format!("/v1/news/img/{story}/tok")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header_of(&response, "content-type"), Some("image/png"));
+        assert_eq!(header_of(&response, "cache-control"), Some("no-store"));
+    }
+
+    #[tokio::test]
+    async fn a_story_that_is_not_an_id_or_not_there_is_refused() {
+        let (_dir, service, _story) = seeded(true);
+        let (router, _config_dir) = socket_router(service.clone());
+        let response = get(router, "/v1/news/body/not-an-id").await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let (router, _config_dir) = socket_router(service);
+        let response = get(router, &format!("/v1/news/body/{}", StoryId::new())).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 }

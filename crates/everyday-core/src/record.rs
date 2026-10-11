@@ -29,9 +29,9 @@ use std::str::FromStr;
 
 use crate::id::{
     AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
-    JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NoteId, OpId,
-    ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, SkillId,
-    TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId, NoteId,
+    OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, SkillId,
+    StoryId, TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 
 /// The kind of one persisted record — every table `everyday-store-sql`
@@ -87,6 +87,10 @@ pub enum RecordKind {
     Recording,
     Transcript,
     Voiceprint,
+    /// Something followed in the Feed -- see [`crate::news::NewsSource`].
+    NewsSource,
+    /// A story a source brought -- see [`crate::news::Story`].
+    Story,
 }
 
 impl RecordKind {
@@ -133,6 +137,8 @@ impl RecordKind {
             RecordKind::Recording => "recording",
             RecordKind::Transcript => "transcript",
             RecordKind::Voiceprint => "voiceprint",
+            RecordKind::NewsSource => "news_source",
+            RecordKind::Story => "story",
         }
     }
 
@@ -175,7 +181,9 @@ impl RecordKind {
             | RecordKind::Op
             | RecordKind::Recording
             | RecordKind::Transcript
-            | RecordKind::Voiceprint => None,
+            | RecordKind::Voiceprint
+            | RecordKind::NewsSource
+            | RecordKind::Story => None,
         }
     }
 
@@ -217,7 +225,9 @@ impl RecordKind {
             | RecordKind::Op
             | RecordKind::Recording
             | RecordKind::Transcript
-            | RecordKind::Voiceprint => None,
+            | RecordKind::Voiceprint
+            | RecordKind::NewsSource
+            | RecordKind::Story => None,
         }
     }
 
@@ -266,6 +276,8 @@ impl RecordKind {
             RecordKind::Recording => "recording",
             RecordKind::Transcript => "transcript",
             RecordKind::Voiceprint => "voiceprint",
+            RecordKind::NewsSource => "news_source",
+            RecordKind::Story => "story",
         }
     }
 }
@@ -625,6 +637,28 @@ impl RecordDescriptor for crate::meeting::Voiceprint {
     }
 }
 
+impl RecordDescriptor for crate::news::NewsSource {
+    const KIND: RecordKind = RecordKind::NewsSource;
+    type Id = NewsSourceId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::news::source_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::news::Story {
+    const KIND: RecordKind = RecordKind::Story;
+    type Id = StoryId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::news::story_aad(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ties [`RecordKind::aad_word`] to every [`RecordDescriptor::aad`],
@@ -685,6 +719,8 @@ mod tests {
         check::<crate::meeting::Recording>(id());
         check::<crate::meeting::Transcript>(id());
         check::<crate::meeting::Voiceprint>(id());
+        check::<crate::news::NewsSource>(id());
+        check::<crate::news::Story>(id());
     }
 
     #[test]
@@ -702,7 +738,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 31] = [
+    const ALL: [RecordKind; 33] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -734,5 +770,7 @@ mod tests {
         RecordKind::Recording,
         RecordKind::Transcript,
         RecordKind::Voiceprint,
+        RecordKind::NewsSource,
+        RecordKind::Story,
     ];
 }

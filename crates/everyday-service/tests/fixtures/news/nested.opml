@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>Subscriptions from NetNewsWire</title>
+    <dateCreated>Sat, 10 Oct 2026 08:00:00 GMT</dateCreated>
+  </head>
+  <body>
+    <outline text="Daring Fireball" title="Daring Fireball" type="rss"
+             xmlUrl="https://daringfireball.example/feeds/main" htmlUrl="https://daringfireball.example/"/>
+    <outline text="Tech" title="Tech">
+      <outline text="Ars &amp; Co" title="Ars &amp; Co" type="rss"
+               xmlUrl="https://ars.example/rss?a=1&amp;b=2" htmlUrl="https://ars.example/"/>
+      <outline text="Rust" title="Rust">
+        <outline text="This Week in Rust" type="rss" xmlUrl="https://twir.example/rss.xml"/>
+        <outline title="Only a title" type="rss" xmlUrl="https://only-title.example/feed"/>
+      </outline>
+      <outline type="rss" xmlUrl="https://bare.example/feed"/>
+    </outline>
+    <outline text="Empty folder" title="Empty folder"/>
+    <outline text="Comics">
+      <outline text="xkcd" type="rss" xmlurl="https://xkcd.example/atom.xml" htmlurl="https://xkcd.example/"/>
+    </outline>
+  </body>
+</opml>

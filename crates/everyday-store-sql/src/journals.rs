@@ -139,6 +139,10 @@ impl JournalStore for SqlStore {
         Some(self)
     }
 
+    fn news(&self) -> Option<&dyn everyday_core::store::news::NewsStore> {
+        Some(self)
+    }
+
     fn profile(&self) -> Result<everyday_core::profile::Profile> {
         self.read_profile()
     }

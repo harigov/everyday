@@ -58,6 +58,7 @@ pub mod mailview;
 pub mod mailvoice;
 pub mod mailwrite;
 pub mod meeting;
+pub mod news;
 pub mod outbox;
 pub mod quick;
 pub mod retry;

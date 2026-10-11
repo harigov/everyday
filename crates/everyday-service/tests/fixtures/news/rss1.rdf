@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns="http://purl.org/rss/1.0/"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:content="http://purl.org/rss/1.0/modules/content/">
+  <channel rdf:about="https://lab.example/index.rdf">
+    <title>Lab Notebook</title>
+    <link>https://lab.example/</link>
+    <description>What was tried, and what happened.</description>
+    <dc:language>en</dc:language>
+    <items>
+      <rdf:Seq>
+        <rdf:li rdf:resource="https://lab.example/2026/10/titration"/>
+        <rdf:li rdf:resource="https://lab.example/2026/09/buffers"/>
+      </rdf:Seq>
+    </items>
+  </channel>
+  <item rdf:about="https://lab.example/2026/10/titration">
+    <title>Titration, redone</title>
+    <link>https://lab.example/2026/10/titration</link>
+    <description>Second attempt, with fresh buffer.</description>
+    <content:encoded><![CDATA[<p>Second attempt, with <b>fresh</b> buffer.</p>]]></content:encoded>
+    <dc:creator>M. Okafor</dc:creator>
+    <dc:date>2026-10-09T14:00:00+02:00</dc:date>
+  </item>
+  <item rdf:about="https://lab.example/2026/09/buffers">
+    <title>Which buffers keep</title>
+    <link>https://lab.example/2026/09/buffers</link>
+    <description>A table of shelf lives.</description>
+    <dc:date>2026-09-21</dc:date>
+  </item>
+</rdf:RDF>

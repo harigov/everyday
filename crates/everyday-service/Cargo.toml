@@ -112,6 +112,15 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tower-http = { version = "0.6", features = ["auth"] }
 tower-service = "0.3"
 roxmltree = "0.21"
+# The Feed: RSS 0.9x/1.0/2.0, Atom and JSON Feed through one lenient parser,
+# and a Readability port for "fetch the full article". See
+# `src/news/mod.rs`. feed-rs's own `sanitize` feature stays off: every body
+# goes through `everyday-mail`'s sanitiser instead.
+feed-rs = { version = "3", default-features = false }
+dom_smoothie = "0.18"
+# The HTML reader dom_smoothie is built on, used directly for what a page
+# advertises: `<link rel="alternate">` feeds and `<link rel="icon">`.
+dom_query = "0.28"
 # iCalendar for account calendars: parses VEVENT, VTIMEZONE and RRULE/EXDATE
 # and expands recurrences via its own `datecalc` module
 # (`ICalendar::expand_dates`), which is why the plan's separately-considered

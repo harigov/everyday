@@ -289,6 +289,14 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "create_event",
     "update_event",
     "delete_event",
+    // What the person follows and has read is theirs to say, and a source is
+    // an address the Feed will go and fetch from -- a dream choosing one
+    // would be choosing where the app reaches out to. Marking and saving are
+    // the person's reading, not records to propose.
+    "follow_source",
+    "unfollow_source",
+    "mark_stories_read",
+    "save_story",
 ];
 
 /// The two tools that write a real `Draft` while drafting and gain a linked

@@ -669,6 +669,126 @@
       ]
     },
     {
+      "command": "add_news_source",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "newsSource",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_news_source",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "newsSource",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_stories_read",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 2,
+          "kind": "story",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_stories_read",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "story",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_stories",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "story",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_all_stories_read",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "story",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "refresh_news",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "story",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "add_story_to_library",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "item",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "import_opml",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "newsSource",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_news_source",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "newsSource",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_meeting_settings",
       "events": [
         {
@@ -965,7 +1085,15 @@
     },
     {
       "command": "unlock",
-      "events": []
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
+        }
+      ]
     }
   ],
   "schedulerTick": [
@@ -1016,6 +1144,10 @@
     {
       "name": "fetch_attachment",
       "reason": "needs a message's raw bytes from a real synced pack"
+    },
+    {
+      "name": "fetch_full_article",
+      "reason": "fetches the page a story links to over the network"
     },
     {
       "name": "fetch_image",

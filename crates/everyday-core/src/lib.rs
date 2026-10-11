@@ -98,6 +98,7 @@ pub mod mailsearch;
 pub mod media;
 pub mod meeting;
 pub mod model;
+pub mod news;
 pub mod note;
 pub mod packstore;
 pub mod profile;
@@ -136,8 +137,9 @@ pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ChatLinkId, ConversationId, DraftId, EntryId, EventId,
     GoalId, ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId,
-    NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId,
-    RoutineRunId, SkillId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId,
+    RoutineId, RoutineRunId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId,
+    TranscriptId, VoiceprintId,
 };
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
@@ -154,6 +156,10 @@ pub use mailsearch::{
     RelUnit, SearchCursor, SearchPage, TextMatch, ThreadKey,
 };
 pub use model::{Attachment, Entry, EntrySummary, Journal, Location, MediaKind, Weather};
+pub use news::{
+    Also, BodyOrigin, FetchState, HnList, NewsImage, NewsSource, Retention, SourceKind,
+    SourceSummary, Story, StoryBody,
+};
 pub use note::{Note, NoteSummary};
 pub use profile::Profile;
 pub use proposal::{
@@ -172,6 +178,7 @@ pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 pub use store::meetings::{MeetingStore, RecordingQuery};
+pub use store::news::{NewsStore, StoryCursor, StoryPage, StoryQuery};
 pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::proposals::{ProposalQuery, ProposalStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};

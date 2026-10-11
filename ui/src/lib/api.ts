@@ -63,6 +63,9 @@ import type {
   Memory,
   MemoryId,
   MemoryOrigin,
+  NewSource,
+  NewsSource,
+  NewsSourceId,
   Note,
   NoteId,
   NoteQuery,
@@ -94,6 +97,8 @@ import type {
   ShellNotification,
   Skill,
   SkillId,
+  StoryId,
+  StoryQuery,
   Task,
   TaskId,
   TaskQuery,
@@ -1465,6 +1470,45 @@ export const api = {
    *  account, `limit` defaults to 20 and stops at 50. */
   inboxSenders: (days: number | null, accounts?: AccountId[] | null, limit?: number | null) =>
     call('inboxSenders', { days, accounts, limit }),
+
+  // ── The Feed ─────────────────────────────────────────────────────────
+  //
+  // What somebody follows, and the stories it brings. "Feed" is the app and
+  // `news` is the domain -- `feed` already meant a subscribed calendar in the
+  // Rust -- so the wire names say news and these say what the screen does.
+  // Available only when `status.capabilities.news` is true. A story's body is
+  // not a command: it is served at `everyday://news/body/{id}`, which
+  // `feed.svelte.ts` fetches the way `mailview.ts` fetches a message.
+
+  newsSources: () => call('listNewsSources', {}),
+  /** Every feed at, or advertised by, an address somebody pasted. */
+  discoverFeeds: (url: string) => call('discoverFeeds', { url }),
+  addNewsSource: (source: NewSource) => call('addNewsSource', { source }),
+  saveNewsSource: (source: NewsSource) => call('saveNewsSource', { source }),
+  /** Unfollows, and takes the source's stories with it. */
+  deleteNewsSource: (id: NewsSourceId) => call('deleteNewsSource', { id }),
+
+  stories: (query: StoryQuery) => call('listStories', { query }),
+  story: (id: StoryId) => call('getStory', { id }),
+  markStoriesRead: (ids: StoryId[], read: boolean) => call('markStoriesRead', { ids, read }),
+  /**
+   * Everything published up to `upTo` in these sources, read. Answers the
+   * ids it changed, which is what makes an undo possible: marking them
+   * unread again touches exactly those and nothing that was read already.
+   */
+  markAllStoriesRead: (sources: NewsSourceId[], upTo: string) =>
+    call('markAllStoriesRead', { sources, upTo }),
+  saveStories: (ids: StoryId[], saved: boolean) => call('saveStories', { ids, saved }),
+  /** Ask the network: one source, or every source when `null`. */
+  refreshNews: (source: NewsSourceId | null = null) => call('refreshNews', { source }),
+  /** Fetch and extract the linked article, keeping it as the story's body. */
+  fetchFullArticle: (id: StoryId) => call('fetchFullArticle', { id }),
+  /** Writes an Articles item first and enriches it after, as the library does. */
+  addStoryToLibrary: (id: StoryId) => call('addStoryToLibrary', { id }),
+  importOpml: (xml: string) => call('importOpml', { xml }),
+  exportOpml: () => call('exportOpml', {}),
+  /** Who sent newsletters to this vault's inboxes over the last `days`. */
+  newsletterSenders: (days: number) => call('newsletterSenders', { days }),
 
   // ── Accounts ───────────────────────────────────────────────────────
   //

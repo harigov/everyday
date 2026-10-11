@@ -63,6 +63,8 @@ import type {
   MailActivity,
   MeetingActivity,
   NoteSummary,
+  SourceSummary,
+  Story,
   Task,
   TaskStats,
   TrackerDay,
@@ -149,6 +151,14 @@ class OverviewState {
   meetings = $state<Record<number, MeetingActivity>>({})
   /** The calendars, for a meeting row's colour and the name under it. */
   calendars = $state<CalendarInfo[]>([])
+
+  /**
+   * The Feed's sources with their unread counts, and the newest unread stories
+   * across them, for the Reading card. Both come with the one `news` need:
+   * neither draws anything without the other.
+   */
+  newsSources = $state<SourceSummary[]>([])
+  newsStories = $state<Story[]>([])
 
   /** The forecast where you live, for the Weather widget. `null` until a
    *  read lands, or while the card is showing one of the two states below
@@ -398,6 +408,8 @@ class OverviewState {
     this.mail = {}
     this.meetings = {}
     this.calendars = []
+    this.newsSources = []
+    this.newsStories = []
     this.bookedToday = { logged: 0, planned: 0 }
     this.weather = null
     this.weatherNoLocation = false
@@ -489,7 +501,19 @@ class OverviewState {
 
     try {
       const [
-        [report, days, taskStats, weekTasks, libraryStats, entries, notes, blocks, weather],
+        [
+          report,
+          days,
+          taskStats,
+          weekTasks,
+          libraryStats,
+          entries,
+          notes,
+          blocks,
+          weather,
+          newsSources,
+          newsStories,
+        ],
         mail,
         meetings,
         calendars,
@@ -516,6 +540,15 @@ class OverviewState {
           ask(needs.has('notes'), () => api.notes({ limit: 6 }), []),
           ask(needs.has('today'), () => api.blocks({ from: today, to: today }), []),
           ask(needs.has('weather'), () => this.fetchWeather(), NO_WEATHER),
+          // Asked only where the backend carries the Feed, as mail is: a vault
+          // without it has nothing to count, and asking anyway would put an
+          // "unsupported" banner over the page.
+          ask(needs.has('news') && app.supportsNews, () => api.newsSources(), []),
+          ask(
+            needs.has('news') && app.supportsNews,
+            () => api.stories({ unreadOnly: true, limit: 20 }).then((page) => page.stories),
+            [],
+          ),
         ]),
         counted('mail', app.supportsMail, api.mailActivity),
         counted('meetings', app.supportsCalendar, api.meetingActivity),
@@ -533,6 +566,8 @@ class OverviewState {
       this.mail = mail
       this.meetings = meetings
       this.calendars = calendars
+      this.newsSources = newsSources
+      this.newsStories = newsStories
       this.bookedToday = blocks.reduce(
         (sum, b) => {
           if (b.localDate !== today) return sum

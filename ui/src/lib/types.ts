@@ -51,6 +51,8 @@ export type TranscriptId = string
 export type VoiceprintId = string
 export type TemplateId = string
 export type ChatLinkId = string
+export type NewsSourceId = string
+export type StoryId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -857,6 +859,12 @@ export interface Capabilities {
    * see `app.supportsMail`.
    */
   mail: boolean
+  /**
+   * Backend implements `news::NewsStore`, so the sources somebody follows in
+   * the Feed and the stories they bring have somewhere to live. False hides
+   * the Feed app. Newsletters are offered only when `mail` is true as well.
+   */
+  news?: boolean
 }
 
 export interface VaultStatus {
@@ -2742,6 +2750,7 @@ export const ON_SCREEN_APPS = [
   'calendar',
   'library',
   'mail',
+  'feed',
   'assistant',
   'journal',
   'settings',
@@ -2769,6 +2778,8 @@ export const SHOWN_KINDS = [
   'thread',
   'message',
   'draft',
+  'newsSource',
+  'story',
 ] as const
 export type ShownKind = (typeof SHOWN_KINDS)[number]
 
@@ -3575,4 +3586,160 @@ export interface CaptureStatus {
   systemUnavailable?: string | null
   /** When auto-stop will act, if armed. */
   autoStopAt?: string | null
+}
+
+// ── The Feed ─────────────────────────────────────────────────────────────
+//
+// Mirrors `everyday_core::news` and the wire types of
+// `everyday-service/src/domains/news.rs`. "Feed" is the app; `news` is the
+// domain, because `feed` already means a subscribed calendar.
+
+/** Which Hacker News list a source follows. */
+export const HN_LISTS = ['front', 'show', 'ask', 'top'] as const
+export type HnList = (typeof HN_LISTS)[number]
+
+/** Where a source's stories come from. */
+export type SourceKind =
+  | { type: 'web'; url: string }
+  | { type: 'hackerNews'; list: HnList; minPoints: number }
+  | { type: 'mail'; sender: string }
+
+/** How long a source's stories are kept, in days. */
+export interface Retention {
+  readDays: number
+  unreadDays: number
+}
+
+/** Something somebody chose to follow. */
+export interface NewsSource {
+  id: NewsSourceId
+  kind: SourceKind
+  title: string
+  /** The sidebar folder. Empty for none. */
+  folder: string
+  siteUrl: string
+  /** The site's icon, in the blob store. */
+  icon?: BlobId | null
+  /** Load a story's pictures when it is opened. */
+  images: boolean
+  /** Extract the linked article for every new story. */
+  fullText: boolean
+  /** Mail-backed only: archive each new issue on arrival. */
+  keepOutOfInbox: boolean
+  /** Words that drop a story whose title has one. */
+  mute: string[]
+  /** `null`/absent is the default: 30 days read, 90 unread. */
+  retention?: Retention | null
+  paused: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** A source with what the sidebar draws beside it. */
+export interface SourceSummary {
+  source: NewsSource
+  unread: number
+  total: number
+  lastOk?: string | null
+  /** Why the last fetch failed. Absent while healthy. */
+  lastError?: string | null
+  nextAt?: string | null
+}
+
+/** Another source a stored story also arrived from. */
+export interface Also {
+  sourceId: NewsSourceId
+  score?: number | null
+  comments?: number | null
+  discussionUrl: string
+}
+
+/** One story: the light half, enough to draw a row. */
+export interface Story {
+  id: StoryId
+  sourceId: NewsSourceId
+  key: string
+  title: string
+  url: string
+  author: string
+  publishedAt: string
+  fetchedAt: string
+  /** Plain text, at most 400 characters. */
+  summary: string
+  imageUrl: string
+  /** Hacker News points. */
+  score?: number | null
+  /** Hacker News comment count. */
+  comments?: number | null
+  discussionUrl: string
+  also: Also[]
+  /** Newsletters: the mail message this story is. */
+  mailMessage?: MailMessageId | null
+  read: boolean
+  saved: boolean
+  /** A body is stored: the feed carried content, or an article was extracted. */
+  hasBody: boolean
+  expired: boolean
+}
+
+/** Where a page of stories ends. */
+export interface StoryCursor {
+  publishedAt: string
+  id: StoryId
+}
+
+/** Filter and page for `list_stories`. All filters are ANDed. */
+export interface StoryQuery {
+  /** Empty or absent: every source. */
+  sources?: NewsSourceId[]
+  unreadOnly?: boolean
+  savedOnly?: boolean
+  since?: string | null
+  before?: StoryCursor | null
+  /** 0 or absent: 50. At most 500. */
+  limit?: number
+}
+
+/** One page of stories, newest first. */
+export interface StoryPage {
+  stories: Story[]
+  /** Where the next page starts. Absent on the last. */
+  next?: StoryCursor | null
+}
+
+/** What `add_news_source` is asked to follow. */
+export type NewSource =
+  | { type: 'web'; url: string; title?: string; folder?: string }
+  | { type: 'hackerNews'; list: HnList; minPoints?: number; folder?: string }
+  | { type: 'mail'; sender: string; title?: string; folder?: string }
+
+/** A feed found at an address somebody pasted. */
+export interface FoundFeed {
+  url: string
+  title: string
+}
+
+/** What one source's refresh did. */
+export interface RefreshReport {
+  sourceId: NewsSourceId
+  inserted: number
+  notModified: boolean
+  error: string | null
+}
+
+/** What an OPML import did. Not the transfer's `ImportReport`. */
+export interface OpmlImportReport {
+  /** Sources followed that were not before. */
+  added: number
+  /** Outlines already followed, or not a feed. */
+  skipped: number
+}
+
+/** Someone who sends newsletters to one of this vault's inboxes. */
+export interface NewsletterSender {
+  email: string
+  name: string
+  messages: number
+  followed: boolean
 }

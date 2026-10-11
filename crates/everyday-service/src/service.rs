@@ -97,6 +97,10 @@ pub struct Service {
     /// already records the failure itself, and reopening the app is a
     /// reasonable moment to be told again.
     reported_feeds: RwLock<HashSet<CalendarId>>,
+    /// The Feed's sources that have already said they are failing, so an
+    /// outage is reported once rather than once per attempt -- the courtesy
+    /// `reported_feeds` extends to a calendar.
+    reported_news: RwLock<HashSet<everyday_core::id::NewsSourceId>>,
     /// This session's routine bookkeeping -- which runs it is claiming, the
     /// name of whichever is running right now, and which failures it has
     /// already reported. See [`crate::runtime::routine::RoutineRuntime`].
@@ -165,6 +169,7 @@ impl Service {
             idempotency: Idempotency::default(),
             transfers: Arc::default(),
             reported_feeds: RwLock::new(HashSet::new()),
+            reported_news: RwLock::new(HashSet::new()),
             routines: RoutineRuntime::default(),
             sign_ins: Arc::new(SignIns::new()),
             token_cache: Arc::new(TokenCache::new()),
@@ -506,6 +511,13 @@ impl Service {
         // very first poll, and both must already answer `Some`.
         self.open_mail(&vault);
         self.supervisor().restart_registered();
+        // The Feed's refresher: one supervised task for every source, started
+        // here on the first unlock and restarted by `restart_registered`
+        // above on every one after. Only where this process may write, as
+        // with chat below: a refresh stores what it fetched.
+        if vault.is_writable() {
+            crate::news::ensure_task(self, &vault);
+        }
         // Chat links, last of the supervised tasks, because it has the final
         // say: `restart_registered` brings back every task that was stopped
         // by the lock, including one whose link has since been switched off
@@ -685,6 +697,7 @@ impl Service {
         self.sign_ins.clear();
         self.token_cache.try_clear();
         self.reported_feeds.write().unwrap().clear();
+        self.reported_news.write().unwrap().clear();
         self.routines.on_lock();
         self.remote_image_once.write().unwrap().clear();
         // Nothing to do, today -- see `MeetingRuntime::on_lock`'s own doc
@@ -775,6 +788,18 @@ impl Service {
     /// Note that `id`'s refresh worked, so the next outage is news again.
     pub fn feed_recovered(&self, id: CalendarId) {
         self.reported_feeds.write().unwrap().remove(&id);
+    }
+
+    /// Note that one of the Feed's sources has failed. True the first time,
+    /// so the refresher says something once per outage, as `feed_failed`
+    /// does for a calendar.
+    pub fn news_failed(&self, id: everyday_core::id::NewsSourceId) -> bool {
+        self.reported_news.write().unwrap().insert(id)
+    }
+
+    /// Note that a source answered again, so its next outage is news.
+    pub fn news_recovered(&self, id: everyday_core::id::NewsSourceId) {
+        self.reported_news.write().unwrap().remove(&id);
     }
 
     // ---- mail: remote images ---------------------------------------------

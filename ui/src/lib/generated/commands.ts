@@ -48,6 +48,7 @@ import type {
   EventScope,
   ExportChunk,
   ExportHandle,
+  FoundFeed,
   Goal,
   GoalActivity,
   GoalId,
@@ -88,6 +89,10 @@ import type {
   MemoryId,
   MemoryOrigin,
   ModelBenchmark,
+  NewSource,
+  NewsSource,
+  NewsSourceId,
+  NewsletterSender,
   Note,
   NoteId,
   NoteQuery,
@@ -95,6 +100,7 @@ import type {
   NoteTemplate,
   OnScreen,
   Op,
+  OpmlImportReport,
   PartInfo,
   Profile,
   Project,
@@ -122,6 +128,7 @@ import type {
   RecordingId,
   RecordingQuery,
   Recurrence,
+  RefreshReport,
   RemoteCalendarInfo,
   RemoteImageSettings,
   ReplySuggestions,
@@ -144,8 +151,13 @@ import type {
   Skill,
   SkillId,
   SourceInfo,
+  SourceSummary,
   SpeechModelInfo,
   StoreStats,
+  Story,
+  StoryId,
+  StoryPage,
+  StoryQuery,
   Surface,
   SyncReport,
   TagCount,
@@ -188,6 +200,8 @@ export interface Commands {
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   activeRecording: { args: Record<string, never>; result: Recording | null }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
+  addNewsSource: { args: { source: NewSource }; result: NewsSource }
+  addStoryToLibrary: { args: { id: StoryId }; result: ItemId }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   allowRemoteImages: {
     args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
@@ -252,6 +266,7 @@ export interface Commands {
   deleteKind: { args: { id: KindId }; result: void }
   deleteLog: { args: { id: LogId }; result: void }
   deleteMemory: { args: { id: MemoryId }; result: void }
+  deleteNewsSource: { args: { id: NewsSourceId }; result: void }
   deleteNote: { args: { id: NoteId }; result: void }
   deleteProject: { args: { id: ProjectId }; result: void }
   deleteReading: { args: { id: ReadingId }; result: void }
@@ -266,6 +281,7 @@ export interface Commands {
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
   discardRecording: { args: { id: RecordingId }; result: void }
+  discoverFeeds: { args: { url: string }; result: FoundFeed[] }
   dismissMeetingOffer: {
     args: { calendarId: CalendarId; uid: string; series?: string | null; never: boolean }
     result: void
@@ -283,7 +299,9 @@ export interface Commands {
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
   enrolVoice: { args: { pcm: string }; result: VoiceprintInfo }
+  exportOpml: { args: Record<string, never>; result: string }
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
+  fetchFullArticle: { args: { id: StoryId }; result: Story }
   fetchImage: { args: { url: string }; result: string }
   finishRecording: { args: { id: RecordingId }; result: Recording }
   flush: { args: Record<string, never>; result: void }
@@ -296,6 +314,7 @@ export interface Commands {
   getProposal: { args: { id: ProposalId }; result: Proposal }
   getRecording: { args: { id: RecordingId }; result: Recording }
   getRun: { args: { id: RoutineRunId }; result: RoutineRun }
+  getStory: { args: { id: StoryId }; result: Story }
   getTask: { args: { id: TaskId }; result: Task }
   getThread: { args: { id: ThreadId }; result: ThreadDetail }
   getTranscript: { args: { noteId: NoteId }; result: Transcript | null }
@@ -304,6 +323,7 @@ export interface Commands {
     args: { name: string; label: string; color: string; ics: string }
     result: CalendarInfo
   }
+  importOpml: { args: { xml: string }; result: OpmlImportReport }
   improveWriting: {
     args: { account: AccountId; text: string; mode: ImproveMode; instruction?: string | null }
     result: WrittenText
@@ -334,6 +354,7 @@ export interface Commands {
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMailboxes: { args: { account: AccountId }; result: Mailbox[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
+  listNewsSources: { args: Record<string, never>; result: SourceSummary[] }
   listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
   listProjects: { args: Record<string, never>; result: Project[] }
@@ -345,6 +366,7 @@ export interface Commands {
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
   listSkills: { args: Record<string, never>; result: Skill[] }
+  listStories: { args: { query: StoryQuery }; result: StoryPage }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
   listThreads: {
@@ -390,9 +412,11 @@ export interface Commands {
     result: MailActionByOrigin[]
   }
   mailActivity: { args: { from: string; to: string; tz?: string }; result: MailActivity }
+  markAllStoriesRead: { args: { sources: NewsSourceId[]; upTo: string }; result: StoryId[] }
   markProposalsSeen: { args: { ids?: ProposalId[] }; result: void }
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
+  markStoriesRead: { args: { ids: StoryId[]; read: boolean }; result: void }
   markUnread: { args: { threads: ThreadId[] }; result: Op[] }
   meetingActivity: { args: { from: string; to: string; tz?: string }; result: MeetingActivity }
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
@@ -434,6 +458,7 @@ export interface Commands {
     result: Task
   }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
+  newsletterSenders: { args: { days?: number | null }; result: NewsletterSender[] }
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   previewMeetingTemplate: { args: { body: string }; result: string }
@@ -477,6 +502,7 @@ export interface Commands {
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
   recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
+  refreshNews: { args: { source?: NewsSourceId | null }; result: RefreshReport[] }
   removeChatLink: { args: { id: ChatLinkId }; result: void }
   respondToInvite: {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
@@ -517,6 +543,7 @@ export interface Commands {
   saveLog: { args: { log: LogEntry }; result: void }
   saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
+  saveNewsSource: { args: { source: NewsSource }; result: void }
   saveNote: { args: { note: Note; expect?: string | null }; result: void }
   saveNoteForce: { args: { note: Note }; result: void }
   saveProfile: { args: { profile: Profile }; result: Profile }
@@ -525,6 +552,7 @@ export interface Commands {
   saveRole: { args: { role: Role }; result: void }
   saveRoutine: { args: { routine: Routine }; result: Routine }
   saveSkill: { args: { skill: Skill }; result: Skill }
+  saveStories: { args: { ids: StoryId[]; saved: boolean }; result: void }
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
@@ -613,6 +641,8 @@ export const COMMAND_NAMES = {
   accountPresets: 'account_presets',
   activeRecording: 'active_recording',
   addItem: 'add_item',
+  addNewsSource: 'add_news_source',
+  addStoryToLibrary: 'add_story_to_library',
   agentSettings: 'agent_settings',
   allowRemoteImages: 'allow_remote_images',
   appendRecordingChunk: 'append_recording_chunk',
@@ -650,6 +680,7 @@ export const COMMAND_NAMES = {
   deleteKind: 'delete_kind',
   deleteLog: 'delete_log',
   deleteMemory: 'delete_memory',
+  deleteNewsSource: 'delete_news_source',
   deleteNote: 'delete_note',
   deleteProject: 'delete_project',
   deleteReading: 'delete_reading',
@@ -664,13 +695,16 @@ export const COMMAND_NAMES = {
   deleteVoiceprint: 'delete_voiceprint',
   discardDraft: 'discard_draft',
   discardRecording: 'discard_recording',
+  discoverFeeds: 'discover_feeds',
   dismissMeetingOffer: 'dismiss_meeting_offer',
   downloadSpeechModel: 'download_speech_model',
   draftWithAi: 'draft_with_ai',
   endExport: 'end_export',
   endImport: 'end_import',
   enrolVoice: 'enrol_voice',
+  exportOpml: 'export_opml',
   fetchAttachment: 'fetch_attachment',
+  fetchFullArticle: 'fetch_full_article',
   fetchImage: 'fetch_image',
   finishRecording: 'finish_recording',
   flush: 'flush',
@@ -683,11 +717,13 @@ export const COMMAND_NAMES = {
   getProposal: 'get_proposal',
   getRecording: 'get_recording',
   getRun: 'get_run',
+  getStory: 'get_story',
   getTask: 'get_task',
   getThread: 'get_thread',
   getTranscript: 'get_transcript',
   goalActivity: 'goal_activity',
   importCalendar: 'import_calendar',
+  importOpml: 'import_opml',
   improveWriting: 'improve_writing',
   inboxSenders: 'inbox_senders',
   label: 'label',
@@ -709,6 +745,7 @@ export const COMMAND_NAMES = {
   listLogs: 'list_logs',
   listMailboxes: 'list_mailboxes',
   listMemories: 'list_memories',
+  listNewsSources: 'list_news_sources',
   listNotes: 'list_notes',
   listParts: 'list_parts',
   listProjects: 'list_projects',
@@ -720,6 +757,7 @@ export const COMMAND_NAMES = {
   listRoutines: 'list_routines',
   listRuns: 'list_runs',
   listSkills: 'list_skills',
+  listStories: 'list_stories',
   listTags: 'list_tags',
   listTasks: 'list_tasks',
   listThreads: 'list_threads',
@@ -733,9 +771,11 @@ export const COMMAND_NAMES = {
   lookupMetadata: 'lookup_metadata',
   mailActionsByOrigin: 'mail_actions_by_origin',
   mailActivity: 'mail_activity',
+  markAllStoriesRead: 'mark_all_stories_read',
   markProposalsSeen: 'mark_proposals_seen',
   markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
+  markStoriesRead: 'mark_stories_read',
   markUnread: 'mark_unread',
   meetingActivity: 'meeting_activity',
   meetingSettings: 'meeting_settings',
@@ -760,6 +800,7 @@ export const COMMAND_NAMES = {
   newSkill: 'new_skill',
   newTask: 'new_task',
   newTracker: 'new_tracker',
+  newsletterSenders: 'newsletter_senders',
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
   previewMeetingTemplate: 'preview_meeting_template',
@@ -791,6 +832,7 @@ export const COMMAND_NAMES = {
   readImport: 'read_import',
   rebuildMailIndex: 'rebuild_mail_index',
   recategorizeMail: 'recategorize_mail',
+  refreshNews: 'refresh_news',
   removeChatLink: 'remove_chat_link',
   respondToInvite: 'respond_to_invite',
   retryRecording: 'retry_recording',
@@ -819,6 +861,7 @@ export const COMMAND_NAMES = {
   saveLog: 'save_log',
   saveMeetingSettings: 'save_meeting_settings',
   saveMemory: 'save_memory',
+  saveNewsSource: 'save_news_source',
   saveNote: 'save_note',
   saveNoteForce: 'save_note_force',
   saveProfile: 'save_profile',
@@ -827,6 +870,7 @@ export const COMMAND_NAMES = {
   saveRole: 'save_role',
   saveRoutine: 'save_routine',
   saveSkill: 'save_skill',
+  saveStories: 'save_stories',
   saveTask: 'save_task',
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
@@ -902,6 +946,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'account_presets',
   'active_recording',
   'add_item',
+  'add_news_source',
+  'add_story_to_library',
   'agent_settings',
   'allow_remote_images',
   'append_recording_chunk',
@@ -939,6 +985,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_news_source',
   'delete_note',
   'delete_project',
   'delete_reading',
@@ -953,13 +1000,16 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_voiceprint',
   'discard_draft',
   'discard_recording',
+  'discover_feeds',
   'dismiss_meeting_offer',
   'download_speech_model',
   'draft_with_ai',
   'end_export',
   'end_import',
   'enrol_voice',
+  'export_opml',
   'fetch_attachment',
+  'fetch_full_article',
   'fetch_image',
   'finish_recording',
   'flush',
@@ -972,11 +1022,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_proposal',
   'get_recording',
   'get_run',
+  'get_story',
   'get_task',
   'get_thread',
   'get_transcript',
   'goal_activity',
   'import_calendar',
+  'import_opml',
   'improve_writing',
   'inbox_senders',
   'label',
@@ -998,6 +1050,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_logs',
   'list_mailboxes',
   'list_memories',
+  'list_news_sources',
   'list_notes',
   'list_parts',
   'list_projects',
@@ -1009,6 +1062,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_routines',
   'list_runs',
   'list_skills',
+  'list_stories',
   'list_tags',
   'list_tasks',
   'list_threads',
@@ -1022,9 +1076,11 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lookup_metadata',
   'mail_actions_by_origin',
   'mail_activity',
+  'mark_all_stories_read',
   'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
+  'mark_stories_read',
   'mark_unread',
   'meeting_activity',
   'meeting_settings',
@@ -1049,6 +1105,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_skill',
   'new_task',
   'new_tracker',
+  'newsletter_senders',
   'note_tags',
   'poll_auto_lock',
   'preview_meeting_template',
@@ -1080,6 +1137,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'read_import',
   'rebuild_mail_index',
   'recategorize_mail',
+  'refresh_news',
   'remove_chat_link',
   'respond_to_invite',
   'retry_recording',
@@ -1108,6 +1166,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_log',
   'save_meeting_settings',
   'save_memory',
+  'save_news_source',
   'save_note',
   'save_note_force',
   'save_profile',
@@ -1116,6 +1175,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_role',
   'save_routine',
   'save_skill',
+  'save_stories',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -1184,6 +1244,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'accept_proposal',
   'add_item',
+  'add_news_source',
+  'add_story_to_library',
   'allow_remote_images',
   'append_recording_chunk',
   'apply_metadata',
@@ -1214,6 +1276,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_news_source',
   'delete_note',
   'delete_project',
   'delete_reading',
@@ -1232,16 +1295,20 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'download_speech_model',
   'enrol_voice',
   'fetch_attachment',
+  'fetch_full_article',
   'fetch_image',
   'finish_recording',
   'flush',
   'import_calendar',
+  'import_opml',
   'label',
   'lock',
   'log_reading',
+  'mark_all_stories_read',
   'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
+  'mark_stories_read',
   'mark_unread',
   'merge_trackers',
   'move_to_mailbox',
@@ -1250,6 +1317,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'poll_auto_lock',
   'rebuild_mail_index',
   'recategorize_mail',
+  'refresh_news',
   'remove_chat_link',
   'respond_to_invite',
   'retry_recording',
@@ -1276,6 +1344,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_log',
   'save_meeting_settings',
   'save_memory',
+  'save_news_source',
   'save_note',
   'save_note_force',
   'save_profile',
@@ -1284,6 +1353,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_role',
   'save_routine',
   'save_skill',
+  'save_stories',
   'save_task',
   'save_tasks',
   'save_tracker',
@@ -1324,6 +1394,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 export const CHANGE_KINDS = {
   accept_proposal: 'proposal',
   add_item: 'item',
+  add_news_source: 'newsSource',
+  add_story_to_library: 'item',
   allow_remote_images: 'settings',
   apply_metadata: 'item',
   archive: 'thread',
@@ -1348,6 +1420,7 @@ export const CHANGE_KINDS = {
   delete_kind: 'shelf',
   delete_log: 'log',
   delete_memory: 'memory',
+  delete_news_source: 'newsSource',
   delete_note: 'note',
   delete_project: 'project',
   delete_reading: 'reading',
@@ -1364,18 +1437,23 @@ export const CHANGE_KINDS = {
   discard_recording: 'recording',
   download_speech_model: 'settings',
   enrol_voice: 'voiceprint',
+  fetch_full_article: 'story',
   finish_recording: 'recording',
   import_calendar: 'calendar',
+  import_opml: 'newsSource',
   label: 'thread',
   log_reading: 'reading',
+  mark_all_stories_read: 'story',
   mark_proposals_seen: 'proposal',
   mark_read: 'thread',
   mark_runs_seen: 'routineRun',
+  mark_stories_read: 'story',
   mark_unread: 'thread',
   merge_trackers: 'tracker',
   move_to_mailbox: 'thread',
   name_speaker: 'transcript',
   new_draft: 'draft',
+  refresh_news: 'story',
   remove_chat_link: 'settings',
   retry_recording: 'recording',
   revoke_remote_image_allowance: 'settings',
@@ -1399,6 +1477,7 @@ export const CHANGE_KINDS = {
   save_log: 'log',
   save_meeting_settings: 'settings',
   save_memory: 'memory',
+  save_news_source: 'newsSource',
   save_note: 'note',
   save_note_force: 'note',
   save_profile: 'settings',
@@ -1407,6 +1486,7 @@ export const CHANGE_KINDS = {
   save_role: 'role',
   save_routine: 'routine',
   save_skill: 'skill',
+  save_stories: 'story',
   save_task: 'task',
   save_tasks: 'task',
   save_tracker: 'tracker',

@@ -114,7 +114,7 @@
       "createdAt": "2023-11-14T22:13:32Z",
       "end": "2023-11-14T22:43:31Z",
       "id": "00000000-0000-0000-0000-00000000000b",
-      "kind": "planned",
+      "kind": "actual",
       "localDate": "2023-11-14",
       "notes": "",
       "purpose": {
@@ -129,7 +129,7 @@
       "tags": [],
       "title": "",
       "tz": "UTC",
-      "updatedAt": "2023-11-14T22:13:32Z"
+      "updatedAt": "2026-10-11T22:48:39.443433597Z"
     }
   },
   {
@@ -536,6 +536,66 @@
     }
   },
   {
+    "id": "00000000-0000-0000-0000-000000000023",
+    "kind": "news_fetch",
+    "record": {
+      "etag": "\"fixture-1\"",
+      "failures": 0,
+      "intervalMinutes": 60,
+      "lastOk": "2023-11-14T22:14:01Z",
+      "nextAt": "2023-11-14T22:14:02Z",
+      "recent": [],
+      "sourceId": "00000000-0000-0000-0000-000000000023"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000023",
+    "kind": "news_source",
+    "record": {
+      "createdAt": "2023-11-14T22:13:59Z",
+      "folder": "Fixtures",
+      "fullText": false,
+      "id": "00000000-0000-0000-0000-000000000023",
+      "images": true,
+      "keepOutOfInbox": false,
+      "kind": {
+        "type": "web",
+        "url": "https://fixture-1.example/feed.xml"
+      },
+      "mute": [
+        "sponsored"
+      ],
+      "paused": false,
+      "siteUrl": "https://fixture-1.example",
+      "sortOrder": 0,
+      "title": "Fixture feed 1",
+      "updatedAt": "2023-11-14T22:13:59Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000024",
+    "kind": "news_source",
+    "record": {
+      "createdAt": "2023-11-14T22:14:00Z",
+      "folder": "",
+      "fullText": false,
+      "id": "00000000-0000-0000-0000-000000000024",
+      "images": true,
+      "keepOutOfInbox": false,
+      "kind": {
+        "list": "top",
+        "minPoints": 100,
+        "type": "hackerNews"
+      },
+      "mute": [],
+      "paused": false,
+      "siteUrl": "",
+      "sortOrder": 0,
+      "title": "HN",
+      "updatedAt": "2023-11-14T22:14:00Z"
+    }
+  },
+  {
     "id": "00000000-0000-0000-0000-000000000007",
     "kind": "note",
     "record": {
@@ -716,6 +776,45 @@
       "startedAt": "2023-11-14T22:13:42Z",
       "steps": 0,
       "summary": "Fixture run summary 1"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000025",
+    "kind": "story",
+    "record": {
+      "also": [],
+      "author": "Fixture Author",
+      "discussionUrl": "",
+      "expired": false,
+      "fetchedAt": "2023-11-14T22:14:04Z",
+      "hasBody": true,
+      "id": "00000000-0000-0000-0000-000000000025",
+      "imageUrl": "",
+      "key": "8db3bbfbbe110cea841fde1283ece789",
+      "publishedAt": "2023-11-14T22:14:03Z",
+      "read": false,
+      "saved": true,
+      "score": 128,
+      "sourceId": "00000000-0000-0000-0000-000000000023",
+      "summary": "The fixture story for generation 1.",
+      "title": "Fixture story 1",
+      "url": "https://fixture-1.example/posts/1"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000025",
+    "kind": "story_body",
+    "record": {
+      "html": "<p>The whole of fixture story 1.</p>",
+      "images": [
+        {
+          "token": "fixture-token-1",
+          "url": "https://fixture-1.example/a.png"
+        }
+      ],
+      "origin": "feed",
+      "storyId": "00000000-0000-0000-0000-000000000025",
+      "text": "The whole of fixture story 1."
     }
   },
   {

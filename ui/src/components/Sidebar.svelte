@@ -13,6 +13,7 @@
   import CalendarNav from './CalendarNav.svelte'
   import LibraryNav from './LibraryNav.svelte'
   import MailNav from './MailNav.svelte'
+  import FeedNav from './FeedNav.svelte'
   import AssistantNav from './AssistantNav.svelte'
   import NotesNav from './NotesNav.svelte'
   import PaneResizer from './PaneResizer.svelte'
@@ -178,6 +179,8 @@
     <LibraryNav />
   {:else if app.section === 'mail'}
     <MailNav />
+  {:else if app.section === 'feed'}
+    <FeedNav />
   {:else}
     <nav class="scroll side-nav">
       <button

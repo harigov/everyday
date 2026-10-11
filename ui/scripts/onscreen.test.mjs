@@ -33,7 +33,7 @@ stubBrowser({
 })
 
 const {
-  modules: [onscreen, screenModule, stateModule, mailModule, todoModule, panelsModule],
+  modules: [onscreen, screenModule, stateModule, mailModule, todoModule, panelsModule, feedModule],
   close,
 } = await load(
   [
@@ -43,6 +43,7 @@ const {
     '/src/lib/mail.svelte.ts',
     '/src/lib/todo.svelte.ts',
     '/src/lib/panels.svelte.ts',
+    '/src/lib/feed.svelte.ts',
   ],
   { svelte: true },
 )
@@ -52,12 +53,19 @@ const { app } = stateModule
 const { mail } = mailModule
 const { todo } = todoModule
 const { panels } = panelsModule
+const { feed } = feedModule
 
 const { check, ok, finish } = makeCheck()
 
 // ── The pure half ────────────────────────────────────────────────────────
 
 check('no id, no reference', seen('thread', null, 'Re: roof'), [])
+check('a source with no name is a source', seen('newsSource', 's1', ' ')[0].label, 'A source')
+check(
+  'a story with no title gets its own words',
+  seen('story', 's1', '')[0].label,
+  'An untitled story',
+)
 check(
   'a blank name gets the kind’s own words',
   seen('note', 'n1', '  ')[0].label,
@@ -151,6 +159,47 @@ check('todo: the project narrows it', now.showing.within, [
   { kind: 'project', id: project.id, label: project.name },
 ])
 check('todo: the selected task is open', now.showing.open?.[0]?.id, task.id)
+
+// Feed: a source narrows it, the open story is what is open, and the view
+// is the interface's own words -- the chip, never a title.
+app.section = 'feed'
+await feed.start()
+ok('the mock vault follows some sources', feed.sources.length > 0)
+const shipyard = feed.sources.find((s) => s.source.title === 'Shipyard Notes')
+await feed.select({ kind: 'source', id: shipyard.source.id })
+const story = feed.stories[0]
+ok('the mock source has a story to open', story !== undefined)
+await feed.open(story.id)
+feed.setQuery('sync')
+now = onScreenNow()
+check('feed: the app', now.app, 'feed')
+check('feed: the source narrows it', now.showing.within, [
+  { kind: 'newsSource', id: shipyard.source.id, label: 'Shipyard Notes' },
+])
+check('feed: the open story is what is open', now.showing.open, [
+  { kind: 'story', id: story.id, label: story.title },
+])
+check('feed: the chip is said in the interface’s words', now.showing.view, 'unread only')
+check('feed: the search goes too', now.showing.query, 'sync')
+
+// A folder is said by the sources in it, by id: its name is something
+// somebody typed, and `view` never carries one.
+await feed.select({ kind: 'folder', name: 'Engineering' })
+now = onScreenNow()
+check(
+  'feed: a folder narrows it by its sources',
+  now.showing.within.map((s) => s.kind),
+  ['newsSource', 'newsSource'],
+)
+ok('feed: and its name is not in the view', !/Engineering/.test(now.showing.view ?? ''))
+check('feed: navigating closes the story', now.showing.open, [])
+const wire = toWire('feed', now.showing)
+check(
+  'feed: the wire carries kinds and ids',
+  wire.within.map((s) => s.kind),
+  ['newsSource', 'newsSource'],
+)
+ok('feed: and no source names', !/Shipyard|Radio/.test(JSON.stringify(wire)))
 
 // Settings stands where the app was, so the app is not on screen at all.
 panels.openSettings('accounts')

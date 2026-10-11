@@ -39,7 +39,13 @@
 //!   feed over the network. (`import_calendar` is *not* skipped: it parses
 //!   ICS text the caller already has in hand, no socket involved.)
 //! - **Fetching something remote**: `fetch_attachment` (a real synced pack),
-//!   `fetch_image` (an HTTP request).
+//!   `fetch_image` (an HTTP request), `fetch_full_article` (the page a story
+//!   links to).
+//! - **The Feed over the network**: following a web address or Hacker News
+//!   looks the address up and fetches its icon, and refreshing either goes
+//!   to the network. `add_news_source` and `refresh_news` are run against a
+//!   newsletter source instead, which asks only the mail index; the OPML
+//!   import fetches nothing at all.
 //! - **`respond_to_invite`**: needs a message carrying a real,
 //!   ICS-bearing invite written into the local pack store -- more raw-byte
 //!   plumbing than this net is trying to buy -- and its own reply queues an
@@ -94,8 +100,14 @@
 //!   `set_agent_access` against never carries mail, and a *second* account
 //!   -- seeded straight into the vault, never through a command -- is what
 //!   every mail command and mail tool below actually uses. Nothing in this
-//!   test ever asks the supervisor to start anything, so there is nothing
+//!   test ever asks the supervisor to start a sync, so there is nothing
 //!   left for it to finish.
+//! - `unlock` starts the Feed's refresher (`crate::news::ensure_task`). Its
+//!   start is the same synchronous `backgroundTask` change, and is pinned in
+//!   the snapshot under `unlock`. It does not finish: its first pass finds no
+//!   source to fetch and it then sleeps for up to a minute, far longer than
+//!   this test runs -- so the sources the Feed section imports are never
+//!   fetched, and nothing it does can land between two of this test's rows.
 //!
 //! To accept a change: `UPDATE_SURFACE=1 cargo test -p everyday-service
 //! --test change_events`.
@@ -110,9 +122,11 @@ use std::sync::{Arc, Mutex};
 use base64::Engine;
 use everyday_core::account::{Account, Provider};
 use everyday_core::agent::tools::Effect;
-use everyday_core::id::{MailMessageId, MailboxId, PackId, ThreadId};
+use everyday_core::id::{MailMessageId, MailboxId, NewsSourceId, PackId, StoryId, ThreadId};
+use everyday_core::library::Kind;
 use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use everyday_core::meeting::{MeetingSettings, Recording};
+use everyday_core::news::Story;
 use everyday_core::packstore::PackRef;
 use everyday_core::proposal::{Payload, ProposedRecord};
 use everyday_core::routine::Trigger;
@@ -234,6 +248,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("download_speech_model", "a real ~40MB network download"),
     ("enrol_voice", "needs the speech/voice model kit to embed real audio"),
     ("fetch_attachment", "needs a message's raw bytes from a real synced pack"),
+    ("fetch_full_article", "fetches the page a story links to over the network"),
     ("fetch_image", "fetches a remote image over HTTP"),
     ("finish_recording", "moves the recording into the transcription pipeline: background work"),
     ("name_speaker", "needs a transcript, which only a finished recording produces"),
@@ -568,6 +583,50 @@ async fn every_offline_write_announces_what_was_written_down() {
     // A file calendar cannot take new events, so the default it can be set
     // to here is this computer's own blocks -- the same write either way.
     run(&svc, &h, "set_default_calendar", json!({ "id": null })).await;
+
+    // ---- the feed -------------------------------------------------------------
+    //
+    // A newsletter source, because it is the one kind that follows something
+    // without a socket: a web address or Hacker News would be looked up and
+    // have its icon fetched on the way in, and `refresh_news` for either goes
+    // to the network. A source for one sender asks only the mail index, which
+    // here has nothing from them -- so the refresh below writes nothing, and
+    // an empty `events` array is the correct recording, not a gap.
+    let followed = run(
+        &svc,
+        &h,
+        "add_news_source",
+        json!({ "source": { "type": "mail", "sender": "Letters@Example.com", "title": "Letters" } }),
+    )
+    .await;
+    let source_id = followed["id"].clone();
+    let mut source = followed;
+    source["title"] = json!("Letters, weekly");
+    run(&svc, &h, "save_news_source", json!({ "source": source })).await;
+
+    // Stories arrive by a refresh, which needs a feed, so they are seeded
+    // straight into the vault -- as the thread above is -- and so is the
+    // Articles shelf `add_story_to_library` files onto, since the library
+    // above already has shelves and the command rightly will not invent one.
+    vault.save_kind(&Kind::new("article", "Articles", "Article")).unwrap();
+    let source_uuid: NewsSourceId = source_id.as_str().unwrap().parse().unwrap();
+    let stories = seed_stories(&vault, source_uuid, 3);
+    let (first, second) = (stories[0].to_string(), stories[1].to_string());
+
+    run(&svc, &h, "mark_stories_read", json!({ "ids": [first, second], "read": true })).await;
+    run(&svc, &h, "mark_stories_read", json!({ "ids": [first], "read": false })).await;
+    run(&svc, &h, "save_stories", json!({ "ids": [first], "saved": true })).await;
+    run(
+        &svc,
+        &h,
+        "mark_all_stories_read",
+        json!({ "sources": [source_id], "upTo": Timestamp::now().to_string() }),
+    )
+    .await;
+    run(&svc, &h, "refresh_news", json!({ "source": source_id })).await;
+    run(&svc, &h, "add_story_to_library", json!({ "id": first })).await;
+    run(&svc, &h, "import_opml", json!({ "xml": OPML })).await;
+    run(&svc, &h, "delete_news_source", json!({ "id": source_id })).await;
 
     // ---- meetings -----------------------------------------------------------
     let meeting_settings = MeetingSettings { enabled: false, ..Default::default() };
@@ -972,6 +1031,40 @@ async fn every_offline_write_announces_what_was_written_down() {
          diff here means production behaviour moved, not just this test.",
         "UPDATE_SURFACE=1 cargo test -p everyday-service --test change_events",
     );
+}
+
+/// A list of subscriptions as another reader would export it: one feed in a
+/// folder and one without. Nothing here is fetched -- the refresher asks for
+/// a source with no fetch state in its own time.
+const OPML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head><title>Subscriptions</title></head>
+  <body>
+    <outline text="Tech" title="Tech">
+      <outline type="rss" text="Example" title="Example" xmlUrl="https://feeds.example.com/a.xml" htmlUrl="https://example.com"/>
+    </outline>
+    <outline type="rss" text="Other" title="Other" xmlUrl="https://feeds.example.com/b.xml"/>
+  </body>
+</opml>"#;
+
+/// `count` stories under `source`, newest first, each an hour apart -- the
+/// light half of what a refresh would have stored, which is all a state
+/// change needs to find.
+fn seed_stories(vault: &everyday_core::Vault, source: NewsSourceId, count: usize) -> Vec<StoryId> {
+    let now = Timestamp::now();
+    let (mut stories, mut ids) = (Vec::new(), Vec::new());
+    for n in 0..count {
+        let key = vault.news_key(&format!("https://letters.example/issue-{n}")).unwrap();
+        let published = now - SignedDuration::from_hours(n as i64 + 1);
+        let mut story = Story::new(source, key, format!("Issue {n}"), published);
+        story.url = format!("https://letters.example/issue-{n}");
+        story.author = "A. Writer".into();
+        story.summary = format!("What happened in issue {n}.");
+        ids.push(story.id);
+        stories.push((story, None));
+    }
+    vault.insert_stories(&stories).unwrap();
+    ids
 }
 
 /// A real `Thread`, seeded the only way one can be: through

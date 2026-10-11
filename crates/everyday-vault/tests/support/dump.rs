@@ -22,7 +22,7 @@
 
 use everyday_core::{
     BlockQuery, ConversationQuery, EventQuery, GoalQuery, ItemQuery, LogQuery, ProposalQuery,
-    ReadingQuery, RecordingQuery, RunQuery, TaskQuery, ThreadFilter, Vault,
+    ReadingQuery, RecordingQuery, RunQuery, StoryQuery, TaskQuery, ThreadFilter, Vault,
 };
 use jiff::Timestamp;
 use serde::Serialize;
@@ -201,6 +201,21 @@ pub fn dump(vault: &Vault) -> String {
     }
     for vp in vault.voiceprints().unwrap() {
         rows.push(("voiceprint", vp.id.to_string(), value(&vp)));
+    }
+
+    for summary in vault.news_source_summaries().unwrap() {
+        let source = &summary.source;
+        rows.push(("news_source", source.id.to_string(), value(source)));
+        if let Some(state) = vault.news_fetch_state(source.id).unwrap() {
+            rows.push(("news_fetch", source.id.to_string(), value(&state)));
+        }
+    }
+    let all = StoryQuery { limit: StoryQuery::MAX_LIMIT, ..StoryQuery::default() };
+    for story in vault.stories(&all).unwrap().stories {
+        if let Some(body) = vault.story_body(story.id).unwrap() {
+            rows.push(("story_body", story.id.to_string(), value(&body)));
+        }
+        rows.push(("story", story.id.to_string(), value(&story)));
     }
 
     if let Ok(profile) = vault.profile() {

@@ -57,6 +57,8 @@ pub fn bundle() -> Value {
         schema_of::<crate::library::Kind>("Kind"),
         schema_of::<crate::library::Item>("Item"),
         schema_of::<crate::library::LogEntry>("LogEntry"),
+        schema_of::<crate::news::NewsSource>("NewsSource"),
+        schema_of::<crate::news::Story>("Story"),
         schema_of::<crate::tracker::Tracker>("Tracker"),
         schema_of::<crate::tracker::Reading>("Reading"),
         schema_of::<crate::purpose::Role>("Role"),

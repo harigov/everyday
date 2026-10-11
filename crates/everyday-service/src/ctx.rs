@@ -105,6 +105,14 @@ pub enum Scope {
     /// and starting a recording switches on somebody's microphone. A client
     /// that clips pages into notes has no business near any of it.
     Meetings,
+    /// The Feed: the sources somebody follows and the stories they brought.
+    ///
+    /// Its own scope rather than a corner of [`Scope::Library`]: what a
+    /// person follows is a fair picture of what they think about, and a
+    /// client that reads a reading list has no business inheriting it.
+    /// Fetching news puts requests on the network, but only to addresses the
+    /// person chose, so it does not need [`Scope::Web`] as well.
+    News,
     /// Searching the web and fetching a picture. Its own scope because it is
     /// the one capability that puts a request on the network, and a client
     /// that only wants to read a shelf has no business asking for it.
@@ -151,6 +159,7 @@ impl Scope {
             Scope::Agent => "agent",
             Scope::Quick => "quick",
             Scope::Meetings => "meetings",
+            Scope::News => "news",
             Scope::Web => "web",
             Scope::Admin => "admin",
             Scope::Any => "any",
@@ -175,6 +184,7 @@ impl Scope {
         Scope::Agent,
         Scope::Quick,
         Scope::Meetings,
+        Scope::News,
         Scope::Web,
         Scope::Admin,
     ];

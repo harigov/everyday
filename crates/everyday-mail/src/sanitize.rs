@@ -8,7 +8,8 @@
 //! 1. **[`lol_html`]**, a streaming rewriter, walks every `img src`,
 //!    `srcset`, `[background]` and `style` (attribute and `<style>` block)
 //!    once and turns every reference to a remote resource into the app's own
-//!    `{scheme}://mail/...` protocol. An `http(s)` image becomes
+//!    `{scheme}://mail/...` protocol (the `mail` is [`Rewrite::route`], and
+//!    is `news` for a story in the Feed). An `http(s)` image becomes
 //!    `{scheme}://mail/img/{message id}/{blake3 of the url}`; a `cid:`
 //!    reference becomes `{scheme}://mail/part/{message id}/{content id}`.
 //!    Both carry the message id as a path segment, not a query parameter --
@@ -78,16 +79,45 @@ use lol_html::{RewriteStrSettings, element, rewrite_str, text};
 ///
 /// `scheme` exists so a test (or a future build with a different protocol
 /// name) does not have to hard-code `everyday`; production code uses
-/// [`Rewrite::new`], which does.
+/// [`Rewrite::new`] or [`Rewrite::news`], which do.
+///
+/// `route` is the part of the address after the scheme that says which of
+/// the app's handlers serves the picture: `mail` for a message, `news` for
+/// a story in the Feed. `message_id` is then whatever that handler keys its
+/// bodies by -- a message's id, or a story's -- and the rewritten address
+/// is `{scheme}://{route}/img/{message_id}/{token}`.
+///
+/// `base_url` is for HTML that arrives without a place of its own. A
+/// message is self-contained, and a relative address in one points at
+/// nothing. A story's body is a page's markup, written to be read at the
+/// address it came from, so its relative `src`, `href` and `srcset` are made
+/// absolute against that address first -- before anything is proxied, so
+/// `/img/a.png` becomes a picture the Feed can fetch and not a reference the
+/// sandboxed frame would resolve against nothing.
 #[derive(Debug, Clone)]
 pub struct Rewrite {
     pub message_id: String,
     pub scheme: String,
+    pub route: String,
+    pub base_url: Option<String>,
 }
 
 impl Rewrite {
+    /// A mail message: `everyday://mail/...`, no base address.
     pub fn new(message_id: impl Into<String>) -> Self {
-        Self { message_id: message_id.into(), scheme: "everyday".to_string() }
+        Self {
+            message_id: message_id.into(),
+            scheme: "everyday".to_string(),
+            route: "mail".to_string(),
+            base_url: None,
+        }
+    }
+
+    /// A story in the Feed: `everyday://news/...`, with relative addresses
+    /// resolved against `base_url` -- the story's link, or the feed's own
+    /// address -- when there is one.
+    pub fn news(story_id: impl Into<String>, base_url: Option<String>) -> Self {
+        Self { route: "news".to_string(), base_url, ..Self::new(story_id) }
     }
 }
 
@@ -235,6 +265,11 @@ fn is_safe_css_url(url: &str, scheme: &str) -> bool {
 #[derive(Debug, Clone)]
 struct Shared {
     rewrite: Rewrite,
+    /// [`Rewrite::base_url`], parsed once. `None` when there was none, or it
+    /// was not an `http(s)` address -- a base that cannot resolve anything
+    /// is the same as no base, and relative references are then dropped as
+    /// they always were.
+    base: Option<url::Url>,
     remote_images: Vec<RemoteImage>,
     seen: HashSet<String>,
     had_tracking_pixels: bool,
@@ -242,25 +277,49 @@ struct Shared {
 
 impl Shared {
     fn new(rewrite: Rewrite) -> Self {
+        let base = rewrite
+            .base_url
+            .as_deref()
+            .and_then(|b| url::Url::parse(b.trim()).ok())
+            .filter(|u| matches!(u.scheme(), "http" | "https"));
         Self {
             rewrite,
+            base,
             remote_images: Vec::new(),
             seen: HashSet::new(),
             had_tracking_pixels: false,
         }
     }
 
+    /// `url` made absolute against the document's base address, when there
+    /// is one and `url` is relative to it: `/a.png`, `../a.png`, `a.png`,
+    /// `?x=1`, `//cdn.example/a.png`. `None` for anything already absolute
+    /// (including `cid:`, `data:` and `javascript:`, which are left for
+    /// [`Shared::classify`] and the allow-list to judge), and for every
+    /// address when there is no base.
+    fn resolve(&self, url: &str) -> Option<String> {
+        let base = self.base.as_ref()?;
+        match url::Url::parse(url.trim()) {
+            Err(url::ParseError::RelativeUrlWithoutBase) => {
+                base.join(url.trim()).ok().map(String::from)
+            }
+            _ => None,
+        }
+    }
+
     /// Classifies one URL from `src`, `background`, a `srcset` candidate, or
     /// a CSS `url()`, and returns what to put in its place.
     fn classify(&mut self, url: &str) -> String {
-        let trimmed = url.trim();
+        let resolved = self.resolve(url);
+        let trimmed = resolved.as_deref().unwrap_or(url).trim();
         let lower = trimmed.to_ascii_lowercase();
 
         if let Some(rest) = lower.strip_prefix("cid:") {
             let content_id = trimmed[trimmed.len() - rest.len()..].trim();
             return format!(
-                "{}://mail/part/{}/{}",
+                "{}://{}/part/{}/{}",
                 self.rewrite.scheme,
+                self.rewrite.route,
                 path_segment(&self.rewrite.message_id),
                 path_segment(content_id)
             );
@@ -277,8 +336,11 @@ impl Shared {
             return self.proxy(&format!("https://{rest}"));
         }
 
-        // Already rewritten, from a message sanitised twice.
-        if lower.starts_with(&format!("{}://mail/", self.rewrite.scheme)) {
+        // Already rewritten, from a message sanitised twice. Only this
+        // route's own addresses: a story whose HTML names
+        // `everyday://mail/img/...` is naming somebody else's picture, and
+        // falls through to nothing below.
+        if lower.starts_with(&format!("{}://{}/", self.rewrite.scheme, self.rewrite.route)) {
             return trimmed.to_string();
         }
 
@@ -300,7 +362,7 @@ impl Shared {
         String::new()
     }
 
-    /// Rewrites a remote `http(s)` URL to `{scheme}://mail/img/{message
+    /// Rewrites a remote `http(s)` URL to `{scheme}://{route}/img/{message
     /// id}/{token}` -- the message id first, matching `.../part/{message
     /// id}/{content id}`'s own order, so both mail routes share one shape
     /// rather than the image route being the odd one out with its id in a
@@ -320,8 +382,9 @@ impl Shared {
                 .push(RemoteImage { original_url: url.to_string(), token: token.clone() });
         }
         format!(
-            "{}://mail/img/{}/{}",
+            "{}://{}/img/{}/{}",
             self.rewrite.scheme,
+            self.rewrite.route,
             path_segment(&self.rewrite.message_id),
             token
         )
@@ -384,6 +447,27 @@ fn rewrite_dangerous_refs(
         })
     };
 
+    // A link is not proxied -- the person follows it in their browser -- but
+    // a relative one would resolve against nothing inside the frame, so a
+    // story's are made absolute here. Mail has no base, so for a message this
+    // handler changes nothing.
+    let anchor_href = {
+        let shared = Rc::clone(shared);
+        element!("a[href]", move |el| {
+            if let Some(href) = el.get_attribute("href") {
+                // Decoded first, for the reason the `src` handler gives.
+                let decoded = crate::entities::decode_entities(&href);
+                if let Some(absolute) = shared.borrow().resolve(&decoded) {
+                    // `set_attribute` writes `&` as it is given, so it is
+                    // escaped here, or `?a=1&copy=2` is one stray reference
+                    // away from meaning something else.
+                    el.set_attribute("href", &absolute.replace('&', "&amp;"))?;
+                }
+            }
+            Ok(())
+        })
+    };
+
     let background_attr = {
         let shared = Rc::clone(shared);
         element!("[background]", move |el| {
@@ -439,6 +523,7 @@ fn rewrite_dangerous_refs(
         .append_element_content_handler(img_src)
         .append_element_content_handler(img_srcset)
         .append_element_content_handler(source_srcset)
+        .append_element_content_handler(anchor_href)
         .append_element_content_handler(background_attr)
         .append_element_content_handler(style_attr)
         .append_element_content_handler(style_block);
@@ -1534,5 +1619,129 @@ mod tests {
             "{}",
             out.html
         );
+    }
+
+    // ---- a story in the Feed: its own route, and a base address ---------
+
+    const POST: &str = "https://blog.example.com/2026/10/post.html";
+
+    fn story(base: Option<&str>) -> Rewrite {
+        Rewrite::news("story-1", base.map(str::to_string))
+    }
+
+    #[test]
+    fn a_mail_rewrite_keeps_the_mail_route_and_no_base() {
+        let r = Rewrite::new("msg-1@example.com");
+        assert_eq!(r.route, "mail");
+        assert_eq!(r.base_url, None);
+    }
+
+    #[test]
+    fn a_stories_pictures_are_proxied_under_the_news_route() {
+        let out = sanitize(
+            r#"<img src="https://cdn.example.com/a.png" width="200" height="60">"#,
+            &story(None),
+        );
+        assert_eq!(out.remote_images.len(), 1);
+        let expected = format!("everyday://news/img/story-1/{}", out.remote_images[0].token);
+        assert!(out.html.contains(&expected), "{}", out.html);
+        assert!(!out.html.contains("everyday://mail/"), "{}", out.html);
+        assert!(!out.html.contains("cdn.example.com"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_stories_content_id_names_the_news_route_too() {
+        let out = sanitize(r#"<img src="cid:logo@example.com">"#, &story(None));
+        assert!(out.html.contains("everyday://news/part/story-1/logo@example.com"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_story_keeps_only_its_own_routes_addresses() {
+        let out = sanitize(
+            r#"<img src="everyday://news/img/story-1/abc"><img src="everyday://mail/img/o/abc">"#,
+            &story(None),
+        );
+        assert!(out.html.contains("everyday://news/img/story-1/abc"), "{}", out.html);
+        assert!(!out.html.contains("everyday://mail/"), "{}", out.html);
+    }
+
+    #[test]
+    fn a_message_keeps_only_its_own_routes_addresses_too() {
+        let out = sanitize(r#"<img src="everyday://news/img/story-1/abc">"#, &rewrite());
+        assert!(!out.html.contains("everyday://news/"), "{}", out.html);
+    }
+
+    #[test]
+    fn relative_pictures_are_resolved_against_the_base_before_they_are_proxied() {
+        let out = sanitize(
+            r#"<img src="/img/a.png"><img src="b.png"><img src="../c.png">
+               <img src="//cdn.example.com/d.png"><img src="https://other.example/e.png">"#,
+            &story(Some(POST)),
+        );
+        let originals: Vec<&str> =
+            out.remote_images.iter().map(|i| i.original_url.as_str()).collect();
+        assert_eq!(
+            originals,
+            [
+                "https://blog.example.com/img/a.png",
+                "https://blog.example.com/2026/10/b.png",
+                "https://blog.example.com/2026/c.png",
+                "https://cdn.example.com/d.png",
+                "https://other.example/e.png",
+            ]
+        );
+        assert!(out.html.contains("everyday://news/img/story-1/"), "{}", out.html);
+        assert!(!out.html.contains("blog.example.com"), "{}", out.html);
+    }
+
+    #[test]
+    fn relative_srcset_candidates_and_css_urls_are_resolved_too() {
+        let out = sanitize(
+            r#"<img src="/a.png" srcset="/a.png 1x, /a@2x.png 2x">
+               <div style="background-image:url(/hero.png)">hi</div>"#,
+            &story(Some(POST)),
+        );
+        let originals: Vec<&str> =
+            out.remote_images.iter().map(|i| i.original_url.as_str()).collect();
+        assert_eq!(
+            originals,
+            [
+                "https://blog.example.com/a.png",
+                "https://blog.example.com/a@2x.png",
+                "https://blog.example.com/hero.png",
+            ]
+        );
+        assert!(out.html.contains("1x") && out.html.contains("2x"), "{}", out.html);
+    }
+
+    #[test]
+    fn relative_links_are_made_absolute_and_absolute_ones_are_left_alone() {
+        let out = sanitize(
+            r##"<a href="/about">a</a> <a href="#top">b</a> <a href="/s?a=1&amp;b=2">c</a>
+               <a href="https://other.example/x">d</a> <a href="mailto:me@example.com">e</a>
+               <a href="javascript:alert(1)">f</a>"##,
+            &story(Some(POST)),
+        );
+        assert!(out.html.contains(r#"href="https://blog.example.com/about""#), "{}", out.html);
+        assert!(
+            out.html.contains(r#"href="https://blog.example.com/2026/10/post.html#top""#),
+            "{}",
+            out.html
+        );
+        assert!(out.html.contains("https://blog.example.com/s?a=1&amp;b=2"), "{}", out.html);
+        assert!(out.html.contains(r#"href="https://other.example/x""#), "{}", out.html);
+        assert!(out.html.contains(r#"href="mailto:me@example.com""#), "{}", out.html);
+        assert!(!out.html.contains("javascript"), "{}", out.html);
+    }
+
+    #[test]
+    fn without_a_base_a_relative_address_is_dropped_as_it_always_was() {
+        let rewrites =
+            [rewrite(), story(None), story(Some("not an address")), story(Some("ftp://x/"))];
+        for r in &rewrites {
+            let out = sanitize(r#"<img src="/img/a.png"><a href="/about">a</a>"#, r);
+            assert!(out.remote_images.is_empty(), "{r:?}");
+            assert!(out.html.contains(r#"href="/about""#), "{}", out.html);
+        }
     }
 }
