@@ -897,6 +897,41 @@ impl Service {
         self.routines.running()
     }
 
+    /// One routine has finished running, whatever others still are.
+    pub(crate) fn routine_finished_running(&self, name: &str) {
+        self.routines.finished_running(name);
+    }
+
+    /// Carry a run out beside the scheduler's tick. See
+    /// `RoutineRuntime::detach`.
+    pub(crate) fn detach_run(
+        &self,
+        routine: Option<everyday_core::RoutineId>,
+        run: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        self.routines.detach(routine, run);
+    }
+
+    /// Whether a run of `routine` is going on beside the tick.
+    pub(crate) fn routine_in_flight(&self, routine: everyday_core::RoutineId) -> bool {
+        self.routines.in_flight(routine)
+    }
+
+    /// Wait for every run going on beside the tick to finish.
+    pub(crate) async fn settle_runs(&self) {
+        self.routines.settle().await;
+    }
+
+    /// Turns true when runs waiting on somebody's answer should stop waiting.
+    pub(crate) fn runs_withdrawn(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.routines.withdrawn()
+    }
+
+    /// Tell every run waiting on somebody's answer to stop waiting.
+    pub(crate) fn withdraw_run_questions(&self) {
+        self.routines.withdraw();
+    }
+
     // ---- dispatch -------------------------------------------------------
 
     /// Run a command by name.
@@ -989,6 +1024,8 @@ impl Service {
             drafting: None,
             // Typed in the rail, not sent from a chat.
             via: None,
+            // Not a scheduled run.
+            reach: crate::agent::Reach::default(),
         })
         .await?;
         self.announce_turn(&turned, args.conversation_id, ctx.caller.origin().map(str::to_string));

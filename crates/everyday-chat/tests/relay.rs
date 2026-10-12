@@ -21,7 +21,7 @@ use everyday_chat::relay::Timing;
 use everyday_chat::run_link_with;
 use everyday_core::agent::Role;
 use everyday_core::chat::{ChatSecret, ChatSettings, Via};
-use everyday_service::chat::ChatState;
+use everyday_service::chat::{ChatState, FromRun};
 use everyday_service::supervisor::Outcome;
 use jiff::{SignedDuration, Timestamp};
 use std::sync::Arc;
@@ -581,4 +581,168 @@ async fn a_message_the_connector_delivers_is_answered_through_the_whole_link() {
     stop_tx.send_replace(true);
     let outcome = within("the link to end", run).await.expect("the task does not panic");
     assert!(matches!(outcome, Ok(Outcome::Done)), "{outcome:?}");
+}
+
+// ---- routines reaching the owner ---------------------------------------------
+//
+// A routine reaches the owner through the outlet the relay registers for its
+// link: a message, a confirmation, a question of its own. Each goes to the
+// owner's private room, in turn with whatever that room is doing.
+
+/// A routine run's transcript, as the scheduler makes one, and who it is from.
+fn routine_run(h: &Harness, name: &str) -> (everyday_core::Conversation, FromRun) {
+    let thread = everyday_core::Conversation::for_run(everyday_core::RoutineRunId::new(), name);
+    h.vault.save_conversation(&thread).unwrap();
+    let from = FromRun { routine: name.into(), conversation: Some(thread.id) };
+    (thread, from)
+}
+
+/// The outlet the relay registers once it is running -- a moment after it is
+/// spawned, so waited for.
+async fn outlet(h: &Harness) -> Arc<dyn everyday_service::chat::ChatOutlet> {
+    within("the relay to offer an outlet", async {
+        loop {
+            if let Some(outlet) = h.service.chat_outlet(h.link.id) {
+                return outlet;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_routine_posts_in_the_owners_room_and_the_reply_carries_on_its_conversation() {
+    let mut h = Harness::start(|_| says("Moved it to Thursday."), Timing::default()).await;
+    h.connector.set_home(room());
+    let (thread, from) = routine_run(&h, "Morning brief");
+
+    outlet(&h)
+        .await
+        .post(from, "**Morning brief**\n\nThe dentist is at nine.".into())
+        .await
+        .expect("it went out");
+    assert_eq!(h.connector.sent(), vec!["**Morning brief**\n\nThe dentist is at nine."]);
+    assert_eq!(
+        h.vault.conversation(thread.id).unwrap().via,
+        Some(via_of(&h)),
+        "a relay started afresh can find it again"
+    );
+
+    h.say("move it to thursday").await;
+    h.connector.wait_for_sent(2).await;
+    h.finish().await;
+
+    let said: Vec<String> = h
+        .vault
+        .messages(thread.id)
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.role == Role::User)
+        .map(|m| m.content)
+        .collect();
+    assert_eq!(said, vec!["move it to thursday"], "the reply went on in the run's own thread");
+    assert_eq!(h.conversations().len(), 1, "and no second conversation was started");
+}
+
+#[tokio::test]
+async fn a_routine_with_no_room_to_post_in_is_told_why() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    let (_, from) = routine_run(&h, "Morning brief");
+
+    let why = outlet(&h).await.post(from, "hello".into()).await.expect_err("there is no room yet");
+    assert!(why.contains("has not joined"), "{why}");
+    h.finish().await;
+    assert!(h.connector.sent().is_empty());
+}
+
+#[tokio::test]
+async fn the_outlet_goes_when_the_relay_does() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    outlet(&h).await;
+    h.halt().await;
+    assert!(h.service.chat_outlet(h.link.id).is_none());
+}
+
+#[tokio::test]
+async fn a_routines_approval_is_asked_in_the_room_and_a_tap_answers_it() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Tidy up");
+
+    let asking = tokio::spawn(outlet(&h).await.confirm(
+        from,
+        "destructive".into(),
+        "Book the dentist".into(),
+        true,
+    ));
+    let (question, reference) = h.connector.wait_for_question().await;
+    assert!(
+        question.markdown.starts_with("_From your routine **Tidy up**:_"),
+        "{}",
+        question.markdown
+    );
+    assert!(question.markdown.contains("Book the dentist"));
+    assert!(question.choices.contains(&Choice::Later), "it can be parked");
+
+    h.choose(&reference, Choice::Yes).await;
+    let answer = within("the answer", asking).await.unwrap();
+    assert_eq!(answer, everyday_service::agent::ConfirmAnswer::Confirm);
+    h.finish().await;
+    assert!(h.connector.typing().is_empty(), "nothing in this room was typing");
+    assert_eq!(h.conversations().len(), 1, "no turn ran here");
+}
+
+#[tokio::test]
+async fn a_routines_own_question_takes_the_next_message_as_its_answer() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Morning brief");
+
+    let asking = tokio::spawn(outlet(&h).await.ask(
+        from,
+        "Which slot for the dentist?".into(),
+        vec!["Tuesday 9:00".into(), "Thursday 14:00".into()],
+    ));
+    h.connector.wait_for_sent(1).await;
+    let question = &h.connector.sent()[0];
+    assert!(question.contains("Which slot for the dentist?"), "{question}");
+    assert!(question.contains("2. Thursday 14:00"), "{question}");
+
+    h.say("2").await;
+    let answer = within("the answer", asking).await.unwrap();
+    assert_eq!(answer.as_deref(), Some("Thursday 14:00"));
+    h.finish().await;
+    assert_eq!(h.connector.sent().len(), 1, "the answer started no turn and got no reply");
+}
+
+#[tokio::test]
+async fn stop_while_a_routine_waits_withdraws_its_question() {
+    let mut h = Harness::start(|_| says("unused"), Timing::default()).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Morning brief");
+
+    let asking = tokio::spawn(outlet(&h).await.ask(from, "Anything to add?".into(), Vec::new()));
+    h.connector.wait_for_sent(1).await;
+    h.say("!stop").await;
+    let answer = within("the answer", asking).await.unwrap();
+    assert_eq!(answer, None);
+    h.connector.wait_for_sent(2).await;
+    h.finish().await;
+    assert_eq!(h.connector.sent()[1], "Stopped.");
+}
+
+#[tokio::test]
+async fn a_routines_question_nobody_answers_comes_back_empty_and_says_so() {
+    let timing = Timing { confirm_timeout: Duration::from_millis(200), ..Timing::default() };
+    let mut h = Harness::start(|_| says("unused"), timing).await;
+    h.connector.set_home(room());
+    let (_, from) = routine_run(&h, "Morning brief");
+
+    let answer =
+        within("the answer", outlet(&h).await.ask(from, "Anything?".into(), Vec::new())).await;
+    assert_eq!(answer, None);
+    h.connector.wait_for_sent(2).await;
+    h.finish().await;
+    assert!(h.connector.sent()[1].starts_with("No answer"), "{:?}", h.connector.sent());
 }

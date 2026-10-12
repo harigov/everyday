@@ -4432,6 +4432,33 @@
           }
         ]
       },
+      "Delivery": {
+        "description": "Where a run's result goes besides the Assistant app, and whether the run\nmay reach its person while it works.\n\nEvery run is kept in the app whatever this says; this adds places. The\ndefault is none, which is every routine saved before this existed.\n\nThe email goes to the sending account's own address, always. It is the\nperson's own report reaching them, not a message to anybody else, and a\nroutine the assistant set up must not be able to point it anywhere else.",
+        "properties": {
+          "ask": {
+            "default": false,
+            "description": "Put questions to the owner in that chat while the run works: approvals\nfor what would delete or send something, and a free question when it\nneeds a fact or a decision only they have. Read only when `chat` is\nset. Off, a run has nobody to ask and refuses or parks as it always\nhas.",
+            "type": "boolean"
+          },
+          "chat": {
+            "description": "The chat link whose private room with its owner gets the result. A\nreply there carries on the run's own conversation. See\n`docs/plans/chat.md`'s \"Routines in the chat\".",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "description": "Email the result from this account to its own address.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "DreamScope": {
         "description": "How far back a dream reads.",
         "oneOf": [
@@ -5046,6 +5073,13 @@
           "createdAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "delivery": {
+            "$ref": "#/$defs/Delivery",
+            "default": {
+              "ask": false
+            },
+            "description": "Where the result goes besides the app, and whether a run may ask."
           },
           "enabled": {
             "type": "boolean"
@@ -6106,6 +6140,33 @@
   },
   "Routine": {
     "$defs": {
+      "Delivery": {
+        "description": "Where a run's result goes besides the Assistant app, and whether the run\nmay reach its person while it works.\n\nEvery run is kept in the app whatever this says; this adds places. The\ndefault is none, which is every routine saved before this existed.\n\nThe email goes to the sending account's own address, always. It is the\nperson's own report reaching them, not a message to anybody else, and a\nroutine the assistant set up must not be able to point it anywhere else.",
+        "properties": {
+          "ask": {
+            "default": false,
+            "description": "Put questions to the owner in that chat while the run works: approvals\nfor what would delete or send something, and a free question when it\nneeds a fact or a decision only they have. Read only when `chat` is\nset. Off, a run has nobody to ask and refuses or parks as it always\nhas.",
+            "type": "boolean"
+          },
+          "chat": {
+            "description": "The chat link whose private room with its owner gets the result. A\nreply there carries on the run's own conversation. See\n`docs/plans/chat.md`'s \"Routines in the chat\".",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "description": "Email the result from this account to its own address.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "DreamScope": {
         "description": "How far back a dream reads.",
         "oneOf": [
@@ -6279,6 +6340,13 @@
         "format": "date-time",
         "type": "string"
       },
+      "delivery": {
+        "$ref": "#/$defs/Delivery",
+        "default": {
+          "ask": false
+        },
+        "description": "Where the result goes besides the app, and whether a run may ask."
+      },
       "enabled": {
         "type": "boolean"
       },
@@ -6336,6 +6404,35 @@
   },
   "RoutineRun": {
     "$defs": {
+      "Delivered": {
+        "description": "Where a run's result was sent, or why it could not be.",
+        "properties": {
+          "detail": {
+            "description": "Where it went (\"Matrix\", \"me@example.com\"), or why it did not.",
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "to": {
+            "$ref": "#/$defs/DeliveredTo"
+          }
+        },
+        "required": [
+          "to",
+          "ok",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "DeliveredTo": {
+        "description": "One of the places [`Delivery`] can send a result.",
+        "enum": [
+          "chat",
+          "email"
+        ],
+        "type": "string"
+      },
       "Outcome": {
         "description": "How a run ended.\n\nA closed set, like [`crate::GoalStatus`], so a run cannot be in a state\nthe interface has no word for.",
         "oneOf": [
@@ -6378,6 +6475,13 @@
           "string",
           "null"
         ]
+      },
+      "delivered": {
+        "description": "Where the result was sent besides the app, one entry per place the\nroutine's [`Delivery`] named, each saying whether it got there.",
+        "items": {
+          "$ref": "#/$defs/Delivered"
+        },
+        "type": "array"
       },
       "finishedAt": {
         "format": "date-time",

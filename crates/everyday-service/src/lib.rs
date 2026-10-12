@@ -45,6 +45,7 @@ pub mod chat;
 pub mod clock;
 pub mod command;
 pub mod ctx;
+pub(crate) mod delivery;
 pub mod domains;
 pub mod error;
 pub mod events;

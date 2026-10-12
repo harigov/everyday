@@ -2615,6 +2615,7 @@ dependencies = [
  "hyper-util",
  "jiff",
  "libdav",
+ "pulldown-cmark",
  "rand 0.9.5",
  "reqwest",
  "rig-agent",

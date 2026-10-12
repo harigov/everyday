@@ -171,7 +171,10 @@ pub use purpose::{
 pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
 pub use record::{RecordDescriptor, RecordKind};
 pub use richtext::RichDoc;
-pub use routine::{DreamScope, Due, Outcome, Routine, RoutineKind, RoutineRun, Trigger, Weekday};
+pub use routine::{
+    Delivered, DeliveredTo, Delivery, DreamScope, Due, Outcome, Routine, RoutineKind, RoutineRun,
+    Trigger, Weekday,
+};
 pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};

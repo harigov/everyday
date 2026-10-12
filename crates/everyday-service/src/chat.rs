@@ -19,6 +19,16 @@
 //! installs the runner, and after every save or removal -- so there is one
 //! place that decides what should be running, however it came to be asked.
 //!
+//! # Reaching the owner unasked
+//!
+//! A link's relay answers the owner, and that used to be all it did. A
+//! routine that should send its result to the owner's chat, or ask them
+//! something while it works, needs to reach that relay from outside: the
+//! relay registers a [`ChatOutlet`] for its link while it runs
+//! ([`Service::open_chat_outlet`]), and the scheduler looks it up by the
+//! link a routine names. No outlet means the link is not running here right
+//! now, and the routine says so in its log rather than waiting for one.
+//!
 //! The supervisor keeps a task's factory after the task stops (that is how a
 //! lock and an unlock bring it back), and has no way to forget one. A link
 //! that was switched off or removed therefore still has a factory on file,
@@ -27,13 +37,14 @@
 //! `Ok(Outcome::Done)` at once for a link that is gone or off, which is what
 //! "do not try again until the settings change" means.
 
-use crate::agent::{Sink, Turn, Turned};
+use crate::agent::{ConfirmAnswer, Reach, Sink, Turn, Turned};
 use crate::error::CommandResult;
 use crate::events::{Change, Kind, Op};
 use crate::service::Service;
 use crate::supervisor::{TaskFuture, TaskState};
 use everyday_core::chat::{ChatLink, Via};
 use everyday_core::{ChatLinkId, ConversationId, Vault};
+use futures::future::BoxFuture;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -56,6 +67,57 @@ pub trait ChatRunner: Send + Sync + 'static {
         link: ChatLinkId,
         stop: watch::Receiver<bool>,
     ) -> TaskFuture;
+}
+
+/// The routine run a message to the owner comes from.
+///
+/// The chat names the routine, so a question arriving out of nowhere says
+/// whose it is; carries a reply on in the run's own conversation, so "yes,
+/// and move the other one too" has everything the run knew; and lets
+/// `!stop` stop the run while it is waiting on them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FromRun {
+    pub routine: String,
+    /// The run's transcript. `None` only for a run whose transcript could
+    /// not be saved, which then has nothing for a reply to carry on.
+    pub conversation: Option<ConversationId>,
+}
+
+/// A running link's way to the owner, for whatever is not a reply to them.
+///
+/// Registered by the relay for as long as it runs. Each call goes to the
+/// owner's private chat on that link, in turn with whatever that chat is
+/// already doing: a question waits for a turn the owner started to finish,
+/// as a second message from them would.
+pub trait ChatOutlet: Send + Sync + 'static {
+    /// Send `markdown` to the owner. `Err` says why it could not go -- the
+    /// owner has not joined the bot's room yet, the server refused -- in
+    /// words for the run log.
+    fn post(&self, from: FromRun, markdown: String) -> BoxFuture<'static, Result<(), String>>;
+
+    /// Put a tool call to the owner -- the same `kind`, `subject` and
+    /// `can_park` a chat turn's own confirmation carries -- and wait for
+    /// their answer. Never yes unless they said so: silence past the relay's
+    /// timeout comes back as later where that is on offer and no otherwise,
+    /// and a question that could not be put at all -- no room yet, the
+    /// relay stopping -- as no.
+    fn confirm(
+        &self,
+        from: FromRun,
+        kind: String,
+        subject: String,
+        can_park: bool,
+    ) -> BoxFuture<'static, ConfirmAnswer>;
+
+    /// Ask the owner a question in the model's own words, offering `choices`
+    /// if there are any, and wait for what they type. `None` when nothing
+    /// came back in time.
+    fn ask(
+        &self,
+        from: FromRun,
+        question: String,
+        choices: Vec<String>,
+    ) -> BoxFuture<'static, Option<String>>;
 }
 
 /// The supervisor key a link's task runs under.
@@ -97,6 +159,8 @@ pub struct ChatStatus {
 pub struct ChatHub {
     pub(crate) runner: RwLock<Option<Arc<dyn ChatRunner>>>,
     pub(crate) status: RwLock<HashMap<ChatLinkId, ChatStatus>>,
+    /// The outlet each running link's relay has registered.
+    pub(crate) outlets: RwLock<HashMap<ChatLinkId, Arc<dyn ChatOutlet>>>,
 }
 
 impl Service {
@@ -184,6 +248,27 @@ impl Service {
         resolved
     }
 
+    /// Make `outlet` the way to reach `link`'s owner, until
+    /// [`Service::close_chat_outlet`]. A relay calls this once it is up.
+    pub fn open_chat_outlet(&self, link: ChatLinkId, outlet: Arc<dyn ChatOutlet>) {
+        self.chat.outlets.write().unwrap().insert(link, outlet);
+    }
+
+    /// Withdraw `outlet`, if it is still the one registered for `link`. A
+    /// relay that is stopping says so with the outlet it opened, so that one
+    /// stopping late cannot remove the outlet of the relay that replaced it.
+    pub fn close_chat_outlet(&self, link: ChatLinkId, outlet: &Arc<dyn ChatOutlet>) {
+        let mut outlets = self.chat.outlets.write().unwrap();
+        if outlets.get(&link).is_some_and(|open| Arc::ptr_eq(open, outlet)) {
+            outlets.remove(&link);
+        }
+    }
+
+    /// How to reach `link`'s owner right now, if its relay is running here.
+    pub fn chat_outlet(&self, link: ChatLinkId) -> Option<Arc<dyn ChatOutlet>> {
+        self.chat.outlets.read().unwrap().get(&link).cloned()
+    }
+
     /// Forget what `link` last reported -- once the link itself is gone.
     pub(crate) fn forget_chat_status(&self, link: ChatLinkId) {
         self.chat.status.write().unwrap().remove(&link);
@@ -220,6 +305,9 @@ impl Service {
             // Only a dream drafts.
             drafting: None,
             via: Some(via),
+            // The owner is right there in the chat; a scheduled run's ways of
+            // reaching them are not needed.
+            reach: Reach::default(),
         })
         .await?;
         // What the tools wrote, then the thread -- the same two things, in

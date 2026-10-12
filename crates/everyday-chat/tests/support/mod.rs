@@ -45,6 +45,7 @@ pub struct FakeConnector {
     deliveries: Mutex<Option<mpsc::UnboundedReceiver<Incoming>>>,
     delivering: mpsc::UnboundedSender<Incoming>,
     listen_error: Mutex<Option<ChatError>>,
+    home: Mutex<Option<ChatId>>,
 }
 
 impl FakeConnector {
@@ -58,7 +59,15 @@ impl FakeConnector {
             deliveries: Mutex::new(Some(deliveries)),
             delivering,
             listen_error: Mutex::new(None),
+            home: Mutex::new(None),
         })
+    }
+
+    /// Say which chat is the owner's private one, for a routine to reach.
+    /// Until this is called there is none, as for an owner who has not
+    /// joined yet.
+    pub fn set_home(&self, chat: ChatId) {
+        *self.home.lock().unwrap() = Some(chat);
     }
 
     /// Hand the connector something the owner "did", for `listen` to pass on.
@@ -220,6 +229,10 @@ impl Connector for FakeConnector {
             reference: reference.clone(),
         });
         Ok(reference)
+    }
+
+    async fn home(&self) -> Option<ChatId> {
+        self.home.lock().unwrap().clone()
     }
 
     async fn typing(&self, chat: &ChatId, on: bool) -> Result<(), ChatError> {

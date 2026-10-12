@@ -365,3 +365,77 @@ turned off.
 Images, files and voice notes (the speech pipeline could transcribe them
 later). Messages typed on the desktop do not echo into the chat. Bridged
 rooms. Other services.
+
+## Routines in the chat (phase 2)
+
+A routine can do real work while nobody is at the desk, and it needs two
+things a chat gives it: a place to send its result, and someone to ask when
+it needs a decision. Each routine now has a `Delivery`:
+
+- `chat`: the link whose private room gets the result;
+- `ask`: whether to ask questions in that room while the run works;
+- `email`: an account that sends the result to its own address.
+
+Every run is still kept in the Assistant app, and the desktop notification is
+unchanged. Delivery only adds places. The editor's "When it is done" section
+sets these fields, and so do the assistant's `create_routine` and
+`update_routine` (`send_to_chat`, `ask_in_chat`, `email_me`,
+`email_account`).
+
+**What was decided, and why**
+
+- **Ask in Matrix only.** The owner chose this over also putting the question
+  in the desktop app. Email cannot take an answer. A routine that delivers by
+  email alone therefore asks nobody: it refuses, or parks as a proposal, as it
+  always has.
+- **Silence is never yes.** A question waits for the relay's 30 minutes. After
+  that, an approval becomes later if the call can be parked and no
+  otherwise. A free question comes back empty, and the model is told to carry
+  on with the sensible reading and say what it assumed.
+- **A routine that asks in a chat always asks before a destructive call**,
+  whatever `confirm_destructive` says. This is the same rule as a turn from
+  the chat: the answer comes from a phone.
+- **The email goes to the account's own address and nowhere else.** The
+  address comes from the account, never from a model. A routine the
+  assistant set up cannot be talked into mailing somebody else.
+- **A reply carries on the run's own conversation.** Posting the result
+  adopts the run's transcript as the chat's current conversation. It also
+  marks it with the room's `via`, so a relay started afresh still finds it.
+  "Move it to Thursday" then has everything the run knew.
+
+**How it fits together**
+
+- **The relay registers a `ChatOutlet`** (`everyday_service::chat`) for its
+  link while it runs, and withdraws it when it stops. A routine's message,
+  approval or question arrives through it as a `RoutineJob`. The job is
+  queued on the owner's private room (`Connector::home`) in turn with
+  whatever that room is doing, so it waits for a turn the owner started.
+  Their answer is routed exactly as an answer to a chat turn's question.
+- **A free question takes whatever the owner types next as its answer.** A
+  bare number picks a numbered choice. A command withdraws the question, and
+  `!stop` also stops the run.
+- **The relay stopping does not stop a routine.** It only tells the routine
+  that nobody will answer.
+- **The agent gets a `Reach`** on its `Turn`:
+  - an `Asker`, which the scheduler builds over the outlet;
+  - the places the reply will go, in words.
+
+  With an asker, the confirmation gate asks instead of refusing or parking,
+  and the run is offered `ask_owner`. That tool allows at most three
+  questions per run.
+- **The run's context says the reply will be sent,** so the model writes the
+  reply as the message.
+- **A run that can ask runs beside the scheduler's tick, not inside it**
+  (`RoutineRuntime::detach`). A half-hour wait must not hold up the meeting
+  watcher, the snooze sweep or the next routine. The run is claimed before
+  the tick moves on, and its routine is held in flight until it ends, so
+  the slot is neither started again nor recorded as missed.
+- **Time spent waiting does not count toward the fifteen-minute run budget.**
+  A two-hour ceiling still bounds the whole run.
+- **A stopping scheduler, or a closing vault, withdraws every waiting
+  question.**
+- **What happened is recorded on the run.** `RoutineRun.delivered` holds one
+  entry per place, saying whether the result got there or why not. Examples:
+  "Matrix was not connected" and "the owner has not joined the bot's
+  private room yet". A failure is delivered once per streak, as the
+  notification is.

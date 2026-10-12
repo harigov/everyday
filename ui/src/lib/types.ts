@@ -616,9 +616,41 @@ export interface Routine {
    * to an app-owned prompt. Absent on a routine saved before dreaming existed.
    */
   kind?: RoutineKind
+  /**
+   * Where the result goes besides the app, and whether a run may ask while it
+   * works. Absent on a routine saved before delivery existed, which stays in
+   * the app.
+   */
+  delivery?: Delivery
   lastRunAt?: string | null
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * Where a routine's result goes besides the app. Every run is kept in the app
+ * whatever this says; this adds places.
+ */
+export interface Delivery {
+  /** The chat link whose private room with its owner gets the result. A
+   *  reply there carries on the run's own conversation. */
+  chat?: ChatLinkId | null
+  /** Ask in that chat while the run works -- approvals for what deletes or
+   *  sends, and a question only they can answer. Read only with `chat`. */
+  ask: boolean
+  /** Email the result from this account to its own address. */
+  email?: AccountId | null
+}
+
+/** One of the places a routine's result can go. */
+export type DeliveredTo = 'chat' | 'email'
+
+/** Where a run's result was sent, or why it could not be. */
+export interface Delivered {
+  to: DeliveredTo
+  ok: boolean
+  /** Where it went ("Matrix", "me@example.com"), or why it did not. */
+  detail: string
 }
 
 export const DREAM_SCOPES = ['day', 'week', 'month'] as const
@@ -652,6 +684,9 @@ export interface RoutineRun {
   /** Whether anybody has looked at it. The count on the app bar. */
   seen: boolean
   steps: number
+  /** Where the result was sent besides the app. Absent when it went nowhere
+   *  else. */
+  delivered?: Delivered[]
 }
 
 export interface RunQuery {

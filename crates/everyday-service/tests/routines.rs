@@ -9,10 +9,15 @@
 //! precisely so that a local model works, and a scripted one is a local model
 //! that always says the same thing. No key, no network, no bill.
 
-use everyday_core::routine::{Outcome, Routine, Trigger, Weekday};
+use everyday_core::routine::{
+    Delivered, DeliveredTo, Delivery, Outcome, Routine, Trigger, Weekday,
+};
 use everyday_core::store::routines::RunQuery;
 use everyday_service::Service;
+use everyday_service::agent::ConfirmAnswer;
+use everyday_service::chat::{ChatOutlet, FromRun};
 use everyday_service::events::{Change, EventSink, Notification};
+use futures::future::BoxFuture;
 use std::sync::{Arc, Mutex};
 
 /// A vault with a journal, an assistant pointed at `endpoint`, and nothing else.
@@ -945,4 +950,278 @@ async fn a_dream_with_nothing_added_can_be_switched_off_from_the_editor() {
     let saved = vault.routine(nightly.id).unwrap();
     assert!(!saved.enabled);
     assert_eq!(saved.grace_minutes, 600);
+}
+
+// ── delivery: docs/plans/chat.md's "Routines in the chat" ───────────────
+
+/// A chat link's outlet, as a running relay registers one: writes down what
+/// it is asked, and answers as it is told to.
+struct FakeOutlet {
+    posts: Mutex<Vec<(FromRun, String)>>,
+    confirms: Mutex<Vec<(String, String, bool)>>,
+    asks: Mutex<Vec<(String, Vec<String>)>>,
+    confirm_with: ConfirmAnswer,
+    say: Option<String>,
+}
+
+impl FakeOutlet {
+    fn answering(confirm_with: ConfirmAnswer, say: Option<&str>) -> Arc<Self> {
+        Arc::new(Self {
+            posts: Mutex::default(),
+            confirms: Mutex::default(),
+            asks: Mutex::default(),
+            confirm_with,
+            say: say.map(str::to_string),
+        })
+    }
+}
+
+impl ChatOutlet for FakeOutlet {
+    fn post(&self, from: FromRun, markdown: String) -> BoxFuture<'static, Result<(), String>> {
+        self.posts.lock().unwrap().push((from, markdown));
+        Box::pin(async { Ok(()) })
+    }
+
+    fn confirm(
+        &self,
+        _from: FromRun,
+        kind: String,
+        subject: String,
+        can_park: bool,
+    ) -> BoxFuture<'static, ConfirmAnswer> {
+        self.confirms.lock().unwrap().push((kind, subject, can_park));
+        let answer = self.confirm_with;
+        Box::pin(async move { answer })
+    }
+
+    fn ask(
+        &self,
+        _from: FromRun,
+        question: String,
+        choices: Vec<String>,
+    ) -> BoxFuture<'static, Option<String>> {
+        self.asks.lock().unwrap().push((question, choices));
+        let said = self.say.clone();
+        Box::pin(async move { said })
+    }
+}
+
+/// A switched-on Matrix link in the vault's settings, and its id.
+fn a_chat_link(svc: &Arc<Service>) -> everyday_core::ChatLinkId {
+    let mut link = everyday_core::chat::ChatLink::new_matrix();
+    link.service = everyday_core::chat::ChatService::Matrix(everyday_core::chat::MatrixLink {
+        homeserver: "http://127.0.0.1:6167".into(),
+        user_id: "@bot:test".into(),
+        owner: "@me:test".into(),
+    });
+    let id = link.id;
+    svc.get()
+        .unwrap()
+        .save_chat_settings(&everyday_core::chat::ChatSettings { links: vec![link] })
+        .unwrap();
+    id
+}
+
+/// Point the assistant at `model`, once the vault exists for the script to
+/// name something in it.
+fn use_model(svc: &Arc<Service>, model: &FakeModel) {
+    let vault = svc.get().unwrap();
+    let mut settings = vault.agent_settings().unwrap();
+    settings.provider_config.base_url = Some(model.endpoint.clone());
+    vault.save_agent_settings(&settings).unwrap();
+}
+
+fn delivered_to(svc: &Arc<Service>, routine: &Routine, delivery: Delivery) {
+    let vault = svc.get().unwrap();
+    let mut routine = vault.routine(routine.id).unwrap();
+    routine.delivery = delivery;
+    vault.save_routine(&routine).unwrap();
+}
+
+#[tokio::test]
+async fn a_routine_that_asks_in_its_chat_puts_the_delete_to_its_person_and_does_it_on_yes() {
+    let (svc, _dir) = service("http://127.0.0.1:1/v1");
+    let vault = svc.get().unwrap();
+    let task = everyday_core::Task::new("Book the dentist");
+    vault.save_task(&task).unwrap();
+    let model = fake_model(calls(
+        "delete_task",
+        serde_json::json!({ "task_id": task.id.to_string() }).to_string(),
+        "Deleted the dentist task, as you said.",
+    ))
+    .await;
+    use_model(&svc, &model);
+    let link = a_chat_link(&svc);
+    let outlet = FakeOutlet::answering(ConfirmAnswer::Confirm, None);
+    svc.open_chat_outlet(link, outlet.clone());
+    let routine = due_now(&svc, "Tidy up.");
+    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+
+    everyday_service::scheduler::tick(&svc).await;
+    everyday_service::scheduler::settle(&svc).await;
+
+    assert!(vault.task(task.id).is_err(), "asked, answered yes, and done");
+    assert_eq!(
+        *outlet.confirms.lock().unwrap(),
+        vec![("destructive".to_string(), "Book the dentist".to_string(), true)]
+    );
+    let run = &vault.runs(&RunQuery::for_routine(routine.id)).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done);
+    let posts = outlet.posts.lock().unwrap().clone();
+    assert_eq!(posts.len(), 1, "one message with the result");
+    assert_eq!(posts[0].1, "**Morning brief**\n\nDeleted the dentist task, as you said.");
+    assert_eq!(posts[0].0.conversation, run.conversation_id, "a reply carries on the run");
+    assert_eq!(
+        run.delivered,
+        vec![Delivered { to: DeliveredTo::Chat, ok: true, detail: "Matrix".into() }]
+    );
+
+    // Once per slot, as ever.
+    everyday_service::scheduler::tick(&svc).await;
+    everyday_service::scheduler::settle(&svc).await;
+    assert_eq!(vault.runs(&RunQuery::default()).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn later_from_the_chat_parks_it_as_this_runs_proposal_and_the_message_says_so() {
+    let (svc, _dir) = service("http://127.0.0.1:1/v1");
+    let vault = svc.get().unwrap();
+    let task = everyday_core::Task::new("Book the dentist");
+    vault.save_task(&task).unwrap();
+    let model = fake_model(calls(
+        "delete_task",
+        serde_json::json!({ "task_id": task.id.to_string() }).to_string(),
+        "Left the dentist task for you.",
+    ))
+    .await;
+    use_model(&svc, &model);
+    let link = a_chat_link(&svc);
+    let outlet = FakeOutlet::answering(ConfirmAnswer::Later, None);
+    svc.open_chat_outlet(link, outlet.clone());
+    let routine = due_now(&svc, "Tidy up.");
+    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+
+    everyday_service::scheduler::tick(&svc).await;
+    everyday_service::scheduler::settle(&svc).await;
+
+    assert!(vault.task(task.id).is_ok(), "parked, not deleted");
+    let run = &vault.runs(&RunQuery::for_routine(routine.id)).unwrap()[0];
+    let pending = vault.proposals(&Default::default()).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].made_by, Some(everyday_core::ProposalSource::Run { run_id: run.id }));
+    let posts = outlet.posts.lock().unwrap();
+    assert!(
+        posts[0].1.ends_with("_One thing is waiting for you to decide in the Assistant app._"),
+        "{}",
+        posts[0].1
+    );
+}
+
+#[tokio::test]
+async fn a_routine_can_put_a_question_of_its_own_to_its_person() {
+    let model = fake_model(calls(
+        "ask_owner",
+        serde_json::json!({
+            "question": "Which slot for the dentist?",
+            "choices": ["Tuesday 9:00", "Thursday 14:00"],
+        })
+        .to_string(),
+        "Booked Thursday.",
+    ))
+    .await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let link = a_chat_link(&svc);
+    let outlet = FakeOutlet::answering(ConfirmAnswer::Decline, Some("Thursday 14:00"));
+    svc.open_chat_outlet(link, outlet.clone());
+    let routine = due_now(&svc, "Book the dentist.");
+    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+
+    everyday_service::scheduler::tick(&svc).await;
+    everyday_service::scheduler::settle(&svc).await;
+
+    assert_eq!(
+        *outlet.asks.lock().unwrap(),
+        vec![(
+            "Which slot for the dentist?".to_string(),
+            vec!["Tuesday 9:00".to_string(), "Thursday 14:00".to_string()]
+        )]
+    );
+    let run = &vault.runs(&RunQuery::for_routine(routine.id)).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done);
+    let messages = vault.messages(run.conversation_id.unwrap()).unwrap();
+    let result = messages
+        .iter()
+        .find(|m| m.role == everyday_core::MessageRole::Tool)
+        .expect("the question's answer is in the transcript");
+    assert!(result.content.contains("Thursday 14:00"), "{}", result.content);
+}
+
+#[tokio::test]
+async fn a_routine_whose_chat_is_not_connected_asks_nobody_and_says_where_it_could_not_go() {
+    let (svc, _dir) = service("http://127.0.0.1:1/v1");
+    let vault = svc.get().unwrap();
+    let task = everyday_core::Task::new("Book the dentist");
+    vault.save_task(&task).unwrap();
+    let model = fake_model(calls(
+        "delete_task",
+        serde_json::json!({ "task_id": task.id.to_string() }).to_string(),
+        "It needs deleting and I could not do it.",
+    ))
+    .await;
+    use_model(&svc, &model);
+    let link = a_chat_link(&svc);
+    // No outlet: the link's relay is not running in this process.
+    let routine = due_now(&svc, "Tidy up.");
+    delivered_to(&svc, &routine, Delivery { chat: Some(link), ask: true, email: None });
+
+    // Not detached: with nobody to ask, there is nothing to wait for.
+    everyday_service::scheduler::tick(&svc).await;
+
+    assert!(vault.task(task.id).is_ok(), "refused, as with nobody to ask");
+    let run = &vault.runs(&RunQuery::for_routine(routine.id)).unwrap()[0];
+    assert_eq!(run.outcome, Outcome::Done);
+    assert_eq!(
+        run.delivered,
+        vec![Delivered {
+            to: DeliveredTo::Chat,
+            ok: false,
+            detail: "Matrix was not connected".into()
+        }]
+    );
+}
+
+#[tokio::test]
+async fn an_emailed_result_goes_from_the_account_to_itself() {
+    let model = fake_model(says("Three things are due.")).await;
+    let (svc, _dir) = service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let mut account = everyday_core::account::Account::new(
+        everyday_core::account::Provider::Custom,
+        "me@example.com",
+    );
+    account.services.mail = true;
+    vault.save_account(&account).unwrap();
+    let routine = due_now(&svc, "Say what is due.");
+    delivered_to(&svc, &routine, Delivery { chat: None, ask: false, email: Some(account.id) });
+
+    everyday_service::scheduler::tick(&svc).await;
+
+    let drafts = vault.drafts(account.id).unwrap();
+    assert_eq!(drafts.len(), 1, "one message");
+    let draft = &drafts[0];
+    assert_eq!(
+        draft.to.iter().map(|a| a.email.as_str()).collect::<Vec<_>>(),
+        vec!["me@example.com"],
+        "to the account itself and nobody else"
+    );
+    assert!(draft.subject.starts_with("Morning brief \u{2014} "), "{}", draft.subject);
+    assert!(draft.body_html.contains("Three things are due."), "{}", draft.body_html);
+    assert!(matches!(draft.state, everyday_core::mail::DraftState::Queued { .. }));
+    assert!(matches!(draft.origin, everyday_core::mail::Origin::Routine { .. }));
+    let run = &vault.runs(&RunQuery::for_routine(routine.id)).unwrap()[0];
+    assert_eq!(
+        run.delivered,
+        vec![Delivered { to: DeliveredTo::Email, ok: true, detail: "me@example.com".into() }]
+    );
 }

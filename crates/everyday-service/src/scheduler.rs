@@ -35,7 +35,8 @@
 //! HTTP client rather than `http.rs`, so it does not share that module's
 //! timeouts. The whole turn is wrapped in one here instead.
 
-use crate::agent::{AgentEvent, Turn};
+use crate::agent::{AgentEvent, Asker, ConfirmAnswer, Reach, Turn};
+use crate::chat::{ChatOutlet, FromRun};
 use crate::events::{Change, Kind, Notification, Op};
 use crate::service::{Service, blocking};
 use everyday_core::agent::tools::Drafting;
@@ -70,6 +71,12 @@ const TICK: Duration = Duration::from_secs(60);
 /// ends.
 const RUN_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+/// Longest any run may take, counting the time it spent waiting on its
+/// person's answers -- which [`RUN_TIMEOUT`] does not. Each question waits at
+/// most half an hour and a run asks few, so this is only ever reached by a run
+/// that has gone wrong.
+const RUN_CEILING: Duration = Duration::from_secs(2 * 60 * 60);
+
 /// Run the scheduler until `stop` says otherwise.
 ///
 /// Must be spawned on the runtime the rest of the process uses. Starting one
@@ -93,7 +100,18 @@ pub async fn run(service: Arc<Service>, mut stop: tokio::sync::watch::Receiver<b
         // therefore checked between ticks, and whoever asked for it waits.
         tick(&service).await;
     }
+    // A run waiting on somebody's answer would hold this up for half an
+    // hour; told to stop waiting, it finishes with what it has, and is
+    // written down like any other.
+    service.withdraw_run_questions();
+    settle(&service).await;
     tracing::info!("the assistant's scheduler has stopped");
+}
+
+/// Wait for every run going on beside the tick -- the ones that may wait on
+/// their person's answer -- to finish. Public so a test can see one through.
+pub async fn settle(service: &Arc<Service>) {
+    service.settle_runs().await;
 }
 
 /// One pass. Public so a test can drive it without waiting a minute.
@@ -233,6 +251,12 @@ pub async fn tick(service: &Arc<Service>) {
     due.sort_by_key(|(r, _)| r.last_run_at.unwrap_or(r.created_at));
 
     for (routine, verdict) in due {
+        // Its last slot is still being worked on beside the tick, waiting on
+        // somebody perhaps. It stamps the slot when it ends; until then the
+        // slot is neither due again nor missed.
+        if service.routine_in_flight(routine.id) {
+            continue;
+        }
         match verdict {
             Due::Missed { slot } => {
                 let late = pretty_minutes(now.timestamp().as_second() - slot.as_second());
@@ -372,6 +396,10 @@ pub async fn tick(service: &Arc<Service>) {
     .await
     .unwrap_or_default();
     for run in queued {
+        // Already being carried out beside the tick, and not started yet.
+        if service.claims_run(&run.id.to_string()) {
+            continue;
+        }
         let routine_id = run.routine_id;
         let run_id = run.id;
         // The lookup and, on failure, the delete are the same trip: both are
@@ -403,7 +431,8 @@ pub async fn tick(service: &Arc<Service>) {
             continue;
         }
         let prompt = routine.instructions.clone();
-        resume(service, &vault, &routine, run, prompt, None).await;
+        let hold = Some(routine.id);
+        carry_out(service, &vault, &routine, run, prompt, hold).await;
     }
 }
 
@@ -679,7 +708,9 @@ async fn about(service: &Arc<Service>, vault: &Arc<Vault>, routine: &Routine, su
     .await;
     let Ok(run) = saved else { return };
     let prompt = about.instructions.clone();
-    resume(service, vault, &about, run, prompt, None).await;
+    // Not held in flight: its subject is what stops a second run about the
+    // same meeting, and a second meeting is a second run.
+    carry_out(service, vault, &about, run, prompt, None).await;
 }
 
 /// Everything about one run, from the row to the notification.
@@ -705,7 +736,34 @@ async fn execute(
     })
     .await;
     let Ok(run) = saved else { return };
-    resume(service, vault, routine, run, routine.instructions.clone(), None).await;
+    let prompt = routine.instructions.clone();
+    carry_out(service, vault, routine, run, prompt, Some(routine.id)).await;
+}
+
+/// Carry out a person's routine's run, whose row is already saved: here, in
+/// the tick, or beside it when it may wait on its person's answer.
+///
+/// A detached run is claimed before this returns, so the rest of this tick --
+/// the queued sweep in particular -- cannot take it up a second time; `hold`
+/// keeps its routine out of the next ticks until it ends.
+async fn carry_out(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    run: RoutineRun,
+    prompt: String,
+    hold: Option<everyday_core::RoutineId>,
+) {
+    if !may_wait(service, routine) {
+        resume(service, vault, routine, run, prompt, None).await;
+        return;
+    }
+    let claim = service.claim_run(run.id.to_string());
+    let (svc, vault, routine) = (service.clone(), vault.clone(), routine.clone());
+    service.detach_run(hold, async move {
+        let _claim = claim;
+        resume(&svc, &vault, &routine, run, prompt, None).await;
+    });
 }
 
 /// Everything about a dream's run: whether it may start at all, the digest
@@ -1008,6 +1066,13 @@ async fn resume(
         save_run(vault, &run).await;
     }
 
+    // Who it can ask, and where its result goes -- only for a person's own
+    // routine: a dream's work is proposals, decided in the app.
+    let outlet = if drafting.is_none() { outlet_for(service, routine) } else { None };
+    let clock = Arc::new(WaitClock::default());
+    let reach =
+        reach_for(service, vault, routine, run.conversation_id, outlet.clone(), &clock).await;
+
     tracing::info!(routine = %routine.name, "running a routine");
     // What the tray says while this is going on. Cleared below whatever
     // happens, including a timeout.
@@ -1026,28 +1091,37 @@ async fn resume(
         unattended: Some(run.id),
         drafting,
         via: None,
+        reach,
     };
 
     let mut wrote = Vec::new();
-    match tokio::time::timeout(RUN_TIMEOUT, crate::agent::run_turn(turn)).await {
-        Ok(Ok(turned)) => {
+    match run_within_budget(crate::agent::run_turn(turn), &clock).await {
+        Some(Ok(turned)) => {
             run.steps = turned.steps;
             wrote = turned.wrote;
             run.finish(Outcome::Done, turned.text);
         }
-        Ok(Err(e)) => run.fail(e.to_string()),
-        Err(_) => run.fail(format!(
+        Some(Err(e)) => run.fail(e.to_string()),
+        None => run.fail(format!(
             "it was still going after {} minutes and was stopped",
             RUN_TIMEOUT.as_secs() / 60
         )),
     }
 
-    service.set_running_routine(None);
+    service.routine_finished_running(&routine.name);
+    // News or not -- the first failure of a streak is, the rest are not --
+    // decided once, for the notification and the deliveries alike.
+    let news = is_news(service, routine, &run);
+    if news {
+        run.delivered = crate::delivery::deliver(service, vault, routine, &run, outlet).await;
+    }
     save_run(vault, &run).await;
     if let Some(slot) = run.slot {
         stamp_async(vault, routine, slot).await;
     }
-    announce(service, routine, &run);
+    if news {
+        announce(service, routine, &run);
+    }
     // What the run *wrote*, and then the run itself. Only the second of these
     // used to be raised, so a window with the Notes app open went on showing
     // yesterday's list after the morning brief had written into it: the run
@@ -1070,14 +1144,237 @@ async fn resume(
     service.events().changed(run_change());
 }
 
-/// Say something, once.
+/// The running chat link `routine` sends its result to, if it names one and
+/// that link's relay is up in this process.
+fn outlet_for(service: &Arc<Service>, routine: &Routine) -> Option<Arc<dyn ChatOutlet>> {
+    if routine.kind.is_dream() {
+        return None;
+    }
+    routine.delivery.chat.and_then(|link| service.chat_outlet(link))
+}
+
+/// Whether a run of `routine` may wait on somebody's answer -- and so must
+/// run beside the tick rather than in it, for the reason
+/// `RoutineRuntime::detach` gives in `runtime::routine`.
+fn may_wait(service: &Arc<Service>, routine: &Routine) -> bool {
+    routine.delivery.asks() && outlet_for(service, routine).is_some()
+}
+
+/// How a run of `routine` reaches its person: an asker over `outlet` when the
+/// routine asks in its chat, and the places its result will be sent, in
+/// words for the model.
 ///
-/// Keyed so that a repetition replaces its predecessor rather than stacking:
-/// a routine whose endpoint has been unreachable every morning for a week says
-/// so once rather than seven times -- the same courtesy `feed_failed` extends
-/// to a calendar that has stopped answering. The title names the routine and
-/// never carries what it found: this is the one notification in the
-/// application that will routinely be drawn over a lock screen.
+/// Only the places it will actually reach: a chat whose link is not running
+/// here is left out, so the model is not told its reply is going somewhere
+/// it is not.
+async fn reach_for(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    routine: &Routine,
+    conversation: Option<ConversationId>,
+    outlet: Option<Arc<dyn ChatOutlet>>,
+    clock: &Arc<WaitClock>,
+) -> Reach {
+    let mut sent_to = Vec::new();
+    if let (Some(link), Some(_)) = (routine.delivery.chat, &outlet) {
+        let label = blocking({
+            let vault = vault.clone();
+            move || Ok(vault.chat_settings()?.link(link).map(|l| l.service.label().to_string()))
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "chat".into());
+        sent_to.push(format!("their {label} chat"));
+    }
+    if routine.delivery.email.is_some() {
+        sent_to.push("email".to_string());
+    }
+    let asker = match outlet {
+        Some(outlet) if routine.delivery.asks() => Some(Arc::new(RunAsker {
+            outlet,
+            from: FromRun { routine: routine.name.clone(), conversation },
+            clock: clock.clone(),
+            withdrawn: service.runs_withdrawn(),
+        }) as Arc<dyn Asker>),
+        _ => None,
+    };
+    Reach { asker, sent_to }
+}
+
+/// Run `turn` to its end, or stop it once it has *worked* for
+/// [`RUN_TIMEOUT`]. `None` means it was stopped.
+///
+/// Working, not existing: the time it spent waiting on its person's answer
+/// is not counted, because a run that asked at seven and was answered at half
+/// past has not been running for half an hour. [`RUN_CEILING`] still bounds
+/// the whole thing, answers included.
+///
+/// Tokio's clock rather than the system's, so a test that pauses time and
+/// jumps past the budget sees the run stopped.
+async fn run_within_budget<F, T>(turn: F, clock: &WaitClock) -> Option<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    let started = tokio::time::Instant::now();
+    let mut turn = std::pin::pin!(turn);
+    loop {
+        let elapsed = started.elapsed();
+        let worked = elapsed.saturating_sub(clock.waited());
+        let left = RUN_TIMEOUT.saturating_sub(worked).min(RUN_CEILING.saturating_sub(elapsed));
+        if left.is_zero() && (!clock.is_waiting() || elapsed >= RUN_CEILING) {
+            return None;
+        }
+        // While it waits on an answer the budget is not spent, so look again
+        // in a while rather than at a deadline that keeps moving.
+        let nap = if left.is_zero() { Duration::from_secs(5) } else { left };
+        tokio::select! {
+            done = &mut turn => return Some(done),
+            () = tokio::time::sleep(nap) => {}
+        }
+    }
+}
+
+/// How long a run has spent waiting on its person's answers.
+///
+/// Counts questions that overlap once: a model can ask for two deletions in
+/// one breath, and the chat puts them one after the other, but the run is
+/// waiting either way and only the wall clock matters.
+#[derive(Default)]
+struct WaitClock {
+    state: std::sync::Mutex<WaitState>,
+}
+
+#[derive(Default)]
+struct WaitState {
+    /// Waits that have ended, added up.
+    waited: Duration,
+    /// How many questions are open, and since when the first of them was.
+    open: u32,
+    since: Option<tokio::time::Instant>,
+}
+
+impl WaitClock {
+    /// Start waiting, until the guard drops.
+    fn wait(self: &Arc<Self>) -> Waiting {
+        let mut state = self.state.lock().unwrap();
+        if state.open == 0 {
+            state.since = Some(tokio::time::Instant::now());
+        }
+        state.open += 1;
+        Waiting(self.clone())
+    }
+
+    fn waited(&self) -> Duration {
+        let state = self.state.lock().unwrap();
+        state.waited + state.since.map(|s| s.elapsed()).unwrap_or_default()
+    }
+
+    fn is_waiting(&self) -> bool {
+        self.state.lock().unwrap().open > 0
+    }
+}
+
+struct Waiting(Arc<WaitClock>);
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        let mut state = self.0.state.lock().unwrap();
+        state.open = state.open.saturating_sub(1);
+        if state.open == 0
+            && let Some(since) = state.since.take()
+        {
+            state.waited += since.elapsed();
+        }
+    }
+}
+
+/// A scheduled run's way to its person: the chat link's outlet, with the run
+/// it is asking for, the clock that pauses its budget while it waits, and the
+/// signal that tells it to stop waiting -- the scheduler stopping, the vault
+/// closing.
+struct RunAsker {
+    outlet: Arc<dyn ChatOutlet>,
+    from: FromRun,
+    clock: Arc<WaitClock>,
+    withdrawn: tokio::sync::watch::Receiver<bool>,
+}
+
+/// Resolve once `withdrawn` turns true, and never otherwise -- including
+/// when its sender is gone without turning it, which only happens once a new
+/// one has replaced it and this run started before.
+async fn withdrawn(mut withdrawn: tokio::sync::watch::Receiver<bool>) {
+    if withdrawn.wait_for(|w| *w).await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
+impl Asker for RunAsker {
+    fn confirm(
+        &self,
+        kind: &str,
+        subject: &str,
+        can_park: bool,
+    ) -> futures::future::BoxFuture<'static, ConfirmAnswer> {
+        let asked =
+            self.outlet.confirm(self.from.clone(), kind.to_string(), subject.to_string(), can_park);
+        let clock = self.clock.clone();
+        let stop = self.withdrawn.clone();
+        Box::pin(async move {
+            let _waiting = clock.wait();
+            tokio::select! {
+                answer = asked => answer,
+                // Nobody will answer now. No, not later: parking writes to a
+                // vault that may be closing.
+                () = withdrawn(stop) => ConfirmAnswer::Decline,
+            }
+        })
+    }
+
+    fn ask(
+        &self,
+        question: String,
+        choices: Vec<String>,
+    ) -> futures::future::BoxFuture<'static, Option<String>> {
+        let asked = self.outlet.ask(self.from.clone(), question, choices);
+        let clock = self.clock.clone();
+        let stop = self.withdrawn.clone();
+        Box::pin(async move {
+            let _waiting = clock.wait();
+            tokio::select! {
+                answer = asked => answer,
+                () = withdrawn(stop) => None,
+            }
+        })
+    }
+}
+
+/// Whether a finished run is news, keeping the failure streak's books as it
+/// decides.
+///
+/// A run that worked is news unless it did and said nothing at all, and it
+/// ends any streak of failures. A failure is news the first time in a streak
+/// only: a routine whose endpoint has been unreachable every morning for a
+/// week says so once rather than seven times -- the same courtesy
+/// `feed_failed` extends to a calendar that has stopped answering. A skip is
+/// never news: it is a row somebody will see when they look.
+fn is_news(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) -> bool {
+    match run.outcome {
+        Outcome::Done => {
+            service.routine_recovered(routine.id.to_string());
+            !(run.summary.trim().is_empty() && run.steps == 0)
+        }
+        Outcome::Failed => service.routine_failed(routine.id.to_string()),
+        Outcome::Skipped | Outcome::Queued | Outcome::Running => false,
+    }
+}
+
+/// Say something about a run [`is_news`] said was news.
+///
+/// Keyed so that a repetition replaces its predecessor rather than stacking.
+/// The title names the routine and never carries what it found: this is the
+/// one notification in the application that will routinely be drawn over a
+/// lock screen.
 ///
 /// The *subject* is part of the key on the way out, and is not on the way in.
 /// A query trigger produces one run, and one notification, per thing it
@@ -1091,10 +1388,6 @@ fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
     let routine_key = format!("routine:{}", routine.id);
     match run.outcome {
         Outcome::Done => {
-            service.routine_recovered(routine.id.to_string());
-            if run.summary.trim().is_empty() && run.steps == 0 {
-                return;
-            }
             let key = match &run.subject {
                 Some(subject) => format!("{routine_key}:{subject}"),
                 None => routine_key,
@@ -1106,16 +1399,13 @@ fn announce(service: &Arc<Service>, routine: &Routine, run: &RoutineRun) {
             );
         }
         Outcome::Failed => {
-            if service.routine_failed(routine.id.to_string()) {
-                service.events().notify(
-                    Notification::warning(format!("{} could not run", routine.name))
-                        .body(run.reason.clone())
-                        .for_user()
-                        .key(routine_key),
-                );
-            }
+            service.events().notify(
+                Notification::warning(format!("{} could not run", routine.name))
+                    .body(run.reason.clone())
+                    .for_user()
+                    .key(routine_key),
+            );
         }
-        // A skip is not news. It is a row somebody will see when they look.
         Outcome::Skipped | Outcome::Queued | Outcome::Running => {}
     }
 }
