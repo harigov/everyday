@@ -40,6 +40,7 @@
     RoutineRun,
     Trigger,
     Weekday,
+    ChatLinkView,
   } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -94,6 +95,51 @@
   const editing = $derived(assistant.editing)
   const schedule = $derived(editing?.trigger.type === 'schedule' ? editing.trigger : null)
   const editingIsDream = $derived(editing?.kind?.type === 'dream')
+
+  /** A chat link as a person would name it: the service, and who it answers. */
+  function chatName(view: ChatLinkView | undefined): string {
+    const service = view?.link.service
+    return service?.kind === 'matrix' ? `Matrix, to ${service.owner}` : 'your chat'
+  }
+
+  const chosenChat = $derived(
+    assistant.chatLinks.find((v) => v.link.id === editing?.delivery?.chat) ??
+      assistant.chatLinks[0],
+  )
+
+  const sendingAccount = $derived(
+    assistant.mailAccounts.find((a) => a.id === editing?.delivery?.email) ??
+      assistant.mailAccounts[0],
+  )
+
+  /** Send the result to a chat, or stop. Asking goes with it: there is
+   *  nowhere else to ask. */
+  function setChat(on: boolean) {
+    if (!editing) return
+    const delivery = (editing.delivery ??= { ask: false })
+    const first = assistant.chatLinks.find((v) => v.link.enabled) ?? assistant.chatLinks[0] ?? null
+    delivery.chat = on ? (first?.link.id ?? null) : null
+    if (!on) delivery.ask = false
+  }
+
+  function setEmail(on: boolean) {
+    if (!editing) return
+    const delivery = (editing.delivery ??= { ask: false })
+    delivery.email = on ? (assistant.mailAccounts[0]?.id ?? null) : null
+  }
+
+  /** One line for where a run's result went, and where it could not. */
+  function deliveredWords(run: RoutineRun): { ok: string; failed: string[] } {
+    const went: string[] = []
+    const failed: string[] = []
+    for (const d of run.delivered ?? []) {
+      const where = d.to === 'chat' ? 'chat' : 'email'
+      if (d.ok) went.push(d.to === 'chat' ? `sent to ${d.detail}` : `emailed to ${d.detail}`)
+      else failed.push(`Not sent by ${where}: ${d.detail}`)
+    }
+    const ok = went.join(' · ')
+    return { ok: ok ? ok.charAt(0).toUpperCase() + ok.slice(1) : '', failed }
+  }
 
   // The dreams sit above the routines a person wrote, under their own
   // heading -- see `docs/plans/dreaming.md`'s routines-pane phase.
@@ -345,6 +391,14 @@
               <div class="said">{@html renderMarkdown(run.summary)}</div>
             {/if}
 
+            {#if run.delivered?.length}
+              {@const words = deliveredWords(run)}
+              {#if words.ok}<p class="hint">{words.ok}</p>{/if}
+              {#each words.failed as line, i (i)}
+                <p class="reason">{line}</p>
+              {/each}
+            {/if}
+
             {#if run.conversationId}
               <footer class="cardfoot">
                 <button class="link" onclick={() => void openRun(run)}>
@@ -467,6 +521,79 @@
             </span>
           </label>
 
+          {#if !editingIsDream}
+            <div class="field-row">
+              <span class="eyebrow">When it is done</span>
+              <span class="hint">
+                Every run is kept here, under What it did. It can also come to you:
+              </span>
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={!!editing.delivery?.chat}
+                  disabled={assistant.chatLinks.length === 0 && !editing.delivery?.chat}
+                  onchange={(e) => setChat(e.currentTarget.checked)}
+                />
+                <span>
+                  <b>In your chat</b>
+                  <small>
+                    {#if assistant.chatLinks.length === 0}
+                      Set up a chat link in Settings, under Chat, to have it sent to your phone.
+                    {:else}
+                      Sent on {chatName(chosenChat)}. Reply there and it carries on from what it
+                      did.
+                    {/if}
+                  </small>
+                </span>
+              </label>
+              {#if editing.delivery?.chat && assistant.chatLinks.length > 1}
+                <select class="field sub" bind:value={editing.delivery.chat}>
+                  {#each assistant.chatLinks as view (view.link.id)}
+                    <option value={view.link.id}>{chatName(view)}</option>
+                  {/each}
+                </select>
+              {/if}
+              {#if editing.delivery?.chat}
+                <label class="toggle sub">
+                  <input type="checkbox" bind:checked={editing.delivery.ask} />
+                  <span>
+                    <b>Ask me there when it needs me</b>
+                    <small>
+                      Before it deletes or sends anything, and when only you can answer. With no
+                      answer in half an hour it saves the change for later, or makes its best guess
+                      and says so.
+                    </small>
+                  </span>
+                </label>
+              {/if}
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={!!editing.delivery?.email}
+                  disabled={assistant.mailAccounts.length === 0 && !editing.delivery?.email}
+                  onchange={(e) => setEmail(e.currentTarget.checked)}
+                />
+                <span>
+                  <b>By email</b>
+                  <small>
+                    {#if sendingAccount}
+                      From {sendingAccount.address} to itself.
+                    {:else}
+                      Add a mail account to have it emailed to you.
+                    {/if}
+                  </small>
+                </span>
+              </label>
+              {#if editing.delivery?.email && assistant.mailAccounts.length > 1}
+                <select class="field sub" bind:value={editing.delivery.email}>
+                  {#each assistant.mailAccounts as account (account.id)}
+                    <option value={account.id}>{account.address}</option>
+                  {/each}
+                </select>
+              {/if}
+            </div>
+          {/if}
+
           <label class="toggle">
             <input type="checkbox" bind:checked={editing.enabled} />
             <span>
@@ -522,6 +649,16 @@
               {/if}
               <span class="spacer"></span>
               <span class="dim">{whenLabel(routine)}</span>
+              {#if routine.delivery?.chat || routine.delivery?.email}
+                <span class="dim">
+                  · {[
+                    routine.delivery?.chat && (routine.delivery.ask ? 'chat, asks' : 'chat'),
+                    routine.delivery?.email && 'email',
+                  ]
+                    .filter(Boolean)
+                    .join(' and ')}
+                </span>
+              {/if}
             </header>
             {#if routine.instructions}<p class="said">{routine.instructions}</p>{/if}
             <footer class="cardfoot">
@@ -972,6 +1109,19 @@
     display: block;
     color: var(--fg-faint);
     font-size: var(--text-xs);
+  }
+
+  /* What belongs to the choice above it: asking goes with the chat, and which
+     link or account sits under the box that turned it on. */
+  .sub {
+    margin-left: calc(13px + var(--sp-3));
+  }
+
+  select.sub {
+    justify-self: start;
+    width: auto;
+    min-width: 16rem;
+    max-width: calc(100% - 13px - var(--sp-3));
   }
 
   .editorfoot {

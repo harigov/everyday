@@ -59,6 +59,9 @@ base64 = "0.22"
 reqwest = { version = "0.13", features = ["gzip", "multipart"] }
 tokio = { version = "1.53.1", features = ["sync", "rt", "time", "macros", "net"] }
 futures = "0.3.34"
+# A routine's emailed result: the model's Markdown as the message's HTML --
+# see `delivery::html_of`. Already in the tree through the Matrix SDK.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rig-core = "0.42"
 rig-agent = "0.42"
 # `suggest_addresses`'s fuzzy match over the contact index -- see

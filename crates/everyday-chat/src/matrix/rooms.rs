@@ -8,7 +8,7 @@
 
 use super::errors::classify;
 use super::rules::{self, RoomKind};
-use crate::connector::ChatError;
+use crate::connector::{ChatError, ChatId};
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::UserId;
 use matrix_sdk::ruma::events::room::member::MembershipState;
@@ -43,6 +43,18 @@ pub(super) async fn kind_of(room: &Room, bot: &UserId, owner: &UserId) -> Option
         }
     }
     Some(rules::classify_room(bot.as_str(), owner.as_str(), &joined, &invited))
+}
+
+/// The bot's private room with its owner, once they are in it: where a
+/// routine's message goes. The first such room, if somehow there are two --
+/// either one reaches only them.
+pub(super) async fn home(client: &Client, bot: &UserId, owner: &UserId) -> Option<ChatId> {
+    for room in client.joined_rooms() {
+        if kind_of(&room, bot, owner).await == Some(RoomKind::Private) {
+            return Some(ChatId(room.room_id().to_string()));
+        }
+    }
+    None
 }
 
 /// What the bot has with its owner.

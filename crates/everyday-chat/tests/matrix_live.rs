@@ -55,7 +55,7 @@ use everyday_chat::Runner;
 use everyday_core::chat::{ChatLink, ChatService, MatrixLink};
 use everyday_core::{AgentSettings, ChatLinkId, Task, Vault, VaultConfig};
 use everyday_service::Service;
-use everyday_service::chat::{ChatState, task_key};
+use everyday_service::chat::{ChatState, FromRun, task_key};
 use everyday_service::ctx::Ctx;
 use everyday_service::supervisor::Supervisor;
 use matrix_sdk::config::SyncSettings;
@@ -1037,6 +1037,42 @@ async fn an_owner_talks_to_the_assistant_over_encrypted_matrix_and_a_stranger_do
             body(&extra)
         );
     }
+
+    // ---- scenario 2b: a routine reaches the owner unasked ----------------
+    // What `Delivery` uses: the relay's outlet finds the owner's private room
+    // by itself, puts a routine's own question there, takes the owner's next
+    // message as the answer, and posts the routine's result.
+    step("scenario 2b: a routine asks a question and posts its result");
+    let outlet = rig.svc.chat_outlet(link.id).expect("the running link offers an outlet");
+    let from = FromRun { routine: "Morning brief".into(), conversation: None };
+    let asked = model.requests().len();
+    let asking = tokio::spawn(outlet.ask(
+        from.clone(),
+        "Which slot for the dentist?".into(),
+        vec!["Tuesday 9:00".into(), "Thursday 14:00".into()],
+    ));
+    let question = owner.wait_for(&mut seen, "the routine's question", text_from(&bot)).await;
+    assert!(
+        body(&question).contains("Which slot for the dentist?")
+            && body(&question).contains("Morning brief"),
+        "the question should say whose it is and what it asks, got: {:?}",
+        body(&question)
+    );
+    assert_eq!(question.room, room, "it went to the owner's private room");
+    owner.say(&room, "2").await;
+    let answer = tokio::time::timeout(WAIT, asking)
+        .await
+        .expect("the routine had its answer in time")
+        .expect("the question did not panic");
+    assert_eq!(answer.as_deref(), Some("Thursday 14:00"), "a number picks the choice");
+    assert_eq!(model.requests().len(), asked, "an answer to a routine is not a turn");
+
+    outlet
+        .post(from, "**Morning brief**\n\nBooked the dentist for Thursday.".into())
+        .await
+        .unwrap_or_else(|why| panic!("the routine's result did not go out: {why}"));
+    let result = owner.wait_for(&mut seen, "the routine's result", text_from(&bot)).await;
+    assert!(body(&result).contains("Booked the dentist for Thursday."), "got: {:?}", body(&result));
 
     // ---- scenario 3: a stranger gets nothing ----------------------------
     step("scenario 3: a stranger writes to the bot");

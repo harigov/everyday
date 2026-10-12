@@ -46,14 +46,16 @@
 //!
 //! # The tools that are not in the catalogue
 //!
-//! Five tools are declared here rather than in the core, each for the reason
+//! Six tools are declared here rather than in the core, each for the reason
 //! [`web_search_tool`] gives: four of them open a socket, which the core
 //! cannot, and the fifth, `update_plan`, touches nothing at all -- it is a
 //! checklist the panel draws from the call's own arguments, so there is no
 //! vault record for the core to own. The four that reach the web are
 //! offered only when the person has said so; `read_web_page` is further
 //! gated on where its address came from -- see [`webpage::Provenance`] and
-//! [`must_confirm_fetch`].
+//! [`must_confirm_fetch`]. The sixth, `ask_owner`, waits on a person in
+//! another place -- see [`ask_owner_tool`] -- and is offered only to a
+//! scheduled run that has one to ask.
 //!
 //! # Stopping a turn
 //!
@@ -281,6 +283,47 @@ pub enum ConfirmAnswer {
     Later,
 }
 
+/// Somebody a scheduled run can put a question to while it works.
+///
+/// What a routine whose [`Delivery`](everyday_core::Delivery) asks in a chat
+/// is handed: the scheduler's adapter over that link's
+/// [`ChatOutlet`](crate::chat::ChatOutlet). Both calls end in an answer
+/// whatever happens, because the turn is waiting on them -- silence comes
+/// back as what silence means, never as a hang.
+pub trait Asker: Send + Sync + 'static {
+    /// A tool call that needs their say. See [`AgentEvent::ConfirmationRequired`]
+    /// for what `kind`, `subject` and `can_park` mean.
+    fn confirm(
+        &self,
+        kind: &str,
+        subject: &str,
+        can_park: bool,
+    ) -> futures::future::BoxFuture<'static, ConfirmAnswer>;
+
+    /// A question in the model's words. `None` when no answer came.
+    fn ask(
+        &self,
+        question: String,
+        choices: Vec<String>,
+    ) -> futures::future::BoxFuture<'static, Option<String>>;
+}
+
+/// How a scheduled run reaches its person: who it may ask while it works, and
+/// where its last word will be sent. Empty -- the default, and every turn that
+/// is not a routine's -- is a run with nobody to ask whose result stays in the
+/// app, which is what every run was before routines could be delivered.
+#[derive(Clone, Default)]
+pub struct Reach {
+    /// Who to ask, if anybody. With one, a call that would be refused or
+    /// parked for want of a person is put to them instead, and the run is
+    /// offered `ask_owner`.
+    pub asker: Option<Arc<dyn Asker>>,
+    /// Where the final reply is sent besides the app, in words for the
+    /// model -- "their Matrix chat", "email" -- so it writes the reply as
+    /// the message it will be.
+    pub sent_to: Vec<String>,
+}
+
 /// Confirmations waiting on a person, and the turns that could be stopped.
 ///
 /// Held by the [`Service`](crate::service::Service).
@@ -463,6 +506,10 @@ struct ConfirmGate {
     /// otherwise be declined on the spot is parked as a proposal instead.
     /// See `on_tool_call`'s own `self.unattended` branch.
     park_unattended: bool,
+    /// Who a scheduled run may ask instead of refusing or parking -- see
+    /// [`Reach::asker`]. With one, an unattended call that needs a person is
+    /// put to them exactly as a chat turn's would be.
+    asker: Option<Arc<dyn Asker>>,
     /// What ran this turn, in call order, so the thread is written down with
     /// its tool calls rather than only its prose. See `run_turn`.
     ledger: Arc<Mutex<Vec<Ran>>>,
@@ -596,7 +643,8 @@ const READ_WEB_PAGE: &str = "read_web_page";
 const GET_WEATHER: &str = "get_weather";
 const LOOK_UP_ITEM: &str = "look_up_item";
 const UPDATE_PLAN: &str = "update_plan";
-/// In the core catalogue, unlike the five above, but singled out by the gate:
+const ASK_OWNER: &str = "ask_owner";
+/// In the core catalogue, unlike the six above, but singled out by the gate:
 /// following a web feed puts a request on the network. See `on_tool_call`.
 const FOLLOW_SOURCE: &str = "follow_source";
 
@@ -696,7 +744,7 @@ impl AgentHook for ConfirmGate {
         // ordinary decline below rather than leaving the call unrecorded.
         let has_proposal_form = !matches!(kind, "search" | "fetch")
             && tools::find(&name).is_some_and(tools::Tool::can_propose);
-        if self.unattended {
+        if self.unattended && self.asker.is_none() {
             if has_proposal_form
                 && self.park_unattended
                 && let Some(run_id) = self.run_id
@@ -774,37 +822,46 @@ impl AgentHook for ConfirmGate {
         // `search` and `fetch` have no proposal form -- see `park`'s own doc
         // -- so neither is ever offered "later".
         let can_park = has_proposal_form;
-        let waiter = self.pending.register(&call_id);
-        self.issued.lock().unwrap().push(call_id.clone());
-        (self.channel)(AgentEvent::ConfirmationRequired {
-            call_id: call_id.clone(),
-            name: name.clone(),
-            subject,
-            arguments: arguments.clone(),
-            kind: kind.to_string(),
-            can_park,
-        });
+        let answer = match &self.asker {
+            // A scheduled run's person is somewhere else: the question goes to
+            // them there, and comes back answered one way or another.
+            Some(asker) => Some(asker.confirm(kind, &subject, can_park).await),
+            None => {
+                let waiter = self.pending.register(&call_id);
+                self.issued.lock().unwrap().push(call_id.clone());
+                (self.channel)(AgentEvent::ConfirmationRequired {
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    subject,
+                    arguments: arguments.clone(),
+                    kind: kind.to_string(),
+                    can_park,
+                });
+                // A dropped sender means the turn was cancelled or the window
+                // went away. Treated as a refusal, because the alternative is
+                // deleting something nobody was left to agree to.
+                waiter.await.ok()
+            }
+        };
 
-        // A dropped sender means the turn was cancelled or the window went
-        // away. Treated as a refusal, because the alternative is deleting
-        // something nobody was left to agree to.
-        match waiter.await {
-            Ok(ConfirmAnswer::Confirm) => {
+        match answer {
+            Some(ConfirmAnswer::Confirm) => {
                 (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
                 ToolCallAction::Run
             }
-            Ok(ConfirmAnswer::Decline) => ToolCallAction::Skip(
+            Some(ConfirmAnswer::Decline) => ToolCallAction::Skip(
                 "The person declined this. Do not try it again or work around it; \
                  tell them it was not done and ask what they would like instead."
                     .into(),
             ),
-            Ok(ConfirmAnswer::Later) => {
-                let conversation = self.conversation;
-                match self.park(
-                    &name,
-                    &arguments,
-                    ProposalSource::Conversation { conversation_id: conversation },
-                ) {
+            Some(ConfirmAnswer::Later) => {
+                // A run's own proposal names the run, as one parked with
+                // nobody asked does; the rail's names its conversation.
+                let source = match self.run_id {
+                    Some(run_id) => ProposalSource::Run { run_id },
+                    None => ProposalSource::Conversation { conversation_id: self.conversation },
+                };
+                match self.park(&name, &arguments, source) {
                     Ok(_) => ToolCallAction::Skip(
                         "Not done. It has been saved as a proposal for the person to \
                          decide later from the Assistant app. Do not try it again or \
@@ -818,7 +875,7 @@ impl AgentHook for ConfirmGate {
                     )),
                 }
             }
-            Err(_) => ToolCallAction::Skip("This was not confirmed and has not been done.".into()),
+            None => ToolCallAction::Skip("This was not confirmed and has not been done.".into()),
         }
     }
 
@@ -1050,6 +1107,9 @@ struct TurnMeta {
     /// [`build`] to decide which tool schemas to offer and whether
     /// `web_search` is offered at all.
     drafting: Option<Drafting>,
+    /// Who a scheduled run may ask -- see [`Reach::asker`]. Read by [`build`],
+    /// which offers `ask_owner` only when there is somebody.
+    asker: Option<Arc<dyn Asker>>,
 }
 
 /// Wrap the core catalogue as rig tools and assemble the agent.
@@ -1161,6 +1221,11 @@ fn build(
     let planning = !is_dream;
     if planning {
         offered.push(update_plan_tool());
+    }
+    if let Some(asker) = &meta.asker
+        && !is_dream
+    {
+        offered.push(ask_owner_tool(asker.clone()));
     }
 
     preamble.push_str(
@@ -1677,6 +1742,137 @@ fn look_up_item_result(hit: &everyday_core::websearch::SearchResult) -> Value {
 /// know it landed. What it checks is what would make the checklist wrong to
 /// draw: no steps, too many to read, a blank line, a status the panel has no
 /// way to show.
+/// What a scheduled run is told in place of what is on screen: that it is
+/// one, whether anybody can be asked, and where its last word goes.
+///
+/// With nobody to ask, the thing a model most needs to know and cannot infer
+/// is that asking is not an option. With somebody, it is that asking costs
+/// them something -- a phone buzzing -- and may not be answered.
+fn unattended_context(reach: &Reach) -> String {
+    let mut text = String::from("This is a scheduled run of one of their routines. ");
+    if reach.asker.is_some() {
+        text.push_str(
+            "They are not at the screen, but you can reach them in their chat. Call \
+             ask_owner when you genuinely need a fact or a decision only they have, and \
+             anything that deletes or sends will be put to them for approval before it \
+             runs. Ask little and ask plainly: a question nobody answers within half an \
+             hour comes back empty, and then you pick the sensible reading, carry on and \
+             say in your reply what you assumed. ",
+        );
+    } else {
+        text.push_str(
+            "Nobody is watching and nobody can answer a question, so do not ask one: pick \
+             the sensible reading and act. If something genuinely cannot be done without a \
+             decision, say so in your reply and leave it. ",
+        );
+    }
+    if reach.sent_to.is_empty() {
+        text.push_str(
+            "If you have more than a paragraph to hand over, write it as a note rather than \
+             putting it all in your reply.",
+        );
+    } else {
+        text.push_str(&format!(
+            "Your final reply is sent to them by {} exactly as you write it, so write it as \
+             that message: what they need to know, short enough to read on a phone, not an \
+             account of how you found it out.",
+            reach.sent_to.join(" and ")
+        ));
+    }
+    text
+}
+
+/// The most `ask_owner` questions one run may put. Each one is a phone
+/// buzzing; a routine that needs more than this needs better instructions.
+const MAX_QUESTIONS_PER_RUN: u32 = 3;
+
+/// The most choices one question may offer.
+const MAX_ASK_CHOICES: usize = 6;
+
+/// Put a question to the person a scheduled run belongs to, in their chat,
+/// and wait for what they say -- [`Asker::ask`], as a tool.
+///
+/// Offered only to a run that has somebody to ask (see [`Reach::asker`]).
+/// Every way of not getting an answer -- silence, the chat going away, the
+/// run's own question budget spent -- comes back as a result rather than an
+/// error, saying what to do instead, because a run that stopped dead on a
+/// question nobody saw would be worse than one that guessed and said so.
+fn ask_owner_tool(asker: Arc<dyn Asker>) -> PortableDynamicTool {
+    let budget = Arc::new(AtomicU32::new(MAX_QUESTIONS_PER_RUN));
+    PortableDynamicTool::new(
+        ASK_OWNER,
+        "Ask them a question in their chat and wait for the answer. Use it only for what \
+         you cannot sensibly decide yourself: a choice that is theirs to make, a fact only \
+         they know. One plain question at a time; offer choices when there are a few \
+         obvious answers. They may not answer -- then you get nothing back, and should \
+         carry on with the sensible reading and say what you assumed. Approvals for \
+         deleting or sending are asked for you; do not ask those yourself.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question, as you would put it to them in a message.",
+                },
+                "choices": {
+                    "type": "array",
+                    "description": "A few short answers they can pick from by number. Omit for an open question.",
+                    "items": { "type": "string" },
+                },
+            },
+            "required": ["question"],
+            "additionalProperties": false,
+        }),
+        move |arguments: serde_json::Value| {
+            let asker = asker.clone();
+            let budget = budget.clone();
+            Box::pin(async move {
+                let question = arguments
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty())
+                    .ok_or_else(|| {
+                        ToolExecutionError::invalid_args("ask_owner: `question` is required")
+                    })?
+                    .to_string();
+                let choices: Vec<String> = arguments
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(Value::as_str)
+                            .map(str::trim)
+                            .filter(|c| !c.is_empty())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if choices.len() > MAX_ASK_CHOICES {
+                    return Err(ToolExecutionError::invalid_args(format!(
+                        "ask_owner: at most {MAX_ASK_CHOICES} choices"
+                    )));
+                }
+                if !take_one(&budget) {
+                    return Ok(ToolOutput::json(serde_json::json!({
+                        "answered": false,
+                        "note": "You have asked all the questions this run may ask. Decide \
+                                 the rest yourself and say in your reply what you assumed.",
+                    })));
+                }
+                Ok(ToolOutput::json(match asker.ask(question, choices).await {
+                    Some(answer) => serde_json::json!({ "answered": true, "answer": answer }),
+                    None => serde_json::json!({
+                        "answered": false,
+                        "note": "No answer came. Carry on with the sensible reading, and say \
+                                 in your reply what you assumed.",
+                    }),
+                }))
+            })
+        },
+    )
+}
+
 fn update_plan_tool() -> PortableDynamicTool {
     PortableDynamicTool::new(
         UPDATE_PLAN,
@@ -1910,6 +2106,9 @@ pub struct Turn {
     /// application's screen. See [`crate::chat`] and
     /// [`Service::chat_turn`](crate::service::Service::chat_turn).
     pub via: Option<everyday_core::chat::Via>,
+    /// For a scheduled run, how it reaches its person. Ignored unless
+    /// [`Turn::unattended`] is set. See [`Reach`].
+    pub reach: Reach,
 }
 
 /// What a turn did, for a caller that has to write it down.
@@ -2046,8 +2245,11 @@ fn chat_context(service: &str) -> String {
 /// it while they are watching -- and a phone is a likelier thing to lose, to
 /// leave unlocked or to have borrowed. The answer is a message in the same
 /// chat, so it costs a tap.
-fn confirms_destructive(setting: bool, via: Option<&everyday_core::chat::Via>) -> bool {
-    setting || via.is_some()
+///
+/// `remote` is that: a turn from a chat, or a scheduled run that asks its
+/// person in one -- the same phone, the same tap.
+fn confirms_destructive(setting: bool, remote: bool) -> bool {
+    setting || remote
 }
 
 /// Run one turn: send what was typed, stream what comes back, write it down.
@@ -2078,7 +2280,11 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         unattended,
         drafting,
         via,
+        reach,
     } = turn;
+    // Only a scheduled run reaches anybody; a turn somebody is watching has
+    // them right there.
+    let reach = if unattended.is_some() { reach } else { Reach::default() };
 
     // Stoppable from the first moment, and for exactly as long as this
     // function runs -- the guard takes the switch out of the registry on
@@ -2131,14 +2337,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // at", because there is no person and nothing on screen. What it says
     // instead is the thing a model most needs to know and cannot infer: that
     // asking a question is not an option here.
-    let unattended_context = unattended.is_some().then(|| {
-        "This is a scheduled run of one of their routines. Nobody is watching and nobody \
-         can answer a question, so do not ask one: pick the sensible reading and act. If \
-         something genuinely cannot be done without a decision, say so in your reply and \
-         leave it. If you have more than a paragraph to hand over, write it as a note \
-         rather than putting it all in your reply."
-            .to_string()
-    });
+    let unattended_context = unattended.is_some().then(|| unattended_context(&reach));
     // Or, for somebody writing from a chat, where they are -- which is not
     // here. Nothing is "open" for them to be looking at, so whatever a caller
     // said was on screen is not described either: telling the model about a
@@ -2177,6 +2376,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         unattended: unattended_run,
         turn_id: reply.id.to_string(),
         drafting,
+        asker: reach.asker.clone(),
     };
     let agent = build(&meta, vault.clone(), &settings, key, context.as_deref(), history_trimmed)?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
@@ -2185,7 +2385,10 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         pending: pending.clone(),
         issued: issued.clone(),
         channel: channel.clone(),
-        enabled: confirms_destructive(settings.confirm_destructive, via.as_ref()),
+        enabled: confirms_destructive(
+            settings.confirm_destructive,
+            via.is_some() || reach.asker.is_some(),
+        ),
         unattended: unattended.is_some(),
         vault: vault.clone(),
         today: settings.now().date(),
@@ -2194,6 +2397,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         assistant_provider: settings.provider_config.acknowledgement_name(),
         run_id: unattended,
         park_unattended: settings.park_unattended,
+        asker: reach.asker.clone(),
         ledger: ledger.clone(),
         mail_read_this_turn: Arc::new(AtomicBool::new(screen_quotes_mail)),
         provenance: Arc::new(Mutex::new(provenance)),
@@ -2507,6 +2711,14 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
     };
     let str_of = |key: &str| result.get(key).and_then(|v| v.as_str()).unwrap_or_default();
     match tool {
+        ASK_OWNER => {
+            return match result.get("answer").and_then(Value::as_str) {
+                Some(answer) => {
+                    format!("answered: {}", answer.chars().take(100).collect::<String>())
+                }
+                None => "no answer".to_string(),
+            };
+        }
         UPDATE_PLAN => {
             let steps = result.get("steps").and_then(Value::as_u64).unwrap_or_default();
             let done = result.get("done").and_then(Value::as_u64).unwrap_or_default();
@@ -2609,14 +2821,6 @@ mod tests {
 
     // ---- chat turns --------------------------------------------------------
 
-    fn via() -> everyday_core::chat::Via {
-        everyday_core::chat::Via {
-            link: everyday_core::ChatLinkId::new(),
-            service: "Matrix".into(),
-            chat: "!room:example.org".into(),
-        }
-    }
-
     #[test]
     fn a_chat_turn_is_told_where_the_person_is_writing_from() {
         let said = chat_context("Matrix");
@@ -2629,19 +2833,61 @@ mod tests {
 
     #[test]
     fn a_chat_turn_confirms_destructive_calls_whatever_the_setting_says() {
-        assert!(confirms_destructive(true, None));
-        assert!(!confirms_destructive(false, None), "the desktop's own choice is still honoured");
-        assert!(confirms_destructive(false, Some(&via())), "a phone always asks");
-        assert!(confirms_destructive(true, Some(&via())));
+        assert!(confirms_destructive(true, false));
+        assert!(!confirms_destructive(false, false), "the desktop's own choice is still honoured");
+        assert!(confirms_destructive(false, true), "a phone always asks");
+        assert!(confirms_destructive(true, true));
         // ...and that is what reaches the gate's own decision.
         assert_eq!(
-            must_confirm(
-                Some(Effect::Destructive),
-                confirms_destructive(false, Some(&via())),
-                false
-            ),
+            must_confirm(Some(Effect::Destructive), confirms_destructive(false, true), false),
             Some("destructive")
         );
+    }
+
+    #[test]
+    fn a_run_with_nobody_to_ask_is_told_so_in_the_words_it_always_was() {
+        assert_eq!(
+            unattended_context(&Reach::default()),
+            "This is a scheduled run of one of their routines. Nobody is watching and nobody \
+             can answer a question, so do not ask one: pick the sensible reading and act. If \
+             something genuinely cannot be done without a decision, say so in your reply and \
+             leave it. If you have more than a paragraph to hand over, write it as a note \
+             rather than putting it all in your reply."
+        );
+    }
+
+    struct Nobody;
+
+    impl Asker for Nobody {
+        fn confirm(
+            &self,
+            _kind: &str,
+            _subject: &str,
+            _can_park: bool,
+        ) -> futures::future::BoxFuture<'static, ConfirmAnswer> {
+            Box::pin(async { ConfirmAnswer::Decline })
+        }
+        fn ask(
+            &self,
+            _question: String,
+            _choices: Vec<String>,
+        ) -> futures::future::BoxFuture<'static, Option<String>> {
+            Box::pin(async { None })
+        }
+    }
+
+    #[test]
+    fn a_run_that_can_ask_is_told_how_and_where_its_reply_goes() {
+        let reach = Reach {
+            asker: Some(Arc::new(Nobody)),
+            sent_to: vec!["their Matrix chat".into(), "email".into()],
+        };
+        let said = unattended_context(&reach);
+        assert!(said.contains("Call ask_owner"));
+        assert!(said.contains("put to them for approval"));
+        assert!(!said.contains("do not ask one"));
+        assert!(said.contains("sent to them by their Matrix chat and email"));
+        assert!(!said.contains("write it as a note"), "the reply is the message now");
     }
 
     // ---- must_confirm_fetch / provenance ----------------------------------
@@ -3209,6 +3455,7 @@ mod tests {
             assistant_provider: String::new(),
             run_id: None,
             park_unattended: false,
+            asker: None,
             ledger: Arc::default(),
             mail_read_this_turn: Arc::default(),
             provenance: Arc::default(),

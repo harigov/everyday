@@ -30,6 +30,13 @@
 //! other. A worker is started the first time its chat is heard from and lives
 //! until the relay ends.
 //!
+//! **Routines reach the owner through the same workers.** While the relay
+//! runs it registers a [`ChatOutlet`] for its link; a routine's message, or
+//! its question, arrives through it as a [`RoutineJob`] and is queued on the
+//! owner's private chat like anything else, so it waits for a turn the owner
+//! started and their answer is routed exactly as an answer to the
+//! assistant's own question is.
+//!
 //! **A [`Shared`] per chat** is the only thing the dispatcher and a worker both
 //! touch: which turn is running (so `!stop` knows what to cancel) and which
 //! question is waiting (so an answer knows where to go). It is a plain
@@ -50,9 +57,11 @@ use crate::connector::{ChatId, Choice, Connector, Incoming, MessageRef, Question
 use everyday_core::chat::{ChatLink, Via};
 use everyday_core::{ChatLinkId, Conversation, ConversationId, ConversationQuery, Vault};
 use everyday_service::agent::{AgentEvent, ConfirmAnswer, Pending, Sink, Turned};
+use everyday_service::chat::{ChatOutlet, FromRun};
 use everyday_service::error::CommandResult;
 use everyday_service::service::Service;
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
@@ -110,6 +119,7 @@ const STOPPED: &str = "Stopped.";
 const NOTHING_RUNNING: &str = "Nothing is running.";
 const NO_REPLY: &str = "(no reply)";
 const UNREADABLE_REPLY: &str = "I couldn't read that message \u{2014} it was encrypted for a session I don't have. Try sending it again.";
+const NO_ANSWER: &str = "No answer, so I'll carry on with my best guess.";
 
 /// Answer what arrives in `inbox` until `stop` turns true or the inbox
 /// closes.
@@ -150,6 +160,10 @@ pub async fn run_with(
     timing: Timing,
 ) {
     tracing::info!(service = link.service.label(), "a chat relay is up");
+    let (outbound_tx, mut outbound) = mpsc::unbounded_channel();
+    let outlet: Arc<dyn ChatOutlet> =
+        Arc::new(RelayOutlet { connector: connector.clone(), outbound: outbound_tx });
+    let _open = OpenOutlet::new(service.clone(), link.id, outlet);
     let context = Arc::new(Context { service, vault, link, connector, timing, stop: stop.clone() });
     let mut chats = Chats::new(context);
 
@@ -161,11 +175,125 @@ pub async fn run_with(
                 Some(item) => chats.dispatch(item),
                 None => break End::InboxClosed,
             },
+            Some((chat, job)) = outbound.recv() => chats.routine(chat, job),
         }
     };
 
     chats.wind_down(ended).await;
     tracing::info!("a chat relay is down");
+}
+
+/// The outlet a running relay offers the rest of the service, registered for
+/// exactly as long as the relay runs -- dropped with it, however it ends.
+struct OpenOutlet {
+    service: Arc<Service>,
+    link: ChatLinkId,
+    outlet: Arc<dyn ChatOutlet>,
+}
+
+impl OpenOutlet {
+    fn new(service: Arc<Service>, link: ChatLinkId, outlet: Arc<dyn ChatOutlet>) -> Self {
+        service.open_chat_outlet(link, outlet.clone());
+        Self { service, link, outlet }
+    }
+}
+
+impl Drop for OpenOutlet {
+    fn drop(&mut self) {
+        self.service.close_chat_outlet(self.link, &self.outlet);
+    }
+}
+
+/// What a routine needs from the owner: [`ChatOutlet`]'s three calls, queued
+/// on the owner's private chat with the half that answers them.
+pub(crate) enum RoutineJob {
+    Post {
+        from: FromRun,
+        markdown: String,
+        done: oneshot::Sender<Result<(), String>>,
+    },
+    Confirm {
+        from: FromRun,
+        kind: String,
+        subject: String,
+        can_park: bool,
+        answer: oneshot::Sender<ConfirmAnswer>,
+    },
+    Ask {
+        from: FromRun,
+        question: String,
+        choices: Vec<String>,
+        answer: oneshot::Sender<Option<String>>,
+    },
+}
+
+/// [`ChatOutlet`] over a running relay: finds the owner's private chat, and
+/// hands the job to the dispatcher, which queues it on that chat's worker.
+struct RelayOutlet {
+    connector: Arc<dyn Connector>,
+    outbound: mpsc::UnboundedSender<(ChatId, RoutineJob)>,
+}
+
+impl RelayOutlet {
+    /// Queue a job for the owner's private chat. `Err` says why it could not
+    /// be: there is no such chat yet, or the relay has stopped.
+    async fn queue(
+        connector: Arc<dyn Connector>,
+        outbound: mpsc::UnboundedSender<(ChatId, RoutineJob)>,
+        job: RoutineJob,
+    ) -> Result<(), String> {
+        let chat =
+            connector.home().await.ok_or("the owner has not joined the bot's private room yet")?;
+        outbound.send((chat, job)).map_err(|_| "the chat link has stopped".to_string())
+    }
+}
+
+impl ChatOutlet for RelayOutlet {
+    fn post(&self, from: FromRun, markdown: String) -> BoxFuture<'static, Result<(), String>> {
+        let (connector, outbound) = (self.connector.clone(), self.outbound.clone());
+        Box::pin(async move {
+            let (done, sent) = oneshot::channel();
+            Self::queue(connector, outbound, RoutineJob::Post { from, markdown, done }).await?;
+            sent.await.map_err(|_| "the chat link stopped before it was sent".to_string())?
+        })
+    }
+
+    fn confirm(
+        &self,
+        from: FromRun,
+        kind: String,
+        subject: String,
+        can_park: bool,
+    ) -> BoxFuture<'static, ConfirmAnswer> {
+        let (connector, outbound) = (self.connector.clone(), self.outbound.clone());
+        Box::pin(async move {
+            let (answer, answered) = oneshot::channel();
+            let job = RoutineJob::Confirm { from, kind, subject, can_park, answer };
+            if let Err(why) = Self::queue(connector, outbound, job).await {
+                tracing::info!(%why, "a routine's question could not be put to the chat");
+                return ConfirmAnswer::Decline;
+            }
+            answered.await.unwrap_or(ConfirmAnswer::Decline)
+        })
+    }
+
+    fn ask(
+        &self,
+        from: FromRun,
+        question: String,
+        choices: Vec<String>,
+    ) -> BoxFuture<'static, Option<String>> {
+        let (connector, outbound) = (self.connector.clone(), self.outbound.clone());
+        Box::pin(async move {
+            let (answer, answered) = oneshot::channel();
+            let job = RoutineJob::Ask { from, question, choices, answer };
+            if let Err(why) = Self::queue(connector, outbound, job).await {
+                tracing::info!(%why, "a routine's question could not be put to the chat");
+                return None;
+            }
+            answered.await.ok().flatten()
+        })
+    }
 }
 
 /// Resolve once `stop` has been flipped, and never otherwise.
@@ -235,6 +363,32 @@ impl Context {
             .unwrap_or_default()
     }
 
+    /// Mark a routine run's conversation as one this chat carries on, so that
+    /// a relay started afresh -- which remembers nothing -- still finds it for
+    /// the owner's reply. Best effort: without it the reply starts a new
+    /// conversation, which is where a chat that has forgotten would be anyway.
+    async fn adopt_conversation(&self, chat: &ChatId, conversation: ConversationId) {
+        let vault = self.vault.clone();
+        let via = Via {
+            link: self.link.id,
+            service: self.link.service.label().to_string(),
+            chat: chat.0.clone(),
+        };
+        let marked = everyday_service::blocking(move || {
+            let mut thread = vault.conversation(conversation)?;
+            if thread.via.is_none() {
+                thread.via = Some(via);
+                thread.updated_at = Timestamp::now();
+                vault.save_conversation(&thread)?;
+            }
+            Ok(())
+        })
+        .await;
+        if let Err(e) = marked {
+            tracing::warn!(chat = %chat.0, error = %e.message, "could not mark a routine's conversation as this chat's");
+        }
+    }
+
     /// The newest conversation this link already has in `chat`, for a relay
     /// that has just started and so remembers nothing. A vault that cannot be
     /// read is the same as one with no such conversation: the chat starts a
@@ -269,15 +423,22 @@ struct Chats {
 
 /// How the dispatcher reaches one chat's worker.
 struct ChatHandle {
-    queue: mpsc::UnboundedSender<Work>,
+    queue: mpsc::UnboundedSender<Job>,
     shared: Arc<Mutex<Shared>>,
+}
+
+/// One thing for a chat's worker to do, in order: what the owner asked for,
+/// or what a routine needs from them.
+enum Job {
+    Owner(Work),
+    Routine(RoutineJob),
 }
 
 impl ChatHandle {
     /// Queue `work`. A worker only goes away when the relay does, so a send
     /// that fails is the relay winding down, and dropping the item is right.
     fn enqueue(&self, work: Work) {
-        let _ = self.queue.send(work);
+        let _ = self.queue.send(Job::Owner(work));
     }
 }
 
@@ -320,6 +481,7 @@ impl Chats {
             Route::Ignore => {}
             Route::Queue(work) => handle.enqueue(work),
             Route::Answer(choice) => shared.answer(choice),
+            Route::AnswerText(text) => shared.answer_text(text),
             Route::Hold { question, choice } => shared.hold(question, choice),
             Route::DeclineThen(work) => {
                 shared.decline();
@@ -331,6 +493,13 @@ impl Chats {
                 tokio::spawn(async move { context.tell(&chat, reply).await });
             }
         }
+    }
+
+    /// Queue what a routine needs on `chat`'s worker. Dropped, if the relay
+    /// is winding down, with its answering half -- which the routine reads
+    /// as the chat having gone.
+    fn routine(&mut self, chat: ChatId, job: RoutineJob) {
+        let _ = self.handle_for(&chat).queue.send(Job::Routine(job));
     }
 
     /// End the workers: see [`run_with`] for the two ways this goes.
@@ -395,13 +564,15 @@ struct Running {
     /// turn existed is applied the moment it does, and the turn's own
     /// "Stopped." is not sent a second time.
     stop_requested: bool,
+    /// Whether this is a routine's run waiting on a question here rather than
+    /// a turn the owner started. `!stop` stops either; the relay stopping
+    /// stops only its own -- the routine runs elsewhere, and is merely told
+    /// nobody will answer.
+    routine: bool,
 }
 
 /// A question the turn is waiting on.
 struct Waiting {
-    /// Whether "later" is among the answers on offer. Without it, "later" is
-    /// read as "no".
-    can_park: bool,
     /// The message the question went out as. `None` while it is still being
     /// sent -- the window in which a typed answer must already count, and a
     /// tap on a message we have not been told the name of yet can only be
@@ -410,7 +581,61 @@ struct Waiting {
     /// Taps that arrived before `question` was known, waiting to be matched
     /// to it.
     early: Vec<(MessageRef, Choice)>,
-    answer: oneshot::Sender<ConfirmAnswer>,
+    answer: Answer,
+}
+
+/// Who is waiting for the answer, and what kind of answer they want.
+enum Answer {
+    /// Yes, no or -- when `can_park` -- later. Without `can_park`, "later" is
+    /// read as "no".
+    Confirm { can_park: bool, tx: oneshot::Sender<ConfirmAnswer> },
+    /// Whatever the owner types next: a routine's question in its own words.
+    Free { tx: oneshot::Sender<Option<String>> },
+}
+
+impl Answer {
+    /// Answer with a tap.
+    fn chose(self, choice: Choice) {
+        match self {
+            Answer::Confirm { can_park, tx } => {
+                let _ = tx.send(answer_for(choice, can_park));
+            }
+            Answer::Free { tx } => {
+                let word = match choice {
+                    Choice::Yes => "yes",
+                    Choice::No => "no",
+                    Choice::Later => "later",
+                };
+                let _ = tx.send(Some(word.to_string()));
+            }
+        }
+    }
+
+    /// Answer with what they typed. Only a free question is routed typed
+    /// text this way; a confirmation reads it as a choice first.
+    fn said(self, text: String) {
+        match self {
+            Answer::Free { tx } => {
+                let _ = tx.send(Some(text));
+            }
+            Answer::Confirm { can_park, tx } => {
+                let choice = Choice::from_text(&text).unwrap_or(Choice::No);
+                let _ = tx.send(answer_for(choice, can_park));
+            }
+        }
+    }
+
+    /// No answer is coming: no, or nothing.
+    fn decline(self) {
+        match self {
+            Answer::Confirm { tx, .. } => {
+                let _ = tx.send(ConfirmAnswer::Decline);
+            }
+            Answer::Free { tx } => {
+                let _ = tx.send(None);
+            }
+        }
+    }
 }
 
 /// Whether a question is waiting, as [`route`] needs to see it.
@@ -422,12 +647,16 @@ pub(crate) enum Asked<'a> {
     Unsent,
     /// One is, and went out as this message.
     Sent(&'a MessageRef),
+    /// A routine's free question is waiting: whatever the owner types next
+    /// is the answer.
+    Open,
 }
 
 impl Shared {
     fn asked(&self) -> Asked<'_> {
         match &self.waiting {
             None => Asked::Nothing,
+            Some(Waiting { answer: Answer::Free { .. }, .. }) => Asked::Open,
             Some(waiting) => match &waiting.question {
                 None => Asked::Unsent,
                 Some(question) => Asked::Sent(question),
@@ -437,10 +666,17 @@ impl Shared {
 
     /// Give the waiting question `choice` as its answer.
     fn answer(&mut self, choice: Choice) {
+        // A closed receiver means the worker stopped waiting an instant ago;
+        // the answer has nowhere to go and nothing depends on it.
         if let Some(waiting) = self.waiting.take() {
-            // A closed receiver means the worker stopped waiting an instant
-            // ago; the answer has nowhere to go and nothing depends on it.
-            let _ = waiting.answer.send(answer_for(choice, waiting.can_park));
+            waiting.answer.chose(choice);
+        }
+    }
+
+    /// Give the waiting question what the owner typed.
+    fn answer_text(&mut self, text: String) {
+        if let Some(waiting) = self.waiting.take() {
+            waiting.answer.said(text);
         }
     }
 
@@ -454,7 +690,7 @@ impl Shared {
     /// Say no to the waiting question, if there is one.
     fn decline(&mut self) {
         if let Some(waiting) = self.waiting.take() {
-            let _ = waiting.answer.send(ConfirmAnswer::Decline);
+            waiting.answer.decline();
         }
     }
 
@@ -477,7 +713,9 @@ impl Shared {
     fn halt(&mut self, pending: &Pending) {
         if let Some(running) = &mut self.running {
             running.stop_requested = true;
-            if let Some(conversation) = running.conversation {
+            if let Some(conversation) = running.conversation
+                && !running.routine
+            {
                 pending.cancel(conversation);
             }
         }
@@ -553,6 +791,8 @@ pub(crate) enum Route {
     Stop,
     /// It answers the waiting question.
     Answer(Choice),
+    /// It answers a routine's free question, in the owner's own words.
+    AnswerText(String),
     /// A tap on a message the question has not been matched to yet.
     Hold { question: MessageRef, choice: Choice },
     /// It is not an answer: withdraw the question, then carry on with this.
@@ -587,7 +827,7 @@ pub(crate) fn route(
         Incoming::Chose { question, choice, .. } => match asked {
             Asked::Sent(waiting_on) if waiting_on == question => Route::Answer(*choice),
             Asked::Unsent => Route::Hold { question: question.clone(), choice: *choice },
-            Asked::Sent(_) | Asked::Nothing => Route::Ignore,
+            Asked::Sent(_) | Asked::Nothing | Asked::Open => Route::Ignore,
         },
         Incoming::Said { text, at, .. } => {
             let text = text.trim();
@@ -611,6 +851,12 @@ pub(crate) fn route(
                 Asked::Unsent | Asked::Sent(_) => match Choice::from_text(text) {
                     Some(choice) => Route::Answer(choice),
                     None => Route::DeclineThen(work),
+                },
+                // Anything they write answers a free question -- except a
+                // command, which is them doing something else.
+                Asked::Open => match work {
+                    Work::Say(text) => Route::AnswerText(text),
+                    other => Route::DeclineThen(other),
                 },
             }
         }
@@ -727,6 +973,13 @@ impl Memory {
         }
     }
 
+    /// Carry on with `conversation` from here: a routine has just written to
+    /// the owner from it, and their reply is to that.
+    fn adopt(&mut self, conversation: ConversationId) {
+        self.current = Some(Current { id: conversation, last_used: Timestamp::now() });
+        self.looked = true;
+    }
+
     /// A turn on `conversation` has just ended.
     fn used(&mut self, conversation: ConversationId) {
         if let Some(current) = &mut self.current
@@ -745,7 +998,7 @@ async fn worker(
     context: Arc<Context>,
     chat: ChatId,
     shared: Arc<Mutex<Shared>>,
-    mut work: mpsc::UnboundedReceiver<Work>,
+    mut work: mpsc::UnboundedReceiver<Job>,
 ) {
     let mut memory = Memory::default();
     while let Some(item) = work.recv().await {
@@ -783,8 +1036,12 @@ async fn do_work(
     chat: &ChatId,
     shared: &Mutex<Shared>,
     memory: &mut Memory,
-    work: Work,
+    job: Job,
 ) {
+    let work = match job {
+        Job::Owner(work) => work,
+        Job::Routine(job) => return for_routine(context, chat, shared, memory, job).await,
+    };
     match work {
         Work::Reply(text) => context.tell(chat, &text).await,
         Work::New => {
@@ -796,6 +1053,49 @@ async fn do_work(
             context.tell(chat, &help_text(&name)).await;
         }
         Work::Say(text) => converse(context, chat, shared, memory, text).await,
+    }
+}
+
+/// What a routine needs from the owner, done in turn with the chat's own
+/// work.
+///
+/// While a routine's question waits, the run it came from is this chat's
+/// running turn as far as `!stop` is concerned: stopping it stops the run.
+async fn for_routine(
+    context: &Context,
+    chat: &ChatId,
+    shared: &Mutex<Shared>,
+    memory: &mut Memory,
+    job: RoutineJob,
+) {
+    let running = |from: &FromRun| {
+        shared.lock().unwrap().running =
+            Some(Running { conversation: from.conversation, stop_requested: false, routine: true });
+    };
+    match job {
+        RoutineJob::Post { from, markdown, done } => {
+            let sent = context.connector.send(chat, &markdown).await;
+            if sent.is_ok()
+                && let Some(conversation) = from.conversation
+            {
+                memory.adopt(conversation);
+                context.adopt_conversation(chat, conversation).await;
+            }
+            let _ = done.send(sent.map(|_| ()).map_err(|e| e.to_string()));
+        }
+        RoutineJob::Confirm { from, kind, subject, can_park, answer } => {
+            running(&from);
+            let given =
+                ask(context, chat, shared, &kind, &subject, can_park, Some(&from.routine)).await;
+            shared.lock().unwrap().running = None;
+            let _ = answer.send(given);
+        }
+        RoutineJob::Ask { from, question, choices, answer } => {
+            running(&from);
+            let given = ask_free(context, chat, shared, &from.routine, &question, &choices).await;
+            shared.lock().unwrap().running = None;
+            let _ = answer.send(given);
+        }
     }
 }
 
@@ -905,7 +1205,7 @@ async fn on_event(
             }
         }
         AgentEvent::ConfirmationRequired { call_id, subject, kind, can_park, .. } => {
-            let answer = ask(context, chat, shared, &kind, &subject, can_park).await;
+            let answer = ask(context, chat, shared, &kind, &subject, can_park, None).await;
             // False when the turn was cancelled in the meantime and nothing
             // is waiting for this any more -- not worth mentioning.
             context.pending().answer(&call_id, answer);
@@ -920,6 +1220,10 @@ async fn on_event(
 /// to an answer whatever happens: the owner's, the dispatcher declining on
 /// their behalf (`!stop`, a message that was not an answer, the relay
 /// stopping), or the timeout.
+///
+/// `routine` names the routine asking, when it is one rather than a turn the
+/// owner started here: the question then says whose it is, and no typing
+/// notice is shown around it, because nothing in this chat is typing.
 async fn ask(
     context: &Context,
     chat: &ChatId,
@@ -927,8 +1231,13 @@ async fn ask(
     kind: &str,
     subject: &str,
     can_park: bool,
+    routine: Option<&str>,
 ) -> ConfirmAnswer {
-    let question = confirmation_question(kind, subject, can_park);
+    let mut question = confirmation_question(kind, subject, can_park);
+    if let Some(routine) = routine {
+        question.markdown = format!("{}{}", from_routine(routine), question.markdown);
+    }
+    let in_turn = routine.is_none();
 
     // Registered before the question is sent, not after: sending it takes as
     // long as the server takes, and a typed "yes" in that time must already
@@ -937,7 +1246,11 @@ async fn ask(
     let closed = {
         let mut shared = shared.lock().unwrap();
         if !shared.closed {
-            shared.waiting = Some(Waiting { can_park, question: None, early: Vec::new(), answer });
+            shared.waiting = Some(Waiting {
+                question: None,
+                early: Vec::new(),
+                answer: Answer::Confirm { can_park, tx: answer },
+            });
         }
         shared.closed
     };
@@ -946,7 +1259,9 @@ async fn ask(
     }
 
     // Nobody is typing while we wait for them.
-    context.typing(chat, false).await;
+    if in_turn {
+        context.typing(chat, false).await;
+    }
     match context.connector.ask(chat, &question).await {
         Ok(reference) => shared.lock().unwrap().question_sent(reference),
         Err(e) => {
@@ -954,7 +1269,9 @@ async fn ask(
             // safe reading of silence is no.
             tracing::warn!(chat = %chat.0, error = %e, "could not put a question to the chat");
             shared.lock().unwrap().waiting = None;
-            context.typing(chat, true).await;
+            if in_turn {
+                context.typing(chat, true).await;
+            }
             return ConfirmAnswer::Decline;
         }
     }
@@ -978,8 +1295,68 @@ async fn ask(
             }
         }
     };
-    context.typing(chat, true).await;
+    if in_turn {
+        context.typing(chat, true).await;
+    }
     answer
+}
+
+/// Put a routine's own question to the owner and wait for what they type.
+///
+/// The free half of [`ask`]: no reactions to tap, because the answer is
+/// words, but the same waiting slot, so the dispatcher routes their next
+/// message here rather than starting a turn with it -- and the same timeout,
+/// after which the routine is told nothing came and carries on.
+async fn ask_free(
+    context: &Context,
+    chat: &ChatId,
+    shared: &Mutex<Shared>,
+    routine: &str,
+    question: &str,
+    choices: &[String],
+) -> Option<String> {
+    let (answer, mut answered) = oneshot::channel();
+    let closed = {
+        let mut shared = shared.lock().unwrap();
+        if !shared.closed {
+            shared.waiting = Some(Waiting {
+                question: None,
+                early: Vec::new(),
+                answer: Answer::Free { tx: answer },
+            });
+        }
+        shared.closed
+    };
+    if closed {
+        return None;
+    }
+
+    match context.connector.send(chat, &free_question(routine, question, choices)).await {
+        Ok(reference) => shared.lock().unwrap().question_sent(reference),
+        Err(e) => {
+            tracing::warn!(chat = %chat.0, error = %e, "could not put a question to the chat");
+            shared.lock().unwrap().waiting = None;
+            return None;
+        }
+    }
+
+    let given = tokio::select! {
+        answer = &mut answered => Some(answer.ok().flatten()),
+        () = tokio::time::sleep(context.timing.confirm_timeout) => None,
+    };
+    let said = match given {
+        Some(said) => said,
+        None => {
+            let still_waiting = shared.lock().unwrap().waiting.take().is_some();
+            if still_waiting {
+                context.tell(chat, NO_ANSWER).await;
+                None
+            } else {
+                answered.try_recv().ok().flatten()
+            }
+        }
+    };
+    said.map(|said| pick_choice(&said, choices))
 }
 
 // ---- what is said -----------------------------------------------------------
@@ -1034,7 +1411,9 @@ pub(crate) fn help_text(assistant_name: &str) -> String {
          - `!new` starts a new conversation\n\
          - `!stop` stops what I'm doing\n\
          - `!help` shows this message\n\n\
-         Before I delete anything, or send something to someone else, I'll ask you here first."
+         Before I delete anything, or send something to someone else, I'll ask you here first. \
+         Routines you have sent here post what they did, and may ask you something while they \
+         work \u{2014} answer them here too."
     )
 }
 
@@ -1086,6 +1465,38 @@ pub(crate) fn confirmation_question(kind: &str, subject: &str, can_park: bool) -
         markdown.push_str("Reply **yes** or **no**.");
     }
     Question { markdown, choices }
+}
+
+/// The line a routine's message to the owner starts with, so that a question
+/// arriving out of nowhere says whose it is.
+fn from_routine(routine: &str) -> String {
+    format!("_From your routine **{}**:_\n\n", escape_markdown(&one_line(routine)))
+}
+
+/// A routine's own question, as the owner sees it: whose it is, the question
+/// in the model's words, and the choices numbered if there are any.
+pub(crate) fn free_question(routine: &str, question: &str, choices: &[String]) -> String {
+    let mut out = from_routine(routine);
+    out.push_str(question.trim());
+    if choices.is_empty() {
+        out.push_str("\n\nReply here.");
+    } else {
+        out.push_str("\n\n");
+        for (n, choice) in choices.iter().enumerate() {
+            out.push_str(&format!("{}. {}\n", n + 1, escape_markdown(&one_line(choice))));
+        }
+        out.push_str("\nReply with a number, or in your own words.");
+    }
+    out
+}
+
+/// What the owner said, with a bare number read as the choice it numbers.
+pub(crate) fn pick_choice(said: &str, choices: &[String]) -> String {
+    let trimmed = said.trim().trim_end_matches('.');
+    match trimmed.parse::<usize>() {
+        Ok(n) if (1..=choices.len()).contains(&n) => choices[n - 1].clone(),
+        _ => said.trim().to_string(),
+    }
 }
 
 /// `head`, then `subject` as a quotation, if there is one.
@@ -1554,9 +1965,85 @@ mod tests {
     /// A chat with a question waiting on `can_park`'s terms, and the receiving
     /// end of its answer.
     fn waiting_on_an_answer(can_park: bool) -> (Shared, oneshot::Receiver<ConfirmAnswer>) {
-        let (answer, answered) = oneshot::channel();
-        let waiting = Waiting { can_park, question: None, early: Vec::new(), answer };
+        let (tx, answered) = oneshot::channel();
+        let waiting =
+            Waiting { question: None, early: Vec::new(), answer: Answer::Confirm { can_park, tx } };
         (Shared { waiting: Some(waiting), ..Shared::default() }, answered)
+    }
+
+    /// A chat with a routine's free question waiting, and the receiving end
+    /// of its answer.
+    fn waiting_on_words() -> (Shared, oneshot::Receiver<Option<String>>) {
+        let (tx, answered) = oneshot::channel();
+        let waiting = Waiting { question: None, early: Vec::new(), answer: Answer::Free { tx } };
+        (Shared { waiting: Some(waiting), ..Shared::default() }, answered)
+    }
+
+    #[test]
+    fn whatever_is_typed_answers_a_free_question_except_a_command() {
+        assert_eq!(
+            routed(&said(" the blue one "), Asked::Open),
+            Route::AnswerText("the blue one".into())
+        );
+        assert_eq!(routed(&said("yes"), Asked::Open), Route::AnswerText("yes".into()));
+        assert_eq!(routed(&said("!stop"), Asked::Open), Route::Stop);
+        assert_eq!(routed(&said("!new"), Asked::Open), Route::DeclineThen(Work::New));
+        assert_eq!(routed(&chose("$q", Choice::Yes), Asked::Open), Route::Ignore);
+    }
+
+    #[test]
+    fn a_free_question_takes_words_and_withdrawing_it_gives_nothing() {
+        let (mut shared, mut answered) = waiting_on_words();
+        assert_eq!(shared.asked(), Asked::Open);
+        shared.answer_text("Thursday".into());
+        assert_eq!(answered.try_recv().unwrap(), Some("Thursday".into()));
+        assert_eq!(shared.asked(), Asked::Nothing);
+
+        let (mut shared, mut answered) = waiting_on_words();
+        shared.decline();
+        assert_eq!(answered.try_recv().unwrap(), None, "no answer, not a no");
+    }
+
+    #[test]
+    fn the_relay_stopping_does_not_stop_a_routine_it_was_asking_for() {
+        let pending = Pending::default();
+        let conversation = ConversationId::new();
+        let mut shared = Shared {
+            running: Some(Running {
+                conversation: Some(conversation),
+                stop_requested: false,
+                routine: true,
+            }),
+            ..Shared::default()
+        };
+        shared.halt(&pending);
+        assert!(shared.closed, "nothing more is answered here");
+        // Nothing to observe on `pending` without a registered turn; what
+        // matters is that `!stop` still reaches the run.
+        assert_eq!(shared.stop(&pending), STOPPED);
+    }
+
+    #[test]
+    fn a_routines_question_says_whose_it_is_and_numbers_its_choices() {
+        let text = free_question(
+            "Morning brief",
+            "Which dentist slot?",
+            &["Tuesday 9:00".into(), "Thursday 14:00".into()],
+        );
+        assert!(text.starts_with("_From your routine **Morning brief**:_\n\nWhich dentist slot?"));
+        assert!(text.contains("1. Tuesday 9:00\n2. Thursday 14:00"));
+        assert!(text.ends_with("Reply with a number, or in your own words."));
+        assert!(free_question("Brief", "Anything?", &[]).ends_with("Reply here."));
+    }
+
+    #[test]
+    fn a_number_is_read_as_the_choice_it_numbers() {
+        let choices = vec!["Tuesday".to_string(), "Thursday".to_string()];
+        assert_eq!(pick_choice(" 2 ", &choices), "Thursday");
+        assert_eq!(pick_choice("1.", &choices), "Tuesday");
+        assert_eq!(pick_choice("3", &choices), "3", "not a choice there is");
+        assert_eq!(pick_choice("Friday instead", &choices), "Friday instead");
+        assert_eq!(pick_choice("2", &[]), "2");
     }
 
     #[test]

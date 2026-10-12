@@ -173,6 +173,11 @@ pub trait Connector: Send + Sync + 'static {
     /// one).
     async fn ask(&self, chat: &ChatId, question: &Question) -> Result<MessageRef, ChatError>;
 
+    /// The owner's private chat with the bot, where something that is not a
+    /// reply -- a routine's result, its question -- goes. `None` until there
+    /// is one the owner has joined.
+    async fn home(&self) -> Option<ChatId>;
+
     /// Show, or stop showing, that the bot is typing in `chat`. Stays on
     /// until it is turned off, however long that is: a service whose typing
     /// notice expires is the connector's to keep renewing.

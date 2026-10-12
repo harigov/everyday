@@ -1399,6 +1399,7 @@ const runs: RoutineRun[] = [
     conversationId: 'c-1',
     seen: false,
     steps: 2,
+    delivered: [{ to: 'chat', ok: true, detail: 'Matrix' }],
   },
   {
     id: 'run-2',
@@ -4151,6 +4152,7 @@ export const mockInvoke = async <T>(
         trigger: { type: 'schedule', at: '07:00', days: [] },
         graceMinutes: 60,
         enabled: true,
+        delivery: { ask: false },
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       } satisfies Routine as T

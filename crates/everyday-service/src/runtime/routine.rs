@@ -1,8 +1,11 @@
 //! The scheduler's bookkeeping about routines this process is running or
 //! has already reported trouble for.
 
+use everyday_core::RoutineId;
 use std::collections::HashSet;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 #[derive(Default)]
 pub(crate) struct RoutineRuntime {
@@ -17,12 +20,27 @@ pub(crate) struct RoutineRuntime {
     /// only in memory -- a run this process is not carrying out is not in
     /// here, whatever the row says.
     claimed: RwLock<HashSet<String>>,
-    /// The routine running right now, by name, if one is.
+    /// The routines running right now, by name, oldest first. The tray
+    /// names the newest.
     ///
     /// Here rather than derived from a `Running` row, because a row is also
     /// what a run abandoned by a dead process looks like. This is in
-    /// memory and therefore cannot lie about the present.
-    running: RwLock<Option<String>>,
+    /// memory and therefore cannot lie about the present. A list because a
+    /// run that can ask its person runs beside the tick rather than in it
+    /// -- see [`RoutineRuntime::detach`] -- so two can be going at once.
+    running: RwLock<Vec<String>>,
+    /// Runs carried out beside the tick rather than in it: the ones that may
+    /// wait half an hour on somebody's answer, which must not hold up the
+    /// meeting watcher, the snooze sweep and every other routine meanwhile.
+    detached: Mutex<Vec<JoinHandle<()>>>,
+    /// The routines one of those runs belongs to, so the tick does not
+    /// start the same slot again -- or record it missed -- while it is still
+    /// going.
+    in_flight: Arc<Mutex<HashSet<RoutineId>>>,
+    /// Flipped to tell every run waiting on an answer to stop waiting: the
+    /// scheduler is stopping, or the vault is closing. Replaced by a fresh
+    /// one each time, so a run started afterwards is not born withdrawn.
+    withdraw: Mutex<Option<watch::Sender<bool>>>,
 }
 
 impl RoutineRuntime {
@@ -51,18 +69,86 @@ impl RoutineRuntime {
         self.claimed.read().unwrap().contains(id)
     }
 
+    /// `Some` adds a running routine; `None` forgets them all.
     pub(crate) fn set_running(&self, name: Option<String>) {
-        *self.running.write().unwrap() = name;
+        let mut running = self.running.write().unwrap();
+        match name {
+            Some(name) => running.push(name),
+            None => running.clear(),
+        }
+    }
+
+    /// One routine has finished, whichever others are still going.
+    pub(crate) fn finished_running(&self, name: &str) {
+        let mut running = self.running.write().unwrap();
+        if let Some(at) = running.iter().position(|n| n == name) {
+            running.remove(at);
+        }
     }
 
     pub(crate) fn running(&self) -> Option<String> {
-        self.running.read().unwrap().clone()
+        self.running.read().unwrap().last().cloned()
+    }
+
+    /// Whether a detached run of `routine` is still going.
+    pub(crate) fn in_flight(&self, routine: RoutineId) -> bool {
+        self.in_flight.lock().unwrap().contains(&routine)
+    }
+
+    /// Carry `run` out beside the tick. `routine`, when given, is held in
+    /// flight until it finishes, however it finishes -- including an abort.
+    pub(crate) fn detach(
+        &self,
+        routine: Option<RoutineId>,
+        run: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        struct Landed(Arc<Mutex<HashSet<RoutineId>>>, Option<RoutineId>);
+        impl Drop for Landed {
+            fn drop(&mut self) {
+                if let Some(id) = self.1 {
+                    self.0.lock().unwrap().remove(&id);
+                }
+            }
+        }
+        if let Some(id) = routine {
+            self.in_flight.lock().unwrap().insert(id);
+        }
+        let landed = Landed(self.in_flight.clone(), routine);
+        let handle = tokio::spawn(async move {
+            let _landed = landed;
+            run.await;
+        });
+        let mut detached = self.detached.lock().unwrap();
+        detached.retain(|h| !h.is_finished());
+        detached.push(handle);
+    }
+
+    /// Wait for every detached run to finish.
+    pub(crate) async fn settle(&self) {
+        loop {
+            let next = self.detached.lock().unwrap().pop();
+            let Some(handle) = next else { return };
+            let _ = handle.await;
+        }
+    }
+
+    /// A signal that turns true when waiting runs are told to stop waiting.
+    pub(crate) fn withdrawn(&self) -> watch::Receiver<bool> {
+        let mut withdraw = self.withdraw.lock().unwrap();
+        withdraw.get_or_insert_with(|| watch::channel(false).0).subscribe()
+    }
+
+    /// Tell every run waiting on an answer to stop waiting, now.
+    pub(crate) fn withdraw(&self) {
+        if let Some(withdraw) = self.withdraw.lock().unwrap().take() {
+            withdraw.send_replace(true);
+        }
     }
 
     // ---- what a full vault close clears ----------------------------------
     //
-    // `on_lock` bundles these three, in this order: reported failures, then
-    // claimed runs, then the running routine's name. Not called by
+    // `on_lock` bundles these four, in this order: detached runs, reported
+    // failures, claimed runs, then the running routines' names. Not called by
     // `Service::locked` -- a lock screen leaves a routine's claim and the
     // "already reported" flags alone, only a full close resets them. See
     // `tests/runtime_lifecycle.rs`.
@@ -76,13 +162,26 @@ impl RoutineRuntime {
     }
 
     fn forget_running(&self) {
-        self.running.write().unwrap().take();
+        self.running.write().unwrap().clear();
+    }
+
+    /// Detached runs are stopped where they stand: the vault they write to is
+    /// going. A row one leaves `Running` is closed by the next unlock's sweep,
+    /// like any other a stopped process left.
+    fn forget_detached(&self) {
+        self.withdraw();
+        for handle in self.detached.lock().unwrap().drain(..) {
+            handle.abort();
+        }
+        self.in_flight.lock().unwrap().clear();
     }
 
     /// Called once, by [`Service::close`](crate::service::Service::close),
-    /// in place of the three `forget_*` calls above written out by hand,
-    /// in the exact order they happened there.
+    /// in place of the `forget_*` calls above written out by hand, in the
+    /// exact order they happened there -- with the detached runs first,
+    /// which are newer than that list.
     pub(crate) fn on_lock(&self) {
+        self.forget_detached();
         self.forget_reported();
         self.forget_claimed();
         self.forget_running();

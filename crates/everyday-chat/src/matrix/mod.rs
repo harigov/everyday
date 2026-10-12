@@ -155,6 +155,10 @@ impl Connector for MatrixConnector {
         self.ask_impl(chat, question).await
     }
 
+    async fn home(&self) -> Option<ChatId> {
+        rooms::home(&self.client, &self.bot, &self.owner).await
+    }
+
     async fn typing(&self, chat: &ChatId, on: bool) -> Result<(), ChatError> {
         self.typing_impl(chat, on).await
     }

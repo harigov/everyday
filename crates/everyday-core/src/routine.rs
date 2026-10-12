@@ -25,7 +25,7 @@
 //! running six hours late or saying nothing at all. A laptop shut for a week
 //! shows one honest row per morning instead of seven briefs at once.
 
-use crate::id::{RoleId, RoutineId, RoutineRunId};
+use crate::id::{AccountId, ChatLinkId, RoleId, RoutineId, RoutineRunId};
 use crate::timestamped::Timestamped;
 use crate::{ConversationId, Error, Result};
 use jiff::civil::{Time, Weekday as CivilWeekday, time};
@@ -316,6 +316,67 @@ impl DreamScope {
     }
 }
 
+/// Where a run's result goes besides the Assistant app, and whether the run
+/// may reach its person while it works.
+///
+/// Every run is kept in the app whatever this says; this adds places. The
+/// default is none, which is every routine saved before this existed.
+///
+/// The email goes to the sending account's own address, always. It is the
+/// person's own report reaching them, not a message to anybody else, and a
+/// routine the assistant set up must not be able to point it anywhere else.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase", default)]
+pub struct Delivery {
+    /// The chat link whose private room with its owner gets the result. A
+    /// reply there carries on the run's own conversation. See
+    /// `docs/plans/chat.md`'s "Routines in the chat".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat: Option<ChatLinkId>,
+    /// Put questions to the owner in that chat while the run works: approvals
+    /// for what would delete or send something, and a free question when it
+    /// needs a fact or a decision only they have. Read only when `chat` is
+    /// set. Off, a run has nobody to ask and refuses or parks as it always
+    /// has.
+    pub ask: bool,
+    /// Email the result from this account to its own address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<AccountId>,
+}
+
+impl Delivery {
+    /// Whether this sends the result anywhere beyond the app.
+    pub fn is_empty(&self) -> bool {
+        self.chat.is_none() && self.email.is_none()
+    }
+
+    /// Whether a run may ask its person something while it works.
+    pub fn asks(&self) -> bool {
+        self.ask && self.chat.is_some()
+    }
+}
+
+/// Where a run's result was sent, or why it could not be.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct Delivered {
+    pub to: DeliveredTo,
+    pub ok: bool,
+    /// Where it went ("Matrix", "me@example.com"), or why it did not.
+    pub detail: String,
+}
+
+/// One of the places [`Delivery`] can send a result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum DeliveredTo {
+    Chat,
+    Email,
+}
+
 /// Standing work.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -334,6 +395,9 @@ pub struct Routine {
     /// is the default, and everything saved before this field existed.
     #[serde(default)]
     pub kind: RoutineKind,
+    /// Where the result goes besides the app, and whether a run may ask.
+    #[serde(default)]
+    pub delivery: Delivery,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<Timestamp>,
     pub created_at: Timestamp,
@@ -355,6 +419,7 @@ impl Routine {
             grace_minutes: DEFAULT_GRACE_MINUTES,
             enabled: true,
             kind: RoutineKind::Custom,
+            delivery: Delivery::default(),
             last_run_at: None,
             created_at: now,
             updated_at: now,
@@ -420,6 +485,12 @@ impl Routine {
                 "instructions are {} bytes; the limit is {MAX_INSTRUCTIONS_BYTES}",
                 self.instructions.len()
             )));
+        }
+        // A dream's work is proposals, decided in the app; there is no result
+        // to hand anybody and nobody it should be asking at three in the
+        // morning.
+        if self.kind.is_dream() && (!self.delivery.is_empty() || self.delivery.ask) {
+            return Err(Error::Invalid("a dream's results stay in the Assistant app".into()));
         }
         if let Trigger::Schedule { day_of_month: Some(dom), .. } = &self.trigger
             && !(1..=28).contains(dom)
@@ -616,6 +687,10 @@ pub struct RoutineRun {
     pub seen: bool,
     #[serde(default)]
     pub steps: u32,
+    /// Where the result was sent besides the app, one entry per place the
+    /// routine's [`Delivery`] named, each saying whether it got there.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delivered: Vec<Delivered>,
 }
 
 impl RoutineRun {
@@ -634,6 +709,7 @@ impl RoutineRun {
             summary: String::new(),
             seen: false,
             steps: 0,
+            delivered: Vec::new(),
         }
     }
 
@@ -976,5 +1052,33 @@ mod tests {
         assert!(run.outcome.is_finished());
         assert!(run.seen, "there is nothing to look at, so nothing to count on the app bar");
         assert_eq!(run.routine_name, "Morning brief", "a log row reads after a rename");
+    }
+
+    #[test]
+    fn a_routine_saved_before_delivery_existed_stays_in_the_app() {
+        let mut json = serde_json::to_value(morning(&[])).unwrap();
+        json.as_object_mut().unwrap().remove("delivery");
+        let r: Routine = serde_json::from_value(json).unwrap();
+        assert_eq!(r.delivery, Delivery::default());
+        assert!(r.delivery.is_empty());
+        assert!(!r.delivery.asks());
+    }
+
+    #[test]
+    fn asking_needs_a_chat_to_ask_in() {
+        let mut d = Delivery { ask: true, ..Default::default() };
+        assert!(!d.asks(), "nowhere to ask");
+        d.chat = Some(ChatLinkId::new());
+        assert!(d.asks());
+    }
+
+    #[test]
+    fn a_dream_cannot_be_sent_anywhere() {
+        let mut r = Routine::dream(DreamScope::Day);
+        r.delivery.email = Some(AccountId::new());
+        assert!(r.validate().is_err());
+        let mut r = morning(&[]);
+        r.delivery.email = Some(AccountId::new());
+        r.validate().expect("a person's routine may be emailed");
     }
 }

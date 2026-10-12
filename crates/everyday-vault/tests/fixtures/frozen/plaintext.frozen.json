@@ -748,6 +748,9 @@
     "kind": "routine",
     "record": {
       "createdAt": "2023-11-14T22:13:41Z",
+      "delivery": {
+        "ask": false
+      },
       "enabled": true,
       "graceMinutes": 60,
       "id": "00000000-0000-0000-0000-000000000012",

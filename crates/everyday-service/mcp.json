@@ -415,6 +415,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "ask_in_chat": {
+            "description": "While it runs, put questions to them in that chat: approvals for anything that deletes or sends, and a question when it needs a fact or a decision only they have. Sends the result there too. False stops asking.",
+            "type": "boolean"
+          },
           "at": {
             "description": "Time of day, 24-hour, as HH:MM. For example 07:00.",
             "type": "string"
@@ -425,6 +429,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "email_account": {
+            "description": "Which of their mail accounts to email from, by address. Omit for the first one.",
+            "type": "string"
+          },
+          "email_me": {
+            "description": "Also email the result to them, from one of their mail accounts to its own address. False stops emailing it.",
+            "type": "boolean"
           },
           "grace_minutes": {
             "description": "How long after its time it will still run before the run is recorded as missed. Default 60.",
@@ -437,6 +449,10 @@
           "name": {
             "description": "What to call it. Short: it goes in a list.",
             "type": "string"
+          },
+          "send_to_chat": {
+            "description": "Also send the result to them in their chat (Matrix, through the bot they reach you by), as well as keeping it in the app. Only if they have a chat link set up. False stops sending it there.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3346,6 +3362,10 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "ask_in_chat": {
+            "description": "While it runs, put questions to them in that chat: approvals for anything that deletes or sends, and a question when it needs a fact or a decision only they have. Sends the result there too. False stops asking.",
+            "type": "boolean"
+          },
           "at": {
             "description": "New time of day as HH:MM.",
             "type": "string"
@@ -3356,6 +3376,14 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "email_account": {
+            "description": "Which of their mail accounts to email from, by address. Omit for the first one.",
+            "type": "string"
+          },
+          "email_me": {
+            "description": "Also email the result to them, from one of their mail accounts to its own address. False stops emailing it.",
+            "type": "boolean"
           },
           "enabled": {
             "description": "Switch it on or off without deleting it.",
@@ -3376,6 +3404,10 @@
           "routine_id": {
             "description": "Id from list_routines.",
             "type": "string"
+          },
+          "send_to_chat": {
+            "description": "Also send the result to them in their chat (Matrix, through the bot they reach you by), as well as keeping it in the app. Only if they have a chat link set up. False stops sending it there.",
+            "type": "boolean"
           }
         },
         "required": [

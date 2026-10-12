@@ -54,6 +54,10 @@ pub(super) static TOOLS: &[Tool] = &[
                          recorded as missed. Default 60."
                     )
                 ),
+                ("send_to_chat", flag(SEND_TO_CHAT)),
+                ("ask_in_chat", flag(ASK_IN_CHAT)),
+                ("email_me", flag(EMAIL_ME)),
+                ("email_account", text(EMAIL_ACCOUNT)),
             ],
             &["name", "instructions", "at"]
         ),
@@ -78,6 +82,10 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("days", list("Replaces the days entirely.")),
                 ("grace_minutes", number("New grace, in minutes.")),
                 ("enabled", flag("Switch it on or off without deleting it.")),
+                ("send_to_chat", flag(SEND_TO_CHAT)),
+                ("ask_in_chat", flag(ASK_IN_CHAT)),
+                ("email_me", flag(EMAIL_ME)),
+                ("email_account", text(EMAIL_ACCOUNT)),
             ],
             &["routine_id"]
         ),
@@ -127,6 +135,20 @@ pub(super) static TOOLS: &[Tool] = &[
     ),
 ];
 
+const SEND_TO_CHAT: &str = "Also send the result to them in their chat (Matrix, through the bot \
+     they reach you by), as well as keeping it in the app. Only if they have a chat link set \
+     up. False stops sending it there.";
+
+const ASK_IN_CHAT: &str = "While it runs, put questions to them in that chat: approvals for \
+     anything that deletes or sends, and a question when it needs a fact or a decision only \
+     they have. Sends the result there too. False stops asking.";
+
+const EMAIL_ME: &str = "Also email the result to them, from one of their mail accounts to its \
+     own address. False stops emailing it.";
+
+const EMAIL_ACCOUNT: &str = "Which of their mail accounts to email from, by address. Omit for \
+     the first one.";
+
 fn describe_delete_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     describe_by_id::<RoutineId, Routine>(
         args,
@@ -152,6 +174,16 @@ fn routine_json(r: &Routine, now: &jiff::Zoned) -> Value {
     }
     if let Some(next) = r.next_due(now) {
         map.insert("next_run".into(), json!(next.to_string()));
+    }
+    if !r.delivery.is_empty() {
+        map.insert(
+            "delivery".into(),
+            json!({
+                "chat": r.delivery.chat.is_some(),
+                "asks_in_chat": r.delivery.asks(),
+                "email": r.delivery.email.is_some(),
+            }),
+        );
     }
     out
 }
@@ -203,14 +235,89 @@ fn parse_days(args: &Args<'_>) -> Result<Vec<Weekday>> {
 /// `run_create_routine` alone: drafting mode exists precisely to bypass it,
 /// the way `docs/plans/dreaming.md` says a proposal is the safe form of the
 /// call it stands in for.
-fn routine_from_create_args(args: &Args<'_>) -> Result<Routine> {
+fn routine_from_create_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Routine> {
     let trigger = schedule_from(args)?;
     let mut routine = Routine::new(args.str("name")?, args.str("instructions")?, trigger);
     if let Some(grace) = args.opt_u32("grace_minutes") {
         routine.grace_minutes = grace;
     }
+    apply_delivery_args(ctx, args, &mut routine.delivery)?;
     routine.validate()?;
     Ok(routine)
+}
+
+/// `send_to_chat`, `ask_in_chat`, `email_me` and `email_account`, applied to
+/// what a routine already has. An omitted flag leaves its part alone, so the
+/// same function serves a new routine (which has nothing) and a change.
+///
+/// The model names no ids: the chat is their first switched-on link, and the
+/// account is found by its address. Either missing is said plainly, so the
+/// reply can tell them what to set up rather than claiming it is done.
+fn apply_delivery_args(
+    ctx: &ToolContext<'_>,
+    args: &Args<'_>,
+    delivery: &mut crate::routine::Delivery,
+) -> Result<()> {
+    let ask = args.opt_bool("ask_in_chat");
+    let chat = match (args.opt_bool("send_to_chat"), ask) {
+        // Asking happens in the chat, so asking for it is asking for the chat.
+        (_, Some(true)) | (Some(true), _) => Some(true),
+        (Some(false), _) => Some(false),
+        (None, _) => None,
+    };
+    match chat {
+        Some(true) if delivery.chat.is_none() => {
+            let link = ctx
+                .vault
+                .chat_settings()
+                .ok()
+                .and_then(|s| s.links.into_iter().find(|l| l.enabled))
+                .ok_or_else(|| {
+                    Error::Invalid(
+                        "they have no chat link switched on, so there is nowhere to send it. \
+                         One is set up in Settings, under Chat."
+                            .into(),
+                    )
+                })?;
+            delivery.chat = Some(link.id);
+        }
+        Some(false) => {
+            delivery.chat = None;
+            delivery.ask = false;
+        }
+        _ => {}
+    }
+    if let Some(ask) = ask {
+        delivery.ask = ask;
+    }
+
+    let account = args.opt_str("email_account").map(str::trim).filter(|a| !a.is_empty());
+    match (args.opt_bool("email_me"), account) {
+        (Some(false), _) => delivery.email = None,
+        (Some(true), _) | (None, Some(_)) => {
+            let accounts: Vec<_> =
+                ctx.vault.accounts()?.into_iter().filter(|a| a.services.mail).collect();
+            let chosen = match account {
+                Some(address) => accounts.iter().find(|a| {
+                    a.address.eq_ignore_ascii_case(address)
+                        || a.identities.iter().any(|i| i.address.eq_ignore_ascii_case(address))
+                }),
+                None => accounts.first(),
+            };
+            let chosen = chosen.ok_or_else(|| {
+                Error::Invalid(match account {
+                    Some(address) => format!(
+                        "{address:?} is not one of their mail accounts. Leave email_account \
+                         out to use the first."
+                    ),
+                    None => "they have no mail account to send it from.".into(),
+                })
+            })?;
+            delivery.email = Some(chosen.id);
+        }
+        (None, None) => {}
+    }
+    Ok(())
 }
 
 fn run_create_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -225,7 +332,7 @@ fn run_create_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                 .into(),
         ));
     }
-    let routine = routine_from_create_args(args)?;
+    let routine = routine_from_create_args(ctx, args)?;
     ctx.vault.save_routine(&routine)?;
 
     let now = ctx.now();
@@ -241,8 +348,8 @@ fn run_create_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     Ok(out)
 }
 
-fn build_create_routine(_ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let routine = routine_from_create_args(args)?;
+fn build_create_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let routine = routine_from_create_args(ctx, args)?;
     let caption = format!("Create routine: {}", routine.name);
     Ok(Built {
         payload: Payload::Create { record: ProposedRecord::Routine(routine) },
@@ -253,7 +360,11 @@ fn build_create_routine(_ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built
 
 /// Everything `update_routine` does to the loaded record, without saving it
 /// -- the half `run_update_routine` and `build_update_routine` share.
-fn apply_update_routine_args(args: &Args<'_>, mut routine: Routine) -> Result<Routine> {
+fn apply_update_routine_args(
+    ctx: &ToolContext<'_>,
+    args: &Args<'_>,
+    mut routine: Routine,
+) -> Result<Routine> {
     if let Some(name) = args.opt_str("name") {
         routine.name = name.to_string();
     }
@@ -295,6 +406,7 @@ fn apply_update_routine_args(args: &Args<'_>, mut routine: Routine) -> Result<Ro
     if let Some(enabled) = args.opt_bool("enabled") {
         routine.enabled = enabled;
     }
+    apply_delivery_args(ctx, args, &mut routine.delivery)?;
     routine.touch();
     routine.validate()?;
     Ok(routine)
@@ -302,7 +414,7 @@ fn apply_update_routine_args(args: &Args<'_>, mut routine: Routine) -> Result<Ro
 
 fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let routine: Routine = load_by_id(args, "routine_id", "routine", |id| ctx.vault.routine(id))?;
-    let routine = apply_update_routine_args(args, routine)?;
+    let routine = apply_update_routine_args(ctx, args, routine)?;
     ctx.vault.save_routine(&routine)?;
 
     let now = ctx.now();
@@ -338,7 +450,7 @@ fn build_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built>
         Ok(r)
     })?;
     let expected_updated_at = original.updated_at;
-    let routine = apply_update_routine_args(args, original)?;
+    let routine = apply_update_routine_args(ctx, args, original)?;
     let caption = format!("Change routine: {}", routine.name);
     let about = About { kind: AboutKind::Routine, id: routine.id.to_string() };
     Ok(Built {

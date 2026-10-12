@@ -18,7 +18,16 @@ import { api } from './api'
 import { panels } from './panels.svelte'
 import { proposals } from './proposals.svelte'
 import { app, handle, isLocked } from './state.svelte'
-import type { Memory, RoutineId, RoutineInfo, RoutineRun, RoutineRunId, Template } from './types'
+import type {
+  Account,
+  ChatLinkView,
+  Memory,
+  RoutineId,
+  RoutineInfo,
+  RoutineRun,
+  RoutineRunId,
+  Template,
+} from './types'
 
 /** How many runs the log shows. A log, not a database. */
 const PAGE = 200
@@ -48,6 +57,12 @@ class AssistantState {
   openRun = $state<RoutineRunId | null>(null)
   /** One routine's log, when a row is expanded. */
   expanded = $state<RoutineId | null>(null)
+  /**
+   * Where the editor can send a result: the chat links and the mail accounts.
+   * Read when the editor opens, so a link set up a minute ago is offered.
+   */
+  chatLinks = $state<ChatLinkView[]>([])
+  mailAccounts = $state<Account[]>([])
 
   constructor() {
     app.onLock(() => this.reset())
@@ -62,6 +77,8 @@ class AssistantState {
     this.editing = null
     this.openRun = null
     this.expanded = null
+    this.chatLinks = []
+    this.mailAccounts = []
     this.loading = false
   }
 
@@ -187,17 +204,37 @@ class AssistantState {
         name: template?.name ?? blank.name,
         instructions: template?.instructions ?? blank.instructions,
         trigger: template?.trigger ?? blank.trigger,
+        delivery: blank.delivery ?? { ask: false },
         when: '',
       }
       this.setPane('routines')
+      await this.#destinations()
     } catch (e) {
       await handle(e)
     }
   }
 
   edit(routine: RoutineInfo) {
-    this.editing = { ...routine }
+    this.editing = { ...routine, delivery: { ask: false, ...routine.delivery } }
     this.setPane('routines')
+    void this.#destinations()
+  }
+
+  /**
+   * The chat links and mail accounts a result could go to. A vault without
+   * either simply has nothing to offer, which the editor says.
+   */
+  async #destinations() {
+    try {
+      this.chatLinks = await api.chatLinks()
+    } catch {
+      this.chatLinks = []
+    }
+    try {
+      this.mailAccounts = (await api.accounts()).filter((a) => a.services.mail)
+    } catch {
+      this.mailAccounts = []
+    }
   }
 
   cancelEdit() {
