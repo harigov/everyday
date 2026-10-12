@@ -693,7 +693,7 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "save_chat_link", json!({ "link": chat_link, "password": "bot-password" })).await;
     run(&svc, &h, "remove_chat_link", json!({ "id": chat_link["id"] })).await;
 
-    run(&svc, &h, "set_quick_job", json!({ "name": "todo.parse", "on": true })).await;
+    run(&svc, &h, "set_quick_ask", json!({ "name": "todo.parse", "on": true })).await;
 
     let mut memory = call(&svc, &h, "new_memory", json!({})).await;
     memory["text"] = json!("Prefers concise replies.");

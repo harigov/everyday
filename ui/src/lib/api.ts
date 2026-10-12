@@ -1264,8 +1264,8 @@ export const api = {
   // which owns the switch check, the cancellation and the rule that a failure
   // here is silence rather than an error.
 
-  quickJobs: () => call('quickJobs', {}),
-  setQuickJob: (args: { name: string; on: boolean }) => call('setQuickJob', args),
+  quickAsks: () => call('quickAsks', {}),
+  setQuickAsk: (args: { name: string; on: boolean }) => call('setQuickAsk', args),
 
   /** The shelf's own declared fields, out of what a search found. */
   quickItemFields: (itemId: ItemId) => call('quickItemFields', { itemId }),

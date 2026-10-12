@@ -1,9 +1,9 @@
 //! The quick model's harness: the half that owns a socket.
 //!
 //! The other half is [`everyday_core::quick`], which decides everything about
-//! what a job *is* — its instruction, its schema, the prompt it builds and
+//! what an ask *is* — its instruction, its schema, the prompt it builds and
 //! the clamps on the answer — with no provider and no network in it. This
-//! file opens the connection and nothing else. It never looks at a job's
+//! file opens the connection and nothing else. It never looks at an ask's
 //! name to decide what to do; it is handed a
 //! [`Prompt`](everyday_core::quick::Prompt) and posts it.
 //!
@@ -16,16 +16,16 @@
 //!
 //! [`rig_agent::extractor::Extractor`] wants one Rust type per answer with
 //! `JsonSchema` derived, resolved at compile time. The schemas here are
-//! values built at runtime from [`JOBS`](everyday_core::quick::JOBS), for the
+//! values built at runtime from [`ASKS`](everyday_core::quick::ASKS), for the
 //! same reason [`crate::agent`] registers dynamic tools rather than typed
-//! ones: the catalogue is data, and a job added to it must not require a
+//! ones: the catalogue is data, and an ask added to it must not require a
 //! match arm in this file. So this does by hand what `Extractor` does
-//! internally — one tool called `submit` carrying the job's schema, tool
+//! internally — one tool called `submit` carrying the ask's schema, tool
 //! choice forced, and the arguments of the call *are* the answer.
 //!
-//! # What bounds a quick job
+//! # What bounds a quick ask
 //!
-//! Two turns and a short timeout, neither of them configurable. A quick job
+//! Two turns and a short timeout, neither of them configurable. A quick ask
 //! that needs a third turn has misunderstood the question, and one that takes
 //! eight seconds has already lost to the person typing the field in
 //! themselves — the interaction it serves is a suggestion appearing beside
@@ -55,33 +55,33 @@ use serde_json::{Value, json};
 
 use crate::error::{CommandError, CommandResult, codes};
 
-/// How long a quick job may take before it is abandoned.
+/// How long a quick ask may take before it is abandoned.
 ///
 /// Generous for a nano-tier model answering a small schema, and short enough
 /// that a suggestion which has not arrived by now has stopped being a
 /// suggestion. The clock covers the whole exchange, not one request.
 pub const TIMEOUT: Duration = Duration::from_secs(12);
 
-/// Turns a quick job may take.
+/// Turns a quick ask may take.
 ///
 /// Two: one to call `submit`, and one spare for a model that opens with a
 /// sentence before doing as it was asked. Not a setting — see the module
 /// docs.
 const MAX_TURNS: usize = 2;
 
-/// The name of the one tool a quick job is given.
+/// The name of the one tool a quick ask is given.
 const SUBMIT: &str = "submit";
 
-/// Run one job and return the raw answer, for the core to parse and clamp.
+/// Run one ask and return the raw answer, for the core to parse and clamp.
 ///
-/// The gate is [`Vault::quick_credentials`], which refuses a job the policy
+/// The gate is [`Vault::quick_credentials`], which refuses an ask the policy
 /// has not allowed — so a caller cannot reach the endpoint by forgetting to
 /// check, and there is exactly one place the check lives. The exchange
 /// itself is [`run_prompt`]; this is only what gets a client and a model out
 /// of the vault first.
 pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value> {
     let (settings, key) = vault
-        .quick_credentials(&prompt.job)
+        .quick_credentials(&prompt.ask)
         .map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
     let model = settings
         .quick_model
@@ -95,12 +95,12 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
 }
 
 /// One request, no tools but `submit`, tool choice forced — the exchange
-/// every one-shot structured job in this application makes, whichever model
+/// every one-shot structured ask in this application makes, whichever model
 /// it is aimed at. Split out of [`run`] so that `everyday_service::mailai`
 /// can post the same shape of request against a *different* model —
 /// [`everyday_core::mail`]'s model-assisted categorisation runs against the
-/// quick model exactly as a quick job would, but is not itself a
-/// [`everyday_core::quick::QuickJob`] and so is never gated by
+/// quick model exactly as a quick ask would, but is not itself a
+/// [`everyday_core::quick::QuickAsk`] and so is never gated by
 /// [`Vault::quick_credentials`]'s policy check; its own gate is
 /// [`everyday_core::mail::mail_ai_allowed`]. Saying the request-building rule
 /// once here, rather than copying it, is the whole point.

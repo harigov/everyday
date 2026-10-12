@@ -330,11 +330,11 @@ pub const DEFAULT_MODEL: &str = "gpt-5.1-mini";
 /// returns the schema it was asked for.
 pub const DEFAULT_QUICK_MODEL: &str = "gpt-5.1-nano";
 
-/// Cap on a quick job's reply.
+/// Cap on a quick ask's reply.
 ///
 /// These return a small object with a handful of fields, so the ceiling is
 /// there to stop a model that has decided to write an essay from being paid
-/// for it. A quick job that needs more than this is not a quick job.
+/// for it. A quick ask that needs more than this is not a quick ask.
 pub const QUICK_MAX_TOKENS: u32 = 1_024;
 
 impl LLMModelConfig {
@@ -346,7 +346,7 @@ impl LLMModelConfig {
 
     /// The quick model's default.
     ///
-    /// Temperature nought, and not a hidden field. Every quick job is an
+    /// Temperature nought, and not a hidden field. Every quick ask is an
     /// extraction into a schema somebody else declared, and there is no
     /// reading of "pull the author out of this paragraph" under which a
     /// person wants more variety in the answer. Leaving it visible is also
@@ -482,7 +482,7 @@ pub struct AgentSettings {
     /// pulling fields out of a search result, reading a tracker's number out
     /// of a sentence, proposing the fields a new shelf should have.
     ///
-    /// `None` means those jobs are simply not done. It deliberately does
+    /// `None` means those asks are simply not done. It deliberately does
     /// *not* fall back to [`assistant_model`](Self::assistant_model): these
     /// run in capture boxes, several of them per keystroke-ish interaction,
     /// and a blank field that silently billed at reasoning-model rates would
@@ -490,13 +490,17 @@ pub struct AgentSettings {
     /// model" has to be that the suggestion does not appear.
     #[serde(default)]
     pub quick_model: Option<LLMModelConfig>,
-    /// Which quick jobs are allowed to run, by [`QuickJob::name`].
+    /// Which quick asks are allowed to run, by [`QuickAsk::name`].
     ///
     /// Not a single switch, because "AI features: on" is not consent to
-    /// having the day's prose read. Empty means every job whose default is
+    /// having the day's prose read. Empty means every ask whose default is
     /// on — see [`QuickPolicy`].
-    #[serde(default)]
-    pub quick_jobs: QuickPolicy,
+    ///
+    /// Read under its old name too: this was `quickJobs` until "job" was
+    /// wanted for the assistant's background work, and a vault written
+    /// before the rename must not have every switch quietly reset.
+    #[serde(default, alias = "quickJobs")]
+    pub quick_asks: QuickPolicy,
     /// Settings written before the endpoint and the model were separate
     /// records.
     ///
@@ -599,7 +603,7 @@ impl Default for AgentSettings {
             provider_config: LLMProviderConfig::default(),
             assistant_model: LLMModelConfig::assistant(),
             quick_model: None,
-            quick_jobs: QuickPolicy::default(),
+            quick_asks: QuickPolicy::default(),
             legacy_model: None,
             instructions: String::new(),
             confirm_destructive: true,
@@ -716,7 +720,7 @@ impl AgentSettings {
         self.enabled && self.assistant_model.validate().is_ok() && self.connected()
     }
 
-    /// Whether the quick jobs could run right now.
+    /// Whether the quick asks could run right now.
     ///
     /// Independent of [`enabled`](Self::enabled), and that is the point. A
     /// person who wants shelf metadata parsed but does not want a resident
@@ -727,10 +731,10 @@ impl AgentSettings {
         self.quick_model.as_ref().is_some_and(|m| m.validate().is_ok()) && self.connected()
     }
 
-    /// Whether a named quick job may run: the model is configured, and the
+    /// Whether a named quick ask may run: the model is configured, and the
     /// policy allows this one.
-    pub fn quick_allows(&self, job: &str) -> bool {
-        self.quick_is_usable() && self.quick_jobs.allows(job)
+    pub fn quick_allows(&self, name: &str) -> bool {
+        self.quick_is_usable() && self.quick_asks.allows(name)
     }
 
     /// Whether the endpoint could be reached: valid, and keyed if it needs
@@ -743,7 +747,7 @@ impl AgentSettings {
     /// What to propose for the quick model when the pane first draws it.
     ///
     /// `Some` for a local endpoint, and that asymmetry is deliberate. The
-    /// quick jobs are the one place in this application where a small model
+    /// quick asks are the one place in this application where a small model
     /// on this machine is genuinely good enough, so the most private
     /// configuration is also the one that can have the feature switched on
     /// without anybody's writing leaving the machine. Anywhere else it costs
@@ -1580,13 +1584,35 @@ mod tests {
     }
 
     #[test]
+    fn quick_switches_saved_as_quick_jobs_survive_the_rename() {
+        // The policy was `quickJobs` before "job" went to background work.
+        // It is sealed in the vault, so a missed alias would turn a journal
+        // ask somebody opted into back off without a word.
+        let old = serde_json::json!({
+            "enabled": false,
+            "instructions": "",
+            "confirmDestructive": true,
+            "maxSteps": 24,
+            "remember": true,
+            "quickJobs": { "allowed": ["journal.title"], "denied": ["todo.parse"] }
+        });
+        let settings: AgentSettings = serde_json::from_value(old).unwrap();
+        assert!(settings.quick_asks.allows("journal.title"));
+        assert!(!settings.quick_asks.allows("todo.parse"));
+
+        let written = serde_json::to_value(&settings).unwrap();
+        assert!(written.get("quickJobs").is_none(), "the old name must not be written again");
+        assert_eq!(written["quickAsks"]["allowed"][0], "journal.title");
+    }
+
+    #[test]
     fn the_quick_model_has_its_own_switch_and_does_not_borrow_the_assistant_s() {
         let mut s = AgentSettings { has_key: true, ..Default::default() };
         assert!(!s.is_usable(), "the assistant is off");
         assert!(!s.quick_is_usable(), "no quick model is configured");
 
         s.quick_model = Some(LLMModelConfig::quick());
-        // Still off, and the quick jobs still work. Somebody who wants shelf
+        // Still off, and the quick asks still work. Somebody who wants shelf
         // metadata parsed but no resident assistant is the case this is for.
         assert!(!s.is_usable());
         assert!(s.quick_is_usable());

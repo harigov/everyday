@@ -110,10 +110,10 @@ import type {
   ProposalQuery,
   ProposedRecord,
   ProviderInfo,
+  QuickAskRow,
   QuickBackfillPick,
   QuickEventDraft,
   QuickFields,
-  QuickJobRow,
   QuickKindDraft,
   QuickLabels,
   QuickMapping,
@@ -463,6 +463,7 @@ export interface Commands {
   pollAutoLock: { args: Record<string, never>; result: boolean }
   previewMeetingTemplate: { args: { body: string }; result: string }
   profile: { args: Record<string, never>; result: Profile }
+  quickAsks: { args: Record<string, never>; result: QuickAskRow[] }
   quickEntryLabels: {
     args: { entryId: EntryId; journalId?: JournalId | null }
     result: QuickLabels
@@ -483,7 +484,6 @@ export interface Commands {
     result: QuickMapping
   }
   quickItemFields: { args: { itemId: ItemId }; result: QuickFields }
-  quickJobs: { args: Record<string, never>; result: QuickJobRow[] }
   quickKindDraft: { args: { name: string }; result: QuickKindDraft }
   quickNoteLabels: { args: { noteId: NoteId }; result: QuickLabels }
   quickNoteTasks: { args: { noteId: NoteId }; result: QuickTaskDraft[] }
@@ -594,7 +594,7 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
-  setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
+  setQuickAsk: { args: { name: string; on: boolean }; result: QuickAskRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
@@ -805,6 +805,7 @@ export const COMMAND_NAMES = {
   pollAutoLock: 'poll_auto_lock',
   previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
+  quickAsks: 'quick_asks',
   quickEntryLabels: 'quick_entry_labels',
   quickEntryReadings: 'quick_entry_readings',
   quickEntryTitle: 'quick_entry_title',
@@ -816,7 +817,6 @@ export const COMMAND_NAMES = {
   quickGoalWording: 'quick_goal_wording',
   quickImportColumns: 'quick_import_columns',
   quickItemFields: 'quick_item_fields',
-  quickJobs: 'quick_jobs',
   quickKindDraft: 'quick_kind_draft',
   quickNoteLabels: 'quick_note_labels',
   quickNoteTasks: 'quick_note_tasks',
@@ -889,7 +889,7 @@ export const COMMAND_NAMES = {
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   setMemoryOrigin: 'set_memory_origin',
-  setQuickJob: 'set_quick_job',
+  setQuickAsk: 'set_quick_ask',
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
   setTranscriberKey: 'set_transcriber_key',
@@ -1110,6 +1110,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'poll_auto_lock',
   'preview_meeting_template',
   'profile',
+  'quick_asks',
   'quick_entry_labels',
   'quick_entry_readings',
   'quick_entry_title',
@@ -1121,7 +1122,6 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'quick_goal_wording',
   'quick_import_columns',
   'quick_item_fields',
-  'quick_jobs',
   'quick_kind_draft',
   'quick_note_labels',
   'quick_note_tasks',
@@ -1193,7 +1193,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
-  'set_quick_job',
+  'set_quick_ask',
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
@@ -1368,7 +1368,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
-  'set_quick_job',
+  'set_quick_ask',
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
@@ -1501,7 +1501,7 @@ export const CHANGE_KINDS = {
   set_item_progress: 'item',
   set_item_status: 'item',
   set_memory_origin: 'memory',
-  set_quick_job: 'settings',
+  set_quick_ask: 'settings',
   set_thread_category: 'thread',
   set_thread_priority: 'thread',
   set_transcriber_key: 'settings',

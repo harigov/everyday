@@ -2675,9 +2675,9 @@ export interface LLMModelConfig {
 }
 
 /**
- * Which quick jobs may run, as the difference from the defaults.
+ * Which quick asks may run, as the difference from the defaults.
  *
- * Stored this way rather than as a list of what is on so that a job added in
+ * Stored this way rather than as a list of what is on so that an ask added in
  * a later build arrives at its own default, instead of arriving switched off
  * because a settings record written last year did not mention it.
  */
@@ -2717,14 +2717,14 @@ export interface AgentSettings {
   /**
    * The cheap, fast model behind the suggestions in the capture boxes.
    *
-   * `null` means those jobs are not done. It deliberately does *not* fall back
+   * `null` means those asks are not done. It deliberately does *not* fall back
    * to `assistantModel`: these run per keystroke-ish interaction, and a blank
    * field that silently billed at reasoning-model rates would be a bill nobody
    * could account for.
    */
   quickModel: LLMModelConfig | null
-  /** Which quick jobs are allowed, by job name. */
-  quickJobs: QuickPolicy
+  /** Which quick asks are allowed, by name. */
+  quickAsks: QuickPolicy
   /** The person's own standing instructions. */
   instructions: string
   /** Whether a destructive tool call stops and asks first. */
@@ -2845,11 +2845,11 @@ export interface OnScreen {
 // none of these types is ever written straight to the vault, and the core has
 // already clamped each one by the time it gets here.
 
-/** One switch in the settings pane's list of quick jobs. */
-export interface QuickJobRow {
+/** One switch in the settings pane's list of quick asks. */
+export interface QuickAskRow {
   name: string
   label: string
-  /** What this job sends. The sentence somebody reads to decide. */
+  /** What this ask sends. The sentence somebody reads to decide. */
   blurb: string
   /** Which app it belongs to, for grouping. */
   app: string

@@ -1,4 +1,4 @@
-//! The quick model: small jobs, one round trip, a schema on the way back.
+//! The quick model: small asks, one round trip, a schema on the way back.
 //!
 //! The assistant in [`agent`](crate::agent) is a reasoning engine with thirty
 //! tools, a system prompt carrying the profile and every memory, and a budget
@@ -31,11 +31,11 @@
 //! quick model put the author in the year field" is a test to write rather
 //! than a network trace to capture.
 //!
-//! # A job is a record
+//! # An ask is a record
 //!
-//! [`QuickJob`] is a name, a label, the sentence settings shows about what it
-//! sends, a system instruction and a JSON schema. [`JOBS`] is the catalogue.
-//! The service never interprets a job: it is handed a [`Prompt`] and posts
+//! [`QuickAsk`] is a name, a label, the sentence settings shows about what it
+//! sends, a system instruction and a JSON schema. [`ASKS`] is the catalogue.
+//! The service never interprets an ask: it is handed a [`Prompt`] and posts
 //! it. Adding the twentieth use of the quick model is a record in this file
 //! and a test beside it, not a new command, not a new setting and not a
 //! change to anything above.
@@ -57,10 +57,10 @@
 //! - **It is not the assistant's switch.**
 //!   [`quick_is_usable`](crate::agent::AgentSettings::quick_is_usable) does
 //!   not consult `enabled`.
-//! - **Every job is listable and refusable.** [`QuickPolicy`] is per-job,
+//! - **Every ask is listable and refusable.** [`QuickPolicy`] is per-ask,
 //!   because "AI features: on" is not consent to having the day's prose
-//!   read. The jobs that read a journal are
-//!   [`default_on`](QuickJob::default_on) `false`.
+//!   read. The asks that read a journal are
+//!   [`default_on`](QuickAsk::default_on) `false`.
 //!
 //! # What it is never allowed to do
 //!
@@ -77,7 +77,7 @@ use std::collections::BTreeSet;
 
 // ── The catalogue ────────────────────────────────────────────────────────
 
-/// Which app a job belongs to, so settings can group them the way the app
+/// Which app an ask belongs to, so settings can group them the way the app
 /// bar does rather than as one alphabetical list of twenty switches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,11 +111,11 @@ impl QuickApp {
 
 /// One thing the quick model is asked to do.
 ///
-/// `Copy`, along with every field, so that [`JOBS`] can be built as an array
+/// `Copy`, along with every field, so that [`ASKS`] can be built as an array
 /// of the named statics below rather than of references to them -- the
 /// public shape callers already iterate over, unchanged.
 #[derive(Clone, Copy)]
-pub struct QuickJob {
+pub struct QuickAsk {
     /// The stable id [`QuickPolicy`] stores. Never renamed: a rename is a
     /// switch somebody set silently reverting to its default.
     pub name: &'static str,
@@ -126,7 +126,7 @@ pub struct QuickJob {
     /// one of them names the text rather than the benefit.
     pub blurb: &'static str,
     pub app: QuickApp,
-    /// Whether this job runs when nobody has said either way.
+    /// Whether this ask runs when nobody has said either way.
     ///
     /// `false` for everything that reads a journal entry. The prose of a day
     /// is the most private text this vault holds, and a feature that starts
@@ -139,7 +139,7 @@ pub struct QuickJob {
     schema: fn() -> Value,
 }
 
-impl QuickJob {
+impl QuickAsk {
     /// JSON Schema for the answer, in the shape a structured-output request
     /// wants.
     pub fn schema(&self) -> Value {
@@ -147,9 +147,9 @@ impl QuickJob {
     }
 }
 
-impl std::fmt::Debug for QuickJob {
+impl std::fmt::Debug for QuickAsk {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("QuickJob").field("name", &self.name).finish()
+        f.debug_struct("QuickAsk").field("name", &self.name).finish()
     }
 }
 
@@ -159,20 +159,20 @@ impl std::fmt::Debug for QuickJob {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prompt {
-    /// Which [`QuickJob`] this came from, so the service can check the
+    /// Which [`QuickAsk`] this came from, so the service can check the
     /// policy without the caller passing it twice.
-    pub job: String,
+    pub ask: String,
     pub system: String,
     pub user: String,
     pub schema: Value,
 }
 
 /// Everything the model is told about what it is looking at, other than the
-/// job's own input.
+/// ask's own input.
 ///
 /// Only ever this much: today's date and the person's zone. There is no
-/// profile here, no memories and no other records — a job that needed those
-/// is a job for the assistant.
+/// profile here, no memories and no other records — an ask that needed those
+/// is an ask for the assistant.
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuickContext {
     pub today: jiff::civil::Date,
@@ -189,17 +189,17 @@ impl QuickContext {
     }
 }
 
-/// Find a job by name.
-pub fn job(name: &str) -> Option<&'static QuickJob> {
-    JOBS.iter().find(|j| j.name == name)
+/// Find an ask by name.
+pub fn find(name: &str) -> Option<&'static QuickAsk> {
+    ASKS.iter().find(|a| a.name == name)
 }
 
 // ── The policy ───────────────────────────────────────────────────────────
 
-/// Which quick jobs may run.
+/// Which quick asks may run.
 ///
 /// Stored as the two sets that differ from the defaults rather than as a
-/// list of what is on, so that a job added in a later build arrives at its
+/// list of what is on, so that an ask added in a later build arrives at its
 /// own default instead of arriving switched off because a settings record
 /// written last year did not mention it. That is the same reasoning that
 /// makes an unknown [`Source`](crate::websearch::Source) degrade to a plain
@@ -207,37 +207,37 @@ pub fn job(name: &str) -> Option<&'static QuickJob> {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuickPolicy {
-    /// Jobs switched on that default off.
+    /// Asks switched on that default off.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub allowed: BTreeSet<String>,
-    /// Jobs switched off that default on.
+    /// Asks switched off that default on.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub denied: BTreeSet<String>,
 }
 
 impl QuickPolicy {
-    /// Whether a named job may run.
+    /// Whether a named ask may run.
     ///
-    /// An unknown name is refused. A job this build does not have is either
+    /// An unknown name is refused. An ask this build does not have is either
     /// a typo or a record from a newer version, and running *something* on
     /// the strength of a name we cannot look up is worse than doing nothing.
     pub fn allows(&self, name: &str) -> bool {
-        let Some(job) = job(name) else { return false };
+        let Some(ask) = find(name) else { return false };
         if self.denied.contains(name) {
             return false;
         }
-        job.default_on || self.allowed.contains(name)
+        ask.default_on || self.allowed.contains(name)
     }
 
-    /// Turn one job on or off, keeping the record to the difference from the
+    /// Turn one ask on or off, keeping the record to the difference from the
     /// defaults.
     pub fn set(&mut self, name: &str, on: bool) {
-        let Some(job) = job(name) else { return };
+        let Some(ask) = find(name) else { return };
         self.allowed.remove(name);
         self.denied.remove(name);
-        if on && !job.default_on {
+        if on && !ask.default_on {
             self.allowed.insert(name.to_string());
-        } else if !on && job.default_on {
+        } else if !on && ask.default_on {
             self.denied.insert(name.to_string());
         }
     }
@@ -246,17 +246,17 @@ impl QuickPolicy {
 // ── Building a prompt ────────────────────────────────────────────────────
 
 impl Prompt {
-    fn new(job: &'static QuickJob, ctx: &QuickContext, user: impl Into<String>) -> Self {
+    fn new(ask: &'static QuickAsk, ctx: &QuickContext, user: impl Into<String>) -> Self {
         Self {
-            job: job.name.to_string(),
-            system: format!("{}\n\n{}", job.system, HOUSE_RULES),
+            ask: ask.name.to_string(),
+            system: format!("{}\n\n{}", ask.system, HOUSE_RULES),
             user: format!("{}\n\n{}", ctx.preamble(), user.into()),
-            schema: job.schema(),
+            schema: ask.schema(),
         }
     }
 }
 
-/// Appended to every job's own instruction.
+/// Appended to every ask's own instruction.
 ///
 /// The second sentence is the load-bearing one. A model asked to extract a
 /// year from a paragraph that does not contain one will supply a plausible
@@ -275,12 +275,12 @@ anything the person already typed.";
 ///
 /// A cap rather than a nicety: these prompts are built from things a person
 /// wrote, and a journal entry or a note has no length limit at all. Sending
-/// the first few thousand characters answers every job in this file — the
+/// the first few thousand characters answers every ask in this file — the
 /// title, the tags, the numbers — and sending a novel would cost real money
-/// on a job advertised as free.
+/// on an ask advertised as free.
 pub const MAX_INPUT_CHARS: usize = 6_000;
 
-/// Trim a document to something a quick job can be asked about.
+/// Trim a document to something the quick model can be asked about.
 pub fn excerpt(text: &str) -> String {
     let text = text.trim();
     if text.chars().count() <= MAX_INPUT_CHARS {
@@ -326,22 +326,22 @@ pub struct Suggestion<T> {
     pub value: T,
 }
 
-/// Parse a model's reply into `T`, with the job named in any error.
+/// Parse a model's reply into `T`, with the ask named in any error.
 ///
-/// A quick job that comes back malformed is not an error a person should
+/// A quick ask that comes back malformed is not an error a person should
 /// see: the suggestion simply does not appear. The message is for the log.
-pub fn parse<T: serde::de::DeserializeOwned>(job: &str, value: Value) -> Result<T> {
+pub fn parse<T: serde::de::DeserializeOwned>(ask: &str, value: Value) -> Result<T> {
     serde_json::from_value(value)
-        .map_err(|e| Error::Invalid(format!("the quick model's answer to {job} did not fit: {e}")))
+        .map_err(|e| Error::Invalid(format!("the quick model's answer to {ask} did not fit: {e}")))
 }
 
 // ── Answer shapes ────────────────────────────────────────────────────────
 //
-// Deliberately few. Twenty-one jobs share eleven shapes, because a shape is
+// Deliberately few. Twenty-one asks share eleven shapes, because a shape is
 // a parser, a validator and a component in the interface, and twenty-one of
 // each would be twenty-one places for the same clamp to be forgotten.
 //
-// None of them carries an identifier the model chose. Where a job has to
+// None of them carries an identifier the model chose. Where an ask has to
 // name an existing record it is given a numbered list and answers with the
 // number, and the mapping back to an id happens here — the same rule
 // `agent::tools` follows for the same reason: "the model picked the wrong
@@ -1023,18 +1023,18 @@ fn is_clock(text: &str) -> bool {
     matches!((h.parse::<u8>(), m.parse::<u8>()), (Ok(h), Ok(m)) if h < 24 && m < 60)
 }
 
-// ── The jobs ─────────────────────────────────────────────────────────────
+// ── The asks ─────────────────────────────────────────────────────────────
 //
-// One named static per job rather than one array literal, so a job's name is
+// One named static per ask rather than one array literal, so an ask's name is
 // typed once -- here -- and every builder below refers to the static rather
-// than looking its own name up in [`JOBS`] on every call. [`JOBS`] itself,
+// than looking its own name up in [`ASKS`] on every call. [`ASKS`] itself,
 // at the foot of this section, is the catalogue the settings pane and
-// [`job`] read; the order it lists them in is the order this section
+// [`find`] read; the order it lists them in is the order this section
 // declares them in.
 
 // -- library ----------------------------------------------------------
 
-pub static LIBRARY_FIELDS: QuickJob = QuickJob {
+pub static LIBRARY_FIELDS: QuickAsk = QuickAsk {
     name: "library.fields",
     label: "Fill in a shelf's fields",
     blurb: "Sends the title you looked up and the search results it found.",
@@ -1047,7 +1047,7 @@ pub static LIBRARY_FIELDS: QuickJob = QuickJob {
     schema: fields_schema,
 };
 
-pub static LIBRARY_PICK: QuickJob = QuickJob {
+pub static LIBRARY_PICK: QuickAsk = QuickAsk {
     name: "library.pick",
     label: "Choose the right search result",
     blurb: "Sends what you typed and the titles of the results found.",
@@ -1061,7 +1061,7 @@ pub static LIBRARY_PICK: QuickJob = QuickJob {
     schema: pick_schema,
 };
 
-pub static LIBRARY_KIND: QuickJob = QuickJob {
+pub static LIBRARY_KIND: QuickAsk = QuickAsk {
     name: "library.kind",
     label: "Draft a new shelf",
     blurb: "Sends the shelf name you typed, and nothing else.",
@@ -1077,7 +1077,7 @@ pub static LIBRARY_KIND: QuickJob = QuickJob {
     schema: kind_schema,
 };
 
-pub static LIBRARY_IMPORT_MAP: QuickJob = QuickJob {
+pub static LIBRARY_IMPORT_MAP: QuickAsk = QuickAsk {
     name: "library.import_map",
     label: "Map an imported list's columns",
     blurb: "Sends the column names of the file you are importing, and one example row.",
@@ -1092,7 +1092,7 @@ pub static LIBRARY_IMPORT_MAP: QuickJob = QuickJob {
 
 // -- todo -------------------------------------------------------------
 
-pub static TODO_PURPOSE: QuickJob = QuickJob {
+pub static TODO_PURPOSE: QuickAsk = QuickAsk {
     name: "todo.purpose",
     label: "Suggest a role or goal",
     blurb: "Sends the task's title and the names of your roles and goals.",
@@ -1105,7 +1105,7 @@ pub static TODO_PURPOSE: QuickJob = QuickJob {
     schema: labels_schema,
 };
 
-pub static TODO_PARSE: QuickJob = QuickJob {
+pub static TODO_PARSE: QuickAsk = QuickAsk {
     name: "todo.parse",
     label: "Read a task written as a sentence",
     blurb: "Sends the line you typed into the capture box.",
@@ -1118,7 +1118,7 @@ pub static TODO_PARSE: QuickJob = QuickJob {
     schema: task_schema,
 };
 
-pub static TODO_SUBTASKS: QuickJob = QuickJob {
+pub static TODO_SUBTASKS: QuickAsk = QuickAsk {
     name: "todo.subtasks",
     label: "Break a task into steps",
     blurb: "Sends the task's title and description.",
@@ -1131,7 +1131,7 @@ pub static TODO_SUBTASKS: QuickJob = QuickJob {
     schema: tasks_schema,
 };
 
-pub static TODO_ESTIMATE: QuickJob = QuickJob {
+pub static TODO_ESTIMATE: QuickAsk = QuickAsk {
     name: "todo.estimate",
     label: "Suggest how long a task will take",
     blurb: "Sends the task's title and how long similar past tasks took.",
@@ -1146,7 +1146,7 @@ pub static TODO_ESTIMATE: QuickJob = QuickJob {
 
 // -- calendar ---------------------------------------------------------
 
-pub static CALENDAR_PARSE: QuickJob = QuickJob {
+pub static CALENDAR_PARSE: QuickAsk = QuickAsk {
     name: "calendar.parse",
     label: "Read an appointment written as a sentence",
     blurb: "Sends the line you typed into the capture box.",
@@ -1159,7 +1159,7 @@ pub static CALENDAR_PARSE: QuickJob = QuickJob {
     schema: event_schema,
 };
 
-pub static CALENDAR_TITLE: QuickJob = QuickJob {
+pub static CALENDAR_TITLE: QuickAsk = QuickAsk {
     name: "calendar.title",
     label: "Tidy a subscribed event's title",
     blurb: "Sends the titles of events from calendars you subscribe to.",
@@ -1175,7 +1175,7 @@ pub static CALENDAR_TITLE: QuickJob = QuickJob {
 
 // -- journal ----------------------------------------------------------
 
-pub static JOURNAL_READINGS: QuickJob = QuickJob {
+pub static JOURNAL_READINGS: QuickAsk = QuickAsk {
     name: "journal.readings",
     label: "Find numbers worth tracking in an entry",
     blurb: "Sends the text of the journal entry you just wrote.",
@@ -1190,7 +1190,7 @@ pub static JOURNAL_READINGS: QuickJob = QuickJob {
     schema: readings_schema,
 };
 
-pub static JOURNAL_TITLE: QuickJob = QuickJob {
+pub static JOURNAL_TITLE: QuickAsk = QuickAsk {
     name: "journal.title",
     label: "Suggest a title for an entry",
     blurb: "Sends the text of the journal entry you just wrote.",
@@ -1202,7 +1202,7 @@ pub static JOURNAL_TITLE: QuickJob = QuickJob {
     schema: text_schema,
 };
 
-pub static JOURNAL_LABELS: QuickJob = QuickJob {
+pub static JOURNAL_LABELS: QuickAsk = QuickAsk {
     name: "journal.labels",
     label: "Suggest tags for an entry",
     blurb: "Sends the text of the journal entry you just wrote.",
@@ -1216,7 +1216,7 @@ pub static JOURNAL_LABELS: QuickJob = QuickJob {
 
 // -- notes ------------------------------------------------------------
 
-pub static NOTES_TITLE: QuickJob = QuickJob {
+pub static NOTES_TITLE: QuickAsk = QuickAsk {
     name: "notes.title",
     label: "Suggest a title for a note",
     blurb: "Sends the text of the note.",
@@ -1227,7 +1227,7 @@ pub static NOTES_TITLE: QuickJob = QuickJob {
     schema: text_schema,
 };
 
-pub static NOTES_TASKS: QuickJob = QuickJob {
+pub static NOTES_TASKS: QuickAsk = QuickAsk {
     name: "notes.tasks",
     label: "Find the tasks in a note",
     blurb: "Sends the text of the note.",
@@ -1240,7 +1240,7 @@ pub static NOTES_TASKS: QuickJob = QuickJob {
     schema: tasks_schema,
 };
 
-pub static NOTES_LABELS: QuickJob = QuickJob {
+pub static NOTES_LABELS: QuickAsk = QuickAsk {
     name: "notes.labels",
     label: "Suggest tags for a note",
     blurb: "Sends the text of the note.",
@@ -1254,7 +1254,7 @@ pub static NOTES_LABELS: QuickJob = QuickJob {
 
 // -- trackers ---------------------------------------------------------
 
-pub static TRACKER_PARSE: QuickJob = QuickJob {
+pub static TRACKER_PARSE: QuickAsk = QuickAsk {
     name: "tracker.parse",
     label: "Read a reading written as a sentence",
     blurb: "Sends the line you typed, and the names of your trackers.",
@@ -1268,7 +1268,7 @@ pub static TRACKER_PARSE: QuickJob = QuickJob {
     schema: reading_schema,
 };
 
-pub static TRACKER_DRAFT: QuickJob = QuickJob {
+pub static TRACKER_DRAFT: QuickAsk = QuickAsk {
     name: "tracker.draft",
     label: "Propose a new tracker's settings",
     blurb: "Sends the tracker name and the line you first recorded against it.",
@@ -1285,7 +1285,7 @@ pub static TRACKER_DRAFT: QuickJob = QuickJob {
 
 // -- roles and goals --------------------------------------------------
 
-pub static PURPOSE_GOAL: QuickJob = QuickJob {
+pub static PURPOSE_GOAL: QuickAsk = QuickAsk {
     name: "purpose.goal",
     label: "Sharpen a goal's wording",
     blurb: "Sends the goal you typed and the role it sits under.",
@@ -1298,7 +1298,7 @@ pub static PURPOSE_GOAL: QuickJob = QuickJob {
     schema: text_schema,
 };
 
-pub static PURPOSE_BACKFILL: QuickJob = QuickJob {
+pub static PURPOSE_BACKFILL: QuickAsk = QuickAsk {
     name: "purpose.backfill",
     label: "Match existing records to a new goal",
     blurb: "Sends the goal's name and the titles of records that have no purpose yet.",
@@ -1312,7 +1312,7 @@ pub static PURPOSE_BACKFILL: QuickJob = QuickJob {
 
 // -- overview ---------------------------------------------------------
 
-pub static OVERVIEW_WEEK: QuickJob = QuickJob {
+pub static OVERVIEW_WEEK: QuickAsk = QuickAsk {
     name: "overview.week",
     label: "Write the week in a sentence or two",
     blurb: "Sends this week's totals: hours by role, tasks done, entries written.",
@@ -1330,7 +1330,7 @@ pub static OVERVIEW_WEEK: QuickJob = QuickJob {
 
 // -- data -------------------------------------------------------------
 
-pub static DATA_IMPORT_MAP: QuickJob = QuickJob {
+pub static DATA_IMPORT_MAP: QuickAsk = QuickAsk {
     name: "data.import_map",
     label: "Map an imported folder's front matter",
     blurb: "Sends the front-matter keys found in the files you are importing.",
@@ -1342,11 +1342,11 @@ pub static DATA_IMPORT_MAP: QuickJob = QuickJob {
     schema: mapping_schema,
 };
 
-/// Every job the quick model has, in the order the settings pane lists them.
+/// Every ask the quick model has, in the order the settings pane lists them.
 ///
 /// The blurbs are written for somebody deciding whether to allow one, which
 /// is why each names *what leaves the machine* rather than what is gained.
-pub static JOBS: &[QuickJob] = &[
+pub static ASKS: &[QuickAsk] = &[
     LIBRARY_FIELDS,
     LIBRARY_PICK,
     LIBRARY_KIND,
@@ -1371,14 +1371,14 @@ pub static JOBS: &[QuickJob] = &[
     DATA_IMPORT_MAP,
 ];
 
-// ── Building each job's prompt ───────────────────────────────────────────
+// ── Building each ask's prompt ───────────────────────────────────────────
 //
-// One function per job, taking domain types rather than a `Value`. That is
+// One function per ask, taking domain types rather than a `Value`. That is
 // what keeps the promise in the module docs: the service is handed a
 // `Prompt` and posts it, and every decision about what the model is told
 // lives here, where it is tested.
 //
-// Where a job must name an existing record, the record is offered as a
+// Where an ask must name an existing record, the record is offered as a
 // *numbered list* and the answer is a number. Nothing in this file ever puts
 // an id in front of a model, which is the same rule `agent::tools` follows
 // and for the stronger reason: these answers are applied to a capture box
@@ -1474,7 +1474,7 @@ pub fn library_import_map(
     Prompt::new(&LIBRARY_IMPORT_MAP, ctx, user)
 }
 
-/// A role-and-goal list, numbered, as every purpose job offers it.
+/// A role-and-goal list, numbered, as every purpose ask offers it.
 ///
 /// Roles come after goals so that the specific answer is the near one: a
 /// model given "Parent" and "Viya rides without stabilisers" should reach for
@@ -1705,27 +1705,27 @@ mod tests {
 
     #[test]
     fn every_job_name_is_unique_and_the_catalogue_is_well_formed() {
-        // Whether a builder names a real job is no longer this test's job:
+        // Whether a builder names a real ask is no longer this test's job:
         // each one now closes over its own static rather than looking a
-        // name up in `JOBS`, so a typo is a compile error, not a panic this
+        // name up in `ASKS`, so a typo is a compile error, not a panic this
         // test has to go looking for.
         let mut seen = BTreeSet::new();
-        for job in JOBS {
-            assert!(seen.insert(job.name), "{} is in JOBS twice", job.name);
-            assert!(!job.system.trim().is_empty(), "{} has no instruction", job.name);
-            assert!(!job.blurb.trim().is_empty(), "{} has no blurb", job.name);
+        for ask in ASKS {
+            assert!(seen.insert(ask.name), "{} is in ASKS twice", ask.name);
+            assert!(!ask.system.trim().is_empty(), "{} has no instruction", ask.name);
+            assert!(!ask.blurb.trim().is_empty(), "{} has no blurb", ask.name);
             // The blurb is what somebody reads to decide. One that does not
             // say what is sent is a switch nobody can make a decision about.
-            assert!(job.blurb.starts_with("Sends "), "{}'s blurb must say what it sends", job.name);
-            let schema = job.schema();
-            assert_eq!(schema["type"], "object", "{}'s schema must have an object root", job.name);
+            assert!(ask.blurb.starts_with("Sends "), "{}'s blurb must say what it sends", ask.name);
+            let schema = ask.schema();
+            assert_eq!(schema["type"], "object", "{}'s schema must have an object root", ask.name);
         }
     }
 
     #[test]
     fn everything_that_reads_a_journal_entry_is_off_by_default() {
-        for job in JOBS.iter().filter(|j| j.app == QuickApp::Journal) {
-            assert!(!job.default_on, "{} reads a journal entry and must default off", job.name);
+        for ask in ASKS.iter().filter(|a| a.app == QuickApp::Journal) {
+            assert!(!ask.default_on, "{} reads a journal entry and must default off", ask.name);
         }
     }
 
@@ -1735,7 +1735,7 @@ mod tests {
         assert!(policy.allows("library.fields"));
         assert!(!policy.allows("journal.title"));
 
-        // Setting a job to what it already defaults to stores nothing, so a
+        // Setting an ask to what it already defaults to stores nothing, so a
         // person who toggles a switch twice does not leave a record behind
         // that would pin it against a later change of default.
         policy.set("library.fields", true);
@@ -2034,7 +2034,7 @@ mod tests {
         assert!(prompt.system.contains("Guessing"), "the house rules must be appended");
         assert!(prompt.user.contains("2026-09-10"), "a relative date needs today");
         assert!(prompt.user.contains("Europe/London"));
-        assert_eq!(prompt.job, "todo.parse");
+        assert_eq!(prompt.ask, "todo.parse");
     }
 
     #[test]

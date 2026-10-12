@@ -160,7 +160,7 @@
           "baseUrl": null,
           "provider": "openAi"
         },
-        "quickJobs": {},
+        "quickAsks": {},
         "quickModel": null,
         "remember": true,
         "web": false

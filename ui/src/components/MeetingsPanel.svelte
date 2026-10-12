@@ -499,14 +499,14 @@
         <div class="pick-list">
           <span class="eyebrow">Calendars</span>
           {#each calendar.calendars as c (c.id)}
-            <label class="job">
+            <label class="switch">
               <input
                 type="checkbox"
                 checked={draft.calendars.calendarIds.includes(c.id)}
                 onchange={() => toggleCalendar(c.id)}
               />
-              <span class="job-text">
-                <span class="job-label">{c.name}</span>
+              <span class="switch-text">
+                <span class="switch-label">{c.name}</span>
               </span>
             </label>
           {/each}
@@ -516,14 +516,14 @@
         <div class="pick-list">
           <span class="eyebrow">Roles</span>
           {#each purpose.roles as r (r.id)}
-            <label class="job">
+            <label class="switch">
               <input
                 type="checkbox"
                 checked={draft.calendars.roleIds.includes(r.id)}
                 onchange={() => toggleRole(r.id)}
               />
-              <span class="job-text">
-                <span class="job-label">{r.icon} {r.name}</span>
+              <span class="switch-text">
+                <span class="switch-label">{r.icon} {r.name}</span>
               </span>
             </label>
           {/each}
@@ -949,17 +949,17 @@
      the shared `.eyebrow` missing its `font-weight`, so a sub-heading inside
      a section read lighter than every other section heading on the page
      instead of just smaller. They use `.eyebrow` directly now. */
-  .job {
+  .switch {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
     cursor: pointer;
   }
-  .job-text {
+  .switch-text {
     display: flex;
     flex-direction: column;
   }
-  .job-label {
+  .switch-label {
     font-size: var(--text-sm);
   }
 

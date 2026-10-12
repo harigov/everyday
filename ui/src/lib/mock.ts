@@ -11,7 +11,7 @@
 
 import type {
   AddedItem,
-  QuickJobRow,
+  QuickAskRow,
   Account,
   AccountView,
   AgentMailAccess,
@@ -3019,16 +3019,16 @@ let nextId = 100
 // a failure -- so the panel can be built and reviewed without a provider.
 
 /**
- * The quick job catalogue, mirrored from `everyday_core::quick::JOBS`.
+ * The quick ask catalogue, mirrored from `everyday_core::quick::ASKS`.
  *
  * A copy, and the only one in this file that is a copy of a Rust table rather
  * than of a record shape -- which is a cost worth naming. It is here because
  * the settings pane's list of switches is a thing to lay out and read, and
  * laying it out against an empty array would be laying out nothing. The
  * *behaviour* it drives is all in Rust, so a drift here costs a mock pane
- * that lists the wrong jobs and nothing else.
+ * that lists the wrong asks and nothing else.
  */
-const MOCK_QUICK_JOBS: QuickJobRow[] = (
+const MOCK_QUICK_ASKS: QuickAskRow[] = (
   [
     [
       'library.fields',
@@ -3180,10 +3180,10 @@ const MOCK_QUICK_JOBS: QuickJobRow[] = (
 }))
 
 /**
- * The quick-job policy, as the difference from the defaults.
+ * The quick-ask policy, as the difference from the defaults.
  *
  * Two sets rather than one, mirroring `QuickPolicy` in the core -- a single
- * "off" set cannot express a job switched *on* that defaults off, which is
+ * "off" set cannot express an ask switched *on* that defaults off, which is
  * every one of the journal's.
  */
 const mockQuickOn = new Set<string>()
@@ -3194,11 +3194,11 @@ let agentSettings: AgentSettings = {
   name: '',
   providerConfig: { provider: 'openAi', baseUrl: null },
   assistantModel: { model: 'gpt-5.1-mini', temperature: null, maxTokens: null },
-  // The mock runs the quick jobs too -- see `quickJobs` below, which answers
+  // The mock runs the quick asks too -- see `quickAsks` below, which answers
   // with the catalogue and canned suggestions, so the chips can be built and
   // reviewed with no Rust, no vault and no provider.
   quickModel: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 },
-  quickJobs: {},
+  quickAsks: {},
   instructions: '',
   confirmDestructive: true,
   maxSteps: 24,
@@ -5666,19 +5666,19 @@ export const mockInvoke = async <T>(
     // components have to draw, and the empty-answer case is reachable by
     // asking about anything whose text contains "nothing".
 
-    case 'quick_jobs':
-    case 'set_quick_job': {
+    case 'quick_asks':
+    case 'set_quick_ask': {
       requireUnlocked()
-      if (cmd === 'set_quick_job') {
+      if (cmd === 'set_quick_ask') {
         const { name, on } = args as { name: string; on: boolean }
         mockQuickOn.delete(name)
         mockQuickOff.delete(name)
-        const job = MOCK_QUICK_JOBS.find((j) => j.name === name)
-        if (job && on !== job.defaultOn) (on ? mockQuickOn : mockQuickOff).add(name)
+        const ask = MOCK_QUICK_ASKS.find((a) => a.name === name)
+        if (ask && on !== ask.defaultOn) (on ? mockQuickOn : mockQuickOff).add(name)
       }
-      return MOCK_QUICK_JOBS.map((job) => ({
-        ...job,
-        on: mockQuickOn.has(job.name) || (job.defaultOn && !mockQuickOff.has(job.name)),
+      return MOCK_QUICK_ASKS.map((ask) => ({
+        ...ask,
+        on: mockQuickOn.has(ask.name) || (ask.defaultOn && !mockQuickOff.has(ask.name)),
       })) as T
     }
 

@@ -168,7 +168,7 @@ pub use proposal::{
 pub use purpose::{
     Goal, GoalActivity, GoalStatus, Purpose, PurposeMinutes, Role, RoleEventMinutes,
 };
-pub use quick::{Prompt as QuickPrompt, QuickApp, QuickContext, QuickJob, QuickPolicy};
+pub use quick::{Prompt as QuickPrompt, QuickApp, QuickAsk, QuickContext, QuickPolicy};
 pub use record::{RecordDescriptor, RecordKind};
 pub use richtext::RichDoc;
 pub use routine::{

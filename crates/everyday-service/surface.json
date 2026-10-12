@@ -3225,6 +3225,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_asks",
+      "orScope": null,
+      "returns": "QuickAskRow[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "entryId",
@@ -3443,17 +3454,6 @@
       "orScope": null,
       "returns": "QuickFields",
       "scope": "quick",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [],
-      "changes": null,
-      "effect": "read",
-      "name": "quick_jobs",
-      "orScope": null,
-      "returns": "QuickJobRow[]",
-      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -5010,9 +5010,9 @@
         "op": "updated"
       },
       "effect": "write",
-      "name": "set_quick_job",
+      "name": "set_quick_ask",
       "orScope": null,
-      "returns": "QuickJobRow[]",
+      "returns": "QuickAskRow[]",
       "scope": "agent",
       "sensitive": false,
       "streams": false

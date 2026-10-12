@@ -1,5 +1,9 @@
 # A second model, for the small jobs
 
+> **Renamed since.** What this plan calls a job is a `QuickAsk` now, and
+> the catalogue is `ASKS` -- "job" went to the assistant's background work;
+> see [`jobs.md`](jobs.md). The stored policy is read under either name.
+
 > **Delivered**, except where noted at the foot. Read this for the reasoning;
 > read the commits for what was done. Seven things went differently from the
 > plan below, each for a reason worth keeping:

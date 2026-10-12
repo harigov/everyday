@@ -893,7 +893,7 @@
       ]
     },
     {
-      "command": "set_quick_job",
+      "command": "set_quick_ask",
       "events": [
         {
           "idPresent": false,

@@ -130,7 +130,7 @@
     // The other half of that same badge -- see `proposals.svelte.ts` and the
     // app bar, which adds the two together.
     void proposals.refreshCount()
-    // Which quick jobs are on. Every capture box in the application reads
+    // Which quick asks are on. Every capture box in the application reads
     // this to decide whether to offer anything, so loading it on first use
     // would mean the first shelf, the first task and the first note of every
     // session silently got no suggestion.
