@@ -83,6 +83,9 @@ typed_id!(NoteId, "note");
 // The assistant's standing work, and its log. See `crate::routine`.
 typed_id!(RoutineId, "routine");
 typed_id!(RoutineRunId, "run");
+// Work the assistant does in the background, started from a conversation.
+// See `crate::job`.
+typed_id!(JobId, "job");
 // Work the assistant prepared and did not do. See `crate::proposal`.
 typed_id!(ProposalId, "proposal");
 

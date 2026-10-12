@@ -146,6 +146,8 @@ pub struct Service {
     /// The chat links' runner and the last status each reported. See
     /// [`crate::chat`].
     pub(crate) chat: crate::chat::ChatHub,
+    /// The background-job worker's session state. See [`crate::jobs`].
+    pub(crate) jobs: crate::jobs::JobRuntime,
 }
 
 impl Default for Service {
@@ -182,6 +184,7 @@ impl Service {
             clock: RwLock::new(clock),
             meetings: MeetingRuntime::default(),
             chat: crate::chat::ChatHub::default(),
+            jobs: crate::jobs::JobRuntime::default(),
             weather_cache: WeatherCache::new(),
         }
     }
@@ -536,6 +539,10 @@ impl Service {
         // moment mail's own account tasks pick back up. See
         // `everyday_service::meeting::spool::recover`.
         crate::meeting::spool::recover(self, &vault);
+        // Background jobs queued while the vault was locked, or left
+        // half-done by a process that stopped: the worker looks now rather
+        // than at its next fallback tick.
+        self.wake_jobs();
         self.events().lock_state(false);
     }
 
@@ -1026,6 +1033,9 @@ impl Service {
             via: None,
             // Not a scheduled run.
             reach: crate::agent::Reach::default(),
+            job: None,
+            follow_up: None,
+            max_steps: None,
         })
         .await?;
         self.announce_turn(&turned, args.conversation_id, ctx.caller.origin().map(str::to_string));

@@ -7,6 +7,7 @@
 mod support;
 
 mod calendar;
+mod jobs;
 mod journals;
 mod library;
 mod memory;

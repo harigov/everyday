@@ -204,7 +204,7 @@
       "tags": [],
       "title": "",
       "tz": "UTC",
-      "updatedAt": "2026-10-11T22:48:39.542684553Z"
+      "updatedAt": "2026-10-13T00:29:56.09745115Z"
     }
   },
   {
@@ -571,6 +571,66 @@
       "tags": [],
       "title": "Fixture item f4240",
       "updatedAt": "2027-01-15T08:00:14Z"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-000000000026",
+    "kind": "job",
+    "record": {
+      "answered": false,
+      "askedIn": "00000000-0000-0000-0000-000000000016",
+      "attempts": 1,
+      "createdAt": "2023-11-14T22:14:05Z",
+      "finishedAt": "2023-11-14T22:14:07Z",
+      "id": "00000000-0000-0000-0000-000000000026",
+      "kind": {
+        "brief": "Fixture brief 1",
+        "question": "Fixture question 1",
+        "type": "research"
+      },
+      "outputs": [
+        {
+          "noteId": "00000000-0000-0000-0000-000000000007",
+          "type": "note"
+        }
+      ],
+      "progress": "Fixture progress 1",
+      "reason": "",
+      "seen": false,
+      "startedAt": "2023-11-14T22:14:06Z",
+      "status": "done",
+      "steps": 3,
+      "summary": "Fixture job summary 1"
+    }
+  },
+  {
+    "id": "00000000-0000-0000-0000-0000000f4265",
+    "kind": "job",
+    "record": {
+      "answered": false,
+      "askedIn": "00000000-0000-0000-0000-0000000f4255",
+      "attempts": 1,
+      "createdAt": "2027-01-15T08:00:45Z",
+      "finishedAt": "2027-01-15T08:00:47Z",
+      "id": "00000000-0000-0000-0000-0000000f4265",
+      "kind": {
+        "brief": "Fixture brief f4240",
+        "question": "Fixture question f4240",
+        "type": "research"
+      },
+      "outputs": [
+        {
+          "noteId": "00000000-0000-0000-0000-0000000f4246",
+          "type": "note"
+        }
+      ],
+      "progress": "Fixture progress f4240",
+      "reason": "",
+      "seen": false,
+      "startedAt": "2027-01-15T08:00:46Z",
+      "status": "done",
+      "steps": 3,
+      "summary": "Fixture job summary f4240"
     }
   },
   {

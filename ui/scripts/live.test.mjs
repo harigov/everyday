@@ -46,6 +46,7 @@ const KINDS = [
   'note',
   'routine',
   'routineRun',
+  'job',
   'proposal',
   'project',
   'task',
@@ -114,6 +115,17 @@ assert.deepEqual(targetsFor(['transcript']), [])
 // the list" -- so there is no applier, and the whole store is what reloads.
 assert.deepEqual(targetsFor(['newsSource', 'story']), ['feed'])
 assert.deepEqual(targetsFor(['story'], true), ['feed'], 'the Overview does not redraw for news')
+
+// A job moving -- queued, running, a new progress line, done -- reloads the
+// jobs store alone, and does not drag the routines with it: the two are
+// listed together in Settings but are separate records with separate loads.
+assert.deepEqual(targetsFor(['job']), ['jobs'])
+assert.deepEqual(targetsFor(['job', 'job']), ['jobs'], 'a burst of progress is one reload')
+assert.deepEqual(
+  new Set(targetsFor(['job', 'routineRun'])),
+  new Set(['jobs', 'assistant']),
+  'each store reloads its own list',
+)
 
 // A recording and a voiceprint share the one `meetings` target -- a call
 // finishing (or failing) in the background, and a voice learned or forgotten,

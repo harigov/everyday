@@ -132,6 +132,9 @@ pub fn dump(vault: &Vault) -> String {
     for run in vault.runs(&RunQuery::default()).unwrap() {
         rows.push(("routine_run", run.id.to_string(), value(&run)));
     }
+    for job in vault.jobs(&everyday_core::JobQuery::default()).unwrap() {
+        rows.push(("job", job.id.to_string(), value(&job)));
+    }
 
     for pr in vault.proposals(&ProposalQuery::default()).unwrap() {
         rows.push(("proposal", pr.id.to_string(), value(&pr)));

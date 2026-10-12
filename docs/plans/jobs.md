@@ -1,5 +1,64 @@
 # Jobs: work the assistant does in the background
 
+> **Delivered.** All four phases are built and tested on `wealthy-pelican`.
+> Read this for the reasoning and the commits for what was done. What went
+> differently from the plan below, each for a reason worth keeping:
+>
+> - **A job's destructive or outward call is declined, never parked,** and
+>   declined even when `confirm_destructive` is off. Parking needs a run to
+>   file the proposal under, and a job spends half an hour on strangers'
+>   pages with nobody to catch an injected delete; it has no reason to
+>   delete anything.
+> - **A job trusts only the addresses the person typed** in the conversation
+>   that asked -- exactly, never whole sites. The brief is written by the
+>   asking model, which may have just read hostile mail, and nobody confirms
+>   a job's start, so an address in the brief is opened only if a search or
+>   a page also returned it.
+> - **`start_research` is offered only with the web on, to a turn somebody
+>   is in** -- not a routine run, a dream, a job, or a job's follow-up (which
+>   is handed web-derived text and could otherwise chain jobs). It refuses
+>   unattended in the core too, and a second call with the same question in
+>   the same thread returns the job already running.
+> - **Job turns do not count toward `turn_in_flight`.** Its only reader is
+>   the dream's idle guard, and research is not somebody typing. They are
+>   still in `Pending`, so stopping and cancelling reach them.
+> - **The follow-up's input is the system line.** "Research finished: «…».
+>   The write-up is in the note …" is what the thread shows, and the model
+>   reads it as `[The application]: …`; there is no second card line.
+> - **A failed job writes one system line** into the asking thread, with no
+>   model call, and a cancelled one writes nothing. `answered` doubles as
+>   "already reported" for a failure. A follow-up that fails is retried by
+>   the worker after five minutes, or at once by "Answer now".
+> - **The worker makes the note,** titled after the question and tagged
+>   `research`, before the turn, and tells the model its id. A job that
+>   never wrote in it has the placeholder replaced by its closing reply; a
+>   blank reply fails the job.
+> - **"Research is ready" carries no body.** The question is what the person
+>   asked about, and this notification is drawn over a lock screen -- the
+>   rule `scheduler::announce` keeps.
+> - **A finished job is unseen again,** even if somebody looked at its card
+>   while it ran: what they saw was a progress line, not the answer.
+> - **Progress is saved at most every three seconds; a cancel is noticed
+>   within two,** by the worker reading its own job's status. That is what
+>   lets a tool, a command, the CLI or another device cancel a job none of
+>   them can reach directly.
+> - **`everyday serve` does not wait for a job on Ctrl-C;** the job is put
+>   back in the queue and resumed, in its note, after the next unlock.
+> - **System lines are drawn in the thread now.** They were dropped on
+>   replay before, and "Research finished" has to be seen.
+> - **An answer reaches a chat through the link's `ChatOutlet`** -- the way
+>   a routine delivers its result, which landed on `main` while this was
+>   being built -- rather than through an outbox of its own. The post names
+>   the asking conversation, so when the owner replies on their phone the
+>   relay carries on in that thread, with the research behind it. A job
+>   still asks nobody: its turn has no `Reach`.
+>
+> Not done, and worth knowing: a job's transcript is written when its turn
+> ends, so "See what it did" mid-run shows only the prompt; the follow-up is
+> not streamed into an open thread (the thread re-reads when the job moves);
+> and clicking a "Research is ready" notification opens nothing, because no
+> notification click is routed anywhere yet.
+
 A plan for letting the assistant take on a question that needs real time —
 an hour of reading rather than three searches — say so, go away and do it,
 and come back to the conversation that asked with an answer. Research is

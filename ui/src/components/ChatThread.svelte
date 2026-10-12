@@ -19,18 +19,21 @@
   // as it goes; and once it is over, a long list of steps folds away under
   // one line so the answer is what is left to read.
 
-  import { onDestroy } from 'svelte'
+  import { onDestroy, untrack } from 'svelte'
   import { activity, elapsed, isPlan, planOf, workSummary, type Turn } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import { APPS } from '../lib/apps'
   import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
+  import { jobs } from '../lib/jobs.svelte'
   import { renderMarkdown } from '../lib/markdown'
   import { headline, toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
   import { onScreenNow } from '../lib/screen.svelte'
+  import type { Job } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import JobCard from './JobCard.svelte'
   import ToolCardView from './ToolCard.svelte'
 
   let {
@@ -131,6 +134,125 @@
   function foldable(turn: Turn, steps: number): boolean {
     return turn.phase === 'done' && steps > FOLD_OVER
   }
+
+  // ── Work it went away to do ─────────────────────────────────────────
+  //
+  // A `start_research` call returns at once, with the work still to be done,
+  // so its plain card -- "Started research" -- is true for a moment and then
+  // says nothing about the thing the person is waiting on. Once the job is
+  // known the card is replaced by the job itself, which moves as it works and
+  // can be cancelled. Until it is known the plain card stands, so a thread
+  // never has a call with nothing drawn for it.
+  //
+  // The call and the job are tied by the id the call's result names, when it
+  // names one, and otherwise by the question: the job is the newest one this
+  // conversation asked with those words. Asking the same thing twice is two
+  // calls and two jobs, so each call takes the newest job not already taken,
+  // newest call first.
+
+  const RESEARCH = 'start_research'
+
+  /** The question a `start_research` call was made with. */
+  function questionOf(args: unknown): string {
+    if (typeof args !== 'object' || args === null) return ''
+    const q = (args as { question?: unknown }).question
+    return typeof q === 'string' ? q.trim() : ''
+  }
+
+  /** Whether a job is research on exactly this question. */
+  function asks(job: Job, question: string): boolean {
+    return job.kind.type === 'research' && job.kind.question.trim() === question
+  }
+
+  /** Each finished `start_research` call on screen, by call id, with its job. */
+  const startedJobs = $derived.by(() => {
+    const found = new Map<string, Job>()
+    const conversation = agent.conversationId
+    if (!conversation) return found
+    const mine = jobs.forConversation(conversation)
+    if (mine.length === 0) return found
+    const calls = agent.turns
+      .flatMap((t) => t.cards)
+      .filter((c) => c.name === RESEARCH && c.state === 'done')
+      .reverse()
+    const taken = new Set<string>()
+    for (const card of calls) {
+      const job = mine.find((j) => !taken.has(j.id) && card.summary.includes(j.id))
+      if (job) {
+        taken.add(job.id)
+        found.set(card.callId, job)
+      }
+    }
+    for (const card of calls) {
+      if (found.has(card.callId)) continue
+      const question = questionOf(card.arguments)
+      const job = mine.find((j) => !taken.has(j.id) && asks(j, question))
+      if (job) {
+        taken.add(job.id)
+        found.set(card.callId, job)
+      }
+    }
+    return found
+  })
+
+  const hasResearch = $derived(agent.turns.some((t) => t.cards.some((c) => c.name === RESEARCH)))
+  const researchDone = $derived(
+    agent.turns.reduce(
+      (n, t) => n + t.cards.filter((c) => c.name === RESEARCH && c.state === 'done').length,
+      0,
+    ),
+  )
+
+  // The store is loaded when a thread shows one of these and not before, so a
+  // vault that never asks for research never pays for the query. Untracked
+  // because the store reads its own state while it loads, and an effect that
+  // depended on that would load again whenever the load finished.
+  $effect(() => {
+    void agent.conversationId
+    if (hasResearch) untrack(() => void jobs.start())
+  })
+  // A call that has just returned may have beaten its job to the store: the
+  // list was asked for while the call was still running.
+  $effect(() => {
+    if (researchDone > 0) untrack(() => void jobs.refresh())
+  })
+
+  // ── When a job comes back here ──────────────────────────────────────
+  //
+  // A finished job writes a line into the conversation that asked, and the
+  // assistant answers in it, with nobody pressing anything. Neither arrives as
+  // a stream this thread is listening to, so the thread is read again when a
+  // job asked from here changes state -- once when it finishes, once when the
+  // answer has been given -- and not while a reply is being written into it,
+  // which a reload would cut off. A change that arrives mid-reply waits for
+  // the reply to end.
+
+  let knownJobs = new Map<string, string>()
+  let knownFor: string | null = null
+  let stale = false
+  $effect(() => {
+    const id = agent.conversationId
+    const next = new Map<string, string>(
+      (id ? jobs.forConversation(id) : []).map((j) => [j.id, `${j.status}:${j.answered}`]),
+    )
+    const busy = agent.busy
+    untrack(() => {
+      // Jobs first seen, and any seen on opening a different thread, are not
+      // news: they were already there when this thread was drawn.
+      if (id === knownFor) {
+        for (const [jobId, state] of next) {
+          const before = knownJobs.get(jobId)
+          if (before !== undefined && before !== state) stale = true
+        }
+      }
+      knownFor = id
+      knownJobs = next
+      if (stale && id && !busy) {
+        stale = false
+        void agent.openThread(id)
+      }
+    })
+  })
 
   // ── Following the reply as it streams ──────────────────────────────
   //
@@ -317,9 +439,32 @@
                 <div class="reply md">{@html renderMarkdown(digest)}</div>
               </details>
             {/if}
+          {:else if turn.role === 'system'}
+            <!-- The application speaking, not either party: "Research
+                 finished: ..." when a job comes back. A quiet line between
+                 two rules rather than a bubble, so it never reads as
+                 something the person said. Only its first line is drawn; a
+                 longer one -- the words the follow-up was given -- is folded
+                 under it. -->
+            {@const [first = '', ...rest] = turn.text.trim().split('\n')}
+            {@const detail = rest.join('\n').trim()}
+            <div class="sysline">
+              <p>{first}</p>
+              {#if detail}
+                <details>
+                  <summary>Details</summary>
+                  <p class="detail">{detail}</p>
+                </details>
+              {/if}
+            </div>
           {:else}
             {@const plan = planOf(turn)}
             {@const steps = turn.cards.filter((c) => !isPlan(c))}
+            <!-- A research call that has become its job is drawn as the job,
+                 below the reply, and is left out of what folds away: the card
+                 is the one step in a long turn somebody comes back to. -->
+            {@const started = steps.filter((c) => startedJobs.has(c.callId))}
+            {@const plain = steps.filter((c) => !startedJobs.has(c.callId))}
             {@const status = activity(turn)}
 
             {#if turn.thinking}
@@ -354,7 +499,7 @@
               </ol>
             {/if}
 
-            {#if steps.length > 0}
+            {#if plain.length > 0}
               {#if foldable(turn, steps.length)}
                 <button
                   class="worked"
@@ -369,7 +514,7 @@
               {/if}
               {#if !foldable(turn, steps.length) || unfolded[turn.id]}
                 <div class="steps">
-                  {#each steps as card (card.callId)}
+                  {#each plain as card (card.callId)}
                     <ToolCardView
                       {card}
                       onanswer={(answer: 'confirm' | 'decline' | 'later') =>
@@ -399,6 +544,10 @@
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               <div class="reply md">{@html renderMarkdown(turn.text)}</div>
             {/if}
+
+            {#each started as card (card.callId)}
+              <JobCard job={startedJobs.get(card.callId)!} compact />
+            {/each}
 
             {#if turn.error}
               <p class="failed">{turn.error}</p>
@@ -649,6 +798,49 @@
   .digest .reply {
     font-size: var(--text-sm);
     color: var(--fg-muted);
+  }
+
+  /* What the application said in the thread -- a job coming back. Faint and
+     centred between two hairlines, so that it reads as a mark in the margin of
+     the conversation and not as a message from either side of it. */
+  .sysline {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-1);
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    text-align: center;
+  }
+  .sysline > p {
+    display: flex;
+    align-items: center;
+    align-self: stretch;
+    gap: var(--sp-3);
+    margin: 0;
+    line-height: var(--leading-snug);
+    overflow-wrap: anywhere;
+  }
+  .sysline > p::before,
+  .sysline > p::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    min-width: var(--sp-4);
+    background: var(--border);
+  }
+  .sysline summary {
+    cursor: pointer;
+    user-select: none;
+  }
+  .sysline summary:hover {
+    color: var(--fg-muted);
+  }
+  .sysline .detail {
+    margin: var(--sp-1) 0 0;
+    white-space: pre-wrap;
+    text-align: left;
+    overflow-wrap: anywhere;
   }
 
   .reasoning {

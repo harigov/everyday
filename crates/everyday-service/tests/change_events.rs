@@ -67,6 +67,13 @@
 //!   (`append_recording_chunk` is *not* skipped: it only spools bytes
 //!   against an already-`Recording`-stage row seeded directly, the same way
 //!   `tests/meetings_spool.rs` does.)
+//! - **`answer_job`**: returns at once and spawns the follow-up turn onto the
+//!   runtime, which needs a model and raises its own changes whenever it ends
+//!   -- a background task this test's capture would race, which is what it
+//!   must not do. `tests/jobs_commands.rs` runs it against a scripted model.
+//!   (`start_research`, `cancel_job`, `delete_job` and `mark_jobs_seen` are
+//!   *not* skipped: they only write records, and the worker that would pick
+//!   a queued job up is not running in a test.)
 //! - **`send_message`**: `streams: true`, and therefore unreachable through
 //!   `Service::call` at all -- see `tests/call.rs`'s
 //!   `a_streaming_command_cannot_be_called_for_a_value`. The assistant's own
@@ -240,6 +247,7 @@ async fn run_tool_call(
 /// `effect: Write` row is here or was run) and for staleness (nothing here
 /// was, despite that, actually run) at the bottom of the test.
 const SKIPPED_COMMANDS: &[(&str, &str)] = &[
+    ("answer_job", "spawns the follow-up turn in the background, which needs a model"),
     ("attach_oauth_sign_in", "OAuth: attaches a real sign-in's tokens to an account"),
     ("begin_oauth_sign_in", "OAuth: a loopback redirect to a real provider"),
     ("begin_recording", "refuses unless the transcriber's speech kit is genuinely on disk"),
@@ -731,6 +739,31 @@ async fn every_offline_write_announces_what_was_written_down() {
     let queued_run = run(&svc, &h, "run_routine", json!({ "id": routine_id })).await;
     let run_id = queued_run["id"].clone();
     run(&svc, &h, "mark_runs_seen", json!({ "ids": [run_id] })).await;
+
+    // ---- jobs ------------------------------------------------------------------
+    //
+    // `start_research` only queues -- see `domains::jobs`: the worker picks a
+    // job up on its own loop, and nothing in this test starts it, so the job
+    // stays exactly where it was put. The thread it is to come back to is
+    // saved straight into the vault, since there is no command that mints a
+    // conversation without asking a model.
+    let asking = everyday_core::Conversation::new();
+    vault.save_conversation(&asking).unwrap();
+    let started = run(
+        &svc,
+        &h,
+        "start_research",
+        json!({
+            "question": "Which heat pumps suit a 1930s semi?",
+            "brief": "Solid walls, no loft insulation yet.",
+            "conversationId": asking.id.to_string(),
+        }),
+    )
+    .await;
+    let job_id = started["id"].clone();
+    run(&svc, &h, "mark_jobs_seen", json!({ "ids": [job_id] })).await;
+    run(&svc, &h, "cancel_job", json!({ "id": job_id })).await;
+    run(&svc, &h, "delete_job", json!({ "id": job_id })).await;
 
     // Nothing is parked on this id -- `Pending::answer` says so plainly
     // rather than erroring (see `crate::agent::Pending`'s own unit test),

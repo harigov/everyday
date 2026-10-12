@@ -125,6 +125,18 @@ import type { ChatLink, ChatLinkView, ChatState, ChatStatus } from './types'
 import { sameAccount, validateLink } from './chat'
 import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
 import {
+  mockAnswerJob,
+  mockCancelJob,
+  mockDeleteJob,
+  mockGetJob,
+  mockJobsInit,
+  mockListJobs,
+  mockMarkJobsSeen,
+  mockOnChange,
+  mockStartResearch,
+  mockUnseenJobs,
+} from './mock-jobs'
+import {
   mockAddNewsSource,
   mockDeleteNewsSource,
   mockDiscoverFeeds,
@@ -3332,6 +3344,36 @@ agentMessages.push(
   },
 )
 
+// Two background jobs, a finished one and a failed one, with their notes and
+// transcripts, and the thread the finished one answered in. Plain data: the
+// timers that walk a *new* job through its life start only when one is
+// started. See `mock-jobs.ts`.
+mockJobsInit({
+  putNote: (note) => {
+    const at = notes.findIndex((n) => n.id === note.id)
+    if (at < 0) notes.unshift(note)
+    else notes[at] = note
+  },
+  putConversation: (conversation) => {
+    const at = conversations.findIndex((c) => c.id === conversation.id)
+    if (at < 0) conversations.push(conversation)
+    else conversations[at] = conversation
+  },
+  addMessage: (message) => {
+    agentMessages.push(message)
+    const thread = conversations.find((c) => c.id === message.conversationId)
+    if (thread) thread.updatedAt = message.createdAt
+  },
+  dropConversation: (id) => {
+    const at = conversations.findIndex((c) => c.id === id)
+    if (at >= 0) conversations.splice(at, 1)
+    for (let n = agentMessages.length - 1; n >= 0; n--) {
+      if (agentMessages[n]?.conversationId === id) agentMessages.splice(n, 1)
+    }
+  },
+  busy: (id) => mockRunning.has(id),
+})
+
 const proposals: Proposal[] = [
   {
     id: 'prop-task',
@@ -3772,6 +3814,7 @@ function status(): VaultStatus {
           accounts: true,
           mail: true,
           news: true,
+          jobs: true,
         }
       : undefined,
   }
@@ -3931,7 +3974,7 @@ const mockRemoteImageSettings: RemoteImageSettings = { senders: [], domains: [] 
 
 // Re-exported so `api.ts`'s mock branch can wire the three meeting events
 // the way it wires everything else emitted by the (here, simulated) shell.
-export { mockOnMeetingOffer, mockOnMeetingStatus, mockOnMeetingStillOn }
+export { mockOnChange, mockOnMeetingOffer, mockOnMeetingStatus, mockOnMeetingStillOn }
 
 export const mockInvoke = async <T>(
   cmd: string,
@@ -4242,6 +4285,50 @@ export const mockInvoke = async <T>(
     case 'unseen_runs':
       requireUnlocked()
       return runs.filter((r) => !r.seen).length as T
+
+    // ── Background jobs ──────────────────────────────────────────────────
+    //
+    // The queue, the script that walks a job through its life, and the
+    // events it raises are in `mock-jobs.ts`; these are the doors into it.
+
+    case 'list_jobs':
+      requireUnlocked()
+      return mockListJobs(args.query ?? {}) as T
+
+    case 'get_job':
+      requireUnlocked()
+      return mockGetJob(str(args.id)) as T
+
+    case 'unseen_jobs':
+      requireUnlocked()
+      return mockUnseenJobs() as T
+
+    case 'start_research':
+      requireUnlocked()
+      return mockStartResearch(
+        str(args.question),
+        str(args.brief),
+        str(args.conversationId) || null,
+      ) as T
+
+    case 'cancel_job':
+      requireUnlocked()
+      return mockCancelJob(str(args.id)) as T
+
+    case 'delete_job':
+      requireUnlocked()
+      mockDeleteJob(str(args.id))
+      return undefined as T
+
+    case 'mark_jobs_seen':
+      requireUnlocked()
+      mockMarkJobsSeen(strArray(args.ids))
+      return undefined as T
+
+    case 'answer_job':
+      requireUnlocked()
+      await mockAnswerJob(str(args.id))
+      return undefined as T
 
     case 'list_proposals': {
       requireUnlocked()
@@ -5894,9 +5981,10 @@ export const mockInvoke = async <T>(
       // A run's transcript is a conversation too, and is left out unless
       // asked for -- as the service's `chats_only` does -- so the history
       // list is the person's own conversations, not every routine's.
+      // So is a background job's, which carries its job's id.
       const ofRuns = new Set(runs.map((r) => r.conversationId).filter(Boolean))
       const rows = [...conversations]
-        .filter((c) => args.includeRuns === true || !ofRuns.has(c.id))
+        .filter((c) => args.includeRuns === true || (!ofRuns.has(c.id) && !c.jobId))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .map((c) => ({
           ...c,
@@ -7053,9 +7141,22 @@ export async function mockSendMessage(
       }
     })
   const toolCalls: AgentMessage['toolCalls'] = []
+  /** The stored answers to calls that have one worth keeping, saved after the turn. */
+  const toolResults: AgentMessage[] = []
   let step = 0
-  /** One tool, start to finish. False once Stop has been pressed. */
-  const tool = async (name: string, args: unknown, ms: number, summary: string) => {
+  /**
+   * One tool, start to finish. False once Stop has been pressed.
+   *
+   * `effect` is what the call does, run as it finishes and before anything is
+   * said about it -- so that what a card is told is already true.
+   */
+  const tool = async (
+    name: string,
+    args: unknown,
+    ms: number,
+    summary: string,
+    effect?: (callId: string) => void,
+  ) => {
     if (run.stopped) return false
     const callId = `call-mock-${++step}`
     onEvent({ type: 'toolPreparing', callId, name })
@@ -7065,6 +7166,7 @@ export async function mockSendMessage(
     toolCalls.push({ id: callId, name, arguments: args })
     await pause(ms)
     if (run.stopped) return false
+    effect?.(callId)
     onEvent({ type: 'toolFinished', callId, name, ok: true, summary })
     await pause(350)
     return !run.stopped
@@ -7090,7 +7192,10 @@ export async function mockSendMessage(
     // which is what checking the composer's strip against it needs.
     if (
       /\b(this|looking at|on screen|on my screen)\b/.test(lower) &&
-      /\b(what|which)\b/.test(lower)
+      /\b(what|which)\b/.test(lower) &&
+      // "Research which boat suits this harbour" is a research question, not
+      // a question about the screen.
+      !/\bresearch/.test(lower)
     ) {
       await pause(250)
       const refs = (label: string, list: Shown[] | undefined) =>
@@ -7168,6 +7273,36 @@ export async function mockSendMessage(
       } else {
         reply = 'Left it alone. What would you like to do instead?'
       }
+    } else if (/\bresearch(ed|es|ing)?\b/.test(lower)) {
+      // The assistant judging that a question wants real time: it queues a
+      // job, says so in the same reply, and the turn ends. The job goes on
+      // without it -- see `mock-jobs.ts` -- and comes back to this thread.
+      //
+      // Not gated on the web switch, though the real tool is offered only
+      // with it on: a demo that needed Settings visited before it would
+      // start is one that nobody could start.
+      const question = prompt.replace(/\s+/g, ' ').trim()
+      const brief =
+        `They asked in the rail: \u201c${question}\u201d. They want a short answer with its ` +
+        'sources, and have not said what it is for or ruled anything out.'
+      const summary = `Started research: ${question}`
+      const ok = await tool('start_research', { question, brief }, 450, summary, (callId) => {
+        mockStartResearch(question, brief, conversationId, lower.includes('unanswered'))
+        toolResults.push({
+          id: `msg-${nextId++}`,
+          conversationId,
+          role: 'tool',
+          content: summary,
+          toolCalls: [],
+          toolCallId: callId,
+          failed: false,
+          createdAt: new Date().toISOString(),
+        })
+      })
+      reply = ok
+        ? 'This one wants real reading, so I have started researching it. It will take a few ' +
+          'minutes, and I will come back here with what I find.'
+        : ''
     } else if (/\b(plan|trip|weekend)\b/.test(lower)) {
       await think(
         'They want a weekend worked out. I should see what is already on the calendar, ' +
@@ -7374,6 +7509,9 @@ export async function mockSendMessage(
         failed: false,
         createdAt: new Date().toISOString(),
       })
+      // After the message that asked for them, which is where a thread
+      // being replayed looks for the answer to a call.
+      agentMessages.push(...toolResults)
     }
     onEvent({ type: 'finished', messageId })
   } finally {

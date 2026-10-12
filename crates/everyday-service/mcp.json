@@ -43,6 +43,31 @@
       "title": "Archive thread"
     },
     {
+      "domain": "jobs",
+      "effect": "write",
+      "name": "cancel_job",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Id of the job to stop, from job_status or start_research.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why, in a few words, for the record. Omit to record that you stopped it at their request.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Cancel job"
+    },
+    {
       "domain": "agent",
       "effect": "write",
       "name": "confirm_memory",
@@ -1279,6 +1304,29 @@
       "scope": "meetings",
       "sensitivity": "ordinary",
       "title": "Get transcript"
+    },
+    {
+      "domain": "jobs",
+      "effect": "read",
+      "name": "job_status",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Id of one job, from start_research or an earlier job_status. Omit for the most recent jobs.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most jobs to list when no id is given. Defaults to 10, capped at 50.",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Job status"
     },
     {
       "domain": "mail",
@@ -2704,6 +2752,32 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Star thread"
+    },
+    {
+      "domain": "jobs",
+      "effect": "write",
+      "name": "start_research",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "brief": {
+            "description": "What the job should know that it will not otherwise: who is asking and why, what they already know or have ruled out, and what shape of answer would help -- a recommendation, a comparison, a reading list. Nothing else about this conversation reaches the job, so say it here. If there is truly nothing to add, say so in a few words.",
+            "type": "string"
+          },
+          "question": {
+            "description": "What to find out, in their words where you have them. One question or one topic: the brief is where the context goes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "brief"
+        ],
+        "type": "object"
+      },
+      "scope": "agent",
+      "sensitivity": "ordinary",
+      "title": "Start research"
     },
     {
       "domain": "purpose",

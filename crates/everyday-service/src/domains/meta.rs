@@ -206,6 +206,8 @@ pub fn scope_of(domain: tools::Domain) -> Scope {
         tools::Domain::Trackers => Scope::Trackers,
         tools::Domain::Purpose => Scope::Purpose,
         tools::Domain::Routines => Scope::Agent,
+        // The same standing reason: its background work is its own.
+        tools::Domain::Jobs => Scope::Agent,
         tools::Domain::Agent => Scope::Agent,
         // Mail's own scope, not a domain-shaped one of its own reasoning:
         // see `Scope::Mail`'s doc for why a client that could read mail
@@ -454,6 +456,12 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
                 kind,
                 op,
             );
+        }
+        // A job queued from a script or an MCP client is picked up now, the
+        // way one the rail's assistant starts is, rather than at the worker's
+        // next fallback look.
+        if args.name == "start_research" {
+            svc.wake_jobs();
         }
         Ok(result)
     })

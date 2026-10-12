@@ -29,9 +29,9 @@ use std::str::FromStr;
 
 use crate::id::{
     AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
-    JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId, NoteId,
-    OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, SkillId,
-    StoryId, TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId,
+    NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
+    SkillId, StoryId, TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
 
 /// The kind of one persisted record — every table `everyday-store-sql`
@@ -66,6 +66,8 @@ pub enum RecordKind {
     /// One run of a routine — `RoutineRun` the type, `"run"` on the wire.
     /// See [`RecordKind::aad_word`].
     RoutineRun,
+    /// Background work -- see [`crate::job::Job`].
+    Job,
     Proposal,
     Conversation,
     /// A message in one of the assistant's own conversations. Not to be
@@ -121,6 +123,7 @@ impl RecordKind {
             // Legacy: a `RoutineRun`'s aad has always been
             // `everyday.run.v1:<id>`, not `routine_run`.
             RecordKind::RoutineRun => "run",
+            RecordKind::Job => "job",
             RecordKind::Proposal => "proposal",
             RecordKind::Conversation => "conversation",
             RecordKind::Message => "message",
@@ -168,6 +171,7 @@ impl RecordKind {
             | RecordKind::Goal
             | RecordKind::Routine
             | RecordKind::RoutineRun
+            | RecordKind::Job
             | RecordKind::Proposal
             | RecordKind::Conversation
             | RecordKind::Message
@@ -213,6 +217,7 @@ impl RecordKind {
             | RecordKind::Goal
             | RecordKind::Routine
             | RecordKind::RoutineRun
+            | RecordKind::Job
             | RecordKind::Proposal
             | RecordKind::Conversation
             | RecordKind::Message
@@ -261,6 +266,7 @@ impl RecordKind {
             RecordKind::Goal => "goal",
             RecordKind::Routine => "routine",
             RecordKind::RoutineRun => "run",
+            RecordKind::Job => "job",
             RecordKind::Proposal => "proposal",
             RecordKind::Conversation => "conversation",
             RecordKind::Message => "message",
@@ -480,6 +486,17 @@ impl RecordDescriptor for crate::routine::RoutineRun {
     }
     fn aad(id: Self::Id) -> Vec<u8> {
         crate::store::routines::run_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::job::Job {
+    const KIND: RecordKind = RecordKind::Job;
+    type Id = JobId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::jobs::job_aad(id)
     }
 }
 
@@ -705,6 +722,7 @@ mod tests {
         check::<crate::purpose::Goal>(id());
         check::<crate::routine::Routine>(id());
         check::<crate::routine::RoutineRun>(id());
+        check::<crate::job::Job>(id());
         check::<crate::proposal::Proposal>(id());
         check::<crate::agent::Conversation>(id());
         check::<crate::agent::Message>(id());
@@ -738,7 +756,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 33] = [
+    const ALL: [RecordKind; 34] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -756,6 +774,7 @@ mod tests {
         RecordKind::Goal,
         RecordKind::Routine,
         RecordKind::RoutineRun,
+        RecordKind::Job,
         RecordKind::Proposal,
         RecordKind::Conversation,
         RecordKind::Message,

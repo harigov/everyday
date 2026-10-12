@@ -52,6 +52,7 @@ pub mod events;
 pub mod feeds;
 pub mod http;
 pub mod idempotency;
+pub mod jobs;
 pub mod llm;
 pub mod mailai;
 pub mod mailsync;

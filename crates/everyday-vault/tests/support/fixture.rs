@@ -29,10 +29,11 @@ use everyday_core::agent::{
 use everyday_core::calendar::{AccountCalendarSource, Calendar, Event, EventStatus};
 use everyday_core::id::{
     AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
-    JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId, NoteId,
-    OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, StoryId,
-    TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId,
+    NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
+    StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
 };
+use everyday_core::job::{Job, JobStatus};
 use everyday_core::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
 use everyday_core::mail::{
     Address, Body, CategorySource, Draft, Mailbox, MailboxRole, Message as MailMessage,
@@ -637,6 +638,25 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
     };
     vault.insert_stories(&[(story.clone(), Some(body))]).unwrap();
     vault.set_stories_saved(&[story.id], true).unwrap();
+
+    // ---- a background job, finished, with its note -----------------------
+
+    let mut job = Job::research(
+        format!("Fixture question {tag}"),
+        format!("Fixture brief {tag}"),
+        Some(conversation_id),
+    );
+    job.id = ids.next::<JobId>();
+    job.created_at = clock.next();
+    job.started_at = Some(clock.next());
+    job.attempts = 1;
+    job.steps = 3;
+    job.progress = format!("Fixture progress {tag}");
+    job.add_note(note.id);
+    job.status = JobStatus::Done;
+    job.summary = format!("Fixture job summary {tag}");
+    job.finished_at = Some(clock.next());
+    vault.save_job(&job).unwrap();
 
     // ---- profile: the vault-wide singleton --------------------------------
 

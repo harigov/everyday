@@ -69,7 +69,8 @@ pub trait ChatRunner: Send + Sync + 'static {
     ) -> TaskFuture;
 }
 
-/// The routine run a message to the owner comes from.
+/// The routine run a message to the owner comes from -- or the background job,
+/// whose finished answer is sent to the chat it was asked in the same way.
 ///
 /// The chat names the routine, so a question arriving out of nowhere says
 /// whose it is; carries a reply on in the run's own conversation, so "yes,
@@ -308,6 +309,9 @@ impl Service {
             // The owner is right there in the chat; a scheduled run's ways of
             // reaching them are not needed.
             reach: Reach::default(),
+            job: None,
+            follow_up: None,
+            max_steps: None,
         })
         .await?;
         // What the tools wrote, then the thread -- the same two things, in

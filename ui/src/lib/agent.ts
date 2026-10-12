@@ -11,7 +11,7 @@
 // a reply assembled out of order. None of those fail to compile.
 //
 // Replaying a stored thread is the second. The vault keeps four roles and the
-// panel draws two, and a tool result has to find the call it answers — which
+// panel draws three, and a tool result has to find the call it answers — which
 // is exactly the kind of loop that keeps working while quietly attaching
 // results to the wrong card.
 //
@@ -77,7 +77,7 @@ export type Phase = 'thinking' | 'preparing' | 'tool' | 'waiting' | 'writing' | 
 /** A turn in the panel: what was said, and what ran while it was said. */
 export interface Turn {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system'
   text: string
   cards: ToolCard[]
   /** Set on a turn that failed, so the panel draws it as an error. */
@@ -98,7 +98,7 @@ export interface Turn {
   endedAt: number | null
 }
 
-export function emptyTurn(role: 'user' | 'assistant', id: string, text = ''): Turn {
+export function emptyTurn(role: Turn['role'], id: string, text = ''): Turn {
   return {
     id,
     role,
@@ -245,7 +245,9 @@ export function settle(turn: Turn, now = Date.now()): void {
 /**
  * Rebuild the panel's turns from a stored thread.
  *
- * The vault keeps four roles; the panel draws two. A tool turn folds onto the
+ * The vault keeps four roles; the panel draws three. A `system` line -- the
+ * application saying something in the thread, such as a background job having
+ * finished -- is drawn as a quiet line of its own. A tool turn folds onto the
  * assistant turn that asked for it, which is where it was drawn live. One
  * arriving with no assistant turn before it is dropped rather than shown
  * floating -- which can happen when a run was interrupted between writing a
@@ -288,7 +290,9 @@ export function replay(messages: AgentMessage[]): Turn[] {
         card.mailLink = m.mailLink ?? null
       }
     }
-    // `system` turns are the application talking to itself. Not drawn.
+    if (m.role === 'system') {
+      turns.push(emptyTurn('system', m.id, m.content))
+    }
   }
   return turns
 }

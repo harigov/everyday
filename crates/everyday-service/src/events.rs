@@ -179,6 +179,9 @@ pub enum Kind {
     Routine,
     /// One run of it. What the count on the app bar is drawn from.
     RoutineRun,
+    /// Work the assistant took on in the background. See
+    /// `everyday_core::job`.
+    Job,
     /// Work the assistant prepared and did not do. See
     /// `everyday_core::proposal`.
     Proposal,
@@ -249,6 +252,7 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Conversation => Ok(RecordKind::Conversation),
             Kind::Routine => Ok(RecordKind::Routine),
             Kind::RoutineRun => Ok(RecordKind::RoutineRun),
+            Kind::Job => Ok(RecordKind::Job),
             Kind::Proposal => Ok(RecordKind::Proposal),
             Kind::Memory => Ok(RecordKind::Memory),
             Kind::Skill => Ok(RecordKind::Skill),
@@ -297,6 +301,7 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::Conversation => Ok(Kind::Conversation),
             RecordKind::Routine => Ok(Kind::Routine),
             RecordKind::RoutineRun => Ok(Kind::RoutineRun),
+            RecordKind::Job => Ok(Kind::Job),
             RecordKind::Proposal => Ok(Kind::Proposal),
             RecordKind::Memory => Ok(Kind::Memory),
             RecordKind::Skill => Ok(Kind::Skill),
@@ -470,7 +475,7 @@ mod tests {
     //! the docs on those impls name.
     use super::*;
 
-    const RECORD_KINDS: [Kind; 29] = [
+    const RECORD_KINDS: [Kind; 30] = [
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
@@ -493,6 +498,7 @@ mod tests {
         Kind::Conversation,
         Kind::Routine,
         Kind::RoutineRun,
+        Kind::Job,
         Kind::Proposal,
         Kind::Memory,
         Kind::Recording,
@@ -506,7 +512,7 @@ mod tests {
     fn every_record_backed_change_kind_round_trips_through_record_kind() {
         for kind in RECORD_KINDS {
             let record = RecordKind::try_from(kind).unwrap_or_else(|()| {
-                panic!("{kind:?} is one of the 29 record-backed kinds and should convert")
+                panic!("{kind:?} is one of the 30 record-backed kinds and should convert")
             });
             assert_eq!(Kind::try_from(record), Ok(kind), "{kind:?}");
         }

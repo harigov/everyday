@@ -16,6 +16,7 @@
   import { threadGroups } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import { assistant } from '../lib/assistant.svelte'
+  import { jobs } from '../lib/jobs.svelte'
   import { viaTitle } from '../lib/chat'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -29,6 +30,11 @@
   let pendingDelete = $state<ConversationSummary | null>(null)
 
   const groups = $derived(threadGroups(agent.threads))
+  /** "What it did", unseen: routine runs and background jobs, which are
+   *  listed together there. Jobs do not need routines to exist. */
+  const didUnseen = $derived(
+    (app.supportsRoutines ? assistant.unseen : 0) + (app.supportsJobs ? jobs.unseen : 0),
+  )
 
   function threadMenu(thread: ConversationSummary): MenuItem[] {
     return tidyMenu([
@@ -86,16 +92,16 @@
     <span class="side-text">New conversation</span>
   </button>
 
-  {#if (app.supportsRoutines && assistant.unseen > 0) || (app.supportsProposals && proposals.unseen > 0)}
+  {#if didUnseen > 0 || (app.supportsProposals && proposals.unseen > 0)}
     <div class="side-head"><span class="eyebrow">While you were away</span></div>
     <!-- Badged counts: these rows are here only because something is
          unseen, and they are the app bar's count broken down -- the number
          somebody pressed Assistant to find. -->
-    {#if app.supportsRoutines && assistant.unseen > 0}
+    {#if didUnseen > 0}
       <button class="side-row" onclick={() => assistant.setPane('runs')}>
         <span class="side-icon"><Icon name="inbox" /></span>
         <span class="side-text">What it did</span>
-        <span class="side-count strong">{assistant.unseen}</span>
+        <span class="side-count strong">{didUnseen}</span>
       </button>
     {/if}
     {#if app.supportsProposals && proposals.unseen > 0}

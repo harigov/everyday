@@ -892,6 +892,12 @@ impl Message {
         Self::new(conversation_id, Role::Assistant, content)
     }
 
+    /// A line the application put in the thread -- a finished job, say --
+    /// attributed to neither party.
+    pub fn system(conversation_id: ConversationId, content: impl Into<String>) -> Self {
+        Self::new(conversation_id, Role::System, content)
+    }
+
     pub fn new(conversation_id: ConversationId, role: Role, content: impl Into<String>) -> Self {
         Self {
             id: MessageId::new(),
@@ -956,6 +962,10 @@ pub struct Conversation {
     /// out of a list of conversations somebody actually had.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<crate::id::RoutineRunId>,
+    /// The background job this thread is the transcript of, if it is one.
+    /// Kept out of the rail's list for the reason `run_id` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<crate::id::JobId>,
     /// The chat this thread arrived through, if somebody started it from
     /// another device rather than in the rail. See [`crate::chat`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -971,6 +981,7 @@ impl Conversation {
             created_at: now,
             updated_at: now,
             run_id: None,
+            job_id: None,
             via: None,
         }
     }
@@ -978,6 +989,17 @@ impl Conversation {
     /// A thread that is a routine run's transcript rather than a chat.
     pub fn for_run(run: crate::id::RoutineRunId, title: impl Into<String>) -> Self {
         Self { title: title.into(), run_id: Some(run), ..Self::new() }
+    }
+
+    /// A thread that is a background job's transcript rather than a chat.
+    pub fn for_job(job: crate::id::JobId, title: impl Into<String>) -> Self {
+        Self { title: title.into(), job_id: Some(job), ..Self::new() }
+    }
+
+    /// Whether somebody typed into this thread, rather than it being the
+    /// transcript of a routine run or a job.
+    pub fn is_chat(&self) -> bool {
+        self.run_id.is_none() && self.job_id.is_none()
     }
 
     /// Longest a derived title may be.

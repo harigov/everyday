@@ -178,6 +178,7 @@ struct Counts {
     entries: usize,
     items: usize,
     goals: usize,
+    jobs: usize,
     /// Drafts in any state, across every account. `draft_reply` and
     /// `draft_message` are allowed to add to this.
     drafts: usize,
@@ -209,6 +210,7 @@ fn counts(v: &Vault) -> Counts {
         entries: v.entries(&everyday_core::store::EntryQuery::default()).unwrap().len(),
         items: v.items(&everyday_core::store::library::ItemQuery::default()).unwrap().len(),
         goals: v.goals(&everyday_core::store::purpose::GoalQuery::default()).unwrap().len(),
+        jobs: v.jobs(&everyday_core::JobQuery::default()).unwrap().len(),
         drafts,
         drafts_past_editing,
     }
@@ -254,6 +256,12 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     // Asking a routine to run right now is an action, not a record to
     // propose.
     "run_routine",
+    // Starting an hour of research is an action with a cost, not a record to
+    // propose, and a dream starting one on its own account is exactly the
+    // loop nobody asked for. Stopping one is the person's call, not a
+    // dream's.
+    "start_research",
+    "cancel_job",
     // Every mail write except drafting (which runs for real, see
     // `mail::DRAFT_WRITERS`) and `send_draft` (which is proposable) refuses
     // outright: nobody is there to say yes to a mailbox being reorganised
@@ -443,6 +451,7 @@ fn every_non_read_tool_is_either_proposable_or_explicitly_refused_while_drafting
     assert_eq!(before.entries, after.entries, "the journal is untouched");
     assert_eq!(before.items, after.items, "the library is untouched");
     assert_eq!(before.goals, after.goals, "roles and goals are untouched");
+    assert_eq!(before.jobs, after.jobs, "no background job was ever started");
     assert_eq!(
         after.drafts,
         before.drafts + MAIL_DRAFT_WRITERS.len(),

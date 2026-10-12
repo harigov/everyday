@@ -91,6 +91,7 @@ pub mod fsutil;
 pub mod ics;
 pub mod id;
 pub mod insights;
+pub mod job;
 pub mod library;
 pub mod lockfile;
 pub mod mail;
@@ -136,11 +137,12 @@ pub use completable::Completable;
 pub use error::{Error, Result};
 pub use id::{
     AccountId, BlobId, BlockId, CalendarId, ChatLinkId, ConversationId, DraftId, EntryId, EventId,
-    GoalId, ItemId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId,
+    GoalId, ItemId, JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId,
     NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId,
     RoutineId, RoutineRunId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId,
     TranscriptId, VoiceprintId,
 };
+pub use job::{Job, JobKind, JobOutput, JobStatus};
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,
@@ -178,6 +180,7 @@ pub use routine::{
 pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
+pub use store::jobs::{JobQuery, JobStore};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};
 pub use store::meetings::{MeetingStore, RecordingQuery};

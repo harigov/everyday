@@ -45,6 +45,7 @@
 //! | note `pinned`, `created_us`, `updated_us` | how many notes there are, which are pinned, and when they were touched -- never a title |
 //! | routine `created_us`, `updated_us` | how many standing jobs the assistant has |
 //! | run `routine_id`, `started_us`, `seen` | that a routine ran at seven and that nobody has read the result |
+//! | job `created_us`, `seen` | that the assistant was asked to look into something at three, and whether anybody has read what it found -- never what, how far it got or whether it worked |
 //! | `record_secrets` (`owner_kind`, `owner_id`) | that some record of that kind holds a credential, never which one or what it is |
 //! | `mail_packs` (`account_id`, `seq`) | Postgres only -- one account's raw messages, in arrival order, never a message's own bytes outside the sealed `data` a `PackRef` addresses |
 //! | account `created_us`, `updated_us` | how many mailbox providers are signed in to, and roughly when -- never the address, the host, or a single credential |
@@ -137,6 +138,7 @@ pub mod schema;
 
 mod agent;
 mod calendars;
+mod jobs;
 mod journals;
 mod library;
 pub mod mail;
