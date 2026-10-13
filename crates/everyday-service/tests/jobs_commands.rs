@@ -507,35 +507,108 @@ async fn a_finished_job_is_answered_in_the_conversation_that_asked_and_marked_so
 }
 
 /// A chat link's outlet, as a running relay registers one: writes down what
-/// it is asked to send. A finished job only ever posts; it asks nobody.
-#[derive(Default)]
-struct Posts(Mutex<Vec<(FromRun, String)>>);
+/// it is asked to send and to confirm, and answers a confirmation as told.
+struct Posts {
+    sent: Mutex<Vec<(FromRun, String)>>,
+    confirms: Mutex<Vec<(FromRun, String, String)>>,
+    confirm_with: ConfirmAnswer,
+}
+
+impl Default for Posts {
+    fn default() -> Self {
+        Self::answering(ConfirmAnswer::Decline)
+    }
+}
 
 impl Posts {
+    fn answering(confirm_with: ConfirmAnswer) -> Self {
+        Self { sent: Mutex::default(), confirms: Mutex::default(), confirm_with }
+    }
+
     fn sent(&self) -> Vec<(FromRun, String)> {
-        self.0.lock().unwrap().clone()
+        self.sent.lock().unwrap().clone()
+    }
+
+    fn confirms(&self) -> Vec<(FromRun, String, String)> {
+        self.confirms.lock().unwrap().clone()
     }
 }
 
 impl ChatOutlet for Posts {
     fn post(&self, from: FromRun, markdown: String) -> BoxFuture<'static, Result<(), String>> {
-        self.0.lock().unwrap().push((from, markdown));
+        self.sent.lock().unwrap().push((from, markdown));
         Box::pin(async { Ok(()) })
     }
 
     fn confirm(
         &self,
-        _: FromRun,
-        _: String,
-        _: String,
-        _: bool,
+        from: FromRun,
+        kind: String,
+        subject: String,
+        _can_park: bool,
     ) -> BoxFuture<'static, ConfirmAnswer> {
-        panic!("a job's follow-up asks nobody to confirm anything")
+        self.confirms.lock().unwrap().push((from, kind, subject));
+        let answer = self.confirm_with;
+        Box::pin(async move { answer })
     }
 
     fn ask(&self, _: FromRun, _: String, _: Vec<String>) -> BoxFuture<'static, Option<String>> {
-        panic!("a job's follow-up asks nobody anything")
+        panic!("a job's follow-up has no ask_owner to call")
     }
+}
+
+#[tokio::test]
+async fn a_follow_up_in_a_chat_puts_a_delete_to_the_owner_there_and_does_it_on_yes() {
+    let task = everyday_core::Task::new("Book the dentist");
+    let model = fake_model_calling(
+        "delete_task",
+        json!({ "task_id": task.id.to_string() }).to_string(),
+        "Deleted the dentist task, as you said.",
+    )
+    .await;
+    let (svc, vault, _events, _dir) = service_with_model(&model.endpoint);
+    vault.save_task(&task).unwrap();
+    let link = ChatLinkId::new();
+    let outlet = Arc::new(Posts::answering(ConfirmAnswer::Confirm));
+    svc.open_chat_outlet(link, outlet.clone());
+    let asking = chat_conversation(&vault, link, "!room:test");
+    let job = finished(&vault, Some(asking.id), None);
+
+    answer::answer(&svc, &vault, job.id).await.unwrap();
+
+    // Asked on the phone, as a turn the owner started there would have been,
+    // rather than declined for want of a card nobody would see.
+    let confirms = outlet.confirms();
+    assert_eq!(confirms.len(), 1, "{confirms:?}");
+    assert_eq!(confirms[0].1, "destructive");
+    assert_eq!(confirms[0].2, "Book the dentist");
+    assert_eq!(
+        confirms[0].0,
+        FromRun { routine: "Research".into(), conversation: Some(asking.id) }
+    );
+    assert!(vault.task(task.id).is_err(), "asked, answered yes, and done");
+    assert_eq!(outlet.sent().len(), 1, "and the answer still goes as one message");
+}
+
+#[tokio::test]
+async fn a_follow_up_with_nobody_to_ask_declines_the_delete() {
+    let task = everyday_core::Task::new("Book the dentist");
+    let model = fake_model_calling(
+        "delete_task",
+        json!({ "task_id": task.id.to_string() }).to_string(),
+        "I could not delete it.",
+    )
+    .await;
+    let (svc, vault, _events, _dir) = service_with_model(&model.endpoint);
+    vault.save_task(&task).unwrap();
+    // Asked in the rail: no chat, so no outlet to put it to.
+    let asking = conversation(&vault);
+    let job = finished(&vault, Some(asking.id), None);
+
+    answer::answer(&svc, &vault, job.id).await.unwrap();
+
+    assert!(vault.task(task.id).is_ok(), "nobody said yes, so nothing was deleted");
+    assert!(vault.job(job.id).unwrap().answered, "the answer was still had");
 }
 
 #[tokio::test]
@@ -715,17 +788,33 @@ struct FakeModel {
 }
 
 async fn fake_model(text: &'static str) -> FakeModel {
+    serve_model(None, text.to_string()).await
+}
+
+/// A model that asks for `tool` with `arguments` the first time it is asked,
+/// and says `then` every time after -- rig asks again with the tool's result.
+async fn fake_model_calling(tool: &str, arguments: String, then: &str) -> FakeModel {
+    serve_model(Some((tool.to_string(), arguments)), then.to_string()).await
+}
+
+async fn serve_model(call: Option<(String, String)>, text: String) -> FakeModel {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let (tx, mut rx) = tokio::sync::watch::channel(false);
 
     tokio::spawn(async move {
+        let mut asked = 0usize;
         loop {
             let accepted = tokio::select! {
                 r = listener.accept() => r,
                 _ = rx.changed() => break,
             };
             let Ok((mut socket, _)) = accepted else { break };
+            asked += 1;
+            let body = match (&call, asked) {
+                (Some((tool, arguments)), 1) => reply_calling(tool, arguments),
+                _ => reply(&text),
+            };
             tokio::spawn(async move {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut buf = vec![0u8; 64 * 1024];
@@ -733,7 +822,6 @@ async fn fake_model(text: &'static str) -> FakeModel {
                 // Server-sent events, not a JSON document: the harness
                 // streams every turn, so a plain body is refused before it is
                 // read. See `reply`.
-                let body = reply(text);
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -745,6 +833,30 @@ async fn fake_model(text: &'static str) -> FakeModel {
     });
 
     FakeModel { endpoint: format!("http://127.0.0.1:{port}/v1"), _shutdown: tx }
+}
+
+/// A request for one tool, as a stream of Chat Completions chunks.
+fn reply_calling(tool: &str, arguments: &str) -> String {
+    let chunk = |delta: Value, finish: Option<&str>| {
+        let chunk = json!({
+            "id": "chatcmpl-test",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "scripted",
+            "choices": [{ "index": 0, "delta": delta, "finish_reason": finish }],
+        });
+        format!("data: {chunk}\n\n")
+    };
+    let call = json!({
+        "role": "assistant",
+        "tool_calls": [{
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": { "name": tool, "arguments": arguments },
+        }],
+    });
+    format!("{}{}data: [DONE]\n\n", chunk(call, None), chunk(json!({}), Some("tool_calls")))
 }
 
 /// One answer, as a stream of Chat Completions chunks.

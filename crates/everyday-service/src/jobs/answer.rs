@@ -177,7 +177,7 @@ pub async fn answer_now(
         // The person is not looking at a screen that is listening, so there
         // is nothing on it to describe.
         on_screen: None,
-        channel: decline_questions(service.pending()),
+        channel: questions_for(service, &conversation, &job, asked_in),
         unattended: None,
         drafting: None,
         via: conversation.via.clone(),
@@ -243,8 +243,25 @@ async fn tell_chat(
     let outlet: Arc<dyn ChatOutlet> = service
         .chat_outlet(via.link)
         .ok_or_else(|| format!("the {} link is not running here", via.service))?;
-    let from = FromRun { routine: label.to_string(), conversation: Some(asked_in) };
-    outlet.post(from, markdown).await
+    // Bounded the way a routine's delivery is: it waits behind whatever the
+    // owner's chat is doing, and a chat stuck on something must not hold the
+    // job's claim, and the follow-up behind it, for ever.
+    match tokio::time::timeout(
+        crate::delivery::POST_TIMEOUT,
+        outlet.post(from_job(label, asked_in), markdown),
+    )
+    .await
+    {
+        Ok(sent) => sent,
+        Err(_) => Err("the chat did not take it in time".to_string()),
+    }
+}
+
+/// Who a message to the owner's chat is from: a job of this kind, and the
+/// conversation that asked for it -- which the relay carries on in when the
+/// owner replies.
+fn from_job(label: &str, asked_in: ConversationId) -> FromRun {
+    FromRun { routine: label.to_string(), conversation: Some(asked_in) }
 }
 
 /// Say, in the conversation that asked, that a job could not finish.
@@ -410,10 +427,54 @@ fn failed(job: JobId, error: CommandError) -> CommandError {
     error
 }
 
+/// Where a question the follow-up asks goes.
+///
+/// A conversation that came from a chat whose link is running here has
+/// somebody to ask: the owner, on their phone, through the link's
+/// [`ChatOutlet`] -- the same yes, no or later a turn they started in that
+/// chat would put to them. Anything else has nobody listening, and
+/// [`decline_questions`] says no for them.
+fn questions_for(
+    service: &Arc<Service>,
+    conversation: &Conversation,
+    job: &Job,
+    asked_in: ConversationId,
+) -> Sink {
+    let outlet = conversation.via.as_ref().and_then(|via| service.chat_outlet(via.link));
+    match outlet {
+        Some(outlet) => {
+            ask_in_chat(service.pending(), outlet, from_job(job.kind.label(), asked_in))
+        }
+        None => decline_questions(service.pending()),
+    }
+}
+
+/// A sink that puts each question the follow-up asks to the owner in their
+/// chat, and answers the waiting call with what they said.
+///
+/// The question is sent from a task of its own because a sink cannot wait,
+/// and the call is registered before the event is sent -- see the
+/// confirmation gate -- so the answer finds it however long the owner takes.
+/// Silence comes back from the outlet as what silence means there, never as
+/// a hang; a turn that has ended by then has forgotten the call, and the
+/// late answer finds nothing to answer, which is harmless.
+fn ask_in_chat(pending: Arc<Pending>, outlet: Arc<dyn ChatOutlet>, from: FromRun) -> Sink {
+    Arc::new(move |event| {
+        if let AgentEvent::ConfirmationRequired { call_id, kind, subject, can_park, .. } = event {
+            let (pending, outlet, from) = (pending.clone(), outlet.clone(), from.clone());
+            tokio::spawn(async move {
+                let answer = outlet.confirm(from, kind, subject, can_park).await;
+                pending.answer(&call_id, answer);
+            });
+        }
+    })
+}
+
 /// A sink that says no to any question the follow-up asks.
 ///
-/// Nobody is listening to this turn's events: the rail only refreshes when it
-/// ends, and a phone gets one message. A destructive call, or a web address
+/// For a follow-up with nobody to ask: the rail only refreshes when the turn
+/// ends, so no card is ever drawn for it, and a chat whose link is not running
+/// here cannot be reached. A destructive call, or a web address
 /// the model composed itself, would otherwise stop and wait for an answer no
 /// card is there to give, holding the thread until the timeout. Declining is
 /// the safe reading of nobody being there, and the model is told so.
