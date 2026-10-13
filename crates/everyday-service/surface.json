@@ -168,6 +168,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "JobId"
+        }
+      ],
+      "changes": {
+        "kind": "job",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "answer_job",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "RecordingId"
         },
         {
@@ -404,6 +424,26 @@
       "orScope": null,
       "returns": "ProviderInfo[]",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "JobId"
+        }
+      ],
+      "changes": {
+        "kind": "job",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "cancel_job",
+      "orScope": null,
+      "returns": "Job",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -834,6 +874,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "JobId"
+        }
+      ],
+      "changes": {
+        "kind": "job",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_job",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -1563,6 +1623,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "JobId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_job",
+      "orScope": null,
+      "returns": "Job",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "NoteId"
         }
       ],
@@ -2049,6 +2126,23 @@
       "orScope": null,
       "returns": "Item[]",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": false,
+          "type": "JobQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_jobs",
+      "orScope": null,
+      "returns": "Job[]",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -2599,6 +2693,26 @@
       "orScope": null,
       "returns": "StoryId[]",
       "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": false,
+          "type": "JobId[]"
+        }
+      ],
+      "changes": {
+        "kind": "job",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "mark_jobs_seen",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -3225,6 +3339,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "quick_asks",
+      "orScope": null,
+      "returns": "QuickAskRow[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "entryId",
@@ -3443,17 +3568,6 @@
       "orScope": null,
       "returns": "QuickFields",
       "scope": "quick",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [],
-      "changes": null,
-      "effect": "read",
-      "name": "quick_jobs",
-      "orScope": null,
-      "returns": "QuickJobRow[]",
-      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -5010,9 +5124,9 @@
         "op": "updated"
       },
       "effect": "write",
-      "name": "set_quick_job",
+      "name": "set_quick_ask",
       "orScope": null,
-      "returns": "QuickJobRow[]",
+      "returns": "QuickAskRow[]",
       "scope": "agent",
       "sensitive": false,
       "streams": false
@@ -5184,6 +5298,36 @@
       "orScope": null,
       "returns": "ImportUpload",
       "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "question",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "brief",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "conversationId",
+          "required": false,
+          "type": "ConversationId | null"
+        }
+      ],
+      "changes": {
+        "kind": "job",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "start_research",
+      "orScope": null,
+      "returns": "Job",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -5539,6 +5683,17 @@
       "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "unseen_jobs",
+      "orScope": null,
+      "returns": "number",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

@@ -1092,6 +1092,9 @@ async fn resume(
         drafting,
         via: None,
         reach,
+        job: None,
+        follow_up: None,
+        max_steps: None,
     };
 
     let mut wrote = Vec::new();

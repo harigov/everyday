@@ -10,7 +10,7 @@
 //!
 //! # Why they are commands rather than one `quick_run`
 //!
-//! A single command taking a job name and a blob would put the prompt-building
+//! A single command taking an ask name and a blob would put the prompt-building
 //! in the interface, which is exactly where it must not be: what the model is
 //! told would then be untestable, unversioned and different in the CLI. The
 //! interface asks for *a suggestion about this task*; the core decides what
@@ -18,7 +18,7 @@
 //!
 //! # Failure is not an error anybody sees
 //!
-//! A quick job that times out, comes back malformed, or is switched off gives
+//! A quick ask that times out, comes back malformed, or is switched off gives
 //! back an empty answer rather than an error, wherever an empty answer is
 //! expressible. The interaction is a chip that appears; the failure of a chip
 //! to appear is not a thing to interrupt somebody about. The log line is for
@@ -29,7 +29,7 @@ use std::sync::Arc;
 use everyday_core::agent::AgentSettings;
 use everyday_core::model::system_tz;
 use everyday_core::purpose::{Goal, Purpose, Role};
-use everyday_core::quick::{self, QuickContext, QuickJob, QuickPolicy};
+use everyday_core::quick::{self, QuickAsk, QuickContext, QuickPolicy};
 use everyday_core::store::purpose::GoalQuery;
 use everyday_core::store::tasks::{TaskQuery, TaskSort};
 use everyday_core::tracker::Tracker;
@@ -50,10 +50,10 @@ use super::Nothing;
 /// One switch in the settings pane.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct JobRow {
+pub struct AskRow {
     pub name: &'static str,
     pub label: &'static str,
-    /// What this job sends. The sentence somebody reads to decide.
+    /// What this ask sends. The sentence somebody reads to decide.
     pub blurb: &'static str,
     pub app: &'static str,
     /// Where the switch is drawn right now, defaults and policy combined.
@@ -62,45 +62,45 @@ pub struct JobRow {
     pub default_on: bool,
 }
 
-fn rows(settings: &AgentSettings) -> Vec<JobRow> {
-    quick::JOBS
+fn rows(settings: &AgentSettings) -> Vec<AskRow> {
+    quick::ASKS
         .iter()
-        .map(|job: &'static QuickJob| JobRow {
-            name: job.name,
-            label: job.label,
-            blurb: job.blurb,
-            app: job.app.label(),
-            on: settings.quick_jobs.allows(job.name),
-            default_on: job.default_on,
+        .map(|ask: &'static QuickAsk| AskRow {
+            name: ask.name,
+            label: ask.label,
+            blurb: ask.blurb,
+            app: ask.app.label(),
+            on: settings.quick_asks.allows(ask.name),
+            default_on: ask.default_on,
         })
         .collect()
 }
 
-/// Every quick job and whether it is on, for the Assistant tab in settings.
-async fn quick_jobs(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<JobRow>> {
+/// Every quick ask and whether it is on, for the Assistant tab in settings.
+async fn quick_asks(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<AskRow>> {
     svc.on_vault(move |vault| Ok(rows(&vault.agent_settings()?))).await
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SetJob {
+pub struct SetAsk {
     pub name: String,
     pub on: bool,
 }
 
-/// Turn one job on or off.
+/// Turn one ask on or off.
 ///
 /// A command of its own rather than a corner of `save_agent_settings`,
 /// because the switches are twenty checkboxes somebody flicks one at a time
 /// and round-tripping the whole settings record per flick is how two panes
 /// open at once overwrite each other.
-async fn set_quick_job(svc: Arc<Service>, _ctx: Ctx, args: SetJob) -> CommandResult<Vec<JobRow>> {
+async fn set_quick_ask(svc: Arc<Service>, _ctx: Ctx, args: SetAsk) -> CommandResult<Vec<AskRow>> {
     let vault = svc.require()?;
     blocking(move || {
         let mut settings = vault.agent_settings()?;
-        let mut policy: QuickPolicy = settings.quick_jobs.clone();
+        let mut policy: QuickPolicy = settings.quick_asks.clone();
         policy.set(&args.name, args.on);
-        settings.quick_jobs = policy;
+        settings.quick_asks = policy;
         vault.save_agent_settings(&settings)?;
         Ok(rows(&vault.agent_settings()?))
     })
@@ -125,13 +125,13 @@ fn context(settings: &AgentSettings) -> QuickContext {
 /// because it touches the store; the request does not. A thin shell over
 /// [`ask_extra`] for the common case, which is every command that has
 /// nothing else to say about what it read.
-async fn ask<T, P>(svc: &Arc<Service>, ctx: &Ctx, job: &str, prep: P) -> CommandResult<T>
+async fn ask<T, P>(svc: &Arc<Service>, ctx: &Ctx, name: &str, prep: P) -> CommandResult<T>
 where
     T: serde::de::DeserializeOwned,
     P: FnOnce(&Vault, &QuickContext) -> CommandResult<quick::Prompt> + Send + 'static,
 {
     let (answer, ()) =
-        ask_extra(svc, ctx, job, move |vault, qctx| Ok((prep(vault, qctx)?, ()))).await?;
+        ask_extra(svc, ctx, name, move |vault, qctx| Ok((prep(vault, qctx)?, ()))).await?;
     Ok(answer)
 }
 
@@ -146,7 +146,7 @@ where
 async fn ask_extra<T, E, P>(
     svc: &Arc<Service>,
     ctx: &Ctx,
-    job: &str,
+    name: &str,
     prep: P,
 ) -> CommandResult<(T, E)>
 where
@@ -173,10 +173,10 @@ where
         })
         .await?
     };
-    let job = job.to_string();
+    let name = name.to_string();
     let raw = crate::quick::run(vault, prompt).await?;
     let answer =
-        quick::parse(&job, raw).map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
+        quick::parse(&name, raw).map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
     Ok((answer, extra))
 }
 
@@ -194,7 +194,7 @@ where
 async fn labels_for<P>(
     svc: &Arc<Service>,
     ctx: &Ctx,
-    job: &str,
+    name: &str,
     roles: &[Role],
     goals: &[Goal],
     prep: P,
@@ -205,7 +205,7 @@ where
         + 'static,
 {
     let (mut answer, existing): (quick::LabelsAnswer, Vec<String>) =
-        ask_extra(svc, ctx, job, prep).await?;
+        ask_extra(svc, ctx, name, prep).await?;
     answer.clamp(&existing);
     Ok(Labels { purpose: purpose_at(roles, goals, answer.purpose), tags: answer.tags })
 }
@@ -535,7 +535,7 @@ async fn quick_estimate(svc: Arc<Service>, ctx: Ctx, args: TaskRef) -> CommandRe
 ///
 /// What the model is given instead of its own sense of how long work takes.
 /// Their *estimates* rather than their time blocks, because an estimate is
-/// what this job is being asked to produce and comparing like with like is
+/// what this ask has to produce and comparing like with like is
 /// the point — a task that overran is still evidence about how this person
 /// sizes things.
 fn comparable(vault: &Vault, exclude: TaskId) -> CommandResult<Vec<(String, u32)>> {
@@ -883,16 +883,16 @@ async fn quick_front_matter(
 /// why it is not [`Scope::Agent`].
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
-        name: "quick_jobs", scope: Agent, effect: Read,
-        args: Nothing, returns: "QuickJobRow[]", signature: &[],
-        run: quick_jobs,
+        name: "quick_asks", scope: Agent, effect: Read,
+        args: Nothing, returns: "QuickAskRow[]", signature: &[],
+        run: quick_asks,
     },
     command! {
-        name: "set_quick_job", scope: Agent, effect: Write,
+        name: "set_quick_ask", scope: Agent, effect: Write,
         change: Settings / Updated,
-        args: SetJob, returns: "QuickJobRow[]",
+        args: SetAsk, returns: "QuickAskRow[]",
         signature: &[("name", "string", true), ("on", "boolean", true)],
-        run: set_quick_job,
+        run: set_quick_ask,
     },
     command! {
         name: "quick_item_fields", scope: Quick, effect: Read,

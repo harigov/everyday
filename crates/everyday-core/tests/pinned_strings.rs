@@ -277,6 +277,22 @@ fn routine_domain_aad_labels_are_pinned() {
     );
 }
 
+// ---- background jobs ----------------------------------------------------
+
+#[test]
+fn job_aad_label_is_pinned() {
+    assert_eq!(
+        store::jobs::job_aad(id::<JobId>()),
+        b"everyday.job.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    // A job and a routine's run are both "work the assistant did", sealed in
+    // tables of the same shape, and a record that opened under the other's
+    // label would be a record read as the wrong thing.
+    let job = store::jobs::job_aad(id::<JobId>());
+    let run = store::routines::run_aad(id::<RoutineRunId>());
+    assert_ne!(job, run);
+}
+
 // ---- per-record secrets -------------------------------------------------
 
 #[test]
@@ -374,6 +390,7 @@ fn every_typed_id_kind_is_pinned() {
     assert_eq!(NoteId::KIND, "note");
     assert_eq!(RoutineId::KIND, "routine");
     assert_eq!(RoutineRunId::KIND, "run");
+    assert_eq!(JobId::KIND, "job");
     assert_eq!(ProposalId::KIND, "proposal");
     assert_eq!(RecordingId::KIND, "recording");
     assert_eq!(TranscriptId::KIND, "transcript");

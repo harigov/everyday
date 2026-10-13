@@ -79,7 +79,7 @@ fn settings_round_trip(store: &dyn AgentStore) {
     s.assistant_model.max_tokens = Some(2048);
     s.provider_config.base_url = Some("https://gateway.example.com/v1".into());
     s.quick_model = Some(LLMModelConfig::quick());
-    s.quick_jobs.set("journal.title", true);
+    s.quick_asks.set("journal.title", true);
 
     store.put_settings(&s).unwrap();
     let back = store.settings().unwrap();
@@ -90,12 +90,12 @@ fn settings_round_trip(store: &dyn AgentStore) {
     assert_eq!(back.remember, s.remember);
     assert_eq!(back.assistant_model, s.assistant_model);
     assert_eq!(back.provider_config, s.provider_config);
-    // The second model and the per-job policy round-trip too. They are the
+    // The second model and the per-ask policy round-trip too. They are the
     // half of this record that a backend written before them would silently
     // drop, which is exactly what a conformance test is for.
     assert_eq!(back.quick_model, s.quick_model);
-    assert_eq!(back.quick_jobs, s.quick_jobs);
-    assert!(back.quick_jobs.allows("journal.title"));
+    assert_eq!(back.quick_asks, s.quick_asks);
+    assert!(back.quick_asks.allows("journal.title"));
 
     // Saving twice must update rather than accumulate.
     store.put_settings(&s).unwrap();

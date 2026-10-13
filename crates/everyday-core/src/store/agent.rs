@@ -78,7 +78,7 @@ impl ConversationQuery {
     /// `chats_only` keeps the threads somebody actually typed into, which is
     /// exactly the ones with no routine run behind them.
     pub fn matches(&self, c: &Conversation) -> bool {
-        !self.chats_only || c.run_id.is_none()
+        !self.chats_only || c.is_chat()
     }
 
     /// Filter, sort newest-first and page. The fallback for a backend that

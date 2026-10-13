@@ -28,6 +28,7 @@
 mod accounts;
 mod agent;
 mod calendars;
+mod jobs;
 mod journal;
 mod library;
 mod mail;
@@ -44,6 +45,7 @@ mod trackers;
 pub use accounts::run_account_suite;
 pub use agent::run_agent_suite;
 pub use calendars::run_calendar_suite;
+pub use jobs::run_job_suite;
 pub use library::run_library_suite;
 pub use mail::run_mail_suite;
 pub use meetings::run_meeting_suite;
@@ -163,6 +165,15 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.routines() {
         Some(_) => run_routine_suite(store),
         None => eprintln!("backend {name:?} stores no routines; skipping the routine suite"),
+    }
+
+    // And the assistant's background work, on the same terms again. Handed
+    // the whole journal store, the same choice `routines` makes above: a
+    // job's transcript is a conversation in the agent store, and what the
+    // suite asks of that is that it stays out of the list of chats.
+    match store.jobs() {
+        Some(_) => run_job_suite(store),
+        None => eprintln!("backend {name:?} stores no jobs; skipping the job suite"),
     }
 
     // And proposals, on the same terms again. Handed the whole journal

@@ -106,6 +106,7 @@ macro_rules! tool {
 
 mod calendar;
 mod conversations;
+mod jobs;
 mod journals;
 mod library;
 // `pub(crate)` for one reader outside the catalogue: `agent::onscreen`, which
@@ -177,6 +178,8 @@ pub enum Domain {
     Purpose,
     /// The assistant's own standing work.
     Routines,
+    /// Work it takes on in the background -- see `agent::tools::jobs`.
+    Jobs,
     Agent,
     /// Mailboxes, threads, drafts and the outbox -- see `agent::tools::mail`.
     ///
@@ -200,7 +203,7 @@ impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 12] = [
+    pub const ALL: [Domain; 13] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -209,6 +212,7 @@ impl Domain {
         Domain::Trackers,
         Domain::Purpose,
         Domain::Routines,
+        Domain::Jobs,
         Domain::Agent,
         Domain::Mail,
         Domain::Meetings,
@@ -229,6 +233,7 @@ impl Domain {
                 Domain::Trackers => vault.supports_trackers(),
                 Domain::Purpose => vault.supports_purpose(),
                 Domain::Routines => vault.supports_routines(),
+                Domain::Jobs => vault.supports_jobs(),
                 Domain::Agent => vault.supports_agent(),
                 Domain::Mail => vault.supports_mail() && vault.supports_accounts(),
                 Domain::Meetings => vault.supports_meetings(),
@@ -258,6 +263,9 @@ impl Domain {
             // recursion worth thinking about, and the answer is in
             // `run_create_routine`: an unattended run may not.
             | Domain::Routines
+            // Its background work: a question it is still looking into, and
+            // what it found. Nothing here that a turn could not read anyway.
+            | Domain::Jobs
             | Domain::Agent
             // Mail is written by strangers and its tools reach strangers,
             // which is a real risk -- but it is not the risk `Secret`
@@ -289,7 +297,7 @@ impl Domain {
     }
 }
 
-/// The domain a record kind's tools live in, for the twenty-nine kinds one
+/// The domain a record kind's tools live in, for the thirty kinds one
 /// actually does -- a `RecordKind::Proposal` names work the assistant
 /// prepared, not a domain of its own, and answers `None`. Coarser than
 /// [`RecordKind`] on purpose, the same way [`Domain::sensitivity`] and
@@ -309,6 +317,7 @@ impl TryFrom<RecordKind> for Domain {
             RecordKind::Tracker | RecordKind::Reading => Ok(Domain::Trackers),
             RecordKind::Role | RecordKind::Goal => Ok(Domain::Purpose),
             RecordKind::Routine | RecordKind::RoutineRun => Ok(Domain::Routines),
+            RecordKind::Job => Ok(Domain::Jobs),
             RecordKind::Conversation
             | RecordKind::Message
             | RecordKind::Memory
@@ -1219,6 +1228,7 @@ fn all() -> &'static [Tool] {
             trackers::TOOLS,
             purpose::TOOLS,
             routines::TOOLS,
+            jobs::TOOLS,
             proposals::TOOLS,
             memory::TOOLS,
             conversations::TOOLS,
@@ -1553,6 +1563,7 @@ mod tests {
             (RecordKind::Goal, Domain::Purpose),
             (RecordKind::Routine, Domain::Routines),
             (RecordKind::RoutineRun, Domain::Routines),
+            (RecordKind::Job, Domain::Jobs),
             (RecordKind::Conversation, Domain::Agent),
             (RecordKind::Message, Domain::Agent),
             (RecordKind::Memory, Domain::Agent),

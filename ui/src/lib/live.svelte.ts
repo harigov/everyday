@@ -21,6 +21,7 @@ import { onChange, onLockState, onPalette } from './api'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
+import { jobs } from './jobs.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
 import { assistant } from './assistant.svelte'
@@ -70,6 +71,11 @@ export const RELOAD = {
   calendar: () => calendar.refresh(),
   notes: () => notes.refresh(),
   assistant: () => assistant.refresh(),
+  // Work the assistant is doing in the background: a job moving from queued
+  // to running to done, a line of progress, a cancel from another window.
+  // Reloads the list and the count together, since the app bar draws one
+  // and Settings → "What it did" the other.
+  jobs: () => jobs.refresh(),
   proposals: () => proposals.refresh(),
   shelves: () => library.refreshKinds(),
   library: () => library.refresh(),
@@ -185,6 +191,9 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // same reload.
   routine: 'assistant',
   routineRun: 'assistant',
+  // A background job, which writes often while it runs -- every tool call is
+  // a progress line. The 250 ms window above gathers those into one reload.
+  job: 'jobs',
   // Work the assistant prepared. Drawn in several apps from one list, which
   // also holds half the count on the app bar -- see `proposals.svelte.ts`.
   proposal: 'proposals',

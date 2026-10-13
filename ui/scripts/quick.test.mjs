@@ -4,7 +4,7 @@
 // does not appear is the feature working slightly less well, not an error --
 // which is exactly why it needs a test. The three rules:
 //
-//   switched off  a job the policy has not allowed must not reach the
+//   switched off  an ask the policy has not allowed must not reach the
 //                 network at all. The Rust checks too, and that is what makes
 //                 the guarantee; this is what stops the request being made.
 //
@@ -64,11 +64,11 @@ function deferred() {
 
 const flush = () => new Promise((r) => setTimeout(r, 0))
 
-// ── A job that is off never reaches the network ──────────────────────────
+// ── An ask that is off never reaches the network ─────────────────────────
 
 {
   configure(false)
-  quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
+  quick.asks = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   let called = 0
   const answer = await ask('notes.title', async () => {
@@ -78,15 +78,15 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
   assert.equal(answer, null, 'no quick model configured means no answer')
   assert.equal(called, 0, 'and no request either')
 
-  // Configured, but this particular job switched off.
+  // Configured, but this particular ask switched off.
   configure(true)
-  quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: false, defaultOn: true }]
+  quick.asks = [{ name: 'notes.title', label: '', blurb: '', app: '', on: false, defaultOn: true }]
   called = 0
   assert.equal(await ask('notes.title', async () => ((called += 1), 'x')), null)
-  assert.equal(called, 0, 'a job switched off must not be asked')
+  assert.equal(called, 0, 'an ask switched off must not be asked')
 
   // A name this build does not have. Refused rather than run: the policy
-  // cannot vouch for a job it cannot look up.
+  // cannot vouch for an ask it cannot look up.
   called = 0
   assert.equal(await ask('notes.invent', async () => ((called += 1), 'x')), null)
   assert.equal(called, 0)
@@ -96,21 +96,21 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 
 {
   configure(true)
-  quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
+  quick.asks = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   // A model endpoint that is down must not become a banner over somebody's
   // writing. It answers null and the chip simply does not appear.
   const answer = await ask('notes.title', async () => {
     throw new Error('connection refused')
   })
-  assert.equal(answer, null, 'a failed job answers null rather than throwing')
+  assert.equal(answer, null, 'a failed ask answers null rather than throwing')
 }
 
 // ── The answer to a stale question is dropped ────────────────────────────
 
 {
   configure(true)
-  quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
+  quick.asks = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   const first = deferred()
   const second = deferred()
@@ -143,7 +143,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 
 {
   configure(true)
-  quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
+  quick.asks = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   const inflight = deferred()
   const s = slot()
@@ -167,7 +167,7 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
 
 {
   configure(true)
-  quick.jobs = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
+  quick.asks = [{ name: 'notes.title', label: '', blurb: '', app: '', on: true, defaultOn: true }]
 
   const inflight = deferred()
   const s = slot()
@@ -185,20 +185,20 @@ const flush = () => new Promise((r) => setTimeout(r, 0))
   assert.deepEqual(seen, [], 'a cancel is silent in both directions')
 }
 
-// ── `track` gates on nothing, so two jobs can share one slot ─────────────
+// ── `track` gates on nothing, so two asks can share one slot ─────────────
 
 {
   configure(true)
-  // One job on, one off -- the journal's shape when somebody wants the
+  // One ask on, one off -- the journal's shape when somebody wants the
   // numbers but not the tags.
-  quick.jobs = [
+  quick.asks = [
     { name: 'journal.readings', label: '', blurb: '', app: '', on: true, defaultOn: false },
     { name: 'journal.labels', label: '', blurb: '', app: '', on: false, defaultOn: false },
   ]
 
   const s = slot()
   const seen = []
-  // `run` would take one job name and suppress the whole press when that one
+  // `run` would take one ask name and suppress the whole press when that one
   // is off. `track` leaves the gating to the caller, which checks each.
   await s.track(
     async () => 'both asked',

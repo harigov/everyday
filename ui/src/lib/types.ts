@@ -27,6 +27,7 @@ export type EntryId = string
 export type NoteId = string
 export type RoutineId = string
 export type RoutineRunId = string
+export type JobId = string
 export type ProposalId = string
 export type BlobId = string
 export type ProjectId = string
@@ -697,6 +698,59 @@ export interface RunQuery {
   limit?: number | null
 }
 
+// ── Background jobs ──────────────────────────────────────────────────────
+//
+// Work the assistant took on because a question needed more time than a
+// turn: it says so in the thread, the job runs on its own, and when it is
+// done the assistant comes back to that thread with an answer. Mirrors
+// `everyday_core::job`. See `docs/plans/jobs.md`.
+
+/** What a job is, with its arguments. Research is the only kind so far. */
+export type JobKind = { type: 'research'; question: string; brief: string }
+
+export const JOB_STATUSES = ['queued', 'running', 'done', 'failed', 'cancelled'] as const
+export type JobStatus = (typeof JOB_STATUSES)[number]
+
+/** Something a job made. A pointer: the note lives in the Notes app. */
+export type JobOutput = { type: 'note'; noteId: NoteId }
+
+export interface Job {
+  id: JobId
+  kind: JobKind
+  /** The conversation it comes back to. Absent for a job started by hand. */
+  askedIn?: ConversationId | null
+  status: JobStatus
+  /** Why it failed or was cancelled. Empty when it simply worked. */
+  reason: string
+  /** One line for the card while it runs: "Reading example.com". */
+  progress: string
+  /** How many tools it has called. */
+  steps: number
+  /** What it made, in order. A research job's note appears here as soon as it exists. */
+  outputs: JobOutput[]
+  /** The model's last message. */
+  summary: string
+  /** The job's own transcript. Absent until it starts. */
+  conversationId?: ConversationId | null
+  /** Whether the follow-up in `askedIn` has been had. */
+  answered: boolean
+  /** How many times it has been started. */
+  attempts: number
+  /** Whether anybody has looked at it. Part of the count on the app bar. */
+  seen: boolean
+  createdAt: string
+  startedAt?: string | null
+  finishedAt?: string | null
+}
+
+export interface JobQuery {
+  statuses?: JobStatus[]
+  unseen?: boolean | null
+  askedIn?: ConversationId | null
+  since?: string | null
+  limit?: number | null
+}
+
 /**
  * A routine, with the two things a list has to say that the record does not.
  *
@@ -866,6 +920,11 @@ export interface Capabilities {
    * nothing from there.
    */
   routines: boolean
+  /**
+   * Backend carries background jobs, so the assistant can take on a question
+   * that needs more time than a turn and come back with the answer.
+   */
+  jobs?: boolean
   /**
    * Backend carries proposals: work the assistant prepared for the person to
    * accept or decline. False hides dreaming and every ghost.
@@ -2675,9 +2734,9 @@ export interface LLMModelConfig {
 }
 
 /**
- * Which quick jobs may run, as the difference from the defaults.
+ * Which quick asks may run, as the difference from the defaults.
  *
- * Stored this way rather than as a list of what is on so that a job added in
+ * Stored this way rather than as a list of what is on so that an ask added in
  * a later build arrives at its own default, instead of arriving switched off
  * because a settings record written last year did not mention it.
  */
@@ -2717,14 +2776,14 @@ export interface AgentSettings {
   /**
    * The cheap, fast model behind the suggestions in the capture boxes.
    *
-   * `null` means those jobs are not done. It deliberately does *not* fall back
+   * `null` means those asks are not done. It deliberately does *not* fall back
    * to `assistantModel`: these run per keystroke-ish interaction, and a blank
    * field that silently billed at reasoning-model rates would be a bill nobody
    * could account for.
    */
   quickModel: LLMModelConfig | null
-  /** Which quick jobs are allowed, by job name. */
-  quickJobs: QuickPolicy
+  /** Which quick asks are allowed, by name. */
+  quickAsks: QuickPolicy
   /** The person's own standing instructions. */
   instructions: string
   /** Whether a destructive tool call stops and asks first. */
@@ -2845,11 +2904,11 @@ export interface OnScreen {
 // none of these types is ever written straight to the vault, and the core has
 // already clamped each one by the time it gets here.
 
-/** One switch in the settings pane's list of quick jobs. */
-export interface QuickJobRow {
+/** One switch in the settings pane's list of quick asks. */
+export interface QuickAskRow {
   name: string
   label: string
-  /** What this job sends. The sentence somebody reads to decide. */
+  /** What this ask sends. The sentence somebody reads to decide. */
   blurb: string
   /** Which app it belongs to, for grouping. */
   app: string
@@ -2989,6 +3048,8 @@ export interface Conversation {
   title: string
   createdAt: string
   updatedAt: string
+  /** The background job this thread is the transcript of, if it is one. */
+  jobId?: JobId | null
   /** The chat this thread arrived through, when somebody started it from
    *  another device rather than in the rail. Absent for every other
    *  conversation -- the Rust side leaves it off the wire entirely. */

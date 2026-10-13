@@ -106,6 +106,7 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::Conversation
         | Kind::Routine
         | Kind::RoutineRun
+        | Kind::Job
         | Kind::Proposal
         | Kind::Memory
         | Kind::Skill
@@ -142,6 +143,7 @@ fn capabilities_baseline() -> Capabilities {
         purpose: false,
         notes: false,
         routines: false,
+        jobs: false,
         proposals: false,
         agent: false,
         secrets: false,
@@ -169,6 +171,7 @@ fn capabilities_all_true() -> Capabilities {
         purpose: true,
         notes: true,
         routines: true,
+        jobs: true,
         proposals: true,
         agent: true,
         secrets: true,

@@ -74,24 +74,24 @@ impl Vault {
         Ok((settings, key))
     }
 
-    /// The same, for a quick job.
+    /// The same, for a quick ask.
     ///
     /// A separate door because it opens on a different condition: the quick
-    /// jobs do not consult [`AgentSettings::enabled`], and a person who wants
+    /// asks do not consult [`AgentSettings::enabled`], and a person who wants
     /// their shelves filled in but no resident assistant must be able to have
     /// exactly that. The key and the endpoint are shared; the switch is not.
     ///
-    /// Takes the job's name and refuses one the policy has not allowed, so
+    /// Takes the ask's name and refuses one the policy has not allowed, so
     /// the check cannot be left to a caller that forgot — this is the only
-    /// way a quick job can get a credential, so it is the right place for the
+    /// way a quick ask can get a credential, so it is the right place for the
     /// gate.
-    pub fn quick_credentials(&self, job: &str) -> Result<(AgentSettings, Option<String>)> {
+    pub fn quick_credentials(&self, name: &str) -> Result<(AgentSettings, Option<String>)> {
         let settings = self.agent_settings()?;
         if settings.quick_model.is_none() {
             return Err(Error::Invalid("no quick model is configured".into()));
         }
-        if !settings.quick_jobs.allows(job) {
-            return Err(Error::Invalid(format!("{job} is switched off")));
+        if !settings.quick_asks.allows(name) {
+            return Err(Error::Invalid(format!("{name} is switched off")));
         }
         self.raw_llm_credentials(settings)
     }
@@ -121,7 +121,7 @@ impl Vault {
     ///
     /// A fourth door onto the credential, beside [`Vault::agent_credentials`],
     /// [`Vault::quick_credentials`] and [`Vault::mail_ai_credentials`], and on
-    /// the loosest terms of the four: no gate on `enabled` or on a job being
+    /// the loosest terms of the four: no gate on `enabled` or on an ask being
     /// allowed, because the assistant need not be switched on for meeting
     /// notes to reuse its key. Answers `None` rather than failing when there
     /// is nothing to reuse -- pointed somewhere other than OpenAI, or no key

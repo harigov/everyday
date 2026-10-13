@@ -270,6 +270,9 @@ fn count(service: &Service, sources: BadgeSources) -> u64 {
         if vault.supports_routines() {
             total += read("runs", vault.unseen_runs());
         }
+        if vault.supports_jobs() {
+            total += read("jobs", vault.unseen_jobs());
+        }
         if vault.supports_proposals() {
             total += read("proposals", vault.unseen_proposals());
         }

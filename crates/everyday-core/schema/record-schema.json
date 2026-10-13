@@ -922,6 +922,14 @@
         "format": "uuid",
         "type": "string"
       },
+      "jobId": {
+        "description": "The background job this thread is the transcript of, if it is one.\nKept out of the rail's list for the reason `run_id` is.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "runId": {
         "description": "The routine run this thread is the transcript of, if it is one.\n\nInside the payload rather than a column, because it is only ever read\nafter the row has been decrypted anyway -- the history list opens every\nthread for its title. It is how the rail keeps a week of morning briefs\nout of a list of conversations somebody actually had.",
         "format": "uuid",
@@ -1981,6 +1989,194 @@
       "updatedAt"
     ],
     "title": "Item",
+    "type": "object"
+  },
+  "Job": {
+    "$defs": {
+      "JobKind": {
+        "description": "What a job is, with its arguments.\n\nAn enum rather than a name and a bag of fields, for the reason\n[`crate::routine::Trigger`] is one: each kind carries exactly what it\nneeds and nothing it does not.",
+        "oneOf": [
+          {
+            "description": "Find out, from the web and from the vault, and write it up as a note.",
+            "properties": {
+              "brief": {
+                "default": "",
+                "description": "What the assistant that started the job knows and the job should:\nwho is asking and what for, what they already know or ruled out,\nwhat shape of answer would help. Written by the model that\nstarted it, because nothing else about that conversation reaches\nthe job.",
+                "type": "string"
+              },
+              "question": {
+                "description": "The question, in the person's words where the assistant has them.",
+                "type": "string"
+              },
+              "type": {
+                "const": "research",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "question"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "JobOutput": {
+        "description": "Something a job made, in the order it made them.\n\nA pointer, never a copy: the note a research job wrote lives in the Notes\napp like any other, and is found there.",
+        "oneOf": [
+          {
+            "description": "A note. A research job's write-up.",
+            "properties": {
+              "noteId": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "note",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "noteId"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "JobStatus": {
+        "description": "Where a job stands.\n\nIts own set rather than [`crate::routine::Outcome`]: `Skipped` means\nsomething precise for a routine (its moment passed) that a job never is,\nand `Cancelled` means something a routine never is.",
+        "oneOf": [
+          {
+            "const": "queued",
+            "description": "Asked for, and not started yet.",
+            "type": "string"
+          },
+          {
+            "const": "running",
+            "description": "Under way. A row in this state that no live process claims is one a\ndead process left, and the worker's sweep puts it back in the queue\n(or fails it, past [`MAX_ATTEMPTS`]).",
+            "type": "string"
+          },
+          {
+            "const": "done",
+            "description": "Finished, and what it made is in [`Job::outputs`].",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The model refused, the endpoint was unreachable, it ran out of time,\nit was interrupted too often. Why is in [`Job::reason`].",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Somebody stopped it: the person, or the assistant on their behalf.\nWhatever it had written by then is kept.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One piece of background work.",
+    "properties": {
+      "answered": {
+        "default": false,
+        "description": "Whether the follow-up turn in [`Job::asked_in`] has been had. Apart\nfrom `status` so that a restart between finishing and answering can\nstill answer.",
+        "type": "boolean"
+      },
+      "askedIn": {
+        "description": "The conversation to come back to when it is done. `None` for a job\nstarted from the Assistant app or the CLI rather than from a thread.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "attempts": {
+        "default": 0,
+        "description": "How many times it has been started. See [`MAX_ATTEMPTS`].",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "conversationId": {
+        "description": "The job's own transcript, kept out of the rail's history the way a\nroutine run's is. Absent until it starts.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "finishedAt": {
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/JobKind"
+      },
+      "outputs": {
+        "default": [],
+        "description": "What it made. A research job's note goes in here the moment the note\nexists, not at the end, so a job that fails half way has still left\nwhat it found somewhere to be read.",
+        "items": {
+          "$ref": "#/$defs/JobOutput"
+        },
+        "type": "array"
+      },
+      "progress": {
+        "default": "",
+        "description": "One line for the card while it runs: \"Reading example.com\". Empty\nuntil it has done something.",
+        "type": "string"
+      },
+      "reason": {
+        "default": "",
+        "description": "Why it failed or was cancelled. Empty when it simply worked.",
+        "type": "string"
+      },
+      "seen": {
+        "default": false,
+        "description": "Whether anybody has looked at it. Part of the count on the app bar.",
+        "type": "boolean"
+      },
+      "startedAt": {
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/$defs/JobStatus"
+      },
+      "steps": {
+        "default": 0,
+        "description": "How many tools it has called.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "summary": {
+        "default": "",
+        "description": "The model's last message: what it has to say for itself.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "kind",
+      "status",
+      "createdAt"
+    ],
+    "title": "Job",
     "type": "object"
   },
   "Journal": {

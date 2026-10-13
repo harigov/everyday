@@ -33,7 +33,7 @@
   import { quick } from '../lib/quick.svelte'
   import { PROPOSAL_KINDS } from '../lib/types'
   import type { Painter } from '../lib/companion-scene'
-  import type { AgentSettings, LLMModelConfig, ProposalKind, QuickJobRow } from '../lib/types'
+  import type { AgentSettings, LLMModelConfig, ProposalKind, QuickAskRow } from '../lib/types'
   import Companion from './Companion.svelte'
   import Icon from './Icon.svelte'
   import MailActionsList from './MailActionsList.svelte'
@@ -172,15 +172,15 @@
   const QUICK_DEFAULT: LLMModelConfig = { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 }
 
   /**
-   * The job switches, grouped the way the app bar is.
+   * The quick-ask switches, grouped the way the app bar is.
    *
    * Grouped rather than listed because twenty checkboxes in one column is a
    * wall nobody reads, and the decision somebody is actually making is
    * per-app: "the library may look things up, the journal may not".
    */
   const grouped = $derived(
-    quick.jobs.reduce<Record<string, QuickJobRow[]>>((acc, job) => {
-      ;(acc[job.app] ??= []).push(job)
+    quick.asks.reduce<Record<string, QuickAskRow[]>>((acc, ask) => {
+      ;(acc[ask.app] ??= []).push(ask)
       return acc
     }, {}),
   )
@@ -189,7 +189,7 @@
    * Turning the quick model on and off.
    *
    * Off writes `null` rather than an empty model name, because those mean
-   * different things: null is "do not do the small jobs", and an empty name
+   * different things: null is "do not do the quick asks", and an empty name
    * is a configuration that fails at the endpoint. The Rust refuses the
    * second, which is the right place for it, and this makes sure the pane
    * cannot produce one.
@@ -219,15 +219,15 @@
   }
 
   /**
-   * A job switch, saved on the spot rather than with the pane.
+   * A quick-ask switch, saved on the spot rather than with the pane.
    *
    * These are twenty checkboxes somebody flicks one at a time, and
    * round-tripping the whole settings record per flick is how two panes open
    * at once overwrite one another. Its own command, for that reason.
    */
-  async function setJob(name: string, on: boolean) {
+  async function setAsk(name: string, on: boolean) {
     try {
-      await quick.setJob(name, on)
+      await quick.setAsk(name, on)
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
     }
@@ -513,20 +513,20 @@
           {/if}
         </p>
 
-        <div class="jobs">
-          {#each Object.entries(grouped) as [app, jobs] (app)}
+        <div class="switches">
+          {#each Object.entries(grouped) as [app, asks] (app)}
             <div class="group">
               <span class="group-name">{app}</span>
-              {#each jobs as job (job.name)}
-                <label class="job">
+              {#each asks as ask (ask.name)}
+                <label class="switch">
                   <input
                     type="checkbox"
-                    checked={job.on}
-                    onchange={(e) => void setJob(job.name, e.currentTarget.checked)}
+                    checked={ask.on}
+                    onchange={(e) => void setAsk(ask.name, e.currentTarget.checked)}
                   />
-                  <span class="job-text">
-                    <span class="job-label">{job.label}</span>
-                    <span class="job-blurb">{job.blurb}</span>
+                  <span class="switch-text">
+                    <span class="switch-label">{ask.label}</span>
+                    <span class="switch-blurb">{ask.blurb}</span>
                   </span>
                 </label>
               {/each}
@@ -619,18 +619,18 @@
         </label>
 
         {#if draft.dreaming}
-          <div class="jobs">
+          <div class="switches">
             <div class="group">
               <span class="group-name">What it may propose</span>
               {#each PROPOSAL_KINDS as kind (kind)}
-                <label class="job">
+                <label class="switch">
                   <input
                     type="checkbox"
                     checked={!isDenied(kind)}
                     onchange={(e) => toggleKind(kind, e.currentTarget.checked)}
                   />
-                  <span class="job-text">
-                    <span class="job-label">{PROPOSAL_KIND_LABELS[kind]}</span>
+                  <span class="switch-text">
+                    <span class="switch-label">{PROPOSAL_KIND_LABELS[kind]}</span>
                   </span>
                 </label>
               {/each}
@@ -708,10 +708,10 @@
 {/if}
 
 <style>
-  /* The job switches. Grouped by app, and each one carries the sentence that
+  /* The quick-ask switches. Grouped by app, and each one carries the sentence that
      says what it sends -- which is the only thing that makes the checkbox a
      decision rather than a shrug. */
-  .jobs {
+  .switches {
     display: flex;
     flex-direction: column;
     gap: var(--sp-4);
@@ -731,24 +731,24 @@
     letter-spacing: 0.06em;
   }
 
-  .job {
+  .switch {
     display: flex;
     align-items: flex-start;
     gap: var(--sp-2);
     cursor: pointer;
   }
 
-  .job-text {
+  .switch-text {
     display: flex;
     flex-direction: column;
     gap: 1px;
   }
 
-  .job-label {
+  .switch-label {
     font-size: var(--text-sm);
   }
 
-  .job-blurb {
+  .switch-blurb {
     color: var(--fg-subtle);
     font-size: var(--text-xs);
   }

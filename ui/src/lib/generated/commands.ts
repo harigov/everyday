@@ -62,6 +62,9 @@ import type {
   ItemId,
   ItemQuery,
   ItemStatus,
+  Job,
+  JobId,
+  JobQuery,
   Journal,
   JournalId,
   Kind,
@@ -110,10 +113,10 @@ import type {
   ProposalQuery,
   ProposedRecord,
   ProviderInfo,
+  QuickAskRow,
   QuickBackfillPick,
   QuickEventDraft,
   QuickFields,
-  QuickJobRow,
   QuickKindDraft,
   QuickLabels,
   QuickMapping,
@@ -207,6 +210,7 @@ export interface Commands {
     args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
     result: void
   }
+  answerJob: { args: { id: JobId }; result: void }
   appendRecordingChunk: {
     args: { id: RecordingId; track: Track; seq: number; startMs: number; pcm: string }
     result: void
@@ -240,6 +244,7 @@ export interface Commands {
   }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
+  cancelJob: { args: { id: JobId }; result: Job }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
   cancelSpeechModelDownload: { args: { id: string }; result: void }
   cancelTurn: { args: { conversationId: ConversationId }; result: boolean }
@@ -262,6 +267,7 @@ export interface Commands {
   deleteEvent: { args: { id: EventId; scope?: EventScope }; result: void }
   deleteGoal: { args: { id: GoalId }; result: void }
   deleteItem: { args: { id: ItemId }; result: void }
+  deleteJob: { args: { id: JobId }; result: void }
   deleteJournal: { args: { id: JournalId }; result: void }
   deleteKind: { args: { id: KindId }; result: void }
   deleteLog: { args: { id: LogId }; result: void }
@@ -310,6 +316,7 @@ export interface Commands {
   getEvent: { args: { id: EventId }; result: CalendarEvent }
   getGoal: { args: { id: GoalId }; result: Goal }
   getItem: { args: { id: ItemId }; result: Item }
+  getJob: { args: { id: JobId }; result: Job }
   getNote: { args: { id: NoteId }; result: Note }
   getProposal: { args: { id: ProposalId }; result: Proposal }
   getRecording: { args: { id: RecordingId }; result: Recording }
@@ -349,6 +356,7 @@ export interface Commands {
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
   listItems: { args: { query: ItemQuery }; result: Item[] }
+  listJobs: { args: { query?: JobQuery }; result: Job[] }
   listJournals: { args: Record<string, never>; result: Journal[] }
   listKinds: { args: Record<string, never>; result: KindInfo[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
@@ -413,6 +421,7 @@ export interface Commands {
   }
   mailActivity: { args: { from: string; to: string; tz?: string }; result: MailActivity }
   markAllStoriesRead: { args: { sources: NewsSourceId[]; upTo: string }; result: StoryId[] }
+  markJobsSeen: { args: { ids?: JobId[] }; result: void }
   markProposalsSeen: { args: { ids?: ProposalId[] }; result: void }
   markRead: { args: { threads: ThreadId[] }; result: Op[] }
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
@@ -463,6 +472,7 @@ export interface Commands {
   pollAutoLock: { args: Record<string, never>; result: boolean }
   previewMeetingTemplate: { args: { body: string }; result: string }
   profile: { args: Record<string, never>; result: Profile }
+  quickAsks: { args: Record<string, never>; result: QuickAskRow[] }
   quickEntryLabels: {
     args: { entryId: EntryId; journalId?: JournalId | null }
     result: QuickLabels
@@ -483,7 +493,6 @@ export interface Commands {
     result: QuickMapping
   }
   quickItemFields: { args: { itemId: ItemId }; result: QuickFields }
-  quickJobs: { args: Record<string, never>; result: QuickJobRow[] }
   quickKindDraft: { args: { name: string }; result: QuickKindDraft }
   quickNoteLabels: { args: { noteId: NoteId }; result: QuickLabels }
   quickNoteTasks: { args: { noteId: NoteId }; result: QuickTaskDraft[] }
@@ -594,7 +603,7 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
-  setQuickJob: { args: { name: string; on: boolean }; result: QuickJobRow[] }
+  setQuickAsk: { args: { name: string; on: boolean }; result: QuickAskRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
@@ -603,6 +612,10 @@ export interface Commands {
   star: { args: { threads: ThreadId[] }; result: Op[] }
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
+  startResearch: {
+    args: { question: string; brief?: string; conversationId?: ConversationId | null }
+    result: Job
+  }
   status: { args: Record<string, never>; result: VaultStatus }
   subscribeAccountCalendar: { args: { account: AccountId; remoteId: string }; result: CalendarInfo }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
@@ -623,6 +636,7 @@ export interface Commands {
   undoSend: { args: { draftId: DraftId }; result: Draft }
   unlabel: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   unlock: { args: { password: string }; result: VaultStatus }
+  unseenJobs: { args: Record<string, never>; result: number }
   unseenProposals: { args: Record<string, never>; result: number }
   unseenRuns: { args: Record<string, never>; result: number }
   unsnooze: { args: { threads: ThreadId[] }; result: void }
@@ -645,6 +659,7 @@ export const COMMAND_NAMES = {
   addStoryToLibrary: 'add_story_to_library',
   agentSettings: 'agent_settings',
   allowRemoteImages: 'allow_remote_images',
+  answerJob: 'answer_job',
   appendRecordingChunk: 'append_recording_chunk',
   applyMetadata: 'apply_metadata',
   archive: 'archive',
@@ -654,6 +669,7 @@ export const COMMAND_NAMES = {
   beginRecording: 'begin_recording',
   benchmarkSpeechModel: 'benchmark_speech_model',
   calendarProviders: 'calendar_providers',
+  cancelJob: 'cancel_job',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
   cancelSpeechModelDownload: 'cancel_speech_model_download',
   cancelTurn: 'cancel_turn',
@@ -676,6 +692,7 @@ export const COMMAND_NAMES = {
   deleteEvent: 'delete_event',
   deleteGoal: 'delete_goal',
   deleteItem: 'delete_item',
+  deleteJob: 'delete_job',
   deleteJournal: 'delete_journal',
   deleteKind: 'delete_kind',
   deleteLog: 'delete_log',
@@ -713,6 +730,7 @@ export const COMMAND_NAMES = {
   getEvent: 'get_event',
   getGoal: 'get_goal',
   getItem: 'get_item',
+  getJob: 'get_job',
   getNote: 'get_note',
   getProposal: 'get_proposal',
   getRecording: 'get_recording',
@@ -740,6 +758,7 @@ export const COMMAND_NAMES = {
   listEvents: 'list_events',
   listGoals: 'list_goals',
   listItems: 'list_items',
+  listJobs: 'list_jobs',
   listJournals: 'list_journals',
   listKinds: 'list_kinds',
   listLogs: 'list_logs',
@@ -772,6 +791,7 @@ export const COMMAND_NAMES = {
   mailActionsByOrigin: 'mail_actions_by_origin',
   mailActivity: 'mail_activity',
   markAllStoriesRead: 'mark_all_stories_read',
+  markJobsSeen: 'mark_jobs_seen',
   markProposalsSeen: 'mark_proposals_seen',
   markRead: 'mark_read',
   markRunsSeen: 'mark_runs_seen',
@@ -805,6 +825,7 @@ export const COMMAND_NAMES = {
   pollAutoLock: 'poll_auto_lock',
   previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
+  quickAsks: 'quick_asks',
   quickEntryLabels: 'quick_entry_labels',
   quickEntryReadings: 'quick_entry_readings',
   quickEntryTitle: 'quick_entry_title',
@@ -816,7 +837,6 @@ export const COMMAND_NAMES = {
   quickGoalWording: 'quick_goal_wording',
   quickImportColumns: 'quick_import_columns',
   quickItemFields: 'quick_item_fields',
-  quickJobs: 'quick_jobs',
   quickKindDraft: 'quick_kind_draft',
   quickNoteLabels: 'quick_note_labels',
   quickNoteTasks: 'quick_note_tasks',
@@ -889,7 +909,7 @@ export const COMMAND_NAMES = {
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   setMemoryOrigin: 'set_memory_origin',
-  setQuickJob: 'set_quick_job',
+  setQuickAsk: 'set_quick_ask',
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
   setTranscriberKey: 'set_transcriber_key',
@@ -898,6 +918,7 @@ export const COMMAND_NAMES = {
   star: 'star',
   startExport: 'start_export',
   startImport: 'start_import',
+  startResearch: 'start_research',
   status: 'status',
   subscribeAccountCalendar: 'subscribe_account_calendar',
   subscribeCalendar: 'subscribe_calendar',
@@ -918,6 +939,7 @@ export const COMMAND_NAMES = {
   undoSend: 'undo_send',
   unlabel: 'unlabel',
   unlock: 'unlock',
+  unseenJobs: 'unseen_jobs',
   unseenProposals: 'unseen_proposals',
   unseenRuns: 'unseen_runs',
   unsnooze: 'unsnooze',
@@ -950,6 +972,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_story_to_library',
   'agent_settings',
   'allow_remote_images',
+  'answer_job',
   'append_recording_chunk',
   'apply_metadata',
   'archive',
@@ -959,6 +982,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'begin_recording',
   'benchmark_speech_model',
   'calendar_providers',
+  'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
   'cancel_turn',
@@ -981,6 +1005,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_event',
   'delete_goal',
   'delete_item',
+  'delete_job',
   'delete_journal',
   'delete_kind',
   'delete_log',
@@ -1018,6 +1043,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_event',
   'get_goal',
   'get_item',
+  'get_job',
   'get_note',
   'get_proposal',
   'get_recording',
@@ -1045,6 +1071,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_events',
   'list_goals',
   'list_items',
+  'list_jobs',
   'list_journals',
   'list_kinds',
   'list_logs',
@@ -1077,6 +1104,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'mail_actions_by_origin',
   'mail_activity',
   'mark_all_stories_read',
+  'mark_jobs_seen',
   'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
@@ -1110,6 +1138,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'poll_auto_lock',
   'preview_meeting_template',
   'profile',
+  'quick_asks',
   'quick_entry_labels',
   'quick_entry_readings',
   'quick_entry_title',
@@ -1121,7 +1150,6 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'quick_goal_wording',
   'quick_import_columns',
   'quick_item_fields',
-  'quick_jobs',
   'quick_kind_draft',
   'quick_note_labels',
   'quick_note_tasks',
@@ -1193,7 +1221,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
-  'set_quick_job',
+  'set_quick_ask',
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
@@ -1202,6 +1230,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'star',
   'start_export',
   'start_import',
+  'start_research',
   'status',
   'subscribe_account_calendar',
   'subscribe_calendar',
@@ -1222,6 +1251,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'undo_send',
   'unlabel',
   'unlock',
+  'unseen_jobs',
   'unseen_proposals',
   'unseen_runs',
   'unsnooze',
@@ -1247,12 +1277,14 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_news_source',
   'add_story_to_library',
   'allow_remote_images',
+  'answer_job',
   'append_recording_chunk',
   'apply_metadata',
   'archive',
   'attach_oauth_sign_in',
   'begin_oauth_sign_in',
   'begin_recording',
+  'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
   'cancel_turn',
@@ -1272,6 +1304,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_event',
   'delete_goal',
   'delete_item',
+  'delete_job',
   'delete_journal',
   'delete_kind',
   'delete_log',
@@ -1305,6 +1338,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'lock',
   'log_reading',
   'mark_all_stories_read',
+  'mark_jobs_seen',
   'mark_proposals_seen',
   'mark_read',
   'mark_runs_seen',
@@ -1368,12 +1402,13 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
-  'set_quick_job',
+  'set_quick_ask',
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
   'snooze',
   'star',
+  'start_research',
   'subscribe_account_calendar',
   'subscribe_calendar',
   'sync_account',
@@ -1397,10 +1432,12 @@ export const CHANGE_KINDS = {
   add_news_source: 'newsSource',
   add_story_to_library: 'item',
   allow_remote_images: 'settings',
+  answer_job: 'job',
   apply_metadata: 'item',
   archive: 'thread',
   attach_oauth_sign_in: 'account',
   begin_recording: 'recording',
+  cancel_job: 'job',
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
   clear_agent_key: 'settings',
@@ -1416,6 +1453,7 @@ export const CHANGE_KINDS = {
   delete_event: 'event',
   delete_goal: 'goal',
   delete_item: 'item',
+  delete_job: 'job',
   delete_journal: 'journal',
   delete_kind: 'shelf',
   delete_log: 'log',
@@ -1444,6 +1482,7 @@ export const CHANGE_KINDS = {
   label: 'thread',
   log_reading: 'reading',
   mark_all_stories_read: 'story',
+  mark_jobs_seen: 'job',
   mark_proposals_seen: 'proposal',
   mark_read: 'thread',
   mark_runs_seen: 'routineRun',
@@ -1501,12 +1540,13 @@ export const CHANGE_KINDS = {
   set_item_progress: 'item',
   set_item_status: 'item',
   set_memory_origin: 'memory',
-  set_quick_job: 'settings',
+  set_quick_ask: 'settings',
   set_thread_category: 'thread',
   set_thread_priority: 'thread',
   set_transcriber_key: 'settings',
   snooze: 'thread',
   star: 'thread',
+  start_research: 'job',
   subscribe_account_calendar: 'calendar',
   subscribe_calendar: 'calendar',
   sync_calendar: 'event',

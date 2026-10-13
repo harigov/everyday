@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -103,6 +103,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v12(d),
         v13(d),
         v14(d),
+        v15(d),
     ]
 }
 
@@ -1385,6 +1386,33 @@ fn v14(d: Dialect) -> Vec<String> {
                  data      {blob} NOT NULL
              )"
         ),
+    ]
+}
+
+/// Version 15: background jobs -- work the assistant took on because a
+/// question needed more time than a turn. See `docs/plans/jobs.md` and
+/// `everyday_core::job`.
+///
+/// Additive. One table. In the clear: when a job was asked for and whether
+/// anybody has looked at it, which is what the list and the count on the app
+/// bar are ordered by. Sealed: its kind and question, where it stands, the
+/// conversation it came from, and everything it said -- so the file can say
+/// that the assistant was asked something at three and nobody has read the
+/// answer, and never what, or whether it worked.
+fn v15(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS jobs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 seen        {boolean} NOT NULL DEFAULT {f},
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS jobs_by_time ON jobs (created_us)".into(),
+        // The count on the app bar, and the list behind it.
+        "CREATE INDEX IF NOT EXISTS jobs_unseen ON jobs (seen, created_us)".into(),
     ]
 }
 

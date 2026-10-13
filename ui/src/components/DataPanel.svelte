@@ -302,7 +302,7 @@
     list-style: none;
   }
 
-  /* No horizontal inset: a `.job` or `.toggle` row elsewhere in Settings puts
+  /* No horizontal inset: a `.switch` or `.toggle` row elsewhere in Settings puts
      its checkbox flush with the section text above it, and this one was
      indented a few pixels past it by padding meant only to give the hover
      highlight some room to breathe. The vertical half of that padding still

@@ -15,6 +15,7 @@
 // by reading.
 
 import { api } from './api'
+import { jobs } from './jobs.svelte'
 import { panels } from './panels.svelte'
 import { proposals } from './proposals.svelte'
 import { app, handle, isLocked } from './state.svelte'
@@ -102,7 +103,10 @@ class AssistantState {
   async #load() {
     this.loading = true
     try {
-      await this.refresh()
+      // Jobs are their own store, loaded alongside rather than through
+      // `refresh`, so that `jobs.start` is the load a caller asking twice
+      // waits for and `jobs.loading` is true while it runs.
+      await Promise.all([this.#refreshStanding(), jobs.start()])
       await proposals.refresh()
       this.templates = app.supportsRoutines ? await api.routineTemplates() : []
     } finally {
@@ -119,14 +123,23 @@ class AssistantState {
    * can appear (the settings nav, a link from the conversation page, a
    * shortcut), which is why it is keyed on the tab being shown rather than
    * on how anybody got there.
+   *
+   * "What it did" lists background jobs beside the routine runs, so looking
+   * at it clears both counts.
    */
   async show(pane: Pane) {
     if (this.#loading) await this.#loading
-    if (pane === 'runs') await this.markSeen()
+    if (pane === 'runs') await Promise.all([this.markSeen(), jobs.markSeen()])
     else if (pane === 'proposals') await proposals.markSeen(proposals.pending)
   }
 
   async refresh() {
+    if (!this.enabled) return
+    await Promise.all([this.#refreshStanding(), jobs.refresh()])
+  }
+
+  /** Everything `refresh` reloads but the jobs, which report their own errors. */
+  async #refreshStanding() {
     if (!this.enabled) return
     try {
       this.memories = await api.memories()
@@ -148,7 +161,11 @@ class AssistantState {
    * three lists it is not showing.
    */
   async refreshCount() {
-    if (!this.enabled || !app.supportsRoutines) return
+    if (!this.enabled) return
+    // The jobs' count is added to the bar's. A vault can have jobs without
+    // routines, so this is not behind the check below.
+    void jobs.refreshCount()
+    if (!app.supportsRoutines) return
     try {
       this.unseen = await api.unseenRuns()
     } catch {

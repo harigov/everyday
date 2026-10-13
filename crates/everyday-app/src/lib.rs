@@ -144,7 +144,13 @@ pub fn run() {
             // Held for the life of the process. The scheduler stops when the
             // process does, and nothing else should be able to stop it.
             std::mem::forget(_stop);
-            tauri::async_runtime::spawn(everyday_service::scheduler::run(service.clone(), listen));
+            tauri::async_runtime::spawn(everyday_service::scheduler::run(
+                service.clone(),
+                listen.clone(),
+            ));
+            // Background jobs, beside the scheduler rather than inside it --
+            // see `everyday_service::jobs` -- on the same stop signal.
+            tauri::async_runtime::spawn(everyday_service::jobs::run(service.clone(), listen));
             // The mail phase's per-account sync tasks, tied to this vault's
             // lock through `Service::locked` and `Service::unlocked` -- see
             // `everyday_service::supervisor`'s module doc. Constructed here,

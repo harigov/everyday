@@ -473,6 +473,19 @@ class AppState {
     return this.status?.capabilities?.routines === true
   }
 
+  /**
+   * Can the assistant here take work on in the background?
+   *
+   * Its own flag rather than `supportsRoutines`, though both are the
+   * assistant's standing work: the Markdown backend stores no jobs, and a
+   * vault that has routines may still not have this table. Without it
+   * `start_research` is not offered, so there is nothing to draw. See
+   * `docs/plans/jobs.md`.
+   */
+  get supportsJobs(): boolean {
+    return this.status?.capabilities?.jobs === true
+  }
+
   /** Backend carries proposals -- see `docs/plans/dreaming.md`. */
   get supportsProposals(): boolean {
     return this.status?.capabilities?.proposals === true

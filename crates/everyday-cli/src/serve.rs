@@ -90,7 +90,11 @@ pub(crate) fn serve(
         // desk, no window anywhere, and a seven o'clock brief that happens
         // anyway. It does nothing until the first client unlocks the vault.
         let (stop_scheduler, listen) = tokio::sync::watch::channel(false);
-        let scheduling = tokio::spawn(everyday_service::scheduler::run(service.clone(), listen));
+        let scheduling =
+            tokio::spawn(everyday_service::scheduler::run(service.clone(), listen.clone()));
+        // Background jobs, beside the scheduler and stopped with it -- see
+        // `everyday_service::jobs`.
+        let working = tokio::spawn(everyday_service::jobs::run(service.clone(), listen));
 
         // Mail's future per-account sync tasks, tied to this vault's lock
         // through `Service::locked` and `Service::unlocked` -- see
@@ -181,6 +185,10 @@ pub(crate) fn serve(
         // stops them -- see `Service::locked`. Bounded by each task's own
         // grace period rather than by a run's fifteen minutes, so this
         // cannot make Ctrl-C wait the way a routine mid-run could.
+        // A background job is not waited for: research can take half an
+        // hour, and the worker's sweep puts a job left `Running` back in the
+        // queue the next time the vault is unlocked.
+        working.abort();
         supervisor.stop_all().await;
         running.stop();
         // Give the vault its checkpoint before the process goes.

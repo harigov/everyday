@@ -893,7 +893,7 @@
       ]
     },
     {
-      "command": "set_quick_job",
+      "command": "set_quick_ask",
       "events": [
         {
           "idPresent": false,
@@ -972,6 +972,54 @@
           "idsLen": 1,
           "kind": "routineRun",
           "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "start_research",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "job",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "mark_jobs_seen",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "job",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "cancel_job",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "job",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_job",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "job",
+          "op": "deleted",
           "origin": "local"
         }
       ]
@@ -1113,6 +1161,10 @@
     }
   ],
   "skippedCommands": [
+    {
+      "name": "answer_job",
+      "reason": "spawns the follow-up turn in the background, which needs a model"
+    },
     {
       "name": "attach_oauth_sign_in",
       "reason": "OAuth: attaches a real sign-in's tokens to an account"

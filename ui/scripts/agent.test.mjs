@@ -405,17 +405,22 @@ function msg(over) {
 }
 
 // A tool turn with no assistant turn before it is dropped rather than drawn
-// floating, and the application's own notes are never drawn at all.
+// floating. The application's own lines -- a background job finishing, say --
+// are drawn, as `system` turns of their own, attributed to neither party.
 {
   const turns = replay([
     msg({ id: 'm1', role: 'tool', content: 'orphan', toolCallId: 'call_x' }),
-    msg({ id: 'm2', role: 'system', content: 'the vault was locked' }),
+    msg({ id: 'm2', role: 'system', content: 'Research finished: «e-bikes»' }),
     msg({ id: 'm3', role: 'user', content: 'hello' }),
   ])
   assert.deepEqual(
-    turns.map((t) => t.id),
-    ['m3'],
+    turns.map((t) => [t.id, t.role]),
+    [
+      ['m2', 'system'],
+      ['m3', 'user'],
+    ],
   )
+  assert.equal(turns[0].text, 'Research finished: «e-bikes»')
 }
 
 assert.deepEqual(replay([]), [], 'an empty thread replays to nothing')

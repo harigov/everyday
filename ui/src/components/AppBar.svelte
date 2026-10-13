@@ -17,6 +17,7 @@
   import { app, type Section } from '../lib/state.svelte'
   import { APPS as APP_REGISTRY } from '../lib/apps'
   import { assistant } from '../lib/assistant.svelte'
+  import { jobs } from '../lib/jobs.svelte'
   import { proposals } from '../lib/proposals.svelte'
   import { meetings } from '../lib/meetings.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -86,11 +87,12 @@
   const ASSISTANT: AppEntry = entryOf('assistant')
 
   /**
-   * What has not been looked at: runs, and proposals waiting for an answer.
-   * Two counts because two stores keep them, one badge because nobody
-   * arriving at this button needs to know which kind it is before opening it.
+   * What has not been looked at: runs, background jobs, and proposals waiting
+   * for an answer. Three counts because three stores keep them, one badge
+   * because nobody arriving at this button needs to know which kind it is
+   * before opening it.
    */
-  const unseen = $derived(assistant.unseen + proposals.unseen)
+  const unseen = $derived(assistant.unseen + jobs.unseen + proposals.unseen)
 
   /**
    * A tray entry as a menu row.

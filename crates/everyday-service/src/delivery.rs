@@ -28,7 +28,7 @@ use std::time::Duration;
 /// How long a message to the chat may take to go before the run stops
 /// waiting for it. Generous, because it waits behind whatever the owner's
 /// own chat is doing at the time.
-const POST_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const POST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Send `run`'s result to every place `routine` names. One [`Delivered`] per
 /// place, in the order the routine's [`Delivery`] lists them; empty when it

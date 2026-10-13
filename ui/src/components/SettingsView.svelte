@@ -46,6 +46,7 @@
   import { api } from '../lib/api'
   import { agent } from '../lib/agent.svelte'
   import { assistant, PANE_LABELS, type Pane } from '../lib/assistant.svelte'
+  import { jobs } from '../lib/jobs.svelte'
   import { proposals } from '../lib/proposals.svelte'
   import { humanBytes, plural } from '../lib/format'
   import { focusOnMount } from '../lib/focus'
@@ -146,9 +147,9 @@
     return PANES.includes(t)
   }
 
-  /** The count a tab carries -- the same two the app bar adds together. */
+  /** The count a tab carries -- the same ones the app bar adds together. */
   function count(t: SettingsTab): number {
-    if (t === 'runs') return assistant.unseen
+    if (t === 'runs') return assistant.unseen + jobs.unseen
     if (t === 'proposals') return proposals.unseen
     return 0
   }

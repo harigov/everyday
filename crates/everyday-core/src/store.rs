@@ -32,6 +32,7 @@ use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::accounts::AccountStore;
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
+use crate::store::jobs::JobStore;
 use crate::store::library::LibraryStore;
 use crate::store::mail::MailStore;
 use crate::store::meetings::MeetingStore;
@@ -117,6 +118,12 @@ pub struct Capabilities {
     /// works: talking to it needs nothing from here.
     #[serde(default)]
     pub routines: bool,
+    /// Backend implements [`jobs::JobStore`], so the assistant can take on
+    /// work that needs more time than a turn and come back with it.
+    ///
+    /// False takes the job tools away; the rail still answers, in one turn.
+    #[serde(default)]
+    pub jobs: bool,
     /// Backend implements [`proposals::ProposalStore`], so the assistant can
     /// leave work it prepared for the person to accept or decline.
     ///
@@ -517,6 +524,7 @@ pub trait JournalStore: Send + Sync {
             purpose: self.purpose().is_some(),
             notes: self.notes().is_some(),
             routines: self.routines().is_some(),
+            jobs: self.jobs().is_some(),
             proposals: self.proposals().is_some(),
             agent: self.agent().is_some(),
             secrets: self.secrets().is_some(),
@@ -594,6 +602,14 @@ pub trait JournalStore: Send + Sync {
     /// [`routines`](crate::store::routines) for the two records it holds and
     /// the one cascade it does have.
     fn routines(&self) -> Option<&dyn RoutineStore> {
+        None
+    }
+
+    /// Storage for background jobs, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`jobs`](crate::store::jobs) and [`crate::job`].
+    fn jobs(&self) -> Option<&dyn JobStore> {
         None
     }
 
@@ -1028,6 +1044,7 @@ impl BackendRegistry {
 pub mod accounts;
 pub mod agent;
 pub mod calendars;
+pub mod jobs;
 pub mod library;
 pub mod mail;
 pub mod meetings;

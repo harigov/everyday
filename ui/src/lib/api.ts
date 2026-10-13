@@ -47,6 +47,8 @@ import type {
   ItemId,
   ItemQuery,
   ItemStatus,
+  JobId,
+  JobQuery,
   Journal,
   JournalId,
   Kind,
@@ -352,9 +354,19 @@ if (!MOCK) {
     }
   }
 } else {
-  const { mockInvoke, mockOnMeetingOffer, mockOnMeetingStatus, mockOnMeetingStillOn } =
-    await import('./mock')
+  const {
+    mockInvoke,
+    mockOnChange,
+    mockOnMeetingOffer,
+    mockOnMeetingStatus,
+    mockOnMeetingStillOn,
+  } = await import('./mock')
   invoke = mockInvoke
+  // Only the simulated research job raises change events -- every other mock
+  // write is read back by the store that made it -- but a job moves on its
+  // own, and a card that only changed when somebody reloaded would not show
+  // what it is for. See `mock-jobs.ts`.
+  onChange = mockOnChange
   // A real backend emits these from native capture code; the mock has none,
   // so it stands in with its own pub/sub, driven by `meetings.svelte.ts`'s
   // "mock capture" simulation rather than by anything crossing a bridge.
@@ -755,6 +767,32 @@ export const api = {
   /** How many runs nobody has looked at. The number on the app bar. */
   unseenRuns: () => call('unseenRuns', {}),
   routineTemplates: () => call('routineTemplates', {}),
+
+  /**
+   * Work the assistant took on in the background. See `jobs.svelte.ts`.
+   *
+   * Newest first, like the run log beside it.
+   */
+  jobs: (query: JobQuery = {}) => call('listJobs', { query }),
+  job: (id: JobId) => call('getJob', { id }),
+  /**
+   * Start research by hand, rather than the assistant starting it.
+   *
+   * Queued rather than run: the worker picks it up. `conversationId` is where
+   * the answer comes back to; leave it off and the job just makes its note.
+   */
+  startResearch: (question: string, brief?: string, conversationId?: ConversationId) =>
+    call('startResearch', { question, brief, conversationId }),
+  /** Stop a queued or running job. Whatever it wrote is kept. */
+  cancelJob: (id: JobId) => call('cancelJob', { id }),
+  /** Delete a finished job and its transcript. The note it made stays. */
+  deleteJob: (id: JobId) => call('deleteJob', { id }),
+  /** Mark jobs as looked at. An empty list means all of them. */
+  markJobsSeen: (ids: JobId[] = []) => call('markJobsSeen', { ids }),
+  /** How many jobs nobody has looked at. Added to the number on the app bar. */
+  unseenJobs: () => call('unseenJobs', {}),
+  /** Have the follow-up in the conversation that asked run again. */
+  answerJob: (id: JobId) => call('answerJob', { id }),
 
   /** Work the assistant prepared. See `proposals.svelte.ts`. */
   proposals: (query: ProposalQuery = {}) => call('listProposals', { query }),
@@ -1264,8 +1302,8 @@ export const api = {
   // which owns the switch check, the cancellation and the rule that a failure
   // here is silence rather than an error.
 
-  quickJobs: () => call('quickJobs', {}),
-  setQuickJob: (args: { name: string; on: boolean }) => call('setQuickJob', args),
+  quickAsks: () => call('quickAsks', {}),
+  setQuickAsk: (args: { name: string; on: boolean }) => call('setQuickAsk', args),
 
   /** The shelf's own declared fields, out of what a search found. */
   quickItemFields: (itemId: ItemId) => call('quickItemFields', { itemId }),

@@ -16,6 +16,7 @@
   import { assistant, type Pane } from '../lib/assistant.svelte'
   import { agent } from '../lib/agent.svelte'
   import { api } from '../lib/api'
+  import { jobs } from '../lib/jobs.svelte'
   import { app } from '../lib/state.svelte'
   import { DECLINE_REASONS, proposals, recordAs } from '../lib/proposals.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -45,6 +46,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
+  import JobCard from './JobCard.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
   import SkillProposalPreview from './SkillProposalPreview.svelte'
 
@@ -348,12 +350,16 @@
 
   <div class="body">
     {#if pane === 'runs'}
-      {#if assistant.runs.length === 0}
+      {#if assistant.runs.length === 0 && jobs.jobs.length === 0}
         <EmptyState lead="It has not done anything yet">
           {#snippet icon()}<Icon name="sparkle" size={34} weight={1.4} />{/snippet}
           {#snippet note()}
             Set up a routine and it will start turning up here on its own. Whatever it makes — a
             note, a task, an hour set aside — goes to the app that owns it.
+            {#if jobs.enabled}
+              A question that needs more than a few searches is taken away and worked on in the
+              background, and turns up here too.
+            {/if}
           {/snippet}
           {#snippet action()}
             {#if app.supportsRoutines}
@@ -364,6 +370,19 @@
           {/snippet}
         </EmptyState>
       {:else}
+        {#if jobs.jobs.length > 0}
+          <!-- Work it took away to do, beside what its routines did. Above
+               them because there is little of it and it is the part that is
+               still moving: a research job is the one thing on this page that
+               can be running while it is read. -->
+          <p class="lead heading">Background work</p>
+          {#each jobs.jobs as job (job.id)}
+            <JobCard {job} onremove={() => void jobs.remove(job.id)} />
+          {/each}
+          {#if assistant.runs.length > 0}
+            <p class="lead heading">Routine runs</p>
+          {/if}
+        {/if}
         {#each assistant.runs as run (run.id)}
           <article
             class="card"

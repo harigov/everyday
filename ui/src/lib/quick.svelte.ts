@@ -5,7 +5,7 @@
 // socket; this file is what components hold, and it exists so that the four
 // things every caller of a suggestion needs are written once:
 //
-//   * is it even switched on, for this job
+//   * is it even switched on, for this ask
 //   * a failure that is silence rather than an error
 //   * cancellation, so a suggestion about the previous note cannot arrive
 //     beside this one
@@ -29,11 +29,11 @@
 
 import { api } from './api'
 import { agent } from './agent.svelte'
-import type { QuickJobRow } from './types'
+import type { QuickAskRow } from './types'
 import { VaultError } from './types'
 
 /**
- * Which jobs are switched on, mirrored from the vault.
+ * Which asks are switched on, mirrored from the vault.
  *
  * Loaded once when the app unlocks and again after the settings pane touches
  * it. Held here rather than asked per call because `enabled` is read on every
@@ -41,7 +41,7 @@ import { VaultError } from './types'
  * suggest" would cost more than the suggestion.
  */
 class QuickState {
-  jobs = $state<QuickJobRow[]>([])
+  asks = $state<QuickAskRow[]>([])
 
   /**
    * Whether a quick model is configured at all.
@@ -57,14 +57,14 @@ class QuickState {
     return agent.settings?.quickModel != null
   }
 
-  /** Whether one named job may run right now. */
-  enabled(job: string): boolean {
+  /** Whether one named ask may run right now. */
+  enabled(name: string): boolean {
     if (!this.configured) return false
-    return this.jobs.find((j) => j.name === job)?.on ?? false
+    return this.asks.find((a) => a.name === name)?.on ?? false
   }
 
   /**
-   * The job rows, and the settings they are read against.
+   * The ask rows, and the settings they are read against.
    *
    * `loadSettings` rather than `agent.load`: the latter also fetches fifty
    * threads and starts one, and nothing about a shelf filling in its own
@@ -72,21 +72,21 @@ class QuickState {
    */
   async load() {
     try {
-      const [jobs] = await Promise.all([api.quickJobs(), agent.loadSettings()])
-      this.jobs = jobs
+      const [asks] = await Promise.all([api.quickAsks(), agent.loadSettings()])
+      this.asks = asks
     } catch {
       // Same argument as everywhere else in this file: a settings read that
       // failed means no chips, not a banner.
-      this.jobs = []
+      this.asks = []
     }
   }
 
-  async setJob(name: string, on: boolean) {
-    this.jobs = await api.setQuickJob({ name, on })
+  async setAsk(name: string, on: boolean) {
+    this.asks = await api.setQuickAsk({ name, on })
   }
 
   reset() {
-    this.jobs = []
+    this.asks = []
   }
 }
 
@@ -96,20 +96,20 @@ export const quick = new QuickState()
  * Run one quick call, or answer `null`.
  *
  * The single door: every suggestion in the application goes through this, so
- * the switch check, the swallow and the log line exist once. `job` is checked
+ * the switch check, the swallow and the log line exist once. `name` is checked
  * against the policy here *as well as* in Rust, and that is not redundancy
  * worth removing — the Rust check is what makes the guarantee, and this one
  * is what stops the request being made at all.
  */
-export async function ask<T>(job: string, call: () => Promise<T>): Promise<T | null> {
-  if (!quick.enabled(job)) return null
+export async function ask<T>(name: string, call: () => Promise<T>): Promise<T | null> {
+  if (!quick.enabled(name)) return null
   try {
     return await call()
   } catch (e) {
     // A locked vault is not a failure of this feature and is already handled
     // by whatever is drawing the lock screen.
     if (!(e instanceof VaultError && e.code === 'locked')) {
-      console.debug(`quick job ${job} did not answer`, e)
+      console.debug(`quick ask ${name} did not answer`, e)
     }
     return null
   }
@@ -131,17 +131,17 @@ export function slot<T>() {
 
   return {
     /** Ask, and call `onResult` only if nothing newer has been asked since. */
-    async run(job: string, call: () => Promise<T>, onResult: (value: T | null) => void) {
+    async run(name: string, call: () => Promise<T>, onResult: (value: T | null) => void) {
       const mine = ++generation
       dismissed = false
-      const value = await ask(job, call)
+      const value = await ask(name, call)
       if (mine !== generation || dismissed) return
       onResult(value)
     },
     /**
      * The same staleness guard, for a caller that does its own gating.
      *
-     * `run` checks one job name, which is right when a slot serves one job.
+     * `run` checks one ask name, which is right when a slot serves one ask.
      * A caller combining two -- the capture box asks `todo.parse` and
      * `todo.purpose` together -- has already checked each, and passing either
      * name to `run` would let one switch being off suppress the other.
