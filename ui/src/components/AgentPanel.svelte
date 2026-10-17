@@ -8,12 +8,14 @@
   // here is the fields and the Save, and none of the chrome.
   //
   // The order of the fields is the order the decisions actually get made:
-  // whether to use it at all, what to call it, then what model, then the
-  // credential that model needs, then how it should behave. The key is
-  // deliberately not first — pasting a key before choosing an endpoint is how
-  // people end up sending an OpenAI key to somebody else's gateway.
+  // whether to use it at all, what to call it, then how it should behave.
+  // Which model it runs on, where, and the key, are not here: they are
+  // application settings -- Settings → Models -- because research and the
+  // quick asks run on models too, and this tab was the cluttered place all
+  // three used to be configured from.
 
   import { onDestroy } from 'svelte'
+  import { providerLabel } from '../lib/accounts'
   import { isLoopback } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import { app } from '../lib/state.svelte'
@@ -29,11 +31,11 @@
     type Look,
   } from '../lib/companion'
   import { PROPOSAL_KIND_LABELS } from '../lib/dream'
+  import { models } from '../lib/models.svelte'
   import { panels } from '../lib/panels.svelte'
-  import { quick } from '../lib/quick.svelte'
   import { PROPOSAL_KINDS } from '../lib/types'
   import type { Painter } from '../lib/companion-scene'
-  import type { AgentSettings, LLMModelConfig, ProposalKind, QuickAskRow } from '../lib/types'
+  import type { AgentSettings, ProposalKind } from '../lib/types'
   import Companion from './Companion.svelte'
   import Icon from './Icon.svelte'
   import MailActionsList from './MailActionsList.svelte'
@@ -41,7 +43,6 @@
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
   // be what the next message is sent to.
   let draft = $state<AgentSettings | null>(null)
-  let key = $state('')
   let notice = $state<string | null>(null)
   let saving = $state(false)
   /**
@@ -138,7 +139,7 @@
   // tab can be opened before the round trip has come back.
   void agent.load()
   void agent.loadMemories()
-  void quick.load()
+  void models.load()
 
   $effect(() => {
     if (!draft && agent.settings) draft = structuredClone($state.snapshot(agent.settings))
@@ -160,45 +161,6 @@
     return [...new Set([localZone, ...all])].sort()
   })()
 
-  /** Common endpoints, so the two local ones are not a thing to look up. */
-  const PRESETS = [
-    { label: 'OpenAI', url: '' },
-    { label: 'Ollama', url: 'http://localhost:11434/v1' },
-    { label: 'LM Studio', url: 'http://localhost:1234/v1' },
-    { label: 'OpenRouter', url: 'https://openrouter.ai/api/v1' },
-  ]
-
-  /** What a fresh quick model looks like when the switch is turned on. */
-  const QUICK_DEFAULT: LLMModelConfig = { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 }
-
-  /**
-   * The quick-ask switches, grouped the way the app bar is.
-   *
-   * Grouped rather than listed because twenty checkboxes in one column is a
-   * wall nobody reads, and the decision somebody is actually making is
-   * per-app: "the library may look things up, the journal may not".
-   */
-  const grouped = $derived(
-    quick.asks.reduce<Record<string, QuickAskRow[]>>((acc, ask) => {
-      ;(acc[ask.app] ??= []).push(ask)
-      return acc
-    }, {}),
-  )
-
-  /**
-   * Turning the quick model on and off.
-   *
-   * Off writes `null` rather than an empty model name, because those mean
-   * different things: null is "do not do the quick asks", and an empty name
-   * is a configuration that fails at the endpoint. The Rust refuses the
-   * second, which is the right place for it, and this makes sure the pane
-   * cannot produce one.
-   */
-  function toggleQuick(on: boolean) {
-    if (!draft) return
-    draft.quickModel = on ? { ...QUICK_DEFAULT } : null
-  }
-
   /**
    * Whether a kind of proposal is switched off.
    *
@@ -219,33 +181,25 @@
   }
 
   /**
-   * A quick-ask switch, saved on the spot rather than with the pane.
+   * Is every model on this machine?
    *
-   * These are twenty checkboxes somebody flicks one at a time, and
-   * round-tripping the whole settings record per flick is how two panes open
-   * at once overwrite one another. Its own command, for that reason.
-   */
-  async function setAsk(name: string, on: boolean) {
-    try {
-      await quick.setAsk(name, on)
-    } catch (e) {
-      notice = e instanceof Error ? e.message : String(e)
-    }
-  }
-
-  /**
-   * Is the model on this machine?
+   * Every one, not only the medium model the conversations run on: a research
+   * job the assistant starts runs on the large one with the same tools, and
+   * reads the vault there; a quick ask reads a journal entry on the small
+   * one. "Nothing leaves it" is only true when all of them are here.
    *
    * `isLoopback`, and not a second opinion. This was a copy of it that had
    * fallen a case or two behind -- it missed `[::1]`, which is the form
-   * `URL.hostname` actually returns for an IPv6 address, and `0.0.0.0`. So an
-   * Ollama endpoint on IPv6 was told "what you ask about is sent to the model
-   * provider you configure below" while `agent.ready` was treating the same
-   * address as local and not asking for a key. Of the two things this decides
-   * -- whether to demand an API key, and what to say about where your journal
-   * goes -- disagreeing about the second is the one that matters.
+   * `URL.hostname` actually returns for an IPv6 address, and `0.0.0.0`. Of
+   * the two things it decides -- whether a key is needed, and what to say
+   * about where your journal goes -- disagreeing about the second is the one
+   * that matters.
    */
-  const local = $derived(isLoopback(draft?.providerConfig.baseUrl ?? null))
+  const local = $derived.by(() => {
+    const s = models.settings
+    if (!s) return false
+    return [s.large, s.medium, s.small].every((t) => t == null || isLoopback(t.baseUrl))
+  })
 
   async function save() {
     if (!draft) return
@@ -256,10 +210,6 @@
     const wasDreaming = agent.settings?.dreaming === true
     try {
       await agent.saveSettings($state.snapshot(draft))
-      if (key.trim()) {
-        await agent.setKey(key.trim())
-        key = ''
-      }
       draft = structuredClone($state.snapshot(agent.settings!))
       // The three dream routines are made the moment dreaming is switched on
       // -- see `Vault::set_dreaming` -- so the routines pane has to be told
@@ -271,18 +221,6 @@
       notice = e instanceof Error ? e.message : String(e)
     } finally {
       saving = false
-    }
-  }
-
-  async function removeKey() {
-    if (noticeTimer) clearTimeout(noticeTimer)
-    noticeTimer = null
-    notice = null
-    try {
-      await agent.clearKey()
-      if (draft) draft.hasKey = false
-    } catch (e) {
-      notice = e instanceof Error ? e.message : String(e)
     }
   }
 </script>
@@ -305,10 +243,10 @@
         <b>Use the assistant</b>
         <small>
           {#if local}
-            Your journal is sent to the model running on this machine. Nothing leaves it.
+            Your journal is sent to the models running on this machine. Nothing leaves it.
           {:else}
-            What you ask about — entries, tasks, whatever it reads — is sent to the model provider
-            you configure below.
+            What you ask about — entries, tasks, whatever it reads — is sent to the providers of the
+            models it runs on, set under Models.
           {/if}
         </small>
       </span>
@@ -415,129 +353,23 @@
       </p>
     </section>
 
+    <!-- What used to be three sections here -- the endpoint, the key, and the
+         quick model -- and is now a pointer: they are the application's
+         settings, under Models, with the large and small models beside the
+         one this runs on. -->
     <section>
-      <span class="eyebrow">Where the models are</span>
-      <div class="presets">
-        {#each PRESETS as preset (preset.label)}
-          <button
-            class="chip"
-            class:on={(draft.providerConfig.baseUrl ?? '') === preset.url}
-            onclick={() => draft && (draft.providerConfig.baseUrl = preset.url || null)}
-          >
-            {preset.label}
-          </button>
-        {/each}
-      </div>
-
-      <label class="setting">
-        <span>Model name</span>
-        <input
-          bind:value={draft.assistantModel.model}
-          placeholder="gpt-5.1-mini"
-          spellcheck="false"
-        />
-      </label>
-
-      <label class="setting">
-        <span>Base URL</span>
-        <input
-          value={draft.providerConfig.baseUrl ?? ''}
-          oninput={(e) =>
-            draft && (draft.providerConfig.baseUrl = e.currentTarget.value.trim() || null)}
-          placeholder="https://api.openai.com/v1"
-          spellcheck="false"
-        />
-      </label>
+      <span class="eyebrow">Model</span>
       <p class="hint">
-        Anything that speaks the OpenAI chat API. Leave empty for OpenAI itself. One endpoint and
-        one key, however many models — the quick model below is the same provider, one tier down.
+        {#if models.settings}
+          It runs on the Medium model, <b>{models.settings.medium.model}</b> at
+          {providerLabel(models.settings.medium.baseUrl)}{models.usable('medium')
+            ? '.'
+            : ', which still needs a key.'}
+        {/if}
+        Which model, where, and the key are under
+        <button class="link" onclick={() => panels.openSettings('models')}>Models</button>, with the
+        large model research runs on and the small one behind the quick asks.
       </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">API key</span>
-      {#if draft.hasKey}
-        <div class="stored">
-          <span><Icon name="lock" size={14} /> A key is stored in this vault.</span>
-          <button class="link" onclick={() => void removeKey()}>Remove</button>
-        </div>
-      {/if}
-      <label class="setting">
-        <span>{draft.hasKey ? 'Replace it' : 'Key'}</span>
-        <input
-          type="password"
-          bind:value={key}
-          placeholder={local ? 'Not needed for a local model' : 'sk-…'}
-          spellcheck="false"
-          autocomplete="off"
-        />
-      </label>
-      <p class="hint">
-        Encrypted with everything else in the vault, so it is unreadable while the vault is locked —
-        and the assistant cannot spend it while locked either.
-      </p>
-    </section>
-
-    <section>
-      <span class="eyebrow">The quick model</span>
-      <label class="toggle">
-        <input
-          type="checkbox"
-          checked={draft.quickModel != null}
-          onchange={(e) => toggleQuick(e.currentTarget.checked)}
-        />
-        <span>Fill in fields and suggest things, using a smaller model</span>
-      </label>
-      <p class="hint">
-        A separate switch from the assistant, and deliberately: wanting your shelves filled in is
-        not the same as wanting something to talk to. It uses the endpoint and the key above, with a
-        cheaper model — and it is never allowed to change what you already typed.
-      </p>
-
-      {#if draft.quickModel}
-        <label class="setting">
-          <span>Model name</span>
-          <input
-            bind:value={draft.quickModel.model}
-            placeholder="gpt-5.1-nano"
-            spellcheck="false"
-          />
-        </label>
-        <p class="hint">
-          {#if local}
-            On this machine, so nothing leaves it. A small local model is enough for this work —
-            pulling four fields out of a paragraph is not a job that rewards a large one.
-          {:else}
-            A nano-tier model. These are one-shot extractions with a schema, so the cheapest thing
-            your endpoint offers is usually the right answer.
-          {/if}
-        </p>
-
-        <div class="switches">
-          {#each Object.entries(grouped) as [app, asks] (app)}
-            <div class="group">
-              <span class="group-name">{app}</span>
-              {#each asks as ask (ask.name)}
-                <label class="switch">
-                  <input
-                    type="checkbox"
-                    checked={ask.on}
-                    onchange={(e) => void setAsk(ask.name, e.currentTarget.checked)}
-                  />
-                  <span class="switch-text">
-                    <span class="switch-label">{ask.label}</span>
-                    <span class="switch-blurb">{ask.blurb}</span>
-                  </span>
-                </label>
-              {/each}
-            </div>
-          {/each}
-        </div>
-        <p class="hint">
-          Each one says what it sends, because “AI features: on” is not a decision anybody can make.
-          The ones that read a journal entry start switched off.
-        </p>
-      {/if}
     </section>
 
     <!-- Called a soul rather than a prompt, because that is what people put
@@ -585,7 +417,7 @@
             preparing for a meeting, the names of the people in it) to a search engine; reading a
             page tells that site the page was asked for; a forecast sends a place name to
             Open-Meteo. An address nobody gave it asks you first. Everything else stays between here
-            and the model endpoint above.
+            and the model endpoints under Models.
           </small>
         </span>
       </label>
@@ -708,9 +540,8 @@
 {/if}
 
 <style>
-  /* The quick-ask switches. Grouped by app, and each one carries the sentence that
-     says what it sends -- which is the only thing that makes the checkbox a
-     decision rather than a shrug. */
+  /* The switches for what a dream may propose -- a group with a heading,
+     drawn the way Settings → Models draws the quick asks. */
   .switches {
     display: flex;
     flex-direction: column;
@@ -746,11 +577,6 @@
 
   .switch-label {
     font-size: var(--text-sm);
-  }
-
-  .switch-blurb {
-    color: var(--fg-subtle);
-    font-size: var(--text-xs);
   }
 
   /* Every box in here is `width: 100%` of a column that has `min-width: 0`.
@@ -962,26 +788,6 @@
     width: 110px;
   }
 
-  .stored {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    padding: var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg);
-    font-size: var(--text-sm);
-    min-width: 0;
-  }
-  .stored span {
-    display: flex;
-    flex: 1;
-    align-items: baseline;
-    gap: var(--sp-2);
-    min-width: 0;
-    line-height: var(--leading-normal);
-    color: var(--fg-muted);
-  }
   .link {
     flex: none;
     color: var(--accent);

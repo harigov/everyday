@@ -155,6 +155,14 @@ impl JournalStore for SqlStore {
         self.write_profile(profile)
     }
 
+    fn model_settings(&self) -> Result<Option<everyday_core::llm::ModelSettings>> {
+        self.read_model_settings()
+    }
+
+    fn put_model_settings(&self, settings: &everyday_core::llm::ModelSettings) -> Result<()> {
+        self.write_model_settings(settings)
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>> {

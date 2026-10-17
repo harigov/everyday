@@ -24,7 +24,7 @@
 //! consent. The chat assistant gets no such moment, so it gets one of its
 //! own: [`crate::account::Account::assistant_provider_acknowledged`] must
 //! name the LLM provider actually configured right now
-//! ([`crate::agent::LLMProviderConfig::acknowledgement_name`]) before any of
+//! ([`crate::llm::ModelSettings::acknowledgement_name`]) before any of
 //! its mail tools apply to that account at all. This is not
 //! [`super::Sensitivity::Secret`] -- mail stays reachable in principle, the
 //! way every domain here is, which is the whole point of having an

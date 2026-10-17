@@ -92,6 +92,9 @@ import type {
   MemoryId,
   MemoryOrigin,
   ModelBenchmark,
+  ModelSettings,
+  ModelSettingsView,
+  ModelTier,
   NewSource,
   NewsSource,
   NewsSourceId,
@@ -251,7 +254,7 @@ export interface Commands {
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
-  clearAgentKey: { args: Record<string, never>; result: void }
+  clearModelKey: { args: { tier: ModelTier }; result: ModelSettingsView }
   collectGarbage: { args: Record<string, never>; result: number }
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
@@ -430,6 +433,7 @@ export interface Commands {
   meetingActivity: { args: { from: string; to: string; tz?: string }; result: MeetingActivity }
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
+  modelSettings: { args: Record<string, never>; result: ModelSettingsView }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
   nameSpeaker: {
     args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }
@@ -552,6 +556,7 @@ export interface Commands {
   saveLog: { args: { log: LogEntry }; result: void }
   saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
+  saveModelSettings: { args: { settings: ModelSettings }; result: ModelSettingsView }
   saveNewsSource: { args: { source: NewsSource }; result: void }
   saveNote: { args: { note: Note; expect?: string | null }; result: void }
   saveNoteForce: { args: { note: Note }; result: void }
@@ -593,7 +598,6 @@ export interface Commands {
     args: { id: AccountId; caller: AgentCallerKind; access: AgentMailAccess }
     result: void
   }
-  setAgentKey: { args: { key: string }; result: void }
   setAutoLock: { args: { seconds: number }; result: void }
   setDefaultCalendar: { args: { id?: CalendarId | null }; result: void }
   setForgetKey: { args: { seconds: number }; result: void }
@@ -603,6 +607,7 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
+  setModelKey: { args: { tier: ModelTier; key: string }; result: ModelSettingsView }
   setQuickAsk: { args: { name: string; on: boolean }; result: QuickAskRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
@@ -676,7 +681,7 @@ export const COMMAND_NAMES = {
   categoryCounts: 'category_counts',
   changePassword: 'change_password',
   chatLinks: 'chat_links',
-  clearAgentKey: 'clear_agent_key',
+  clearModelKey: 'clear_model_key',
   collectGarbage: 'collect_garbage',
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
@@ -800,6 +805,7 @@ export const COMMAND_NAMES = {
   meetingActivity: 'meeting_activity',
   meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
+  modelSettings: 'model_settings',
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
   newBlock: 'new_block',
@@ -881,6 +887,7 @@ export const COMMAND_NAMES = {
   saveLog: 'save_log',
   saveMeetingSettings: 'save_meeting_settings',
   saveMemory: 'save_memory',
+  saveModelSettings: 'save_model_settings',
   saveNewsSource: 'save_news_source',
   saveNote: 'save_note',
   saveNoteForce: 'save_note_force',
@@ -902,13 +909,13 @@ export const COMMAND_NAMES = {
   sendDraft: 'send_draft',
   sendMessage: 'send_message',
   setAgentAccess: 'set_agent_access',
-  setAgentKey: 'set_agent_key',
   setAutoLock: 'set_auto_lock',
   setDefaultCalendar: 'set_default_calendar',
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   setMemoryOrigin: 'set_memory_origin',
+  setModelKey: 'set_model_key',
   setQuickAsk: 'set_quick_ask',
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
@@ -989,7 +996,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'category_counts',
   'change_password',
   'chat_links',
-  'clear_agent_key',
+  'clear_model_key',
   'collect_garbage',
   'confirm_tool_call',
   'conversation_messages',
@@ -1113,6 +1120,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'meeting_activity',
   'meeting_settings',
   'merge_trackers',
+  'model_settings',
   'move_to_mailbox',
   'name_speaker',
   'new_block',
@@ -1194,6 +1202,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_log',
   'save_meeting_settings',
   'save_memory',
+  'save_model_settings',
   'save_news_source',
   'save_note',
   'save_note_force',
@@ -1214,13 +1223,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'seed_roles',
   'send_draft',
   'set_agent_access',
-  'set_agent_key',
   'set_auto_lock',
   'set_default_calendar',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
+  'set_model_key',
   'set_quick_ask',
   'set_thread_category',
   'set_thread_priority',
@@ -1289,7 +1298,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_speech_model_download',
   'cancel_turn',
   'change_password',
-  'clear_agent_key',
+  'clear_model_key',
   'collect_garbage',
   'confirm_tool_call',
   'create_event',
@@ -1378,6 +1387,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_log',
   'save_meeting_settings',
   'save_memory',
+  'save_model_settings',
   'save_news_source',
   'save_note',
   'save_note_force',
@@ -1395,13 +1405,13 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'send_draft',
   'send_message',
   'set_agent_access',
-  'set_agent_key',
   'set_auto_lock',
   'set_default_calendar',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
+  'set_model_key',
   'set_quick_ask',
   'set_thread_category',
   'set_thread_priority',
@@ -1440,7 +1450,7 @@ export const CHANGE_KINDS = {
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
-  clear_agent_key: 'settings',
+  clear_model_key: 'settings',
   create_event: 'event',
   decline_proposal: 'proposal',
   delete_account: 'account',
@@ -1516,6 +1526,7 @@ export const CHANGE_KINDS = {
   save_log: 'log',
   save_meeting_settings: 'settings',
   save_memory: 'memory',
+  save_model_settings: 'settings',
   save_news_source: 'newsSource',
   save_note: 'note',
   save_note_force: 'note',
@@ -1533,13 +1544,13 @@ export const CHANGE_KINDS = {
   send_draft: 'draft',
   send_message: 'conversation',
   set_agent_access: 'account',
-  set_agent_key: 'settings',
   set_auto_lock: 'settings',
   set_default_calendar: 'calendar',
   set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
   set_memory_origin: 'memory',
+  set_model_key: 'settings',
   set_quick_ask: 'settings',
   set_thread_category: 'thread',
   set_thread_priority: 'thread',

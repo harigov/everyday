@@ -71,16 +71,18 @@ fn service_with_model(
     endpoint: &str,
 ) -> (Arc<Service>, Arc<Vault>, Arc<Collector>, tempfile::TempDir) {
     let (svc, vault, events, dir) = service();
-    let mut settings = AgentSettings {
+    let settings = AgentSettings {
         enabled: true,
         // Everything is reckoned in UTC so the tests are about jobs rather
         // than about where the machine running them is.
         timezone: Some("UTC".into()),
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
     (svc, vault, events, dir)
 }
 

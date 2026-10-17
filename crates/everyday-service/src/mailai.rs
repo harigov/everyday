@@ -45,8 +45,8 @@ use std::sync::Arc;
 
 use everyday_core::Vault;
 use everyday_core::account::Account;
-use everyday_core::agent::{AgentSettings, LLMModelConfig};
 use everyday_core::id::{AccountId, MailMessageId, ThreadId};
+use everyday_core::llm::{ModelAccess, ModelTier};
 use everyday_core::mail::voice::{self, VoiceProfile};
 use everyday_core::mail::{
     Address, Category, CategorySource, Draft, DraftState, MailAiFeature, MailAiRefusal, Message,
@@ -106,11 +106,27 @@ const SUMMARY_MESSAGE_CAP: usize = 20;
 /// Total characters of `model_text` a summary prompt carries.
 const SUMMARY_CHAR_CAP: usize = 12_000;
 
-/// [`LLMProviderConfig::acknowledgement_name`](everyday_core::agent::LLMProviderConfig::acknowledgement_name),
-/// or `""` when there is nothing configured — the same value
-/// [`mail_ai_allowed`] compares every account's acknowledgement against.
-fn provider_name(settings: &AgentSettings) -> String {
-    settings.provider_config.acknowledgement_name()
+/// The model a mail feature is about to send `account`'s mail to, refused
+/// unless the account's acknowledgement names that model's endpoints.
+///
+/// Checked against [`ModelAccess::acknowledgement`] -- the snapshot the
+/// request is about to be made under -- and not against an earlier read of
+/// the settings: a check made before an `await` and a request made after it
+/// could otherwise be about two different sets of endpoints, if the models
+/// were moved in between. Every on-request feature here and in
+/// `crate::mailwrite` takes its model through this, right before the call.
+pub(crate) fn mail_model(
+    vault: &Vault,
+    account: &Account,
+    feature: MailAiFeature,
+    tier: ModelTier,
+) -> CommandResult<ModelAccess> {
+    let access = vault
+        .mail_ai_credentials(tier)
+        .map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
+    mail_ai_allowed(account, &access.acknowledgement, feature)
+        .map_err(|r| refused(account, feature, r))?;
+    Ok(access)
 }
 
 fn refused(account: &Account, feature: MailAiFeature, refusal: MailAiRefusal) -> CommandError {
@@ -175,19 +191,22 @@ pub async fn categorize_tick(service: &Arc<Service>) {
         return;
     }
     let Ok(accounts) = vault.accounts() else { return };
-    let Ok(settings) = vault.agent_settings() else { return };
-    let provider = provider_name(&settings);
+    // One snapshot of the small model for the whole tick -- sorting is
+    // small-model work, and with none there is nothing to do -- and every
+    // account checked against *its* acknowledgement: the endpoints the
+    // requests below are actually sent to, not an earlier read of them.
+    let Ok(small) = vault.mail_ai_credentials(ModelTier::Small) else { return };
     for account in accounts.into_iter().filter(|a| a.services.mail) {
-        if mail_ai_allowed(&account, &provider, MailAiFeature::Categorize).is_err() {
+        if mail_ai_allowed(&account, &small.acknowledgement, MailAiFeature::Categorize).is_err() {
             continue;
         }
-        if let Err(e) = categorize_account(service, &vault, &account).await {
+        if let Err(e) = categorize_account(service, &vault, &account, &small).await {
             tracing::warn!(error = %e, account = %account.id, "mail categorisation failed");
         }
         // Priority is a categorisation too -- see `prioritize_account`'s
         // own docs -- so it runs under the exact gate just checked above,
         // with no switch or acknowledgement check of its own.
-        if let Err(e) = prioritize_account(service, &vault, &account).await {
+        if let Err(e) = prioritize_account(service, &vault, &account, &small).await {
             tracing::warn!(error = %e, account = %account.id, "mail prioritisation failed");
         }
     }
@@ -207,6 +226,7 @@ async fn categorize_account(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
     account: &Account,
+    small: &ModelAccess,
 ) -> CommandResult<()> {
     let account_id = account.id;
     let cursor = service.mail_categorize_cursor(account_id);
@@ -297,13 +317,8 @@ async fn categorize_account(
         return Ok(());
     }
 
-    let (settings, key) =
-        vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
-    let model = settings
-        .quick_model
-        .clone()
-        .ok_or_else(|| CommandError::new(codes::QUICK, "no quick model is configured"))?;
-    let client = crate::llm::client(&settings.provider_config, key)
+    let model = &small.config.model;
+    let client = crate::llm::client_for(small)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
     let user = items
@@ -313,7 +328,7 @@ async fn categorize_account(
         .collect::<Vec<_>>()
         .join("\n\n");
     let answer =
-        crate::quick::run_prompt(client, &model, CATEGORIZE_SYSTEM, &user, categorize_schema())
+        crate::quick::run_prompt(client, model, CATEGORIZE_SYSTEM, &user, categorize_schema())
             .await?;
 
     apply_categorize_answer(vault, &items, answer).await;
@@ -435,6 +450,7 @@ async fn prioritize_account(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
     account: &Account,
+    small: &ModelAccess,
 ) -> CommandResult<()> {
     let account_id = account.id;
     let cursor = service.mail_priority_cursor(account_id);
@@ -535,13 +551,8 @@ async fn prioritize_account(
     // tick still reaches them.
     items.truncate(granted);
 
-    let (settings, key) =
-        vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
-    let model = settings
-        .quick_model
-        .clone()
-        .ok_or_else(|| CommandError::new(codes::QUICK, "no quick model is configured"))?;
-    let client = crate::llm::client(&settings.provider_config, key)
+    let model = &small.config.model;
+    let client = crate::llm::client_for(small)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
     let user = items
@@ -551,7 +562,7 @@ async fn prioritize_account(
         .collect::<Vec<_>>()
         .join("\n\n");
     let answer =
-        crate::quick::run_prompt(client, &model, PRIORITIZE_SYSTEM, &user, priority_schema())
+        crate::quick::run_prompt(client, model, PRIORITIZE_SYSTEM, &user, priority_schema())
             .await?;
 
     apply_priority_answer(vault, &items, answer).await;
@@ -659,10 +670,11 @@ pub async fn summarize_thread(
         blocking(move || Ok(vault.account(account_id)?)).await?
     };
 
-    let settings =
-        vault.agent_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
-    let provider = provider_name(&settings);
-    mail_ai_allowed(&account, &provider, MailAiFeature::Summaries)
+    // Checked here as well as at the request, so a cached answer is never
+    // handed out for an account that has not agreed to summaries.
+    let models =
+        vault.model_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
+    mail_ai_allowed(&account, &models.acknowledgement_name(), MailAiFeature::Summaries)
         .map_err(|r| refused(&account, MailAiFeature::Summaries, r))?;
 
     // A cached answer costs nothing -- not a model call, and not a token
@@ -693,14 +705,15 @@ pub async fn summarize_thread(
         return Ok(String::new());
     }
 
-    let (settings, key) =
-        vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
-    let client = crate::llm::client(&settings.provider_config, key)
+    // A summary is prose about somebody's correspondence, which is the
+    // assistant's model's work rather than the small one's.
+    let medium = mail_model(&vault, &account, MailAiFeature::Summaries, ModelTier::Medium)?;
+    let client = crate::llm::client_for(&medium)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
     let user = format!("untrusted_text:\n{text}");
     let answer = crate::quick::run_prompt(
         client,
-        &settings.assistant_model,
+        &medium.config.model,
         SUMMARIZE_SYSTEM,
         &user,
         summary_schema(),
@@ -780,16 +793,28 @@ pub async fn auto_draft_tick(service: &Arc<Service>) {
         return;
     }
     let Ok(accounts) = vault.accounts() else { return };
-    let Ok(settings) = vault.agent_settings() else { return };
-    let provider = provider_name(&settings);
+    // One snapshot of the small model for the whole tick, as
+    // `categorize_tick` takes, and each account checked against the
+    // endpoints its drafts would actually be sent to. With no small model
+    // there is nothing to draft with, but stale drafts are still cleaned up
+    // -- that sends nothing anywhere -- under the configured endpoints.
+    let small = vault.mail_ai_credentials(ModelTier::Small).ok();
+    let acknowledgement = match &small {
+        Some(small) => small.acknowledgement.clone(),
+        None => match vault.model_settings() {
+            Ok(models) => models.acknowledgement_name(),
+            Err(_) => return,
+        },
+    };
     for account in accounts.into_iter().filter(|a| a.services.mail) {
-        if mail_ai_allowed(&account, &provider, MailAiFeature::AutoDraft).is_err() {
+        if mail_ai_allowed(&account, &acknowledgement, MailAiFeature::AutoDraft).is_err() {
             continue;
         }
         if let Err(e) = cleanup_stale_auto_drafts(&vault, account.id).await {
             tracing::warn!(error = %e, account = %account.id, "auto-draft cleanup failed");
         }
-        if let Err(e) = auto_draft_account(service, &vault, &account).await {
+        let Some(small) = &small else { continue };
+        if let Err(e) = auto_draft_account(service, &vault, &account, small).await {
             tracing::warn!(error = %e, account = %account.id, "auto-draft pass failed");
         }
     }
@@ -832,6 +857,7 @@ async fn auto_draft_account(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
     account: &Account,
+    small: &ModelAccess,
 ) -> CommandResult<()> {
     let mut budget = service.mail_autodraft_take(AUTO_DRAFT_CANDIDATES);
     if budget == 0 {
@@ -839,12 +865,9 @@ async fn auto_draft_account(
     }
     let account_id = account.id;
 
-    let (settings, key) =
-        vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
-    let model = settings
-        .quick_model
-        .clone()
-        .ok_or_else(|| CommandError::new(codes::QUICK, "no quick model is configured"))?;
+    // On the small model, as it always was: a tick may draft several, and a
+    // vault with no small model drafts none rather than billing the
+    // assistant's rates in the background -- see `auto_draft_tick`.
 
     // Priority threads first -- they are the ones most worth drafting for
     // (see the module docs), so a tight budget reaches them before
@@ -870,17 +893,7 @@ async fn auto_draft_account(
         if budget == 0 {
             break;
         }
-        draft_for_thread(
-            service,
-            vault,
-            account,
-            &model,
-            &settings,
-            &key,
-            &thread_summary,
-            &mut budget,
-        )
-        .await?;
+        draft_for_thread(service, vault, account, small, &thread_summary, &mut budget).await?;
     }
     if budget == 0 {
         return Ok(());
@@ -920,17 +933,7 @@ async fn auto_draft_account(
         if budget == 0 {
             break;
         }
-        draft_for_thread(
-            service,
-            vault,
-            account,
-            &model,
-            &settings,
-            &key,
-            &thread_summary,
-            &mut budget,
-        )
-        .await?;
+        draft_for_thread(service, vault, account, small, &thread_summary, &mut budget).await?;
     }
     Ok(())
 }
@@ -947,14 +950,11 @@ async fn auto_draft_account(
 /// the model to say no more often than yes, so gating the spend on a
 /// *saved draft* would let a tick that declined every candidate spend
 /// nothing at all, no matter how many real calls it made.
-#[allow(clippy::too_many_arguments)]
 async fn draft_for_thread(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
     account: &Account,
-    model: &LLMModelConfig,
-    settings: &AgentSettings,
-    key: &Option<String>,
+    small: &ModelAccess,
     thread_summary: &Thread,
     budget: &mut u32,
 ) -> CommandResult<()> {
@@ -1008,14 +1008,15 @@ async fn draft_for_thread(
             .await?
     };
 
-    let client = crate::llm::client(&settings.provider_config, key.clone())
+    let client = crate::llm::client_for(small)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
     // Spent here, on the call itself -- not below, on whether it led to a
     // saved draft. See this function's own doc for why.
     *budget -= 1;
     let system = format!("{AUTO_DRAFT_SYSTEM}\n\n{}", crate::mailvoice::HUMAN_WRITING_RULES);
     let answer =
-        crate::quick::run_prompt(client, model, &system, &user, auto_draft_schema()).await?;
+        crate::quick::run_prompt(client, &small.config.model, &system, &user, auto_draft_schema())
+            .await?;
     // The model has now been asked about this thread, whatever it
     // answered -- including `reply: false` -- so the filter above skips
     // it next tick until a new message moves `message_count` past this.

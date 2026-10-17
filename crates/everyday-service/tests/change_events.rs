@@ -684,8 +684,18 @@ async fn every_offline_write_announces_what_was_written_down() {
         json!({ "settings": serde_json::to_value(&agent_settings).unwrap() }),
     )
     .await;
-    run(&svc, &h, "set_agent_key", json!({ "key": "sk-test-key" })).await;
-    run(&svc, &h, "clear_agent_key", json!({})).await;
+
+    // ---- the models -----------------------------------------------------------
+    let models = everyday_core::llm::ModelSettings::default();
+    run(
+        &svc,
+        &h,
+        "save_model_settings",
+        json!({ "settings": serde_json::to_value(&models).unwrap() }),
+    )
+    .await;
+    run(&svc, &h, "set_model_key", json!({ "tier": "medium", "key": "sk-test-key" })).await;
+    run(&svc, &h, "clear_model_key", json!({ "tier": "medium" })).await;
 
     // ---- chat links ---------------------------------------------------------
     //
@@ -1202,16 +1212,18 @@ async fn run_scheduler_tick_section() -> Vec<Value> {
     let vault = everyday_vault::create(dir.path(), config).unwrap();
     vault.save_journal(&everyday_core::Journal::new("Journal")).unwrap();
 
-    let mut settings = AgentSettings {
+    let settings = AgentSettings {
         enabled: true,
         // UTC throughout, on the same reasoning `tests/routines.rs` gives:
         // this is about the scheduler, not about the machine running it.
         timezone: Some("UTC".into()),
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint);
-    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint);
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
 
     let svc = Arc::new(Service::new());
     let vault = svc.set(vault);

@@ -71,29 +71,17 @@
     "id": "singleton",
     "kind": "agent_settings",
     "record": {
-      "key": "fixture-agent-key-1",
       "settings": {
-        "assistantModel": {
-          "maxTokens": null,
-          "model": "gpt-5.1-mini",
-          "temperature": null
-        },
         "companion": {},
         "confirmDestructive": true,
         "dreaming": false,
         "enabled": true,
-        "hasKey": true,
         "instructions": "Be a fixture.",
         "maxSteps": 24,
         "name": "Fixture Assistant 1",
         "parkUnattended": false,
         "proposals": {},
-        "providerConfig": {
-          "baseUrl": null,
-          "provider": "openAi"
-        },
         "quickAsks": {},
-        "quickModel": null,
         "remember": true,
         "web": false
       }
@@ -563,6 +551,28 @@
       "role": "user",
       "toolCallId": null,
       "toolCalls": []
+    }
+  },
+  {
+    "id": "singleton",
+    "kind": "model_settings",
+    "record": {
+      "keys": {
+        "large": "fixture-agent-key-1",
+        "medium": "fixture-agent-key-1",
+        "small": null
+      },
+      "settings": {
+        "large": null,
+        "medium": {
+          "baseUrl": null,
+          "maxTokens": null,
+          "model": "gpt-5.1-mini",
+          "provider": "openAi",
+          "temperature": null
+        },
+        "small": null
+      }
     }
   },
   {

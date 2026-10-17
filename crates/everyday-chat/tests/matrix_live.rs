@@ -333,7 +333,7 @@ fn rig(endpoint: &str) -> Rig {
     let task = Task::new("Renew the passport");
     vault.save_task(&task).unwrap();
 
-    let mut settings = AgentSettings {
+    let settings = AgentSettings {
         enabled: true,
         timezone: Some("UTC".into()),
         // Off on the desktop, and it must make no difference here: a chat
@@ -343,9 +343,11 @@ fn rig(endpoint: &str) -> Rig {
         confirm_destructive: false,
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
 
     let svc = Arc::new(Service::new());
     let vault = svc.set(vault);

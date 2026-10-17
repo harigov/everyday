@@ -27,6 +27,9 @@ export type SettingsTab =
   | 'general'
   | 'profile'
   | 'accounts'
+  // Which model each size of work runs on -- application settings, not the
+  // assistant's, though the assistant is the main thing that asks one.
+  | 'models'
   | 'assistant'
   // The assistant's standing work, drawn under its own tab -- see
   // `assistant.svelte.ts`'s `Pane`, which is these four by name.

@@ -186,12 +186,13 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
 }
 
 /// Refuse an assistant acknowledgement this save gives that does not name
-/// the model provider configured right now.
+/// the model endpoints configured right now.
 ///
 /// The mail gate offers the assistant an account's mail only when
 /// [`Account::assistant_provider_acknowledged`] equals
-/// `LLMProviderConfig::acknowledgement_name` exactly, and the interface
-/// writes that string itself. It used to write the provider's display name
+/// `ModelSettings::acknowledgement_name` exactly, and the interface writes
+/// that string itself -- taken from `model_settings`'s own answer, now, so
+/// the two are made in one place. It used to write the provider's display name
 /// instead -- "OpenAI" where the gate compared `https://api.openai.com/v1` --
 /// so every acknowledgement anybody gave was stored, shown ticked, and
 /// silently matched nothing: the assistant was never offered mail at all.
@@ -214,13 +215,13 @@ fn check_acknowledgement(
     if stored.as_deref() == Some(given) {
         return Ok(());
     }
-    let current = vault.agent_settings()?.provider_config.acknowledgement_name();
+    let current = vault.model_settings()?.acknowledgement_name();
     if given == current {
         return Ok(());
     }
     Err(everyday_core::Error::Invalid(format!(
-        "the assistant now talks to {current}, not {given}: open the account again and tick \
-         the box for the assistant's provider once more"
+        "the models are now at {current}, not {given}: open the account again and tick the \
+         box for the assistant's provider once more"
     )))
 }
 

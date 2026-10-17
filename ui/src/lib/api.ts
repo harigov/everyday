@@ -65,6 +65,8 @@ import type {
   Memory,
   MemoryId,
   MemoryOrigin,
+  ModelSettings,
+  ModelTier,
   NewSource,
   NewsSource,
   NewsSourceId,
@@ -1225,12 +1227,24 @@ export const api = {
 
   agentSettings: () => call('agentSettings', {}),
 
-  /** Returns what was actually stored: `hasKey` is derived, not echoed. */
+  /** Returns what was actually stored. */
   saveAgentSettings: (settings: AgentSettings) => call('saveAgentSettings', { settings }),
 
-  /** Store the API key. There is deliberately no call that reads one back. */
-  setAgentKey: (key: string) => call('setAgentKey', { key }),
-  clearAgentKey: () => call('clearAgentKey', {}),
+  // ── The models ────────────────────────────────────────────────────────
+  //
+  // Application settings, not the assistant's: which model each size of work
+  // runs on, and where. Every call answers the whole view, so the pane is
+  // told what was stored rather than what it asked for.
+
+  modelSettings: () => call('modelSettings', {}),
+  saveModelSettings: (settings: ModelSettings) => call('saveModelSettings', { settings }),
+
+  /**
+   * Store the key for the endpoint `tier` points at -- every tier there
+   * shares it. There is deliberately no call that reads one back.
+   */
+  setModelKey: (tier: ModelTier, key: string) => call('setModelKey', { tier, key }),
+  clearModelKey: (tier: ModelTier) => call('clearModelKey', { tier }),
 
   conversations: (limit?: number) => call('listConversations', { limit }),
 

@@ -9,7 +9,7 @@
 //!
 //! * **The transcriber's own key** is not part of [`MeetingSettings`] at
 //!   all -- see [`Vault::set_transcriber_key`] for why, the same argument
-//!   [`Vault::set_agent_key`] makes for the assistant's.
+//!   [`Vault::set_model_key`] makes for the models'.
 //! * **A transcript's words belong in search**, and search is built from
 //!   entries and notes, neither of which knows a transcript exists. See
 //!   [`reindex_note`] for how the two are kept in step.
@@ -102,8 +102,8 @@ impl Vault {
         }
     }
 
-    /// The transcriber's own key, if one is stored. Not the assistant's --
-    /// see [`Vault::assistant_key_if_openai`] for that half of
+    /// The transcriber's own key, if one is stored. Not the models' -- see
+    /// [`Vault::models_key_if_openai`] for that half of
     /// `use_assistant_key`, and `everyday_service::meeting::transcriber_key`
     /// for the function that picks between the two.
     pub fn transcriber_key(&self) -> Result<Option<String>> {

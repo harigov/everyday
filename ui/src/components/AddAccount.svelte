@@ -16,6 +16,7 @@
   // sent to before it saves anything.
 
   import { agent } from '../lib/agent.svelte'
+  import { models } from '../lib/models.svelte'
   import { api } from '../lib/api'
   import {
     beginAccountSignIn,
@@ -25,8 +26,7 @@
   } from '../lib/accounts.svelte'
   import {
     DEFAULT_AGENT_ACCESS,
-    acknowledgementName,
-    providerLabel,
+    providersLabel,
     signInArgs,
     validateCustomEndpoint,
   } from '../lib/accounts'
@@ -51,9 +51,18 @@
   void accounts.loadPresets()
   void agent.loadSettings()
 
-  const providerName = $derived(providerLabel(agent.settings?.providerConfig.baseUrl ?? null))
-  /** What a tick is stored as -- see `acknowledgementName`; `providerName` is only what it says. */
-  const providerAck = $derived(acknowledgementName(agent.settings?.providerConfig.baseUrl ?? null))
+  const providerName = $derived(providersLabel(models.settings))
+  /** What a tick is stored as -- the server's own string, see `ModelSettingsView`;
+   *  `providerName` is only what it says. */
+  const providerAck = $derived(models.acknowledgement)
+  /** Why a tick cannot be taken yet -- see `AgentAccessGrid`. */
+  const ackUnavailable = $derived(
+    providerAck
+      ? null
+      : models.error
+        ? `Where the models are could not be read: ${models.error}`
+        : 'Reading where the models are…',
+  )
 
   // Stable for the life of this sheet, so retrying a failed sign-in saves
   // over the same record rather than minting a second one. See
@@ -131,7 +140,7 @@
       services: { ...services },
       assistantAccess,
       mcpAccess,
-      assistantProviderAcknowledged: acknowledged ? providerAck : null,
+      assistantProviderAcknowledged: acknowledged && providerAck ? providerAck : null,
       attachmentCapBytes: null,
       status: { type: 'needsSignIn', reason: 'not yet signed in' },
       lastSyncedAt: null,
@@ -461,7 +470,8 @@
       {assistantAccess}
       {mcpAccess}
       {providerName}
-      {acknowledged}
+      acknowledged={acknowledged && providerAck != null}
+      {ackUnavailable}
       onchange={(caller: AgentCallerKind, access: AgentMailAccess) => {
         if (caller === 'assistant') assistantAccess = access
         else mcpAccess = access

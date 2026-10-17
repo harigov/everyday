@@ -109,8 +109,12 @@ import type {
   Conversation,
   DeclineReason,
   DreamScope,
+  LLMConfig,
   Memory,
   MemoryOrigin,
+  ModelSettings,
+  ModelSettingsView,
+  ModelTier,
   Proposal,
   ProposalQuery,
   ProposedRecord,
@@ -3349,12 +3353,6 @@ const mockQuickOff = new Set<string>()
 let agentSettings: AgentSettings = {
   enabled: true,
   name: '',
-  providerConfig: { provider: 'openAi', baseUrl: null },
-  assistantModel: { model: 'gpt-5.1-mini', temperature: null, maxTokens: null },
-  // The mock runs the quick asks too -- see `quickAsks` below, which answers
-  // with the catalogue and canned suggestions, so the chips can be built and
-  // reviewed with no Rust, no vault and no provider.
-  quickModel: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 },
   quickAsks: {},
   instructions: '',
   confirmDestructive: true,
@@ -3365,9 +3363,60 @@ let agentSettings: AgentSettings = {
   proposals: {},
   parkUnattended: false,
   companion: {},
-  hasKey: true,
 }
-let agentKey = 'sk-mock'
+
+/**
+ * The models, and which endpoints have a key. Keys by endpoint, as the core
+ * keeps them -- see `everyday_core::llm` -- so two tiers at one address share
+ * one here too. The small model is on: the mock runs the quick asks as well
+ * (see `quickAsks` below, which answers with the catalogue and canned
+ * suggestions), so the chips can be built and reviewed with no Rust, no vault
+ * and no provider.
+ */
+let modelSettings: ModelSettings = {
+  large: null,
+  medium: {
+    provider: 'openAi',
+    baseUrl: null,
+    model: 'gpt-5.1-mini',
+    temperature: null,
+    maxTokens: null,
+  },
+  small: {
+    provider: 'openAi',
+    baseUrl: null,
+    model: 'gpt-5.1-nano',
+    temperature: 0,
+    maxTokens: 1024,
+  },
+}
+const modelKeys = new Set<string>(['https://api.openai.com/v1'])
+
+function mockEndpoint(baseUrl: string | null): string {
+  return (baseUrl ?? '').trim().replace(/\/+$/, '') || 'https://api.openai.com/v1'
+}
+
+function modelSettingsView(): ModelSettingsView {
+  const endpoints = [
+    ...new Set(
+      [modelSettings.large, modelSettings.medium, modelSettings.small]
+        .filter((t): t is LLMConfig => t != null)
+        .map((t) => mockEndpoint(t.baseUrl)),
+    ),
+  ].sort()
+  return {
+    settings: structuredClone(modelSettings),
+    keyed: endpoints.filter((e) => modelKeys.has(e)),
+    acknowledgement: endpoints.join(', '),
+  }
+}
+
+function modelTier(args: Record<string, unknown>): LLMConfig {
+  const tier = args.tier as ModelTier
+  const config = modelSettings[tier]
+  if (!config) throw new VaultError('invalid', `no ${tier} model is configured`)
+  return config
+}
 const conversations: Conversation[] = []
 const agentMessages: AgentMessage[] = []
 const memories: Memory[] = [
@@ -6124,7 +6173,7 @@ export const mockInvoke = async <T>(
 
     case 'agent_settings':
       requireUnlocked()
-      return { ...agentSettings, hasKey: agentKey !== '' } as T
+      return agentSettings as T
 
     case 'save_agent_settings': {
       requireUnlocked()
@@ -6136,18 +6185,42 @@ export const mockInvoke = async <T>(
       for (const r of routines) {
         if (r.kind?.type === 'dream') r.enabled = agentSettings.dreaming === true
       }
-      return { ...agentSettings, hasKey: agentKey !== '' } as T
+      return agentSettings as T
     }
 
-    case 'set_agent_key':
+    case 'model_settings':
       requireUnlocked()
-      agentKey = str(args.key)
-      return undefined as T
+      return modelSettingsView() as T
 
-    case 'clear_agent_key':
+    case 'save_model_settings': {
       requireUnlocked()
-      agentKey = ''
-      return undefined as T
+      const before = modelSettingsView().acknowledgement
+      modelSettings = structuredClone(args.settings as ModelSettings)
+      // As the real one: a key no model points at any more is forgotten.
+      const inUse = new Set(
+        [modelSettings.large, modelSettings.medium, modelSettings.small]
+          .filter((t): t is LLMConfig => t != null)
+          .map((t) => mockEndpoint(t.baseUrl)),
+      )
+      for (const endpoint of [...modelKeys]) if (!inUse.has(endpoint)) modelKeys.delete(endpoint)
+      // And clears every account's mail acknowledgement when the endpoints
+      // change -- see `Vault::save_model_settings`.
+      if (modelSettingsView().acknowledgement !== before) {
+        for (const account of accounts) account.assistantProviderAcknowledged = null
+      }
+      return modelSettingsView() as T
+    }
+
+    case 'set_model_key':
+      requireUnlocked()
+      if (!str(args.key).trim()) throw new VaultError('invalid', 'an API key cannot be blank')
+      modelKeys.add(mockEndpoint(modelTier(args).baseUrl))
+      return modelSettingsView() as T
+
+    case 'clear_model_key':
+      requireUnlocked()
+      modelKeys.delete(mockEndpoint(modelTier(args).baseUrl))
+      return modelSettingsView() as T
 
     case 'list_conversations': {
       requireUnlocked()

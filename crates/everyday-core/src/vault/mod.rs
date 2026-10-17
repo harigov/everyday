@@ -37,6 +37,7 @@ mod journal;
 mod keys;
 mod library;
 mod lifecycle;
+mod llm;
 mod mail;
 mod maintenance;
 mod meetings;

@@ -35,6 +35,7 @@ use everyday_core::id::{
 };
 use everyday_core::job::{Job, JobStatus};
 use everyday_core::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
+use everyday_core::llm::{LLMConfig, LLMModelConfig, LLMProviderConfig, ModelSettings, ModelTier};
 use everyday_core::mail::{
     Address, Body, CategorySource, Draft, Mailbox, MailboxRole, Message as MailMessage,
     MessageFlags, Op, OpKind, OpState, OpTarget, Origin,
@@ -458,7 +459,13 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
     memory.updated_at = memory.created_at;
     vault.save_memory(&memory).unwrap();
 
-    // ---- agent settings and its own secret --------------------------------
+    // ---- agent settings, the models, and their keys -----------------------
+    //
+    // A vault written before the models were application settings has its
+    // model in the assistant's record and one key beside it; the frozen
+    // fixture is one of those, and reading it back is what carries them
+    // over. What is written here is the shape since: a large model at an
+    // endpoint of its own, so two keys are stored, one per endpoint.
 
     let settings = AgentSettings {
         enabled: true,
@@ -467,7 +474,22 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         ..AgentSettings::default()
     };
     vault.save_agent_settings(&settings).unwrap();
-    vault.set_agent_key(&format!("fixture-agent-key-{tag}")).unwrap();
+    let models = ModelSettings {
+        large: Some(LLMConfig {
+            connection: LLMProviderConfig {
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+                ..LLMProviderConfig::default()
+            },
+            model: LLMModelConfig {
+                model: format!("fixture-large-{tag}"),
+                ..LLMModelConfig::large()
+            },
+        }),
+        ..ModelSettings::default()
+    };
+    vault.save_model_settings(&models).unwrap();
+    vault.set_model_key(ModelTier::Medium, &format!("fixture-agent-key-{tag}")).unwrap();
+    vault.set_model_key(ModelTier::Large, &format!("fixture-large-key-{tag}")).unwrap();
 
     // ---- mail: mailbox, message, body, thread, draft, outbox op ----------
 

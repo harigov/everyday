@@ -3,6 +3,7 @@
 //! the same domain exercised through `dispatch` the way a model would.
 
 mod support;
+use everyday_core::llm::{LLMConfig, LLMProviderConfig, ModelSettings, ModelTier};
 use support::vault;
 
 #[test]
@@ -259,13 +260,17 @@ fn the_api_key_never_comes_back_through_the_settings() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
 
-    vault.set_agent_key("sk-secret").unwrap();
-    let settings = vault.agent_settings().unwrap();
-    assert!(settings.has_key, "the pane needs to know one is set");
-    // The only place the key is reachable is `agent_credentials`, and
-    // that is gated on the assistant being switched on.
-    let json = serde_json::to_string(&settings).unwrap();
-    assert!(!json.contains("sk-secret"), "the key must not ride along with the settings");
+    vault.set_model_key(ModelTier::Medium, "sk-secret").unwrap();
+    assert_eq!(
+        vault.model_settings_and_keyed().unwrap().1,
+        vec!["https://api.openai.com/v1".to_string()],
+        "the pane needs to know one is set"
+    );
+    // The only place the key is reachable is `model_access`.
+    let models = serde_json::to_string(&vault.model_settings().unwrap()).unwrap();
+    let agent = serde_json::to_string(&vault.agent_settings().unwrap()).unwrap();
+    assert!(!models.contains("sk-secret"), "the key must not ride along with the models");
+    assert!(!agent.contains("sk-secret"), "nor with the assistant's settings");
 }
 
 #[test]
@@ -274,26 +279,33 @@ fn credentials_are_refused_until_the_assistant_is_configured() {
     let vault = vault(dir.path());
 
     // Off is off, key or no key.
-    vault.set_agent_key("sk-secret").unwrap();
-    assert!(vault.agent_credentials().is_err(), "a switched-off assistant has no credentials");
+    vault.set_model_key(ModelTier::Medium, "sk-secret").unwrap();
+    assert!(
+        vault.agent_credentials(ModelTier::Medium).is_err(),
+        "a switched-off assistant has no credentials"
+    );
 
-    let mut settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
+    let settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
     vault.save_agent_settings(&settings).unwrap();
-    let (back, key) = vault.agent_credentials().unwrap();
+    let (back, access) = vault.agent_credentials(ModelTier::Medium).unwrap();
     assert!(back.enabled);
-    assert_eq!(key.as_deref(), Some("sk-secret"));
+    assert_eq!(access.key.as_deref(), Some("sk-secret"));
 
     // Enabled, remote, and keyless is the half-configured state that
     // must fail here rather than as a 401 nobody can act on.
-    vault.clear_agent_key().unwrap();
-    let err = vault.agent_credentials().unwrap_err();
+    vault.clear_model_key(ModelTier::Medium).unwrap();
+    let err = vault.agent_credentials(ModelTier::Medium).unwrap_err();
     assert!(err.to_string().contains("API key"), "got {err}");
 
     // ...but a model on this machine needs no key at all.
-    settings.provider_config.base_url = Some("http://localhost:11434/v1".into());
-    vault.save_agent_settings(&settings).unwrap();
-    let (_, key) = vault.agent_credentials().unwrap();
-    assert!(key.is_none(), "a local model should work with nothing configured but its address");
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some("http://localhost:11434/v1".into());
+    vault.save_model_settings(&models).unwrap();
+    let (_, access) = vault.agent_credentials(ModelTier::Medium).unwrap();
+    assert!(
+        access.key.is_none(),
+        "a local model should work with nothing configured but its address"
+    );
 }
 
 #[test]
@@ -301,14 +313,236 @@ fn settings_that_could_not_be_acted_on_are_refused_at_the_pane() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
 
-    let mut settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
-    settings.assistant_model.model = String::new();
-    assert!(vault.save_agent_settings(&settings).is_err(), "a model name is required");
+    let mut models = ModelSettings::default();
+    models.medium.model.model = String::new();
+    assert!(vault.save_model_settings(&models).is_err(), "a model name is required");
 
-    settings.assistant_model.model = "gpt-5.1".into();
-    settings.provider_config.base_url = Some("http://gateway.example.com/v1".into());
-    assert!(
-        vault.save_agent_settings(&settings).is_err(),
-        "plain http off this machine would leak the key"
-    );
+    models.medium.model.model = "gpt-5.1".into();
+    models.large = Some(LLMConfig {
+        connection: LLMProviderConfig {
+            base_url: Some("http://gateway.example.com/v1".into()),
+            ..Default::default()
+        },
+        ..LLMConfig::large()
+    });
+    let err = vault.save_model_settings(&models).unwrap_err().to_string();
+    assert!(err.contains("Large"), "the error says which card is wrong: {err}");
+    assert!(err.contains("unencrypted"), "plain http off this machine would leak the key: {err}");
+}
+
+/// A key belongs to the endpoint it was stored for. Two tiers at one
+/// endpoint share it without anybody pasting it twice, and a tier moved to
+/// another endpoint does not take it along -- which is what keeps an OpenAI
+/// key from ever being sent to a gateway it was not stored for.
+#[test]
+fn a_key_belongs_to_its_endpoint_and_not_to_its_tier() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    let openrouter = LLMProviderConfig {
+        base_url: Some("https://openrouter.ai/api/v1".into()),
+        ..Default::default()
+    };
+    let models = ModelSettings {
+        large: Some(LLMConfig { connection: openrouter.clone(), ..LLMConfig::large() }),
+        medium: LLMConfig::medium(),
+        small: Some(LLMConfig::small()),
+    };
+    vault.save_model_settings(&models).unwrap();
+    vault.set_model_key(ModelTier::Medium, "sk-openai").unwrap();
+
+    // The small model is at OpenAI too, so it has the key already.
+    assert_eq!(vault.model_access(ModelTier::Small).unwrap().key.as_deref(), Some("sk-openai"));
+    // The large one is somewhere else, and has none -- not OpenAI's.
+    let err = vault.model_access(ModelTier::Large).unwrap_err().to_string();
+    assert!(err.contains("openrouter.ai"), "it says which endpoint wants a key: {err}");
+
+    vault.set_model_key(ModelTier::Large, "sk-or").unwrap();
+    assert_eq!(vault.model_access(ModelTier::Large).unwrap().key.as_deref(), Some("sk-or"));
+    assert_eq!(vault.model_access(ModelTier::Medium).unwrap().key.as_deref(), Some("sk-openai"));
+
+    // Move the small model to OpenRouter: it now uses OpenRouter's key, and
+    // OpenAI's stays where it was, for the medium model.
+    let mut moved = vault.model_settings().unwrap();
+    moved.small = Some(LLMConfig { connection: openrouter, ..LLMConfig::small() });
+    vault.save_model_settings(&moved).unwrap();
+    assert_eq!(vault.model_access(ModelTier::Small).unwrap().key.as_deref(), Some("sk-or"));
+
+    // Clearing a tier's key clears its endpoint's, for every tier there.
+    vault.clear_model_key(ModelTier::Small).unwrap();
+    assert!(vault.model_access(ModelTier::Large).is_err(), "Large shared that key");
+    assert!(vault.model_access(ModelTier::Medium).is_ok(), "Medium's endpoint is another");
+}
+
+#[test]
+fn research_runs_on_the_medium_model_until_a_large_one_is_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault
+        .save_agent_settings(&everyday_core::AgentSettings { enabled: true, ..Default::default() })
+        .unwrap();
+    vault.set_model_key(ModelTier::Medium, "sk-openai").unwrap();
+
+    let (_, access) = vault.agent_credentials(ModelTier::Large).unwrap();
+    assert_eq!(access.tier, ModelTier::Medium, "no large model: research uses the medium one");
+
+    let mut models = vault.model_settings().unwrap();
+    models.large = Some(LLMConfig::large());
+    vault.save_model_settings(&models).unwrap();
+    let (_, access) = vault.agent_credentials(ModelTier::Large).unwrap();
+    assert_eq!(access.tier, ModelTier::Large);
+    assert_eq!(access.config.model.model, everyday_core::llm::DEFAULT_LARGE_MODEL);
+    assert_eq!(access.key.as_deref(), Some("sk-openai"), "same endpoint, same key");
+}
+
+/// The quick asks have a door of their own: the assistant's switch is not
+/// theirs, there is no fallback to a bigger model, and the policy decides
+/// which asks may run.
+#[test]
+fn a_quick_ask_needs_a_small_model_and_the_policy_s_yes() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.set_model_key(ModelTier::Medium, "sk-openai").unwrap();
+
+    let err = vault.quick_credentials("library.fields").unwrap_err().to_string();
+    assert!(err.contains("small"), "no small model, so nothing to ask: {err}");
+    assert!(!vault.quick_allows("library.fields"));
+
+    let mut models = vault.model_settings().unwrap();
+    models.small = Some(LLMConfig::small());
+    vault.save_model_settings(&models).unwrap();
+    // The assistant is still switched off, and the quick asks still work.
+    assert!(!vault.agent_settings().unwrap().enabled);
+    assert!(vault.quick_allows("library.fields"));
+    assert!(!vault.quick_allows("journal.title"), "reading a journal is opted into");
+}
+
+/// A key no model points at any more is forgotten when the models are saved,
+/// rather than kept out of sight -- where the pane could neither show it nor
+/// remove it -- and quietly used again the day a model is pointed back.
+#[test]
+fn a_key_nothing_points_at_is_forgotten() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let openrouter = LLMProviderConfig {
+        base_url: Some("https://openrouter.ai/api/v1".into()),
+        ..Default::default()
+    };
+    let with_large = ModelSettings {
+        large: Some(LLMConfig { connection: openrouter, ..LLMConfig::large() }),
+        ..ModelSettings::default()
+    };
+    vault.save_model_settings(&with_large).unwrap();
+    vault.set_model_key(ModelTier::Large, "sk-or").unwrap();
+    vault.set_model_key(ModelTier::Medium, "sk-openai").unwrap();
+
+    // Large off: OpenRouter's key goes with it, OpenAI's stays for Medium.
+    vault.save_model_settings(&ModelSettings::default()).unwrap();
+    assert_eq!(vault.model_settings_and_keyed().unwrap().1, vec!["https://api.openai.com/v1"]);
+
+    // Pointed back, it asks for a key rather than reaching for the old one.
+    vault.save_model_settings(&with_large).unwrap();
+    let err = vault.model_access(ModelTier::Large).unwrap_err().to_string();
+    assert!(err.contains("API key"), "{err}");
+    assert_eq!(vault.model_access(ModelTier::Medium).unwrap().key.as_deref(), Some("sk-openai"));
+}
+
+/// Where the models are is sealed like everything else -- an endpoint can be
+/// a company's private gateway -- and so is every key. Nothing of either may
+/// be readable in the files of an encrypted vault.
+#[test]
+fn no_endpoint_or_key_is_written_in_the_clear() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = everyday_core::VaultConfig {
+        password: Some("correct horse battery".into()),
+        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+        ..Default::default()
+    };
+    let vault = everyday_vault::create(dir.path(), config).unwrap();
+    let gateway = LLMProviderConfig {
+        base_url: Some("https://llm-gw.corp.internal/v1".into()),
+        ..Default::default()
+    };
+    let models = ModelSettings {
+        large: Some(LLMConfig { connection: gateway, ..LLMConfig::large() }),
+        ..ModelSettings::default()
+    };
+    vault.save_model_settings(&models).unwrap();
+    vault.set_model_key(ModelTier::Large, "sk-gateway-secret").unwrap();
+    vault.set_model_key(ModelTier::Medium, "sk-openai-secret").unwrap();
+    vault.lock();
+    drop(vault);
+
+    let mut files = vec![dir.path().to_path_buf()];
+    let mut seen = 0;
+    while let Some(path) = files.pop() {
+        if path.is_dir() {
+            files.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        seen += 1;
+        for needle in ["llm-gw.corp.internal", "api.openai.com", "sk-gateway-secret", "sk-openai"] {
+            assert!(
+                !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()),
+                "{needle} is readable in {}",
+                path.display()
+            );
+        }
+    }
+    assert!(seen > 0, "the vault wrote nothing to look in");
+}
+
+/// Changing where the models are clears every account's mail
+/// acknowledgement, in the vault's own save -- not only in the command that
+/// usually calls it -- so no caller can move the models and leave an account
+/// ticked for endpoints that are no longer the ones configured.
+#[test]
+fn moving_a_model_clears_the_mail_acknowledgements() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let ack = vault.model_settings().unwrap().acknowledgement_name();
+    let mut account =
+        everyday_core::Account::new(everyday_core::account::Provider::Custom, "me@example.com");
+    account.assistant_provider_acknowledged = Some(ack.clone());
+    vault.save_account(&account).unwrap();
+
+    // The same endpoints, another model name: nothing to clear.
+    let mut models = vault.model_settings().unwrap();
+    models.medium.model.model = "another".into();
+    vault.save_model_settings(&models).unwrap();
+    assert_eq!(vault.account(account.id).unwrap().assistant_provider_acknowledged, Some(ack));
+
+    models.small = Some(LLMConfig {
+        connection: LLMProviderConfig {
+            base_url: Some("http://localhost:11434/v1".into()),
+            ..Default::default()
+        },
+        ..LLMConfig::small()
+    });
+    vault.save_model_settings(&models).unwrap();
+    assert_eq!(vault.account(account.id).unwrap().assistant_provider_acknowledged, None);
+}
+
+/// Reading the models never writes them: the carry-over from the assistant's
+/// settings happens once, at unlock, and a lock and unlock later leaves a
+/// saved record exactly as it was.
+#[test]
+fn unlocking_again_leaves_saved_models_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = everyday_core::VaultConfig {
+        password: Some("correct horse battery".into()),
+        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+        ..Default::default()
+    };
+    let vault = everyday_vault::create(dir.path(), config).unwrap();
+    let mut models = ModelSettings::default();
+    models.medium.model.model = "mine".into();
+    vault.save_model_settings(&models).unwrap();
+    vault.set_model_key(ModelTier::Medium, "sk-mine").unwrap();
+
+    vault.lock();
+    vault.unlock(Some("correct horse battery")).unwrap();
+    assert_eq!(vault.model_settings().unwrap(), models);
+    assert_eq!(vault.model_access(ModelTier::Medium).unwrap().key.as_deref(), Some("sk-mine"));
 }

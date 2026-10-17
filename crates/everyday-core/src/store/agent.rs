@@ -31,12 +31,13 @@
 //!
 //! # The API key is a secret, not a setting
 //!
-//! [`AgentStore::put_secret`] exists as a separate pair of methods rather
-//! than as a field on [`AgentSettings`] so that the credential has a
-//! different *shape* from the configuration and cannot be handed out by
-//! accident. Settings are read constantly and cross to the interface whole;
-//! the key is read in one place, on the way to building a request, and never
-//! travels the other way. See the [`agent`](crate::agent) module docs.
+//! [`AgentStore::put_secret`] existed as a separate pair of methods rather
+//! than as a field on [`AgentSettings`] so that the credential had a
+//! different *shape* from the configuration and could not be handed out by
+//! accident. The keys have since moved to the
+//! [`SecretStore`](super::secrets::SecretStore), one per model endpoint --
+//! see [`crate::llm`] -- on the same principle; what is left here is the
+//! old singleton, read once to be carried over.
 
 use crate::agent::{AgentSettings, Conversation, Memory, Message, Skill};
 use crate::chat::ChatSettings;
@@ -115,17 +116,12 @@ pub trait AgentStore: Send + Sync {
     /// off — and making every caller unwrap that would put the default in
     /// four places instead of one.
     ///
-    /// Implementations must set [`AgentSettings::has_key`] from
-    /// [`AgentStore::has_secret`] rather than from anything stored in the
-    /// settings record itself.
-    ///
-    /// They must also call [`AgentSettings::normalize`] on the decoded
-    /// record. A settings payload written before the endpoint and the model
-    /// were separate records still says `model`, and it cannot be migrated
-    /// where every other shape change in this store is — a migration step is
-    /// handed a connection, not the cipher, so a sealed record can only be
-    /// folded by whoever just decrypted it. Skipping it silently replaces
-    /// somebody's endpoint and model name with the defaults.
+    /// Implementations return the record exactly as decoded, including the
+    /// `legacy_*` fields. A payload written before the models became
+    /// application settings still names its model in here, and it cannot be
+    /// migrated where every other shape change in this store is -- a
+    /// migration step is handed a connection, not the cipher -- so it is
+    /// carried over by [`AgentSettings::legacy_models`] after decryption.
     fn settings(&self) -> Result<AgentSettings>;
 
     fn put_settings(&self, settings: &AgentSettings) -> Result<()>;
@@ -156,6 +152,12 @@ pub trait AgentStore: Send + Sync {
     fn put_chat_settings(&self, settings: &ChatSettings) -> Result<()>;
 
     // ---- the credential -------------------------------------------------
+    //
+    // The one API key from when the assistant owned the connection. Keys are
+    // per endpoint now, in the `SecretStore` -- see `crate::llm` -- and this
+    // one is read once, by `Vault::model_settings`, to be carried over to
+    // its endpoint and deleted. Nothing writes it any more but a test
+    // building a vault in the old shape.
 
     /// Store the API key, replacing any previous one.
     ///
@@ -166,11 +168,8 @@ pub trait AgentStore: Send + Sync {
 
     /// The API key, if one is stored.
     ///
-    /// Called on the way to building a request and nowhere else. In
-    /// particular it is not reachable from the command surface — there is no
-    /// path by which the interface can ask for the key back, which is what
-    /// makes storing it here meaningfully different from storing it in a
-    /// field the settings pane round-trips.
+    /// Not reachable from the command surface — there is no path by which
+    /// the interface can ask for the key back.
     fn secret(&self) -> Result<Option<String>>;
 
     /// Forget the key. Distinct from storing an empty one, which would be a

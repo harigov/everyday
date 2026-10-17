@@ -272,9 +272,9 @@
   <p class="hint">
     An export is your writing in a form anything can read, which means it is your writing with the
     encryption taken off. A <i>backup</i> is the vault copied as it is, still sealed, still opening
-    with the same password — and it keeps the things an export deliberately leaves out: your
-    assistant's key, the devices you have paired, and the key the vault itself is locked with. That
-    is <code>everyday backup</code> on the command line.
+    with the same password — and it keeps the things an export deliberately leaves out: your model
+    keys, the devices you have paired, and the key the vault itself is locked with. That is
+    <code>everyday backup</code> on the command line.
   </p>
 </section>
 

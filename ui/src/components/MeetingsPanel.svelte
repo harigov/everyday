@@ -413,7 +413,7 @@
         {#if meetings.view?.assistantKeyAvailable}
           <label class="toggle small">
             <input type="checkbox" bind:checked={draft.useAssistantKey} />
-            <span>Use the assistant’s key</span>
+            <span>Use the OpenAI key from Models</span>
           </label>
         {/if}
         {#if !draft.useAssistantKey}

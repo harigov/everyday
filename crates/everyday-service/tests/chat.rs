@@ -771,7 +771,7 @@ fn reply(text: &str, call: Option<(&str, &str)>) -> String {
 /// honour.
 fn assistant_service(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
     let (svc, dir) = support::vault::service(None);
-    let mut settings = everyday_core::AgentSettings {
+    let settings = everyday_core::AgentSettings {
         enabled: true,
         // Everything is reckoned in UTC so the tests are about the chat
         // rather than about where the machine running them is.
@@ -779,9 +779,12 @@ fn assistant_service(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
         confirm_destructive: false,
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.assistant_model.model = "scripted".into();
-    svc.get().unwrap().save_agent_settings(&settings).unwrap();
+    let vault = svc.get().unwrap();
+    vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
     (svc, dir)
 }
 
@@ -876,10 +879,10 @@ async fn delete_through_a_chat(
         "All done.",
     ))
     .await;
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
-    assert!(!settings.confirm_destructive, "the desktop's setting is off");
-    vault.save_agent_settings(&settings).unwrap();
+    assert!(!vault.agent_settings().unwrap().confirm_destructive, "the desktop's setting is off");
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
 
     let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
     let sink: Sink = {
@@ -951,9 +954,9 @@ async fn the_rail_still_honours_the_setting_that_a_chat_ignores() {
         "Deleted.",
     ))
     .await;
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
-    vault.save_agent_settings(&settings).unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
 
     let events: Arc<Mutex<Vec<AgentEvent>>> = Arc::default();
     let sink: Sink = {

@@ -1,20 +1,19 @@
-//! Changing the assistant's configured provider must visibly clear mail
-//! access -- not merely disable it. `Account::assistant_acknowledged_for`
-//! already refuses every mail tool the moment
-//! [`LLMProviderConfig::acknowledgement_name`] stops matching what an
-//! account's own `assistant_provider_acknowledged` names, but that field --
-//! and the ticked checkbox beside it in Settings → Accounts -- used to go on
-//! naming a provider that was no longer the one configured. `save_agent_settings`
-//! now clears it on every account that had it set, in the same write, the
-//! moment the endpoint actually changes.
+//! Changing where the models are must visibly clear mail access -- not
+//! merely disable it. `Account::assistant_acknowledged_for` already refuses
+//! every mail feature the moment [`ModelSettings::acknowledgement_name`]
+//! stops matching what an account's own `assistant_provider_acknowledged`
+//! names, but that field -- and the ticked checkbox beside it in Settings →
+//! Accounts -- used to go on naming a provider that was no longer the one
+//! configured. `save_model_settings` clears it on every account that had it
+//! set, in the same write, the moment any tier's endpoint changes.
 //!
 //! And giving one has to store that same string: `save_account` refuses an
-//! acknowledgement that names anything other than the configured endpoint.
+//! acknowledgement that names anything other than the configured endpoints.
 
 use std::sync::Arc;
 
 use everyday_core::account::{Account, Provider};
-use everyday_core::agent::AgentSettings;
+use everyday_core::llm::{LLMConfig, ModelSettings};
 use everyday_service::Service;
 use everyday_service::ctx::Ctx;
 use serde_json::json;
@@ -35,17 +34,23 @@ async fn saving_the_same_provider_leaves_every_accounts_acknowledgement_alone() 
     let (svc, _dir) = service();
     let vault = svc.get().unwrap();
 
-    let mut settings = AgentSettings::default();
-    settings.provider_config.base_url = Some("https://api.example.com/v1".into());
-    vault.save_agent_settings(&settings).unwrap();
-    let ack = settings.provider_config.acknowledgement_name();
+    let mut settings = ModelSettings::default();
+    settings.medium.connection.base_url = Some("https://api.example.com/v1".into());
+    vault.save_model_settings(&settings).unwrap();
+    let ack = settings.acknowledgement_name();
 
     let mut account = Account::new(Provider::Custom, "me@example.com");
     account.services.mail = true;
     account.assistant_provider_acknowledged = Some(ack.clone());
     vault.save_account(&account).unwrap();
 
-    call(&svc, "save_agent_settings", json!({ "settings": settings })).await;
+    // A different model at the same endpoint, and a small model beside it
+    // at that endpoint too: the endpoints are what was agreed to, and they
+    // have not changed.
+    settings.medium.model.model = "another".into();
+    settings.small =
+        Some(LLMConfig { connection: settings.medium.connection.clone(), ..LLMConfig::small() });
+    call(&svc, "save_model_settings", json!({ "settings": settings })).await;
 
     let unchanged = vault.account(account.id).unwrap();
     assert_eq!(
@@ -60,10 +65,10 @@ async fn changing_the_providers_endpoint_clears_every_accounts_acknowledgement()
     let (svc, _dir) = service();
     let vault = svc.get().unwrap();
 
-    let mut settings = AgentSettings::default();
-    settings.provider_config.base_url = Some("https://api.example.com/v1".into());
-    vault.save_agent_settings(&settings).unwrap();
-    let ack = settings.provider_config.acknowledgement_name();
+    let mut settings = ModelSettings::default();
+    settings.medium.connection.base_url = Some("https://api.example.com/v1".into());
+    vault.save_model_settings(&settings).unwrap();
+    let ack = settings.acknowledgement_name();
 
     let mut one = Account::new(Provider::Custom, "one@example.com");
     one.services.mail = true;
@@ -82,11 +87,18 @@ async fn changing_the_providers_endpoint_clears_every_accounts_acknowledgement()
     vault.save_account(&three).unwrap();
 
     let mut changed = settings.clone();
-    // A different endpoint under the same `Provider::OpenAi` label --
-    // `acknowledgement_name` compares the endpoint actually reached, not
-    // the provider's own name, so this must still count as a change.
-    changed.provider_config.base_url = Some("https://openrouter.ai/api/v1".into());
-    call(&svc, "save_agent_settings", json!({ "settings": changed })).await;
+    // A large model at a new endpoint, under the same `Provider::OpenAi`
+    // label -- `acknowledgement_name` names every endpoint actually reached,
+    // not the provider's own name, so this must count as a change even
+    // though the assistant's own endpoint did not move.
+    changed.large = Some(LLMConfig {
+        connection: everyday_core::llm::LLMProviderConfig {
+            base_url: Some("https://openrouter.ai/api/v1".into()),
+            ..Default::default()
+        },
+        ..LLMConfig::large()
+    });
+    call(&svc, "save_model_settings", json!({ "settings": changed })).await;
 
     assert_eq!(vault.account(one.id).unwrap().assistant_provider_acknowledged, None);
     assert_eq!(vault.account(two.id).unwrap().assistant_provider_acknowledged, None);
@@ -106,9 +118,7 @@ async fn changing_the_providers_endpoint_clears_every_accounts_acknowledgement()
 async fn an_acknowledgement_is_saved_only_when_it_names_the_configured_endpoint() {
     let (svc, _dir) = service();
     let vault = svc.get().unwrap();
-    let settings = AgentSettings::default();
-    vault.save_agent_settings(&settings).unwrap();
-    let ack = settings.provider_config.acknowledgement_name();
+    let ack = vault.model_settings().unwrap().acknowledgement_name();
     assert_eq!(ack, "https://api.openai.com/v1");
 
     let mut account = Account::new(Provider::Custom, "me@example.com");
@@ -135,7 +145,6 @@ async fn an_acknowledgement_is_saved_only_when_it_names_the_configured_endpoint(
 async fn an_acknowledgement_saved_back_unchanged_is_not_refused() {
     let (svc, _dir) = service();
     let vault = svc.get().unwrap();
-    vault.save_agent_settings(&AgentSettings::default()).unwrap();
 
     let mut account = Account::new(Provider::Custom, "me@example.com");
     account.services.mail = false;

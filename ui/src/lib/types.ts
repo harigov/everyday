@@ -2705,25 +2705,18 @@ export interface WeatherReport {
   airQuality: AirQualityReport | null
 }
 
-// ── The assistant ────────────────────────────────────────────────────────
+// ── The models ───────────────────────────────────────────────────────────
 //
-// Mirrors `everyday_core::agent`. Note what is *not* here: the API key. It
-// has no field on `AgentSettings` on the Rust side either, and there is no
-// command that reads one back -- see the module docs there for why that is
-// structural rather than a convention.
+// Mirrors `everyday_core::llm`. Application settings rather than the
+// assistant's: three sizes of work, each with its own endpoint and model.
+// Note what is *not* here: an API key. Keys are stored per endpoint and there
+// is no command that reads one back; `ModelSettingsView.keyed` says which
+// endpoints have one.
 
 /** Which family of API the model is spoken to over. */
 export type Provider = 'openAi'
 
-/**
- * Where the models are: one endpoint, one credential, however many models.
- *
- * Split from `LLMModelConfig` because the two change on different occasions.
- * Which provider you talk to changes when you move house — a new endpoint, a
- * new key. Which model you ask for changes whenever somebody ships one. There
- * is deliberately no way to express a second endpoint: the quick model is the
- * same provider, one tier down.
- */
+/** Where a model is. A key is found by this half. */
 export interface LLMProviderConfig {
   provider: Provider
   /** Overrides the provider default. What points this at a local model. */
@@ -2737,6 +2730,44 @@ export interface LLMModelConfig {
   temperature: number | null
   maxTokens: number | null
 }
+
+/** Which of the three models. */
+export type ModelTier = 'large' | 'medium' | 'small'
+
+/** One model: where it is, and which to ask there. Flat on the wire. */
+export interface LLMConfig extends LLMProviderConfig, LLMModelConfig {}
+
+/** Every model this vault asks for. */
+export interface ModelSettings {
+  /** Deep research. `null` means research runs on `medium`. */
+  large: LLMConfig | null
+  /** The assistant: conversations, routines, dreams, meeting notes. */
+  medium: LLMConfig
+  /**
+   * The quick asks, mail sorting, reply suggestions. `null` means those are
+   * not done -- deliberately *not* a fallback to `medium`: these run per
+   * keystroke-ish interaction, and a blank card that silently billed at the
+   * assistant's rates would be a bill nobody could account for.
+   */
+  small: LLMConfig | null
+}
+
+/** What every models command answers. */
+export interface ModelSettingsView {
+  settings: ModelSettings
+  /** The endpoints, of those `settings` names, that have a key stored. */
+  keyed: string[]
+  /**
+   * What an account's mail acknowledgement must say for its mail to reach
+   * these models -- every configured endpoint. Stored by a tick as-is.
+   */
+  acknowledgement: string
+}
+
+// ── The assistant ────────────────────────────────────────────────────────
+//
+// Mirrors `everyday_core::agent`. Which model it runs on is the models'
+// business, above.
 
 /**
  * Which quick asks may run, as the difference from the defaults.
@@ -2774,19 +2805,6 @@ export interface AgentSettings {
    * backend older than the field leaves it out, which reads the same way.
    */
   companion?: Companion | null
-  /** Where the models are. Shared by every model this vault asks for. */
-  providerConfig: LLMProviderConfig
-  /** The model that holds conversations: tools, memories, a turn budget. */
-  assistantModel: LLMModelConfig
-  /**
-   * The cheap, fast model behind the suggestions in the capture boxes.
-   *
-   * `null` means those asks are not done. It deliberately does *not* fall back
-   * to `assistantModel`: these run per keystroke-ish interaction, and a blank
-   * field that silently billed at reasoning-model rates would be a bill nobody
-   * could account for.
-   */
-  quickModel: LLMModelConfig | null
   /** Which quick asks are allowed, by name. */
   quickAsks: QuickPolicy
   /** The person's own standing instructions. */
@@ -2830,8 +2848,6 @@ export interface AgentSettings {
    * promise from one that refuses them.
    */
   parkUnattended?: boolean
-  /** Whether a key is stored. Never the key. */
-  hasKey: boolean
 }
 
 // ── What is on screen, for the assistant ─────────────────────────────────

@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -104,6 +104,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v13(d),
         v14(d),
         v15(d),
+        v16(d),
     ]
 }
 
@@ -1414,6 +1415,27 @@ fn v15(d: Dialect) -> Vec<String> {
         // The count on the app bar, and the list behind it.
         "CREATE INDEX IF NOT EXISTS jobs_unseen ON jobs (seen, created_us)".into(),
     ]
+}
+
+/// Version 16: the models -- which model each size of work runs on, and
+/// where. See `everyday_core::llm`.
+///
+/// One table, and it is `profile` (`v8`) again: a singleton pinned to one
+/// row by a `CHECK`, holding one sealed record, nothing in the clear. Not a
+/// column on `agent_settings`, because the models stopped being the
+/// assistant's -- research and the quick asks run on them too. Their keys are
+/// not here either: each is sealed per endpoint in `record_secrets` (`v9`),
+/// under the owner kind `"model-endpoint"`, and the one `agent_secret` held
+/// is moved there the first time an unlocked vault reads this row and finds
+/// it missing.
+fn v16(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS model_settings (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
 }
 
 #[cfg(test)]

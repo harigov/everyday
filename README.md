@@ -303,7 +303,7 @@ than a plain feed's —
 `calcard`'s own engine, because CalDAV and Graph hand back `RRULE`-bearing
 events and delta pages rather than one static document, and a second,
 hand-rolled expander for that shape would be the DST-boundary risk the
-[assistant's two-model section](#a-second-model-for-the-small-jobs) warns
+[three-model section](#three-models-one-for-each-size-of-work) warns
 about elsewhere, just doubled. An invitation that arrives in **mail** —
 accept, tentative, decline — sends its reply as an ordinary email back to
 whoever organised it, rather than through the calendar API: it works the
@@ -1807,7 +1807,7 @@ turn and per minute, so nothing — a wedged model in a loop, a hostile
 instruction that half-worked — can flood an account's outbox faster than a
 person could ever click.
 
-### A second model, for the small jobs
+### Three models, one for each size of work
 
 The assistant is a reasoning engine with thirty tools, every memory in its
 system prompt and a budget of twenty-four turns. That is the right shape for
@@ -1815,33 +1815,37 @@ system prompt and a budget of twenty-four turns. That is the right shape for
 shape for *this is a wine, what are its fields* — which wants no tools, no
 memories, one round trip, a rigid schema on the way back, an answer inside a
 second, and a cost near nothing, because it is asked every time somebody types
-into a capture box.
+into a capture box. And it is the wrong shape the other way for a research job
+the assistant goes away to write up, where the answer is worth paying for.
 
-So the vault holds **two model names against one endpoint**:
+So the vault holds **three models**, each with its own provider and model
+name, set in **Settings → Models** — application settings rather than the
+assistant's, because the assistant is one of three things that ask a model:
 
 ```
-  LLMProviderConfig   provider, base URL   ── one key, one host
-       ├── assistantModel   gpt-5.1-mini   ── tools, memories, turns
-       └── quickModel       gpt-5.1-nano   ── one shot, one schema
+  Large    gpt-5.1        ── deep research: the jobs the assistant goes away to write up
+  Medium   gpt-5.1-mini   ── the assistant: tools, memories, turns; meeting notes; mail prose
+  Small    gpt-5.1-nano   ── one shot, one schema: quick asks, sorting mail, reply chips
 ```
 
-There is deliberately no way to configure a *second endpoint*. A quick model
-at a different host would be a second place a credential lives and a second
-server that learns something about this vault, for a feature whose whole
-premise is "the same provider, one tier down". The split also means "does this
-endpoint need a key" is asked once rather than once per model, which is a
-question two records would eventually answer differently.
+Each points wherever you like — OpenAI, OpenRouter, a company gateway, Ollama
+on this machine — so research can run on a large hosted model while the
+extractions run on a small local one. **A key belongs to an endpoint, not to a
+model**: two models at one address share one key, and moving a model to
+another address does not take the key with it, so an OpenAI key is never sent
+to a host it was not stored for. A key no model points at any more is
+forgotten when the models are saved. The keys and the addresses are sealed
+like everything else.
 
-Leaving `quickModel` unset means the small jobs are **not done** — never that
-they fall back to the expensive one. These run in capture boxes; a blank field
-that silently billed at reasoning-model rates would be a bill nobody could
-account for.
+Leaving **Large** unset means research runs on the Medium model. Leaving
+**Small** unset means the small jobs are **not done** — never that they fall
+back to a bigger one. These run in capture boxes; a blank card that silently
+billed at the assistant's rates would be a bill nobody could account for.
 
-It is **on by default when the endpoint is on this machine**, and off
-otherwise. Pulling four fields out of a paragraph is the one job in this
-application a small local model is unambiguously good enough for, so the most
-private configuration is also the one that can afford to have the feature
-switched on with nothing leaving the machine at all.
+An account's "the assistant may read this mail" acknowledgement names every
+configured endpoint, since every model can carry mail — the assistant's tools
+on Medium, a research job's on Large, sorting on Small. Moving any model to a
+new address clears it, visibly, until it is given again.
 
 #### What it is for
 
@@ -2468,7 +2472,7 @@ discovers a gap in a year.
 
 An export is your writing **with the encryption taken off**. It is a plaintext
 file bound for a Downloads folder, so it deliberately leaves out every
-credential in the vault: the assistant's API key, the tokens paired devices
+credential in the vault: the models' API keys, the tokens paired devices
 hold, and the wrapped data key itself. A credential in an export is a
 credential leaked.
 

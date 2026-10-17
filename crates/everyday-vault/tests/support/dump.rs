@@ -150,14 +150,32 @@ pub fn dump(vault: &Vault) -> String {
         rows.push(("memory", mem.id.to_string(), value(&mem)));
     }
 
-    // A singleton: no id of its own, and the key beside it is write-only
-    // everywhere except here -- see `Vault::agent_credentials`'s own docs.
+    // A singleton: no id of its own.
     if let Ok(settings) = vault.agent_settings() {
-        let key = vault.agent_credentials().ok().and_then(|(_, k)| k);
         rows.push((
             "agent_settings",
             "singleton".to_string(),
-            json!({ "settings": value(&settings), "key": key }),
+            json!({ "settings": value(&settings) }),
+        ));
+    }
+
+    // Another, read after the assistant's: a vault from before the models
+    // were application settings carries them over from that record on this
+    // first read. Each tier's key is write-only everywhere except here --
+    // see `Vault::model_access`'s own docs.
+    if let Ok(models) = vault.model_settings() {
+        let key = |tier| vault.model_access(tier).ok().and_then(|a| a.key);
+        rows.push((
+            "model_settings",
+            "singleton".to_string(),
+            json!({
+                "settings": value(&models),
+                "keys": {
+                    "large": key(everyday_core::llm::ModelTier::Large),
+                    "medium": key(everyday_core::llm::ModelTier::Medium),
+                    "small": key(everyday_core::llm::ModelTier::Small),
+                },
+            }),
         ));
     }
 

@@ -555,15 +555,21 @@
       "streams": false
     },
     {
-      "args": [],
+      "args": [
+        {
+          "name": "tier",
+          "required": true,
+          "type": "ModelTier"
+        }
+      ],
       "changes": {
         "kind": "settings",
         "op": "updated"
       },
       "effect": "write",
-      "name": "clear_agent_key",
+      "name": "clear_model_key",
       "orScope": null,
-      "returns": "void",
+      "returns": "ModelSettingsView",
       "scope": "agent",
       "sensitive": false,
       "streams": false
@@ -2885,6 +2891,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "model_settings",
+      "orScope": null,
+      "returns": "ModelSettingsView",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "threads",
@@ -4473,6 +4490,26 @@
     {
       "args": [
         {
+          "name": "settings",
+          "required": true,
+          "type": "ModelSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_model_settings",
+      "orScope": null,
+      "returns": "ModelSettingsView",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "source",
           "required": true,
           "type": "NewsSource"
@@ -4939,26 +4976,6 @@
     {
       "args": [
         {
-          "name": "key",
-          "required": true,
-          "type": "string"
-        }
-      ],
-      "changes": {
-        "kind": "settings",
-        "op": "updated"
-      },
-      "effect": "write",
-      "name": "set_agent_key",
-      "orScope": null,
-      "returns": "void",
-      "scope": "agent",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [
-        {
           "name": "seconds",
           "required": true,
           "type": "number"
@@ -5102,6 +5119,31 @@
       "name": "set_memory_origin",
       "orScope": null,
       "returns": "Memory",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "tier",
+          "required": true,
+          "type": "ModelTier"
+        },
+        {
+          "name": "key",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_model_key",
+      "orScope": null,
+      "returns": "ModelSettingsView",
       "scope": "agent",
       "sensitive": false,
       "streams": false

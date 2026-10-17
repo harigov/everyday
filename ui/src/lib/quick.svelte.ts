@@ -28,7 +28,7 @@
 // caller has already done the thing.
 
 import { api } from './api'
-import { agent } from './agent.svelte'
+import { models } from './models.svelte'
 import type { QuickAskRow } from './types'
 import { VaultError } from './types'
 
@@ -44,17 +44,17 @@ class QuickState {
   asks = $state<QuickAskRow[]>([])
 
   /**
-   * Whether a quick model is configured at all.
+   * Whether a small model is configured at all.
    *
-   * Read through from the assistant's settings rather than copied at load
-   * time, and that is not a style preference. `load` and `agent.load` are two
-   * round trips started together, so a snapshot taken here lands `false`
-   * whenever the settings arrive second -- and the whole feature then does
-   * nothing at all, quietly, with every switch still reading "on" in the
-   * pane. A getter cannot be stale.
+   * Read through from the models rather than copied at load time, and that
+   * is not a style preference. `load` and `models.load` are two round trips
+   * started together, so a snapshot taken here lands `false` whenever the
+   * models arrive second -- and the whole feature then does nothing at all,
+   * quietly, with every switch still reading "on" in the pane. A getter
+   * cannot be stale.
    */
   get configured(): boolean {
-    return agent.settings?.quickModel != null
+    return models.settings?.small != null
   }
 
   /** Whether one named ask may run right now. */
@@ -66,13 +66,13 @@ class QuickState {
   /**
    * The ask rows, and the settings they are read against.
    *
-   * `loadSettings` rather than `agent.load`: the latter also fetches fifty
+   * The models rather than `agent.load`: the latter also fetches fifty
    * threads and starts one, and nothing about a shelf filling in its own
    * fields should mint a conversation. It is a no-op once they have arrived.
    */
   async load() {
     try {
-      const [asks] = await Promise.all([api.quickAsks(), agent.loadSettings()])
+      const [asks] = await Promise.all([api.quickAsks(), models.load()])
       this.asks = asks
     } catch {
       // Same argument as everywhere else in this file: a settings read that

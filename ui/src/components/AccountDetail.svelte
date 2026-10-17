@@ -13,6 +13,7 @@
   // `set_agent_access`'s own doc, not a form waiting to be submitted.
 
   import { agent } from '../lib/agent.svelte'
+  import { models } from '../lib/models.svelte'
   import { api } from '../lib/api'
   import { accounts, beginAccountSignIn, type OAuthSignInHandle } from '../lib/accounts.svelte'
   import { humanBytes } from '../lib/format'
@@ -21,8 +22,7 @@
     MAIL_AI_SWITCHES,
     PROVIDER_LABELS,
     SYNC_INTERVALS,
-    acknowledgementName,
-    providerLabel,
+    providersLabel,
     statusLabel,
   } from '../lib/accounts'
   import { errorMessage } from '../lib/errors'
@@ -48,10 +48,19 @@
   void agent.loadSettings()
 
   const original = $derived(accounts.account(id))
-  const providerName = $derived(providerLabel(agent.settings?.providerConfig.baseUrl ?? null))
-  /** What a tick is stored as, and compared with -- see `acknowledgementName`.
+  const providerName = $derived(providersLabel(models.settings))
+  /** What a tick is stored as, and compared with: every configured model's
+   *  endpoint, in the server's own spelling -- see `ModelSettingsView`.
    *  `providerName` is only what the sentence beside the checkbox says. */
-  const providerAck = $derived(acknowledgementName(agent.settings?.providerConfig.baseUrl ?? null))
+  const providerAck = $derived(models.acknowledgement)
+  /** Why a tick cannot be taken yet -- see `AgentAccessGrid`. */
+  const ackUnavailable = $derived(
+    providerAck
+      ? null
+      : models.error
+        ? `Where the models are could not be read: ${models.error}`
+        : 'Reading where the models are…',
+  )
 
   // ── Calendars ────────────────────────────────────────────────────────
   //
@@ -626,10 +635,12 @@
         assistantAccess={original.assistantAccess}
         mcpAccess={original.mcpAccess}
         {providerName}
-        acknowledged={original.assistantProviderAcknowledged === providerAck}
+        acknowledged={providerAck != null && original.assistantProviderAcknowledged === providerAck}
+        {ackUnavailable}
         onchange={(caller: AgentCallerKind, access: AgentMailAccess) =>
           void accounts.setAccess(original.id, caller, access)}
         onacknowledge={(ack: boolean) =>
+          (!ack || providerAck) &&
           void api
             .saveAccount(
               $state.snapshot({
@@ -648,13 +659,15 @@
     <section>
       <span class="eyebrow">Mail assistant</span>
       <p class="hint">
-        Categorising, drafting ahead and summarising all run in the background, through the model
-        configured for the assistant -- not as something you ask for in chat. Off until the "I
-        understand" checkbox above is ticked, since they read this account's mail the same way the
-        assistant's own tools do.
+        Categorising, drafting ahead and summarising all run in the background, through the models
+        set under Settings → Models -- sorting and drafting ahead on the small one, summaries on the
+        assistant's -- not as something you ask for in chat. Off until the "I understand" checkbox
+        above is ticked, since they read this account's mail the same way the assistant's own tools
+        do.
       </p>
       {#each MAIL_AI_SWITCHES as sw (sw.key)}
-        {@const acknowledged = original.assistantProviderAcknowledged === providerAck}
+        {@const acknowledged =
+          providerAck != null && original.assistantProviderAcknowledged === providerAck}
         <label class="mailai-row" class:disabled={!acknowledged}>
           <input
             type="checkbox"
