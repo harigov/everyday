@@ -1340,24 +1340,51 @@ pub fn system_prompt(
 ) -> String {
     let mut out = String::new();
 
-    if !settings.instructions.trim().is_empty() {
-        out.push_str(settings.instructions.trim());
-        out.push_str("\n\n---\n\n");
+    // The soul: who the person wants the assistant to be, in their words.
+    //
+    // Introduced as theirs, rather than dropped in raw ahead of the house
+    // rules as it first was. Raw, it read as a stray paragraph that the
+    // very next line -- "You are the assistant built into Every Day" --
+    // answered with an identity of its own, and a model weighs the
+    // instruction that says what it governs over text that says nothing
+    // about itself. So it says whose it is and what it rules, which is tone
+    // and voice; and the house rules after it say they hold whoever the
+    // assistant has been asked to be, which is the other half of keeping
+    // it from being read as a replacement for them.
+    let soul = settings.instructions.trim();
+    if !soul.is_empty() {
+        out.push_str(
+            "The person you work for wrote this about who they want you to be. It is your \
+             temperament and your voice in every reply, in every conversation -- how you speak \
+             to them, how much you say, what you sound like -- and where anything after it \
+             speaks to tone, length or style, this wins:\n\n",
+        );
+        out.push_str(soul);
+        out.push_str(
+            "\n\n---\n\nWhat follows is how you do the work, and it holds whoever you are.\n\n",
+        );
     }
 
     // Who it is, before what it does. The name is the person's, so it is
     // trimmed and dropped straight in; `validate` has already refused a
     // newline in it, which is the only thing here that could pass for a
     // second instruction rather than a word.
+    //
+    // With a soul above, the house sentence says what the work is rather
+    // than who the assistant *is* -- "you are" a second time, straight after
+    // the person has said who it is, is the line that used to win.
+    let house = if soul.is_empty() {
+        "You are the assistant built into Every Day"
+    } else {
+        "You work as the assistant built into Every Day"
+    };
     match settings.name.trim() {
-        "" => out.push_str("You are the assistant built into Every Day"),
+        "" => out.push_str(house),
         name => {
             out.push_str("Your name is ");
             out.push_str(name);
-            out.push_str(
-                ". The person you work for chose it, so answer to it. \
-                          You are the assistant built into Every Day",
-            );
+            out.push_str(". The person you work for chose it, so answer to it. ");
+            out.push_str(house);
         }
     }
     out.push_str(
@@ -1439,6 +1466,19 @@ pub fn system_prompt(
         &rejected,
         MAX_REJECTED,
     );
+
+    // The soul again, by reference, at the end of everything stable. It was
+    // said once at the top of a long prompt, ahead of every tool's schema
+    // and of a conversation whose earlier replies set a tone of their own --
+    // often written before the person said who they wanted -- and a model
+    // continues the voice it sees itself using. One line, not the text
+    // again: it is up to eight thousand bytes and is already there.
+    if !soul.is_empty() {
+        out.push_str(
+            "\n\nHowever the conversation so far has sounded, write this reply in the voice \
+             and manner they asked for at the top of these instructions.",
+        );
+    }
 
     // What the person is looking at -- or, on a scheduled run, that nobody
     // is. Appended last because it is the one part of the prompt that
@@ -1769,17 +1809,66 @@ mod tests {
     fn the_persons_instructions_come_before_the_house_rules() {
         let s =
             AgentSettings { instructions: "Be terse. I am a nurse.".into(), ..Default::default() };
+        let told = Memory::new("They take their coffee black.");
         let prompt = system_prompt(
             &s,
+            &crate::profile::Profile::default(),
+            std::slice::from_ref(&told),
+            &[],
+            &at(9, 0, "UTC"),
+            Some("They are looking at their calendar."),
+        );
+        let mine = prompt.find("I am a nurse").unwrap();
+        let house = prompt.find("the assistant built into Every Day").unwrap();
+        assert!(mine < house, "the person's own instructions should be read first");
+        assert_eq!(prompt.matches("I am a nurse").count(), 1, "said once, not twice");
+    }
+
+    #[test]
+    fn a_soul_is_introduced_as_theirs_and_recalled_at_the_end() {
+        // The bug: the text went in raw, and the next line said "You are the
+        // assistant built into Every Day" -- an identity of its own, which
+        // is what a model went on being.
+        let s = AgentSettings {
+            instructions: "Answer like a ship's captain.".into(),
+            ..Default::default()
+        };
+        let told = Memory::new("They take their coffee black.");
+        let prompt = system_prompt(
+            &s,
+            &crate::profile::Profile::default(),
+            std::slice::from_ref(&told),
+            &[],
+            &at(9, 0, "UTC"),
+            Some("They are looking at their calendar."),
+        );
+        let soul = prompt.find("ship's captain").unwrap();
+        let intro = prompt.find("who they want you to be").unwrap();
+        assert!(intro < soul, "it says whose it is before it is read: {prompt}");
+        assert!(prompt.contains("this wins"), "and that it governs tone and style");
+        assert!(
+            !prompt.contains("You are the assistant built into"),
+            "the house sentence must not answer it with an identity of its own: {prompt}"
+        );
+        assert!(prompt.contains("holds whoever you are"), "the house rules still hold");
+
+        let recall = prompt.find("However the conversation so far has sounded").unwrap();
+        let memory = prompt.find("coffee black").unwrap();
+        let screen = prompt.find("looking at their calendar").unwrap();
+        assert!(memory < recall && recall < screen, "after the memories, before the screen");
+
+        // And none of it without a soul.
+        let plain = system_prompt(
+            &AgentSettings::default(),
             &crate::profile::Profile::default(),
             &[],
             &[],
             &at(9, 0, "UTC"),
             None,
         );
-        let mine = prompt.find("I am a nurse").unwrap();
-        let house = prompt.find("You are the assistant").unwrap();
-        assert!(mine < house, "the person's own instructions should be read first");
+        assert!(!plain.contains("who they want you to be"));
+        assert!(!plain.contains("However the conversation"));
+        assert!(plain.starts_with("You are the assistant built into Every Day"));
     }
 
     #[test]
