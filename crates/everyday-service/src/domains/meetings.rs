@@ -215,7 +215,9 @@ fn usable(
         }
         TranscriberConfig::OpenAi { .. } => {
             if !(has_transcriber_key || (use_assistant_key && assistant_key_available)) {
-                return Err("add an OpenAI key, or turn on \"use the assistant's key\"".into());
+                return Err(
+                    "add an OpenAI key, or turn on \"use the OpenAI key from Models\"".into()
+                );
             }
             if !speech_kit_installed {
                 return Err("the speech kit has not been downloaded yet -- it is needed to detect speech before any audio is sent".into());
@@ -275,7 +277,7 @@ pub(crate) fn view(
     settings: MeetingSettings,
 ) -> everyday_core::Result<MeetingSettingsView> {
     let has_key = vault.has_transcriber_key()?;
-    let assistant_key_available = vault.assistant_key_if_openai()?.is_some();
+    let assistant_key_available = vault.models_key_if_openai()?.is_some();
 
     let (usable, problem) = match &settings.transcriber {
         None => (false, Some("choose a transcriber before turning meeting notes on".to_string())),
@@ -335,10 +337,10 @@ fn validate_templates(templates: &[NoteTemplate]) -> everyday_core::Result<()> {
 /// The one door the pipeline (`everyday_service::meeting::pipeline`) reaches
 /// for on its way to building a request, rather than making it resolve
 /// `use_assistant_key` itself: an `OpenAi` transcriber set to reuse the
-/// assistant's key is answered from
-/// [`Vault::assistant_key_if_openai`](everyday_core::Vault::assistant_key_if_openai)
-/// -- which is `None` unless the assistant is actually pointed at OpenAI's
-/// hosted endpoint with a key stored -- and everything else, including an
+/// models' key is answered from
+/// [`Vault::models_key_if_openai`](everyday_core::Vault::models_key_if_openai)
+/// -- which is `None` unless some model is actually pointed at OpenAI's
+/// hosted endpoint with a key stored for it -- and everything else, including an
 /// `OpenAi` transcriber that has its own key instead, is answered from
 /// [`Vault::transcriber_key`](everyday_core::Vault::transcriber_key).
 ///
@@ -350,7 +352,7 @@ pub fn transcriber_key(vault: &Vault) -> Option<String> {
     let settings = vault.meeting_settings().ok()?;
     if settings.use_assistant_key
         && matches!(settings.transcriber, Some(TranscriberConfig::OpenAi { .. }))
-        && let Ok(Some(key)) = vault.assistant_key_if_openai()
+        && let Ok(Some(key)) = vault.models_key_if_openai()
     {
         return Some(key);
     }

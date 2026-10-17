@@ -48,7 +48,7 @@
 //! environment is invalid (401), so [`chat_stub`] runs a tiny local
 //! OpenAI-compatible HTTP server (axum, already a workspace dev-dependency)
 //! that answers `POST /chat/completions` with a fixed, heading-correct
-//! note, and the assistant's `provider_config.base_url` is pointed at it --
+//! note, and the medium model's `base_url` is pointed at it --
 //! a loopback address needs no key (`Provider::needs_key`). Everything
 //! upstream of that one call -- capture, the spool, real VAD, real local
 //! Parakeet recognition, echo removal, real speaker embedding and
@@ -83,11 +83,12 @@ use everyday_app_lib::SessionHandle;
 use everyday_app_lib::capture::{self, CaptureHandle, CaptureSlot, RecordingHandle, RecordingSink};
 use everyday_app_lib::meeting::begin_headless;
 
-use everyday_core::agent::{AgentSettings, LLMModelConfig, LLMProviderConfig, Provider};
+use everyday_core::agent::AgentSettings;
 use everyday_core::calendar::{
     AccountCalendarSource, AccountSyncCursor, Calendar, CalendarOrigin, Event, EventStatus,
 };
 use everyday_core::id::{AccountId, EventId};
+use everyday_core::llm::{LLMConfig, LLMModelConfig, LLMProviderConfig, ModelSettings, Provider};
 use everyday_core::meeting::{
     Attribution, LocalModel, MeetingSettings, Offer, Recording, SAMPLE_RATE, Stage,
     TranscriberConfig,
@@ -464,21 +465,24 @@ async fn chat_stub() -> String {
 // ============================================================================
 
 fn configure_assistant(vault: &Vault, base_url: &str) {
-    let settings = AgentSettings {
-        enabled: true,
-        assistant_model: LLMModelConfig {
-            model: "stub-model".to_string(),
-            ..LLMModelConfig::assistant()
-        },
-        provider_config: LLMProviderConfig {
-            provider: Provider::OpenAi,
-            base_url: Some(base_url.to_string()),
-        },
-        ..AgentSettings::default()
-    };
-    // A loopback base URL needs no key -- `Provider::needs_key` -- so
-    // nothing is stored here.
+    let settings = AgentSettings { enabled: true, ..AgentSettings::default() };
     vault.save_agent_settings(&settings).unwrap();
+    // The summary is the medium model's work. A loopback base URL needs no
+    // key -- `Provider::needs_key` -- so nothing is stored here.
+    let models = ModelSettings {
+        medium: LLMConfig {
+            connection: LLMProviderConfig {
+                provider: Provider::OpenAi,
+                base_url: Some(base_url.to_string()),
+            },
+            model: LLMModelConfig {
+                model: "stub-model".to_string(),
+                ..LLMModelConfig::assistant()
+            },
+        },
+        ..ModelSettings::default()
+    };
+    vault.save_model_settings(&models).unwrap();
 }
 
 /// An account calendar with a role, so the note this call produces has

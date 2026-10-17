@@ -24,6 +24,7 @@ pub mod mailview;
 pub mod mailwrite;
 pub mod meetings;
 pub mod meta;
+pub mod models;
 pub mod news;
 pub mod newsmail;
 pub mod notes;
@@ -94,6 +95,7 @@ pub fn catalog() -> &'static [&'static Command] {
             web::COMMANDS,
             weather::COMMANDS,
             assistant::COMMANDS,
+            models::COMMANDS,
             chat::COMMANDS,
             quick::COMMANDS,
             meta::COMMANDS,

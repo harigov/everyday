@@ -27,14 +27,16 @@ fn service(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
     let vault = everyday_vault::create(dir.path(), config).unwrap();
     vault.save_journal(&everyday_core::Journal::new("Journal")).unwrap();
 
-    let mut settings = everyday_core::AgentSettings {
+    let settings = everyday_core::AgentSettings {
         enabled: true,
         timezone: Some("UTC".into()),
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
 
     let svc = Arc::new(Service::new());
     svc.set(vault);
@@ -412,8 +414,10 @@ async fn the_offered_tools_carry_why_and_exclude_web_search() {
     let vault = svc.get().unwrap();
     let mut settings = vault.agent_settings().unwrap();
     settings.web = true; // on, so its absence from a dream is meaningful
-    settings.provider_config.base_url = Some(model.endpoint.clone());
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
     dreaming_on(&svc);
     seed_yesterday(&svc);
     set_nightly_slot(&svc, 1.0);

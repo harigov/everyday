@@ -88,7 +88,7 @@ impl MailAiRefusal {
 
 /// The only gate [`super::categorize`]'s model-assisted pass, `summarize_thread`
 /// and the auto-draft background task call. `provider` is
-/// [`crate::agent::LLMProviderConfig::acknowledgement_name`] for the
+/// [`crate::llm::ModelSettings::acknowledgement_name`] for the
 /// provider actually configured right now, or `""` when none is — the same
 /// value and the same empty-never-matches rule
 /// [`Account::assistant_acknowledged_for`] already keeps for the chat

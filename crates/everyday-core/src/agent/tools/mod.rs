@@ -592,7 +592,7 @@ pub struct ToolContext<'a> {
     /// The provider the assistant is actually configured to use right now,
     /// compared against
     /// [`crate::account::Account::assistant_provider_acknowledged`] by
-    /// [`crate::agent::LLMProviderConfig::acknowledgement_name`]. `None` for
+    /// [`crate::llm::ModelSettings::acknowledgement_name`]. `None` for
     /// every caller but the assistant, since nothing else reads it.
     pub assistant_provider: Option<String>,
     /// The one gate a mail write's enqueue passes through before it reaches
@@ -1275,7 +1275,7 @@ pub fn available(vault: &Vault) -> Vec<&'static Tool> {
 /// `caller: None` reads as the vault's owner acting directly, unrestricted;
 /// `assistant_provider` is only consulted when `caller` is
 /// [`Caller::Assistant`] and is the string
-/// [`crate::agent::LLMProviderConfig::acknowledgement_name`] produces for
+/// [`crate::llm::ModelSettings::acknowledgement_name`] produces for
 /// whatever is configured right now.
 pub fn available_for(
     vault: &Vault,

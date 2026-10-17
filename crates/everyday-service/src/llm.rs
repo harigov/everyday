@@ -11,7 +11,7 @@
 //! matter of one arm in [`client`], rather than two builders in two files
 //! that have to be found and changed together.
 
-use everyday_core::agent::{LLMModelConfig, LLMProviderConfig, Provider};
+use everyday_core::llm::{LLMModelConfig, LLMProviderConfig, ModelAccess, Provider};
 use rig_agent::AgentBuilder;
 use rig_agent::core::providers::openai;
 
@@ -49,6 +49,12 @@ pub fn client(
             .build()
             .map_err(|e| e.to_string()),
     }
+}
+
+/// Open a connection to the model the vault handed out -- what every caller
+/// holding a [`ModelAccess`] wants, which is all of them.
+pub fn client_for(access: &ModelAccess) -> Result<openai::CompletionsClient, String> {
+    client(&access.config.connection, access.key.clone())
 }
 
 /// Apply a model's temperature and token ceiling to a builder.

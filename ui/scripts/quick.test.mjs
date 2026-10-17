@@ -34,25 +34,38 @@ stubBrowser({
 })
 
 const {
-  modules: [quickModule, agentModule],
+  modules: [quickModule, modelsModule],
   close,
-} = await load(['/src/lib/quick.svelte.ts', '/src/lib/agent.svelte.ts'], { svelte: true })
+} = await load(['/src/lib/quick.svelte.ts', '/src/lib/models.svelte.ts'], { svelte: true })
 const { ask, quick, slot } = quickModule
-const { agent } = agentModule
+const { models } = modelsModule
 
 /**
- * Configure -- or unconfigure -- the quick model.
+ * Configure -- or unconfigure -- the small model.
  *
- * Through `agent.settings`, because that is where `quick.configured` reads
+ * Through `models.view`, because that is where `quick.configured` reads
  * from. It is a getter rather than a copy for a reason worth not undoing: the
  * two loads are separate round trips, and a snapshot taken here lands `false`
- * whenever the settings arrive second, which switches the whole feature off
+ * whenever the models arrive second, which switches the whole feature off
  * silently with every switch still reading "on" in the pane.
  */
 function configure(on) {
-  agent.settings = on
-    ? { quickModel: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 } }
-    : { quickModel: null }
+  const small = {
+    provider: 'openAi',
+    baseUrl: null,
+    model: 'gpt-5.1-nano',
+    temperature: 0,
+    maxTokens: 1024,
+  }
+  models.view = {
+    settings: {
+      large: null,
+      medium: { ...small, model: 'gpt-5.1-mini' },
+      small: on ? small : null,
+    },
+    keyed: ['https://api.openai.com/v1'],
+    acknowledgement: 'https://api.openai.com/v1',
+  }
 }
 
 /** A promise that resolves when we say so. */

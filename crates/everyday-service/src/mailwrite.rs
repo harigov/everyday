@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use everyday_core::Vault;
 use everyday_core::account::Account;
-use everyday_core::agent::AgentSettings;
 use everyday_core::id::{AccountId, MailMessageId, ThreadId};
+use everyday_core::llm::ModelTier;
 use everyday_core::mail::voice::{self, VoiceProfile};
 use everyday_core::mail::{
     Address, Category, MailAiFeature, MailAiRefusal, Message, Origin, Thread, mail_ai_allowed,
@@ -71,15 +71,13 @@ pub struct WrittenText {
 
 // ---- small equivalents of mailai's own private helpers --------------------
 //
-// `everyday_service::mailai` keeps `provider_name`, `refused`,
-// `display_address`, `excerpt` and `own_addresses` to itself -- see this
-// crate's module layout -- so each is re-stated here rather than made
-// `pub(crate)` there for one more caller. Any drift between the two copies
-// is a one-line diff, not a shared dependency to break.
-
-fn provider_name(settings: &AgentSettings) -> String {
-    settings.provider_config.acknowledgement_name()
-}
+// `everyday_service::mailai` keeps `refused`, `display_address`, `excerpt`
+// and `own_addresses` to itself -- see this crate's module layout -- so each
+// is re-stated here rather than made `pub(crate)` there for one more caller.
+// Any drift between the two copies is a one-line diff, not a shared
+// dependency to break. The one exception is `mailai::mail_model`, the gate
+// and the credential together: two copies of *that* would be two places a
+// request could be checked against one set of endpoints and sent to another.
 
 fn refused(account: &Account, feature: MailAiFeature, refusal: MailAiRefusal) -> CommandError {
     CommandError::new(codes::FORBIDDEN, refusal.message(account, feature))
@@ -317,10 +315,11 @@ pub async fn suggest_replies(
         return Ok(Vec::new());
     };
 
-    let settings =
-        vault.agent_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
-    let provider = provider_name(&settings);
-    mail_ai_allowed(&account, &provider, MailAiFeature::Writing)
+    // Checked before the cache as well as at the request, so a cached answer
+    // is never handed out for an account that has not agreed to this.
+    let models =
+        vault.model_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
+    mail_ai_allowed(&account, &models.acknowledgement_name(), MailAiFeature::Writing)
         .map_err(|r| refused(&account, MailAiFeature::Writing, r))?;
 
     // A cached answer costs nothing -- checked before the rate limiter, not
@@ -343,13 +342,13 @@ pub async fn suggest_replies(
     let voice_ctx =
         mailvoice::voice_context(service, &vault, &account, Some(&newest.from.email)).await?;
 
-    let (settings, key) =
-        vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
     // Speed matters here -- these appear as the thread opens -- so the
-    // quick model is used when one is configured, falling back to the
-    // assistant model rather than refusing outright when it is not.
-    let model = settings.quick_model.as_ref().unwrap_or(&settings.assistant_model);
-    let client = crate::llm::client(&settings.provider_config, key)
+    // small model is used when one is configured, falling back to the
+    // medium one rather than refusing outright when it is not.
+    let tier = if models.small.is_some() { ModelTier::Small } else { ModelTier::Medium };
+    let chosen = crate::mailai::mail_model(&vault, &account, MailAiFeature::Writing, tier)?;
+    let model = &chosen.config.model;
+    let client = crate::llm::client_for(&chosen)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
     let system = format!("{SUGGEST_REPLIES_SYSTEM}\n\n{HUMAN_WRITING_RULES}");
@@ -437,10 +436,11 @@ pub async fn draft_with_ai(
         blocking(move || Ok(vault.account(account_id)?)).await?
     };
 
-    let settings =
-        vault.agent_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
-    let provider = provider_name(&settings);
-    mail_ai_allowed(&account, &provider, MailAiFeature::Writing)
+    // Refused before the rate limiter and the voice are spent on it; checked
+    // again, against the model actually used, right before the request.
+    let models =
+        vault.model_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
+    mail_ai_allowed(&account, &models.acknowledgement_name(), MailAiFeature::Writing)
         .map_err(|r| refused(&account, MailAiFeature::Writing, r))?;
 
     let origin = Origin::Assistant { conversation: format!("mail-write:{account_id}") };
@@ -465,9 +465,9 @@ pub async fn draft_with_ai(
     let voice_ctx =
         mailvoice::voice_context(service, &vault, &account, correspondent.as_deref()).await?;
 
-    let (settings, key) =
-        vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
-    let client = crate::llm::client(&settings.provider_config, key)
+    let medium =
+        crate::mailai::mail_model(&vault, &account, MailAiFeature::Writing, ModelTier::Medium)?;
+    let client = crate::llm::client_for(&medium)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
     let system = format!("{DRAFT_SYSTEM}\n\n{HUMAN_WRITING_RULES}");
@@ -479,9 +479,9 @@ pub async fn draft_with_ai(
     );
 
     // Quality matters more than speed for a whole draft, unlike
-    // `suggest_replies` -- the assistant model, never the quick one.
+    // `suggest_replies` -- the medium model, never the small one.
     let answer =
-        crate::quick::run_prompt(client, &settings.assistant_model, &system, &user, body_schema())
+        crate::quick::run_prompt(client, &medium.config.model, &system, &user, body_schema())
             .await?;
     let body = answer.get("body").and_then(Value::as_str).unwrap_or_default();
     let body_text = voice::humanize(body, &voice_ctx.profile);
@@ -563,10 +563,11 @@ pub async fn improve_writing(
         blocking(move || Ok(vault.account(account_id)?)).await?
     };
 
-    let settings =
-        vault.agent_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
-    let provider = provider_name(&settings);
-    mail_ai_allowed(&account, &provider, MailAiFeature::Writing)
+    // Refused before the rate limiter and the voice are spent on it; checked
+    // again, against the model actually used, right before the request.
+    let models =
+        vault.model_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
+    mail_ai_allowed(&account, &models.acknowledgement_name(), MailAiFeature::Writing)
         .map_err(|r| refused(&account, MailAiFeature::Writing, r))?;
 
     let origin = Origin::Assistant { conversation: format!("mail-write:{account_id}") };
@@ -577,9 +578,9 @@ pub async fn improve_writing(
     // anybody in particular yet.
     let voice_ctx = mailvoice::voice_context(service, &vault, &account, None).await?;
 
-    let (settings, key) =
-        vault.mail_ai_credentials().map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
-    let client = crate::llm::client(&settings.provider_config, key)
+    let medium =
+        crate::mailai::mail_model(&vault, &account, MailAiFeature::Writing, ModelTier::Medium)?;
+    let client = crate::llm::client_for(&medium)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
     let task = instruction
@@ -591,7 +592,7 @@ pub async fn improve_writing(
     let user = improve_user_prompt(task, &text, &voice_ctx.prompt_section());
 
     let answer =
-        crate::quick::run_prompt(client, &settings.assistant_model, &system, &user, body_schema())
+        crate::quick::run_prompt(client, &medium.config.model, &system, &user, body_schema())
             .await?;
     let body = answer.get("body").and_then(Value::as_str).unwrap_or_default();
     // Every mode but `Fix` is humanised; `Fix` promises to keep every word

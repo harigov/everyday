@@ -52,7 +52,6 @@ fn agent_cleanup(store: &dyn AgentStore) {
 fn agent_starts_unconfigured(store: &dyn AgentStore) {
     let s = store.settings().unwrap();
     assert!(!s.enabled, "a backend with no settings record must report the assistant off");
-    assert!(!s.has_key, "no key has been stored");
     assert!(!store.has_secret().unwrap());
     assert!(store.secret().unwrap().is_none());
     assert_eq!(
@@ -74,11 +73,7 @@ fn settings_round_trip(store: &dyn AgentStore) {
         remember: false,
         ..Default::default()
     };
-    s.assistant_model.model = "gpt-5.1".into();
-    s.assistant_model.temperature = Some(0.3);
-    s.assistant_model.max_tokens = Some(2048);
-    s.provider_config.base_url = Some("https://gateway.example.com/v1".into());
-    s.quick_model = Some(LLMModelConfig::quick());
+    s.name = "Robin".into();
     s.quick_asks.set("journal.title", true);
 
     store.put_settings(&s).unwrap();
@@ -88,18 +83,15 @@ fn settings_round_trip(store: &dyn AgentStore) {
     assert_eq!(back.confirm_destructive, s.confirm_destructive);
     assert_eq!(back.max_steps, s.max_steps);
     assert_eq!(back.remember, s.remember);
-    assert_eq!(back.assistant_model, s.assistant_model);
-    assert_eq!(back.provider_config, s.provider_config);
-    // The second model and the per-ask policy round-trip too. They are the
-    // half of this record that a backend written before them would silently
-    // drop, which is exactly what a conformance test is for.
-    assert_eq!(back.quick_model, s.quick_model);
+    // The per-ask policy round-trips too. It is the half of this record that
+    // a backend written before it would silently drop, which is exactly what
+    // a conformance test is for.
     assert_eq!(back.quick_asks, s.quick_asks);
     assert!(back.quick_asks.allows("journal.title"));
 
     // Saving twice must update rather than accumulate.
     store.put_settings(&s).unwrap();
-    assert_eq!(store.settings().unwrap().assistant_model.model, "gpt-5.1");
+    assert_eq!(store.settings().unwrap().name, "Robin");
 
     store.put_settings(&AgentSettings::default()).unwrap();
     assert!(!store.settings().unwrap().enabled, "settings must be replaceable, not merged");
@@ -190,17 +182,15 @@ fn a_conversation_remembers_the_chat_it_arrived_through(store: &dyn AgentStore) 
     store.delete_conversation(desk.id).unwrap();
 }
 
-/// The credential must not be reachable through the settings, and
-/// `has_key` must be derived from the secret rather than from anything a
-/// caller wrote into the settings record.
+/// The old singleton key -- read once, to be carried over to the models --
+/// is stored apart from the settings and never reachable through them.
 fn the_key_is_stored_apart_from_the_settings(store: &dyn AgentStore) {
-    // A caller lying about `has_key` must not be believed.
-    store.put_settings(&AgentSettings { has_key: true, ..Default::default() }).unwrap();
-    assert!(!store.settings().unwrap().has_key, "has_key must come from the secret table");
-
     store.put_secret("sk-test-0123456789").unwrap();
     assert!(store.has_secret().unwrap());
-    assert!(store.settings().unwrap().has_key, "storing a key must show in the settings");
+    assert!(
+        !serde_json::to_string(&store.settings().unwrap()).unwrap().contains("sk-test"),
+        "the key must not be reachable through the settings"
+    );
     assert_eq!(store.secret().unwrap().as_deref(), Some("sk-test-0123456789"));
 
     // Replacing, not accumulating.
@@ -218,7 +208,6 @@ fn the_key_is_stored_apart_from_the_settings(store: &dyn AgentStore) {
     store.delete_secret().unwrap();
     assert!(!store.has_secret().unwrap());
     assert!(store.secret().unwrap().is_none());
-    assert!(!store.settings().unwrap().has_key);
 
     // Deleting a key that is not there is not an error: the settings pane
     // clears the field whether or not one was set.

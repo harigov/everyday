@@ -14,7 +14,8 @@ const {
   diffAccess,
   accessEqual,
   providerLabel,
-  acknowledgementName,
+  endpointOf,
+  providersLabel,
   isPasswordAuth,
 } = accounts
 
@@ -120,11 +121,12 @@ assert.equal(
 )
 assert.equal(providerLabel('not a url'), 'not a url', 'an unparsable value is echoed back')
 
-// ── acknowledgementName ───────────────────────────────────────────────
+// ── endpointOf ────────────────────────────────────────────────────────
 //
-// The same table as `acknowledgement_name_is_the_endpoint` in
-// crates/everyday-core/src/agent.rs: the assistant is offered mail only when
-// the stored acknowledgement equals the Rust side's string exactly.
+// The same table as `the_endpoint_is_spelt_as_the_interface_spells_it` in
+// crates/everyday-core/src/llm.rs: a model key is stored under the Rust
+// side's string, so the pane can only say a card has one if it spells the
+// endpoint identically.
 
 for (const [baseUrl, want] of [
   [null, 'https://api.openai.com/v1'],
@@ -132,18 +134,31 @@ for (const [baseUrl, want] of [
   ['https://openrouter.ai/api/v1', 'https://openrouter.ai/api/v1'],
   ['https://openrouter.ai/api/v1/', 'https://openrouter.ai/api/v1'],
   ['http://localhost:11434/v1//', 'http://localhost:11434/v1'],
+  [' https://openrouter.ai/api/v1 ', 'https://openrouter.ai/api/v1'],
   ['/', 'https://api.openai.com/v1'],
 ]) {
-  assert.equal(
-    acknowledgementName(baseUrl),
-    want,
-    `acknowledgementName(${JSON.stringify(baseUrl)})`,
-  )
+  assert.equal(endpointOf(baseUrl), want, `endpointOf(${JSON.stringify(baseUrl)})`)
 }
-assert.notEqual(
-  acknowledgementName(null),
-  providerLabel(null),
-  'what is stored is not what the sentence says',
+
+// ── providersLabel ────────────────────────────────────────────────────
+
+const at = (baseUrl) => ({
+  provider: 'openAi',
+  baseUrl,
+  model: 'm',
+  temperature: null,
+  maxTokens: null,
+})
+assert.equal(providersLabel(null), 'OpenAI')
+assert.equal(providersLabel({ large: null, medium: at(null), small: at(null) }), 'OpenAI')
+assert.equal(
+  providersLabel({
+    large: at('https://openrouter.ai/api/v1'),
+    medium: at(null),
+    small: at('http://localhost:11434/v1'),
+  }),
+  'OpenRouter, OpenAI and Ollama',
+  'every tier can carry mail, so the sentence names every provider once',
 )
 
 // ── isPasswordAuth ────────────────────────────────────────────────────

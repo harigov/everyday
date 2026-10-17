@@ -27,6 +27,7 @@ pub(super) fn run_journal_suite(store: &dyn JournalStore) {
     stats_reflect_contents(store);
     unicode_survives_a_round_trip(store);
     the_owner_round_trips_and_starts_empty(store);
+    the_models_round_trip_and_start_unsaved(store);
     capabilities_match_the_accessors(store);
 }
 
@@ -539,6 +540,57 @@ fn the_owner_round_trips_and_starts_empty(store: &dyn JournalStore) {
     // Emptied by hand is emptied, not reverted to what was there before.
     store.put_profile(&Profile::default()).expect("clearing the profile");
     assert!(store.profile().unwrap().is_empty(), "clearing it must actually clear it");
+}
+
+/// Which models the vault asks for: one row, application-wide.
+///
+/// "Never saved" must come back as `None` rather than as the defaults,
+/// because that is the one signal that a vault still has its models in the
+/// assistant's record and needs them carried over -- a backend that answered
+/// the defaults instead would quietly replace somebody's endpoint with
+/// OpenAI's on upgrade.
+fn the_models_round_trip_and_start_unsaved(store: &dyn JournalStore) {
+    assert_eq!(store.model_settings().expect("a fresh store still has an answer"), None);
+
+    let mine = crate::llm::ModelSettings {
+        large: Some(crate::llm::LLMConfig {
+            connection: crate::llm::LLMProviderConfig {
+                provider: crate::llm::Provider::OpenAi,
+                base_url: Some("https://openrouter.ai/api/v1".into()),
+            },
+            model: crate::llm::LLMModelConfig {
+                model: "anthropic/claude-opus".into(),
+                temperature: Some(0.7),
+                max_tokens: Some(16_000),
+            },
+        }),
+        medium: crate::llm::LLMConfig::medium(),
+        small: Some(crate::llm::LLMConfig {
+            connection: crate::llm::LLMProviderConfig {
+                provider: crate::llm::Provider::OpenAi,
+                base_url: Some("http://localhost:11434/v1".into()),
+            },
+            model: crate::llm::LLMModelConfig::quick(),
+        }),
+    };
+    match store.put_model_settings(&mine) {
+        Ok(()) => {}
+        Err(e) if e.code() == "unsupported" => {
+            eprintln!("  (backend stores no model settings; skipping them)");
+            return;
+        }
+        Err(e) => panic!("put_model_settings: {e}"),
+    }
+    assert_eq!(store.model_settings().unwrap().as_ref(), Some(&mine), "every tier, every field");
+
+    // A second write replaces rather than merging: switching a tier off is
+    // switching it off.
+    let fewer = crate::llm::ModelSettings::default();
+    store.put_model_settings(&fewer).expect("put_model_settings again");
+    assert_eq!(store.model_settings().unwrap(), Some(fewer), "tiers must be replaced, not merged");
+
+    // Another singleton, sealed under other data: the owner's row is not it.
+    assert!(store.profile().unwrap().is_empty(), "the models are not the profile");
 }
 
 /// Every domain flag on [`Capabilities`] must equal `.is_some()` on the

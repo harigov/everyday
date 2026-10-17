@@ -2,19 +2,22 @@
 //! what you asked it to remember.
 //!
 //! The sixth domain. Everything here needs an unlocked vault, like every
-//! other domain -- which is the whole argument for keeping the API key in
-//! here rather than in the platform keychain. A locked vault is a vault
+//! other domain -- which is the whole argument for keeping the model keys in
+//! the vault rather than in the platform keychain. A locked vault is a vault
 //! whose assistant cannot read your tasks, so a key it could still spend
-//! would buy nothing and leak somewhere new.
+//! would buy nothing and leak somewhere new. The keys themselves are the
+//! models', in [`super::llm`]; what is here are the doors each feature asks
+//! through.
 
 use super::Vault;
 use super::session::Domain;
 use crate::agent::{
     AgentSettings, Conversation, MAX_INFERRED, MAX_MEMORIES, MAX_REJECTED, Memory, MemoryOrigin,
-    Message, Provider, Skill,
+    Message, Skill,
 };
 use crate::error::{Error, Result};
 use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
+use crate::llm::{ModelAccess, ModelTier};
 use crate::record::RecordKind;
 use crate::store::agent::{AgentStore, ConversationQuery};
 use crate::timestamped::Timestamped;
@@ -33,120 +36,74 @@ impl Vault {
         self.with_agent(|a| a.settings())
     }
 
+    /// Replace the assistant's settings.
+    ///
+    /// Carries the models over first if unlock did not: a record from before
+    /// they were application settings still names them, and writing this one
+    /// drops that copy -- see [`AgentSettings::legacy_models`] -- so they are
+    /// moved before anything can lose them.
     pub fn save_agent_settings(&self, settings: &AgentSettings) -> Result<()> {
         self.writable()?;
         settings.validate()?;
+        self.carry_over_models()?;
         self.with_agent(|a| a.put_settings(settings))
     }
 
-    /// Store the API key.
+    /// The settings and the model a turn runs on, for the one kind of caller
+    /// that needs both: an assistant turn about to be taken.
     ///
-    /// Takes the key by value and does nothing else with it: there is no
-    /// getter on this type, deliberately. The only reader is
-    /// [`Vault::agent_credentials`], which hands it straight to the layer
-    /// that builds a request.
-    pub fn set_agent_key(&self, key: &str) -> Result<()> {
-        self.writable()?;
-        self.with_agent(|a| a.put_secret(key))
-    }
-
-    pub fn clear_agent_key(&self) -> Result<()> {
-        self.writable()?;
-        self.with_agent(|a| a.delete_secret())
-    }
-
-    /// The settings and the key together, for the one caller that needs both.
-    ///
-    /// Deliberately the *only* way out for the credential, and deliberately
-    /// awkward to reach for: a caller asking for this is announcing that it
-    /// is about to open a socket. Everything that merely wants to draw the
-    /// settings pane calls [`Vault::agent_settings`] and gets no key.
-    ///
-    /// Fails rather than returning a keyless configuration when one is
-    /// needed, so "the assistant is enabled but nothing happens" cannot be a
-    /// state the interface has to diagnose.
-    pub fn agent_credentials(&self) -> Result<(AgentSettings, Option<String>)> {
+    /// `tier` is [`ModelTier::Medium`] for a conversation, a routine or a
+    /// dream, and [`ModelTier::Large`] for a research job, which runs on the
+    /// medium model when no large one is set. Fails when the assistant is
+    /// switched off, before the key is even read.
+    pub fn agent_credentials(&self, tier: ModelTier) -> Result<(AgentSettings, ModelAccess)> {
         let settings = self.agent_settings()?;
         if !settings.enabled {
             return Err(Error::Invalid("the assistant is switched off".into()));
         }
-        let (settings, key) = self.raw_llm_credentials(settings)?;
-        Ok((settings, key))
+        settings.validate()?;
+        let model = self.model_access(tier)?;
+        Ok((settings, model))
     }
 
-    /// The same, for a quick ask.
+    /// The small model, for a quick ask.
     ///
     /// A separate door because it opens on a different condition: the quick
     /// asks do not consult [`AgentSettings::enabled`], and a person who wants
     /// their shelves filled in but no resident assistant must be able to have
-    /// exactly that. The key and the endpoint are shared; the switch is not.
+    /// exactly that.
     ///
     /// Takes the ask's name and refuses one the policy has not allowed, so
     /// the check cannot be left to a caller that forgot — this is the only
     /// way a quick ask can get a credential, so it is the right place for the
     /// gate.
-    pub fn quick_credentials(&self, name: &str) -> Result<(AgentSettings, Option<String>)> {
+    pub fn quick_credentials(&self, name: &str) -> Result<ModelAccess> {
         let settings = self.agent_settings()?;
-        if settings.quick_model.is_none() {
-            return Err(Error::Invalid("no quick model is configured".into()));
-        }
         if !settings.quick_asks.allows(name) {
             return Err(Error::Invalid(format!("{name} is switched off")));
         }
-        self.raw_llm_credentials(settings)
+        self.model_access(ModelTier::Small)
     }
 
-    /// The settings and the key, validated, with no policy check of its own
-    /// — the common tail [`Vault::agent_credentials`] and
-    /// [`Vault::quick_credentials`] both run once they have decided their own
-    /// question is answered `yes`.
+    /// Whether a named quick ask could run right now: the policy allows it,
+    /// and the small model is configured and keyed.
+    pub fn quick_allows(&self, name: &str) -> bool {
+        self.quick_credentials(name).is_ok()
+    }
+
+    /// A model for one of mail's own features -- categorising, summarising,
+    /// drafting -- with no policy check of its own.
     ///
-    /// The third door onto this pair: `everyday_service::mailai`'s
-    /// categorisation, summary and auto-draft features are gated by
+    /// The third door. `everyday_service::mailai`'s features are gated by
     /// [`crate::mail::mail_ai_allowed`] against the *account* they are about
     /// to touch, not by [`AgentSettings::enabled`] or
     /// [`crate::quick::QuickPolicy`] — mail's own switch, per
-    /// `docs/plans/mail.md`'s phase 7. `mailai` calls this directly, after
-    /// its own gate has already said yes, rather than being made to satisfy
-    /// either of the other two doors' unrelated conditions.
-    pub fn mail_ai_credentials(&self) -> Result<(AgentSettings, Option<String>)> {
-        let settings = self.agent_settings()?;
-        self.raw_llm_credentials(settings)
-    }
-
-    /// The assistant's own key, if it is pointed at OpenAI's hosted endpoint
-    /// and one is stored -- for meeting notes' "use the assistant's key"
-    /// option, so the transcriber setting does not have to know how the
-    /// assistant is plumbed.
-    ///
-    /// A fourth door onto the credential, beside [`Vault::agent_credentials`],
-    /// [`Vault::quick_credentials`] and [`Vault::mail_ai_credentials`], and on
-    /// the loosest terms of the four: no gate on `enabled` or on an ask being
-    /// allowed, because the assistant need not be switched on for meeting
-    /// notes to reuse its key. Answers `None` rather than failing when there
-    /// is nothing to reuse -- pointed somewhere other than OpenAI, or no key
-    /// stored -- so a caller can fall back to the transcriber's own key
-    /// without matching on an error first.
-    pub fn assistant_key_if_openai(&self) -> Result<Option<String>> {
-        let settings = self.agent_settings()?;
-        if !settings.has_key
-            || settings.provider_config.endpoint() != Provider::OpenAi.default_base_url()
-        {
-            return Ok(None);
-        }
-        self.with_agent(|a| a.secret())
-    }
-
-    fn raw_llm_credentials(
-        &self,
-        settings: AgentSettings,
-    ) -> Result<(AgentSettings, Option<String>)> {
-        settings.validate()?;
-        let key = self.with_agent(|a| a.secret())?;
-        if key.is_none() && settings.provider_config.needs_key() {
-            return Err(Error::Invalid("no API key is set; add one in Settings".into()));
-        }
-        Ok((settings, key))
+    /// `docs/plans/mail.md`'s phase 7. `mailai` calls this after its own gate
+    /// has already said yes, rather than being made to satisfy either of the
+    /// other two doors' unrelated conditions. Which tier is the feature's
+    /// call: sorting is small-model work and a summary is not.
+    pub fn mail_ai_credentials(&self, tier: ModelTier) -> Result<ModelAccess> {
+        self.model_access(tier)
     }
 
     // ---- conversations ---------------------------------------------------

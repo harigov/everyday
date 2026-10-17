@@ -400,7 +400,7 @@ pub fn world(endpoint: &str) -> World {
     let vault = everyday_vault::create(dir.path(), config).unwrap();
     vault.save_journal(&everyday_core::Journal::new("Journal")).unwrap();
 
-    let mut settings = everyday_core::AgentSettings {
+    let settings = everyday_core::AgentSettings {
         enabled: true,
         name: "Juniper".into(),
         // Everything is reckoned in UTC so the tests are about the relay
@@ -408,9 +408,11 @@ pub fn world(endpoint: &str) -> World {
         timezone: Some("UTC".into()),
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
 
     let service = Arc::new(Service::new());
     let vault = service.set(vault);
@@ -462,9 +464,9 @@ impl Harness {
         let task = Task::new("Book the dentist");
         vault.save_task(&task).unwrap();
         let model = fake_model(script(&task)).await;
-        let mut settings = vault.agent_settings().unwrap();
-        settings.provider_config.base_url = Some(model.endpoint.clone());
-        vault.save_agent_settings(&settings).unwrap();
+        let mut models = vault.model_settings().unwrap();
+        models.medium.connection.base_url = Some(model.endpoint.clone());
+        vault.save_model_settings(&models).unwrap();
 
         let link = matrix_link();
         let connector = FakeConnector::new();

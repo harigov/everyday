@@ -35,16 +35,18 @@ fn service(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
     let vault = everyday_vault::create(dir.path(), config).unwrap();
     vault.save_journal(&everyday_core::Journal::new("Journal")).unwrap();
 
-    let mut settings = everyday_core::AgentSettings {
+    let settings = everyday_core::AgentSettings {
         enabled: true,
         // Everything is reckoned in UTC so the tests are about the scheduler
         // rather than about where the machine running them is.
         timezone: Some("UTC".into()),
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
 
     let svc = Arc::new(Service::new());
     svc.set(vault);
@@ -296,9 +298,9 @@ async fn a_scheduled_run_may_not_delete_anything() {
         "It needs deleting and I could not do it.",
     ))
     .await;
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
-    vault.save_agent_settings(&settings).unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
     due_now(&svc, "Tidy up.");
 
     everyday_service::scheduler::tick(&svc).await;
@@ -341,9 +343,9 @@ async fn a_scheduled_run_may_not_send_anything() {
         "It needs sending and I could not do it.",
     ))
     .await;
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
-    vault.save_agent_settings(&settings).unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
 
     // `send_draft` is only ever *offered* to the assistant on an account
     // that has both acknowledged this provider and switched sending on for
@@ -352,7 +354,7 @@ async fn a_scheduled_run_may_not_send_anything() {
     // what this test is about: it must still be refused with nobody
     // watching even once the account itself has said yes, so both are set
     // here rather than left at their defaults.
-    account.assistant_provider_acknowledged = Some(settings.provider_config.acknowledgement_name());
+    account.assistant_provider_acknowledged = Some(models.acknowledgement_name());
     account.assistant_access.send = true;
     vault.save_account(&account).unwrap();
     due_now(&svc, "Send it.");
@@ -387,10 +389,10 @@ async fn park_unattended_off_leaves_todays_behaviour_alone() {
         "It needs deleting and I could not do it.",
     ))
     .await;
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
-    assert!(!settings.park_unattended, "off by default");
-    vault.save_agent_settings(&settings).unwrap();
+    assert!(!vault.agent_settings().unwrap().park_unattended, "off by default");
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
     due_now(&svc, "Tidy up.");
 
     everyday_service::scheduler::tick(&svc).await;
@@ -418,9 +420,11 @@ async fn park_unattended_on_saves_the_delete_as_a_proposal_from_this_run() {
     ))
     .await;
     let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
     settings.park_unattended = true;
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
     let routine = due_now(&svc, "Tidy up.");
 
     everyday_service::scheduler::tick(&svc).await;
@@ -1026,9 +1030,9 @@ fn a_chat_link(svc: &Arc<Service>) -> everyday_core::ChatLinkId {
 /// name something in it.
 fn use_model(svc: &Arc<Service>, model: &FakeModel) {
     let vault = svc.get().unwrap();
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
-    vault.save_agent_settings(&settings).unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
 }
 
 fn delivered_to(svc: &Arc<Service>, routine: &Routine, delivery: Delivery) {

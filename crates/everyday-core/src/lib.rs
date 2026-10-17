@@ -93,6 +93,7 @@ pub mod id;
 pub mod insights;
 pub mod job;
 pub mod library;
+pub mod llm;
 pub mod lockfile;
 pub mod mail;
 pub mod mailsearch;
@@ -128,8 +129,8 @@ pub use account::{
     EndpointSecurity, Identity, Permission as MailPermission, Preset as AccountPreset, Services,
 };
 pub use agent::{
-    AgentSettings, Conversation, LLMModelConfig, LLMProviderConfig, Memory, MemoryOrigin, Message,
-    Provider, Role as MessageRole, Skill, ToolCall,
+    AgentSettings, Conversation, Memory, MemoryOrigin, Message, Role as MessageRole, Skill,
+    ToolCall,
 };
 pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
@@ -146,6 +147,9 @@ pub use job::{Job, JobKind, JobOutput, JobStatus};
 pub use library::{
     ExternalRating, FieldDef, FieldType, Item, ItemStatus, Kind, KindCount, LibraryStats, Link,
     LogEntry, LogEvent, Progress, Verbs,
+};
+pub use llm::{
+    LLMConfig, LLMModelConfig, LLMProviderConfig, ModelAccess, ModelSettings, ModelTier, Provider,
 };
 pub use mail::{
     Address as MailAddress, Body as MailBody, Category as MailCategory, Draft as MailDraft,

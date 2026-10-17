@@ -19,7 +19,8 @@
 // the moment the catalogue changed and nobody would notice.
 
 import { api, sendMessage } from './api'
-import { applyEvent, emptyTurn, isLoopback, liveTurn, replay, settle, type Turn } from './agent'
+import { applyEvent, emptyTurn, liveTurn, replay, settle, type Turn } from './agent'
+import { models } from './models.svelte'
 import { pref } from './prefs'
 import { app, handle, isLocked, quietly } from './state.svelte'
 import type { AgentSettings, ConversationId, ConversationSummary, Memory, OnScreen } from './types'
@@ -107,12 +108,9 @@ class AgentState {
    * supported but unconfigured (a link to settings), and ready.
    */
   get ready(): boolean {
-    const s = this.settings
-    if (!s?.enabled || !s.assistantModel.model.trim()) return false
-    // A model on this machine needs no key, which is the whole reason the
-    // base URL is a setting. Mirrors `Provider::needs_key` in the core; if
-    // they ever disagree the backend is the one that decides, and says so.
-    return s.hasKey || isLoopback(s.providerConfig.baseUrl)
+    // Switched on, and the medium model -- the assistant's -- configured and
+    // keyed. A model on this machine needs no key; see `models.usable`.
+    return this.settings?.enabled === true && models.usable('medium')
   }
 
   async toggle() {
@@ -151,7 +149,7 @@ class AgentState {
     if (!this.supported) return
     if (this.settings) return
     try {
-      this.settings = await api.agentSettings()
+      ;[this.settings] = await Promise.all([api.agentSettings(), models.load()])
     } catch (e) {
       // Quiet: every caller of this draws a suggestion or nothing, and the
       // rail's own `load` reports properly for the case somebody is looking.
@@ -173,7 +171,7 @@ class AgentState {
   async load() {
     if (!this.supported) return
     try {
-      this.settings = await api.agentSettings()
+      ;[this.settings] = await Promise.all([api.agentSettings(), models.load()])
       this.threads = await api.conversations(50)
       if (!this.conversationId) {
         const last = this.threads[0]
@@ -353,16 +351,6 @@ class AgentState {
 
   async saveSettings(settings: AgentSettings) {
     this.settings = await api.saveAgentSettings(settings)
-  }
-
-  async setKey(key: string) {
-    await api.setAgentKey(key)
-    this.settings = await api.agentSettings()
-  }
-
-  async clearKey() {
-    await api.clearAgentKey()
-    this.settings = await api.agentSettings()
   }
 
   async loadMemories() {

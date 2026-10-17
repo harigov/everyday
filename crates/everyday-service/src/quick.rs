@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use everyday_core::Vault;
-use everyday_core::agent::LLMModelConfig;
+use everyday_core::llm::LLMModelConfig;
 // Aliased: `rig_agent::prelude` brings its own `Prompt`, and that one is the
 // trait carrying `.prompt()`.
 use everyday_core::quick::Prompt as QuickPrompt;
@@ -80,18 +80,14 @@ const SUBMIT: &str = "submit";
 /// itself is [`run_prompt`]; this is only what gets a client and a model out
 /// of the vault first.
 pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value> {
-    let (settings, key) = vault
+    let access = vault
         .quick_credentials(&prompt.ask)
         .map_err(|e| CommandError::new(codes::QUICK, e.to_string()))?;
-    let model = settings
-        .quick_model
-        .clone()
-        .ok_or_else(|| CommandError::new(codes::QUICK, "no quick model is configured"))?;
-
-    let client = crate::llm::client(&settings.provider_config, key)
+    let client = crate::llm::client_for(&access)
         .map_err(|e| CommandError::new(codes::QUICK, format!("could not reach the model: {e}")))?;
 
-    run_prompt(client, &model, &prompt.system, &prompt.user, prompt.schema.clone()).await
+    run_prompt(client, &access.config.model, &prompt.system, &prompt.user, prompt.schema.clone())
+        .await
 }
 
 /// One request, no tools but `submit`, tool choice forced — the exchange

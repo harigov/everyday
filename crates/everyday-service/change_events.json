@@ -845,7 +845,7 @@
       ]
     },
     {
-      "command": "set_agent_key",
+      "command": "save_model_settings",
       "events": [
         {
           "idPresent": false,
@@ -857,7 +857,19 @@
       ]
     },
     {
-      "command": "clear_agent_key",
+      "command": "set_model_key",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "clear_model_key",
       "events": [
         {
           "idPresent": false,

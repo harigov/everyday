@@ -38,12 +38,6 @@ pub struct SaveSettings {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SetKey {
-    pub key: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Conversations {
     #[serde(default)]
     pub limit: Option<u32>,
@@ -134,8 +128,8 @@ pub struct SendMessage {
     pub on_screen: Option<serde_json::Value>,
 }
 
-/// How the assistant is configured. Never carries the API key; see
-/// [`everyday_core::agent`] for why that is structural rather than a habit.
+/// How the assistant is configured. Which model it runs on, and the key, are
+/// `models`'s -- see [`everyday_core::llm`].
 async fn agent_settings(
     svc: Arc<Service>,
     _ctx: Ctx,
@@ -152,33 +146,8 @@ async fn save_agent_settings(
     let vault = svc.require()?;
     let settings = blocking(move || {
         let previous = vault.agent_settings()?;
-        // Compared before the write below overwrites `previous`, on
-        // `acknowledgement_name`'s own rule -- the endpoint actually
-        // reached, not the provider label -- so switching between two
-        // gateways that both happen to be `Provider::OpenAi` still counts
-        // as a change.
-        let provider_changed = previous.provider_config.acknowledgement_name()
-            != args.settings.provider_config.acknowledgement_name();
         let dreaming_before = previous.dreaming;
         vault.save_agent_settings(&args.settings)?;
-
-        // A provider change must *visibly* clear mail access, not merely
-        // disable it. `Account::assistant_acknowledged_for` already refuses
-        // every mail tool the moment `acknowledgement_name` stops matching
-        // -- that part was never silent -- but the account's own
-        // `assistant_provider_acknowledged` field, and so the ticked
-        // checkbox beside it in Settings → Accounts, would otherwise go on
-        // naming a provider that is no longer the one configured. Cleared
-        // here, in the same write, on every account that had it set, rather
-        // than left for whoever next opens that account to notice it is
-        // stale.
-        if provider_changed {
-            for mut account in vault.accounts()? {
-                if account.assistant_provider_acknowledged.take().is_some() {
-                    vault.save_account(&account)?;
-                }
-            }
-        }
 
         // The dream routines. `set_dreaming` is idempotent, so it is only
         // worth calling when something might actually change: the switch
@@ -193,30 +162,20 @@ async fn save_agent_settings(
             }
         }
 
-        // Read back rather than echoing what was sent: `has_key` is derived
-        // from the secret table, so the pane must be told what is true rather
-        // than what it asked for.
+        // Read back rather than echoing what was sent, so the pane is told
+        // what was stored rather than what it asked for.
         Ok(vault.agent_settings()?)
     })
     .await?;
 
-    // A batch `Change` rather than one per account, matching `events.rs`'s
-    // own "the board reorder" rule: several accounts losing their
-    // acknowledgement in one save is one thing that happened, not several.
-    // The closure above no longer collects which accounts and routines it
-    // touched for itself -- the collector already saw the same writes, in
-    // the same order, so `emit_touched` raises the identical batch from
-    // that: one `Change` per kind, `ids` rather than `id` the moment there
-    // is more than one, nothing at all when there is nothing to report.
+    // A batch `Change` rather than one per routine, matching `events.rs`'s
+    // own "the board reorder" rule: the closure above does not collect which
+    // routines it touched for itself -- the collector already saw the same
+    // writes, in the same order, so `emit_touched` raises the identical
+    // batch from that: `ids` rather than `id` the moment there is more than
+    // one, nothing at all when there is nothing to report.
     let origin = ctx.caller.origin().map(str::to_string);
     let touched = crate::touched::current();
-    crate::events::emit_touched(
-        svc.events().as_ref(),
-        origin.clone(),
-        &touched,
-        Kind::Account,
-        Op::Updated,
-    );
     crate::events::emit_touched(
         svc.events().as_ref(),
         origin,
@@ -225,15 +184,6 @@ async fn save_agent_settings(
         Op::Updated,
     );
     Ok(settings)
-}
-
-/// Store the API key. There is no command that reads one back.
-async fn set_agent_key(svc: Arc<Service>, _ctx: Ctx, args: SetKey) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.set_agent_key(&args.key)).await
-}
-
-async fn clear_agent_key(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.clear_agent_key()).await
 }
 
 async fn list_conversations(
@@ -446,19 +396,6 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SaveSettings, returns: "AgentSettings",
         signature: &[("settings", "AgentSettings", true)],
         run: save_agent_settings,
-    },
-    command! {
-        name: "set_agent_key", scope: Agent, effect: Write,
-        change: Settings / Updated,
-        args: SetKey, returns: "void",
-        signature: &[("key", "string", true)],
-        run: set_agent_key,
-    },
-    command! {
-        name: "clear_agent_key", scope: Agent, effect: Write,
-        change: Settings / Updated,
-        args: Nothing, returns: "void", signature: &[],
-        run: clear_agent_key,
     },
     command! {
         name: "list_conversations", scope: Agent, effect: Read,

@@ -14,8 +14,8 @@ mod support;
 use std::sync::Arc;
 
 use everyday_core::account::{Account, Provider};
-use everyday_core::agent::LLMModelConfig;
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
+use everyday_core::llm::{LLMConfig, LLMModelConfig, ModelSettings};
 use everyday_core::mail::{
     Address, Body, Category, CategorySource, DraftState, Mailbox, MailboxRole, Message,
     MessageFlags, Origin,
@@ -116,25 +116,30 @@ fn reply_tool_call(tool: &str, arguments: &str) -> String {
 fn env(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
     let (svc, dir) = support::vault::service(None);
     let vault = svc.get().unwrap();
-    let mut settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.quick_model = Some(LLMModelConfig {
-        model: "scripted".into(),
-        temperature: Some(0.0),
-        max_tokens: Some(512),
-    });
-    settings.assistant_model.model = "scripted".into();
+    let settings = everyday_core::AgentSettings { enabled: true, ..Default::default() };
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    models.small = Some(LLMConfig {
+        connection: models.medium.connection.clone(),
+        model: LLMModelConfig {
+            model: "scripted".into(),
+            temperature: Some(0.0),
+            max_tokens: Some(512),
+        },
+    });
+    vault.save_model_settings(&models).unwrap();
     (svc, dir)
 }
 
 fn seed_account(svc: &Arc<Service>, mail_ai: everyday_core::account::MailAi) -> Account {
     let vault = svc.get().unwrap();
-    let settings = vault.agent_settings().unwrap();
+    let models = vault.model_settings().unwrap();
     let mut account = Account::new(Provider::Custom, "me@example.com");
     account.services.mail = true;
     account.mail_ai = mail_ai;
-    account.assistant_provider_acknowledged = Some(settings.provider_config.acknowledgement_name());
+    account.assistant_provider_acknowledged = Some(models.acknowledgement_name());
     vault.save_account(&account).unwrap();
     account
 }
@@ -267,17 +272,20 @@ async fn categorize_tick_is_a_no_op_when_the_account_has_not_turned_it_on() {
 /// show up in the result, and it never does.
 ///
 /// Re-acknowledges `account` for the new endpoint in the same call:
-/// `LLMProviderConfig::acknowledgement_name` is the endpoint itself (see
-/// its own docs -- "the provider actually configured right now"), so
-/// changing `base_url` without this would make `mail_ai_allowed` refuse
-/// every account all over again, for a reason that has nothing to do with
-/// what these tests are proving.
+/// `ModelSettings::acknowledgement_name` is the endpoints themselves (see
+/// its own docs), so changing `base_url` without this would make
+/// `mail_ai_allowed` refuse every account all over again, for a reason that
+/// has nothing to do with what these tests are proving. Both the medium and
+/// the small model move, as they did when they shared one connection.
 fn repoint_model(svc: &Arc<Service>, account: &mut Account, endpoint: &str) {
     let vault = svc.get().unwrap();
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    vault.save_agent_settings(&settings).unwrap();
-    account.assistant_provider_acknowledged = Some(settings.provider_config.acknowledgement_name());
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    if let Some(small) = &mut models.small {
+        small.connection.base_url = Some(endpoint.to_string());
+    }
+    vault.save_model_settings(&models).unwrap();
+    account.assistant_provider_acknowledged = Some(models.acknowledgement_name());
     vault.save_account(account).unwrap();
 }
 
@@ -990,12 +998,11 @@ async fn categorize_tick_does_not_let_one_accounts_small_backlog_starve_another_
 
     let mut accounts = Vec::new();
     for n in 0..2 {
-        let settings = vault.agent_settings().unwrap();
+        let models = vault.model_settings().unwrap();
         let mut account = Account::new(Provider::Custom, format!("me{n}@example.com"));
         account.services.mail = true;
         account.mail_ai = mail_ai(true, false, false);
-        account.assistant_provider_acknowledged =
-            Some(settings.provider_config.acknowledgement_name());
+        account.assistant_provider_acknowledged = Some(models.acknowledgement_name());
         vault.save_account(&account).unwrap();
         let mailbox = seed_mailbox(&svc, account.id, MailboxRole::Inbox);
         seed_message(

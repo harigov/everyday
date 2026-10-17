@@ -625,7 +625,7 @@ impl Account {
     /// A plain string comparison against
     /// [`Account::assistant_provider_acknowledged`], on purpose: what
     /// `provider` names is
-    /// [`crate::agent::LLMProviderConfig::acknowledgement_name`]'s call, not
+    /// [`crate::llm::ModelSettings::acknowledgement_name`]'s call, not
     /// this one's, and this method exists precisely so that call is made in
     /// one place. `provider` empty never matches anything a person could
     /// have acknowledged, which is what a caller with nothing configured

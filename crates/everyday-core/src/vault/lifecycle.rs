@@ -191,6 +191,17 @@ impl Vault {
 
         *self.state_write() = Some(Unlocked { store, index, cipher });
         self.touch();
+
+        // A vault from before the models were application settings has them
+        // in the assistant's record; moved now, once, so that reading them is
+        // never also writing them -- see `super::llm`. Best-effort: a failure
+        // leaves the old record and key where every reader still finds them,
+        // and the next unlock tries again.
+        if self.is_writable()
+            && let Err(e) = self.carry_over_models()
+        {
+            tracing::warn!(error = %e, "could not carry the models over from the assistant's settings");
+        }
         Ok(())
     }
 

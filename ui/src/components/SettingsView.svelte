@@ -62,6 +62,7 @@
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import DataPanel from './DataPanel.svelte'
   import MeetingsPanel from './MeetingsPanel.svelte'
+  import ModelsPanel from './ModelsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
@@ -119,6 +120,10 @@
     // a label for one of them.
     { id: 'profile', label: 'About You', icon: 'star' },
     { id: 'accounts', label: 'Accounts', icon: 'inbox' },
+    // Before the assistant rather than under it: research and the quick asks
+    // run on these too, and the assistant's own tab is who it is and how it
+    // behaves, not which model it is.
+    { id: 'models', label: 'Models', icon: 'layers' },
     { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
     // The assistant's standing work, which was the Assistant app's four
     // panes until that app became the conversation. Under the Assistant tab
@@ -163,7 +168,11 @@
   const shown = $derived(
     TABS.filter(
       (t) =>
-        (t.id !== 'assistant' && t.id !== 'skills' && t.id !== 'chat' && !isPane(t.id)) ||
+        (t.id !== 'assistant' &&
+          t.id !== 'models' &&
+          t.id !== 'skills' &&
+          t.id !== 'chat' &&
+          !isPane(t.id)) ||
         agent.supported,
     )
       .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
@@ -326,6 +335,8 @@
   <div class="content">
     {#if tab === 'assistant'}
       <AgentPanel />
+    {:else if tab === 'models'}
+      <ModelsPanel />
     {:else if isPane(tab)}
       <AssistantPanes pane={tab} />
     {:else if tab === 'skills'}

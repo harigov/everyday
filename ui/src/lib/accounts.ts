@@ -16,6 +16,7 @@ import type {
   Endpoint,
   MailAi,
   MailProvider,
+  ModelSettings,
   OAuthPreset,
   Services,
 } from './types'
@@ -215,11 +216,10 @@ export function accessEqual(a: AgentMailAccess, b: AgentMailAccess): boolean {
   return diffAccess(a, b).length === 0
 }
 
-/** Common LLM endpoints, mirrored from `AgentPanel`'s own list -- see that
- *  component for why these four. Kept here too so the provider sentence
- *  above the assistant column and the presets panel never disagree about
- *  what a base URL is called. */
-const KNOWN_LLM_ENDPOINTS: { label: string; url: string }[] = [
+/** Common LLM endpoints -- the presets `ModelsPanel` offers, and what the
+ *  provider sentence above the assistant column calls each. One list, so
+ *  the two never disagree about what a base URL is called. */
+export const KNOWN_LLM_ENDPOINTS: { label: string; url: string }[] = [
   { label: 'OpenAI', url: '' },
   { label: 'Ollama', url: 'http://localhost:11434/v1' },
   { label: 'LM Studio', url: 'http://localhost:1234/v1' },
@@ -247,28 +247,45 @@ export function providerLabel(baseUrl: string | null | undefined): string {
   }
 }
 
-/** Where the assistant's requests go when no base URL is set --
- *  `Provider::OpenAi.default_base_url()` in `crates/everyday-core/src/agent.rs`. */
+/** Where a model's requests go when no base URL is set --
+ *  `Provider::OpenAi.default_base_url()` in `crates/everyday-core/src/llm.rs`. */
 const OPENAI_BASE_URL = 'https://api.openai.com/v1'
 
 /**
- * What `Account.assistantProviderAcknowledged` holds once somebody has said
- * yes to "your mail will be sent to …": the endpoint the assistant actually
- * reaches, spelt exactly as `LLMProviderConfig::acknowledgement_name` spells
- * it in Rust (`crates/everyday-core/src/agent.rs`) -- the base URL with its
- * trailing slashes taken off, or OpenAI's own when there is none. The
- * assistant's mail tools, and the mail assistant switches below them, are
- * offered only on an account whose acknowledgement equals that string.
+ * The endpoint a base URL reaches, spelt exactly as `LLMProviderConfig::endpoint`
+ * spells it in Rust (`crates/everyday-core/src/llm.rs`): trimmed, its trailing
+ * slashes taken off, or OpenAI's own when there is none.
  *
- * Not `providerLabel`, which is what the sentence says. Storing the label
- * meant no acknowledgement given in this interface ever matched what the
- * backend compared it with, so the assistant was never offered mail at all,
- * whatever was ticked. Both sides pin the same examples in a test --
- * `accounts.test.mjs` here, `acknowledgement_name_is_the_endpoint` there --
- * so changing one without the other fails.
+ * A model key is stored under this, so it is what says whether a card in the
+ * models pane has one -- `ModelSettingsView.keyed` lists endpoints, not tiers.
+ * Both sides pin the same examples in a test -- `accounts.test.mjs` here,
+ * `the_endpoint_is_spelt_as_the_interface_spells_it` there -- so changing one
+ * without the other fails.
+ *
+ * Not what a mail acknowledgement stores: that is every configured tier's
+ * endpoint, and the server sends it whole as `ModelSettingsView.acknowledgement`
+ * so the string a tick stores and the string the gate compares are made in one
+ * place. It used to be worked out here, and storing the provider's *label*
+ * instead once meant no acknowledgement given in this interface ever matched.
  */
-export function acknowledgementName(baseUrl: string | null | undefined): string {
-  return (baseUrl ?? '').replace(/\/+$/, '') || OPENAI_BASE_URL
+export function endpointOf(baseUrl: string | null | undefined): string {
+  return (baseUrl ?? '').trim().replace(/\/+$/, '') || OPENAI_BASE_URL
+}
+
+/**
+ * What to call where the models are, in a sentence: each configured tier's
+ * provider, once -- "OpenAI", "OpenAI and Ollama". Every tier can carry mail
+ * (see `ModelSettings::acknowledgement_name`), so the sentence a person agrees
+ * to names all of them.
+ */
+export function providersLabel(settings: ModelSettings | null | undefined): string {
+  if (!settings) return 'OpenAI'
+  const tiers = [settings.large, settings.medium, settings.small].filter(
+    (t): t is NonNullable<typeof t> => t != null,
+  )
+  const labels = [...new Set(tiers.map((t) => providerLabel(t.baseUrl)))]
+  if (labels.length <= 1) return labels[0] ?? 'OpenAI'
+  return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
 }
 
 /** Does this auth method need a password, rather than an OAuth token? */

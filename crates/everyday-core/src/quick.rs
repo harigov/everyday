@@ -10,8 +10,8 @@
 //! is asked every time somebody types into a capture box.
 //!
 //! That is a different model, not a different prompt, which is why
-//! [`AgentSettings`](crate::agent::AgentSettings) holds two of them against
-//! one [`LLMProviderConfig`](crate::agent::LLMProviderConfig).
+//! [`ModelSettings`](crate::llm::ModelSettings) has a small one of its own --
+//! the tier every ask here runs on.
 //!
 //! # The split, for the fourth time
 //!
@@ -55,8 +55,8 @@
 //! - **It fills gaps and never argues.** What you typed survives. Notes,
 //!   ratings and statuses are not reachable from here at all.
 //! - **It is not the assistant's switch.**
-//!   [`quick_is_usable`](crate::agent::AgentSettings::quick_is_usable) does
-//!   not consult `enabled`.
+//!   [`Vault::quick_credentials`](crate::Vault::quick_credentials) does not
+//!   consult `enabled`.
 //! - **Every ask is listable and refusable.** [`QuickPolicy`] is per-ask,
 //!   because "AI features: on" is not consent to having the day's prose
 //!   read. The asks that read a journal are

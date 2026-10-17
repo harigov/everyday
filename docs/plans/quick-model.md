@@ -1,5 +1,9 @@
 # A second model, for the small jobs
 
+> **Superseded in part.** The models are application settings now, three of
+> them, each with its own endpoint -- see [`models.md`](models.md). The quick
+> model is the **Small** one; "one endpoint, one key" below is no longer true.
+
 > **Renamed since.** What this plan calls a job is a `QuickAsk` now, and
 > the catalogue is `ASKS` -- "job" went to the assistant's background work;
 > see [`jobs.md`](jobs.md). The stored policy is read under either name.

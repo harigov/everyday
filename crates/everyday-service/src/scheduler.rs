@@ -1036,7 +1036,12 @@ async fn resume(
     // `CommandError` first would prefix it with a code nobody asked to read.
     let unusable = blocking({
         let vault = vault.clone();
-        move || Ok(vault.agent_credentials().map(|_| ()).map_err(|e| e.to_string()))
+        move || {
+            Ok(vault
+                .agent_credentials(everyday_core::llm::ModelTier::Medium)
+                .map(|_| ())
+                .map_err(|e| e.to_string()))
+        }
     })
     .await;
     if let Some(reason) = unusable.unwrap_or_else(|e| Err(e.to_string())).err() {

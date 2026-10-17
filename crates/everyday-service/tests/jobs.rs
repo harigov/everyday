@@ -34,14 +34,16 @@ fn service(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
     let vault = everyday_vault::create(dir.path(), config).unwrap();
     vault.save_journal(&everyday_core::Journal::new("Journal")).unwrap();
 
-    let mut settings = everyday_core::AgentSettings {
+    let settings = everyday_core::AgentSettings {
         enabled: true,
         timezone: Some("UTC".into()),
         ..Default::default()
     };
-    settings.provider_config.base_url = Some(endpoint.to_string());
-    settings.assistant_model.model = "scripted".into();
     vault.save_agent_settings(&settings).unwrap();
+    let mut models = everyday_core::llm::ModelSettings::default();
+    models.medium.connection.base_url = Some(endpoint.to_string());
+    models.medium.model.model = "scripted".into();
+    vault.save_model_settings(&models).unwrap();
 
     let svc = Arc::new(Service::new());
     svc.set(vault);
@@ -308,9 +310,9 @@ async fn a_job_started_again_goes_on_in_the_note_and_the_transcript_it_left() {
         "Written up in the note.",
     ))
     .await;
-    let mut settings = vault.agent_settings().unwrap();
-    settings.provider_config.base_url = Some(model.endpoint.clone());
-    vault.save_agent_settings(&settings).unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.connection.base_url = Some(model.endpoint.clone());
+    vault.save_model_settings(&models).unwrap();
 
     everyday_service::jobs::pass(&svc).await;
 

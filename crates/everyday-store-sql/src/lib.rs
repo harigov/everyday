@@ -62,6 +62,7 @@
 //! | `mail_remote_image_settings` (singleton) | that a standing remote-image allow-list exists -- every sender and domain on it stays sealed |
 //! | `mail_contacts` (singleton) | that a contact index exists, for address autocomplete -- every address and name it has seen stays sealed |
 //! | `chat_settings` (singleton) | that chat links exist -- every homeserver, account and owner stays sealed |
+//! | `model_settings` (singleton) | that models are configured -- every endpoint and model name stays sealed |
 //! | `mail_category_rules` (`account_id`) | that one account has sealed corrections outranking the rules `categorize` runs at sync -- never what they are |
 //! | news source `sort_order`, `created_us`, `updated_us` | how many sources are followed and when they were added -- never a name, an address or a folder |
 //! | `news_fetch` (`source_id`, `next_us`) | when each source is next asked for news -- never what it said last time |
@@ -143,6 +144,7 @@ mod journals;
 mod library;
 pub mod mail;
 mod meetings;
+mod models;
 mod news;
 mod notes;
 pub mod packs;

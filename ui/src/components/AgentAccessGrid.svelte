@@ -23,6 +23,7 @@
     providerName,
     acknowledged,
     disabled = false,
+    ackUnavailable = null,
     onchange,
     onacknowledge,
   }: {
@@ -33,6 +34,12 @@
     /** Has this account's `assistantProviderAcknowledged` been set? */
     acknowledged: boolean
     disabled?: boolean
+    /**
+     * Why there is nothing to agree to yet -- the models have not been read
+     * -- or `null`. A tick then would store no endpoints at all while the
+     * box looked ticked, so it is refused rather than taken.
+     */
+    ackUnavailable?: string | null
     onchange: (caller: AgentCallerKind, access: AgentMailAccess) => void
     onacknowledge: (ack: boolean) => void
   } = $props()
@@ -83,7 +90,7 @@
     <input
       type="checkbox"
       checked={acknowledged}
-      {disabled}
+      disabled={disabled || (ackUnavailable != null && !acknowledged)}
       onchange={(e) => onacknowledge(e.currentTarget.checked)}
     />
     <span>
@@ -91,6 +98,9 @@
       regardless of the switches above.
     </span>
   </label>
+  {#if ackUnavailable}
+    <p class="hint send-hint">{ackUnavailable}</p>
+  {/if}
 </div>
 
 <style>

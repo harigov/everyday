@@ -139,29 +139,17 @@
     "id": "singleton",
     "kind": "agent_settings",
     "record": {
-      "key": "fixture-agent-key-f4240",
       "settings": {
-        "assistantModel": {
-          "maxTokens": null,
-          "model": "gpt-5.1-mini",
-          "temperature": null
-        },
         "companion": {},
         "confirmDestructive": true,
         "dreaming": false,
         "enabled": true,
-        "hasKey": true,
         "instructions": "Be a fixture.",
         "maxSteps": 24,
         "name": "Fixture Assistant f4240",
         "parkUnattended": false,
         "proposals": {},
-        "providerConfig": {
-          "baseUrl": null,
-          "provider": "openAi"
-        },
         "quickAsks": {},
-        "quickModel": null,
         "remember": true,
         "web": false
       }
@@ -1097,6 +1085,34 @@
       "role": "user",
       "toolCallId": null,
       "toolCalls": []
+    }
+  },
+  {
+    "id": "singleton",
+    "kind": "model_settings",
+    "record": {
+      "keys": {
+        "large": "fixture-large-key-f4240",
+        "medium": "fixture-agent-key-f4240",
+        "small": null
+      },
+      "settings": {
+        "large": {
+          "baseUrl": "https://openrouter.ai/api/v1",
+          "maxTokens": null,
+          "model": "fixture-large-f4240",
+          "provider": "openAi",
+          "temperature": null
+        },
+        "medium": {
+          "baseUrl": null,
+          "maxTokens": null,
+          "model": "gpt-5.1-mini",
+          "provider": "openAi",
+          "temperature": null
+        },
+        "small": null
+      }
     }
   },
   {

@@ -346,8 +346,8 @@ pub(crate) async fn do_summarise_and_write(
     let loopback = {
         let vault = vault.clone();
         blocking(move || {
-            let (agent_settings, _) = vault.agent_credentials()?;
-            Ok(everyday_core::agent::is_loopback(agent_settings.provider_config.endpoint()))
+            let (_, access) = vault.agent_credentials(everyday_core::llm::ModelTier::Medium)?;
+            Ok(everyday_core::llm::is_loopback(access.config.endpoint()))
         })
         .await
         .unwrap_or(false)

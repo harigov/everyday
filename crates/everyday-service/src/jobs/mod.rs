@@ -440,7 +440,14 @@ async fn execute(
     // through `CommandError` first, so the reason is the text a person reads.
     let unusable = blocking({
         let vault = vault.clone();
-        move || Ok(vault.agent_credentials().map(|_| ()).map_err(|e| e.to_string()))
+        // The large model's, which is the medium one's when there is no
+        // large one -- the same resolution the turn itself makes.
+        move || {
+            Ok(vault
+                .agent_credentials(everyday_core::llm::ModelTier::Large)
+                .map(|_| ())
+                .map_err(|e| e.to_string()))
+        }
     })
     .await;
     if let Some(reason) = unusable.unwrap_or_else(|e| Err(e.to_string())).err() {

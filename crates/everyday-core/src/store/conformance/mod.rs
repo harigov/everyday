@@ -65,7 +65,7 @@ use super::purpose::{GoalQuery, PurposeWindow};
 use super::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 use super::trackers::ReadingQuery;
 use super::{EntryQuery, JournalStore, SortOrder};
-use crate::agent::{AgentSettings, Conversation, LLMModelConfig, Memory, Message, Role, ToolCall};
+use crate::agent::{AgentSettings, Conversation, Memory, Message, Role, ToolCall};
 use crate::calendar::{Calendar, Event, EventStatus};
 use crate::id::{
     BlobId, BlockId, CalendarId, ConversationId, EntryId, EventId, GoalId, ItemId, JournalId,

@@ -715,6 +715,30 @@ pub trait JournalStore: Send + Sync {
         Err(Error::Unsupported("storing a profile"))
     }
 
+    // ---- the models -----------------------------------------------------
+
+    /// Which models this vault asks for, and where -- see [`crate::llm`] --
+    /// or `None` if they have never been saved.
+    ///
+    /// On the base trait, as the profile is, because they belong to the
+    /// application rather than to any one domain. An `Option` where the
+    /// profile is not, because "never saved" has to be told apart from "saved
+    /// as the defaults": a vault from before the models were settings of
+    /// their own still has them in the assistant's record, and
+    /// [`Vault::model_settings`](crate::Vault::model_settings) carries them
+    /// over only when this says there is nothing here yet.
+    ///
+    /// Keys are not in this record. They are in the
+    /// [`SecretStore`](secrets::SecretStore), one per endpoint.
+    fn model_settings(&self) -> Result<Option<crate::llm::ModelSettings>> {
+        Ok(None)
+    }
+
+    fn put_model_settings(&self, settings: &crate::llm::ModelSettings) -> Result<()> {
+        let _ = settings;
+        Err(Error::Unsupported("storing model settings"))
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>>;

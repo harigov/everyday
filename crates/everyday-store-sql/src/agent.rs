@@ -87,35 +87,22 @@ impl AgentStore for SqlStore {
     fn settings(&self) -> Result<AgentSettings> {
         let sealed = self.read().sealed("SELECT data FROM agent_settings WHERE id = 1", &[])?;
 
-        let mut settings: AgentSettings = match sealed {
-            Some(sealed) => self.unseal(&settings_aad(), &sealed)?,
+        // Returned as decoded, `legacy_*` fields and all: a record from
+        // before the models were application settings still names them, and
+        // `Vault::model_settings` carries them over from here. A sealed
+        // payload cannot be migrated in SQL -- a migration step is handed a
+        // connection, not the cipher.
+        match sealed {
+            Some(sealed) => self.unseal(&settings_aad(), &sealed),
             // Never configured. The default is a real answer -- the
             // assistant is off -- so it is returned rather than an `Option`
             // every caller would have to unwrap the same way.
-            None => AgentSettings::default(),
-        };
-
-        // Settings written before the endpoint and the model were separate
-        // records still say `model`. A sealed payload cannot be migrated in
-        // SQL -- a migration step is handed a connection, not the cipher --
-        // so the fold happens here, and the old key disappears the next time
-        // anything saves.
-        settings.normalize();
-
-        // The flag is derived, never stored. A `has_key` persisted alongside
-        // the settings would be a second source of truth for a question the
-        // secret table already answers, and the two would disagree the first
-        // time a key was removed by anything but the settings pane.
-        settings.has_key = self.has_secret()?;
-        Ok(settings)
+            None => Ok(AgentSettings::default()),
+        }
     }
 
     fn put_settings(&self, settings: &AgentSettings) -> Result<()> {
         settings.validate()?;
-        // `has_key` is deliberately not zeroed before sealing: it is ignored
-        // on the way back out (see `settings` above), so whatever lands in
-        // the record cannot be believed by anyone. Writing it as-is keeps
-        // this method a plain round-trip of what it was handed.
         let data = self.seal(&settings_aad(), settings)?;
         self.write().execute(
             "INSERT INTO agent_settings (id, data) VALUES (1, ?1)

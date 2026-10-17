@@ -174,8 +174,8 @@ async fn tz_and_budget(
         let agent_settings = vault.agent_settings().unwrap_or_default();
         let tz = agent_settings.timezone.clone().unwrap_or_else(system_tz);
         let loopback = vault
-            .agent_credentials()
-            .map(|(s, _)| everyday_core::agent::is_loopback(s.provider_config.endpoint()))
+            .agent_credentials(everyday_core::llm::ModelTier::Medium)
+            .map(|(_, access)| everyday_core::llm::is_loopback(access.config.endpoint()))
             .unwrap_or(false);
         let budget = settings
             .summary_budget

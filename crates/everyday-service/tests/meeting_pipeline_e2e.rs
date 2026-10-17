@@ -40,7 +40,8 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use everyday_core::agent::{AgentSettings, LLMModelConfig, LLMProviderConfig, Provider};
+use everyday_core::agent::AgentSettings;
+use everyday_core::llm::{ModelSettings, ModelTier};
 use everyday_core::meeting::{
     CHUNK_SECONDS, ChunkMeta, EventRef, LocalModel, MeetingSettings, Recording, SAMPLE_RATE, Stage,
     Track, TranscriberConfig,
@@ -319,17 +320,11 @@ fn test_vault(dir: &Path) -> Arc<Vault> {
 }
 
 fn configure_assistant(vault: &Vault, key: &str) {
-    let settings = AgentSettings {
-        enabled: true,
-        assistant_model: LLMModelConfig {
-            model: everyday_core::agent::DEFAULT_MODEL.to_string(),
-            ..LLMModelConfig::assistant()
-        },
-        provider_config: LLMProviderConfig { provider: Provider::OpenAi, base_url: None },
-        ..AgentSettings::default()
-    };
+    let settings = AgentSettings { enabled: true, ..AgentSettings::default() };
     vault.save_agent_settings(&settings).unwrap();
-    vault.set_agent_key(key).unwrap();
+    // The medium model is the assistant's, at OpenAI's own endpoint.
+    vault.save_model_settings(&ModelSettings::default()).unwrap();
+    vault.set_model_key(ModelTier::Medium, key).unwrap();
 }
 
 async fn ensure_installed(id: &str) {
@@ -405,7 +400,7 @@ async fn run_once(
 
     let vault = test_vault(&vault_dir);
     // Only wired up when the real assistant is actually going to be asked --
-    // `FixedSummariser` runs never touch `vault.agent_credentials()`, and an
+    // `FixedSummariser` runs never touch `vault.agent_credentials(..)`, and an
     // empty or placeholder key would fail `save_agent_settings`'s own
     // validation for no reason.
     if summariser.is_none() {

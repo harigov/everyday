@@ -103,6 +103,7 @@ use everyday_core::agent::tools::{self, Caller as ToolCaller, Drafting, Effect, 
 use everyday_core::agent::{
     AgentSettings, Conversation, MailLink, Message as VaultMessage, Role, ToolCall,
 };
+use everyday_core::llm::{ModelAccess, ModelTier};
 use everyday_core::mail::Origin as MailOrigin;
 use everyday_core::model::system_tz;
 use everyday_core::proposal::{ProposalKind, ProposalSource};
@@ -1494,23 +1495,23 @@ fn build(
     meta: &TurnMeta,
     vault: Arc<Vault>,
     settings: &AgentSettings,
-    key: Option<String>,
+    access: &ModelAccess,
     context: Option<&str>,
     history_trimmed: bool,
 ) -> CommandResult<Agent> {
-    let model = &settings.assistant_model;
-    let connection = &settings.provider_config;
+    let model = &access.config.model;
 
-    let client = crate::llm::client(connection, key).map_err(|e| {
-        CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
-    })?;
+    let client =
+        crate::llm::client(&access.config.connection, access.key.clone()).map_err(|e| {
+            CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
+        })?;
 
     // Which core tools this vault can serve, worked out before the preamble
     // because the preamble's skill index depends on it: an index that says
     // "call read_skill" to a model that was not handed `read_skill` is an
     // instruction it can only fail.
     let caller = ToolCaller::Assistant { conversation: meta.conversation };
-    let assistant_provider = settings.provider_config.acknowledgement_name();
+    let assistant_provider = access.acknowledgement.clone();
     // Whether this is a dream. It changes exactly two things about the
     // catalogue: every writing tool's schema grows the `why` argument (see
     // `Tool::parameters_for`), and none of the tools this file declares for
@@ -2797,7 +2798,12 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // its first look.
     let running = pending.start_turn(conversation);
 
-    let (settings, key) = vault.agent_credentials()?;
+    // A research job is written up by the large model -- or the medium one,
+    // when there is no large one -- and everything else by the medium one,
+    // the follow-up to a job included: that is the assistant talking to the
+    // person again, in their own conversation.
+    let tier = if job.is_some() { ModelTier::Large } else { ModelTier::Medium };
+    let (settings, access) = vault.agent_credentials(tier)?;
     // The ceiling is this turn's own if the caller gave one -- and never
     // nothing, which would end the turn before it began.
     let max_steps = max_steps.unwrap_or(settings.max_steps).max(1) as usize;
@@ -2897,7 +2903,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
             let zone = zone_name(&settings);
             let ctx = ToolContext::new(&vault, settings.now().date(), &zone)
                 .with_caller(ToolCaller::Assistant { conversation })
-                .with_assistant_provider(settings.provider_config.acknowledgement_name());
+                .with_assistant_provider(access.acknowledgement.clone());
             Some(everyday_core::agent::onscreen::describe(&ctx, &screen))
         }
         _ => None,
@@ -2921,7 +2927,8 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         drafting,
         asker: reach.asker.clone(),
     };
-    let agent = build(&meta, vault.clone(), &settings, key, context.as_deref(), history_trimmed)?;
+    let agent =
+        build(&meta, vault.clone(), &settings, &access, context.as_deref(), history_trimmed)?;
     let ledger: Arc<Mutex<Vec<Ran>>> = Arc::default();
     let issued: Arc<Mutex<Vec<String>>> = Arc::default();
     let gate = ConfirmGate {
@@ -2937,13 +2944,13 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         job: job.is_some(),
         research: job.as_ref().map(|job| ResearchReading {
             question: job.question.clone(),
-            extract: settings.quick_allows(RESEARCH_EXTRACT.name),
+            extract: vault.quick_allows(RESEARCH_EXTRACT.name),
         }),
         vault: vault.clone(),
         today: settings.now().date(),
         tz: zone_name(&settings),
         conversation,
-        assistant_provider: settings.provider_config.acknowledgement_name(),
+        assistant_provider: access.acknowledgement.clone(),
         run_id: unattended,
         park_unattended: settings.park_unattended,
         asker: reach.asker.clone(),

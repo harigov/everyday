@@ -77,10 +77,9 @@ pub trait Summariser: Send + Sync {
 /// note that has not arrived by then has stopped being useful to wait for.
 const SUMMARISE_TIMEOUT: Duration = Duration::from_secs(180);
 
-/// The real [`Summariser`]: the assistant's own provider and model --
-/// [`everyday_core::agent::AgentSettings::assistant_model`], never the quick
-/// model, per the plan's "Summaries use the assistant's model, not the quick
-/// model". No tools are registered: a summary is one piece of the transcript
+/// The real [`Summariser`]: the assistant's own model -- the medium one,
+/// [`everyday_core::llm::ModelSettings::medium`], never the small one, per
+/// the plan's "Summaries use the assistant's model, not the quick model". No tools are registered: a summary is one piece of the transcript
 /// in and one piece of prose out, not a turn that should be reading the
 /// vault.
 pub struct AssistantSummariser {
@@ -93,11 +92,12 @@ impl AssistantSummariser {
     }
 
     async fn attempt(&self, system: &str, user: &str) -> CommandResult<String> {
-        let (settings, key) = self.vault.agent_credentials().map_err(|e| {
-            CommandError::new(codes::AGENT, format!("the assistant is not usable: {e}"))
-        })?;
-        let model = settings.assistant_model.clone();
-        let client = crate::llm::client(&settings.provider_config, key).map_err(|e| {
+        let (_, access) =
+            self.vault.agent_credentials(everyday_core::llm::ModelTier::Medium).map_err(|e| {
+                CommandError::new(codes::AGENT, format!("the assistant is not usable: {e}"))
+            })?;
+        let model = access.config.model.clone();
+        let client = crate::llm::client_for(&access).map_err(|e| {
             CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
         })?;
         let builder = AgentBuilder::new(client.completion_model(&model.model)).preamble(system);
