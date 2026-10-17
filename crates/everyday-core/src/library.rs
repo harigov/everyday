@@ -150,6 +150,14 @@ pub enum FieldType {
     /// shelf written by a newer build is a shelf with a plain field on it
     /// rather than a shelf that will not open -- and last for that reason
     /// alone, because serde's catch-all has to be.
+    ///
+    /// It is a lossy reading, not a round trip. Saving that shelf from this
+    /// build -- a rename, a new colour -- writes `text` back, and the newer
+    /// build then draws the field as a plain line for good. What is lost is
+    /// only how the field is drawn: every value on every item is a string
+    /// in [`Item::facts`] and survives untouched. The alternative, a shelf
+    /// that fails to load in an older build, loses the whole shelf from
+    /// view, which is the worse of the two.
     #[default]
     #[serde(other)]
     Text,

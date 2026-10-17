@@ -5878,8 +5878,12 @@ export const mockInvoke = async <T>(
       if (hit.year != null && (overwrite || item.year == null)) item.year = hit.year
       const kind = kinds.find((k) => k.id === item.kindId)
       for (const [key, value] of Object.entries(hit.facts)) {
-        if (!kind?.fields.some((f) => f.key === key)) continue
-        if (overwrite || !item.facts[key]) item.facts[key] = value
+        const field = kind?.fields.find((f) => f.key === key)
+        if (!field) continue
+        // A list somebody has written in is theirs, even on a re-fetch.
+        const written = Boolean(item.facts[key]?.trim())
+        if (written && (!overwrite || field.fieldType === 'list')) continue
+        item.facts[key] = value
       }
       if (hit.rating != null) {
         const label = 'Open Library'

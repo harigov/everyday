@@ -38,6 +38,14 @@ pub fn parse_duckduckgo(html: &str) -> Vec<SearchResult> {
             .and_then(|url| http_url(&url).ok())
             .unwrap_or_default();
 
+        // An advertisement. Its link is DuckDuckGo's own click counter
+        // (`y.js`) rather than a wrapper round a page, and a result that is
+        // picked has its page read -- which for an ad would count a click on
+        // it and read the advertiser's landing page as the thing.
+        if is_duckduckgo(&url) {
+            continue;
+        }
+
         let summary = after
             .split_once("class=\"result__snippet\"")
             .and_then(|(_, rest)| anchor_text(rest))
@@ -74,6 +82,15 @@ fn last_href(fragment: &str) -> Option<String> {
     let at = fragment.rfind("href=\"")? + 6;
     let end = fragment[at..].find('"')? + at;
     Some(fragment[at..end].to_string())
+}
+
+/// Whether an address is DuckDuckGo's own rather than a result's.
+fn is_duckduckgo(url: &str) -> bool {
+    let host = url
+        .split_once("://")
+        .map_or("", |(_, rest)| rest.split(['/', '?', '#', ':']).next().unwrap_or_default())
+        .to_ascii_lowercase();
+    host == "duckduckgo.com" || host.ends_with(".duckduckgo.com")
 }
 
 /// DuckDuckGo wraps every outbound link in `/l/?uddg=<encoded>`. Unwrap it,
@@ -114,6 +131,21 @@ pub(crate) mod tests {
         assert_eq!(hits[0].url, "https://example.org/dune", "the redirect was not unwrapped");
         assert!(hits[0].summary.starts_with("A desert planet"));
         assert_eq!(hits[1].url, "https://example.org/two");
+    }
+
+    #[test]
+    fn an_advertisement_is_not_a_result() {
+        let page = r#"
+          <div class="result result--ad">
+            <a class="result__a" href="https://duckduckgo.com/y.js?ad_domain=shop.example&amp;u3=x">Buy lasagne</a>
+            <a class="result__snippet">Sponsored.</a>
+          </div>
+          <div class="result">
+            <a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Flasagne">Lasagne</a>
+          </div>"#;
+        let hits = parse_duckduckgo(page);
+        assert_eq!(hits.len(), 1, "got {hits:?}");
+        assert_eq!(hits[0].url, "https://example.org/lasagne");
     }
 
     #[test]

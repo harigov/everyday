@@ -67,7 +67,7 @@
 //! every URL in this file and adds nothing to them.
 
 use crate::error::{Error, Result};
-use crate::library::{ExternalRating, Item, Kind, Link};
+use crate::library::{ExternalRating, FieldType, Item, Kind, Link};
 use crate::timestamped::Timestamped;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -390,7 +390,8 @@ impl Source {
         match self {
             Source::Steam => merge_steam_detail(result, body),
             Source::Web => {
-                merge_page(result, body);
+                let landed = result.url.clone();
+                merge_page(result, body, &landed);
                 Ok(())
             }
             _ => Ok(()),
@@ -448,8 +449,19 @@ impl SearchRequest {
     }
 
     /// The request for a kind, using whatever source that kind prefers.
+    ///
+    /// A shelf whose own source is a general one -- an encyclopedia, the open
+    /// web -- has its query hinted from the start, the way a fallback's is
+    /// (see [`hinted_query`](Self::hinted_query)). Such a source is in a
+    /// fallback's position from the first request: it does not know what
+    /// kind of thing is wanted, and without the word "Pale Fire" on a Drinks
+    /// shelf is Nabokov's novel.
     pub fn for_kind(query: impl Into<String>, kind: &Kind) -> Self {
-        Self::new(query).on(Source::from_slug(&kind.source)).about(kind.slug.clone())
+        let request = Self::new(query).on(Source::from_slug(&kind.source)).about(kind.slug.clone());
+        match request.source {
+            Source::Wikipedia | Source::Web => Self { query: request.hinted_query(), ..request },
+            _ => request,
+        }
     }
 
     /// The requests to try, in order, stopping at the first that answers.
@@ -526,8 +538,10 @@ impl SearchRequest {
     /// article first, and neither source has a structured field to
     /// disambiguate on: the query is all there is.
     ///
-    /// Only for a fallback, never for a search somebody asked for on that
-    /// source directly: there, what was typed is what was meant.
+    /// Only for a fallback, or a shelf whose own source is a fallback's kind
+    /// (see [`for_kind`](Self::for_kind)) -- never for a search somebody
+    /// asked for on that source directly: there, what was typed is what was
+    /// meant.
     fn hinted_query(&self) -> String {
         let hint = self.hint.trim();
         if hint.is_empty() || self.query.to_lowercase().contains(&hint.to_lowercase()) {
@@ -612,6 +626,30 @@ impl SearchResult {
         })
     }
 
+    /// Whether this can be taken for what was typed without anybody having
+    /// looked at it -- the test adding something with a lookup turned on
+    /// applies before it fills in a card nobody chose.
+    ///
+    /// A catalogue's answer can: it only holds the kind of thing a shelf
+    /// does, and the place search answers with places. A general source --
+    /// an encyclopedia, the open web -- answers with anything that mentions
+    /// the words, so its answer is taken only when every word typed is in
+    /// its title. "Negroni" answers "negroni"; neither Nabokov's *Pale Fire*
+    /// nor "India pale ale" answers a beer called Pale Fire, and a card left
+    /// as it was typed is better than one with a stranger's cover on it.
+    pub fn answers(&self, query: &str) -> bool {
+        let source = Source::from_slug(&self.source);
+        if source.is_catalogue() || source == Source::Nominatim {
+            return true;
+        }
+        if is_address(query) {
+            return self.url.trim() == query.trim();
+        }
+        let title = words(&self.title);
+        let wanted = words(query);
+        !wanted.is_empty() && wanted.is_subset(&title)
+    }
+
     /// The one line under the title, for a row in the results list.
     pub fn byline(&self) -> String {
         match (self.creator.trim(), self.year) {
@@ -621,6 +659,18 @@ impl SearchResult {
             (c, Some(y)) => format!("{c} \u{00b7} {y}"),
         }
     }
+}
+
+/// The words of a title, for [`SearchResult::answers`]: lower case, split at
+/// anything that is not a letter or a digit, without the little words a
+/// title gains or loses between one catalogue and the next.
+fn words(text: &str) -> std::collections::BTreeSet<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty() && !matches!(*w, "the" | "a" | "an" | "of" | "and"))
+        .filter(|w| w.chars().count() > 1 || w.chars().all(|c| c.is_ascii_digit()))
+        .map(str::to_string)
+        .collect()
 }
 
 // ── The facade ───────────────────────────────────────────────────────────
@@ -735,15 +785,19 @@ pub fn apply(result: &SearchResult, kind: &Kind, item: &mut Item, overwrite: boo
     // arriving on a shelf with no runtime field would be invisible in the
     // interface and undeletable from it, which is worse than losing it.
     for (key, value) in &result.facts {
-        if value.trim().is_empty() || !kind.fields.iter().any(|f| &f.key == key) {
+        let Some(field) = kind.fields.iter().find(|f| &f.key == key) else { continue };
+        if value.trim().is_empty() {
             continue;
         }
-        match item.facts.get(key) {
-            Some(existing) if !existing.trim().is_empty() && !overwrite => {}
-            _ => {
-                item.facts.insert(key.clone(), value.trim().to_string());
-            }
+        // A list somebody has written in -- a method with their own swaps
+        // in it -- is theirs even on an explicit re-fetch, which is allowed
+        // to replace a director but not an afternoon's cooking notes. To
+        // take the page's version instead, empty it first.
+        let written = item.facts.get(key).is_some_and(|v| !v.trim().is_empty());
+        if written && (!overwrite || field.field_type == FieldType::List) {
+            continue;
         }
+        item.facts.insert(key.clone(), value.trim().to_string());
     }
 
     if let Some(score) = result.rating {
@@ -775,6 +829,14 @@ pub fn apply(result: &SearchResult, kind: &Kind, item: &mut Item, overwrite: boo
         item.source = result.source.clone();
     }
     item.touch();
+}
+
+/// Fold a page fetched for a [`Request::page`] into its result:
+/// [`Source::merge_detail`] for a web result, told where the page was found
+/// after redirects -- which is what the page's own relative addresses are
+/// relative to, and where its site is when nothing else names one.
+pub fn merge_page_at(result: &mut SearchResult, html: &str, landed: &str) {
+    merge_page(result, html, landed);
 }
 
 /// [`apply`], for a result a [`Source::detail`] request has since filled in.
@@ -875,7 +937,9 @@ fn decode_percent(s: &str) -> String {
 /// One pass, left to right, so `&amp;lt;` is a literal "&lt;" and never a
 /// "<" -- decoding the ampersand first, in a second pass, is the classic way
 /// to get that wrong. Anything unrecognised is left as written: a stray
-/// `&foo;` read literally is better than one guessed at.
+/// `&foo;` read literally is better than one guessed at. So is a number
+/// that names something [`is_invisible`]: `&#8238;` decoded would turn a
+/// title round on the shelf.
 fn decode_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -934,7 +998,7 @@ fn decode_entities(s: &str) -> String {
                         Some(hex) => u32::from_str_radix(hex, 16).ok()?,
                         None => number.parse().ok()?,
                     };
-                    char::from_u32(code)?
+                    char::from_u32(code).filter(|c| !is_invisible(*c))?
                 }
             };
             Some((ch, semi + 1))
@@ -952,6 +1016,28 @@ fn decode_entities(s: &str) -> String {
     }
     out.push_str(rest);
     out.trim().to_string()
+}
+
+/// Characters nobody can see: controls other than a line break and a tab,
+/// zero-width spaces, direction marks and overrides, the byte-order mark and
+/// the Unicode tag block, which can spell out a whole sentence in nothing at
+/// all. The set `webpage::tidy` keeps from a model, and kept out of the
+/// vault for the same reason: what the card cannot show, the assistant can
+/// still read. Joiners stay, because emoji are built from them.
+pub(crate) fn is_invisible(c: char) -> bool {
+    (c.is_control() && c != '\n' && c != '\t')
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{200B}'
+                | '\u{200E}'
+                | '\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+                | '\u{E0000}'..='\u{E007F}'
+        )
 }
 
 /// Remove any markup inside a run of text, leaving the words.
@@ -1260,6 +1346,59 @@ mod tests {
     }
 
     #[test]
+    fn a_list_somebody_wrote_in_survives_an_explicit_refetch() {
+        let recipes = kind("recipe");
+        let mut item = Item::new(recipes.id, "Lasagne");
+        item.facts.insert("method".into(), "My own way, with less béchamel.".into());
+        item.facts.insert("cuisine".into(), "Italian-ish".into());
+        let mut found = SearchResult { title: "Classic lasagne".into(), ..Default::default() };
+        found.facts.insert("method".into(), "Their way.".into());
+        found.facts.insert("ingredients".into(), "Pasta".into());
+        found.facts.insert("cuisine".into(), "Italian".into());
+        apply(&found, &recipes, &mut item, true);
+        assert_eq!(item.facts["method"], "My own way, with less béchamel.");
+        assert_eq!(item.facts["ingredients"], "Pasta", "an empty list is still filled");
+        assert_eq!(item.facts["cuisine"], "Italian", "a one-line field is replaced as before");
+    }
+
+    #[test]
+    fn a_general_source_is_told_what_kind_of_thing_to_look_for() {
+        let drink = SearchRequest::for_kind("Pale Fire", &kind("drink"));
+        assert_eq!((drink.source, drink.query.as_str()), (Source::Wikipedia, "Pale Fire drink"));
+        assert_eq!(SearchRequest::for_kind("lasagne", &kind("recipe")).query, "lasagne recipe");
+        assert_eq!(
+            SearchRequest::for_kind("Lasagne recipe", &kind("recipe")).query,
+            "Lasagne recipe"
+        );
+        // A catalogue already only holds the right kind of thing.
+        assert_eq!(SearchRequest::for_kind("Dune", &kind("book")).query, "Dune");
+        // And a search somebody aimed at Wikipedia themselves is theirs.
+        assert_eq!(SearchRequest::new("Dune").on(Source::Wikipedia).query, "Dune");
+    }
+
+    #[test]
+    fn only_an_answer_that_names_what_was_typed_is_taken_unseen() {
+        let hit = |title: &str, source: Source| SearchResult {
+            title: title.into(),
+            source: source.slug().into(),
+            ..Default::default()
+        };
+        assert!(hit("Negroni", Source::Wikipedia).answers("negroni"));
+        assert!(hit("Cloud Atlas (novel)", Source::Wikipedia).answers("The Cloud Atlas"));
+        assert!(hit("Classic lasagne recipe | Good Food", Source::Web).answers("Lasagne"));
+        assert!(!hit("India pale ale", Source::Wikipedia).answers("Pale Fire"));
+        assert!(!hit("Lagavulin distillery", Source::Wikipedia).answers("Lagavulin 16"));
+        assert!(!hit("", Source::Web).answers(""));
+        // A catalogue's answer is the kind of thing asked for, whatever its
+        // title says -- "Dune: Part One" for "dune part 1" is still the film.
+        assert!(hit("Something else entirely", Source::OpenLibrary).answers("Dune"));
+        // A pasted address is answered by its own page.
+        let url = "https://example.com/negroni";
+        assert!(SearchResult::for_address(url).unwrap().answers(url));
+        assert!(!hit("Negroni", Source::Web).answers(url));
+    }
+
+    #[test]
     fn a_title_that_is_only_an_address_gives_way_to_the_pages_name() {
         let url = "https://example.com/negroni";
         let mut item = Item::new(KindId::new(), url);
@@ -1415,6 +1554,18 @@ mod tests {
         assert_eq!(decode_entities("a &amp;lt; b"), "a &lt; b");
         assert_eq!(decode_entities("Fear &amp; Loathing"), "Fear & Loathing");
         assert_eq!(decode_entities("it&#39;s"), "it's");
+        assert_eq!(decode_entities("ragu&#768; &eacute;"), "ragu\u{300} é");
+    }
+
+    #[test]
+    fn an_entity_for_something_invisible_stays_written_out() {
+        // A right-to-left override would turn the title round on the shelf;
+        // a NUL or a tag character would hide in it.
+        for written in ["&#8238;", "&#x202E;", "&#0;", "&#7;", "&#xE0041;", "&#8203;"] {
+            let title = format!("Dune{written}");
+            assert_eq!(decode_entities(&title), title, "{written}");
+        }
+        assert_eq!(decode_entities("a&#10;b"), "a\nb", "a line break is not invisible");
     }
 
     #[test]

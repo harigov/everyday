@@ -1,7 +1,5 @@
 use crate::library::normalize_rating;
-use crate::websearch::{
-    SearchResult, decode_entities, http_url, strip_tags, trim_summary, year_from_iso,
-};
+use crate::websearch::{SearchResult, decode_entities, http_url, is_invisible, trim_summary};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -32,59 +30,65 @@ const MAX_DEPTH: u8 = 8;
 ///   sentence, a picture and the name of the site. It is what turns an
 ///   article into a card with a picture on it.
 ///
-/// The page's own name and blurb *replace* the search's excerpt of them --
+/// A recipe's own name and blurb *replace* the search's excerpt of them --
 /// "Classic lasagne" over "Classic lasagne recipe | BBC Good Food" -- since
 /// the excerpt was only ever somebody else's rendering of the same page.
+/// Any other page only fills what is blank: its OpenGraph title may be the
+/// cookie wall or the consent page the address redirected to, where the
+/// search's listing was at least about the page that was asked for.
 /// Everything else fills gaps, as [`apply`](crate::websearch::apply) does.
+///
+/// `landed` is where the page was found after any redirects, which is what
+/// its own relative addresses are relative to; the result keeps the address
+/// it was picked by.
 ///
 /// Never fails. A page with nothing in its head leaves the result as it
 /// was, which was already enough to put on a shelf.
-pub(crate) fn merge_page(result: &mut SearchResult, html: &str) {
+pub(crate) fn merge_page(result: &mut SearchResult, html: &str, landed: &str) {
+    let base = if is_address(landed) { landed.trim().to_string() } else { result.url.clone() };
     let meta = meta_tags(html);
     let recipe = ld_json(html).iter().find_map(|block| find_typed(block, "Recipe", 0).cloned());
-    let site = site_name(recipe.as_ref(), &meta, &result.url);
+    let site = site_name(recipe.as_ref(), &meta, &base);
+    let meta_first =
+        |keys: &[&str]| keys.iter().map(|k| clean(meta_at(&meta, k))).find(|v| !v.is_empty());
 
-    let own_title = recipe
-        .as_ref()
-        .map(|r| clean(&str_at(r, "name")))
-        .into_iter()
-        .chain(["og:title", "twitter:title"].iter().map(|k| clean(meta_at(&meta, k))))
-        .find(|t| !t.is_empty());
-    match own_title {
-        Some(title) => result.title = title,
-        // A pasted address, or a result with no title at all: the page's
-        // `<title>` is better than either, and only then.
-        None if result.title.trim().is_empty() || is_address(&result.title) => {
-            let title = clean(&title_tag(html));
-            if !title.is_empty() {
-                result.title = title;
-            }
+    let recipe_title = recipe.as_ref().map(|r| clean(&str_at(r, "name")));
+    if let Some(title) = recipe_title.filter(|t| !t.is_empty()) {
+        result.title = title;
+    } else if result.title.trim().is_empty() || is_address(&result.title) {
+        // A pasted address, or a result with no title at all.
+        let title =
+            meta_first(&["og:title", "twitter:title"]).unwrap_or_else(|| clean(&title_tag(html)));
+        if !title.is_empty() {
+            result.title = title;
         }
-        None => {}
     }
 
-    let own_summary = recipe
-        .as_ref()
-        .map(|r| clean(&str_at(r, "description")))
-        .into_iter()
-        .chain(
-            ["og:description", "twitter:description", "description"]
-                .iter()
-                .map(|k| clean(meta_at(&meta, k))),
-        )
-        .find(|s| !s.is_empty());
-    if let Some(summary) = own_summary {
+    let recipe_summary = recipe.as_ref().map(|r| clean(&str_at(r, "description")));
+    if let Some(summary) = recipe_summary.filter(|s| !s.is_empty()) {
+        result.summary = trim_summary(&summary);
+    } else if result.summary.trim().is_empty()
+        && let Some(summary) = meta_first(&["og:description", "twitter:description", "description"])
+    {
         result.summary = trim_summary(&summary);
     }
 
+    // Who made it, from a recipe page only. A recipe names its cook; any
+    // other page's author is whoever wrote *the page* -- a reviewer, a
+    // blogger -- and a Books shelf that fell back to the web would credit
+    // them with the book. On a recipe page the page's own author tag is the
+    // cook, which is what a recipe that names its author only by a
+    // reference elsewhere in the page's data falls back to.
     let author = recipe
         .as_ref()
         .map(|r| names(r.get("author")))
-        .into_iter()
-        .chain(["author", "article:author"].iter().map(|k| clean(meta_at(&meta, k))))
-        // `article:author` is often the address of the author's page.
-        .find(|a| !a.is_empty() && !is_address(a));
-    if let Some(author) = author {
+        .map(
+            |named| {
+                if named.is_empty() { meta_first(&["author"]).unwrap_or_default() } else { named }
+            },
+        )
+        .unwrap_or_default();
+    if !author.is_empty() && !is_address(&author) {
         if result.creator.trim().is_empty() {
             result.creator = author.clone();
         }
@@ -101,17 +105,10 @@ pub(crate) fn merge_page(result: &mut SearchResult, html: &str) {
                     .map(|k| meta_at(&meta, k).trim().to_string())
                     .find(|u| !u.is_empty())
             })
-            .and_then(|u| absolute(&result.url, &u));
+            .and_then(|u| absolute(&base, &u));
         if let Some(picture) = picture {
             result.image_url = picture;
         }
-    }
-
-    // When it was published is a year worth having for an article. A
-    // recipe's is the day somebody posted it, which says nothing about the
-    // dish, so it is left out.
-    if result.year.is_none() && recipe.is_none() {
-        result.year = year_from_iso(meta_at(&meta, "article:published_time").trim());
     }
 
     if let Some(recipe) = &recipe {
@@ -179,11 +176,8 @@ fn merge_recipe(result: &mut SearchResult, recipe: &Value, site: &str) {
             number(rating.get("ratingValue")).and_then(|v| normalize_rating(v, best))
         {
             result.rating = Some(score);
-            result.rating_count = ["ratingCount", "reviewCount"]
-                .iter()
-                .find_map(|k| number(rating.get(*k)))
-                .filter(|n| *n >= 1.0)
-                .map(|n| n.min(u32::MAX as f64) as u32);
+            result.rating_count =
+                ["ratingCount", "reviewCount"].iter().find_map(|k| count(rating.get(*k)));
             // The site's readers gave it, not "the web".
             result.rating_source = site.to_string();
         }
@@ -192,18 +186,38 @@ fn merge_recipe(result: &mut SearchResult, recipe: &Value, site: &str) {
 
 /// "Cocktail" or "Mocktail", when the recipe says it is one -- the first
 /// field on the Drinks shelf, which nothing else would fill.
+///
+/// The name and the category are read for the words; keywords only whole,
+/// one at a time. A page's keywords list the variations it mentions -- a
+/// mojito's says "virgin mojito", anything with a dressing says "extra
+/// virgin olive oil" -- and a phrase with the word in it is not the drink
+/// being that word. A keyword that *is* the word ("alcohol-free") is.
 fn drink_type(recipe: &Value) -> String {
-    let said = [
-        listed(recipe.get("recipeCategory")),
-        listed(recipe.get("keywords")),
-        str_at(recipe, "name"),
-    ]
-    .join(" ")
-    .to_lowercase();
-    let without_alcohol = ["mocktail", "non-alcoholic", "alcohol-free", "alcohol free", "virgin "];
-    if without_alcohol.iter().any(|w| said.contains(w)) {
+    const WITHOUT: [&str; 6] =
+        ["mocktail", "mocktails", "non-alcoholic", "alcohol-free", "alcohol free", "zero-proof"];
+    let name = clean(&str_at(recipe, "name")).to_lowercase();
+    let filed =
+        format!("{} {}", listed(recipe.get("recipeCategory")), listed(recipe.get("recipeCuisine")))
+            .to_lowercase();
+    let keywords: Vec<String> = listed(recipe.get("keywords"))
+        .split(',')
+        .map(|k| k.trim().to_lowercase())
+        .filter(|k| !k.is_empty())
+        .collect();
+    let says_without = |text: &str| WITHOUT.iter().any(|w| text.contains(w));
+    let keyword = |words: &[&str]| keywords.iter().any(|k| words.contains(&k.as_str()));
+
+    if says_without(&name)
+        || name.starts_with("virgin ")
+        || says_without(&filed)
+        || keyword(&WITHOUT)
+        || keyword(&["virgin"])
+    {
         "Mocktail".into()
-    } else if said.contains("cocktail") {
+    } else if name.contains("cocktail")
+        || filed.contains("cocktail")
+        || keyword(&["cocktail", "cocktails"])
+    {
         "Cocktail".into()
     } else {
         String::new()
@@ -336,28 +350,61 @@ fn collect_lines(value: &Value, out: &mut Vec<String>) {
 /// A run of HTML or text as the lines a person would read: a paragraph, a
 /// list item and a line break each end one.
 fn lines(text: &str) -> Vec<String> {
-    let mut broken = String::with_capacity(text.len());
-    let lower = text.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(at) = lower[from..].find('<') {
-        let at = from + at;
-        let tag = &lower[at..];
-        let ends_line =
-            ["<br", "</p", "</li", "</div", "<p>", "<p ", "<li"].iter().any(|t| tag.starts_with(t));
-        broken.push_str(&text[from..at]);
-        if ends_line {
-            broken.push('\n');
-        }
-        broken.push('<');
-        from = at + 1;
-    }
-    broken.push_str(&text[from..]);
-    strip_tags(&broken)
+    strip_markup(&decode_entities(text), true)
         .lines()
-        .map(clean)
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|l| !l.is_empty())
         .map(|l| l.chars().take(MAX_LINE_CHARS).collect())
         .collect()
+}
+
+/// Markup taken out of a run of text, leaving the words -- and, with
+/// `breaks`, a line break wherever a paragraph, a list item or a `<br>`
+/// ended one.
+///
+/// Only what looks like a tag is one: a `<` followed by a letter, a `/` or a
+/// `!`, and closed by a `>`. A recipe says "bake until <70C inside" and
+/// "milk (<2% fat)", and the search parsers' `strip_tags`, which takes every
+/// `<` to open a tag, would cut both lines at the bracket -- and in a method
+/// written as one paragraph, every step after it.
+///
+/// Invisible characters go too, for the reason `webpage::tidy` removes them
+/// before a model reads a page: what nobody can see on the card can still
+/// be read by the assistant, and a page's structured data is shown nowhere
+/// on the page itself.
+fn strip_markup(text: &str, breaks: bool) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find('<') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let opens = after.starts_with(|c: char| c.is_ascii_alphabetic() || c == '/' || c == '!');
+        match after.find('>').filter(|_| opens) {
+            Some(end) => {
+                let name: String = after
+                    .trim_start_matches('/')
+                    .chars()
+                    .take_while(char::is_ascii_alphanumeric)
+                    .collect::<String>()
+                    .to_ascii_lowercase();
+                let ends_line = matches!(
+                    name.as_str(),
+                    "br" | "p" | "li" | "div" | "tr" | "ul" | "ol" | "h1" | "h2" | "h3" | "h4"
+                );
+                if breaks && ends_line {
+                    out.push('\n');
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('<');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.retain(|c| !is_invisible(c));
+    out
 }
 
 fn joined(lines: Vec<String>) -> String {
@@ -367,10 +414,7 @@ fn joined(lines: Vec<String>) -> String {
 /// Entities decoded, markup removed and whitespace collapsed to single
 /// spaces: one line of somebody else's text, tidied.
 fn clean(text: &str) -> String {
-    decode_entities(&strip_tags(&decode_entities(text)))
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    strip_markup(&decode_entities(text), false).split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn str_at(value: &Value, key: &str) -> String {
@@ -481,6 +525,23 @@ fn number(value: Option<&Value>) -> Option<f64> {
     .filter(|n: &f64| n.is_finite())
 }
 
+/// How many people a rating is an average of, as a number or as a string
+/// with whatever thousands separator the site's language uses -- "1,204",
+/// "1.204", "1 204". Not [`number`], which would read the first as 1.204.
+fn count(value: Option<&Value>) -> Option<u32> {
+    let n: u64 = match value? {
+        Value::Number(n) => n.as_u64(),
+        Value::String(s) => s
+            .chars()
+            .filter(|c| !matches!(c, ',' | '.' | ' ' | '\'' | '\u{a0}' | '\u{202f}'))
+            .collect::<String>()
+            .parse()
+            .ok(),
+        _ => None,
+    }?;
+    (n >= 1).then(|| n.min(u64::from(u32::MAX)) as u32)
+}
+
 /// How many it serves: the first whole number in "4 servings", "Serves
 /// 4-6" or "12 biscuits", or the number itself.
 fn first_count(value: &Value) -> Option<String> {
@@ -517,7 +578,10 @@ fn iso_minutes(text: &str) -> Option<u32> {
                     ('H', true) => n * 60.0,
                     ('M', true) => n,
                     ('S', true) => n / 60.0,
-                    // Months and years: a dish that takes those is not one
+                    // Years and months spelled out as nothing --
+                    // `P0Y0M0DT0H45M0S` is forty-five minutes.
+                    ('Y' | 'M', false) if n == 0.0 => 0.0,
+                    // And not as nothing: a dish that takes those is not one
                     // with a cooking time worth recording.
                     _ => return None,
                 };
@@ -632,13 +696,19 @@ fn site_name(recipe: Option<&Value>, meta: &BTreeMap<String, String>, url: &str)
 
 /// The host of an address, or nothing.
 fn host(url: &str) -> &str {
-    let Some((_, rest)) = url.split_once("://") else { return "" };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let authority = authority.rsplit('@').next().unwrap_or_default();
+    let authority = authority(url);
     match authority.rsplit_once(':') {
         Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
         _ => authority,
     }
+}
+
+/// The host of an address with its port, if it names one, and without
+/// anybody's user name: what a path on the same site is joined to.
+fn authority(url: &str) -> &str {
+    let Some((_, rest)) = url.split_once("://") else { return "" };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    authority.rsplit('@').next().unwrap_or_default()
 }
 
 /// `href` as an absolute web address, read relative to the page at `base`.
@@ -654,11 +724,10 @@ fn absolute(base: &str, href: &str) -> Option<String> {
         return http_url(&format!("{scheme}://{rest}")).ok();
     }
     if href.starts_with('/') {
-        let host = host(base);
-        if host.is_empty() {
+        if host(base).is_empty() {
             return None;
         }
-        return http_url(&format!("{scheme}://{host}{href}")).ok();
+        return http_url(&format!("{scheme}://{}{href}", authority(base))).ok();
     }
     None
 }
@@ -710,6 +779,12 @@ pub(crate) mod tests {
 </script>
 </head><body>…</body></html>"#;
 
+    /// [`merge_page`] for a page found where it was asked for.
+    fn merge(hit: &mut SearchResult, page: &str) {
+        let landed = hit.url.clone();
+        merge_page(hit, page, &landed);
+    }
+
     fn picked(title: &str, url: &str) -> SearchResult {
         SearchResult {
             title: title.into(),
@@ -726,7 +801,7 @@ pub(crate) mod tests {
             "Classic lasagne recipe | Good Food",
             "https://www.bbcgoodfood.com/recipes/classic-lasagne",
         );
-        merge_page(&mut hit, RECIPE_PAGE);
+        merge(&mut hit, RECIPE_PAGE);
 
         assert_eq!(hit.title, "Classic lasagne", "the page's own name, not the listing's");
         assert_eq!(hit.creator, "Cassie Best");
@@ -763,57 +838,153 @@ pub(crate) mod tests {
              "recipeInstructions":"Stir with ice.\nStrain over a large cube.",
              "totalTime":"PT3M","recipeYield":1}</script>"#;
         let mut hit = picked("Negroni", "https://drinks.example/negroni");
-        merge_page(&mut hit, page);
+        merge(&mut hit, page);
         assert_eq!(hit.facts["type"], "Cocktail");
         assert_eq!(hit.facts["method"], "Stir with ice.\nStrain over a large cube.");
         assert_eq!(hit.facts["time"], "3");
         assert_eq!(hit.facts["serves"], "1");
 
-        let mut virgin = picked("Nojito", "https://drinks.example/nojito");
-        merge_page(
-            &mut virgin,
-            r#"<script type="application/ld+json">{"@type":"Recipe","name":"Nojito",
-               "keywords":"mojito, cocktail, alcohol-free"}</script>"#,
+        let typed = |json: &str| {
+            let mut hit = picked("x", "https://drinks.example/x");
+            merge(&mut hit, &format!(r#"<script type="application/ld+json">{json}</script>"#));
+            hit.facts.get("type").cloned().unwrap_or_default()
+        };
+        // A keyword that is the word itself outranks "cocktail".
+        assert_eq!(
+            typed(
+                r#"{"@type":"Recipe","name":"Nojito","keywords":"mojito, cocktail, alcohol-free"}"#
+            ),
+            "Mocktail"
         );
-        assert_eq!(virgin.facts["type"], "Mocktail", "alcohol-free outranks cocktail");
+        assert_eq!(typed(r#"{"@type":"Recipe","name":"Virgin Mary"}"#), "Mocktail");
+        assert_eq!(
+            typed(r#"{"@type":"Recipe","name":"Shirley","recipeCategory":"Mocktails"}"#),
+            "Mocktail"
+        );
+        // One that only mentions a variation does not.
+        assert_eq!(
+            typed(
+                r#"{"@type":"Recipe","name":"Mojito","keywords":"mojito, cocktail, rum, virgin mojito"}"#
+            ),
+            "Cocktail"
+        );
+        assert_eq!(
+            typed(
+                r#"{"@type":"Recipe","name":"Dirty martini","recipeCategory":"Cocktails","keywords":"extra virgin olive oil"}"#
+            ),
+            "Cocktail"
+        );
+        assert_eq!(
+            typed(r#"{"@type":"Recipe","name":"Salad","keywords":"extra virgin olive oil"}"#),
+            ""
+        );
     }
 
     #[test]
-    fn a_page_without_a_recipe_still_has_a_name_a_picture_and_a_site() {
-        let page = r#"<html><head>
-            <meta property="og:title" content="Why we cook">
-            <meta content="An essay." property="og:description" />
-            <meta property='og:image' content='/img/hero.jpg'>
-            <meta property="og:site_name" content="The Paper">
-            <meta name="author" content="A. Writer">
-            <meta property="article:published_time" content="2024-03-01T09:00:00Z">
-            </head></html>"#;
+    fn a_bracket_that_is_not_markup_is_kept_with_everything_after_it() {
+        let page = r#"<script type="application/ld+json">{"@type":"Recipe","name":"Pork",
+            "recipeIngredient":["1 cup milk (&lt;2% fat)","1 tsp <b>salt</b>"],
+            "recipeInstructions":"Heat oven.\nBake until <70C inside.\nRest 10 min."}</script>"#;
+        let mut hit = picked("x", "https://x.example/");
+        merge(&mut hit, page);
+        assert_eq!(hit.facts["ingredients"], "1 cup milk (<2% fat)\n1 tsp salt");
+        assert_eq!(hit.facts["method"], "Heat oven.\nBake until <70C inside.\nRest 10 min.");
+    }
+
+    #[test]
+    fn nothing_invisible_survives_into_a_recipe() {
+        // Zero-width spaces, a right-to-left override and the Unicode tag
+        // block, which can spell out a sentence the card never shows.
+        let page = "<script type=\"application/ld+json\">{\"@type\":\"Recipe\",\
+            \"name\":\"Neg\u{200b}roni\u{202e}\",\
+            \"recipeInstructions\":\"Stir.\u{e0049}\u{e0067}\u{e006e}\"}</script>";
+        let mut hit = picked("x", "https://x.example/");
+        merge(&mut hit, page);
+        assert_eq!(hit.title, "Negroni");
+        assert_eq!(hit.facts["method"], "Stir.");
+    }
+
+    const ARTICLE: &str = r#"<html><head>
+        <meta property="og:title" content="Why we cook">
+        <meta content="An essay." property="og:description" />
+        <meta property='og:image' content='/img/hero.jpg'>
+        <meta property="og:site_name" content="The Paper">
+        <meta name="author" content="A. Writer">
+        <meta property="article:published_time" content="2024-03-01T09:00:00Z">
+        </head></html>"#;
+
+    #[test]
+    fn a_page_without_a_recipe_still_has_a_picture_and_a_site() {
         let mut hit = picked("Why we cook - The Paper", "https://paper.example/2024/cook");
-        merge_page(&mut hit, page);
-        assert_eq!(hit.title, "Why we cook");
-        assert_eq!(hit.summary, "An essay.");
+        merge(&mut hit, ARTICLE);
+        // What the search listed is kept: a page's own title might be the
+        // consent wall it redirected to.
+        assert_eq!(hit.title, "Why we cook - The Paper");
+        assert!(hit.summary.starts_with("Make our easy lasagne"));
         assert_eq!(hit.image_url, "https://paper.example/img/hero.jpg", "made absolute");
-        assert_eq!(hit.creator, "A. Writer");
-        assert_eq!(hit.year, Some(2024));
         assert_eq!(hit.facts["publication"], "The Paper");
-        assert_eq!(hit.facts["author"], "A. Writer");
+        // The page's author wrote the page, not whatever a shelf is looking
+        // up, and when it was published is not when that was made.
+        assert_eq!(hit.creator, "");
+        assert_eq!(hit.year, None);
+        assert!(!hit.facts.contains_key("author"));
         assert!(!hit.facts.contains_key("ingredients"));
+
+        // A pasted address has nothing listed, so the page names itself.
+        let mut pasted = SearchResult::for_address("https://paper.example/2024/cook").unwrap();
+        merge(&mut pasted, ARTICLE);
+        assert_eq!(pasted.title, "Why we cook");
+        assert_eq!(pasted.summary, "An essay.");
+    }
+
+    #[test]
+    fn a_recipe_that_names_its_cook_by_reference_takes_the_pages_author() {
+        let page = r#"<meta name="author" content="Nagi">
+            <script type="application/ld+json">{"@graph":[
+              {"@type":"Recipe","name":"Lasagna","author":{"@id":"https://x.example/#/person/1"}},
+              {"@type":"Person","@id":"https://x.example/#/person/1"}]}</script>"#;
+        let mut hit = picked("x", "https://x.example/lasagna");
+        merge(&mut hit, page);
+        assert_eq!(hit.creator, "Nagi");
+    }
+
+    #[test]
+    fn a_redirected_page_is_read_where_it_landed() {
+        let mut hit = SearchResult::for_address("https://short.example/abc").unwrap();
+        merge_page(&mut hit, ARTICLE, "https://paper.example:8443/2024/cook");
+        assert_eq!(hit.image_url, "https://paper.example:8443/img/hero.jpg", "with its port");
+        assert_eq!(hit.facts["url"], "https://short.example/abc", "the address it was picked by");
+        let mut nameless = SearchResult::for_address("https://short.example/abc").unwrap();
+        merge_page(&mut nameless, "<title>T</title>", "https://www.paper.example/x");
+        assert_eq!(nameless.facts["source"], "paper.example");
+    }
+
+    #[test]
+    fn a_count_reads_its_thousands_separator() {
+        for (written, want) in [
+            (r#""1,204""#, Some(1204)),
+            (r#""1.204""#, Some(1204)),
+            (r#""1 204""#, Some(1204)),
+            ("1204", Some(1204)),
+            (r#""0""#, None),
+            (r#""many""#, None),
+        ] {
+            let value: Value = serde_json::from_str(written).unwrap();
+            assert_eq!(count(Some(&value)), want, "{written}");
+        }
     }
 
     #[test]
     fn a_pasted_address_takes_the_pages_title_when_that_is_all_there_is() {
         let mut hit = picked("https://plain.example/page", "https://plain.example/page");
-        merge_page(
-            &mut hit,
-            "<html><head><title>  A   plain page &amp; more </title></head></html>",
-        );
+        merge(&mut hit, "<html><head><title>  A   plain page &amp; more </title></head></html>");
         assert_eq!(hit.title, "A plain page & more");
         assert_eq!(hit.facts["source"], "plain.example", "the host, when nothing names the site");
 
         // A real title from a search survives a page that has only a
         // `<title>`: that is what the search listed in the first place.
         let mut listed = picked("Listed title", "https://plain.example/page");
-        merge_page(&mut listed, "<title>Other</title>");
+        merge(&mut listed, "<title>Other</title>");
         assert_eq!(listed.title, "Listed title");
     }
 
@@ -829,7 +1000,7 @@ pub(crate) mod tests {
             r#"<script type="application/ld+json">{"@type":"Recipe","recipeInstructions":[[[[[[[[[[["deep"]]]]]]]]]]]}</script>"#,
         ] {
             let mut hit = picked("Kept", "https://x.example/");
-            merge_page(&mut hit, page);
+            merge(&mut hit, page);
             assert_eq!(hit.title, "Kept", "{page:?}");
         }
     }
@@ -838,7 +1009,7 @@ pub(crate) mod tests {
     fn a_raw_line_break_inside_a_string_does_not_lose_the_recipe() {
         let page = "<script type=\"application/ld+json\">{\"@type\":\"Recipe\",\"name\":\"Soda\nbread\"}</script>";
         let mut hit = picked("x", "https://x.example/");
-        merge_page(&mut hit, page);
+        merge(&mut hit, page);
         assert_eq!(hit.title, "Soda bread");
     }
 
@@ -884,7 +1055,8 @@ pub(crate) mod tests {
         assert_eq!(iso_minutes("PT90S"), Some(2));
         assert_eq!(iso_minutes("P1D"), Some(1440));
         assert_eq!(iso_minutes("pt0.5h"), Some(30));
-        for nonsense in ["", "P", "PT", "45 minutes", "PT1H30", "P1M", "PTxM"] {
+        assert_eq!(iso_minutes("P0Y0M0DT0H45M0S"), Some(45), "spelled out in full");
+        for nonsense in ["", "P", "PT", "45 minutes", "PT1H30", "P1M", "P1Y", "PTxM"] {
             assert_eq!(iso_minutes(nonsense), None, "{nonsense:?}");
         }
     }

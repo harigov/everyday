@@ -447,7 +447,7 @@ pub fn parse(address: &str) -> Result<Url, String> {
 
 /// The address itself, when the host is one rather than a name. Brackets
 /// off an IPv6 literal first, for the reason `http`'s redirect policy gives.
-fn literal_ip(url: &Url) -> Option<std::net::IpAddr> {
+pub(crate) fn literal_ip(url: &Url) -> Option<std::net::IpAddr> {
     url.host_str()?.trim_start_matches('[').trim_end_matches(']').parse().ok()
 }
 

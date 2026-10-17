@@ -280,8 +280,13 @@ async fn add_item(svc: Arc<Service>, ctx: Ctx, args: AddItem) -> CommandResult<A
         return Ok(AddedItem { item, looked_up: false });
     }
 
-    let hit = match websearch::lookup(&title, &kind, 1).await {
-        Ok(hits) => hits.into_iter().next(),
+    // The first of a few that can be taken for what was typed without
+    // anybody looking. A catalogue's first answer always can; a general
+    // source's -- an encyclopedia's, the open web's -- only when it names
+    // the thing, or a beer called Pale Fire arrives with Nabokov's cover.
+    // See `SearchResult::answers`.
+    let hit = match websearch::lookup(&title, &kind, 3).await {
+        Ok(hits) => hits.into_iter().find(|hit| hit.answers(&title)),
         // Worth a line in the log and nothing more: the item is already on
         // disk, and a network that is off is not a reason to refuse to keep a
         // list. See the doc comment.

@@ -2571,7 +2571,7 @@
           },
           {
             "const": "text",
-            "description": "A line. Also what a type this build has never heard of reads as, so a\nshelf written by a newer build is a shelf with a plain field on it\nrather than a shelf that will not open -- and last for that reason\nalone, because serde's catch-all has to be.",
+            "description": "A line. Also what a type this build has never heard of reads as, so a\nshelf written by a newer build is a shelf with a plain field on it\nrather than a shelf that will not open -- and last for that reason\nalone, because serde's catch-all has to be.\n\nIt is a lossy reading, not a round trip. Saving that shelf from this\nbuild -- a rename, a new colour -- writes `text` back, and the newer\nbuild then draws the field as a plain line for good. What is lost is\nonly how the field is drawn: every value on every item is a string\nin [`Item::facts`] and survives untouched. The alternative, a shelf\nthat fails to load in an older build, loses the whole shelf from\nview, which is the worse of the two.",
             "type": "string"
           }
         ]

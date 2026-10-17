@@ -775,8 +775,8 @@
             <p class="empty">Nothing found for “{item.title}”.</p>
           {:else}
             <p class="empty">
-              Picking one replaces the title, byline and details. Your rating, your notes and the
-              history are never touched.
+              Picking one replaces the title, byline and details. Your rating, your notes, the
+              history and any list you have written in are never touched.
             </p>
             <div class="matches">
               {#each matches as hit, i (hit.url || hit.title + i)}

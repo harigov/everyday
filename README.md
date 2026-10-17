@@ -618,8 +618,18 @@ last one returns: a web search answers with *pages* — "Dune (2021) — IMDb",
 "Buy Dune on Blu-ray" — and what a shelf wants is the thing, which is what an
 encyclopaedia article parses into. The plain search is still the last resort,
 and when it runs it is told what kind of thing it is looking for, so "dune"
-on a movies shelf is searched for as "dune film". The order is one list,
-`SearchRequest::attempts`, walked by both callers so neither can drift.
+on a movies shelf is searched for as "dune film". So is a shelf whose *own*
+source is Wikipedia or the web, which is in a fallback's position from the
+start: "pale fire" on Drinks is "pale fire drink", or it is Nabokov. The
+order is one list, `SearchRequest::attempts`, walked by both callers so
+neither can drift.
+
+Pressing Enter with lookups on takes the answer without anybody seeing it,
+so from a general source it takes one only when every word typed is in its
+title. "Negroni" is taken; "India pale ale", for a beer called Pale Fire,
+is not, and the card stays as typed with **Look this up** a click away. A
+catalogue's first answer is taken as before, since it only holds the kind
+of thing the shelf does.
 
 Every one of them works with no API key, no account and no client id
 registered to a vendor. That is a constraint rather than a coincidence: this
@@ -644,16 +654,24 @@ engines to draw their recipe cards from, so picking one fills in the
 ingredients, the method one step to a line, how many it serves, how long it
 takes, the picture and the site's own rating — under the site's name — and
 replaces the search engine's "Classic lasagne recipe | BBC Good Food" with
-the page's own "Classic lasagne". A cocktail page does the same for a drink.
-A page that is not a recipe still gives its name, a sentence, a picture and
-the name of its site, which is what gives an article a cover. The page is
-fetched the way the assistant reads one — public addresses only, every
-redirect checked — because its address came off the internet.
+the recipe's own "Classic lasagne". A cocktail page does the same for a
+drink. A page that is not a recipe only fills gaps: a picture, the name of
+its site, and a sentence where the search had none — which is what gives an
+article a cover — but not its title, since a page's own title can be the
+consent wall it redirected to. Nor its author or date, which on a Books
+shelf that fell back to the web would credit a reviewer with the book. The
+page, and its picture, are fetched the way the assistant reads a page —
+public addresses only, every redirect checked — because both addresses came
+off the internet; every cover is fetched that way now, for the same reason.
+Invisible characters are stripped on the way in, and an advertisement in
+the search results is never offered.
 
 **Paste an address** into the add line and it is not searched for at all:
 the one suggestion is that page, and adding it reads the page as above, so
 a recipe someone sent you is one paste and one Enter from being on the
-shelf with its ingredients.
+shelf with its ingredients. The assistant's `look_up_item` reads an address
+the same way, held to the same check as its `read_web_page`: an address you
+gave it opens straight away, one it composed asks you first.
 
 Four rules hold this together, and the last two are the ones worth stating:
 
@@ -669,7 +687,8 @@ Four rules hold this together, and the last two are the ones worth stating:
   lookup that disagrees with it. Your notes, your rating and the status are
   not metadata and cannot be touched — not even by the explicit "look this up
   again", which is allowed to replace the byline and the details and nothing
-  else. The rule lives in `websearch::apply`, in Rust, where it is tested.
+  else, and not a recipe's ingredients or method once you have written in
+  them. The rule lives in `websearch::apply`, in Rust, where it is tested.
 - **A cover is downloaded, never linked.** It goes into the same
   content-addressed, chunk-encrypted blob store that holds photographs in a
   journal entry, and is drawn through the `everyday://` protocol. An
