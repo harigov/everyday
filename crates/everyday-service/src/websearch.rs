@@ -18,6 +18,12 @@
 //! which is a deliberate constraint and not a coincidence: see
 //! [`Source`](everyday_core::websearch::Source).
 //!
+//! And, once something is picked from a plain web search or an address is
+//! pasted, one request to that page, to read what it says about itself --
+//! a recipe's ingredients, an article's picture. It goes through
+//! [`webpage::fetch`], the assistant's own careful way of reading a
+//! stranger's page, because the address came off the internet.
+//!
 //! # Why a cover is downloaded rather than linked
 //!
 //! [`fetch_image`] pulls the picture into the vault's blob store, where it
@@ -40,7 +46,7 @@ use everyday_core::{Item, Kind, Vault};
 pub use everyday_core::websearch::DEFAULT_LIMIT;
 
 use crate::error::{CommandError, CommandResult, codes};
-use crate::http;
+use crate::{http, webpage};
 
 /// Run one search: build the request in the core, fetch it here, parse it in
 /// the core.
@@ -75,6 +81,11 @@ pub async fn lookup(query: &str, kind: &Kind, limit: u32) -> CommandResult<Vec<S
     // when a client asks it to.
     if !kind.looks_things_up() {
         return Ok(Vec::new());
+    }
+    // A pasted address is answered with itself, and nothing is searched for
+    // it: the person has already said which page they mean.
+    if let Some(page) = SearchResult::for_address(query) {
+        return Ok(vec![page]);
     }
     let mut last: Option<CommandError> = None;
     for attempt in SearchRequest::for_kind(query, kind).limit(limit).attempts() {
@@ -126,13 +137,28 @@ async fn get(request: &Request) -> CommandResult<String> {
 /// the bytes actually are. Anything that is not a recognised image is
 /// refused rather than stored — a shelf full of `application/octet-stream`
 /// covers would render as broken pictures with no way to find out why.
+///
+/// Over [`http::public_client`], whatever the picture is for. A cover's
+/// address is always somebody else's choice -- a catalogue's answer, the
+/// head of a page somebody picked, an address copied out of a browser -- and
+/// a page can name `http://192.168.1.1/…` as its picture as easily as a
+/// photograph. So no name may resolve to a private network, no redirect may
+/// lead to one, and a literal private address is refused before anything is
+/// sent; mail's remote images are fetched on the same terms.
 pub async fn fetch_image(url: &str) -> CommandResult<Vec<u8>> {
     // Checked before the request, not after: the address comes off the
     // internet, and `file:///etc/passwd` reaching a fetcher is the bug this
     // ordering prevents.
     let url = http_url(url).map_err(CommandError::from)?;
-    let response = http::client()?
-        .get(&url)
+    let parsed = webpage::parse(&url).map_err(|e| CommandError::new(codes::INVALID, e))?;
+    if webpage::literal_ip(&parsed).is_some_and(|ip| http::is_forbidden_address(ip, false)) {
+        return Err(CommandError::new(
+            codes::FORBIDDEN,
+            "that picture is on a private network, which this app will not fetch from",
+        ));
+    }
+    let response = http::public_client()?
+        .get(parsed)
         .header(reqwest::header::ACCEPT, "image/*")
         .send()
         .await
@@ -196,27 +222,67 @@ fn describe(e: &reqwest::Error, request: &Request) -> CommandError {
 /// Ask a source for the rest of what it knows about the one result somebody
 /// chose.
 ///
-/// Only Steam has anything to add today -- see
+/// Steam has a store page to add, and a plain web search has the page
+/// itself -- see
 /// [`Source::detail`](everyday_core::websearch::Source::detail) for why the
 /// request is made on a pick rather than for every hit in a list. Everything
 /// here is best-effort by construction: no second request, a refused one, an
 /// unreadable answer or a store that has never heard of the game all leave
 /// the result exactly as the search returned it, which is already enough to
 /// put on a shelf.
-async fn enriched(result: &SearchResult) -> SearchResult {
+///
+/// Also how the assistant's `look_up_item` reads a page it was given the
+/// address of.
+pub(crate) async fn enriched(result: &SearchResult) -> SearchResult {
     let source = Source::from_slug(&result.source);
     let Some(request) = source.detail(result) else { return result.clone() };
-    let mut filled = result.clone();
-    match get(&request).await {
-        Ok(body) => {
-            if let Err(e) = source.merge_detail(&mut filled, &body) {
-                tracing::warn!(source = source.slug(), error = %e, "could not read the details");
-                return result.clone();
-            }
+    let fetched = if request.page {
+        page(&request.url).await
+    } else {
+        get(&request).await.map(|body| (body, request.url.clone()))
+    };
+    let (body, landed) = match fetched {
+        Ok(fetched) => fetched,
+        Err(e) => {
+            tracing::info!(source = source.slug(), error = %e, "no details this time");
+            return result.clone();
         }
-        Err(e) => tracing::info!(source = source.slug(), error = %e, "no details this time"),
+    };
+    // Off the runtime's threads: a page can be a few megabytes of markup,
+    // and reading it is real work -- the reason `webpage::read` gives.
+    let mut filled = result.clone();
+    let merged = tokio::task::spawn_blocking(move || {
+        if request.page {
+            everyday_core::websearch::merge_page_at(&mut filled, &body, &landed);
+            Ok(filled)
+        } else {
+            source.merge_detail(&mut filled, &body).map(|()| filled)
+        }
+    })
+    .await;
+    match merged {
+        Ok(Ok(filled)) => filled,
+        Ok(Err(e)) => {
+            tracing::warn!(source = source.slug(), error = %e, "could not read the details");
+            result.clone()
+        }
+        Err(e) => {
+            tracing::warn!(source = source.slug(), error = %e, "reading the details panicked");
+            result.clone()
+        }
     }
-    filled
+}
+
+/// A page somebody picked, as text, and the address it was found at after
+/// any redirects -- fetched the way the assistant fetches one: see
+/// [`webpage::fetch`] for the checks. Only a page that is markup is worth
+/// reading for what it says about itself.
+async fn page(address: &str) -> CommandResult<(String, String)> {
+    let fetched = webpage::fetch(address).await?;
+    if fetched.kind != webpage::Kind::Html {
+        return Err(CommandError::new(codes::UNSUPPORTED, "that address is not a web page"));
+    }
+    Ok((String::from_utf8_lossy(&fetched.body).into_owned(), fetched.landed.to_string()))
 }
 
 /// Apply a result to an item and bring its cover home, in that order.
@@ -240,8 +306,8 @@ pub async fn apply_and_cover(
     item: &mut Item,
     overwrite: bool,
 ) {
-    let result = &enriched(result).await;
-    everyday_core::websearch::apply(result, kind, item, overwrite);
+    let detailed = enriched(result).await;
+    everyday_core::websearch::apply_detailed(result, &detailed, kind, item, overwrite);
 
     let wanted = item.cover_url.trim().to_string();
     if wanted.is_empty() || (item.cover.is_some() && !overwrite) {
@@ -260,5 +326,25 @@ pub async fn apply_and_cover(
             }
         }
         Err(e) => tracing::info!(error = %e, "could not fetch a cover"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_picture_on_a_private_network_is_refused_before_anything_is_sent() {
+        // What a page can name as its picture as easily as a photograph:
+        // this machine, the router, a cloud's metadata service.
+        for url in [
+            "http://127.0.0.1:6167/_matrix/key",
+            "http://192.168.1.1/cgi-bin/reboot",
+            "http://[::1]/cover.jpg",
+            "http://169.254.169.254/latest/meta-data/",
+        ] {
+            let err = fetch_image(url).await.unwrap_err();
+            assert_eq!(err.code, codes::FORBIDDEN, "{url}: {}", err.message);
+        }
     }
 }

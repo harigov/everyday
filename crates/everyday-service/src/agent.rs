@@ -108,6 +108,7 @@ use everyday_core::model::system_tz;
 use everyday_core::proposal::{ProposalKind, ProposalSource};
 use everyday_core::quick::{ExtractAnswer, QuickContext, RESEARCH_EXTRACT};
 use everyday_core::record::RecordKind;
+use everyday_core::websearch::SearchResult;
 use everyday_core::{ConversationId, KindId, MessageId, Vault};
 use rig_agent::agent::hook::{
     ToolCall as HookToolCall, ToolCallAction, ToolResultAction, ToolResultEvent,
@@ -754,6 +755,9 @@ const ASK_OWNER: &str = "ask_owner";
 /// In the core catalogue, unlike the six above, but singled out by the gate:
 /// following a web feed puts a request on the network. See `on_tool_call`.
 const FOLLOW_SOURCE: &str = "follow_source";
+/// Also in the core catalogue, and singled out after it runs: an item filled
+/// in from the web carries a stranger's words. See `on_tool_result`.
+const GET_ITEM: &str = "get_item";
 /// The tools in [`tools::Domain::Jobs`], which are in the core catalogue like
 /// any other and are named here because this file offers them on terms of its
 /// own (see [`JobTools`]), wakes the worker after the first, and gives all
@@ -842,9 +846,19 @@ impl AgentHook for ConfirmGate {
         // ordinary write.
         let follows_address = name == FOLLOW_SOURCE
             && arguments.get("url").and_then(|v| v.as_str()).is_some_and(|u| !u.trim().is_empty());
+        // Looking up an address reads that page (see `look_up_item_tool`),
+        // which makes it a fetch like `read_web_page`, held to the same
+        // check. A title that is not an address is a query, as before.
+        let looked_up_address = (name == LOOK_UP_ITEM)
+            .then(|| arguments.get("title").and_then(|v| v.as_str()))
+            .flatten()
+            .filter(|t| SearchResult::for_address(t).is_some());
         let kind = if name == READ_WEB_PAGE {
             let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
             let trust = self.provenance.lock().unwrap().check(address);
+            must_confirm_fetch(trust, mail_read)
+        } else if let Some(address) = looked_up_address {
+            let trust = self.provenance.lock().unwrap().check(address.trim());
             must_confirm_fetch(trust, mail_read)
         } else if follows_address {
             let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
@@ -980,7 +994,17 @@ impl AgentHook for ConfirmGate {
                 matches!(t.domain, tools::Domain::Mail | tools::Domain::News)
                     && t.effect == Effect::Read
             });
-            if is_mail_read {
+            // And so does an item filled in from the web: a catalogue's
+            // blurb, a recipe page's method. `get_item` names where the words
+            // came from as `filled_from`, and only then is it a stranger's
+            // writing; an item typed in by its owner is not.
+            let is_filled_item = event.tool_name == GET_ITEM
+                && event
+                    .raw_result
+                    .output()
+                    .as_json()
+                    .is_some_and(|json| json.get("filled_from").is_some());
+            if is_mail_read || is_filled_item {
                 self.mail_read_this_turn.store(true, Ordering::Release);
             }
             mail_link = mail_link_of(event.tool_name, event.raw_result.output());
@@ -2009,8 +2033,10 @@ fn look_up_item_tool(vault: Arc<Vault>) -> PortableDynamicTool {
          iTunes for films, and so on -- falling back to a general web search when that finds \
          nothing. Returns a few candidates with their creator, year, a blurb and a rating \
          where there is one; call create_item or update_item with the fields from whichever \
-         matches. Does not create or change anything itself, and a shelf that never looks \
-         things up (Contacts) always comes back empty.",
+         matches. Given a web address instead of a title -- a recipe they sent you, say -- \
+         it reads that page, and a recipe page comes back with its ingredients and method \
+         among the fields. Does not create or change anything itself, and a shelf that \
+         never looks things up (Contacts) always comes back empty.",
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -2070,12 +2096,20 @@ fn look_up_item_tool(vault: Arc<Vault>) -> PortableDynamicTool {
                         )
                     })?;
 
-                let hits = crate::websearch::lookup(&title, &kind, limit)
+                let mut hits = crate::websearch::lookup(&title, &kind, limit)
                     .await
                     .map_err(|e| ToolExecutionError::other(e.message))?;
+                // An address is answered with its own page, unread; read it,
+                // as picking it in the library would. Where the address came
+                // from was checked before this ran -- see `on_tool_call`.
+                if SearchResult::for_address(&title).is_some() {
+                    for hit in &mut hits {
+                        *hit = crate::websearch::enriched(hit).await;
+                    }
+                }
                 Ok(ToolOutput::json(serde_json::json!({
                     "count": hits.len(),
-                    "results": hits.iter().map(look_up_item_result).collect::<Vec<_>>(),
+                    "results": hits.iter().map(|hit| look_up_item_result(hit, &kind)).collect::<Vec<_>>(),
                 })))
             })
         },
@@ -2090,7 +2124,7 @@ fn look_up_item_tool(vault: Arc<Vault>) -> PortableDynamicTool {
 /// either. Omits whatever the hit did not have, the same reasoning
 /// `agent::tools::library::item_json` gives for doing the same with an
 /// `Item`, rather than sending the model an empty string to puzzle over.
-fn look_up_item_result(hit: &everyday_core::websearch::SearchResult) -> Value {
+fn look_up_item_result(hit: &SearchResult, kind: &everyday_core::Kind) -> Value {
     let mut v = serde_json::json!({ "title": hit.title, "url": hit.url });
     let m = v.as_object_mut().expect("built as an object");
     if !hit.creator.trim().is_empty() {
@@ -2104,6 +2138,20 @@ fn look_up_item_result(hit: &everyday_core::websearch::SearchResult) -> Value {
     }
     if let Some(rating) = hit.rating {
         m.insert("rating_out_of_10".into(), serde_json::json!(f64::from(rating) / 10.0));
+    }
+    // Only the fields the shelf has, keyed as it keys them, so they can go
+    // straight into create_item's `fields` -- which refuses a key the shelf
+    // does not have, and every source answers with a few of those.
+    let fields: serde_json::Map<String, Value> = hit
+        .facts
+        .iter()
+        .filter(|(key, value)| {
+            !value.trim().is_empty() && kind.fields.iter().any(|f| &f.key == *key)
+        })
+        .map(|(key, value)| (key.clone(), serde_json::json!(value)))
+        .collect();
+    if !fields.is_empty() {
+        m.insert("fields".into(), Value::Object(fields));
     }
     v
 }
@@ -3883,7 +3931,8 @@ mod tests {
 
     #[test]
     fn a_looked_up_result_keeps_only_what_it_had() {
-        use everyday_core::websearch::SearchResult;
+        let books =
+            everyday_core::library::default_kinds().into_iter().find(|k| k.slug == "book").unwrap();
 
         let full = SearchResult {
             title: "Dune".into(),
@@ -3895,7 +3944,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            look_up_item_result(&full),
+            look_up_item_result(&full, &books),
             serde_json::json!({
                 "title": "Dune",
                 "url": "https://openlibrary.org/works/OL893415W",
@@ -3913,8 +3962,19 @@ mod tests {
         let bare =
             SearchResult { title: "A film nobody has heard of".into(), ..Default::default() };
         assert_eq!(
-            look_up_item_result(&bare),
+            look_up_item_result(&bare, &books),
             serde_json::json!({ "title": "A film nobody has heard of", "url": "" })
+        );
+
+        // A shelf's own fields come along under the name create_item takes
+        // them by, and only the shelf's: iTunes says who the artist was on a
+        // film too, and Books has nowhere to put it.
+        let mut book = bare.clone();
+        book.facts.insert("isbn".into(), "9780441013593".into());
+        book.facts.insert("artist".into(), "Somebody".into());
+        assert_eq!(
+            look_up_item_result(&book, &books)["fields"],
+            serde_json::json!({ "isbn": "9780441013593" })
         );
     }
 

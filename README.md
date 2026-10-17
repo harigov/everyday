@@ -481,8 +481,8 @@ hundred and sixty-five of those are not a journal.
 ## The library
 
 A shelf for the things you mean to get to. Books, movies, TV shows, music,
-games, articles, podcasts, restaurants, recipes, places and the people you
-know, out of the box — and whatever else you keep a list of, because a *kind* is a record in the
+games, articles, podcasts, restaurants, recipes, drinks, places and the
+people you know, out of the box — and whatever else you keep a list of, because a *kind* is a record in the
 vault rather than a variant in the source.
 
 ```
@@ -505,6 +505,7 @@ fields — Author, Pages, ISBN — and, more usefully than it sounds, its own
   Movies       To watch  Watching   Watched
   Games        To play   Playing    Played
   Restaurants  To try    Booked     Been
+  Drinks       To try    On hand    Tried
 ```
 
 A person *reads* a book, *watches* a show and *plays* a game, and an
@@ -527,6 +528,18 @@ Park, Beach and the rest, plus anything you have already typed there, so a
 shelf holding a walk and a gallery can be searched for either — and the one
 sort of place nobody thought of is still one you can write down.
 
+**Recipes and drinks** keep what it takes to make them. A recipe has a
+course, a cuisine, how many it serves, how long it takes, where it came
+from, and its **ingredients** and **method** — *list* fields, one entry to a
+line, drawn as sections of their own at the panel's full width rather than
+as rows beside a label. **Drinks** is one shelf for the beer, the whiskey,
+the wine and the negroni, with a *Type* field offering Beer, Whiskey,
+Cocktail, Mocktail and the rest, then a style, the ABV and where it is
+from. A cocktail fills in its own ingredients and method too; a beer leaves
+them as two small buttons rather than two empty boxes. Rating it, logging
+each time you have it and noting what you thought work as on every other
+shelf.
+
 **Contacts** is a shelf of people: how you know them, an email, a telephone
 number, a birthday, and the log as a record of when you last caught up. It
 is the one seeded shelf that **never looks anything up** — typing a friend's
@@ -535,8 +548,10 @@ the same way with **Look things up on → Nowhere**.
 
 Seeded shelves are **upgraded once** when a release changes them — Films
 became Movies, Series became TV Shows, Places gained its type, Contacts
-arrived. A shelf you renamed keeps your name, and a shelf you deleted after
-the upgrade stays deleted.
+arrived; later Recipes gained its ingredients and method, and Drinks
+arrived. A shelf you renamed keeps your name, a field you had already added
+is not added twice, a Drinks shelf you made yourself is not doubled, and a
+shelf you deleted after the upgrade stays deleted.
 
 What is deliberately *not* per-kind is the status itself: `wishlist`,
 `active`, `paused`, `done`, `abandoned`, closed, the same five everywhere.
@@ -587,8 +602,9 @@ source it asks depends on the shelf:
 | Music | MusicBrainz, with covers from the Cover Art Archive | the year the record came out rather than the year of the remaster on sale |
 | Games | Steam | poster art, and the store's own page for who made it, when, and what it is |
 | Restaurants, places | OpenStreetMap | an address, often a cuisine and a phone number, and what sort of place it is |
+| Drinks | Wikipedia | an article and a picture for every classic cocktail, distillery and brewery |
 | Anything general | Wikipedia | a summary and a thumbnail |
-| Articles, recipes | a plain web search | there is no catalogue of these |
+| Articles, recipes | a plain web search, then the page you pick | there is no catalogue of these, but a recipe page carries its own recipe |
 | Contacts | nowhere | a person is not a search query |
 
 Any shelf can be pointed at a different one: right-click it and pick under
@@ -602,8 +618,18 @@ last one returns: a web search answers with *pages* — "Dune (2021) — IMDb",
 "Buy Dune on Blu-ray" — and what a shelf wants is the thing, which is what an
 encyclopaedia article parses into. The plain search is still the last resort,
 and when it runs it is told what kind of thing it is looking for, so "dune"
-on a movies shelf is searched for as "dune film". The order is one list,
-`SearchRequest::attempts`, walked by both callers so neither can drift.
+on a movies shelf is searched for as "dune film". So is a shelf whose *own*
+source is Wikipedia or the web, which is in a fallback's position from the
+start: "pale fire" on Drinks is "pale fire drink", or it is Nabokov. The
+order is one list, `SearchRequest::attempts`, walked by both callers so
+neither can drift.
+
+Pressing Enter with lookups on takes the answer without anybody seeing it,
+so from a general source it takes one only when every word typed is in its
+title. "Negroni" is taken; "India pale ale", for a beer called Pale Fire,
+is not, and the card stays as typed with **Look this up** a click away. A
+catalogue's first answer is taken as before, since it only holds the kind
+of thing the shelf does.
 
 Every one of them works with no API key, no account and no client id
 registered to a vendor. That is a constraint rather than a coincidence: this
@@ -622,6 +648,31 @@ genres and Metacritic's score — which is recorded under *Metacritic's* name,
 not the shop's. Eight results would have been eight requests for seven games
 nobody is adding.
 
+A plain web search asks one too, of the **page you picked**. Nearly every
+recipe on the web carries the whole recipe as structured data, for search
+engines to draw their recipe cards from, so picking one fills in the
+ingredients, the method one step to a line, how many it serves, how long it
+takes, the picture and the site's own rating — under the site's name — and
+replaces the search engine's "Classic lasagne recipe | BBC Good Food" with
+the recipe's own "Classic lasagne". A cocktail page does the same for a
+drink. A page that is not a recipe only fills gaps: a picture, the name of
+its site, and a sentence where the search had none — which is what gives an
+article a cover — but not its title, since a page's own title can be the
+consent wall it redirected to. Nor its author or date, which on a Books
+shelf that fell back to the web would credit a reviewer with the book. The
+page, and its picture, are fetched the way the assistant reads a page —
+public addresses only, every redirect checked — because both addresses came
+off the internet; every cover is fetched that way now, for the same reason.
+Invisible characters are stripped on the way in, and an advertisement in
+the search results is never offered.
+
+**Paste an address** into the add line and it is not searched for at all:
+the one suggestion is that page, and adding it reads the page as above, so
+a recipe someone sent you is one paste and one Enter from being on the
+shelf with its ingredients. The assistant's `look_up_item` reads an address
+the same way, held to the same check as its `read_web_page`: an address you
+gave it opens straight away, one it composed asks you first.
+
 Four rules hold this together, and the last two are the ones worth stating:
 
 - **Adding never waits on the network.** The item is written first and
@@ -636,7 +687,8 @@ Four rules hold this together, and the last two are the ones worth stating:
   lookup that disagrees with it. Your notes, your rating and the status are
   not metadata and cannot be touched — not even by the explicit "look this up
   again", which is allowed to replace the byline and the details and nothing
-  else. The rule lives in `websearch::apply`, in Rust, where it is tested.
+  else, and not a recipe's ingredients or method once you have written in
+  them. The rule lives in `websearch::apply`, in Rust, where it is tested.
 - **A cover is downloaded, never linked.** It goes into the same
   content-addressed, chunk-encrypted blob store that holds photographs in a
   journal entry, and is drawn through the `everyday://` protocol. An

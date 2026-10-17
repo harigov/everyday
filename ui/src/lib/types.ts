@@ -2309,8 +2309,13 @@ export interface BadgeSources {
 // field, so reading something twice does not overwrite the first time. See
 // the core module's docs for both arguments in full.
 
-/** How a shelf's extra fields are written. Presentation, never validation. */
-export type FieldType = 'text' | 'multiline' | 'number' | 'date' | 'url'
+/**
+ * How a shelf's extra fields are written. Presentation, never validation.
+ *
+ * `list` is one entry per line -- a recipe's ingredients, its method -- and
+ * is drawn as a section of its own rather than a row of the details.
+ */
+export type FieldType = 'text' | 'multiline' | 'number' | 'date' | 'url' | 'list'
 
 export interface FieldDef {
   /** Stable key into `Item.facts`. Renaming the label never moves this. */

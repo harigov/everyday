@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   import { api } from '../lib/api'
   import { friendlyDate, plural, pluralWord } from '../lib/format'
   import { ask, quick, slot } from '../lib/quick.svelte'
@@ -237,6 +238,36 @@
   }
 
   const shownFields = $derived(kind?.fields ?? [])
+  /** The one-line fields, drawn as rows of the details. */
+  const rowFields = $derived(shownFields.filter((f) => f.fieldType !== 'list'))
+
+  // ── lists: ingredients, a method ─────────────────────────────────────
+  //
+  // A list wants the panel's width and as many lines as it has, so it is a
+  // section of its own rather than a row squeezed beside a label. One with
+  // nothing in it is only a button, because the Drinks shelf has a method
+  // for a cocktail and none for a beer, and two empty boxes on every beer
+  // would be the panel asking a question that does not apply.
+
+  /** `item:key` for each empty list somebody has opened, or is typing in. */
+  let opened = $state<string[]>([])
+  const listFields = $derived(shownFields.filter((f) => f.fieldType === 'list'))
+  const isOpen = (field: FieldDef) =>
+    (item.facts[field.key] ?? '').trim() !== '' || opened.includes(`${item.id}:${field.key}`)
+  const openLists = $derived(listFields.filter(isOpen))
+  const closedLists = $derived(listFields.filter((f) => !isOpen(f)))
+
+  /** Keep a list on screen while it is being written in, even emptied. */
+  function holdOpen(field: FieldDef) {
+    const key = `${item.id}:${field.key}`
+    if (!opened.includes(key)) opened = [...opened, key]
+  }
+
+  async function openList(field: FieldDef) {
+    holdOpen(field)
+    await tick()
+    document.getElementById(`list-${field.key}`)?.focus()
+  }
 
   /**
    * What a text field offers as you type: the shelf's suggestions, then
@@ -514,6 +545,31 @@
       ></textarea>
     </section>
 
+    {#each openLists as field (field.key)}
+      <section>
+        <h3><label for="list-{field.key}">{field.label}</label></h3>
+        <textarea
+          id="list-{field.key}"
+          class="list"
+          rows="3"
+          placeholder={field.placeholder || 'One to a line'}
+          value={item.facts[field.key] ?? ''}
+          onfocus={() => holdOpen(field)}
+          oninput={(e) => setFact(field.key, e.currentTarget.value)}
+        ></textarea>
+      </section>
+    {/each}
+    {#if closedLists.length > 0}
+      <div class="add-lists">
+        {#each closedLists as field (field.key)}
+          <button class="mini" onclick={() => void openList(field)}>
+            <Icon name="plus" size={12} />
+            {field.label}
+          </button>
+        {/each}
+      </div>
+    {/if}
+
     <section>
       <h3>Notes</h3>
       <textarea
@@ -537,7 +593,7 @@
             oninput={(e) => setYear(e.currentTarget.value)}
           />
         </dd>
-        {#each shownFields as field (field.key)}
+        {#each rowFields as field (field.key)}
           <dt>{field.label}</dt>
           <dd>
             {#if field.fieldType === 'multiline'}
@@ -719,8 +775,8 @@
             <p class="empty">Nothing found for “{item.title}”.</p>
           {:else}
             <p class="empty">
-              Picking one replaces the title, byline and details. Your rating, your notes and the
-              history are never touched.
+              Picking one replaces the title, byline and details. Your rating, your notes, the
+              history and any list you have written in are never touched.
             </p>
             <div class="matches">
               {#each matches as hit, i (hit.url || hit.title + i)}
@@ -1154,7 +1210,29 @@
     font-family: var(--font-read);
     line-height: var(--leading-normal);
   }
+  /* As tall as what is in it, so a method is read rather than scrolled. */
+  .list {
+    width: 100%;
+    min-height: 4.5em;
+    padding: var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    field-sizing: content;
+    resize: vertical;
+    user-select: text;
+    font-family: var(--font-read);
+    font-size: var(--text-base);
+    line-height: var(--leading-normal);
+    color: var(--fg);
+  }
+  .add-lists {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1);
+  }
   .notes:focus,
+  .list:focus,
   .summary:focus,
   .facts textarea:focus,
   .facts input:focus {
