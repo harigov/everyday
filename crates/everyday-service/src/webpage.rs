@@ -90,6 +90,32 @@ pub struct Page {
 
 /// Fetch `address` and read it.
 pub async fn read(address: &str) -> CommandResult<Page> {
+    let Fetched { body, kind, landed } = fetch(address).await?;
+    // Converting a few megabytes of HTML is real work; it does not belong on
+    // the runtime's own threads, for the reason `run_tool` gives about the
+    // vault.
+    tokio::task::spawn_blocking(move || render(&body, &kind, &landed))
+        .await
+        .map_err(|e| CommandError::new(codes::INTERNAL, format!("reading the page failed: {e}")))
+}
+
+/// One page as it arrived: the bytes, what they are, and where they were
+/// found after redirects. Never [`Kind::Unreadable`] -- [`fetch`] refuses
+/// those -- and never [`Kind::Unknown`], which it has already looked at.
+pub struct Fetched {
+    pub body: Vec<u8>,
+    pub kind: Kind,
+    pub landed: Url,
+}
+
+/// Fetch `address` with every check [`read`] makes, and hand back the page
+/// unread.
+///
+/// The half of `read` that is about getting a page safely, for the one
+/// other caller that wants a stranger's page and something other than its
+/// text: the library, reading the recipe out of a page somebody picked from
+/// a web search (see [`crate::websearch`]).
+pub async fn fetch(address: &str) -> CommandResult<Fetched> {
     let url = parse(address).map_err(|e| CommandError::new(codes::INVALID, e))?;
     if let Some(ip) = literal_ip(&url)
         && http::is_forbidden_address(ip, false)
@@ -136,13 +162,7 @@ pub async fn read(address: &str) -> CommandResult<Page> {
     if let Kind::Unreadable(what) = &kind {
         return Err(unreadable(what));
     }
-
-    // Converting a few megabytes of HTML is real work; it does not belong on
-    // the runtime's own threads, for the reason `run_tool` gives about the
-    // vault.
-    tokio::task::spawn_blocking(move || render(&body, &kind, &landed))
-        .await
-        .map_err(|e| CommandError::new(codes::INTERNAL, format!("reading the page failed: {e}")))
+    Ok(Fetched { body, kind, landed })
 }
 
 /// What a body is, as far as reading it goes.

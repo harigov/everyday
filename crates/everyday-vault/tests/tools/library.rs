@@ -103,14 +103,18 @@ fn a_library_seeded_by_an_older_build_is_brought_up_to_date_on_the_next_open() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
     // The shelves as an older build left them: unstamped, Films and Series,
-    // no type on a place and no shelf of people.
+    // no type on a place, no shelf of people or of drinks, and a recipe with
+    // nothing to cook from.
     for mut kind in everyday_core::library::default_kinds() {
         kind.revision = 0;
         match kind.slug.as_str() {
-            "contact" => continue,
+            "contact" | "drink" => continue,
             "film" => (kind.name, kind.singular) = ("Films".into(), "Film".into()),
             "series" => (kind.name, kind.singular) = ("Series".into(), "Series".into()),
             "place" => kind.fields.retain(|f| f.key != "type"),
+            "recipe" => {
+                kind.fields.retain(|f| !["ingredients", "method"].contains(&f.key.as_str()))
+            }
             _ => {}
         }
         vault.save_kind(&kind).unwrap();
@@ -125,13 +129,95 @@ fn a_library_seeded_by_an_older_build_is_brought_up_to_date_on_the_next_open() {
         .collect();
     assert!(names.contains(&"Movies".to_string()), "got {names:?}");
     assert!(names.contains(&"TV Shows".to_string()), "got {names:?}");
-    assert_eq!(names.last().map(String::as_str), Some("Contacts"), "got {names:?}");
+    assert_eq!(names[names.len() - 2..], ["Contacts", "Drinks"], "got {names:?}");
     let place = vault.kinds().unwrap().into_iter().find(|k| k.slug == "place").unwrap();
     assert_eq!(place.fields[0].key, "type");
+    let recipe = vault.kinds().unwrap().into_iter().find(|k| k.slug == "recipe").unwrap();
+    assert!(recipe.fields.iter().any(|f| f.key == "method"), "a recipe can be cooked from");
 
     // Deleting the new shelf is a decision the next open respects.
     let contacts = vault.kinds().unwrap().into_iter().find(|k| k.slug == "contact").unwrap();
     vault.delete_kind(contacts.id).unwrap();
     assert_eq!(vault.seed_library().unwrap(), 0);
     assert!(vault.kinds().unwrap().iter().all(|k| k.slug != "contact"));
+}
+
+/// The shelf a test wants, by its slug, from what list_shelves says.
+fn shelf(vault: &everyday_core::Vault, slug: &str) -> String {
+    let id = vault.kinds().unwrap().into_iter().find(|k| k.slug == slug).unwrap().id;
+    id.to_string()
+}
+
+#[test]
+fn a_recipe_is_saved_with_its_ingredients_and_read_back_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.seed_library().unwrap();
+
+    // The shelf says what it keeps, so a model knows the keys to use.
+    let shelves = call(&vault, "list_shelves", serde_json::json!({}));
+    let recipes = shelves.as_array().unwrap().iter().find(|s| s["name"] == "Recipes").unwrap();
+    let ingredients =
+        recipes["fields"].as_array().unwrap().iter().find(|f| f["key"] == "ingredients").unwrap();
+    assert_eq!(ingredients["type"], "list");
+
+    let id = call(
+        &vault,
+        "create_item",
+        serde_json::json!({
+            "shelf_id": shelf(&vault, "recipe"),
+            "title": "Cacio e pepe",
+            "fields": {
+                "cuisine": "Italian",
+                "serves": "2",
+                // A list sent as a list is kept one to a line.
+                "ingredients": ["200g spaghetti", "100g pecorino", "black pepper"],
+                "method": "Cook the pasta.\nToast the pepper.\nMake the sauce off the heat.",
+            },
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let full = call(&vault, "get_item", serde_json::json!({ "item_id": id }));
+    assert_eq!(full["shelf"], "Recipes");
+    assert_eq!(full["fields"]["ingredients"], "200g spaghetti\n100g pecorino\nblack pepper");
+    assert_eq!(full["fields"]["method"].as_str().unwrap().lines().count(), 3);
+
+    // A listing carries the short fields and leaves the method to get_item.
+    let listed = call(&vault, "list_items", serde_json::json!({ "text": "cacio" }));
+    let row = &listed["items"][0];
+    assert_eq!(row["fields"]["cuisine"], "Italian");
+    assert!(row["fields"].get("method").is_none(), "got {row}");
+
+    // An update names only what it changes, and an empty value clears.
+    call(
+        &vault,
+        "update_item",
+        serde_json::json!({ "item_id": id, "fields": { "serves": "4", "cuisine": "" } }),
+    );
+    let after = call(&vault, "get_item", serde_json::json!({ "item_id": id }));
+    assert_eq!(after["fields"]["serves"], "4");
+    assert!(after["fields"].get("cuisine").is_none(), "got {after}");
+    assert!(after["fields"].get("ingredients").is_some(), "an unnamed field was touched");
+}
+
+#[test]
+fn a_field_the_shelf_does_not_have_is_refused_with_the_ones_it_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.seed_library().unwrap();
+
+    let err = call_err(
+        &vault,
+        "create_item",
+        serde_json::json!({
+            "shelf_id": shelf(&vault, "drink"),
+            "title": "Negroni",
+            "fields": { "glassware": "rocks" },
+        }),
+    );
+    assert!(err.contains("`glassware`") && err.contains("ingredients"), "got {err}");
+    assert!(vault.items(&everyday_core::ItemQuery::default()).unwrap().is_empty());
 }

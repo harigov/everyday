@@ -482,6 +482,62 @@ const kinds: KindInfo[] = [
     open: 0,
   },
   {
+    id: 'k-recipe',
+    slug: 'recipe',
+    name: 'Recipes',
+    singular: 'Recipe',
+    icon: '\u{1f957}',
+    color: '#4d7c0f',
+    verbs: verbs('To cook', 'Cooking', 'Cooked', 'cooked'),
+    fields: [
+      field('course', 'Course', 'text', ['Main', 'Side', 'Dessert', 'Baking']),
+      field('cuisine', 'Cuisine', 'text'),
+      field('serves', 'Serves', 'number'),
+      field('time', 'Time (min)', 'number'),
+      field('source', 'From', 'text'),
+      field('url', 'Address', 'url'),
+      { ...field('ingredients', 'Ingredients', 'list'), placeholder: '200g spaghetti\n2 eggs' },
+      { ...field('method', 'Method', 'list'), placeholder: 'One step to a line' },
+    ],
+    source: 'web',
+    progressUnit: '',
+    sortOrder: 5,
+    builtin: true,
+    visible: true,
+    revision: 2,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
+    id: 'k-drink',
+    slug: 'drink',
+    name: 'Drinks',
+    singular: 'Drink',
+    icon: '\u{1f379}',
+    color: '#0e7490',
+    verbs: verbs('To try', 'On hand', 'Tried', 'tried'),
+    fields: [
+      field('type', 'Type', 'text', ['Beer', 'Wine', 'Whiskey', 'Gin', 'Cocktail', 'Mocktail']),
+      field('style', 'Style', 'text'),
+      field('abv', 'ABV (%)', 'number'),
+      field('origin', 'Origin', 'text'),
+      { ...field('ingredients', 'Ingredients', 'list'), placeholder: '50ml gin\n25ml lemon juice' },
+      { ...field('method', 'Method', 'list'), placeholder: 'One step to a line' },
+    ],
+    source: 'wikipedia',
+    progressUnit: '',
+    sortOrder: 6,
+    builtin: true,
+    visible: true,
+    revision: 2,
+    createdAt: iso(300),
+    updatedAt: iso(300),
+    items: 0,
+    open: 0,
+  },
+  {
     id: 'k-place',
     slug: 'place',
     name: 'Places',
@@ -496,7 +552,7 @@ const kinds: KindInfo[] = [
     ],
     source: 'nominatim',
     progressUnit: '',
-    sortOrder: 5,
+    sortOrder: 7,
     builtin: true,
     visible: true,
     revision: 1,
@@ -521,7 +577,7 @@ const kinds: KindInfo[] = [
     ],
     source: 'none',
     progressUnit: '',
-    sortOrder: 6,
+    sortOrder: 8,
     builtin: true,
     visible: true,
     revision: 1,
@@ -680,6 +736,69 @@ const items: Item[] = [
     status: 'wishlist',
     facts: { cuisine: 'Japanese' },
     createdAt: iso(2),
+  }),
+  seedItem({
+    id: 'i-cacio',
+    kindId: 'k-recipe',
+    title: 'Cacio e pepe',
+    status: 'done',
+    rating: 90,
+    summary: 'Pasta, pecorino and pepper, and nothing else to hide behind.',
+    facts: {
+      course: 'Main',
+      cuisine: 'Italian',
+      serves: '2',
+      time: '20',
+      source: 'A friend in Rome',
+      ingredients: '200g spaghetti\n100g pecorino romano, finely grated\n2 tsp black peppercorns',
+      method:
+        'Toast the peppercorns in a dry pan, then crush them.\n' +
+        'Cook the pasta in less water than usual and keep a mugful of it.\n' +
+        'Off the heat, beat the cheese with a little of the water to a paste.\n' +
+        'Toss the pasta through it with the pepper, loosening with more water.',
+    },
+    notes: 'Take the pan off the heat before the cheese goes in, or it seizes.',
+    finishedOn: day(5),
+    createdAt: iso(45),
+  }),
+  seedItem({
+    id: 'i-negroni',
+    kindId: 'k-drink',
+    title: 'Negroni',
+    status: 'done',
+    rating: 90,
+    favourite: true,
+    facts: {
+      type: 'Cocktail',
+      style: 'Stirred',
+      origin: 'Florence',
+      ingredients: '25ml gin\n25ml Campari\n25ml sweet vermouth\nOrange peel',
+      method:
+        'Stir with ice for 30 seconds.\nStrain over one large cube.\nExpress the peel over the top.',
+    },
+    finishedOn: day(3),
+    createdAt: iso(80),
+  }),
+  seedItem({
+    id: 'i-lagavulin',
+    kindId: 'k-drink',
+    title: 'Lagavulin 16',
+    creator: 'Lagavulin',
+    status: 'active',
+    rating: 85,
+    facts: { type: 'Whiskey', style: 'Single malt', abv: '43', origin: 'Islay' },
+    notes: 'Smoke first, then sweetness. A drop of water opens it up.',
+    startedOn: day(20),
+    createdAt: iso(25),
+  }),
+  seedItem({
+    id: 'i-punk',
+    kindId: 'k-drink',
+    title: 'Pale Fire',
+    creator: 'Cloudwater',
+    status: 'wishlist',
+    facts: { type: 'Beer', style: 'Pale ale', abv: '5.5', origin: 'Manchester' },
+    createdAt: iso(4),
   }),
   seedItem({
     id: 'i-parkland',
@@ -918,6 +1037,32 @@ function libraryStats(): LibraryStats {
  * with something plausible, so the add sheet, the suggestion list and the
  * "look this up again" panel can all be designed against.
  */
+/**
+ * What reading a picked web page adds, faked: the mock's one recipe page.
+ * Only for a result from a plain web search, which is the only kind the
+ * service reads a page for.
+ */
+function fakePage(hit: SearchResult): SearchResult {
+  if (hit.source !== 'web' || !/^https?:\/\//i.test(hit.url)) return hit
+  return {
+    ...hit,
+    title: 'Spiced lentil soup',
+    creator: 'The Mock Kitchen',
+    summary: 'A weeknight soup from the cupboard, written by the mock backend.',
+    facts: {
+      ...hit.facts,
+      course: 'Soup',
+      serves: '4',
+      time: '40',
+      source: 'The Mock Kitchen',
+      url: hit.url,
+      ingredients: '1 onion, chopped\n2 garlic cloves\n1 tsp cumin\n200g red lentils\n1l stock',
+      method:
+        'Soften the onion and garlic.\nAdd the cumin, then the lentils and stock.\nSimmer for 25 minutes and blend.',
+    },
+  }
+}
+
 function fakeResults(query: string, limit: number): SearchResult[] {
   const q = query.trim()
   if (!q) return []
@@ -5675,11 +5820,30 @@ export const mockInvoke = async <T>(
       return fakeResults(request.query, request.limit || 8) as T
     }
 
-    case 'lookup_metadata':
+    case 'lookup_metadata': {
       requireUnlocked()
       // As the service does: a shelf that looks nothing up answers nothing.
       if (kinds.find((k) => k.id === args.kindId)?.source === 'none') return [] as T
-      return fakeResults(str(args.query), (args.limit as number) ?? 8) as T
+      // And a pasted address is answered with itself, unread until picked.
+      const query = str(args.query).trim()
+      if (/^https?:\/\/[^\s/]+\S*$/i.test(query)) {
+        return [
+          {
+            ...fakeResults('x', 1)[0]!,
+            title: query,
+            creator: '',
+            year: null,
+            summary: '',
+            rating: null,
+            ratingCount: null,
+            facts: {},
+            url: query,
+            source: 'web',
+          },
+        ] as T
+      }
+      return fakeResults(query, (args.limit as number) ?? 8) as T
+    }
 
     case 'search_sources':
       return [
@@ -5697,13 +5861,18 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const item = items.find((i) => i.id === args.id)
       if (!item) throw new VaultError('not_found', 'no such item')
-      const hit = args.result as SearchResult
+      // A web result is read from its own page on the way in, as the
+      // service does; here the "page" is always the same recipe.
+      const hit = fakePage(args.result as SearchResult)
       const overwrite = Boolean(args.overwrite)
       // The rule the core enforces and this has to mirror or the mock lies:
       // metadata fills gaps, and never touches notes, your rating or status.
       const fill = (current: string, next: string) =>
         next.trim() && (overwrite || !current.trim()) ? next.trim() : current
-      item.title = fill(item.title, hit.title)
+      // An address for a title is a placeholder, as the core treats it.
+      item.title = /^https?:\/\/\S+$/i.test(item.title.trim())
+        ? hit.title
+        : fill(item.title, hit.title)
       item.creator = fill(item.creator, hit.creator)
       item.summary = hit.summary || item.summary
       if (hit.year != null && (overwrite || item.year == null)) item.year = hit.year

@@ -79,6 +79,7 @@ use sources::itunes::parse_itunes;
 use sources::musicbrainz::parse_musicbrainz;
 use sources::nominatim::parse_nominatim;
 use sources::open_library::parse_open_library;
+use sources::page::{is_address, merge_page};
 use sources::steam::{merge_steam_detail, parse_steam, steam_app_id};
 use sources::tvmaze::parse_tvmaze;
 use sources::wikipedia::parse_wikipedia;
@@ -112,7 +113,9 @@ pub const DEFAULT_LIMIT: u32 = 8;
 #[serde(rename_all = "camelCase")]
 pub enum Source {
     /// A general web search. What a recipe or an article gets, and the
-    /// fallback for a kind that names nothing better.
+    /// fallback for a kind that names nothing better. The one result picked
+    /// from it is then read for what the page says about itself -- see
+    /// [`Source::detail`].
     #[default]
     Web,
     /// Wikipedia's search API: a summary, a thumbnail and an address. The
@@ -317,7 +320,7 @@ impl Source {
                 "application/json",
             ),
         };
-        Ok(Request { url, accept, source: self })
+        Ok(Request { url, accept, source: self, page: false })
     }
 
     /// Turn a response body into results. Never panics on malformed input.
@@ -342,6 +345,14 @@ impl Source {
     /// when it came out, what it is) is one request away at a different
     /// address.
     ///
+    /// Nor does a plain web search, which answers with a search engine's
+    /// excerpt of a page. The page itself says what it is: a recipe page
+    /// carries the whole recipe as structured data, and almost any page
+    /// carries a name, a picture and the name of its site. So the request
+    /// for a web result is the page -- marked [`Request::page`], because its
+    /// address is one a stranger's search chose rather than one this file
+    /// wrote, and is fetched the cautious way.
+    ///
     /// Fetched on *pick* rather than for every hit, which is the whole
     /// reason it is a separate step: eight results would be eight more
     /// requests, for seven games nobody is adding. See
@@ -353,6 +364,13 @@ impl Source {
                 url: format!("https://store.steampowered.com/api/appdetails?appids={id}&l=en"),
                 accept: "application/json",
                 source: self,
+                page: false,
+            }),
+            Source::Web if is_address(&result.url) => Some(Request {
+                url: result.url.trim().to_string(),
+                accept: "text/html",
+                source: self,
+                page: true,
             }),
             _ => None,
         }
@@ -364,9 +382,17 @@ impl Source {
     /// contradicts what the search already said. A detail reply that is
     /// unreadable, or about something else entirely, therefore leaves a
     /// usable result rather than a damaged one.
+    ///
+    /// The one exception is a page's own name and blurb, which replace a web
+    /// search's excerpt of them: the excerpt was never anything but somebody
+    /// else's rendering of the same page. See `sources::page`.
     pub fn merge_detail(self, result: &mut SearchResult, body: &str) -> Result<()> {
         match self {
             Source::Steam => merge_steam_detail(result, body),
+            Source::Web => {
+                merge_page(result, body);
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -380,6 +406,12 @@ pub struct Request {
     /// of them serves HTML to a client that does not ask.
     pub accept: &'static str,
     pub source: Source,
+    /// Whether this is somebody else's page rather than an endpoint this
+    /// file chose: the page a picked web result points at, or an address
+    /// somebody pasted. A fetcher reads it the way the assistant reads a
+    /// page -- public addresses only, every redirect checked again -- since
+    /// the address came off the internet.
+    pub page: bool,
 }
 
 /// What is being looked for, and where.
@@ -561,6 +593,25 @@ pub struct SearchResult {
 }
 
 impl SearchResult {
+    /// A pasted address, as a result: the page it names, before anybody has
+    /// read it.
+    ///
+    /// What a lookup answers when what was typed is a web address rather
+    /// than a title. Searching for an address finds pages *about* it, when
+    /// the person has already said which page they mean -- so nothing is
+    /// sent anywhere until it is picked, and then the page itself is read
+    /// (see [`Source::detail`]). Its title is the address, a placeholder
+    /// [`apply`] knows to replace.
+    pub fn for_address(query: &str) -> Option<Self> {
+        let url = query.trim();
+        is_address(url).then(|| Self {
+            title: url.to_string(),
+            url: url.to_string(),
+            source: Source::Web.slug().to_string(),
+            ..Default::default()
+        })
+    }
+
     /// The one line under the title, for a row in the results list.
     pub fn byline(&self) -> String {
         match (self.creator.trim(), self.year) {
@@ -618,6 +669,9 @@ impl<F: Fetcher> WebSearch<F> {
         if !kind.looks_things_up() {
             return Ok(Vec::new());
         }
+        if let Some(page) = SearchResult::for_address(query) {
+            return Ok(vec![page]);
+        }
         let mut last = None;
         for attempt in SearchRequest::for_kind(query, kind).attempts() {
             match self.search(&attempt) {
@@ -657,7 +711,14 @@ pub fn apply(result: &SearchResult, kind: &Kind, item: &mut Item, overwrite: boo
         }
     };
 
-    fill(&mut item.title, &result.title);
+    // A title that is only an address is a placeholder -- what somebody
+    // pasted to mean "this page" -- and gives way to the page's own name as
+    // an empty one would.
+    if is_address(&item.title) && !result.title.trim().is_empty() {
+        item.title = result.title.trim().to_string();
+    } else {
+        fill(&mut item.title, &result.title);
+    }
     fill(&mut item.subtitle, &result.subtitle);
     fill(&mut item.creator, &result.creator);
     fill(&mut item.cover_url, &result.image_url);
@@ -714,6 +775,28 @@ pub fn apply(result: &SearchResult, kind: &Kind, item: &mut Item, overwrite: boo
         item.source = result.source.clone();
     }
     item.touch();
+}
+
+/// [`apply`], for a result a [`Source::detail`] request has since filled in.
+///
+/// One thing differs. A title picked off a list of results is the search's
+/// excerpt of a page -- "Classic lasagne recipe | BBC Good Food" -- rather
+/// than a name anybody typed, so when the page turns out to call itself
+/// something else, that name replaces it. A title that is not what the list
+/// said was typed, or has been edited since, and is kept: the rule in
+/// [`apply`] about titles still holds for every title a person chose.
+pub fn apply_detailed(
+    listed: &SearchResult,
+    detailed: &SearchResult,
+    kind: &Kind,
+    item: &mut Item,
+    overwrite: bool,
+) {
+    let picked = !listed.title.trim().is_empty() && item.title.trim() == listed.title.trim();
+    if picked && !detailed.title.trim().is_empty() {
+        item.title = detailed.title.trim().to_string();
+    }
+    apply(detailed, kind, item, overwrite);
 }
 // ── Small helpers ────────────────────────────────────────────────────────
 
@@ -785,17 +868,89 @@ fn decode_percent(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// The five entities that actually appear in a search result's title.
+/// The entities that actually appear in a search result's title or a
+/// recipe's ingredients: the markup five, the typographer's dozen, the
+/// accents a cuisine is spelled with, and any number.
+///
+/// One pass, left to right, so `&amp;lt;` is a literal "&lt;" and never a
+/// "<" -- decoding the ampersand first, in a second pass, is the classic way
+/// to get that wrong. Anything unrecognised is left as written: a stray
+/// `&foo;` read literally is better than one guessed at.
 fn decode_entities(s: &str) -> String {
-    let mut out = s
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&#x27;", "'")
-        .replace("&nbsp;", " ");
-    // Ampersand last, or `&amp;lt;` decodes to `<` in two passes.
-    out = out.replace("&amp;", "&");
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp..];
+        let decoded = after.find(';').filter(|&semi| semi <= 10).and_then(|semi| {
+            let name = &after[1..semi];
+            let ch = match name {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" => '\'',
+                "nbsp" => ' ',
+                "ndash" => '\u{2013}',
+                "mdash" => '\u{2014}',
+                "lsquo" => '\u{2018}',
+                "rsquo" => '\u{2019}',
+                "ldquo" => '\u{201c}',
+                "rdquo" => '\u{201d}',
+                "hellip" => '\u{2026}',
+                "middot" => '\u{b7}',
+                "deg" => '\u{b0}',
+                "frac12" => '\u{bd}',
+                "frac14" => '\u{bc}',
+                "frac34" => '\u{be}',
+                "times" => '\u{d7}',
+                "copy" => '\u{a9}',
+                "reg" => '\u{ae}',
+                "trade" => '\u{2122}',
+                "agrave" => '\u{e0}',
+                "aacute" => '\u{e1}',
+                "acirc" => '\u{e2}',
+                "auml" => '\u{e4}',
+                "ccedil" => '\u{e7}',
+                "egrave" => '\u{e8}',
+                "eacute" => '\u{e9}',
+                "ecirc" => '\u{ea}',
+                "euml" => '\u{eb}',
+                "iacute" => '\u{ed}',
+                "icirc" => '\u{ee}',
+                "ntilde" => '\u{f1}',
+                "oacute" => '\u{f3}',
+                "ocirc" => '\u{f4}',
+                "ouml" => '\u{f6}',
+                "ugrave" => '\u{f9}',
+                "uacute" => '\u{fa}',
+                "ucirc" => '\u{fb}',
+                "uuml" => '\u{fc}',
+                "szlig" => '\u{df}',
+                "Eacute" => '\u{c9}',
+                _ => {
+                    let number = name.strip_prefix('#')?;
+                    let code = match number.strip_prefix(['x', 'X']) {
+                        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                        None => number.parse().ok()?,
+                    };
+                    char::from_u32(code)?
+                }
+            };
+            Some((ch, semi + 1))
+        });
+        match decoded {
+            Some((ch, used)) => {
+                out.push(ch);
+                rest = &after[used..];
+            }
+            None => {
+                out.push('&');
+                rest = &after[1..];
+            }
+        }
+    }
+    out.push_str(rest);
     out.trim().to_string()
 }
 
@@ -875,6 +1030,7 @@ fn year_from_text(text: &str) -> Option<i16> {
 mod tests {
     use super::sources::duckduckgo::tests::DDG;
     use super::*;
+    use crate::KindId;
     use crate::library::{ItemStatus, default_kinds};
 
     pub(crate) fn kind(slug: &str) -> Kind {
@@ -942,7 +1098,7 @@ mod tests {
 
     #[test]
     fn a_source_with_nothing_more_to_say_asks_for_nothing() {
-        for source in Source::ALL.iter().filter(|s| **s != Source::Steam) {
+        for source in Source::ALL.iter().filter(|s| !matches!(s, Source::Steam | Source::Web)) {
             let hit = SearchResult {
                 url: "https://store.steampowered.com/app/1145360/".into(),
                 ..Default::default()
@@ -1015,6 +1171,105 @@ mod tests {
         let contacts =
             crate::library::default_kinds().into_iter().find(|k| k.slug == "contact").unwrap();
         assert!(WebSearch::new(Refuse).lookup("Ada Lovelace", &contacts).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_picked_web_result_is_read_from_its_own_page_and_carefully() {
+        let hit = SearchResult {
+            url: "https://www.bbcgoodfood.com/recipes/classic-lasagne".into(),
+            source: "web".into(),
+            ..Default::default()
+        };
+        let request = Source::Web.detail(&hit).expect("the page is the detail");
+        assert_eq!(request.url, hit.url);
+        assert!(request.page, "a stranger's address must be fetched as one");
+        // Every endpoint this file writes itself is not a page.
+        let steam =
+            SearchResult { url: "https://store.steampowered.com/app/1/".into(), ..hit.clone() };
+        assert!(!Source::Steam.detail(&steam).unwrap().page);
+        assert!(!Source::Web.request(&SearchRequest::new("x")).unwrap().page);
+        // And a result whose address is not one asks for nothing.
+        for url in ["", "javascript:alert(1)", "file:///etc/passwd", "/relative"] {
+            let odd = SearchResult { url: url.into(), ..hit.clone() };
+            assert!(Source::Web.detail(&odd).is_none(), "{url:?} produced a request");
+        }
+    }
+
+    #[test]
+    fn a_pasted_address_is_the_answer_and_nothing_is_searched_for_it() {
+        struct Refuse;
+        impl Fetcher for Refuse {
+            fn get(&self, request: &Request) -> Result<String> {
+                panic!("searched for a pasted address at {}", request.url)
+            }
+        }
+        let url = "https://www.bbcgoodfood.com/recipes/classic-lasagne";
+        let hits = WebSearch::new(Refuse).lookup(&format!(" {url} "), &kind("recipe")).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].url.as_str(), hits[0].title.as_str()), (url, url));
+        assert_eq!(Source::from_slug(&hits[0].source), Source::Web);
+        // On any shelf that looks things up -- a book's page is a page too --
+        // and on none that does not.
+        assert_eq!(WebSearch::new(Refuse).lookup(url, &kind("book")).unwrap().len(), 1);
+        assert!(WebSearch::new(Refuse).lookup(url, &kind("contact")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_recipe_page_fills_a_recipe_and_the_drink_shelf_takes_what_it_has_room_for() {
+        let url = "https://www.bbcgoodfood.com/recipes/classic-lasagne";
+        let listed = SearchResult {
+            title: "Classic lasagne recipe | Good Food".into(),
+            url: url.into(),
+            summary: "Make our easy lasagne…".into(),
+            source: "web".into(),
+            ..Default::default()
+        };
+        let mut detailed = listed.clone();
+        Source::Web.merge_detail(&mut detailed, super::sources::page::tests::RECIPE_PAGE).unwrap();
+
+        // Picked off the list: the item was given the listing's title, and
+        // the page's own name replaces it.
+        let recipes = kind("recipe");
+        let mut item = Item::new(recipes.id, listed.title.clone());
+        apply_detailed(&listed, &detailed, &recipes, &mut item, false);
+        assert_eq!(item.title, "Classic lasagne");
+        assert!(item.facts["ingredients"].starts_with("1 tbsp olive oil\n"));
+        assert!(item.facts["method"].contains("Fry the onions."));
+        assert_eq!(item.facts["serves"], "6");
+        assert_eq!(item.facts["source"], "BBC Good Food");
+        assert_eq!(item.facts["url"], url);
+        assert_eq!(item.cover_url, "https://images.example/lasagne.jpg");
+        assert_eq!(item.external[0].source, "BBC Good Food", "the site's rating, by name");
+        // `publication` is an article's field and `author` a book's; a
+        // recipe shelf has neither, so neither is kept.
+        assert!(!item.facts.contains_key("publication"));
+
+        // Typed rather than picked: what somebody typed is theirs.
+        let mut typed = Item::new(recipes.id, "lasagne");
+        apply_detailed(&listed, &detailed, &recipes, &mut typed, false);
+        assert_eq!(typed.title, "lasagne");
+
+        // The same page on the Drinks shelf: the lists, and nothing it has
+        // no field for.
+        let drinks = kind("drink");
+        let mut drink = Item::new(drinks.id, "x");
+        apply(&detailed, &drinks, &mut drink, false);
+        assert!(drink.facts.contains_key("ingredients"));
+        assert!(drink.facts.contains_key("method"));
+        assert!(!drink.facts.contains_key("serves"));
+    }
+
+    #[test]
+    fn a_title_that_is_only_an_address_gives_way_to_the_pages_name() {
+        let url = "https://example.com/negroni";
+        let mut item = Item::new(KindId::new(), url);
+        let found = SearchResult { title: "Negroni".into(), url: url.into(), ..Default::default() };
+        apply(&found, &kind("drink"), &mut item, false);
+        assert_eq!(item.title, "Negroni");
+        // A page that named nothing leaves the address rather than nothing.
+        let mut bare = Item::new(KindId::new(), url);
+        apply(&SearchResult::default(), &kind("drink"), &mut bare, false);
+        assert_eq!(bare.title, url);
     }
 
     #[test]

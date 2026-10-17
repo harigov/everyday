@@ -287,6 +287,13 @@
             "description": "Author, director, developer.",
             "type": "string"
           },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The shelf's own fields, by the keys list_shelves gives: an author, a cuisine, an ABV. A list field -- a recipe's or a cocktail's ingredients and method -- takes one entry per line. An empty string clears one.",
+            "type": "object"
+          },
           "notes": {
             "description": "Anything worth saying about it.",
             "type": "string"
@@ -1212,6 +1219,27 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "Get entry"
+    },
+    {
+      "domain": "library",
+      "effect": "read",
+      "name": "get_item",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "description": "Id from list_items.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "item_id"
+        ],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "Get item"
     },
     {
       "domain": "notes",
@@ -3191,6 +3219,13 @@
           "favourite": {
             "description": "Mark or unmark a favourite.",
             "type": "boolean"
+          },
+          "fields": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The shelf's own fields, by the keys list_shelves gives: an author, a cuisine, an ABV. A list field -- a recipe's or a cocktail's ingredients and method -- takes one entry per line. An empty string clears one.",
+            "type": "object"
           },
           "finished_on": {
             "description": "The day you finished. Format: YYYY-MM-DD.",

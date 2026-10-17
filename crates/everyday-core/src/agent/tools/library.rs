@@ -9,7 +9,7 @@ use super::{
 };
 use crate::error::Result;
 use crate::id::{ItemId, LogId};
-use crate::library::{Item, ItemStatus, LogEntry, LogEvent};
+use crate::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
 use crate::store::library::{ItemQuery, LogQuery};
 use crate::timestamped::Timestamped;
 
@@ -25,9 +25,10 @@ pub(super) static TOOLS: &[Tool] = &[
         Read,
         Library,
         empty_schema(),
-        "The shelves in the library \u{2014} Books, Films, whatever else was made \u{2014} \
-         with their ids and how many things are on them. Call this before \
-         list_items or create_item, which need a shelf id.",
+        "The shelves in the library \u{2014} Books, Recipes, Drinks, whatever else was made \
+         \u{2014} with their ids and the fields each keeps beyond a title: an author, a \
+         cuisine, a recipe's ingredients and method. Call this before list_items or \
+         create_item, which need a shelf id, and before setting any `fields`.",
         run_list_kinds
     ),
     tool!(
@@ -46,9 +47,21 @@ pub(super) static TOOLS: &[Tool] = &[
             ],
             &[]
         ),
-        "Things on the shelves: books, films, games, whatever this vault tracks. \
-         For 'what did I read this year', filter on finished_from and finished_to.",
+        "Things on the shelves: books, films, games, recipes, drinks, whatever this vault \
+         tracks, with their short fields. For 'what did I read this year', filter on \
+         finished_from and finished_to. get_item has the rest: notes, and a recipe's \
+         ingredients and method.",
         run_list_items
+    ),
+    tool!(
+        "get_item",
+        Read,
+        Library,
+        schema(vec![("item_id", text("Id from list_items."))], &["item_id"]),
+        "One thing on a shelf in full: its blurb, your notes, its links and every one of \
+         its shelf's fields \u{2014} a recipe's ingredients and method, one to a line, or a \
+         drink's style and strength.",
+        run_get_item
     ),
     tool!(
         "create_item",
@@ -64,6 +77,7 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("rating", decimal("Out of 10, so 8 means four stars.")),
                 ("notes", text("Anything worth saying about it.")),
                 ("tags", list("Tags to attach.")),
+                fields_arg(),
             ],
             &["shelf_id", "title"]
         ),
@@ -99,11 +113,12 @@ pub(super) static TOOLS: &[Tool] = &[
                     )
                 ),
                 ("total", number("The finishing line, if you know it, in the same unit.")),
+                fields_arg(),
             ],
             &["item_id"]
         ),
-        "Change something on a shelf: finish it, rate it, make it a favourite, or say how \
-         far through you are.",
+        "Change something on a shelf: finish it, rate it, make it a favourite, say how \
+         far through you are, or fill in its fields. Fields not named are left alone.",
         run_update_item
     ),
     tool!(
@@ -202,6 +217,73 @@ fn rating_out_of_ten(args: &Args<'_>) -> Result<Option<u8>> {
     Ok(Some((raw * 10.0).round() as u8))
 }
 
+/// The `fields` argument create_item and update_item share.
+fn fields_arg() -> (&'static str, Value) {
+    (
+        "fields",
+        json!({
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "description": "The shelf's own fields, by the keys list_shelves gives: an author, \
+                            a cuisine, an ABV. A list field -- a recipe's or a cocktail's \
+                            ingredients and method -- takes one entry per line. An empty \
+                            string clears one.",
+        }),
+    )
+}
+
+/// Write a `fields` argument onto `item`, refusing a key the shelf has no
+/// field for.
+///
+/// Refused rather than kept, though a fact may outlive its field (see
+/// [`Kind::field_label`]): a value under a key no field draws is one the
+/// interface shows greyed out at the foot of the panel, and a model that
+/// guessed `serves` on a shelf that says `servings` should be told, while
+/// it can still put it right, with the keys it should have used.
+fn set_fields(kind: &Kind, args: &Args<'_>, item: &mut Item) -> Result<()> {
+    let Some(given) = args.get("fields") else { return Ok(()) };
+    let Some(given) = given.as_object() else {
+        return Err(args.bad("`fields` is an object of field key to text"));
+    };
+    for (key, value) in given {
+        if !kind.fields.iter().any(|f| f.key == *key) {
+            let keys: Vec<&str> = kind.fields.iter().map(|f| f.key.as_str()).collect();
+            return Err(args.bad(format!(
+                "the {} shelf has no field `{key}`; its fields are: {}",
+                kind.name,
+                if keys.is_empty() { "none".to_string() } else { keys.join(", ") },
+            )));
+        }
+        let text = match value {
+            Value::String(s) => s.trim().to_string(),
+            // A list, sent as one: one entry to a line is how it is kept.
+            Value::Array(entries) => entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|e| !e.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Value::Number(n) => n.to_string(),
+            Value::Null => String::new(),
+            _ => return Err(args.bad(format!("`fields.{key}` should be text"))),
+        };
+        if text.is_empty() {
+            item.facts.remove(key);
+        } else {
+            item.facts.insert(key.clone(), text);
+        }
+    }
+    Ok(())
+}
+
+/// A fact short enough to belong in a listing: one line, and not a long
+/// one. A recipe's method is neither, and fifty of them would be the whole
+/// reply; get_item has it.
+fn is_short(value: &str) -> bool {
+    !value.contains('\n') && value.chars().count() <= 120
+}
+
 fn item_json(i: &Item) -> Value {
     let mut v = json!({
         "id": i.id.to_string(),
@@ -235,7 +317,57 @@ fn item_json(i: &Item) -> Value {
         }
         m.insert("progress".into(), progress);
     }
+    let short: serde_json::Map<String, Value> = i
+        .facts
+        .iter()
+        .filter(|(_, value)| !value.trim().is_empty() && is_short(value))
+        .map(|(key, value)| (key.clone(), json!(value)))
+        .collect();
+    if !short.is_empty() {
+        m.insert("fields".into(), Value::Object(short));
+    }
     v
+}
+
+fn run_get_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let item: Item = load_by_id(args, "item_id", "item", |id| ctx.vault.item(id))?;
+    let mut v = item_json(&item);
+    let m = v.as_object_mut().unwrap();
+    if let Ok(kind) = ctx.vault.kind(item.kind_id) {
+        m.insert("shelf".into(), json!(kind.name));
+    }
+    for (key, value) in
+        [("subtitle", &item.subtitle), ("summary", &item.summary), ("notes", &item.notes)]
+    {
+        if !value.trim().is_empty() {
+            m.insert(key.into(), json!(value));
+        }
+    }
+    if let Some(d) = item.started_on {
+        m.insert("started_on".into(), json!(d.to_string()));
+    }
+    // Every field, the long ones included: this is where a recipe is read.
+    let all: serde_json::Map<String, Value> = item
+        .facts
+        .iter()
+        .filter(|(_, value)| !value.trim().is_empty())
+        .map(|(key, value)| (key.clone(), json!(value)))
+        .collect();
+    if !all.is_empty() {
+        m.insert("fields".into(), Value::Object(all));
+    }
+    if !item.links.is_empty() {
+        m.insert(
+            "links".into(),
+            json!(
+                item.links
+                    .iter()
+                    .map(|l| json!({ "label": l.label, "url": l.url }))
+                    .collect::<Vec<_>>()
+            ),
+        );
+    }
+    Ok(v)
 }
 
 fn run_list_kinds(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
@@ -243,11 +375,29 @@ fn run_list_kinds(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
         ctx.vault
             .kinds()?
             .iter()
-            .map(|k| json!({
-                "id": k.id.to_string(),
-                "name": k.name,
-                "singular": k.singular,
-            }))
+            .map(|k| {
+                let mut shelf = json!({
+                    "id": k.id.to_string(),
+                    "name": k.name,
+                    "singular": k.singular,
+                });
+                if !k.fields.is_empty() {
+                    shelf.as_object_mut().unwrap().insert(
+                        "fields".into(),
+                        json!(
+                            k.fields
+                                .iter()
+                                .map(|f| json!({
+                                    "key": f.key,
+                                    "label": f.label,
+                                    "type": f.field_type.as_str(),
+                                }))
+                                .collect::<Vec<_>>()
+                        ),
+                    );
+                }
+                shelf
+            })
             .collect::<Vec<_>>()
     ))
 }
@@ -283,6 +433,7 @@ fn run_create_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     item.rating = rating_out_of_ten(args)?;
     item.notes = args.opt_str("notes").unwrap_or_default().to_string();
     item.tags = args.strings("tags");
+    set_fields(&kind, args, &mut item)?;
 
     ctx.vault.save_item(&item)?;
     done(
@@ -328,6 +479,10 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
     if args.get("tags").is_some() {
         item.tags = args.strings("tags");
+    }
+    if args.get("fields").is_some() {
+        let kind = ctx.vault.kind(item.kind_id)?;
+        set_fields(&kind, args, &mut item)?;
     }
 
     // Where you have got to, through the same `Item::set_progress` the

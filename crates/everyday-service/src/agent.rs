@@ -2105,6 +2105,11 @@ fn look_up_item_result(hit: &everyday_core::websearch::SearchResult) -> Value {
     if let Some(rating) = hit.rating {
         m.insert("rating_out_of_10".into(), serde_json::json!(f64::from(rating) / 10.0));
     }
+    // Keyed the way the seeded shelves key their own fields, so they can go
+    // straight into create_item's `fields`.
+    if !hit.facts.is_empty() {
+        m.insert("fields".into(), serde_json::json!(hit.facts));
+    }
     v
 }
 
@@ -3915,6 +3920,15 @@ mod tests {
         assert_eq!(
             look_up_item_result(&bare),
             serde_json::json!({ "title": "A film nobody has heard of", "url": "" })
+        );
+
+        // A shelf's own fields come along under the name create_item takes
+        // them by.
+        let mut book = bare.clone();
+        book.facts.insert("isbn".into(), "9780441013593".into());
+        assert_eq!(
+            look_up_item_result(&book)["fields"],
+            serde_json::json!({ "isbn": "9780441013593" })
         );
     }
 

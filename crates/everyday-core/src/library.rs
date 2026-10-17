@@ -7,6 +7,12 @@
 //! themselves. Nothing here stores a book; it stores that you want to read
 //! one, that you started it in March, and what you thought when you finished.
 //!
+//! A recipe is the one thing on these shelves whose metadata *is* most of
+//! the thing — nobody keeps a recipe for its cover — so its ingredients and
+//! its method are fields like a book's ISBN, written one entry per line (see
+//! [`FieldType::List`]). The same goes for the cocktail on the Drinks shelf
+//! beside the whisky you are working through.
+//!
 //! ```text
 //!   Kind ────── Item ────── LogEntry
 //!  (Books)     (Dune)      started 3 Mar, finished 2 Apr, ★★★★½
@@ -17,7 +23,7 @@
 //! **A kind is data, not a variant.** [`Kind`] is a record in the vault with
 //! a name, an icon, a set of extra [`fields`](FieldDef) and the verbs it
 //! prefers ("reading" rather than "in progress"). The application seeds
-//! eleven of them — see [`default_kinds`] — and the person using it can edit those
+//! twelve of them — see [`default_kinds`] — and the person using it can edit those
 //! or add "Board games", "Wines", "Podcasts I owe someone an opinion on"
 //! without a release. A closed Rust enum would have made every new category
 //! a schema migration, and there is no end to the list of things a person
@@ -125,8 +131,6 @@ impl Verbs {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub enum FieldType {
-    #[default]
-    Text,
     /// A paragraph rather than a line: an address, a note on the wine.
     Multiline,
     Number,
@@ -134,11 +138,32 @@ pub enum FieldType {
     Date,
     /// Rendered as a link, opened in the system browser.
     Url,
+    /// One entry per line, and long enough to want the panel's full width: a
+    /// recipe's ingredients, its method.
+    ///
+    /// Still one string in [`Item::facts`], split on newlines by whoever
+    /// reads it. A list that is a string survives every importer and every
+    /// spreadsheet untouched; one that was a JSON array would be the only
+    /// fact that is not.
+    List,
+    /// A line. Also what a type this build has never heard of reads as, so a
+    /// shelf written by a newer build is a shelf with a plain field on it
+    /// rather than a shelf that will not open -- and last for that reason
+    /// alone, because serde's catch-all has to be.
+    #[default]
+    #[serde(other)]
+    Text,
 }
 
 impl FieldType {
-    pub const ALL: [FieldType; 5] =
-        [FieldType::Text, FieldType::Multiline, FieldType::Number, FieldType::Date, FieldType::Url];
+    pub const ALL: [FieldType; 6] = [
+        FieldType::Text,
+        FieldType::Multiline,
+        FieldType::Number,
+        FieldType::Date,
+        FieldType::Url,
+        FieldType::List,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -147,6 +172,7 @@ impl FieldType {
             FieldType::Number => "number",
             FieldType::Date => "date",
             FieldType::Url => "url",
+            FieldType::List => "list",
         }
     }
 
@@ -374,7 +400,7 @@ pub const DEFAULT_KIND_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;
 
 /// The kinds a new vault starts with.
 ///
-/// Eleven, covering what the brief asked for, and every one of them editable
+/// Twelve, covering what the brief asked for, and every one of them editable
 /// and deletable afterwards. They are seeded rather than hard-coded so that
 /// the first run is useful and the second run is yours: the application has
 /// an opinion about where to start and none at all about where you end up.
@@ -460,16 +486,8 @@ pub fn default_kinds() -> Vec<Kind> {
                 FieldDef::new("phone", "Telephone", FieldType::Text),
                 FieldDef::new("url", "Website", FieldType::Url),
             ]),
-        Kind::new("recipe", "Recipes", "Recipe")
-            .with_icon("\u{1f957}")
-            .with_verbs(Verbs::new("To cook", "Cooking", "Cooked", "cooked"))
-            .with_source("web")
-            .with_fields(vec![
-                FieldDef::new("source", "From", FieldType::Text),
-                FieldDef::new("serves", "Serves", FieldType::Number),
-                FieldDef::new("time", "Time (min)", FieldType::Number),
-                FieldDef::new("url", "Address", FieldType::Url),
-            ]),
+        recipes_kind(),
+        drinks_kind(),
         Kind::new("place", "Places", "Place")
             .with_icon("\u{1f5fa}\u{fe0f}")
             .with_verbs(Verbs::new("To visit", "Planning", "Visited", "visited"))
@@ -513,6 +531,121 @@ fn place_type_field() -> FieldDef {
         ])
 }
 
+/// Recipes: what a dish is, and how to make it.
+///
+/// Looked up on the plain web, because there is no catalogue of recipes that
+/// needs no key -- and because a recipe *page* is the best catalogue there
+/// is. Nearly every one carries the recipe as structured data for search
+/// engines, which is where the ingredients and the method come from when
+/// one is picked; see `websearch::sources::page`.
+fn recipes_kind() -> Kind {
+    Kind::new("recipe", "Recipes", "Recipe")
+        .with_icon("\u{1f957}")
+        .with_verbs(Verbs::new("To cook", "Cooking", "Cooked", "cooked"))
+        .with_source("web")
+        .with_fields(vec![
+            course_field(),
+            cuisine_field(),
+            FieldDef::new("serves", "Serves", FieldType::Number),
+            FieldDef::new("time", "Time (min)", FieldType::Number),
+            FieldDef::new("source", "From", FieldType::Text),
+            FieldDef::new("url", "Address", FieldType::Url),
+            ingredients_field("200g spaghetti\n2 eggs"),
+            method_field(),
+        ])
+}
+
+/// Which part of a meal. First on the Recipes shelf, for the reason a
+/// place's type is first on Places: it is what a shelf holding a soup and a
+/// cake is searched by.
+fn course_field() -> FieldDef {
+    FieldDef::new("course", "Course", FieldType::Text)
+        .with_placeholder("Main, dessert, baking…")
+        .with_suggestions(&[
+            "Breakfast",
+            "Starter",
+            "Main",
+            "Side",
+            "Salad",
+            "Soup",
+            "Dessert",
+            "Baking",
+            "Snack",
+            "Sauce",
+        ])
+}
+
+fn cuisine_field() -> FieldDef {
+    FieldDef::new("cuisine", "Cuisine", FieldType::Text).with_placeholder("Italian, Thai…")
+}
+
+/// What goes in. Shared by recipes and drinks, under one key, so a lookup
+/// that reads a recipe page fills either shelf the same way.
+fn ingredients_field(example: &str) -> FieldDef {
+    FieldDef::new("ingredients", "Ingredients", FieldType::List).with_placeholder(example)
+}
+
+/// How it is made, one step to a line.
+fn method_field() -> FieldDef {
+    FieldDef::new("method", "Method", FieldType::List).with_placeholder("One step to a line")
+}
+
+/// Drinks: the beer you liked at the pub, the whisky you are working
+/// through, the cocktail you want to get right.
+///
+/// One shelf rather than a shelf each, with the *type* as its first field,
+/// on the precedent Places set: a person thinks of "something to drink" and
+/// then of what sort, and a beer and a negroni are rated, revisited and
+/// recommended in exactly the same way. A cocktail's ingredients and method
+/// sit on the same shelf as a bottle's ABV and origin, and whichever do not
+/// apply are simply left empty.
+///
+/// Looked up on Wikipedia, which has an article with a picture for every
+/// classic cocktail and every distillery and brewery of note -- and when it
+/// does not, the open web behind it, where a cocktail's recipe page is read
+/// the way a recipe's is.
+fn drinks_kind() -> Kind {
+    Kind::new("drink", "Drinks", "Drink")
+        .with_icon("\u{1f379}")
+        .with_verbs(Verbs::new("To try", "On hand", "Tried", "tried"))
+        .with_source("wikipedia")
+        .with_fields(vec![
+            drink_type_field(),
+            FieldDef::new("style", "Style", FieldType::Text)
+                .with_placeholder("IPA, single malt, sour…"),
+            FieldDef::new("abv", "ABV (%)", FieldType::Number),
+            FieldDef::new("origin", "Origin", FieldType::Text)
+                .with_placeholder("Islay, Belgium, Kentucky…"),
+            ingredients_field("50ml gin\n25ml lemon juice"),
+            method_field(),
+        ])
+}
+
+/// What sort of drink it is. Offered, never enforced: somebody's kombucha
+/// is a drink this list did not think of.
+fn drink_type_field() -> FieldDef {
+    FieldDef::new("type", "Type", FieldType::Text)
+        .with_placeholder("Beer, whiskey, cocktail…")
+        .with_suggestions(&[
+            "Beer",
+            "Cider",
+            "Wine",
+            "Whiskey",
+            "Gin",
+            "Rum",
+            "Tequila",
+            "Vodka",
+            "Brandy",
+            "Liqueur",
+            "Sake",
+            "Cocktail",
+            "Mocktail",
+            "Coffee",
+            "Tea",
+            "Soft drink",
+        ])
+}
+
 /// People. A shelf like any other — a log row is a catch-up, a note is a
 /// note — except that nothing on it is ever looked up. See [`NO_SOURCE`].
 fn contacts_kind() -> Kind {
@@ -541,7 +674,9 @@ fn contacts_kind() -> Kind {
 ///
 /// 1. Films became Movies, Series became TV Shows, Places gained a type,
 ///    and a Contacts shelf was added.
-pub const LIBRARY_REVISION: u32 = 1;
+/// 2. Recipes gained a course, a cuisine, ingredients and a method, and a
+///    Drinks shelf was added.
+pub const LIBRARY_REVISION: u32 = 2;
 
 /// Bring an existing library's shelves up to [`LIBRARY_REVISION`]. Returns
 /// the shelves to write — every one, stamped — or nothing when the library
@@ -549,11 +684,11 @@ pub const LIBRARY_REVISION: u32 = 1;
 ///
 /// Each step changes only what still looks the way the application left it.
 /// A shelf somebody renamed keeps their name; a Places shelf that already
-/// has a type keeps it. And a step runs once: a Contacts shelf deleted after
-/// the upgrade stays deleted, for the reason
+/// has a type keeps it. And a step runs once: a Contacts or Drinks shelf
+/// deleted after the upgrade stays deleted, for the reason
 /// [`Vault::seed_library`](crate::Vault::seed_library) gives. The one way to
-/// run it twice is to delete every shelf it stamped, and then the only thing
-/// it can bring back is the Contacts shelf.
+/// run it twice is to delete every shelf it stamped, and then the only things
+/// it can bring back are the shelves it added.
 pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
     let revision = kinds.iter().map(|k| k.revision).max().unwrap_or(0);
     if kinds.is_empty() || revision >= LIBRARY_REVISION {
@@ -578,11 +713,35 @@ pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
             }
         }
         if !kinds.iter().any(|k| k.slug == "contact") {
-            let mut contacts = contacts_kind();
-            contacts.builtin = true;
-            contacts.sort_order = kinds.iter().map(|k| k.sort_order).max().unwrap_or(0) + 1;
-            contacts.color = DEFAULT_KIND_COLORS[kinds.len() % DEFAULT_KIND_COLORS.len()].into();
-            kinds.push(contacts);
+            push_shelf(&mut kinds, contacts_kind());
+        }
+    }
+
+    if revision < 2 {
+        // The fields a recipe was missing, wherever the shelf has got to:
+        // the two short ones at the head of the panel, the two lists after
+        // whatever is already there. A field somebody already added under
+        // the same key -- their own Ingredients -- is theirs and stays.
+        for kind in kinds.iter_mut().filter(|k| k.builtin && k.slug == "recipe") {
+            for (at, field) in [(0, course_field()), (1, cuisine_field())] {
+                if !kind.fields.iter().any(|f| f.key == field.key) {
+                    kind.fields.insert(at.min(kind.fields.len()), field);
+                }
+            }
+            for field in [ingredients_field("200g spaghetti\n2 eggs"), method_field()] {
+                if !kind.fields.iter().any(|f| f.key == field.key) {
+                    kind.fields.push(field);
+                }
+            }
+        }
+        // A shelf of drinks somebody already made for themselves -- made in
+        // the sidebar, it would be called `drinks` -- is the shelf; a second
+        // one beside it would be the application arguing.
+        let has_drinks = kinds.iter().any(|k| {
+            matches!(k.slug.as_str(), "drink" | "drinks") || k.name.eq_ignore_ascii_case("drinks")
+        });
+        if !has_drinks {
+            push_shelf(&mut kinds, drinks_kind());
         }
     }
 
@@ -594,6 +753,15 @@ pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
         }
     }
     kinds
+}
+
+/// Add a seeded shelf to a library that already has some: at the foot of the
+/// sidebar rather than on top of somebody's Books, in the next colour along.
+fn push_shelf(kinds: &mut Vec<Kind>, mut kind: Kind) {
+    kind.builtin = true;
+    kind.sort_order = kinds.iter().map(|k| k.sort_order).max().unwrap_or(0) + 1;
+    kind.color = DEFAULT_KIND_COLORS[kinds.len() % DEFAULT_KIND_COLORS.len()].into();
+    kinds.push(kind);
 }
 
 // ── Items ────────────────────────────────────────────────────────────────
@@ -1147,9 +1315,18 @@ mod tests {
             kinds.iter().map(|k| k.slug.as_str()).collect();
         assert_eq!(slugs.len(), kinds.len(), "two seeded kinds share a slug");
         // The list the brief asked for, by name.
-        for want in
-            ["book", "film", "music", "game", "restaurant", "recipe", "place", "article", "contact"]
-        {
+        for want in [
+            "book",
+            "film",
+            "music",
+            "game",
+            "restaurant",
+            "recipe",
+            "drink",
+            "place",
+            "article",
+            "contact",
+        ] {
             assert!(slugs.contains(want), "no seeded kind for {want}");
         }
         assert!(kinds.iter().all(|k| k.builtin), "seeded kinds should say so");
@@ -1162,10 +1339,29 @@ mod tests {
         assert!(upgrade_kinds(kinds).is_empty());
     }
 
+    /// The shelves as a build at revision 1 left them: no Drinks, and a
+    /// recipe that was a name, a source, a size and a time.
+    fn revision_one() -> Vec<Kind> {
+        let mut kinds: Vec<Kind> =
+            default_kinds().into_iter().filter(|k| k.slug != "drink").collect();
+        for kind in &mut kinds {
+            kind.revision = 1;
+            if kind.slug == "recipe" {
+                kind.fields = vec![
+                    FieldDef::new("source", "From", FieldType::Text),
+                    FieldDef::new("serves", "Serves", FieldType::Number),
+                    FieldDef::new("time", "Time (min)", FieldType::Number),
+                    FieldDef::new("url", "Address", FieldType::Url),
+                ];
+            }
+        }
+        kinds
+    }
+
     /// The shelves as a build before revision 1 seeded them.
     fn revision_zero() -> Vec<Kind> {
         let mut kinds: Vec<Kind> =
-            default_kinds().into_iter().filter(|k| k.slug != "contact").collect();
+            revision_one().into_iter().filter(|k| k.slug != "contact").collect();
         for kind in &mut kinds {
             kind.revision = 0;
             match kind.slug.as_str() {
@@ -1176,6 +1372,10 @@ mod tests {
             }
         }
         kinds
+    }
+
+    fn keys(kind: &Kind) -> Vec<&str> {
+        kind.fields.iter().map(|f| f.key.as_str()).collect()
     }
 
     fn by_slug<'a>(kinds: &'a [Kind], slug: &str) -> &'a Kind {
@@ -1193,15 +1393,78 @@ mod tests {
         let contacts = by_slug(&upgraded, "contact");
         assert!(contacts.builtin);
         assert!(!contacts.looks_things_up());
-        // Added at the foot of the sidebar, not on top of Books.
-        assert!(upgraded.iter().all(|k| k.slug == "contact" || k.sort_order < contacts.sort_order));
+        // Both later steps run on a library that missed both.
+        assert!(by_slug(&upgraded, "drink").builtin);
+        assert!(keys(by_slug(&upgraded, "recipe")).contains(&"ingredients"));
+        // Added at the foot of the sidebar, not on top of Books, and in the
+        // order the steps added them.
+        let added = ["contact", "drink"];
+        let foot = upgraded.iter().filter(|k| !added.contains(&k.slug.as_str()));
+        assert!(foot.clone().all(|k| k.sort_order < contacts.sort_order));
+        assert!(contacts.sort_order < by_slug(&upgraded, "drink").sort_order);
 
         assert!(upgraded.iter().all(|k| k.revision == LIBRARY_REVISION));
         assert!(upgrade_kinds(upgraded.clone()).is_empty(), "a second run should do nothing");
 
-        // Deleting the new shelf afterwards is a decision, and sticks.
-        let without: Vec<Kind> = upgraded.into_iter().filter(|k| k.slug != "contact").collect();
+        // Deleting the new shelves afterwards is a decision, and sticks.
+        let without: Vec<Kind> =
+            upgraded.into_iter().filter(|k| !added.contains(&k.slug.as_str())).collect();
         assert!(upgrade_kinds(without).is_empty());
+    }
+
+    #[test]
+    fn a_library_at_revision_one_gains_drinks_and_recipes_to_cook_from() {
+        let upgraded = upgrade_kinds(revision_one());
+        assert_eq!(upgraded.len(), revision_one().len() + 1, "one shelf added, none lost");
+
+        let drinks = by_slug(&upgraded, "drink");
+        assert_eq!(drinks.name, "Drinks");
+        assert_eq!(drinks.fields[0].key, "type");
+        assert!(drinks.fields[0].suggestions.iter().any(|s| s == "Mocktail"));
+        assert_eq!(drinks.revision, LIBRARY_REVISION);
+        assert!(upgraded.iter().all(|k| k.slug == "drink" || k.sort_order < drinks.sort_order));
+
+        // The two short fields at the head, the old ones where they were,
+        // and the two lists at the foot.
+        assert_eq!(
+            keys(by_slug(&upgraded, "recipe")),
+            ["course", "cuisine", "source", "serves", "time", "url", "ingredients", "method"]
+        );
+        let recipe = by_slug(&upgraded, "recipe");
+        assert_eq!(recipe.fields[6].field_type, FieldType::List);
+
+        // Nothing else was touched: the other shelves are as they were, but
+        // stamped.
+        for (before, after) in revision_one().iter().zip(&upgraded) {
+            if before.slug != "recipe" {
+                assert_eq!(before.fields, after.fields, "{} changed", before.slug);
+                assert_eq!(before.name, after.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_recipe_shelf_somebody_already_extended_keeps_their_fields() {
+        let mut kinds = revision_one();
+        for kind in &mut kinds {
+            if kind.slug == "recipe" {
+                kind.fields.push(FieldDef::new(
+                    "ingredients",
+                    "What you need",
+                    FieldType::Multiline,
+                ));
+            }
+        }
+        // And their own shelf of drinks, made in the sidebar before there
+        // was a built-in one.
+        kinds.push(Kind::new("drinks", "Drinks", "Drink"));
+
+        let upgraded = upgrade_kinds(kinds);
+        let recipe = by_slug(&upgraded, "recipe");
+        assert_eq!(keys(recipe).iter().filter(|k| **k == "ingredients").count(), 1);
+        assert_eq!(recipe.field_label("ingredients"), "What you need");
+        assert!(keys(recipe).contains(&"method"));
+        assert!(upgraded.iter().all(|k| k.slug != "drink"), "a second Drinks shelf was added");
     }
 
     #[test]
@@ -1209,8 +1472,10 @@ mod tests {
         // An older build, or a client that does not know the field, saves a
         // shelf without it. Somebody has since deleted Contacts and renamed
         // Movies back to Films. Neither may be undone on the next open.
-        let mut kinds: Vec<Kind> =
-            upgrade_kinds(revision_zero()).into_iter().filter(|k| k.slug != "contact").collect();
+        let mut kinds: Vec<Kind> = upgrade_kinds(revision_zero())
+            .into_iter()
+            .filter(|k| k.slug != "contact" && k.slug != "drink")
+            .collect();
         for kind in &mut kinds {
             if kind.slug == "film" {
                 (kind.name, kind.singular) = ("Films".into(), "Film".into());
@@ -1364,15 +1629,20 @@ mod tests {
         for e in LogEvent::ALL {
             assert_eq!(serde_json::to_string(&e).unwrap(), format!("\"{}\"", e.as_str()));
         }
-        for f in [
-            FieldType::Text,
-            FieldType::Multiline,
-            FieldType::Number,
-            FieldType::Date,
-            FieldType::Url,
-        ] {
+        for f in FieldType::ALL {
             assert_eq!(serde_json::to_string(&f).unwrap(), format!("\"{}\"", f.as_str()));
+            assert_eq!(FieldType::parse(f.as_str()), Some(f));
         }
+    }
+
+    #[test]
+    fn a_field_type_from_a_newer_build_reads_as_text() {
+        // The shelf has to open. A field drawn as a plain line is a shelf
+        // that is slightly less pretty; one that fails to deserialize takes
+        // every item on it off the screen.
+        let field: FieldDef =
+            serde_json::from_str(r#"{"key":"k","label":"K","fieldType":"hologram"}"#).unwrap();
+        assert_eq!(field.field_type, FieldType::Text);
     }
 
     #[test]
