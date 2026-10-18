@@ -325,6 +325,10 @@
       ]
     },
     {
+      "command": "shrink_cover",
+      "events": []
+    },
+    {
       "command": "save_account",
       "events": [
         {

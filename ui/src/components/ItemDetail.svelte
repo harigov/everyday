@@ -8,9 +8,18 @@
   import { ratingLabel } from '../lib/rating'
   import { looksThingsUp, sourceLabel } from '../lib/websearch'
   import { ITEM_STATUSES } from '../lib/types'
-  import type { FieldDef, Item, KindInfo, LogEvent, QuickFields, SearchResult } from '../lib/types'
+  import type {
+    FieldDef,
+    Item,
+    ItemId,
+    KindInfo,
+    LogEvent,
+    QuickFields,
+    SearchResult,
+  } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Cover from './Cover.svelte'
+  import CoverSearch from './CoverSearch.svelte'
   import Icon from './Icon.svelte'
   import Rating from './Rating.svelte'
   import Suggestions from './Suggestions.svelte'
@@ -32,11 +41,29 @@
   // ── choosing a cover by hand ─────────────────────────────────────────
   //
   // For when no lookup finds the right edition, or finds nothing at all: a
-  // file off the disk, or the address of a picture somebody has open in a
-  // browser. Both are stored in the vault; neither is ever hot-linked.
+  // file off the disk, the address of a picture somebody has open in a
+  // browser, or a search for pictures of the thing. All three are stored in
+  // the vault; none is ever hot-linked.
 
   let coverInput = $state<HTMLInputElement | null>(null)
   let coverUrlDraft = $state<string | null>(null)
+  /**
+   * Which item the picture search is open for. An id rather than a flag so
+   * that moving on to another item closes it: a picture searched for one
+   * book must not be one click from landing on the next.
+   */
+  let coverSearchFor = $state<ItemId | null>(null)
+
+  /** The address form and the search share a place; one at a time. */
+  function toggleCoverUrl() {
+    coverSearchFor = null
+    coverUrlDraft = coverUrlDraft === null ? '' : null
+  }
+
+  function toggleCoverSearch() {
+    coverUrlDraft = null
+    coverSearchFor = coverSearchFor === item.id ? null : item.id
+  }
 
   function pickedCover(e: Event & { currentTarget: HTMLInputElement }) {
     const file = e.currentTarget.files?.[0]
@@ -356,20 +383,35 @@
           aria-label="Cover picture"
           onchange={pickedCover}
         />
-        <div class="cover-actions">
+        <div class="cover-actions" class:crowded={!!item.cover}>
           <button
             class="cover-act"
+            title="Choose a picture file"
+            aria-label="Choose a picture"
             disabled={library.enriching}
             onclick={() => coverInput?.click()}
           >
-            <Icon name="image" size={12} /> Choose
+            <Icon name="image" size={12} /> <span class="act-word">Choose</span>
           </button>
           <button
             class="cover-act"
+            class:on={coverSearchFor === item.id}
+            title="Search for a picture"
+            aria-label="Search for a picture"
+            aria-expanded={coverSearchFor === item.id}
+            disabled={library.enriching}
+            onclick={toggleCoverSearch}
+          >
+            <Icon name="search" size={12} />
+          </button>
+          <button
+            class="cover-act"
+            class:on={coverUrlDraft !== null}
             title="Use the address of a picture"
             aria-label="Use the address of a picture"
+            aria-expanded={coverUrlDraft !== null}
             disabled={library.enriching}
-            onclick={() => (coverUrlDraft = coverUrlDraft === null ? '' : null)}
+            onclick={toggleCoverUrl}
           >
             <Icon name="link" size={12} />
           </button>
@@ -467,6 +509,8 @@
         />
         <button class="mini" type="submit" disabled={!coverUrlDraft.trim()}>Use</button>
       </form>
+    {:else if coverSearchFor === item.id}
+      <CoverSearch {item} ratio={coverRatio(kind)} onclose={() => (coverSearchFor = null)} />
     {/if}
 
     <!-- Status: five buttons, in this shelf's own words. A select would be
@@ -948,13 +992,20 @@
     color: var(--fg-subtle);
     background: var(--bg-hover);
   }
-  /* Only "Choose" carries a word: three labelled buttons do not fit under a
-     116px cover, and the other two say what they are on hover. */
+  /* Only "Choose" carries a word: four labelled buttons do not fit under a
+     116px cover, and the others say what they are on hover. */
   .cover-act + .cover-act {
     flex: none;
     width: 24px;
   }
-  .cover-act:hover:not(:disabled) {
+  /* And not even "Choose" once a cover is there to be removed: four buttons
+     leave it too narrow for the word, which would spill under its neighbour.
+     The picture icon and the hover title still say what it does. */
+  .cover-actions.crowded .act-word {
+    display: none;
+  }
+  .cover-act:hover:not(:disabled),
+  .cover-act.on {
     color: var(--fg);
     background: var(--bg-active);
   }

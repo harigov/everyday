@@ -2599,6 +2599,29 @@ export interface SourceInfo {
   hasImages: boolean
 }
 
+/**
+ * One picture an image search found. Mirrors
+ * `everyday_core::websearch::images::ImageResult`.
+ *
+ * Addresses only: nothing here is fetched until it is shown through
+ * `api.imagePreview` or chosen through `api.fetchImage`.
+ */
+export interface ImageResult {
+  title: string
+  /** The picture itself, full size -- what a cover is made from. */
+  imageUrl: string
+  /** A small copy for a grid, hosted by the search rather than the page. */
+  thumbnailUrl: string
+  /** The page the picture is on. */
+  pageUrl: string
+  width?: number | null
+  height?: number | null
+  /** The page's site, without its `www.`. */
+  site: string
+  /** Which search found it: `bing` or `commons`. */
+  source: string
+}
+
 // ── Weather ──────────────────────────────────────────────────────────────
 //
 // Mirrors `everyday_core::weather` and `everyday_core::air_quality`. Read by

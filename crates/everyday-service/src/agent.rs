@@ -46,16 +46,18 @@
 //!
 //! # The tools that are not in the catalogue
 //!
-//! Six tools are declared here rather than in the core, each for the reason
-//! [`web_search_tool`] gives: four of them open a socket, which the core
-//! cannot, and the fifth, `update_plan`, touches nothing at all -- it is a
+//! Nine tools are declared here rather than in the core, each for the reason
+//! [`web_search_tool`] gives: seven of them open a socket, which the core
+//! cannot -- the two that find places and the way to them are written in
+//! [`crate::maps`] -- and `update_plan` touches nothing at all -- it is a
 //! checklist the panel draws from the call's own arguments, so there is no
-//! vault record for the core to own. The four that reach the web are
+//! vault record for the core to own. The seven that reach the web are
 //! offered only when the person has said so; `read_web_page` is further
 //! gated on where its address came from -- see [`webpage::Provenance`] and
-//! [`must_confirm_fetch`]. The sixth, `ask_owner`, waits on a person in
-//! another place -- see [`ask_owner_tool`] -- and is offered only to a
-//! scheduled run that has one to ask.
+//! [`must_confirm_fetch`] -- and so is a cover a library tool names by
+//! address. The ninth, `ask_owner`, waits on a person in another place --
+//! see [`ask_owner_tool`] -- and is offered only to a scheduled run that has
+//! one to ask.
 //!
 //! # Stopping a turn
 //!
@@ -91,6 +93,7 @@
 //!   application -- see [`application_note`].
 
 use crate::events::Kind;
+use crate::maps::{GET_DIRECTIONS, SEARCH_PLACES};
 use crate::service::Service;
 use crate::webpage::{self, Provenance, Trust};
 use std::collections::{HashMap, HashSet};
@@ -744,6 +747,31 @@ fn take_one(budget: &AtomicU32) -> bool {
     budget.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok()
 }
 
+/// The tools whose arguments are sent, word for word, to somebody else's
+/// search -- and so are held back, once a stranger's writing has been read
+/// this turn, until the person has seen what would be sent. See
+/// `on_tool_call`.
+const SENDS_WORDS: [&str; 5] =
+    [WEB_SEARCH, LOOK_UP_ITEM, SEARCH_IMAGES, SEARCH_PLACES, GET_DIRECTIONS];
+
+/// What a search would send, as the person is asked about it: the words for
+/// a search, the title for a lookup, and where from and where to for a route.
+fn search_words(name: &str, arguments: &Value) -> String {
+    let text = |key: &str| arguments.get(key).and_then(Value::as_str).unwrap_or_default().trim();
+    match name {
+        LOOK_UP_ITEM => text("title").to_string(),
+        GET_DIRECTIONS => {
+            let from = text("from");
+            let from = if from.is_empty() { "home" } else { from };
+            format!("{from} \u{2192} {}", text("to"))
+        }
+        SEARCH_PLACES if !text("near").is_empty() => {
+            format!("{} near {}", text("query"), text("near"))
+        }
+        _ => text("query").to_string(),
+    }
+}
+
 /// The tools [`build`] declares itself rather than taking from the core's
 /// catalogue. Named once, here, because the gate, the summariser and the
 /// prompt all have to agree on them.
@@ -751,9 +779,10 @@ const WEB_SEARCH: &str = "web_search";
 const READ_WEB_PAGE: &str = "read_web_page";
 const GET_WEATHER: &str = "get_weather";
 const LOOK_UP_ITEM: &str = "look_up_item";
+const SEARCH_IMAGES: &str = "search_images";
 const UPDATE_PLAN: &str = "update_plan";
 const ASK_OWNER: &str = "ask_owner";
-/// In the core catalogue, unlike the six above, but singled out by the gate:
+/// In the core catalogue, unlike the ones above, but singled out by the gate:
 /// following a web feed puts a request on the network. See `on_tool_call`.
 const FOLLOW_SOURCE: &str = "follow_source";
 /// Also in the core catalogue, and singled out after it runs: an item filled
@@ -833,46 +862,7 @@ impl AgentHook for ConfirmGate {
             );
         }
 
-        // `web_search` and `read_web_page` are not in the core catalogue --
-        // `tools::find` answers `None` for both -- so they reach this hook
-        // exactly like every other tool and are singled out here rather than
-        // by a second hook. See the module doc's "the exfiltration path
-        // through `web_search`", and `must_confirm_fetch` for the page.
-        let mail_read = self.mail_read_this_turn.load(Ordering::Acquire);
-        // Following a feed is a fetch with a delay: the refresher will ask
-        // that address for news within a minute, so an address the model
-        // composed -- or any address once a stranger's words are in the
-        // context -- is the same way out `read_web_page` is, and is held to
-        // the same check. Following Hacker News names no address and is an
-        // ordinary write.
-        let follows_address = name == FOLLOW_SOURCE
-            && arguments.get("url").and_then(|v| v.as_str()).is_some_and(|u| !u.trim().is_empty());
-        // Looking up an address reads that page (see `look_up_item_tool`),
-        // which makes it a fetch like `read_web_page`, held to the same
-        // check. A title that is not an address is a query, as before.
-        let looked_up_address = (name == LOOK_UP_ITEM)
-            .then(|| arguments.get("title").and_then(|v| v.as_str()))
-            .flatten()
-            .filter(|t| SearchResult::for_address(t).is_some());
-        let kind = if name == READ_WEB_PAGE {
-            let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-            let trust = self.provenance.lock().unwrap().check(address);
-            must_confirm_fetch(trust, mail_read)
-        } else if let Some(address) = looked_up_address {
-            let trust = self.provenance.lock().unwrap().check(address.trim());
-            must_confirm_fetch(trust, mail_read)
-        } else if follows_address {
-            let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-            let trust = self.provenance.lock().unwrap().check(address);
-            must_confirm_fetch(trust, mail_read)
-                .or_else(|| must_confirm(self.effect_of(&name, &arguments), self.enabled, false))
-        } else {
-            // `look_up_item` sends its title to a catalogue the way
-            // `web_search` sends its query to a search engine, so a title
-            // lifted out of a stranger's mail is the same way out.
-            let tainted_search = (name == WEB_SEARCH || name == LOOK_UP_ITEM) && mail_read;
-            must_confirm(self.effect_of(&name, &arguments), self.enabled, tainted_search)
-        };
+        let kind = self.confirmation(&name, &arguments);
         let Some(kind) = kind else {
             (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
             return ToolCallAction::Run;
@@ -892,16 +882,16 @@ impl AgentHook for ConfirmGate {
         }
 
         let subject = match kind {
-            "search" => {
-                let words = if name == LOOK_UP_ITEM { "title" } else { "query" };
-                arguments.get(words).and_then(|v| v.as_str()).unwrap_or_default().to_string()
-            }
+            "search" => search_words(&name, &arguments),
             // The whole address, untrimmed and unshortened: it is the thing
             // being asked about, and the part that would carry anything out
             // is usually the end of it.
-            "fetch" => {
-                arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string()
-            }
+            "fetch" => arguments
+                .get("url")
+                .or_else(|| arguments.get("image_url"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
             _ => self.describe(&name, &arguments),
         };
         // `search` and `fetch` have no proposal form -- see `park`'s own doc
@@ -1178,11 +1168,70 @@ impl ConfirmGate {
         ToolCallAction::Skip(unattended_refusal(kind, self.job).into())
     }
 
-    /// What this call is about to act on, named rather than identified.
-    ///
-    /// Falls back to nothing rather than to an id: a card that says "delete
-    /// project" with no subject asks somebody to think, and one that says
-    /// "delete 0192f8b2-..." asks them to guess.
+    /// Whether a call must stop and ask first, and as what kind of question
+    /// -- [`must_confirm`]'s and [`must_confirm_fetch`]'s answer for this
+    /// call -- or `None` to run it straight away. Its own method so the rules
+    /// can be tested without the `HookContext` only rig can build.
+    fn confirmation(&self, name: &str, arguments: &Value) -> Option<&'static str> {
+        // `web_search` and `read_web_page` are not in the core catalogue --
+        // `tools::find` answers `None` for both -- so they reach this hook
+        // exactly like every other tool and are singled out here rather than
+        // by a second hook. See the module doc's "the exfiltration path
+        // through `web_search`", and `must_confirm_fetch` for the page.
+        let mail_read = self.mail_read_this_turn.load(Ordering::Acquire);
+        // Following a feed is a fetch with a delay: the refresher will ask
+        // that address for news within a minute, so an address the model
+        // composed -- or any address once a stranger's words are in the
+        // context -- is the same way out `read_web_page` is, and is held to
+        // the same check. Following Hacker News names no address and is an
+        // ordinary write.
+        let follows_address = name == FOLLOW_SOURCE
+            && arguments.get("url").and_then(|v| v.as_str()).is_some_and(|u| !u.trim().is_empty());
+        // Looking up an address reads that page (see `look_up_item_tool`),
+        // which makes it a fetch like `read_web_page`, held to the same
+        // check. A title that is not an address is a query, as before.
+        let looked_up_address = (name == LOOK_UP_ITEM)
+            .then(|| arguments.get("title").and_then(|v| v.as_str()))
+            .flatten()
+            .filter(|t| SearchResult::for_address(t).is_some());
+        // A cover named by address is fetched before the item is saved --
+        // see `websearch::prefetch_cover` -- so it is a way out exactly as a
+        // page is: an address the model composed, or one written after a
+        // stranger's words arrived, could carry what it read. Held to the
+        // same check, and then to the write's own, as following a feed is.
+        let cover_address = crate::websearch::COVER_TOOLS
+            .contains(&name)
+            .then(|| arguments.get("image_url").and_then(|v| v.as_str()))
+            .flatten()
+            .map(str::trim)
+            .filter(|u| !u.is_empty());
+        if name == READ_WEB_PAGE {
+            let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+            let trust = self.provenance.lock().unwrap().check(address);
+            must_confirm_fetch(trust, mail_read)
+        } else if let Some(address) = looked_up_address {
+            let trust = self.provenance.lock().unwrap().check(address.trim());
+            must_confirm_fetch(trust, mail_read)
+        } else if follows_address {
+            let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
+            let trust = self.provenance.lock().unwrap().check(address);
+            must_confirm_fetch(trust, mail_read)
+                .or_else(|| must_confirm(self.effect_of(name, arguments), self.enabled, false))
+        } else if let Some(address) = cover_address {
+            let trust = self.provenance.lock().unwrap().check(address);
+            must_confirm_fetch(trust, mail_read)
+                .or_else(|| must_confirm(self.effect_of(name, arguments), self.enabled, false))
+        } else {
+            // `look_up_item` sends its title to a catalogue the way
+            // `web_search` sends its query to a search engine, so a title
+            // lifted out of a stranger's mail is the same way out. So do the
+            // searches for a picture, a place and a route: every word of
+            // each leaves the machine.
+            let tainted_search = SENDS_WORDS.contains(&name) && mail_read;
+            must_confirm(self.effect_of(name, arguments), self.enabled, tainted_search)
+        }
+    }
+
     /// What this call does -- the tool's own effect, unless its arguments
     /// reach somebody outside the vault after all (`create_event` with
     /// guests), in which case `Outward`. See
@@ -1195,6 +1244,11 @@ impl ConfirmGate {
         tools::effect_for(&ctx, name, arguments)
     }
 
+    /// What this call is about to act on, named rather than identified.
+    ///
+    /// Falls back to nothing rather than to an id: a card that says "delete
+    /// project" with no subject asks somebody to think, and one that says
+    /// "delete 0192f8b2-..." asks them to guess.
     fn describe(&self, name: &str, arguments: &Value) -> String {
         // A confirmation card only ever reads a record to name it --
         // `describe_send_draft` reads the draft's own recipients and
@@ -1254,6 +1308,27 @@ fn learn_addresses(provenance: &mut Provenance, tool: &str, result: &Value) {
                 if let Some(text) = result.get(field).and_then(Value::as_str) {
                     provenance.found(text);
                 }
+            }
+        }
+        // A catalogue's own pages and covers, a picture search's pictures
+        // and the pages they are on, a place's website: each came back from
+        // a search, as `web_search`'s hits do, and may be read -- or kept as
+        // a cover -- exactly as written.
+        LOOK_UP_ITEM | SEARCH_IMAGES | SEARCH_PLACES => {
+            let listed = result.get("results").or_else(|| result.get("places"));
+            for hit in listed.and_then(Value::as_array).into_iter().flatten() {
+                for field in ["url", "image_url", "thumbnail_url", "page_url", "website"] {
+                    if let Some(url) = hit.get(field).and_then(Value::as_str) {
+                        provenance.found(url);
+                    }
+                }
+            }
+        }
+        // The route on openstreetmap.org, for them to open: an address this
+        // app built, from the coordinates the geocoder answered.
+        GET_DIRECTIONS => {
+            if let Some(url) = result.get("map_url").and_then(Value::as_str) {
+                provenance.found(url);
             }
         }
         _ => {}
@@ -1591,7 +1666,7 @@ fn build(
     let mut offered: Vec<PortableDynamicTool> = available.into_iter().map(wrap).collect();
 
     // The tools declared here rather than in the core -- see the module
-    // doc's "the tools that are not in the catalogue". The four that reach
+    // doc's "the tools that are not in the catalogue". The seven that reach
     // the web are one switch, because to the person they are one decision:
     // whether the assistant may talk to strangers' computers at all.
     let web = !is_dream && settings.web;
@@ -1600,6 +1675,12 @@ fn build(
         offered.push(read_web_page_tool());
         offered.push(get_weather_tool(profile.location.trim().to_string()));
         offered.push(look_up_item_tool(vault.clone()));
+        offered.push(search_images_tool());
+        offered.push(crate::maps::search_places_tool(profile.location.trim().to_string()));
+        offered.push(crate::maps::get_directions_tool(
+            profile.location.trim().to_string(),
+            zone.clone(),
+        ));
     }
     let planning = !is_dream;
     if planning {
@@ -1689,9 +1770,13 @@ impl std::fmt::Display for Guidance {
             Some(true) => f.write_str(
                 "\n\nYou can reach the web. Use web_search to find things, read_web_page to \
                  read a page, get_weather for forecasts, wind and air quality (it defaults \
-                 to where they live), and look_up_item for a book's, film's or anything \
-                 else's own details -- author, year, a blurb -- before you create_item or \
-                 update_item it on a shelf. \
+                 to where they live), search_places to find a place or places of a kind \
+                 nearby, get_directions for the way there and how long it takes (driving, \
+                 walking, cycling or public transport), and look_up_item for a book's, \
+                 film's or anything else's own details -- author, year, a blurb, a cover -- \
+                 before you create_item or update_item it on a shelf. Give those two an \
+                 image_url to give the item a cover: look_up_item's own, or one from \
+                 search_images when it has none. \
                  A page at an address they gave you, or that a search or a page you read \
                  returned, opens straight away; any other address asks them first, so use \
                  addresses exactly as you found them. For anything current -- news, prices, \
@@ -2019,8 +2104,9 @@ fn weather_args(arguments: &Value, home: &str) -> Result<WeatherArgs, String> {
 /// It only reads: a shelf that never looks anything up (Contacts) comes back
 /// with nothing, the same way its own button never offers to. Picking a
 /// candidate and saving it is the model's own next call, to create_item or
-/// update_item; no cover is fetched here, which is the interface's own
-/// fetch, or a later `apply_metadata`, to do.
+/// update_item; no cover is fetched here. A candidate's picture comes back
+/// as its `image_url`, which those two take as it stands and fetch once the
+/// item is saved -- see `websearch::prefetch_cover`.
 ///
 /// `vault` is read once per call, on the blocking pool, to turn `shelf_id`
 /// into the [`everyday_core::library::Kind`] the lookup needs -- the same
@@ -2032,10 +2118,10 @@ fn look_up_item_tool(vault: Arc<Vault>) -> PortableDynamicTool {
         "Look up a book, film or anything else a shelf tracks, before adding it or fixing \
          its details. Tries whichever source that shelf prefers -- Open Library for books, \
          iTunes for films, and so on -- falling back to a general web search when that finds \
-         nothing. Returns a few candidates with their creator, year, a blurb and a rating \
-         where there is one; call create_item or update_item with the fields from whichever \
-         matches. Given a web address instead of a title -- a recipe they sent you, say -- \
-         it reads that page, and a recipe page comes back with its ingredients and method \
+         nothing. Returns a few candidates with their creator, year, a blurb, a rating \
+         and a cover picture where there is one; call create_item or update_item with the \
+         fields from whichever matches, and its image_url for the cover. Given a web \
+         address instead of a title -- a recipe they sent you, say -- it reads that page, and a recipe page comes back with its ingredients and method \
          among the fields. Does not create or change anything itself, and a shelf that \
          never looks things up (Contacts) always comes back empty.",
         serde_json::json!({
@@ -2128,6 +2214,11 @@ fn look_up_item_tool(vault: Arc<Vault>) -> PortableDynamicTool {
 fn look_up_item_result(hit: &SearchResult, kind: &everyday_core::Kind) -> Value {
     let mut v = serde_json::json!({ "title": hit.title, "url": hit.url });
     let m = v.as_object_mut().expect("built as an object");
+    // The cover, by address, for create_item's own `image_url`: a model never
+    // shown it had no way to give an item a picture.
+    if !hit.image_url.trim().is_empty() {
+        m.insert("image_url".into(), serde_json::json!(hit.image_url));
+    }
     if !hit.creator.trim().is_empty() {
         m.insert("creator".into(), serde_json::json!(hit.creator));
     }
@@ -2153,6 +2244,90 @@ fn look_up_item_result(hit: &SearchResult, kind: &everyday_core::Kind) -> Value 
         .collect();
     if !fields.is_empty() {
         m.insert("fields".into(), Value::Object(fields));
+    }
+    v
+}
+
+/// Pictures of something: [`crate::websearch::search_images`], as a tool.
+///
+/// Beside [`look_up_item_tool`] for its reason -- it opens a socket -- and
+/// mostly for its purpose: a cover for something on a shelf that no
+/// catalogue has a picture of, a dish, a bottle, a place. What comes back
+/// are addresses; nothing is fetched until create_item or update_item is
+/// given one as its `image_url`, and each address a search returns is one
+/// the gate lets through without asking (see [`learn_addresses`]).
+///
+/// The model cannot see the pictures, only what their pages call them, so
+/// the description steers it to a catalogue's own cover first and to saying
+/// which picture it chose.
+fn search_images_tool() -> PortableDynamicTool {
+    PortableDynamicTool::new(
+        SEARCH_IMAGES,
+        "Search for pictures of something -- for a cover on a shelf when look_up_item has \
+         none (a dish, a drink, a place), or when they ask for a picture. Returns each \
+         picture's address, the page it is on and what that page calls it; you cannot see \
+         the pictures themselves, so prefer one whose page is plainly about the thing, \
+         and tell them which you chose. Give create_item or update_item a result's \
+         image_url to use it as a cover; if that one cannot be fetched, try its \
+         thumbnail_url or another result. Prefer a catalogue's own cover from look_up_item \
+         when there is one.",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What to look for, as you would type it into an image \
+                                    search: \u{201c}Dune Frank Herbert book cover\u{201d}.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many pictures, up to 20. Default 8.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": false,
+        }),
+        move |arguments: serde_json::Value| {
+            Box::pin(async move {
+                let query = arguments
+                    .get("query")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|q| !q.is_empty())
+                    .ok_or_else(|| {
+                        ToolExecutionError::invalid_args("search_images: `query` is required")
+                    })?;
+                let limit =
+                    arguments.get("limit").and_then(Value::as_u64).unwrap_or(8).clamp(1, 20) as u32;
+                let found = crate::websearch::search_images(query, limit)
+                    .await
+                    .map_err(|e| ToolExecutionError::other(e.message))?;
+                Ok(ToolOutput::json(serde_json::json!({
+                    "count": found.len(),
+                    "results": found.iter().map(image_result).collect::<Vec<_>>(),
+                })))
+            })
+        },
+    )
+}
+
+/// One picture as `search_images` hands it to the model, with nothing it
+/// would only have to read past: no empty strings, and the size only when
+/// the search knew it.
+fn image_result(found: &everyday_core::websearch::images::ImageResult) -> Value {
+    let mut v = serde_json::json!({ "title": found.title, "image_url": found.image_url });
+    let m = v.as_object_mut().expect("built as an object");
+    for (key, value) in [
+        ("thumbnail_url", &found.thumbnail_url),
+        ("page_url", &found.page_url),
+        ("site", &found.site),
+    ] {
+        if !value.trim().is_empty() {
+            m.insert(key.into(), serde_json::json!(value));
+        }
+    }
+    if let (Some(width), Some(height)) = (found.width, found.height) {
+        m.insert("size".into(), serde_json::json!(format!("{width}\u{d7}{height}")));
     }
     v
 }
@@ -2403,10 +2578,21 @@ async fn run_tool(
     meta: TurnMeta,
     vault: Arc<Vault>,
     name: &'static str,
-    arguments: serde_json::Value,
+    mut arguments: serde_json::Value,
     zone: String,
     assistant_provider: String,
 ) -> Result<ToolOutput, ToolExecutionError> {
+    // A cover named by address is fetched before the tool runs -- see
+    // `websearch::prefetch_cover` for why before -- and only after the gate
+    // has let the call through: `on_tool_call` holds `image_url` to the
+    // check `read_web_page` is held to. Never for a dream, which does not
+    // reach the web; its proposal keeps the address, and the library offers
+    // to fetch it once the proposal is accepted.
+    let cover = if meta.drafting.is_none() {
+        crate::websearch::prefetch_cover(&vault, name, &mut arguments).await
+    } else {
+        None
+    };
     let outcome = tokio::task::spawn_blocking(move || {
         // Read per call rather than once per turn: a conversation left open
         // overnight must not still think it is yesterday. The *zone* is
@@ -2472,7 +2658,10 @@ async fn run_tool(
             .with_invite_responder(&invite_responder)
             .with_calendar_writer(&calendar_writer)
             .with_drafting(meta.drafting.clone());
-        let result = tools::dispatch(&ctx, name, &arguments);
+        let result = tools::dispatch(&ctx, name, &arguments).map(|mut value| {
+            crate::websearch::settle_cover(&vault, cover, &mut value);
+            value
+        });
         // The core's `start_research` only writes the queued record -- it
         // has no worker to ring. The job should begin as this turn ends, not
         // whenever the worker next looks. A job already going for the same
@@ -3365,6 +3554,38 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
                 _ => format!("looking into: {what}"),
             };
         }
+        SEARCH_IMAGES => {
+            return match result.get("count").and_then(Value::as_u64) {
+                Some(1) => "1 picture".into(),
+                Some(n) => format!("{n} pictures"),
+                None => String::new(),
+            };
+        }
+        SEARCH_PLACES => {
+            let count = result.get("count").and_then(Value::as_u64).unwrap_or_default();
+            let places = if count == 1 { "1 place".to_string() } else { format!("{count} places") };
+            let near = str_of("near").trim();
+            return if near.is_empty() { places } else { format!("{places} near {near}") };
+        }
+        GET_DIRECTIONS => {
+            // A route: how long and how far, which is the answer. Transit:
+            // how many ways there are, since each has its own times.
+            if let Some(options) = result.get("options").and_then(Value::as_array) {
+                return match options.len() {
+                    0 => "no connections found".into(),
+                    1 => "1 connection".into(),
+                    n => format!("{n} connections"),
+                };
+            }
+            let duration = str_of("duration").trim();
+            let distance = str_of("distance").trim();
+            return match (duration.is_empty(), distance.is_empty()) {
+                (false, false) => format!("{duration}, {distance}"),
+                (false, true) => duration.to_string(),
+                (true, false) => distance.to_string(),
+                (true, true) => String::new(),
+            };
+        }
         CANCEL_JOB => return format!("cancelled: {}", str_of("name")),
         JOB_STATUS => {
             // One job: where it stands, and what it is doing if it says.
@@ -3814,6 +4035,8 @@ mod tests {
         .to_string();
         assert!(on.contains("read_web_page") && on.contains("get_weather"));
         assert!(on.contains("look_up_item"));
+        assert!(on.contains("search_places") && on.contains("get_directions"));
+        assert!(on.contains("search_images") && on.contains("image_url"));
         assert!(on.contains("update_plan"));
         assert!(!on.contains("long conversation"));
 
@@ -3831,6 +4054,7 @@ mod tests {
         assert!(off.contains("Settings \u{2192} Assistant"));
         assert!(!off.contains("read_web_page"));
         assert!(!off.contains("look_up_item"));
+        assert!(!off.contains("search_images") && !off.contains("get_directions"));
 
         let dream = Guidance {
             web: None,
@@ -3932,6 +4156,135 @@ mod tests {
         // already gives it a line.
         let lookup = ToolOutput::json(serde_json::json!({ "count": 3, "results": [] }));
         assert_eq!(summarise(LOOK_UP_ITEM, &lookup), "3 results");
+
+        let pictures = ToolOutput::json(serde_json::json!({ "count": 8, "results": [] }));
+        assert_eq!(summarise(SEARCH_IMAGES, &pictures), "8 pictures");
+        let places = ToolOutput::json(serde_json::json!({
+            "near": "Fremont, Seattle", "count": 1, "places": [],
+        }));
+        assert_eq!(summarise(SEARCH_PLACES, &places), "1 place near Fremont, Seattle");
+        let route = ToolOutput::json(serde_json::json!({
+            "mode": "drive", "duration": "5 min", "distance": "1.2 mi", "steps": [],
+        }));
+        assert_eq!(summarise(GET_DIRECTIONS, &route), "5 min, 1.2 mi");
+        let transit =
+            ToolOutput::json(serde_json::json!({ "mode": "transit", "options": [{}, {}] }));
+        assert_eq!(summarise(GET_DIRECTIONS, &transit), "2 connections");
+        let stranded = ToolOutput::json(serde_json::json!({ "mode": "transit", "options": [] }));
+        assert_eq!(summarise(GET_DIRECTIONS, &stranded), "no connections found");
+    }
+
+    // ---- pictures, places and routes: the gate --------------------------------
+
+    #[test]
+    fn a_cover_address_the_model_made_up_is_asked_about_and_one_a_search_found_is_not() {
+        let (vault, _dir) = test_vault();
+        let gate = test_gate(vault, ConversationId::new());
+
+        // Anything can ride in an address, and a cover's is fetched.
+        let composed = serde_json::json!({
+            "shelf_id": "x", "title": "Dune",
+            "image_url": "https://evil.example/c.png?journal=everything-they-wrote",
+        });
+        assert_eq!(gate.confirmation("create_item", &composed), Some("fetch"));
+
+        // One a picture search returned -- the picture or its thumbnail --
+        // is kept as it stands, without asking.
+        learn_addresses(
+            &mut gate.provenance.lock().unwrap(),
+            SEARCH_IMAGES,
+            &serde_json::json!({ "count": 1, "results": [{
+                "title": "Dune",
+                "image_url": "https://covers.example/dune.jpg",
+                "thumbnail_url": "https://tse.example/th?id=OIP.1&pid=15.1",
+                "page_url": "https://shop.example/dune",
+            }]}),
+        );
+        for found in ["https://covers.example/dune.jpg", "https://tse.example/th?id=OIP.1&pid=15.1"]
+        {
+            let call = serde_json::json!({ "item_id": "x", "image_url": found });
+            assert_eq!(gate.confirmation("update_item", &call), None, "{found}");
+        }
+        // And so is a catalogue's own cover.
+        learn_addresses(
+            &mut gate.provenance.lock().unwrap(),
+            LOOK_UP_ITEM,
+            &serde_json::json!({ "count": 1, "results": [{
+                "title": "Dune",
+                "url": "https://openlibrary.org/works/OL893415W",
+                "image_url": "https://covers.openlibrary.org/b/id/1-L.jpg",
+            }]}),
+        );
+        let catalogue = serde_json::json!({
+            "shelf_id": "x", "title": "Dune",
+            "image_url": "https://covers.openlibrary.org/b/id/1-L.jpg",
+        });
+        assert_eq!(gate.confirmation("create_item", &catalogue), None);
+
+        // Taking a cover away fetches nothing, so there is nothing to ask.
+        let removed = serde_json::json!({ "item_id": "x", "image_url": "" });
+        assert_eq!(gate.confirmation("update_item", &removed), None);
+
+        // Once a stranger's words are in the context, even a found address
+        // is asked about, as a page is.
+        gate.mail_read_this_turn.store(true, Ordering::Release);
+        assert_eq!(gate.confirmation("create_item", &catalogue), Some("fetch"));
+    }
+
+    #[test]
+    fn a_picture_place_or_route_search_is_held_back_once_mail_has_been_read() {
+        let (vault, _dir) = test_vault();
+        let gate = test_gate(vault, ConversationId::new());
+        let calls = [
+            (SEARCH_IMAGES, serde_json::json!({ "query": "pad thai" })),
+            (SEARCH_PLACES, serde_json::json!({ "query": "cafe" })),
+            (GET_DIRECTIONS, serde_json::json!({ "to": "Pike Place Market" })),
+        ];
+        for (name, arguments) in &calls {
+            assert_eq!(gate.confirmation(name, arguments), None, "{name}, mail unread");
+        }
+        gate.mail_read_this_turn.store(true, Ordering::Release);
+        for (name, arguments) in &calls {
+            assert_eq!(gate.confirmation(name, arguments), Some("search"), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_held_back_search_shows_what_it_would_send() {
+        let words = |name: &str, arguments: Value| search_words(name, &arguments);
+        assert_eq!(words(SEARCH_IMAGES, serde_json::json!({ "query": " pad thai " })), "pad thai");
+        assert_eq!(words(LOOK_UP_ITEM, serde_json::json!({ "title": "Dune" })), "Dune");
+        assert_eq!(words(SEARCH_PLACES, serde_json::json!({ "query": "cafe" })), "cafe");
+        assert_eq!(
+            words(SEARCH_PLACES, serde_json::json!({ "query": "cafe", "near": "Fremont" })),
+            "cafe near Fremont"
+        );
+        assert_eq!(
+            words(GET_DIRECTIONS, serde_json::json!({ "to": "Pike Place Market" })),
+            "home \u{2192} Pike Place Market",
+            "no `from` is from home, and home is not named in the request either"
+        );
+        assert_eq!(
+            words(GET_DIRECTIONS, serde_json::json!({ "from": "Work", "to": "Gym" })),
+            "Work \u{2192} Gym"
+        );
+    }
+
+    #[test]
+    fn a_places_search_trusts_each_places_website_and_map_page() {
+        let mut provenance = Provenance::default();
+        learn_addresses(
+            &mut provenance,
+            SEARCH_PLACES,
+            &serde_json::json!({ "near": "Seattle", "count": 1, "places": [{
+                "name": "Moore Coffee",
+                "website": "https://moorecoffeeshop.com/",
+                "url": "https://www.openstreetmap.org/node/1",
+            }]}),
+        );
+        assert_eq!(provenance.check("https://moorecoffeeshop.com/"), Trust::Seen);
+        assert_eq!(provenance.check("https://www.openstreetmap.org/node/1"), Trust::Seen);
+        assert_eq!(provenance.check("https://moorecoffeeshop.com/menu?x=1"), Trust::Unseen);
     }
 
     // ---- look_up_item's results ---------------------------------------------
@@ -3947,6 +4300,7 @@ mod tests {
             year: Some(1965),
             summary: "A desert planet.".into(),
             url: "https://openlibrary.org/works/OL893415W".into(),
+            image_url: "https://covers.openlibrary.org/b/id/11481354-L.jpg".into(),
             rating: Some(90),
             ..Default::default()
         };
@@ -3955,6 +4309,8 @@ mod tests {
             serde_json::json!({
                 "title": "Dune",
                 "url": "https://openlibrary.org/works/OL893415W",
+                // What create_item's `image_url` takes, as it stands.
+                "image_url": "https://covers.openlibrary.org/b/id/11481354-L.jpg",
                 "creator": "Frank Herbert",
                 "year": 1965,
                 "summary": "A desert planet.",

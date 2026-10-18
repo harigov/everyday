@@ -1084,13 +1084,33 @@ export const api = {
   applyMetadata: (id: ItemId, result: SearchResult, overwrite: boolean) =>
     call('applyMetadata', { id, result, overwrite }),
   /**
-   * Download a picture into the vault and return its blob id.
+   * Download a picture into the vault as a cover -- no more than 800 pixels
+   * on its longer side, as a JPEG -- and return its blob id.
    *
    * Nothing in the interface ever loads a remote image directly: the content
    * security policy allows images from `'self'` and `everyday:` and nowhere
    * else, so a cover has to come home before it can be drawn.
    */
   fetchImage: (url: string) => call('fetchImage', { url }),
+  /**
+   * Make a picture already in the vault into a cover -- shrunk and stored as
+   * a JPEG, the way `fetchImage` stores one -- and return the cover's blob
+   * id, which is the same id when it was one already. For a file chosen off
+   * the disk, which arrives through `putBlob` like any attachment.
+   */
+  shrinkCover: (blob: string) => call('shrinkCover', { blob }),
+  /**
+   * Look for pictures of something: Bing, then Wikimedia Commons when Bing
+   * has nothing. Addresses only; nothing is fetched or kept.
+   */
+  imageSearch: (query: string, limit?: number) =>
+    call('imageSearch', { query, limit: limit ?? null }),
+  /**
+   * One picture, small, as a `data:` address a grid can draw -- fetched on a
+   * cover's terms and kept nowhere. The webview cannot load the address
+   * itself, for `fetchImage`'s reason.
+   */
+  imagePreview: (url: string) => call('imagePreview', { url }),
 
   // ── Weather ────────────────────────────────────────────────────────
   //

@@ -673,6 +673,17 @@ shelf with its ingredients. The assistant's `look_up_item` reads an address
 the same way, held to the same check as its `read_web_page`: an address you
 gave it opens straight away, one it composed asks you first.
 
+**Search for a picture** when no lookup has the right cover — a dish, a
+bottle, an edition nobody catalogues. The magnifier under the cover searches
+Bing for the title and byline (Wikimedia Commons when Bing has nothing) and
+shows a grid; picking one saves it as the cover. DuckDuckGo, which answers
+the plain web search, now meets an image search with a bot check, and its
+pictures were Bing's anyway. The grid's thumbnails come through the app, on
+a cover's terms, and none of them is kept. The assistant can do the same:
+`create_item` and `update_item` take an `image_url` — a catalogue's own cover
+from `look_up_item`, or one from `search_images` — and download it into the
+vault with the item.
+
 Four rules hold this together, and the last two are the ones worth stating:
 
 - **Adding never waits on the network.** The item is written first and
@@ -696,7 +707,14 @@ Four rules hold this together, and the last two are the ones worth stating:
   a stranger's server which books are on your shelf every time you opened the
   app. It is also not possible: the webview's content security policy allows
   images from `'self'` and `everyday:` and from nowhere else, which is the
-  check that outlives the reason.
+  check that outlives the reason. On the way in it is made a cover's size —
+  no more than 800 pixels on its longer side, turned the right way up, and
+  re-encoded as a JPEG at quality 85 — however it came: a lookup, a picked
+  or pasted address, a file, or the assistant. A shop's 2560-pixel jacket
+  becomes a few dozen kilobytes that look the same on a card, and a
+  photograph loses the camera's notes, including where it was taken. A
+  picture already that small is kept as it came, and one that cannot be read
+  (an SVG, say) is kept as before.
 
 ### Web search is a facility, not a feature
 
@@ -1728,17 +1746,23 @@ no way to see why the bill grew.
 
 ### Looking things up
 
-Three tools leave this computer for somewhere you did not choose, and they
+These tools leave this computer for somewhere you did not choose, and they
 share one switch, **Let it use the web**: `web_search` finds pages,
 `read_web_page` reads one, and `get_weather` asks
 [Open-Meteo](https://open-meteo.com) for the conditions and a forecast up to
 sixteen days out — where you live, from About You, unless you name somewhere
-else. None needs a key or an account, for the reason every lookup in this
-application does not. The switch is off until you turn it on, and the
-sentence beside it says what each costs: a search sends your question (and,
-preparing for a meeting, the names of the people in it) to a search engine;
-reading a page tells that site the page was asked for; a forecast sends a
-place name. Everything else the assistant does happens between this machine
+else. `search_images` finds pictures (Bing, then Wikimedia Commons);
+`search_places` finds a place, or places of a kind near one, on
+[OpenStreetMap](https://www.openstreetmap.org); and `get_directions` gives the
+way there and how long it takes — driving, walking or cycling from
+[Valhalla](https://valhalla1.openstreetmap.de) as OpenStreetMap's own
+directions use it, public transport from [Transitous](https://transitous.org)
+wherever transit agencies publish their timetables. None needs a key or an
+account, for the reason every lookup in this application does not. The switch
+is off until you turn it on, and the sentence beside it says what each costs:
+a search sends your question (and, preparing for a meeting, the names of the
+people in it) to a search engine; reading a page tells that site the page was
+asked for; a forecast, a place search or a route sends place names. Everything else the assistant does happens between this machine
 and the model endpoint you configured. With the switch off it says so when
 asked for something current, and where to turn it on, rather than answering
 from a memory of the world that ended when it was trained.
@@ -1768,13 +1792,14 @@ returned, or a link on a page it has already read — each exactly as written
 address carries no query string, since a query is where data rides. Anything
 else stops on a card that shows the whole address and asks; a scheduled run,
 with nobody to ask, is refused. Once mail has been read in a turn, every
-address asks. It cannot reach this
+address asks. A cover named by address is held to the same rule, since
+downloading it is reading it. It cannot reach this
 machine or your network at all, whoever gave it the address: names are
 resolved through the same filter that guards a message's remote images.
 
 **Mail is the same risk, doubled.** It is the first domain whose contents
 are written by strangers *and* whose tools reach strangers, so once a mail
-tool has returned content in a turn, `web_search` and `read_web_page` in that
+tool has returned content in a turn, every search and `read_web_page` in that
 same turn ask first and show what they would send — a model that has just
 read a stranger's words can put those words in a search and send them
 somewhere else entirely, and a turn that never touched mail is unchanged.

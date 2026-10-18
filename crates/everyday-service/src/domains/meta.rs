@@ -364,6 +364,18 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         ));
     }
 
+    // A cover named by address, fetched the way the assistant's own call
+    // fetches it (see `websearch::prefetch_cover`) -- but only for a caller
+    // that may reach the web, as `add_item`'s lookup is. One that may keep a
+    // list and not reach the web still saves the address, and the library
+    // offers to fetch it.
+    let mut args = args;
+    let cover = if ctx.holds(crate::ctx::Scope::Web) {
+        crate::websearch::prefetch_cover(&vault, &args.name, &mut args.arguments).await
+    } else {
+        None
+    };
+
     blocking(move || {
         let tz = system_tz();
         // Held for the call: `Service::mail_index` hands back an `Arc`, and
@@ -442,7 +454,8 @@ async fn run_tool(svc: Arc<Service>, ctx: Ctx, args: RunTool) -> CommandResult<V
         let (result, dispatched) = everyday_core::vault::touched::collect(|| {
             tools::dispatch(&ctx, &args.name, &args.arguments)
         });
-        let result = result.map_err(CommandError::from)?;
+        let mut result = result.map_err(CommandError::from)?;
+        crate::websearch::settle_cover(&vault, cover, &mut result);
         // See `mail_tool_change_kind`'s own doc: this is `run_tool`'s
         // equivalent of the `change:` a row in `command::COMMANDS` declares
         // for itself, for the one row -- this one -- whose actual effect

@@ -412,12 +412,13 @@
         <span>
           <b>Let it use the web</b>
           <small>
-            Searching, reading pages and checking the weather — the one thing it does that leaves
-            this computer for somewhere you did not choose. A search sends your question (and,
-            preparing for a meeting, the names of the people in it) to a search engine; reading a
-            page tells that site the page was asked for; a forecast sends a place name to
-            Open-Meteo. An address nobody gave it asks you first. Everything else stays between here
-            and the model endpoints under Models.
+            Searching, reading pages, checking the weather, finding places and the way to them — the
+            one thing it does that leaves this computer for somewhere you did not choose. A search
+            sends your question (and, preparing for a meeting, the names of the people in it) to a
+            search engine; reading a page tells that site the page was asked for; a forecast sends a
+            place name to Open-Meteo, and a place search or a route sends place names to
+            OpenStreetMap and Transitous. An address nobody gave it asks you first. Everything else
+            stays between here and the model endpoints under Models.
           </small>
         </span>
       </label>

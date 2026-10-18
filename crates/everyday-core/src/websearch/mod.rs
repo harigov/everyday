@@ -72,6 +72,7 @@ use crate::timestamped::Timestamped;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub mod images;
 mod sources;
 
 pub use sources::duckduckgo::parse_duckduckgo;

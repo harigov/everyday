@@ -12,7 +12,7 @@ use crate::id::{ItemId, LogId};
 use crate::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
 use crate::store::library::{ItemQuery, LogQuery};
 use crate::timestamped::Timestamped;
-use crate::websearch::Source;
+use crate::websearch::{Source, http_url};
 
 const ITEM_STATUSES: &[&str] = &["wishlist", "active", "paused", "done", "abandoned"];
 
@@ -81,11 +81,16 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("notes", text("Anything worth saying about it.")),
                 ("tags", list("Tags to attach.")),
                 fields_arg(),
+                image_arg(
+                    "A picture for its cover: the image_url of a look_up_item or \
+                     search_images result, or an address they gave you, exactly as written. \
+                     It is downloaded and kept with the item."
+                ),
             ],
             &["shelf_id", "title"]
         ),
         "Put something on a shelf. Does not look anything up online \u{2014} it records \
-         what you tell it.",
+         what you tell it, and downloads the picture at image_url if you give one.",
         run_create_item
     ),
     tool!(
@@ -117,11 +122,17 @@ pub(super) static TOOLS: &[Tool] = &[
                 ),
                 ("total", number("The finishing line, if you know it, in the same unit.")),
                 fields_arg(),
+                image_arg(
+                    "Replace its cover with this picture: the image_url of a look_up_item or \
+                     search_images result, or an address they gave you, exactly as written. \
+                     An empty string removes the cover."
+                ),
             ],
             &["item_id"]
         ),
         "Change something on a shelf: finish it, rate it, make it a favourite, say how \
-         far through you are, or fill in its fields. Fields not named are left alone.",
+         far through you are, fill in its fields or give it a cover. Fields not named are \
+         left alone.",
         run_update_item
     ),
     tool!(
@@ -280,6 +291,49 @@ fn set_fields(kind: &Kind, args: &Args<'_>, item: &mut Item) -> Result<()> {
     Ok(())
 }
 
+/// The `image_url` argument create_item and update_item share, described
+/// for each.
+fn image_arg(description: &'static str) -> (&'static str, Value) {
+    ("image_url", text(description))
+}
+
+/// Point `item`'s cover at an `image_url` argument, if there is one.
+///
+/// Only the address: the core cannot download anything (see
+/// [`crate::websearch`]'s module doc), so the picture itself is fetched by
+/// whoever ran the tool -- `everyday_service::websearch::prefetch_cover`,
+/// before the call, which hands the stored picture to
+/// `settle_cover` once this has saved the item. A caller that cannot reach
+/// the web leaves the address on the item, and the library offers to fetch
+/// it ("Get the cover") the way it does for a lookup that lost its network
+/// half-way.
+///
+/// A new address forgets the old picture, for the reason
+/// `chooseCover` in the interface does: the address is where the cover came
+/// from, and an old picture under a new address would be put back by the
+/// first "Get the cover". The same address again changes nothing. An empty
+/// string takes the cover away.
+fn set_cover_address(args: &Args<'_>, item: &mut Item) -> Result<()> {
+    // Read raw rather than through `opt_str`, which counts a blank string as
+    // absent: here a blank string is the instruction to take the cover away.
+    let Some(given) = args.get("image_url") else { return Ok(()) };
+    let Some(given) = given.as_str().map(str::trim) else {
+        return Err(args.bad("`image_url` must be a web address, or empty to remove the cover"));
+    };
+    if given.is_empty() {
+        item.cover = None;
+        item.cover_url.clear();
+        return Ok(());
+    }
+    let url = http_url(given)
+        .map_err(|_| args.bad("`image_url` must be a web address starting https:// or http://"))?;
+    if url != item.cover_url {
+        item.cover = None;
+        item.cover_url = url;
+    }
+    Ok(())
+}
+
 /// A fact short enough to belong in a listing: one line, and not a long
 /// one. A recipe's method is neither, and fifty of them would be the whole
 /// reply; get_item has it.
@@ -348,6 +402,14 @@ fn run_get_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
     if let Some(d) = item.started_on {
         m.insert("started_on".into(), json!(d.to_string()));
+    }
+    // Whether it has a cover, and where from when that is known -- so a
+    // model asked to "find it a picture" can see whether it already has one.
+    if item.cover.is_some() {
+        m.insert("has_cover".into(), json!(true));
+    }
+    if !item.cover_url.trim().is_empty() {
+        m.insert("image_url".into(), json!(item.cover_url));
     }
     // Where the words came from, when they are not all the owner's: the
     // assistant's gate reads this to treat the item as it treats a mail it
@@ -443,6 +505,7 @@ fn run_create_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     item.notes = args.opt_str("notes").unwrap_or_default().to_string();
     item.tags = args.strings("tags");
     set_fields(&kind, args, &mut item)?;
+    set_cover_address(args, &mut item)?;
 
     ctx.vault.save_item(&item)?;
     done(
@@ -493,6 +556,7 @@ fn run_update_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         let kind = ctx.vault.kind(item.kind_id)?;
         set_fields(&kind, args, &mut item)?;
     }
+    set_cover_address(args, &mut item)?;
 
     // Where you have got to, through the same `Item::set_progress` the
     // interface's own progress control uses.

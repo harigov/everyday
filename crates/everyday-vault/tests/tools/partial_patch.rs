@@ -466,6 +466,13 @@ fn update_item_touches_only_the_named_field() {
             i.tags = vec!["fiction".into(), "reread".into()];
         },
     );
+    check(
+        "image_url",
+        serde_json::json!({"item_id": item_id, "image_url": "https://covers.example/p.jpg"}),
+        &mut |i| {
+            i.cover_url = "https://covers.example/p.jpg".into();
+        },
+    );
 }
 
 #[test]

@@ -870,6 +870,18 @@ fn progress_line(name: &str, arguments: &serde_json::Value) -> String {
         "get_note" | "list_notes" => "Reading notes".to_string(),
         "get_weather" => "Checking the weather".to_string(),
         "look_up_item" => "Looking something up".to_string(),
+        "search_images" => match text("query") {
+            Some(query) => format!("Looking for pictures of {}", short(&query, 50)),
+            None => "Looking for pictures".to_string(),
+        },
+        "search_places" => match text("query") {
+            Some(query) => format!("Looking for {} on the map", short(&query, 50)),
+            None => "Looking at the map".to_string(),
+        },
+        "get_directions" => match text("to") {
+            Some(to) => format!("Finding the way to {}", short(&to, 50)),
+            None => "Finding the way".to_string(),
+        },
         "list_events" | "list_calendars" | "list_time_blocks" => {
             "Checking the calendar".to_string()
         }

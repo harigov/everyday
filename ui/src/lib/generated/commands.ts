@@ -53,6 +53,7 @@ import type {
   GoalActivity,
   GoalId,
   GoalQuery,
+  ImageResult,
   ImportProgress,
   ImportResult,
   ImportUpload,
@@ -329,6 +330,8 @@ export interface Commands {
   getThread: { args: { id: ThreadId }; result: ThreadDetail }
   getTranscript: { args: { noteId: NoteId }; result: Transcript | null }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
+  imagePreview: { args: { url: string }; result: string }
+  imageSearch: { args: { query: string; limit?: number | null }; result: ImageResult[] }
   importCalendar: {
     args: { name: string; label: string; color: string; ics: string }
     result: CalendarInfo
@@ -612,6 +615,7 @@ export interface Commands {
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
+  shrinkCover: { args: { blob: string }; result: string }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
   speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
@@ -745,6 +749,8 @@ export const COMMAND_NAMES = {
   getThread: 'get_thread',
   getTranscript: 'get_transcript',
   goalActivity: 'goal_activity',
+  imagePreview: 'image_preview',
+  imageSearch: 'image_search',
   importCalendar: 'import_calendar',
   importOpml: 'import_opml',
   improveWriting: 'improve_writing',
@@ -920,6 +926,7 @@ export const COMMAND_NAMES = {
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
   setTranscriberKey: 'set_transcriber_key',
+  shrinkCover: 'shrink_cover',
   snooze: 'snooze',
   speechModels: 'speech_models',
   star: 'star',
@@ -1060,6 +1067,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_thread',
   'get_transcript',
   'goal_activity',
+  'image_preview',
+  'image_search',
   'import_calendar',
   'import_opml',
   'improve_writing',
@@ -1234,6 +1243,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
+  'shrink_cover',
   'snooze',
   'speech_models',
   'star',
@@ -1416,6 +1426,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
+  'shrink_cover',
   'snooze',
   'star',
   'start_research',

@@ -432,6 +432,12 @@ async fn every_offline_write_announces_what_was_written_down() {
     )
     .await;
 
+    // A file chosen as a cover arrives through `put_blob`, like any
+    // attachment, and is then made a cover. No record changes, so nothing is
+    // announced: the item is saved with the cover's id afterwards.
+    let picture = svc.put_blob(&Ctx::local(), b"not a picture: kept as it came".to_vec()).await;
+    run(&svc, &h, "shrink_cover", json!({ "blob": picture.unwrap() })).await;
+
     // ---- accounts ---------------------------------------------------------
     //
     // `services.mail` is left off on this one: `save_account_password` would
