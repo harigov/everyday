@@ -29,12 +29,12 @@ export function startDayMove(e: DragEvent, move: DayMove) {
  * Is a day move what is being dragged over? Asked on `dragover`, where the
  * browser lets the types be seen but not the data.
  */
-export function carriesDayMove(e: DragEvent): boolean {
+function carriesDayMove(e: DragEvent): boolean {
   return !!e.dataTransfer?.types.includes(DAY_MOVE)
 }
 
 /** The day move being dropped, or `null` for anything else. */
-export function readDayMove(e: DragEvent): DayMove | null {
+function readDayMove(e: DragEvent): DayMove | null {
   const raw = e.dataTransfer?.getData(DAY_MOVE)
   if (!raw) return null
   try {
@@ -50,4 +50,32 @@ export function readDayMove(e: DragEvent): DayMove | null {
     // Something else's data under our type; not ours to read.
   }
   return null
+}
+
+/**
+ * A day's cell as somewhere a day move can land: the three handlers its
+ * element needs. `light` is told which day to show as the target while
+ * something is over it, and `null` once it is not; `land` is given what
+ * was dropped and where.
+ */
+export function dayDropTarget(
+  light: (day: string | null) => void,
+  land: (move: DayMove, day: string) => void,
+) {
+  return {
+    over: (e: DragEvent, day: string) => {
+      if (!carriesDayMove(e)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+      light(day)
+    },
+    leave: () => light(null),
+    drop: (e: DragEvent, day: string) => {
+      light(null)
+      const move = readDayMove(e)
+      if (!move) return
+      e.preventDefault()
+      land(move, day)
+    },
+  }
 }

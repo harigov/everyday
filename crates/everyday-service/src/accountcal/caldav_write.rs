@@ -356,8 +356,9 @@ fn read(ics: &str) -> CommandResult<ICalendar> {
 
 /// This account, as far as an iCalendar file is concerned: the address it
 /// organises from, the name to sign that with, and every address that
-/// counts as "us" when an `ORGANIZER` is read back.
-struct Me {
+/// counts as "us" when an `ORGANIZER` is read back. The sync reads it too,
+/// for [`Event::own`](everyday_core::calendar::Event::own).
+pub(super) struct Me {
     name: String,
     address: String,
     /// Lower-cased: the account's own address and every identity's. An
@@ -366,7 +367,7 @@ struct Me {
 }
 
 impl Me {
-    fn of(account: &Account) -> Self {
+    pub(super) fn of(account: &Account) -> Self {
         let address = account.address.trim().to_string();
         let name = Some(account.display_name.trim())
             .filter(|name| !name.is_empty())
@@ -733,7 +734,7 @@ fn response_of(entry: &ICalendarEntry) -> Option<AttendeeResponse> {
 
 /// Is this component this account's to change? Yes when nobody organised it
 /// -- a plain event on somebody's own calendar -- or this account did.
-fn owned_by(comp: &ICalendarComponent, me: &Me) -> bool {
+pub(super) fn owned_by(comp: &ICalendarComponent, me: &Me) -> bool {
     comp.property(&ICalendarProperty::Organizer)
         .and_then(address_of)
         .is_none_or(|address| me.is(&address))
@@ -1760,6 +1761,7 @@ mod tests {
             CalendarId::new(),
             "/cal/event.ics",
             "UTC",
+            &me(),
             window,
             now(),
         );

@@ -208,6 +208,10 @@ struct GoogleAttendee {
     email: String,
     #[serde(rename = "displayName")]
     display_name: Option<String>,
+    /// Set on the organizer (or a guest) that is this account -- what
+    /// [`Event::own`] is read from.
+    #[serde(rename = "self")]
+    is_self: Option<bool>,
 }
 
 impl GoogleAttendee {
@@ -439,6 +443,8 @@ fn to_event(
         url: item.html_link.clone(),
         busy: item.transparency != "transparent",
         series: item.recurring_event_id.clone().or_else(|| item.i_cal_uid.clone()),
+        // Nobody organised it, or this account did -- `load`'s own test.
+        own: Some(item.organizer.as_ref().is_none_or(|o| o.is_self == Some(true))),
         updated_at: now,
     })
 }
@@ -1110,5 +1116,26 @@ mod tests {
         let item = bare_google_event("evt-1");
         let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series, None);
+    }
+
+    /// `organizer.self` is what says whether the grid may offer a drag.
+    /// No organizer at all is an event on somebody's own calendar: theirs,
+    /// which here is this account's.
+    #[test]
+    fn organizer_self_becomes_whether_the_event_is_this_accounts_own() {
+        let read = |item: &GoogleEvent| {
+            to_event(CalendarId::new(), item, "UTC", jiff::Timestamp::now()).unwrap().own
+        };
+        let mut item = bare_google_event("evt-1");
+        assert_eq!(read(&item), Some(true), "nobody organised it");
+        let organizer = |is_self| GoogleAttendee {
+            email: "priya@example.com".into(),
+            display_name: Some("Priya Raman".into()),
+            is_self,
+        };
+        item.organizer = Some(organizer(None));
+        assert_eq!(read(&item), Some(false), "somebody else did");
+        item.organizer = Some(organizer(Some(true)));
+        assert_eq!(read(&item), Some(true), "this account did");
     }
 }

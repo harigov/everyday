@@ -578,6 +578,7 @@ fn materialise(
         // comment above) and `detect::series_key`'s suffix-stripping
         // fallback already recovers it, the same way it does for CalDAV.
         series: None,
+        own: None,
         updated_at: Timestamp::now(),
     })
 }

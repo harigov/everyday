@@ -236,6 +236,10 @@ async function open(event) {
   return shown
 }
 
+const localToday = (() => {
+  const now = new Date()
+  return plusDays(`${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`, 0)
+})()
 const minutesIn = (ts) => new Date(ts).getHours() * 60 + new Date(ts).getMinutes()
 const lengthOf = (e) => (Date.parse(e.end) - Date.parse(e.start)) / 60_000
 
@@ -286,20 +290,51 @@ const lengthOf = (e) => (Date.parse(e.end) - Date.parse(e.start)) / 60_000
 }
 
 {
-  // Somebody else's: not asked about, not written, and not moved again.
+  // Somebody else's, as its sync says: not offered at all.
   const [seeded] = await onWork('Quarterly review')
   const review = await open(seeded)
-  await calendar.moveEvent(review, review.localDate, 9 * 60)
+  assert.equal(review.own, false, 'the sync says whose it is')
+  assert.equal(calendar.canMove(review), false, 'so it is not offered as movable')
+
+  // One whose sync did not say: the server is asked on the drop, and says.
+  const unknown = { ...review, own: undefined }
+  assert.ok(calendar.canMove(unknown), 'not knowing, it is offered')
+  await calendar.moveEvent(unknown, review.localDate, 9 * 60)
   assert.equal(calendar.moveQuestion, null, 'somebody else’s meeting asks nothing')
   assert.equal((await onWork('Quarterly review'))[0].start, review.start, 'and stays put')
-  assert.equal(calendar.canMove(review), false, 'and is not offered as movable again')
+  assert.equal(calendar.canMove(unknown), false, 'and is not offered again')
+}
+
+{
+  // A drag from a stale copy -- moved elsewhere since the last sync --
+  // changes what the server has, not what this vault last saw.
+  const [lunch] = await onWork('Lunch with Ana')
+  const stale = {
+    ...lunch,
+    start: new Date(Date.parse(lunch.start) - 3_600_000).toISOString(),
+    end: new Date(Date.parse(lunch.end) - 3_600_000).toISOString(),
+  }
+  const stretching = calendar.resizeEvent(stale, 30)
+  await until(() => calendar.moveQuestion, 'the question for a stale resize')
+  calendar.moveQuestion.options[0].run()
+  await stretching
+  const [after] = await onWork('Lunch with Ana')
+  assert.equal(after.start, lunch.start, 'a resize keeps the start the server has')
+  assert.equal(lengthOf(after), 30, 'at the new length')
+
+  // And Edit waits for a move on its way: it would read the old times.
+  const fresh = await open(after)
+  const moving = calendar.moveEvent(fresh, fresh.localDate, 13 * 60)
+  await calendar.editEvent(fresh.id)
+  assert.equal(calendar.editing, null, 'no editor opens while it is moving')
+  await until(() => calendar.moveQuestion, 'the question for the move')
+  calendar.moveQuestion.cancel()
+  await moving
 }
 
 {
   // One of a series, this occurrence only.
-  const now = new Date()
-  const today = plusDays(`${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`, 0)
-  const upcoming = (await onWork('Team sync')).filter((e) => e.localDate > today)
+  const upcoming = (await onWork('Team sync')).filter((e) => e.localDate > localToday)
   const [first, second] = upcoming
   const sync = await open(first)
   const before = (await onWork('Team sync')).length
@@ -331,6 +366,96 @@ const lengthOf = (e) => (Date.parse(e.end) - Date.parse(e.start)) / 60_000
     shifted.every((e) => new Date(e.start).getDay() === weekday && minutesIn(e.start) === 9 * 60),
     'every occurrence is on the next weekday, at nine',
   )
+}
+
+{
+  // Two moves waiting at once ask one after the other, and both land.
+  const [lunch] = await onWork('Lunch with Ana')
+  const sync = (await onWork('Team sync')).find((e) => e.localDate > localToday)
+  const first = calendar.moveEvent(lunch, lunch.localDate, 13 * 60)
+  const second = calendar.moveEvent(sync, sync.localDate, 15 * 60)
+  const asked = []
+  for (const _ of [1, 2]) {
+    await until(() => calendar.moveQuestion, 'the next question')
+    const shown = calendar.moveQuestion
+    asked.push(shown.title)
+    shown.options[0].run()
+    await until(() => calendar.moveQuestion !== shown, 'the question to go')
+  }
+  await Promise.all([first, second])
+  assert.equal(asked.length, 2, 'each move is asked about')
+  assert.ok(asked.some((t) => t.includes('Lunch')) && asked.some((t) => t.includes('Team sync')))
+  assert.equal(calendar.moves.size, 0, 'and neither is left waiting')
+  assert.equal(minutesIn((await onWork('Lunch with Ana'))[0].start), 13 * 60, 'lunch moved')
+  const synced = (await onWork('Team sync')).find((e) => e.localDate === sync.localDate)
+  assert.equal(minutesIn(synced.start), 15 * 60, 'and so did the sync')
+}
+
+{
+  // With the editor open on one of a series, a drag to another day leaves
+  // the repeat alone -- Save still asks -- and "all of them" carries it.
+  const upcoming = (await onWork('Team sync')).filter((e) => e.localDate > localToday)
+  const occurrence = await open(upcoming[1])
+  await calendar.editEvent(occurrence.id)
+  const before = JSON.stringify(calendar.editing.event.draft.recurrence)
+  await calendar.moveEvent(occurrence, plusDays(occurrence.localDate, 1), 9 * 60)
+  assert.equal(
+    JSON.stringify(calendar.editing.draft.recurrence),
+    before,
+    'the repeat is as the server had it, so Save asks which is meant',
+  )
+  assert.equal(await calendar.saveEdit('series'), null, 'saving all of them works')
+  const weekday = (new Date(occurrence.start).getDay() + 1) % 7
+  assert.ok(
+    (await onWork('Team sync')).every((e) => new Date(e.start).getDay() === weekday),
+    'and the repeat followed it to the next day',
+  )
+}
+
+{
+  // A repeat that cannot follow a move to another day: Monday and
+  // Wednesday, with its first dragged to Tuesday.
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const monday = plusDays(localToday, (8 - new Date().getDay()) % 7 || 7)
+  const at = (iso, h) => {
+    const [y, m, d] = iso.split('-').map(Number)
+    return new Date(y, m - 1, d, h).toISOString()
+  }
+  await api.createEvent('c-google-work', {
+    title: 'Mon and Wed',
+    description: '',
+    location: '',
+    start: at(monday, 8),
+    end: at(monday, 9),
+    allDay: false,
+    tz,
+    attendees: [],
+    recurrence: { frequency: 'weekly', interval: 1, weekdays: ['monday', 'wednesday'] },
+  })
+  const [first] = await onWork('Mon and Wed')
+  const twice = await open(first)
+  const moving = calendar.moveEvent(twice, plusDays(twice.localDate, 1), 8 * 60)
+  await until(() => calendar.moveQuestion, 'the series question')
+  assert.deepEqual(
+    calendar.moveQuestion.options.map((o) => o.label),
+    ['This event'],
+    'only this one is offered',
+  )
+  assert.match(calendar.moveQuestion.detail, /cannot follow it to another day/)
+  calendar.moveQuestion.cancel()
+  await moving
+
+  // The same through the editor: "all of them" says why not.
+  await calendar.editEvent(twice.id)
+  await calendar.moveEvent(twice, plusDays(twice.localDate, 1), 8 * 60)
+  const refused = await calendar.saveEdit('series')
+  assert.match(refused ?? '', /cannot follow it to another day/, 'the editor is told why')
+  assert.equal((await onWork('Mon and Wed'))[0].start, first.start, 'and nothing was written')
+
+  // An editor that has made it all-day: the timed slot is not draggable.
+  calendar.patchEdit({ allDay: true })
+  assert.equal(calendar.canMove(twice), false, 'a timed drag means nothing to it now')
+  calendar.cancelEdit()
 }
 
 {

@@ -13,7 +13,7 @@
   import { APPS } from './lib/apps'
   import './lib/notes.svelte'
   import { todo } from './lib/todo.svelte'
-  import './lib/calendar.svelte'
+  import { calendar } from './lib/calendar.svelte'
   import { library } from './lib/library.svelte'
   import './lib/mail.svelte'
   import { feed } from './lib/feed.svelte'
@@ -51,6 +51,7 @@
   import Notices from './components/Notices.svelte'
   import Toasts from './components/Toasts.svelte'
   import ContextMenu from './components/ContextMenu.svelte'
+  import ChoiceDialog from './components/ChoiceDialog.svelte'
   import ChatPanel from './components/ChatPanel.svelte'
   import Icon from './components/Icon.svelte'
   import MeetingOfferBanner from './components/MeetingOfferBanner.svelte'
@@ -227,6 +228,15 @@
 <!-- Also outside the screen switch, and mounted once: there is one context
      menu in the window, and every list opens it through the store. -->
 <ContextMenu />
+<!-- A calendar event dragged somewhere that has to ask first: which of a
+     series it means, or whether its guests are to be told. Here rather than
+     in the calendar, because the server can answer after you have gone to
+     another app, and a question nobody can see would leave the move waiting
+     for ever. It names the event and the new time, so it reads anywhere. -->
+{#if calendar.moveQuestion}
+  {@const q = calendar.moveQuestion}
+  <ChoiceDialog title={q.title} detail={q.detail} options={q.options} oncancel={q.cancel} />
+{/if}
 
 <div class="app" style="--journal-accent: {accent}">
   {#if app.screen !== 'main'}

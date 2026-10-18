@@ -378,6 +378,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         url: String::new(),
         busy: true,
         series: None,
+        own: None,
         updated_at: clock.next(),
     };
     // Through `with_store`, not `sync_account_calendar`: that method calls

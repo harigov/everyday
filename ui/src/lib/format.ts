@@ -11,7 +11,7 @@
 // of "the local calendar day" is four places for the same off-by-a-timezone
 // bug to be fixed in three of.
 
-import { isoDate, locale, startOfDay } from './time'
+import { daysApart, isoDate, locale, startOfDay } from './time'
 
 // ── the formatters ─────────────────────────────────────────────────────
 //
@@ -93,9 +93,7 @@ function relativeFormat(options: Intl.RelativeTimeFormatOptions): Intl.RelativeT
 }
 
 export function daysBetween(a: Date, b: Date): number {
-  return Math.round(
-    (startOfDay(isoDate(b)).getTime() - startOfDay(isoDate(a)).getTime()) / 86_400_000,
-  )
+  return daysApart(isoDate(a), isoDate(b))
 }
 
 /** "Today", "Yesterday", "Tuesday", or a date — whichever a reader expects.

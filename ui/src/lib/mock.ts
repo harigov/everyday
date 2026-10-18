@@ -2638,6 +2638,8 @@ function writeMockSeries(key: string, series: MockSeries): CalendarEvent[] {
       organizer: series.organizer,
       url: '',
       busy: true,
+      // As a sync records it: Google's `organizer.self` and the rest.
+      own: series.own,
     }
     events.push(event)
     seriesOfEvent.set(event.id, key)

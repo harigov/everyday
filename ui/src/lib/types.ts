@@ -1466,6 +1466,11 @@ export interface CalendarEvent {
   url: string
   /** False for a "free" or cancelled event, which should not read as a clash. */
   busy: boolean
+  /**
+   * Whether this account organised it, as its sync was told; absent where
+   * the source does not say. Somebody else's is not offered as movable.
+   */
+  own?: boolean | null
   updatedAt: string
 }
 

@@ -533,6 +533,7 @@ fn online_event(calendar_id: CalendarId, offset_secs: i64, attendees: &[String])
         url: String::new(),
         busy: true,
         series: None,
+        own: None,
         updated_at: now,
     }
 }

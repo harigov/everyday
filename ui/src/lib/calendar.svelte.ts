@@ -36,7 +36,7 @@ import { ask, quick } from './quick.svelte'
 import { Autosave } from './autosave'
 import { pref } from './prefs'
 import { edited, proposals, recordAs } from './proposals.svelte'
-import { carryRule, dayIn, midnightIn } from './recurrence'
+import { carryRule, dayIn, matchPreset, midnightIn, sameRecurrence } from './recurrence'
 import { app, errorMessage, handle, isLocked, quietly } from './state.svelte'
 import { latest } from './store/latest'
 import { optimisticPatch } from './store/optimistic-patch'
@@ -348,8 +348,8 @@ class CalendarState {
   editing = $state<EventEdit | null>(null)
   /** Account events dragged somewhere and not yet back from their servers, by id. */
   moves = new SvelteMap<EventId, EventPlace>()
-  /** What a move is waiting to hear before it is sent. See `moveEvent`. */
-  moveQuestion = $state.raw<MoveQuestion | null>(null)
+  /** Questions moves are waiting on, oldest first. See `#askToMove`. */
+  #questions = $state.raw<MoveQuestion[]>([])
   /** Events a move found to be somebody else's meeting. They stay put. */
   #theirs = new SvelteSet<EventId>()
   /**
@@ -449,6 +449,11 @@ class CalendarState {
     return this.#selection
   }
 
+  /** The question on the sheet: the oldest move still waiting on one. */
+  get moveQuestion(): MoveQuestion | null {
+    return this.#questions[0] ?? null
+  }
+
   set selection(next: Selection) {
     this.#selection = next
     if (next?.kind !== 'draft') this.draft = null
@@ -481,7 +486,9 @@ class CalendarState {
     this.syncNote = null
     // A move waiting on its question is not sent; one already on its way
     // finishes or fails behind the lock, and is not drawn either way.
-    this.moveQuestion?.cancel()
+    const asking = this.#questions
+    this.#questions = []
+    for (const question of asking) question.cancel()
     this.moves.clear()
     this.#theirs.clear()
     this.#calendarsKnown = false
@@ -796,8 +803,12 @@ class CalendarState {
    * The events, each where it should be drawn: where it was dragged to,
    * while its server is told -- or where the editor open on it has it, so
    * a time typed in the rail moves the slot, as it does a new event's.
+   *
+   * Derived, so it is worked out once per change: `slotsOn` and `allDayOn`
+   * read it for every day on screen -- forty-two of them in the month --
+   * and the timer strip reads it every second.
    */
-  get shownEvents(): CalendarEvent[] {
+  shownEvents = $derived.by((): CalendarEvent[] => {
     const open = this.editing?.status === 'ready' && this.editing.event.own ? this.editing : null
     if (this.moves.size === 0 && !open) return this.events
     return this.events.map((event) => {
@@ -808,7 +819,7 @@ class CalendarState {
       if (start === event.start && end === event.end) return event
       return { ...event, ...placeOf(event, start, end) }
     })
-  }
+  })
 
   /**
    * Readings that occupy a *length* of time, as rectangles.
@@ -1604,6 +1615,9 @@ class CalendarState {
    */
   async editEvent(id: EventId) {
     this.selection = { kind: 'event', id }
+    // Not while a move of it is on its way: the server would hand back the
+    // times it is moving away from, and Save would write them back over it.
+    if (this.moves.has(id)) return
     this.editing = { id, status: 'loading' }
     try {
       const event = await api.loadEvent(id)
@@ -1635,7 +1649,14 @@ class CalendarState {
   async saveEdit(scope: EventScope): Promise<string | null> {
     const open = this.editing
     if (open?.status !== 'ready') return null
-    const draft = $state.snapshot(open.draft)
+    let draft = $state.snapshot(open.draft)
+    if (scope === 'series') {
+      // Moved to another day -- typed, or dragged on the grid -- and meant
+      // for all of them: the repeat follows, or this says why it cannot.
+      const series = this.#forSeries(open.event, draft)
+      if (typeof series === 'string') return series
+      draft = series
+    }
     const calendarId = open.event.calendarId
     try {
       await api.updateEvent(open.id, draft, scope)
@@ -1703,32 +1724,43 @@ class CalendarState {
 
   /**
    * Can `event` be picked up and moved? Only on a calendar this vault may
-   * write to; not a cancelled one, nor one already found to be somebody
-   * else's meeting, nor one whose last move is still on its way.
+   * write to, and only one of this account's own -- `own` from the sync
+   * where its source says, or found out by the first move that asked. Not a
+   * cancelled one, nor one whose last move is still on its way, nor one
+   * whose editor has made it all-day or timed when the grid still draws it
+   * the other way, where a drag would mean nothing the editor could hold.
    */
   canMove(event: CalendarEvent): boolean {
+    const open = this.editing
     return (
       this.calendarOf(event.calendarId)?.access === 'writable' &&
       event.status !== 'cancelled' &&
+      event.own !== false &&
       !this.#theirs.has(event.id) &&
-      !this.moves.has(event.id)
+      !this.moves.has(event.id) &&
+      !(open?.id === event.id && open.status === 'ready' && open.draft.allDay !== event.allDay)
     )
   }
 
   /** Move a timed event to `startMinutes` into `day`, keeping its length. */
   moveEvent(event: CalendarEvent, day: string, startMinutes: number): Promise<void> {
     const start = instantAt(day, startMinutes)
-    const length = Date.parse(event.end) - Date.parse(event.start)
-    const end = new Date(Date.parse(start) + length).toISOString()
-    return this.#reschedule(event, placeOf(event, start, end), () => ({ start, end }))
+    const after = (from: string, to: string) =>
+      new Date(Date.parse(start) + Date.parse(to) - Date.parse(from)).toISOString()
+    return this.#reschedule(event, placeOf(event, start, after(event.start, event.end)), (d) => ({
+      start,
+      end: after(d.start, d.end),
+    }))
   }
 
   /** Change a timed event's length, holding its start. */
   resizeEvent(event: CalendarEvent, minutes: number): Promise<void> {
-    const { start } = event
     const length = Math.max(MIN_BLOCK_MINUTES, minutes) * 60_000
-    const end = new Date(Date.parse(start) + length).toISOString()
-    return this.#reschedule(event, placeOf(event, start, end), () => ({ start, end }))
+    const end = (start: string) => new Date(Date.parse(start) + length).toISOString()
+    return this.#reschedule(event, placeOf(event, event.start, end(event.start)), (d) => ({
+      start: d.start,
+      end: end(d.start),
+    }))
   }
 
   /**
@@ -1795,14 +1827,17 @@ class CalendarState {
     const open = this.editing
     if (open?.id === id && open.status === 'ready' && open.event.own) {
       // Its editor is open in the rail: the move is one more change to what
-      // is being edited there, written with the rest of them on Save.
-      this.patchEdit(this.#placed(open.draft, place(open.draft)))
+      // is being edited there, written with the rest of them on Save. The
+      // times only -- the repeat is left as the server had it, so Save
+      // still asks which of a series is meant (`saveEdit` carries it if
+      // the answer is all of them).
+      this.patchEdit(place(open.draft))
       return
     }
     // An editor still asking for it, or one that could not, would open on
-    // the times it is moving away from.
+    // the times it is moving away from. `editEvent` will not open another
+    // until this move has landed.
     if (open?.id === id) this.editing = null
-    const selected = this.selection?.kind === 'event' && this.selection.id === id
     const locks = this.#locks
     this.moves.set(id, shown)
     try {
@@ -1810,7 +1845,8 @@ class CalendarState {
       if (locks !== this.#locks) return
       if (!loaded.own) {
         // Theirs to move: a change made here would only diverge from the
-        // one they send, and the server would refuse most of it anyway.
+        // one they send. Their sync may not have said so (`own`); the
+        // server just has, and it is remembered until the vault locks.
         this.#theirs.add(id)
         notify.info(`Only ${loaded.organizer || 'whoever organised it'} can move this`, {
           body: `“${event.title}” is their meeting, so it stays where it was.`,
@@ -1819,15 +1855,18 @@ class CalendarState {
         return
       }
       const moved = { ...loaded.draft, ...place(loaded.draft) }
-      const scope = await this.#askToMove(event.title, loaded, moved)
+      const series = loaded.recurring ? this.#forSeries(loaded, moved) : null
+      const scope = await this.#askToMove(event.title, loaded, moved, series)
       if (!scope || locks !== this.#locks) return
-      // The whole of a series moves the way this one did, and its repeat
-      // goes with it: a weekly Tuesday dragged to Thursday is a weekly
-      // Thursday, as it is when the day is changed in the editor. One
-      // occurrence keeps the series' rule exactly as it was read.
-      const draft = scope === 'series' ? this.#placed(loaded.draft, moved) : moved
+      // One occurrence keeps the series' rule exactly as it was read.
+      const draft = scope === 'series' && series && typeof series !== 'string' ? series : moved
       await api.updateEvent(id, draft, scope)
+      // Asked now rather than when the drag began: a click elsewhere, or
+      // Escape, while the server was answering was a choice to look at
+      // something else, and the move landing should not undo it.
+      const selected = this.selection?.kind === 'event' && this.selection.id === id
       await this.refresh()
+      if (locks !== this.#locks) return
       // A move can come back as an occurrence with a new id -- CalDAV's
       // carry their start -- and the one that was selected is found again
       // by where it now is, as after a Save.
@@ -1842,27 +1881,55 @@ class CalendarState {
   }
 
   /**
-   * `draft` at new times, with its repeat carried onto the day it now
-   * starts -- `EventEditor`'s `setDay`, for a draft moved on the grid.
+   * `draft`, to be written to the whole of its series.
+   *
+   * The server moves a series the way its occurrence moved (the service's
+   * `draft_for_series`): the same number of days on, at the new time. So
+   * when the day changed, the repeat has to follow it, or the series would
+   * start on a day its own rule never falls on -- a weekly Tuesday dragged
+   * to Thursday is a weekly Thursday. Days are the event's own zone's,
+   * which is where its server reads the rule. A repeat changed by hand
+   * says where it falls itself and is left alone.
+   *
+   * Some rules cannot follow: two days a week, an ending, a count, one this
+   * app cannot read (`customRecurrence`). Moving the first of "Monday and
+   * Wednesday" to Tuesday has no right answer, so those answer why not,
+   * for the editor to show or the move question to say.
    */
-  #placed(draft: EventDraft, at: Pick<EventDraft, 'start' | 'end'>): EventDraft {
-    const dayOf = (start: string) =>
-      draft.allDay ? dayIn(start, draft.tz) : isoDate(new Date(start))
-    const [from, to] = [dayOf(draft.start), dayOf(at.start)]
-    if (from === to) return { ...draft, ...at }
-    return { ...draft, ...at, recurrence: carryRule(draft.recurrence, from, to) }
+  #forSeries(loaded: EditableEvent, draft: EventDraft): EventDraft | string {
+    const rule = loaded.draft.recurrence
+    const tz = draft.tz || null
+    const from = dayIn(loaded.draft.start, tz)
+    const to = dayIn(draft.start, tz)
+    if (from === to) return draft
+    if (!sameRecurrence(rule, draft.recurrence, loaded.draft.start, tz)) return draft
+    const preset = loaded.customRecurrence ? 'custom' : matchPreset(rule, loaded.draft.start, tz)
+    if (preset === 'custom' || preset === 'none') {
+      return 'Its repeat cannot follow it to another day from here, so only this one can move.'
+    }
+    return { ...draft, recurrence: carryRule(rule, from, to, tz) }
   }
 
   /**
    * What a move has to have answered before it is sent, asked in a sheet
-   * over the grid: which of a series it means, and -- when there are
-   * guests -- that they are about to be told, because a drag is a much
-   * smaller gesture than a button that says "notify guests". A one-off
-   * with nobody else on it asks nothing, the way a block does not.
+   * over whatever is on screen: which of a series it means, and -- when
+   * there are guests -- that they are about to be told, because a drag is a
+   * much smaller gesture than a button that says "notify guests". A
+   * one-off with nobody else on it asks nothing, the way a block does not.
+   *
+   * `series` is `#forSeries`'s answer: a reason in place of a draft takes
+   * "All events" off the sheet and says why.
    *
    * Answers the scope to write with, or `null` for "leave it where it was".
+   * Two moves waiting at once ask one after the other, in the order they
+   * were dropped: the sheet shows the oldest (`moveQuestion`).
    */
-  #askToMove(title: string, loaded: EditableEvent, moved: EventDraft): Promise<EventScope | null> {
+  #askToMove(
+    title: string,
+    loaded: EditableEvent,
+    moved: EventDraft,
+    series: EventDraft | string | null,
+  ): Promise<EventScope | null> {
     const guests = loaded.draft.attendees
     if (!loaded.recurring && guests.length === 0) return Promise.resolve('occurrence')
     const first = guests[0]
@@ -1872,26 +1939,34 @@ class CalendarState {
         : guests.length === 1 && first
           ? `${first.name || first.email} is sent the new time.`
           : 'Everyone invited is sent the new time.'
-    const detail = [`To ${whenOf(moved)}.`, loaded.recurring ? 'It is one of a series.' : '', told]
+    const why = typeof series === 'string' ? series : ''
+    const detail = [
+      `To ${whenOf(moved)}.`,
+      loaded.recurring ? 'It is one of a series.' : '',
+      why,
+      told,
+    ]
       .filter(Boolean)
       .join(' ')
     return new Promise((resolve) => {
       const answer = (scope: EventScope | null) => () => {
-        if (this.moveQuestion === question) this.moveQuestion = null
+        this.#questions = this.#questions.filter((q) => q !== question)
         resolve(scope)
       }
       const question: MoveQuestion = {
         title: `Move “${title}”?`,
         detail,
-        options: loaded.recurring
-          ? [
-              { label: 'This event', run: answer('occurrence') },
-              { label: 'All events', run: answer('series') },
-            ]
-          : [{ label: 'Move and notify guests', run: answer('occurrence') }],
+        options: !loaded.recurring
+          ? [{ label: 'Move and notify guests', run: answer('occurrence') }]
+          : why
+            ? [{ label: 'This event', run: answer('occurrence') }]
+            : [
+                { label: 'This event', run: answer('occurrence') },
+                { label: 'All events', run: answer('series') },
+              ],
         cancel: answer(null),
       }
-      this.moveQuestion = question
+      this.#questions = [...this.#questions, question]
     })
   }
 

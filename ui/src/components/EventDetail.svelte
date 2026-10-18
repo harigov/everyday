@@ -473,6 +473,12 @@
             <Icon name="lock" size={13} />
             Only {edit.event.organizer || 'whoever organised it'} can change this event.
           </p>
+        {:else if event.own === false && cal?.access === 'writable'}
+          <!-- The same, known from the sync without asking the server. -->
+          <p class="readonly">
+            <Icon name="lock" size={13} />
+            Only {event.organizer || 'whoever organised it'} can change this event.
+          </p>
         {/if}
 
         {#if cal?.access === 'needsSignIn'}
@@ -500,7 +506,10 @@
               <button
                 class="btn btn-outline"
                 disabled={edit?.status === 'loading' ||
-                  (edit?.status === 'ready' && !edit.event.own)}
+                  (edit?.status === 'ready' && !edit.event.own) ||
+                  event.own === false ||
+                  calendar.moves.has(event.id)}
+                title={calendar.moves.has(event.id) ? 'Moving it — one moment' : undefined}
                 onclick={() => calendar.editEvent(event.id)}
               >
                 <Icon name="pencil" size={14} />

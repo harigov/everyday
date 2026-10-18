@@ -39,7 +39,7 @@
     snap,
     todayIso,
   } from '../lib/time'
-  import { carriesDayMove, readDayMove, startDayMove } from '../lib/day-move'
+  import { dayDropTarget, startDayMove } from '../lib/day-move'
   import type { CalendarEvent, Proposal, TimeBlock } from '../lib/types'
   import Icon from './Icon.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
@@ -54,10 +54,10 @@
   const RESIZE_GRIP = 7
   /**
    * How far the pointer must travel before a press on something becomes a
-   * drag of it. Without it the slightest wobble during a click counted:
-   * harmless on a block, which sits on the quarter hours anyway, but a
-   * meeting at 10:05 snapped to 10:00 -- a write to its server, and maybe
-   * a question about its guests, for a click that meant "show me this".
+   * drag of it: until then it is a click, and nothing is drawn as being
+   * dragged. What keeps a click -- or a drag put back where it began --
+   * from writing anything is that a move is snapped by the distance moved,
+   * not to the quarter hours: see `onColumnPointerMove`.
    */
   const DRAG_SLOP = 4
   /**
@@ -425,9 +425,17 @@
     } else if (drag.mode === 'move') {
       // The day comes from the column the pointer is over, so a block can be
       // dragged across the week and not merely up and down its own day.
-      drag = { ...drag, day: iso, start: Math.max(0, snap(at - drag.grabbed)) }
+      //
+      // Snapped by how far it has moved rather than to the quarter hours,
+      // so a meeting at 10:05 goes to 10:20 or 11:05 -- and one put back
+      // where it was is where it was, not at 10:00, which would be a write
+      // to its server (and a question about its guests) for no change.
+      const was = drag.from.start
+      drag = { ...drag, day: iso, start: Math.max(0, was + snap(at - drag.grabbed - was)) }
     } else {
-      drag = { ...drag, end: Math.max(drag.start + MIN_BLOCK_MINUTES, snap(at)) }
+      // The same for the bottom edge: by how far it has been pulled.
+      const was = drag.start + drag.from.length
+      drag = { ...drag, end: Math.max(drag.start + MIN_BLOCK_MINUTES, was + snap(at - was)) }
     }
   }
 
@@ -484,20 +492,10 @@
 
   // ── moving an all-day event along the band ─────────────────────────────
 
-  function onBandDragOver(e: DragEvent, iso: string) {
-    if (!carriesDayMove(e)) return
-    e.preventDefault()
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    bandDrop = iso
-  }
-
-  function onBandDrop(e: DragEvent, iso: string) {
-    bandDrop = null
-    const move = readDayMove(e)
-    if (!move) return
-    e.preventDefault()
-    calendar.moveToDay(move, iso)
-  }
+  const band = dayDropTarget(
+    (iso) => (bandDrop = iso),
+    (move, iso) => calendar.moveToDay(move, iso),
+  )
 
   // ── dropping a task in from the rail ───────────────────────────────────
 
@@ -593,9 +591,9 @@
       <div
         class="bandcell"
         class:droptarget={bandDrop === iso}
-        ondragover={(e) => onBandDragOver(e, iso)}
-        ondragleave={() => (bandDrop = null)}
-        ondrop={(e) => onBandDrop(e, iso)}
+        ondragover={(e) => band.over(e, iso)}
+        ondragleave={band.leave}
+        ondrop={(e) => band.drop(e, iso)}
       >
         {#if pendingAllDayOn(iso)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->

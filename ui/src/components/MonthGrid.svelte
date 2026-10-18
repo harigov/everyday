@@ -14,7 +14,7 @@
   // changes as you page through the year makes everything below it jump.
 
   import { calendar } from '../lib/calendar.svelte'
-  import { carriesDayMove, readDayMove, startDayMove, type DayMove } from '../lib/day-move'
+  import { dayDropTarget, startDayMove, type DayMove } from '../lib/day-move'
   import { daysFrom, startOfWeek, todayIso } from '../lib/time'
   import { dateFormat, timeOfDay } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
@@ -156,21 +156,10 @@
 
   /** The day something is being dragged over. */
   let dropOn = $state<string | null>(null)
-
-  function onDragOver(e: DragEvent, iso: string) {
-    if (!carriesDayMove(e)) return
-    e.preventDefault()
-    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    dropOn = iso
-  }
-
-  function onDrop(e: DragEvent, iso: string) {
-    dropOn = null
-    const move = readDayMove(e)
-    if (!move) return
-    e.preventDefault()
-    calendar.moveToDay(move, iso)
-  }
+  const cells = dayDropTarget(
+    (iso) => (dropOn = iso),
+    (move, iso) => calendar.moveToDay(move, iso),
+  )
 </script>
 
 <div class="month">
@@ -189,9 +178,9 @@
         class:today={iso === currentDay}
         class:droptarget={dropOn === iso}
         oncontextmenu={(e) => menu.show(e, dayMenu(iso))}
-        ondragover={(e) => onDragOver(e, iso)}
-        ondragleave={() => (dropOn = null)}
-        ondrop={(e) => onDrop(e, iso)}
+        ondragover={(e) => cells.over(e, iso)}
+        ondragleave={cells.leave}
+        ondrop={(e) => cells.drop(e, iso)}
       >
         <div class="cellhead">
           <button

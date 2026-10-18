@@ -93,6 +93,7 @@ fn a_synced_event(vault: &everyday_core::Vault, calendar: &Calendar, guests: &[&
         url: String::new(),
         busy: true,
         series: None,
+        own: None,
         updated_at: start,
     };
     vault

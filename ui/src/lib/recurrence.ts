@@ -18,7 +18,7 @@
 // a wrong meeting on forty Tuesdays.
 
 import { dateFormat } from './format'
-import { addDays, isoDate, startOfDay } from './time'
+import { addDays, daysApart, isoDate, startOfDay } from './time'
 import type { Frequency, Recurrence, RecurrenceDay } from './types'
 
 /**
@@ -379,12 +379,6 @@ export function describeRecurrence(
 
 // ── Expansion ─────────────────────────────────────────────────────────────
 
-function daysBetween(a: string, b: string): number {
-  // Rounded, because a change of clocks makes one day in the year 23 hours
-  // long and another 25.
-  return Math.round((startOfDay(b).getTime() - startOfDay(a).getTime()) / 86_400_000)
-}
-
 function mondayOf(day: string): string {
   return addDays(day, -WEEKDAYS.indexOf(weekdayOf(day)))
 }
@@ -409,10 +403,10 @@ export function expandDays(rule: Recurrence, first: string, through: string, cap
     const [y = 1970, m = 1, d = 1] = day.split('-').map(Number)
     switch (rule.frequency) {
       case 'daily':
-        return daysBetween(first, day) % n === 0
+        return daysApart(first, day) % n === 0
       case 'weekly':
         return (
-          weekly.includes(weekdayOf(day)) && (daysBetween(firstMonday, mondayOf(day)) / 7) % n === 0
+          weekly.includes(weekdayOf(day)) && (daysApart(firstMonday, mondayOf(day)) / 7) % n === 0
         )
       case 'monthly': {
         if (((y - fy) * 12 + (m - fm)) % n !== 0) return false

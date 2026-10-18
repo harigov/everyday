@@ -439,11 +439,15 @@ export function eventMenu(event: CalendarEvent): MenuItem[] {
       icon: 'list',
       run: () => (calendar.selection = { kind: 'event', id: event.id }),
     },
-    cal?.access === 'writable' && {
-      label: 'Edit…',
-      icon: 'pencil',
-      run: () => calendar.editEvent(event.id),
-    },
+    // Not while a move of it is on its way -- see `editEvent` -- nor for a
+    // meeting its sync says is somebody else's.
+    cal?.access === 'writable' &&
+      event.own !== false &&
+      !calendar.moves.has(event.id) && {
+        label: 'Edit…',
+        icon: 'pencil',
+        run: () => calendar.editEvent(event.id),
+      },
     cal?.access === 'needsSignIn' && {
       label: 'Sign in again to change it…',
       icon: 'lock',
