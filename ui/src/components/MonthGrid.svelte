@@ -7,10 +7,14 @@
   // *shape* of a month rather than the detail of an hour. Clicking a day
   // opens it in the day view, which is where the detail lives.
   //
+  // What can be moved can be dragged onto another day here, and keeps its
+  // time of day -- see `day-move.ts`. The hour is changed in the week.
+  //
   // Six rows always, even when a month fits in five. A grid whose height
   // changes as you page through the year makes everything below it jump.
 
   import { calendar } from '../lib/calendar.svelte'
+  import { carriesDayMove, readDayMove, startDayMove, type DayMove } from '../lib/day-move'
   import { daysFrom, startOfWeek, todayIso } from '../lib/time'
   import { dateFormat, timeOfDay } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
@@ -38,6 +42,10 @@
     muted?: boolean
     /** A pending proposal rather than a real record -- drawn as a small ghost chip. */
     ghost?: boolean
+    /** What dragging it onto another day moves, when it can be moved. */
+    move?: DayMove
+    /** Moved, and its server not yet told. */
+    saving?: boolean
     onopen: () => void
     /**
      * The same menus the week grid raises, on the same things.
@@ -62,6 +70,8 @@
         color: cal?.color ?? 'var(--fg-subtle)',
         kind: 'event',
         muted: event.status === 'cancelled',
+        move: calendar.canMove(event) ? { kind: 'event', id: event.id, from: iso } : undefined,
+        saving: calendar.moves.has(event.id),
         onopen: () => (calendar.selection = { kind: 'event', id: event.id }),
         menu: () => eventMenu(event),
       })
@@ -98,6 +108,16 @@
     for (const slot of calendar.slotsOn(iso)) {
       const start = slot.block?.start ?? slot.event?.start ?? slot.reading?.at
       const proposal = slot.proposal
+      // What dragging it onto another day moves: a block of your own, or an
+      // event `canMove` allows -- whole or not, since a night that runs into
+      // the next day still moves by its day. Never a ghost.
+      const move: DayMove | undefined = proposal
+        ? undefined
+        : slot.event && calendar.canMove(slot.event)
+          ? { kind: 'event', id: slot.event.id, from: iso }
+          : slot.block && slot.movable
+            ? { kind: 'block', id: slot.block.id, from: iso }
+            : undefined
       timed.push({
         key: slot.key,
         label: slot.reading ? `${slot.title} · ${slot.subtitle}` : slot.title,
@@ -106,6 +126,8 @@
         kind: slot.kind,
         muted: slot.cancelled,
         ghost: !!proposal,
+        move,
+        saving: slot.saving,
         // A ghost opens its own proposal pane; a right-click on it does the
         // same, rather than raising the ordinary block menu -- there is no
         // row on disk yet for "delete" or "rename" to act on.
@@ -131,6 +153,24 @@
   }
 
   const currentDay = $derived(todayIso())
+
+  /** The day something is being dragged over. */
+  let dropOn = $state<string | null>(null)
+
+  function onDragOver(e: DragEvent, iso: string) {
+    if (!carriesDayMove(e)) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    dropOn = iso
+  }
+
+  function onDrop(e: DragEvent, iso: string) {
+    dropOn = null
+    const move = readDayMove(e)
+    if (!move) return
+    e.preventDefault()
+    calendar.moveToDay(move, iso)
+  }
 </script>
 
 <div class="month">
@@ -147,7 +187,11 @@
         class="cell"
         class:outside={!calendar.inAnchorMonth(iso)}
         class:today={iso === currentDay}
+        class:droptarget={dropOn === iso}
         oncontextmenu={(e) => menu.show(e, dayMenu(iso))}
+        ondragover={(e) => onDragOver(e, iso)}
+        ondragleave={() => (dropOn = null)}
+        ondrop={(e) => onDrop(e, iso)}
       >
         <div class="cellhead">
           <button
@@ -178,8 +222,13 @@
               class="row {row.kind}"
               class:muted={row.muted}
               class:ghost={row.ghost}
+              class:movable={!!row.move}
+              class:saving={row.saving}
               style="--c: {row.color}"
               title={row.ghost ? `Proposed: ${row.label}` : row.label}
+              draggable={!!row.move}
+              ondragstart={(e) => row.move && startDayMove(e, row.move)}
+              ondragend={() => (dropOn = null)}
               onclick={row.onopen}
               oncontextmenu={(e) => menu.show(e, row.menu())}
             >
@@ -259,6 +308,10 @@
   .cell.today {
     background: color-mix(in oklab, var(--accent) 4.5%, transparent);
   }
+  /* The day something is being dragged onto. */
+  .cell.droptarget {
+    background: color-mix(in oklab, var(--accent) 9%, transparent);
+  }
 
   .cellhead {
     display: flex;
@@ -323,6 +376,14 @@
   .row.muted {
     opacity: 0.5;
     text-decoration: line-through;
+  }
+  .row.movable {
+    cursor: grab;
+  }
+  /* Moved, and its server not yet told. */
+  .row.saving {
+    opacity: 0.6;
+    cursor: progress;
   }
 
   /* The dot carries the whole visual language at this size: filled for

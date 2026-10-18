@@ -8,6 +8,7 @@
   import { calendar, type View } from '../lib/calendar.svelte'
   import { dateFormat, dayHeading, formatMinutes, monthYear } from '../lib/format'
   import { proposals } from '../lib/proposals.svelte'
+  import ChoiceDialog from './ChoiceDialog.svelte'
   import Icon from './Icon.svelte'
   import TimeGrid from './TimeGrid.svelte'
   import MonthGrid from './MonthGrid.svelte'
@@ -149,6 +150,14 @@
     <EventDetail />
   </div>
 </main>
+
+<!-- An event dragged somewhere that has to ask first: which of a series it
+     means, or whether its guests are to be told. It is already drawn where
+     it was dropped, behind the sheet; Cancel puts it back. -->
+{#if calendar.moveQuestion}
+  {@const q = calendar.moveQuestion}
+  <ChoiceDialog title={q.title} detail={q.detail} options={q.options} oncancel={q.cancel} />
+{/if}
 
 <style>
   .cal {
