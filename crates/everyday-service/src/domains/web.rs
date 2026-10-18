@@ -7,6 +7,7 @@
 //! and not this.
 
 use crate::command;
+use crate::covers;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
 use crate::service::{Service, blocking};
@@ -14,6 +15,7 @@ use crate::websearch;
 use everyday_core::ItemId;
 use everyday_core::KindId;
 use everyday_core::library::Item;
+use everyday_core::websearch::images::{DEFAULT_IMAGES, ImageResult};
 use everyday_core::websearch::{SearchRequest, SearchResult, Source};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -65,6 +67,14 @@ pub struct Apply {
 #[serde(rename_all = "camelCase")]
 pub struct FetchImage {
     pub url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageSearch {
+    pub query: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 /// Search the web. The general entry point; any part of the app may call it.
@@ -136,13 +146,15 @@ async fn apply_metadata(svc: Arc<Service>, _ctx: Ctx, args: Apply) -> CommandRes
     Ok(item)
 }
 
-/// Download a picture into the vault and return its content address.
+/// Download a picture into the vault as a cover and return its content
+/// address.
 ///
-/// The general entry point, beside `web_search`: anything that has found an
-/// image address can put it in the blob store with this, and it comes back as a
-/// blob id the `everyday://` protocol will serve. Nothing in the interface ever
-/// loads a remote image directly -- see `websearch.rs` for why, and the content
-/// security policy for the check that outlives the reason.
+/// It comes back as a blob id the `everyday://` protocol will serve. Nothing
+/// in the interface ever loads a remote image directly -- see `websearch.rs`
+/// for why, and the content security policy for the check that outlives the
+/// reason. What is kept is made a cover's size first (`covers::store`), since
+/// a cover is all anything asks this for: a caller that one day wants a
+/// picture at full size wants a command of its own.
 async fn fetch_image(svc: Arc<Service>, _ctx: Ctx, args: FetchImage) -> CommandResult<String> {
     // Checked *before* the fetch, like `web_search`, and not left to the blob
     // store to refuse afterwards. Without this a locked vault still put a
@@ -150,7 +162,30 @@ async fn fetch_image(svc: Arc<Service>, _ctx: Ctx, args: FetchImage) -> CommandR
     // precisely the thing the rule exists to prevent.
     let vault = svc.require_unlocked()?;
     let bytes = websearch::fetch_image(&args.url).await?;
-    blocking(move || Ok(vault.put_blob(&bytes)?.to_hex())).await
+    Ok(covers::store(&vault, bytes).await?.to_hex())
+}
+
+/// Look for pictures of something: Bing, and Wikimedia Commons when Bing has
+/// nothing. See `everyday_core::websearch::images` for why those two.
+///
+/// What comes back are addresses, and nothing is fetched or kept: a grid
+/// shows each through `image_preview`, and the one somebody picks comes home
+/// through `fetch_image` like any other cover.
+async fn image_search(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ImageSearch,
+) -> CommandResult<Vec<ImageResult>> {
+    // Not from the lock screen, for `web_search`'s reason.
+    let _ = svc.require_unlocked()?;
+    websearch::search_images(&args.query, args.limit.unwrap_or(DEFAULT_IMAGES)).await
+}
+
+/// A picture for a grid, as a `data:` address, fetched on a cover's terms and
+/// kept nowhere. See `websearch::preview`.
+async fn image_preview(svc: Arc<Service>, _ctx: Ctx, args: FetchImage) -> CommandResult<String> {
+    let _ = svc.require_unlocked()?;
+    websearch::preview(&args.url).await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[
@@ -192,5 +227,17 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: FetchImage, returns: "string",
         signature: &[("url", "string", true)],
         run: fetch_image,
+    },
+    command! {
+        name: "image_search", scope: Web, effect: Read,
+        args: ImageSearch, returns: "ImageResult[]",
+        signature: &[("query", "string", true), ("limit", "number | null", false)],
+        run: image_search,
+    },
+    command! {
+        name: "image_preview", scope: Web, effect: Read,
+        args: FetchImage, returns: "string",
+        signature: &[("url", "string", true)],
+        run: image_preview,
     },
 ];

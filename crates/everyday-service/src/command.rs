@@ -643,6 +643,9 @@ mod tests {
             // Writes a blob. Invisible until an item references it, and the
             // save that does the referencing announces itself.
             "fetch_image",
+            // The same, for a file chosen as a cover: a smaller blob, which
+            // nothing names until the item is saved with it.
+            "shrink_cover",
             // Writes a blob and updates one message's own `Body.parts`
             // entry to name it -- on `fetch_image`'s own reasoning above.
             // Neither a message nor a thread's clear columns change, so

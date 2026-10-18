@@ -48,6 +48,8 @@ Reproduced below in full:
   39. tar — © The tar-rs Project Contributors, https://github.com/composefs/tar-rs
   40. bzip2 — © 2014-2025 Alex Crichton and Contributors, https://github.com/trifectatechfoundation/bzip2-rs
   41. three.js — © 2010-2026 three.js authors, https://github.com/mrdoob/three.js
+  42. image — the image-rs developers, https://github.com/image-rs/image
+  43. jpeg-encoder — © 2021 Volker Ströbel, https://github.com/vstroebel/jpeg-encoder, with portions from the Independent JPEG Group's software
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -2548,3 +2550,68 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+---
+
+## 42. image
+
+`crates/everyday-service/src/covers.rs` reads a cover -- JPEG, PNG, WebP,
+GIF or BMP -- and shrinks it to the size a cover is drawn at with `image`
+(https://github.com/image-rs/image), dual-licensed MIT or Apache-2.0, used
+here under MIT. Reproduced below.
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 43. jpeg-encoder
+
+`crates/everyday-service/src/covers.rs` encodes every stored cover as a JPEG
+with `jpeg-encoder` (https://github.com/vstroebel/jpeg-encoder), licensed
+"(MIT OR Apache-2.0) AND IJG", used here under MIT and the IJG terms.
+
+This software is based in part on the work of the Independent JPEG Group:
+jpeg-encoder's forward DCT is ported from mozjpeg, which is derived from the
+IJG's JPEG library. The IJG's terms ask that this be acknowledged in a
+program's documentation, which is what this paragraph is; they make no
+warranty for that code, and the IJG's authors do not endorse this program.
+
+MIT License
+
+Copyright (c) 2021 Volker Ströbel <volkerstroebel@mysurdity.de>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

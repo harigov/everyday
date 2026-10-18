@@ -64,6 +64,16 @@ futures = "0.3.34"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rig-core = "0.42"
 rig-agent = "0.42"
+# A cover made the size it is drawn at: decoded, shrunk and re-encoded as a
+# JPEG before it is stored -- see `covers.rs`. Without `default-features`,
+# which would bring in rayon and a dozen formats no shop serves a cover in;
+# these are the ones a cover arrives as. Pure Rust, every one of them.
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+# And encoded with this rather than `image`'s own JPEG encoder: its 4:2:0
+# chroma makes the same quality a fifth smaller on real jackets, measured.
+# Pure Rust; its DCT comes from mozjpeg, hence the IJG notice in
+# THIRD-PARTY-NOTICES.md.
+jpeg-encoder = "0.7.1"
 # `suggest_addresses`'s fuzzy match over the contact index -- see
 # `mailsync::contacts`. Pinned exactly, per the plan's rule for a young
 # crate this tree does not vendor; MSRV 1.89.0, comfortably under the

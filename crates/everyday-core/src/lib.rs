@@ -97,6 +97,7 @@ pub mod llm;
 pub mod lockfile;
 pub mod mail;
 pub mod mailsearch;
+pub mod maps;
 pub mod media;
 pub mod meeting;
 pub mod model;

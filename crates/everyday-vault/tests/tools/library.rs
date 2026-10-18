@@ -221,3 +221,84 @@ fn a_field_the_shelf_does_not_have_is_refused_with_the_ones_it_does() {
     assert!(err.contains("`glassware`") && err.contains("ingredients"), "got {err}");
     assert!(vault.items(&everyday_core::ItemQuery::default()).unwrap().is_empty());
 }
+
+#[test]
+fn a_cover_is_named_by_address_and_a_new_one_forgets_the_old_picture() {
+    // The core keeps the address; the picture is fetched by whoever ran the
+    // tool (`everyday_service::websearch::prefetch_cover`). Here, with no
+    // network, the address is all there is -- which is what a caller that
+    // cannot reach the web leaves for the library's "Get the cover".
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.seed_library().unwrap();
+
+    let id = call(
+        &vault,
+        "create_item",
+        serde_json::json!({
+            "shelf_id": shelf(&vault, "book"),
+            "title": "Dune",
+            "image_url": "  https://covers.openlibrary.org/b/id/1-L.jpg ",
+        }),
+    )["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let item_id: everyday_core::ItemId = id.parse().unwrap();
+    assert_eq!(
+        vault.item(item_id).unwrap().cover_url,
+        "https://covers.openlibrary.org/b/id/1-L.jpg"
+    );
+    let read = call(&vault, "get_item", serde_json::json!({ "item_id": id }));
+    assert_eq!(read["image_url"], "https://covers.openlibrary.org/b/id/1-L.jpg");
+    assert!(read.get("has_cover").is_none(), "an address alone is not a picture yet: {read}");
+
+    // A picture arrives, as the service would put it there.
+    let blob = vault.put_blob(b"\x89PNG\r\n\x1a\n not really").unwrap();
+    let mut item = vault.item(item_id).unwrap();
+    item.cover = Some(blob);
+    vault.save_item(&item).unwrap();
+    assert_eq!(call(&vault, "get_item", serde_json::json!({ "item_id": id }))["has_cover"], true);
+
+    // The same address again changes nothing.
+    call(
+        &vault,
+        "update_item",
+        serde_json::json!({ "item_id": id, "image_url": "https://covers.openlibrary.org/b/id/1-L.jpg" }),
+    );
+    assert_eq!(vault.item(item_id).unwrap().cover, Some(blob));
+
+    // A new one forgets the old picture until its own arrives: an old cover
+    // under a new address would be put back by the first "Get the cover".
+    call(
+        &vault,
+        "update_item",
+        serde_json::json!({ "item_id": id, "image_url": "https://upload.example/dune.png" }),
+    );
+    let item = vault.item(item_id).unwrap();
+    assert_eq!((item.cover, item.cover_url.as_str()), (None, "https://upload.example/dune.png"));
+
+    // And an empty one takes the cover away.
+    call(&vault, "update_item", serde_json::json!({ "item_id": id, "image_url": "" }));
+    let item = vault.item(item_id).unwrap();
+    assert_eq!((item.cover, item.cover_url.as_str()), (None, ""));
+}
+
+#[test]
+fn a_cover_that_is_not_a_web_address_is_refused_and_nothing_is_saved() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.seed_library().unwrap();
+
+    let err = call_err(
+        &vault,
+        "create_item",
+        serde_json::json!({
+            "shelf_id": shelf(&vault, "book"),
+            "title": "Dune",
+            "image_url": "file:///etc/passwd",
+        }),
+    );
+    assert!(err.contains("image_url"), "got {err}");
+    assert!(vault.items(&everyday_core::ItemQuery::default()).unwrap().is_empty());
+}

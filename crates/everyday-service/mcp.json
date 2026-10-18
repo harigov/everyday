@@ -294,6 +294,10 @@
             "description": "The shelf's own fields, by the keys list_shelves gives: an author, a cuisine, an ABV. A list field -- a recipe's or a cocktail's ingredients and method -- takes one entry per line. An empty string clears one.",
             "type": "object"
           },
+          "image_url": {
+            "description": "A picture for its cover: the image_url of a look_up_item or search_images result, or an address they gave you, exactly as written. It is downloaded and kept with the item.",
+            "type": "string"
+          },
           "notes": {
             "description": "Anything worth saying about it.",
             "type": "string"
@@ -3229,6 +3233,10 @@
           },
           "finished_on": {
             "description": "The day you finished. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "image_url": {
+            "description": "Replace its cover with this picture: the image_url of a look_up_item or search_images result, or an address they gave you, exactly as written. An empty string removes the cover.",
             "type": "string"
           },
           "item_id": {

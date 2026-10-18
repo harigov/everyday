@@ -1797,6 +1797,45 @@
     {
       "args": [
         {
+          "name": "url",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "image_preview",
+      "orScope": null,
+      "returns": "string",
+      "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "number | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "image_search",
+      "orScope": null,
+      "returns": "ImageResult[]",
+      "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "name",
           "required": true,
           "type": "string"
@@ -5240,6 +5279,23 @@
       "orScope": null,
       "returns": "MeetingSettingsView",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "blob",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "shrink_cover",
+      "orScope": null,
+      "returns": "string",
+      "scope": "library",
       "sensitive": false,
       "streams": false
     },

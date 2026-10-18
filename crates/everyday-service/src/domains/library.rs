@@ -14,10 +14,12 @@
 //! that a network exists.
 
 use crate::command;
+use crate::covers;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::websearch;
+use everyday_core::id::BlobId;
 use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent};
 use everyday_core::model::{system_tz, today_local};
 use everyday_core::store::library::{ItemQuery, LogQuery};
@@ -99,6 +101,12 @@ pub struct AddItem {
     pub kind_id: KindId,
     pub title: String,
     pub lookup: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShrinkCover {
+    pub blob: BlobId,
 }
 
 #[derive(Deserialize)]
@@ -305,6 +313,27 @@ async fn add_item(svc: Arc<Service>, ctx: Ctx, args: AddItem) -> CommandResult<A
     Ok(AddedItem { item, looked_up: true })
 }
 
+/// Make a picture already in the vault into a cover, and return the id of
+/// the cover -- which is the same id when the picture was one already.
+///
+/// For a file chosen off the disk. It arrives through `put_blob` like any
+/// attachment, because that is the one path bytes take into the vault, and
+/// is then made the size every other cover is made on its way in -- see
+/// `covers.rs`. The original is not deleted here: nothing refers to it once
+/// the item is saved with the new id, and garbage collection takes it on the
+/// usual grace period, as it takes a cover somebody replaced.
+async fn shrink_cover(svc: Arc<Service>, _ctx: Ctx, args: ShrinkCover) -> CommandResult<String> {
+    let vault = svc.require()?;
+    blocking(move || {
+        let picture = vault.blob(args.blob)?;
+        Ok(match covers::shrink(&picture) {
+            Some(cover) => vault.put_blob(&cover)?.to_hex(),
+            None => args.blob.to_hex(),
+        })
+    })
+    .await
+}
+
 /// Move an item to `status`, dating it and -- optionally -- logging it.
 ///
 /// The dates and the log row are coupled here rather than left to a client
@@ -481,6 +510,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("lookup", "boolean", true),
         ],
         run: add_item,
+    },
+    command! {
+        name: "shrink_cover", scope: Library, effect: Write,
+        args: ShrinkCover, returns: "string",
+        signature: &[("blob", "string", true)],
+        run: shrink_cover,
     },
     command! {
         name: "set_item_status", scope: Library, effect: Write,

@@ -64,6 +64,7 @@ import type {
   SearchRequest,
   SearchResult,
   SourceInfo,
+  ImageResult,
   SyncReport,
   Entry,
   Note,
@@ -298,7 +299,7 @@ function swatch(a: string, b: string, label: string): string {
     <text x="60" y="740" font-family="system-ui,sans-serif" font-size="34"
           fill="rgba(255,255,255,.72)">${label}</text>
   </svg>`
-  return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`
 }
 
 const BLOBS: Record<string, string> = {
@@ -1065,6 +1066,63 @@ function fakePage(hit: SearchResult): SearchResult {
         'Soften the onion and garlic.\nAdd the cumin, then the lentils and stock.\nSimmer for 25 minutes and blend.',
     },
   }
+}
+
+/**
+ * What `image_search` finds in the mock: addresses on hosts that do not
+ * exist, which is fine, because nothing here fetches them -- `image_preview`
+ * draws a tile for any address, and `fetch_image` answers with a seeded
+ * jacket. The fourth's preview is refused on purpose; see `image_preview`.
+ */
+function fakeImages(query: string, limit: number): ImageResult[] {
+  const q = query.trim()
+  if (!q) return []
+  const slug = encodeURIComponent(q.toLowerCase().replace(/\s+/g, '-'))
+  const sites = [
+    'openlibrary.org',
+    'penguin.co.uk',
+    'commons.wikimedia.org',
+    'goodreads.com',
+    'bookshop.org',
+    'commons.wikimedia.org',
+    'waterstones.com',
+    'example.org',
+  ]
+  return sites.slice(0, Math.max(0, Math.min(limit, sites.length))).map((site, i) => {
+    const commons = site === 'commons.wikimedia.org'
+    return {
+      title: commons ? `${q} (${2010 + i})` : `${q} \u2014 ${site}`,
+      imageUrl: `https://${site}/images/${slug}/${i}.jpg`,
+      thumbnailUrl: commons
+        ? `https://thumb.wikimedia.org/${slug}/330px-${i}.jpg`
+        : `https://th.bing.example/${i === 3 ? 'refused/' : ''}${slug}/${i}`,
+      pageUrl: `https://${site}/${slug}`,
+      width: 600 + i * 40,
+      height: 900 + i * 20,
+      site,
+      source: commons ? 'commons' : 'bing',
+    }
+  })
+}
+
+/** A small number from a string, for picking a colour that stays put. */
+function hashOf(text: string): number {
+  let h = 0
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) >>> 0
+  return h
+}
+
+/** A preview tile for any address: a gradient whose colour follows it. */
+function previewTile(url: string): string {
+  const hue = hashOf(url) % 360
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="300">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="hsl(${hue} 55% 62%)"/>
+      <stop offset="100%" stop-color="hsl(${(hue + 40) % 360} 50% 32%)"/>
+    </linearGradient></defs>
+    <rect width="200" height="300" fill="url(#g)"/>
+  </svg>`
+  return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`
 }
 
 function fakeResults(query: string, limit: number): SearchResult[] {
@@ -5954,6 +6012,31 @@ export const mockInvoke = async <T>(
       // Any of the seeded jackets, so the "get the cover" button visibly
       // does something without a network.
       return (Object.keys(COVERS)[0] ?? '1'.repeat(64)) as T
+
+    case 'shrink_cover':
+      // The mock's pictures are already cover-sized; the real one shrinks and
+      // re-encodes, and hands back the same id when there was nothing to do.
+      requireUnlocked()
+      return str(args.blob) as T
+
+    case 'image_search': {
+      requireUnlocked()
+      await sleep(300)
+      return fakeImages(str(args.query), (args.limit as number | null) ?? 12) as T
+    }
+
+    case 'image_preview': {
+      requireUnlocked()
+      const url = str(args.url)
+      // Staggered, as previews from a dozen strangers' servers arrive.
+      await sleep(120 + (hashOf(url) % 5) * 90)
+      // And one that never does, so the grid's placeholder tile has
+      // something to be drawn for.
+      if (url.includes('/refused/')) {
+        throw new VaultError('network', 'the picture could not be fetched (403 Forbidden).')
+      }
+      return previewTile(url) as T
+    }
 
     // ── Weather ──────────────────────────────────────────────────────
 

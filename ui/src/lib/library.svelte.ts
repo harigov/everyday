@@ -32,6 +32,7 @@ import { optimisticRemove } from './store/optimistic-remove'
 import { guardedRefresh } from './store/refresh'
 import { web, type SearchOutcome } from './websearch'
 import type {
+  ImageResult,
   Item,
   ItemId,
   ItemSort,
@@ -694,16 +695,64 @@ class LibraryState {
   async chooseCover(id: ItemId, from: File | string) {
     this.enriching = true
     try {
+      // A file goes in as any attachment does and is then made a cover's
+      // size, as an address is on its way in -- see `covers.rs`.
       const blob =
         typeof from === 'string'
           ? await api.fetchImage(from)
-          : await api.putBlob(new Uint8Array(await from.arrayBuffer()))
+          : await api.shrinkCover(await api.putBlob(new Uint8Array(await from.arrayBuffer())))
       const item = this.items.find((i) => i.id === id)
       if (!item) return
       item.cover = blob
       item.coverUrl = typeof from === 'string' ? from : ''
       this.touch(id)
       this.note = null
+    } catch (e) {
+      if (isLocked(e)) await app.lock()
+      else this.note = errorMessage(e)
+    } finally {
+      this.enriching = false
+    }
+  }
+
+  /**
+   * Put a picture an image search found on an item.
+   *
+   * The full-size picture first, because that is the cover worth keeping.
+   * Plenty of sites refuse their pictures to anything that is not a browser
+   * on one of their own pages -- a 403, or a page of HTML where the picture
+   * should be -- and the search's own thumbnail is hosted by the search, so
+   * it is the fallback: a small cover beats an error and no cover.
+   * `coverUrl` is whichever address actually arrived, so "Get the cover"
+   * never offers to fetch one that has already refused.
+   */
+  async chooseCoverFrom(id: ItemId, result: ImageResult) {
+    this.enriching = true
+    try {
+      const addresses = [result.imageUrl, result.thumbnailUrl].filter(
+        (url, i, all) => url.trim() !== '' && all.indexOf(url) === i,
+      )
+      // The full-size picture's reason, if both refuse: it is the one that
+      // was asked for, and the thumbnail failing too usually says nothing new.
+      let refused: unknown = null
+      for (const url of addresses) {
+        try {
+          const blob = await api.fetchImage(url)
+          const item = this.items.find((i) => i.id === id)
+          if (!item) return
+          item.cover = blob
+          item.coverUrl = url
+          this.touch(id)
+          this.note = null
+          return
+        } catch (e) {
+          // A locked vault is not a picture that refused, and no second
+          // address will fare any better.
+          if (isLocked(e)) throw e
+          refused ??= e
+        }
+      }
+      if (refused) this.note = errorMessage(refused)
     } catch (e) {
       if (isLocked(e)) await app.lock()
       else this.note = errorMessage(e)
