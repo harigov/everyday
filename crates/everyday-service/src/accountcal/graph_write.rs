@@ -1157,6 +1157,7 @@ mod tests {
             url: String::new(),
             busy: true,
             series: None,
+            own: None,
             updated_at: now,
         }
     }

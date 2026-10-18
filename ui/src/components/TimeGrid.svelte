@@ -39,7 +39,8 @@
     snap,
     todayIso,
   } from '../lib/time'
-  import type { Proposal, TimeBlock } from '../lib/types'
+  import { dayDropTarget, startDayMove } from '../lib/day-move'
+  import type { CalendarEvent, Proposal, TimeBlock } from '../lib/types'
   import Icon from './Icon.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
@@ -51,6 +52,14 @@
   const DAY_HEIGHT = HOUR * 24
   /** How close to the bottom edge counts as "resize" rather than "move". */
   const RESIZE_GRIP = 7
+  /**
+   * How far the pointer must travel before a press on something becomes a
+   * drag of it: until then it is a click, and nothing is drawn as being
+   * dragged. What keeps a click -- or a drag put back where it began --
+   * from writing anything is that a move is snapped by the distance moved,
+   * not to the quarter hours: see `onColumnPointerMove`.
+   */
+  const DRAG_SLOP = 4
   /**
    * How tall a slot must be to stack its start time over its title, and to
    * hold one line with the usual padding round it. Below the first -- 30
@@ -64,6 +73,17 @@
   let body = $state<HTMLDivElement | null>(null)
 
   /**
+   * Where a move or a resize was pressed, and whether the pointer has since
+   * gone far enough for it to be one -- see `DRAG_SLOP`. Until it has, it
+   * is a click, and nothing is drawn as being dragged.
+   */
+  interface Press {
+    x: number
+    y: number
+    lifted: boolean
+  }
+
+  /**
    * A gesture in flight: creating, moving or resizing.
    *
    * Held here rather than written through on every pointer move. A drag is
@@ -73,7 +93,7 @@
    */
   type Drag =
     | { mode: 'create'; day: string; from: number; to: number }
-    | {
+    | (Press & {
         mode: 'move'
         id: string
         day: string
@@ -91,8 +111,10 @@
         ghostBlock?: TimeBlock
         /** Set when it is the unsaved new event: the drop moves the draft. */
         draft?: true
-      }
-    | {
+        /** Set when it is an account calendar's event: the drop goes to its server. */
+        event?: CalendarEvent
+      })
+    | (Press & {
         mode: 'resize'
         id: string
         day: string
@@ -100,11 +122,14 @@
         end: number
         from: { length: number }
         draft?: true
-      }
+        event?: CalendarEvent
+      })
     | null
   let drag = $state<Drag>(null)
   /** A task being dragged in from the rail, and the slot it is over. */
   let dropAt = $state<{ day: string; minutes: number } | null>(null)
+  /** The day in the band an all-day event is being dragged over. */
+  let bandDrop = $state<string | null>(null)
 
   const hours = Array.from({ length: 24 }, (_, h) => h)
 
@@ -158,7 +183,13 @@
 
   /** Is this slot the one currently under the pointer? It is drawn as the draft. */
   function isDragging(slot: Slot): boolean {
-    return !!drag && (drag.mode === 'move' || drag.mode === 'resize') && slot.block?.id === drag.id
+    if (!drag || drag.mode === 'create' || !drag.lifted) return false
+    return (slot.block?.id ?? slot.event?.id) === drag.id
+  }
+
+  /** A press on something movable at `e`, not yet a drag. */
+  function pressed(e: PointerEvent): Press {
+    return { x: e.clientX, y: e.clientY, lifted: false }
   }
 
   /**
@@ -190,6 +221,7 @@
     iso: string,
   ): { top: number; height: number; label: string; color: string } | null {
     if (!drag || drag.day !== iso) return null
+    if (drag.mode !== 'create' && !drag.lifted) return null
     const [from, to] =
       drag.mode === 'create'
         ? [Math.min(drag.from, drag.to), Math.max(drag.from, drag.to)]
@@ -202,7 +234,9 @@
         ? calendar.colorOfCalendar(calendar.defaultCalendar?.id ?? null)
         : drag.draft
           ? calendar.colorOfCalendar(calendar.draft?.calendarId ?? null)
-          : 'var(--accent)'
+          : drag.event
+            ? calendar.colorOfCalendar(drag.event.calendarId)
+            : 'var(--accent)'
     return {
       top: (from / 60) * HOUR,
       height,
@@ -234,7 +268,7 @@
   function pendingOn(iso: string): Pending | null {
     const open = calendar.draft
     if (!open || open.draft.allDay) return null
-    if (drag && drag.mode !== 'create' && drag.draft) return null
+    if (drag && drag.mode !== 'create' && drag.draft && drag.lifted) return null
     const start = offsetInDay(open.draft.start, iso)
     const end = offsetInDay(open.draft.end, iso)
     if (end <= 0 || start >= 24 * 60) return null
@@ -281,7 +315,10 @@
 
   function onSlotPointerDown(e: PointerEvent, placed: Placed, iso: string) {
     const slot = placed.slot
-    if (!slot.movable || !slot.block || e.button !== 0) {
+    // A block of your own, or an account calendar's event: `movable` has
+    // already said whether this one may go anywhere.
+    const id = slot.block?.id ?? slot.event?.id
+    if (!slot.movable || !id || e.button !== 0) {
       // Not draggable, but still selectable.
       calendar.select(slot)
       e.stopPropagation()
@@ -297,7 +334,7 @@
       const el = (e.currentTarget as HTMLElement).parentElement!
       drag = {
         mode: 'move',
-        id: slot.block.id,
+        id,
         day: iso,
         start: slot.start,
         length: Math.max(MIN_BLOCK_MINUTES, slot.end - slot.start),
@@ -305,6 +342,7 @@
         from: { day: iso, start: slot.start },
         proposal: slot.proposal,
         ghostBlock: slot.block,
+        ...pressed(e),
       }
       return
     }
@@ -316,21 +354,25 @@
     if (box.bottom - e.clientY <= RESIZE_GRIP) {
       drag = {
         mode: 'resize',
-        id: slot.block.id,
+        id,
         day: iso,
         start: slot.start,
         end: slot.end,
         from: { length: slot.end - slot.start },
+        event: slot.event,
+        ...pressed(e),
       }
     } else {
       drag = {
         mode: 'move',
-        id: slot.block.id,
+        id,
         day: iso,
         start: slot.start,
         length: Math.max(MIN_BLOCK_MINUTES, slot.end - slot.start),
         grabbed: minutesAt(el, e.clientY) - slot.start,
         from: { day: iso, start: slot.start },
+        event: slot.event,
+        ...pressed(e),
       }
     }
   }
@@ -355,6 +397,7 @@
             end: at.end,
             from: { length: at.end - at.start },
             draft: true,
+            ...pressed(e),
           }
         : {
             mode: 'move',
@@ -365,11 +408,16 @@
             grabbed: minutesAt(el, e.clientY) - at.start,
             from: { day: iso, start: at.start },
             draft: true,
+            ...pressed(e),
           }
   }
 
   function onColumnPointerMove(e: PointerEvent, iso: string) {
     if (!drag) return
+    if (drag.mode !== 'create' && !drag.lifted) {
+      if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < DRAG_SLOP) return
+      drag = { ...drag, lifted: true }
+    }
     const column = e.currentTarget as HTMLElement
     const at = minutesAt(column, e.clientY)
     if (drag.mode === 'create') {
@@ -377,9 +425,17 @@
     } else if (drag.mode === 'move') {
       // The day comes from the column the pointer is over, so a block can be
       // dragged across the week and not merely up and down its own day.
-      drag = { ...drag, day: iso, start: Math.max(0, snap(at - drag.grabbed)) }
+      //
+      // Snapped by how far it has moved rather than to the quarter hours,
+      // so a meeting at 10:05 goes to 10:20 or 11:05 -- and one put back
+      // where it was is where it was, not at 10:00, which would be a write
+      // to its server (and a question about its guests) for no change.
+      const was = drag.from.start
+      drag = { ...drag, day: iso, start: Math.max(0, was + snap(at - drag.grabbed - was)) }
     } else {
-      drag = { ...drag, end: Math.max(drag.start + MIN_BLOCK_MINUTES, snap(at)) }
+      // The same for the bottom edge: by how far it has been pulled.
+      const was = drag.start + drag.from.length
+      drag = { ...drag, end: Math.max(drag.start + MIN_BLOCK_MINUTES, was + snap(at - was)) }
     }
   }
 
@@ -419,15 +475,27 @@
             gesture.day,
             gesture.start,
           )
+        } else if (gesture.event) {
+          // Its server's to move: drawn where it was dropped meanwhile, and
+          // asked about first if it repeats or has guests -- see the store.
+          void calendar.moveEvent(gesture.event, gesture.day, gesture.start)
         } else {
           calendar.moveBlock(gesture.id, gesture.day, gesture.start)
         }
       }
     } else if (gesture.end - gesture.start !== gesture.from.length) {
       if (gesture.draft) calendar.resizeDraft(gesture.end - gesture.start)
+      else if (gesture.event) void calendar.resizeEvent(gesture.event, gesture.end - gesture.start)
       else calendar.resizeBlock(gesture.id, gesture.end - gesture.start)
     }
   }
+
+  // ── moving an all-day event along the band ─────────────────────────────
+
+  const band = dayDropTarget(
+    (iso) => (bandDrop = iso),
+    (move, iso) => calendar.moveToDay(move, iso),
+  )
 
   // ── dropping a task in from the rail ───────────────────────────────────
 
@@ -519,7 +587,14 @@
   <div class="band">
     <div class="bandgutter">All day</div>
     {#each days as iso (iso)}
-      <div class="bandcell">
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="bandcell"
+        class:droptarget={bandDrop === iso}
+        ondragover={(e) => band.over(e, iso)}
+        ondragleave={band.leave}
+        ondrop={(e) => band.drop(e, iso)}
+      >
         {#if pendingAllDayOn(iso)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <span
@@ -532,11 +607,17 @@
         {/if}
         {#each calendar.allDayOn(iso) as event (event.id)}
           {@const cal = calendar.calendarOf(event.calendarId)}
+          {@const movable = calendar.canMove(event)}
           <button
             class="chip event"
             class:cancelled={event.status === 'cancelled'}
+            class:movable
+            class:saving={calendar.moves.has(event.id)}
             style="--c: {cal?.color ?? 'var(--fg-subtle)'}"
             title={event.title + (cal ? ` — ${cal.name}` : '')}
+            draggable={movable}
+            ondragstart={(e) => startDayMove(e, { kind: 'event', id: event.id, from: iso })}
+            ondragend={() => (bandDrop = null)}
             onclick={() => (calendar.selection = { kind: 'event', id: event.id })}
             oncontextmenu={(e) => {
               calendar.selection = { kind: 'event', id: event.id }
@@ -636,6 +717,8 @@
                 class:cancelled={p.slot.cancelled}
                 class:free={p.slot.free}
                 class:live={p.slot.live}
+                class:movable={p.slot.movable}
+                class:saving={p.slot.saving}
                 class:tight={p.height < ONE_LINE}
                 class:sel={p.slot.block
                   ? calendar.selection?.kind === 'block' &&
@@ -644,6 +727,9 @@
                     calendar.selection.id === p.slot.event?.id}
                 style="top: {p.top}px; height: {p.height}px; left: {p.left}%; width: {p.width}%; --c: {p
                   .slot.color}"
+                title={p.slot.saving
+                  ? `Moving it on ${calendar.calendarOf(p.slot.event!.calendarId)?.name ?? 'its calendar'}…`
+                  : undefined}
                 onpointerdown={(e) => onSlotPointerDown(e, p, iso)}
                 oncontextmenu={(e) => onSlotContextMenu(e, p.slot)}
               >
@@ -909,6 +995,13 @@
     opacity: 0.55;
     text-decoration: line-through;
   }
+  .chip.event.movable {
+    cursor: grab;
+  }
+  /* The day an all-day event is being dragged over. */
+  .bandcell.droptarget {
+    background: color-mix(in oklab, var(--accent) 9%, transparent);
+  }
   /* A reading with no time of day. Not a button: there is nothing to open,
      and it is edited on the day's entry where the tracker is named. */
   .chip.reading {
@@ -1104,6 +1197,17 @@
   .slot.event.free {
     border-left-style: dotted;
     opacity: 0.8;
+  }
+  /* One on a calendar this vault can write to, which moves like a block. */
+  .slot.event.movable {
+    cursor: grab;
+  }
+  /* Dropped, and its server not yet told: drawn where it is going, faded
+     until it is there. A block never needs this -- it is saved here. */
+  .slot.saving,
+  .chip.saving {
+    opacity: 0.6;
+    cursor: progress;
   }
   .slot.cancelled {
     opacity: 0.55;

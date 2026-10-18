@@ -25,7 +25,6 @@
     timeOfDay,
     toLocalTimeValue,
   } from '../lib/format'
-  import { focusOnMount, trapFocus } from '../lib/focus'
   import { eventInProgress, looksLikeOnlineCall } from '../lib/meeting-hosts'
   import { meetings } from '../lib/meetings.svelte'
   import { minutesBetween, offsetInDay } from '../lib/time'
@@ -40,6 +39,7 @@
   import { panels } from '../lib/panels.svelte'
   import { describeRecurrence } from '../lib/recurrence'
   import BlockProposalDetail from './BlockProposalDetail.svelte'
+  import ChoiceDialog from './ChoiceDialog.svelte'
   import EventEditor from './EventEditor.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -59,9 +59,7 @@
 
   /**
    * A deletion that has to ask which part is meant: one block of a series,
-   * or one occurrence of a repeating event. `ConfirmDialog` has one way to
-   * say yes, and these have two or three, so this is its shape with a row
-   * of answers instead -- the same scrim, sheet and focus rules.
+   * or one occurrence of a repeating event. Asked in a `ChoiceDialog`.
    */
   interface Choice {
     title: string
@@ -232,12 +230,6 @@
     if (doomed) await calendar.removeBlock(doomed.id)
   }
 </script>
-
-<svelte:window
-  onkeydown={(e: KeyboardEvent) => {
-    if (choice && e.key === 'Escape') choice = null
-  }}
-/>
 
 <aside class="rail">
   {#if calendar.selectedProposal}
@@ -481,6 +473,12 @@
             <Icon name="lock" size={13} />
             Only {edit.event.organizer || 'whoever organised it'} can change this event.
           </p>
+        {:else if event.own === false && cal?.access === 'writable'}
+          <!-- The same, known from the sync without asking the server. -->
+          <p class="readonly">
+            <Icon name="lock" size={13} />
+            Only {event.organizer || 'whoever organised it'} can change this event.
+          </p>
         {/if}
 
         {#if cal?.access === 'needsSignIn'}
@@ -508,7 +506,10 @@
               <button
                 class="btn btn-outline"
                 disabled={edit?.status === 'loading' ||
-                  (edit?.status === 'ready' && !edit.event.own)}
+                  (edit?.status === 'ready' && !edit.event.own) ||
+                  event.own === false ||
+                  calendar.moves.has(event.id)}
+                title={calendar.moves.has(event.id) ? 'Moving it — one moment' : undefined}
                 onclick={() => calendar.editEvent(event.id)}
               >
                 <Icon name="pencil" size={14} />
@@ -609,32 +610,12 @@
 {/if}
 
 {#if choice}
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div class="scrim" onclick={() => (choice = null)}></div>
-  <div class="sheet" role="alertdialog" aria-modal="true" aria-label={choice.title} use:trapFocus>
-    <h2 class="sheet-title">{choice.title}</h2>
-    {#if choice.detail}<p class="hint">{choice.detail}</p>{/if}
-    <!-- The answers stacked, widest reach last, so the three read as a
-         scale -- this one, these, all of them -- rather than as a row of
-         buttons whose order has to be puzzled out. -->
-    <div class="choices">
-      {#each choice.options as option (option.label)}
-        <button
-          class="btn"
-          class:btn-outline={!option.danger}
-          class:btn-danger={option.danger}
-          onclick={() => answer(option)}>{option.label}</button
-        >
-      {/each}
-    </div>
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <!-- Focus on Cancel, as in `ConfirmDialog`: this appears because
-           something irreversible was asked for, and Enter on a sheet not yet
-           read should not be what answers it. -->
-      <button class="btn" use:focusOnMount onclick={() => (choice = null)}>Cancel</button>
-    </div>
-  </div>
+  <ChoiceDialog
+    title={choice.title}
+    detail={choice.detail}
+    options={choice.options.map((o) => ({ ...o, run: () => answer(o) }))}
+    oncancel={() => (choice = null)}
+  />
 {/if}
 
 <style>
@@ -966,25 +947,6 @@
     }
   }
 
-  /* ── The choice sheet ───────────────────────────────────────────────── */
-
-  .sheet-title {
-    font-size: var(--text-md);
-    font-weight: 620;
-    letter-spacing: -0.008em;
-  }
-  .sheet-title + .hint {
-    margin-top: var(--sp-2);
-  }
-  .choices {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-    margin-top: var(--sp-4);
-  }
-  .choices .btn {
-    justify-content: center;
-  }
   .notes-error {
     margin: var(--sp-2) 0 0;
     color: var(--danger);

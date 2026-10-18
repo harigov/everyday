@@ -670,6 +670,20 @@ pub struct Event {
     /// field existed still reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series: Option<String>,
+    /// Whether this account organised it, as the sync was told: Google's
+    /// `organizer.self`, Graph's `isOrganizer`, a CalDAV `ORGANIZER` that is
+    /// one of the account's own addresses (or none at all). `None` where the
+    /// source does not say -- a subscribed feed, which nobody here can
+    /// change anyway, or a row synced before this was recorded.
+    ///
+    /// Only the account's own can be moved or changed from here, and the
+    /// grid reads this so it does not offer a drag of somebody else's
+    /// meeting only for the server to refuse it. Writing still asks the
+    /// server ([`EditableEvent::own`]); this is the stored copy's reading.
+    /// `#[serde(default)]` so an `Event` sealed before this field existed
+    /// still reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own: Option<bool>,
     pub updated_at: Timestamp,
 }
 
@@ -1192,6 +1206,7 @@ mod tests {
             url: String::new(),
             busy: false,
             series: None,
+            own: None,
             updated_at: Timestamp::now(),
         };
         // The bug this guards: a week query keyed on the start day alone,

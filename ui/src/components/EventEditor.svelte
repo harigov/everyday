@@ -24,7 +24,7 @@
   import { menu } from '../lib/menu.svelte'
   import { calendarChoiceItems } from '../lib/menus'
   import { carryRule, dayIn, midnightIn, sameRecurrence } from '../lib/recurrence'
-  import { addDays, instantAt, isoDate, minutesBetween, offsetInDay, startOfDay } from '../lib/time'
+  import { addDays, daysApart, instantAt, isoDate, minutesBetween, offsetInDay } from '../lib/time'
   import { looksLikeEmail } from '../lib/guests'
   import GuestsField from './GuestsField.svelte'
   import Icon from './Icon.svelte'
@@ -125,14 +125,17 @@
     return h * 60 + m
   }
 
-  function daysApart(a: string, b: string): number {
-    return Math.round((startOfDay(b).getTime() - startOfDay(a).getTime()) / 86_400_000)
-  }
-
-  /** Move it to another day, keeping its time, its length and what its repeat meant. */
+  /**
+   * Move it to another day, keeping its time, its length and what its
+   * repeat meant. A repeat the server already had is left as it was: this
+   * may be one occurrence moving, and Save asks -- `saveEdit` carries the
+   * repeat over if the answer is all of them. One that is new, or changed
+   * here, is carried now, since it is this draft's own.
+   */
   function setDay(day: string) {
     if (!day) return
-    const recurrence = carryRule(draft.recurrence, firstDay, day)
+    const recurrence =
+      isNew || ruleChanged ? carryRule(draft.recurrence, firstDay, day) : draft.recurrence
     if (draft.allDay) {
       const span = daysApart(firstDay, lastDay)
       onpatch({

@@ -2638,6 +2638,8 @@ function writeMockSeries(key: string, series: MockSeries): CalendarEvent[] {
       organizer: series.organizer,
       url: '',
       busy: true,
+      // As a sync records it: Google's `organizer.self` and the rest.
+      own: series.own,
     }
     events.push(event)
     seriesOfEvent.set(event.id, key)
@@ -5185,12 +5187,20 @@ export const mockInvoke = async <T>(
         return undefined as T
       }
       if (scope === 'series' || !series.draft.recurrence) {
-        // The whole series, kept on the day it began: this occurrence's new
-        // clock time and length move every one of them.
+        // The whole series, moved the way this occurrence was: as many days
+        // on, at its new clock time and length -- `draft_for_series` in the
+        // service, so a weekly Tuesday dragged to Thursday starts a Thursday.
         const length = Date.parse(draft.end) - Date.parse(draft.start)
         const start = new Date(series.draft.recurrence ? series.draft.start : draft.start)
         if (series.draft.recurrence) {
           const moved = new Date(draft.start)
+          const was = new Date(event.start)
+          const days = Math.round(
+            (Date.UTC(moved.getFullYear(), moved.getMonth(), moved.getDate()) -
+              Date.UTC(was.getFullYear(), was.getMonth(), was.getDate())) /
+              86_400_000,
+          )
+          start.setDate(start.getDate() + days)
           start.setHours(moved.getHours(), moved.getMinutes(), 0, 0)
         }
         writeMockSeries(key, {

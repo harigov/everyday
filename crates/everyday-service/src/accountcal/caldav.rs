@@ -271,6 +271,8 @@ pub async fn sync(
     let base = base_uri(account)?;
     let client = client_for(credential)?;
     let webdav = WebDavClient::new(base, client);
+    // Who "we" are, for which events are this account's own to move.
+    let me = write::Me::of(account);
 
     // Try RFC 6578 first when a token is already on record; a server that
     // has stopped recognising it (410-equivalent for CalDAV: a 507, or a
@@ -351,8 +353,15 @@ pub async fn sync(
                 continue;
             };
             fresh_etags.push((resource.href.clone(), content.etag.clone()));
-            let (mut events, more_skipped, recurring) =
-                events_from_ics(&content.data, calendar.id, &resource.href, &tz, window, svc.now());
+            let (mut events, more_skipped, recurring) = events_from_ics(
+                &content.data,
+                calendar.id,
+                &resource.href,
+                &tz,
+                &me,
+                window,
+                svc.now(),
+            );
             skipped += more_skipped;
             upsert.append(&mut events);
             if recurring {
@@ -680,6 +689,7 @@ fn events_from_ics(
     calendar_id: CalendarId,
     href: &str,
     default_tz: &str,
+    me: &write::Me,
     window: (jiff::civil::Date, jiff::civil::Date),
     now: jiff::Timestamp,
 ) -> (Vec<Event>, u64, bool) {
@@ -781,6 +791,8 @@ fn events_from_ics(
             // it from the `#start` suffix the same way it does for a
             // subscribed feed's `<uid>@<start>`.
             series: None,
+            // Nobody organised it, or this account did: `load`'s own test.
+            own: Some(write::owned_by(comp, me)),
             updated_at: now,
         });
     }
@@ -1005,6 +1017,39 @@ mod write;
 mod tests {
     use super::*;
 
+    /// The account the tests' resources are synced for.
+    fn me() -> write::Me {
+        write::Me::of(&Account::new(everyday_core::account::Provider::ICloud, "me@example.com"))
+    }
+
+    /// Whose an event is rides along on every occurrence the sync stores:
+    /// nobody's organised is ours, our address (in any case) is ours, and
+    /// anybody else's is theirs -- the grid does not offer to move those.
+    #[test]
+    fn an_event_says_whether_this_account_organised_it() {
+        let own = |organizer: &str| {
+            let ics = format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:o@example.com\r\n\
+                 DTSTART:20260302T090000Z\r\nDTEND:20260302T093000Z\r\n{organizer}\
+                 SUMMARY:Review\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+            let (events, _, _) = events_from_ics(
+                &ics,
+                CalendarId::new(),
+                "/cal/o.ics",
+                "UTC",
+                &me(),
+                window,
+                jiff::Timestamp::now(),
+            );
+            events[0].own
+        };
+        assert_eq!(own(""), Some(true), "nobody organised it");
+        assert_eq!(own("ORGANIZER:mailto:Me@Example.com\r\n"), Some(true));
+        assert_eq!(own("ORGANIZER;CN=Priya:mailto:priya@example.com\r\n"), Some(false));
+    }
+
     #[test]
     fn etag_diff_finds_changed_new_and_vanished_resources() {
         let mut previous = std::collections::BTreeMap::new();
@@ -1104,6 +1149,7 @@ mod tests {
             CalendarId::new(),
             "/cal/standup.ics",
             "America/New_York",
+            &me(),
             window,
             jiff::Timestamp::now(),
         );
@@ -1162,6 +1208,7 @@ mod tests {
             CalendarId::new(),
             "/cal/standup.ics",
             "UTC",
+            &me(),
             window,
             jiff::Timestamp::now(),
         );
@@ -1182,6 +1229,7 @@ mod tests {
             CalendarId::new(),
             "/cal/x.ics",
             "UTC",
+            &me(),
             window,
             jiff::Timestamp::now(),
         );
@@ -1238,6 +1286,7 @@ mod tests {
             CalendarId::new(),
             "/cal/trip.ics",
             "UTC",
+            &me(),
             window,
             jiff::Timestamp::now(),
         );
@@ -1264,6 +1313,7 @@ mod tests {
             CalendarId::new(),
             "/cal/overnight.ics",
             "UTC",
+            &me(),
             window,
             jiff::Timestamp::now(),
         );

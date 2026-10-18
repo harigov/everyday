@@ -250,6 +250,10 @@ struct GraphEvent {
     /// `seriesMasterId` is absent.
     #[serde(rename = "iCalUId")]
     i_cal_u_id: Option<String>,
+    /// Whether this account organised it -- [`Event::own`]. Left unknown
+    /// when an answer leaves it out, rather than guessed either way.
+    #[serde(rename = "isOrganizer")]
+    is_organizer: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -415,6 +419,7 @@ fn to_event(calendar_id: CalendarId, item: &GraphEvent, now: jiff::Timestamp) ->
         url: item.web_link.clone(),
         busy: !matches!(item.show_as.as_str(), "free" | "workingElsewhere"),
         series: item.series_master_id.clone().or_else(|| item.i_cal_u_id.clone()),
+        own: item.is_organizer,
         updated_at: now,
     })
 }
@@ -1027,6 +1032,7 @@ mod tests {
             removed: None,
             series_master_id: None,
             i_cal_u_id: None,
+            is_organizer: None,
         }
     }
 
@@ -1059,5 +1065,18 @@ mod tests {
         let item = bare_graph_event("evt-1");
         let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.series, None);
+    }
+
+    /// `isOrganizer` is what says whether the grid may offer a drag; an
+    /// answer that leaves it out leaves it unknown, not "theirs".
+    #[test]
+    fn is_organizer_becomes_whether_the_event_is_this_accounts_own() {
+        let mut item = bare_graph_event("evt-1");
+        let read = |item: &GraphEvent| to_event(CalendarId::new(), item, jiff::Timestamp::now());
+        assert_eq!(read(&item).unwrap().own, None, "not said, not guessed");
+        item.is_organizer = Some(true);
+        assert_eq!(read(&item).unwrap().own, Some(true));
+        item.is_organizer = Some(false);
+        assert_eq!(read(&item).unwrap().own, Some(false));
     }
 }

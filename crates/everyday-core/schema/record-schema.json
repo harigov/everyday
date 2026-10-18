@@ -834,6 +834,13 @@
         "description": "Who called it, as the feed gives it: usually a name, sometimes an\naddress.",
         "type": "string"
       },
+      "own": {
+        "description": "Whether this account organised it, as the sync was told: Google's\n`organizer.self`, Graph's `isOrganizer`, a CalDAV `ORGANIZER` that is\none of the account's own addresses (or none at all). `None` where the\nsource does not say -- a subscribed feed, which nobody here can\nchange anyway, or a row synced before this was recorded.\n\nOnly the account's own can be moved or changed from here, and the\ngrid reads this so it does not offer a drag of somebody else's\nmeeting only for the server to refuse it. Writing still asks the\nserver ([`EditableEvent::own`]); this is the stored copy's reading.\n`#[serde(default)]` so an `Event` sealed before this field existed\nstill reads.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
       "series": {
         "description": "A durable identifier for the *series* this occurrence belongs to,\nwhen the source gives one that is not simply `uid` itself: Google's\n`recurringEventId` (falling back to `iCalUID`) and Graph's\n`seriesMasterId` (falling back to `iCalUId`) both hand back a\nper-occurrence `id`/`uid` that changes across a recurring series --\nsee [`crate::meeting::detect::series_key`]'s own doc for why that\nbroke \"never for this meeting\" for exactly those two sources. A\nCalDAV resource or a subscribed feed's occurrence already writes a\n`uid` whose base is shared by the whole series (`href#start`,\n`<uid>@<start>`), so their adapters leave this `None` and the\nexisting suffix-stripping fallback in [`crate::meeting::detect::series_key`]\nstill applies. `#[serde(default)]` so an `Event` sealed before this\nfield existed still reads.",
         "type": [

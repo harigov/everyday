@@ -398,6 +398,7 @@ fn an_event(calendar_id: everyday_core::CalendarId, title: &str, location: &str)
         url: String::new(),
         busy: true,
         series: None,
+        own: None,
         updated_at: jiff::Timestamp::now(),
     }
 }

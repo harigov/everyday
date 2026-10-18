@@ -54,6 +54,12 @@ export function addDays(iso: string, days: number): string {
   return isoDate(at)
 }
 
+/** How many days on `to` is from `from`, both `YYYY-MM-DD`; negative when earlier. */
+export function daysApart(from: string, to: string): number {
+  // Rounded, because a day with a change of clocks is 23 or 25 hours long.
+  return Math.round((startOfDay(to).getTime() - startOfDay(from).getTime()) / 86_400_000)
+}
+
 export function addMonths(iso: string, months: number): string {
   const at = startOfDay(iso)
   // Clamp to the last day of the target month: stepping forward from the

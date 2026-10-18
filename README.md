@@ -186,7 +186,8 @@ rail on the right; drag one onto Tuesday afternoon and it becomes a planned
 block pointing at that task, as long as its estimate — and drops off the rail,
 because a plan you have already made is not a thing to be nagged about. Drag
 blocks to move them, drag their bottom edge to resize, drag on empty grid to
-make an event out of nothing. Everything snaps to a quarter hour. (Dragging
+make an event out of nothing; in the month, drag a block onto another day.
+Everything snaps to a quarter hour. (Dragging
 is the better gesture, so Enter on a task in the rail finds it the first free
 slot instead — a feature only a mouse can reach is one half the people using
 it do not have.)
@@ -231,6 +232,22 @@ trusting what the last sync left, so a change made on a phone in the
 meantime is not quietly undone. A repeating event asks whether a change
 means this occurrence or the whole series, and an event somebody else
 organised says it is theirs to change.
+
+Moving one is the same drag as moving a block: pick it up and put it down at
+another time or on another day, or drag its bottom edge to change its
+length. A meeting at 10:05 moves by quarter hours from where it was, to 10:20
+or 11:05, so one put back where it began has not moved. In the month, and in
+the all-day band over the week, drag it onto another day and it keeps its
+time. It is drawn where it was dropped straight away, faded until its server
+has the change, and goes back if the server refuses. A plain move of an event
+with nobody else on it asks nothing. A repeating one asks whether you mean
+this one or all of them — all of them shift by the same amount, so a weekly
+Tuesday dragged to Thursday becomes a weekly Thursday; a repeat that cannot
+follow to another day (Monday and Wednesday, one with an ending) offers only
+this one — and one with guests says they are about to be told before
+anything is sent. Somebody else's meeting is not offered to drag at all,
+because the sync records whose each event is. With its editor open, a drag
+changes the times in the editor instead, for Save to write.
 
 A repeat on this computer is written out as one block per occurrence, two
 years ahead — the same reach an account calendar's sync has — so the grid
