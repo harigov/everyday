@@ -283,10 +283,17 @@ pub fn run() {
                 // the command line. Closing the window is then the last thing
                 // the person can do to this application, so it has to mean
                 // what it says.
+                //
+                // And never for the tray's Quit, which arrives here as this
+                // same close request: hiding is what it is asking not to do.
                 let handle = window.app_handle();
                 let reachable =
                     handle.state::<Tray>().is_showing() || hotkey::is_registered(handle);
-                if reachable && window.try_state::<AppState>().is_some_and(|s| s.stays_resident()) {
+                if reachable
+                    && window
+                        .try_state::<AppState>()
+                        .is_some_and(|s| !s.is_quitting() && s.stays_resident())
+                {
                     api.prevent_close();
                     let _ = window.hide();
                     return;
