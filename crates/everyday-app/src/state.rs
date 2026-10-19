@@ -29,6 +29,9 @@ pub struct AppState {
     /// Set once the interface has been told to save and close, so the second
     /// `CloseRequested` -- the one we ask for ourselves -- is let through.
     closing: AtomicBool,
+    /// Set by an explicit Quit, so the close it asks for is not turned into a
+    /// hide by [`AppState::stays_resident`]. See [`AppState::quit`].
+    quitting: AtomicBool,
     /// Where the service's remarks go. Kept so a remote session can re-emit the
     /// server's events through the same channel a local vault uses.
     sink: RwLock<Option<Arc<dyn EventSink>>>,
@@ -72,6 +75,7 @@ impl AppState {
             session: RwLock::new(Session::Local(service.clone())),
             service,
             closing: AtomicBool::new(false),
+            quitting: AtomicBool::new(false),
             sink: RwLock::new(None),
             sharing: Arc::default(),
             mcp: Arc::default(),
@@ -221,6 +225,22 @@ impl AppState {
     /// window that will not shut.
     pub fn begin_closing(&self) -> bool {
         !self.closing.swap(true, Ordering::SeqCst)
+    }
+
+    /// Mark the close about to be asked for as a quit, not a hide.
+    ///
+    /// The tray's Quit closes the window the same way its close button does,
+    /// so that quitting saves and locks through the one handshake -- and so,
+    /// without this, a vault with a routine on it answered Quit by hiding a
+    /// window that was usually hidden already, and nothing happened at all.
+    /// Never cleared: once asked, the process goes, if only by the close
+    /// handler's own fallback.
+    pub fn quit(&self) {
+        self.quitting.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_quitting(&self) -> bool {
+        self.quitting.load(Ordering::SeqCst)
     }
 }
 

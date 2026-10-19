@@ -776,6 +776,12 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             // and locks exactly the way closing the window does. The three
             // second fallback there also covers an interface too wedged to
             // answer, which is the case where a tray quit matters most.
+            //
+            // Marked as a quit first, or that handler hides the window
+            // instead whenever the vault has a routine or is being served.
+            if let Some(state) = app.try_state::<crate::state::AppState>() {
+                state.quit();
+            }
             if let Some(window) = app.webview_windows().values().next() {
                 let _ = window.close();
             }
