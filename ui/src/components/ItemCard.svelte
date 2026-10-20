@@ -117,12 +117,18 @@
   .art {
     position: relative;
     /* The lift on hover is the whole of the grid's interaction feedback, so
-       it is worth a real shadow rather than a border change. */
+       it is worth a real shadow rather than a border change.
+
+       No shadow at rest, though. WebKitGTK redraws a blurred shadow for
+       every card in view on every frame of a scroll: with five hundred
+       books it held scrolling at ~35 ms a frame in the dark theme and ~51 ms
+       in the light one (which stacks two), against ~16 ms without. Only the
+       hovered and selected cards carry one, and the cover's own inset edge
+       (see `Cover.svelte`) still gives a pale jacket its boundary. */
     transition:
       transform var(--med) var(--ease),
       box-shadow var(--med) var(--ease);
     border-radius: var(--radius);
-    box-shadow: var(--shadow-sm);
   }
   .card:hover .art {
     transform: translateY(-3px);

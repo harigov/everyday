@@ -47,9 +47,6 @@ import type {
 } from './types'
 import { ITEM_STATUSES, isAhead } from './types'
 
-/** How many items a shelf loads at once. A shelf, not a database. */
-const PAGE = 500
-
 /** Which shelf is on screen. `null` is the everything view. */
 export type Shelf = KindId | null
 
@@ -406,7 +403,11 @@ class LibraryState {
             text: this.query.trim(),
             favourite: this.favouritesOnly ? true : null,
             sort: this.sort,
-            limit: PAGE,
+            // Every match, not a page of them. There is no "more" control,
+            // so a cap was a silent one: a shelf of 512 books showed 500,
+            // counted "500 items" in the bar, and the other twelve could
+            // only be found by searching for them.
+            limit: null,
           }),
           api.libraryStats(),
         ])
