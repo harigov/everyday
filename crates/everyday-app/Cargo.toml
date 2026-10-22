@@ -100,6 +100,40 @@ cpal = { version = "0.18", features = ["pipewire"] }
 # `set_badge_count`. Already in the build: the opener and single-instance
 # plugins use the same crate, with the same default features.
 zbus = "5"
+# Writing help on Wayland, and the global keys there: the GlobalShortcuts
+# portal claims a key for the whole desktop (no Wayland protocol lets an
+# application do it), and the RemoteDesktop portal is the one sanctioned way
+# for an application to press Ctrl+V into another. See `src/hotkey.rs` and
+# `src/writing/wayland.rs`. `screencast` only because ashpd's
+# `remote_desktop` module names its types; nothing here records a screen.
+# `wayland` so the main window can be named as the parent of the desktop's
+# shortcut dialog, which otherwise opens behind it.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts", "remote_desktop", "screencast", "wayland"] }
+# The webview's own toolkit, already in the build through Tauri. Writing help
+# reads the selection and places its popup through it directly: the
+# PRIMARY selection, the pointer's position on the overlay, and the
+# activation token that lets a window take focus on Wayland are none of them
+# things Tauri's window API reaches.
+gtk = "0.18"
+# X11's half of taking focus: presenting a window with the server's own
+# time, which focus-stealing prevention accepts. See `src/writing/desktop.rs`.
+gdkx11 = "0.18"
+futures-util = "0.3"
+# The main window's Wayland surface, for the portal dialog's parent. The
+# same version Tauri's windows implement.
+raw-window-handle = "0.6"
+
+# Writing help everywhere but Wayland: pressing Ctrl+C and Ctrl+V into the
+# application the text was selected in. XTest on X11, SendInput on Windows,
+# CGEvent on macOS. See `src/writing/desktop.rs`.
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
+enigo = "0.6"
+
+# The clipboard where GTK is not the toolkit, text and images both, so that
+# what was on it can be put back. On Linux the GTK clipboard above serves
+# both display servers; this is built there too, unused, so that the
+# Windows and macOS path at least compiles where it is developed.
+arboard = "3"
 
 [dev-dependencies]
 # `protocol.rs`'s mail route tests build their URLs from a real

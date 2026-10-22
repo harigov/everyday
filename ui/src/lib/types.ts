@@ -28,6 +28,7 @@ export type NoteId = string
 export type RoutineId = string
 export type RoutineRunId = string
 export type JobId = string
+export type WritingId = string
 export type ProposalId = string
 export type BlobId = string
 export type ProjectId = string
@@ -743,6 +744,38 @@ export interface Job {
   finishedAt?: string | null
 }
 
+/** What writing help was asked to do to the selected text. */
+export type WritingAction = 'improve' | 'grammar' | 'concise'
+
+/** What became of writing help's answer. */
+export type WritingOutcome = 'pending' | 'replaced' | 'copied' | 'cancelled' | 'failed'
+
+/** One use of writing help over text selected anywhere on the desktop. */
+export interface WritingAssist {
+  id: WritingId
+  createdAt: string
+  updatedAt: string
+  action: WritingAction
+  /** The selection, exactly as captured. */
+  original: string
+  /** What the model gave back. Empty when it failed. */
+  result?: string
+  /** The application it was selected in, where the desktop says. */
+  app?: string | null
+  /** The model that answered. */
+  model?: string
+  outcome: WritingOutcome
+  /** Why it failed, when it did. */
+  error?: string | null
+}
+
+export interface WritingQuery {
+  actions?: WritingAction[]
+  outcomes?: WritingOutcome[]
+  since?: string | null
+  limit?: number | null
+}
+
 export interface JobQuery {
   statuses?: JobStatus[]
   unseen?: boolean | null
@@ -925,6 +958,11 @@ export interface Capabilities {
    * that needs more time than a turn and come back with the answer.
    */
   jobs?: boolean
+  /**
+   * Backend keeps writing help: each use of the writing shortcut over text
+   * selected in another application, and what came of it.
+   */
+  writing?: boolean
   /**
    * Backend carries proposals: work the assistant prepared for the person to
    * accept or decline. False hides dreaming and every ghost.
@@ -2260,6 +2298,30 @@ export interface HotkeyStatus {
   registered: boolean
   /** How to write it on screen, from the value the shell actually claimed. */
   shortcut: string
+}
+
+/** One OS-wide key, as the settings pane draws it. */
+export interface KeyStatus {
+  /** Somebody wants it claimed. */
+  on: boolean
+  /** The desktop says it is. */
+  registered: boolean
+  /** The combination, as the desktop describes it where it keeps the binding. */
+  shortcut: string
+  /** The desktop keeps the binding (Wayland's portal); a different key is chosen in its settings. */
+  desktopManaged: boolean
+  /** Why it is not claimed, when it is wanted and is not. */
+  problem?: string | null
+}
+
+/** Writing help's per-machine setting: the shortcut over text selected in any application. */
+export interface WritingSettings {
+  enabled: boolean
+  /** The combination chosen here -- what is offered to the desktop. */
+  shortcut: string
+  key: KeyStatus
+  /** How the selection is read and the answer pasted on this desktop. */
+  platform: 'wayland' | 'x11' | 'windows' | 'macos'
 }
 
 // ── The tray ───────────────────────────────────────────────────────────

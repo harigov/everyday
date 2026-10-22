@@ -262,8 +262,13 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("finish_recording", "moves the recording into the transcription pipeline: background work"),
     ("name_speaker", "needs a transcript, which only a finished recording produces"),
     ("respond_to_invite", "needs an ICS-bearing message in the local pack store, and sends"),
+    (
+        "rewrite_selection",
+        "asks the medium model; and announces nothing, since no list shows writing help",
+    ),
     ("retry_recording", "resumes the same background pipeline finish_recording does"),
     ("send_message", "streams: true, unreachable through Service::call at all"),
+    ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
     ("start_chat_verification", "needs a chat bot signed in to a real Matrix server"),
     ("subscribe_account_calendar", "fetches a remote account's calendar over the network"),
     ("subscribe_calendar", "fetches a remote ICS feed over the network"),

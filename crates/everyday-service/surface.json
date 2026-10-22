@@ -2592,6 +2592,23 @@
     {
       "args": [
         {
+          "name": "query",
+          "required": false,
+          "type": "WritingQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_writing_assists",
+      "orScope": null,
+      "returns": "WritingAssist[]",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "EventId"
@@ -4069,6 +4086,33 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "text",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "action",
+          "required": true,
+          "type": "WritingAction"
+        },
+        {
+          "name": "app",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "rewrite_selection",
+      "orScope": null,
+      "returns": "WritingAssist",
+      "scope": "quick",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -5306,6 +5350,28 @@
       "orScope": null,
       "returns": "MeetingSettingsView",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "WritingId"
+        },
+        {
+          "name": "outcome",
+          "required": true,
+          "type": "WritingOutcome"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "settle_writing_assist",
+      "orScope": null,
+      "returns": "WritingAssist",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },

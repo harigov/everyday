@@ -50,6 +50,8 @@ pub(super) enum Domain {
     Routines,
     /// Background work -- see [`crate::job`].
     Jobs,
+    /// Writing help -- see [`crate::writing`].
+    Writing,
     /// Work the assistant prepared -- see [`crate::proposal`].
     Proposals,
     Notes,
@@ -82,6 +84,7 @@ impl Domain {
             Domain::Agent => "the assistant (this vault's backend stores journals only)",
             Domain::Routines => "routines (this vault's backend stores journals only)",
             Domain::Jobs => "background jobs (this vault's backend stores journals only)",
+            Domain::Writing => "writing help (this vault's backend stores journals only)",
             Domain::Proposals => "proposals (this vault's backend stores journals only)",
             Domain::Notes => "notes (this vault's backend stores journals only)",
             Domain::Secrets => "per-record secrets (this vault's backend stores journals only)",

@@ -115,6 +115,10 @@ impl JournalStore for SqlStore {
         Some(self)
     }
 
+    fn writing(&self) -> Option<&dyn everyday_core::store::writing::WritingStore> {
+        Some(self)
+    }
+
     fn proposals(&self) -> Option<&dyn ProposalStore> {
         Some(self)
     }

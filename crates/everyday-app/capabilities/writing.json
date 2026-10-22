@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "writing",
+  "description": "Capabilities granted to writing help's popup. Narrower than the main window's: it listens for the shell's events and calls the shell's commands -- the rewrite itself is the same `call` the main window makes -- and needs nothing else. No dialogs, no opener, no notifications; a paste that fails is reported by the shell, not by the popup.",
+  "windows": ["writing"],
+  "permissions": ["core:default"]
+}

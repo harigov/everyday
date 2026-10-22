@@ -124,6 +124,7 @@ pub mod tracker;
 pub mod vault;
 pub mod weather;
 pub mod websearch;
+pub mod writing;
 
 pub use account::{
     Account, AccountSecret, AccountStatus, AgentCaller, AgentMailAccess, AuthMethod, Endpoint,
@@ -142,7 +143,7 @@ pub use id::{
     GoalId, ItemId, JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId,
     NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId,
     RoutineId, RoutineRunId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId,
-    TranscriptId, VoiceprintId,
+    TranscriptId, VoiceprintId, WritingId,
 };
 pub use job::{Job, JobKind, JobOutput, JobStatus};
 pub use library::{
@@ -196,6 +197,7 @@ pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::routines::RunQuery;
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 pub use store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
+pub use store::writing::{WritingQuery, WritingStore};
 pub use store::{
     BackendInfo, BackendRegistry, BackendSettings, Capabilities, EntryQuery, JournalStore,
     SettingSpec, SortOrder, StoreContext, StoreFactory, StoreStats,
@@ -210,3 +212,4 @@ pub use tracker::{
 };
 pub use vault::{Vault, VaultConfig, VaultHeader, VaultStatus};
 pub use websearch::{Fetcher, SearchRequest, SearchResult, Source, WebSearch};
+pub use writing::{WritingAction, WritingAssist, WritingOutcome};

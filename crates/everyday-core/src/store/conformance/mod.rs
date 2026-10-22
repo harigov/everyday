@@ -41,6 +41,7 @@ mod routines;
 mod secrets;
 mod tasks;
 mod trackers;
+mod writing;
 
 pub use accounts::run_account_suite;
 pub use agent::run_agent_suite;
@@ -57,6 +58,7 @@ pub use routines::run_routine_suite;
 pub use secrets::run_secret_suite;
 pub use tasks::run_task_suite;
 pub use trackers::run_tracker_suite;
+pub use writing::run_writing_suite;
 
 use super::agent::{AgentStore, ConversationQuery};
 use super::calendars::{CalendarStore, EventQuery};
@@ -174,6 +176,12 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.jobs() {
         Some(_) => run_job_suite(store),
         None => eprintln!("backend {name:?} stores no jobs; skipping the job suite"),
+    }
+
+    // And writing help, on the same terms again.
+    match store.writing() {
+        Some(_) => run_writing_suite(store),
+        None => eprintln!("backend {name:?} keeps no writing help; skipping the writing suite"),
     }
 
     // And proposals, on the same terms again. Handed the whole journal

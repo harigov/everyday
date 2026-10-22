@@ -119,6 +119,7 @@ import type {
   VerificationAnswer,
   VoiceprintId,
   VoiceprintInfo,
+  WritingSettings,
 } from './types'
 import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
@@ -586,6 +587,16 @@ export const api = {
    */
   hotkeyStatus: () => invoke<HotkeyStatus>('hotkey_status'),
   setHotkey: (on: boolean) => invoke<HotkeyStatus>('set_hotkey', { on }),
+
+  /**
+   * Writing help: a second OS-wide key, over text selected in any
+   * application. Per machine, like the palette's key, and kept by the shell
+   * rather than the vault -- see `crates/everyday-app/src/writing/mod.rs`.
+   * Unanswered in mock mode, where the pane leaves the row out.
+   */
+  writingSettings: () => invoke<WritingSettings>('writing_settings'),
+  setWritingSettings: (enabled: boolean, shortcut: string | null = null) =>
+    invoke<WritingSettings>('set_writing_settings', { enabled, shortcut }),
 
   // ── Meeting capture, in the Tauri shell ────────────────────────────
   //

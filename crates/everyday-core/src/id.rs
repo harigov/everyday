@@ -88,6 +88,9 @@ typed_id!(RoutineRunId, "run");
 typed_id!(JobId, "job");
 // Work the assistant prepared and did not do. See `crate::proposal`.
 typed_id!(ProposalId, "proposal");
+// One use of writing help over text selected anywhere on the desktop. See
+// `crate::writing`.
+typed_id!(WritingId, "writing");
 
 // Meeting notes. A `RecordingId` names one call being (or once) recorded, a
 // `TranscriptId` what was said in it, a `VoiceprintId` a voice, and a

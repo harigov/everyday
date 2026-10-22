@@ -193,6 +193,11 @@ import type {
   VoiceprintId,
   VoiceprintInfo,
   WeatherReport,
+  WritingAction,
+  WritingAssist,
+  WritingId,
+  WritingOutcome,
+  WritingQuery,
   WrittenText,
 } from '../types'
 
@@ -409,6 +414,7 @@ export interface Commands {
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   listVoiceprints: { args: Record<string, never>; result: VoiceprintInfo[] }
+  listWritingAssists: { args: { query?: WritingQuery }; result: WritingAssist[] }
   loadEvent: { args: { id: EventId }; result: EditableEvent }
   lock: { args: Record<string, never>; result: VaultStatus }
   logReading: {
@@ -535,6 +541,10 @@ export interface Commands {
     result: void
   }
   rewriteMeetingNote: { args: { noteId: NoteId; templateId: TemplateId }; result: string }
+  rewriteSelection: {
+    args: { text: string; action: WritingAction; app?: string | null }
+    result: WritingAssist
+  }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
@@ -620,6 +630,7 @@ export interface Commands {
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
+  settleWritingAssist: { args: { id: WritingId; outcome: WritingOutcome }; result: WritingAssist }
   shrinkCover: { args: { blob: string }; result: string }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
   speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
@@ -802,6 +813,7 @@ export const COMMAND_NAMES = {
   listTools: 'list_tools',
   listTrackers: 'list_trackers',
   listVoiceprints: 'list_voiceprints',
+  listWritingAssists: 'list_writing_assists',
   loadEvent: 'load_event',
   lock: 'lock',
   logReading: 'log_reading',
@@ -877,6 +889,7 @@ export const COMMAND_NAMES = {
   retryRecording: 'retry_recording',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   rewriteMeetingNote: 'rewrite_meeting_note',
+  rewriteSelection: 'rewrite_selection',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
   runRoutine: 'run_routine',
@@ -933,6 +946,7 @@ export const COMMAND_NAMES = {
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
   setTranscriberKey: 'set_transcriber_key',
+  settleWritingAssist: 'settle_writing_assist',
   shrinkCover: 'shrink_cover',
   snooze: 'snooze',
   speechModels: 'speech_models',
@@ -1122,6 +1136,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_tools',
   'list_trackers',
   'list_voiceprints',
+  'list_writing_assists',
   'load_event',
   'lock',
   'log_reading',
@@ -1197,6 +1212,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'retry_recording',
   'revoke_remote_image_allowance',
   'rewrite_meeting_note',
+  'rewrite_selection',
   'routine_templates',
   'run_import',
   'run_routine',
@@ -1252,6 +1268,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
+  'settle_writing_assist',
   'shrink_cover',
   'snooze',
   'speech_models',
@@ -1386,6 +1403,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'respond_to_invite',
   'retry_recording',
   'revoke_remote_image_allowance',
+  'rewrite_selection',
   'run_import',
   'run_routine',
   'run_tool',
@@ -1437,6 +1455,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
+  'settle_writing_assist',
   'shrink_cover',
   'snooze',
   'star',

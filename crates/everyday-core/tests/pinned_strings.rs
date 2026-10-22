@@ -280,6 +280,14 @@ fn routine_domain_aad_labels_are_pinned() {
 // ---- background jobs ----------------------------------------------------
 
 #[test]
+fn writing_assist_aad_label_is_pinned() {
+    assert_eq!(
+        store::writing::writing_assist_aad(id::<WritingId>()),
+        b"everyday.writing_assist.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+}
+
+#[test]
 fn job_aad_label_is_pinned() {
     assert_eq!(
         store::jobs::job_aad(id::<JobId>()),
@@ -391,6 +399,7 @@ fn every_typed_id_kind_is_pinned() {
     assert_eq!(RoutineId::KIND, "routine");
     assert_eq!(RoutineRunId::KIND, "run");
     assert_eq!(JobId::KIND, "job");
+    assert_eq!(WritingId::KIND, "writing");
     assert_eq!(ProposalId::KIND, "proposal");
     assert_eq!(RecordingId::KIND, "recording");
     assert_eq!(TranscriptId::KIND, "transcript");

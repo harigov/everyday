@@ -760,29 +760,27 @@ pub async fn mcp_issue_token(
 /// the tray instead.
 #[tauri::command]
 pub async fn hotkey_status(app: tauri::AppHandle) -> CommandResult<HotkeyStatus> {
-    let mac = cfg!(target_os = "macos");
-    Ok(HotkeyStatus {
-        registered: crate::hotkey::is_registered(&app),
-        shortcut: crate::hotkey::describe(mac),
-    })
+    let status =
+        app.state::<crate::hotkey::Hotkeys>().status(&app, crate::hotkey::Binding::Palette);
+    Ok(HotkeyStatus { registered: status.registered, shortcut: status.shortcut })
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HotkeyStatus {
     pub registered: bool,
-    /// How to write it on screen, from the same value that was claimed.
+    /// How to write it on screen -- the desktop's own answer where it keeps
+    /// the binding.
     pub shortcut: String,
 }
 
-/// Claim the key, or give it back.
+/// Claim the palette's key, or give it back.
 #[tauri::command]
 pub async fn set_hotkey(app: tauri::AppHandle, on: bool) -> CommandResult<HotkeyStatus> {
-    if on {
-        crate::hotkey::install(&app);
-    } else {
-        crate::hotkey::remove(&app)?;
-    }
+    let hotkeys = app.state::<crate::hotkey::Hotkeys>();
+    let answer = hotkeys.answer();
+    hotkeys.set_palette(&app, on)?;
+    answer.await;
     hotkey_status(app).await
 }
 

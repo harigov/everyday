@@ -53,6 +53,7 @@ mod tasks;
 mod tests;
 pub mod touched;
 mod trackers;
+mod writing;
 
 pub use header::VaultHeader;
 

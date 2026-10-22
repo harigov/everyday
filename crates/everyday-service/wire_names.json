@@ -19,7 +19,8 @@
       "secrets": true,
       "tasks": true,
       "trackers": true,
-      "transactional": true
+      "transactional": true,
+      "writing": true
     },
     "baseline": {
       "accounts": false,
@@ -40,7 +41,8 @@
       "secrets": false,
       "tasks": false,
       "trackers": false,
-      "transactional": false
+      "transactional": false,
+      "writing": false
     }
   },
   "changes": {

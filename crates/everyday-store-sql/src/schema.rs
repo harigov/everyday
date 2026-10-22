@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -105,6 +105,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v14(d),
         v15(d),
         v16(d),
+        v17(d),
     ]
 }
 
@@ -1436,6 +1437,27 @@ fn v16(d: Dialect) -> Vec<String> {
              data        {blob} NOT NULL
          )"
     )]
+}
+
+/// Version 17: writing help -- every time the writing shortcut was used over
+/// text selected in another application, and what came of it. See
+/// `docs/plans/writing-tools.md` and `everyday_core::writing`.
+///
+/// Additive. One table. In the clear: only when it was asked, which is what
+/// the history is ordered by. Sealed: the text that was selected, where,
+/// what was asked of it, what came back and whether it was used.
+fn v17(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS writing_assists (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS writing_assists_by_time ON writing_assists (created_us)".into(),
+    ]
 }
 
 #[cfg(test)]

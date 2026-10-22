@@ -44,6 +44,7 @@ use crate::store::routines::RoutineStore;
 use crate::store::secrets::SecretStore;
 use crate::store::tasks::TaskStore;
 use crate::store::trackers::TrackerStore;
+use crate::store::writing::WritingStore;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -124,6 +125,13 @@ pub struct Capabilities {
     /// False takes the job tools away; the rail still answers, in one turn.
     #[serde(default)]
     pub jobs: bool,
+    /// Backend implements [`writing::WritingStore`], so writing help over
+    /// text selected anywhere on the desktop has somewhere to keep what it
+    /// was asked and what it answered.
+    ///
+    /// False leaves the writing shortcut working and its history unkept.
+    #[serde(default)]
+    pub writing: bool,
     /// Backend implements [`proposals::ProposalStore`], so the assistant can
     /// leave work it prepared for the person to accept or decline.
     ///
@@ -525,6 +533,7 @@ pub trait JournalStore: Send + Sync {
             notes: self.notes().is_some(),
             routines: self.routines().is_some(),
             jobs: self.jobs().is_some(),
+            writing: self.writing().is_some(),
             proposals: self.proposals().is_some(),
             agent: self.agent().is_some(),
             secrets: self.secrets().is_some(),
@@ -610,6 +619,13 @@ pub trait JournalStore: Send + Sync {
     /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`jobs`](crate::store::jobs) and [`crate::job`].
     fn jobs(&self) -> Option<&dyn JobStore> {
+        None
+    }
+
+    /// Storage for writing help, if this backend has any. Same shape and
+    /// same reasoning as [`JournalStore::tasks`]. See
+    /// [`writing`](crate::store::writing) and [`crate::writing`].
+    fn writing(&self) -> Option<&dyn WritingStore> {
         None
     }
 
@@ -1080,6 +1096,7 @@ pub mod routines;
 pub mod secrets;
 pub mod tasks;
 pub mod trackers;
+pub mod writing;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod conformance;

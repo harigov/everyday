@@ -1242,8 +1242,16 @@
       "reason": "resumes the same background pipeline finish_recording does"
     },
     {
+      "name": "rewrite_selection",
+      "reason": "asks the medium model; and announces nothing, since no list shows writing help"
+    },
+    {
       "name": "send_message",
       "reason": "streams: true, unreachable through Service::call at all"
+    },
+    {
+      "name": "settle_writing_assist",
+      "reason": "needs an assist, which needs a model; announces nothing either"
     },
     {
       "name": "start_chat_verification",
