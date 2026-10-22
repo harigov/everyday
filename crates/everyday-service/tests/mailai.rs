@@ -127,6 +127,7 @@ fn env(endpoint: &str) -> (Arc<Service>, tempfile::TempDir) {
             model: "scripted".into(),
             temperature: Some(0.0),
             max_tokens: Some(512),
+            reasoning_effort: None,
         },
     });
     vault.save_model_settings(&models).unwrap();

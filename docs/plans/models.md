@@ -81,6 +81,31 @@ provider and model name, configured in **Settings → Models**.
   `save_model_settings`, `set_model_key`, `clear_model_key`) need what
   `set_agent_key` needed.
 
+- **A reasoning effort per tier, unset by default.** `LLMModelConfig.reasoning_effort`
+  (`none` … `xhigh`, `max`), sent as a top-level `reasoning_effort` -- which
+  OpenAI, OpenRouter (mapping it onto Anthropic's and Gemini's budgets),
+  Ollama, vLLM and LM Studio all read -- through rig's `additional_params`
+  in `llm::configure`, the one place every request is built. Settable
+  because the endpoint's default is not a middle setting: `gpt-5.1`'s is
+  `none`, no reasoning at all, which an assistant planning a multi-step job
+  reads as lazy. Unset sends nothing, so no saved vault asks differently
+  until somebody picks a level, and a model that refuses the field (Ollama's
+  without thinking) is not broken by the field existing. No per-model list
+  of levels. Around it:
+  - a model told to reason is sent no temperature -- OpenAI's reasoning
+    models refuse one above effort `none`, and Small's hidden temperature of
+    nought would otherwise break it from a setting the pane does not show;
+  - Small is refused above Low on save (`SMALL_MAX_EFFORT`): its thinking
+    comes out of `QUICK_MAX_TOKENS` and a twelve-second clock, and it would
+    never answer;
+  - `quick::run_prompt`, which also carries Medium's mail summaries and
+    drafts, gives a model set to Medium or above longer (`timeout_for`), and
+    says so when it still runs out;
+  - a refused level comes back through `llm::friendly_for` as a sentence
+    pointing at the setting -- only when an effort was actually sent;
+  - a stored level this build does not know reads as unset rather than
+    failing the one sealed record every tier lives in.
+
 ## Not done
 
 - **A second wire protocol.** `Provider` still has one variant, OpenAI's chat
@@ -88,4 +113,5 @@ provider and model name, configured in **Settings → Models**.
   speak. A native Anthropic client is a new `Provider` variant and an arm in
   `everyday_service::llm::client`.
 - **Temperature and token limits in the pane.** Carried and honoured, not
-  shown -- as before.
+  shown -- as before. The reasoning effort is the one request setting the
+  pane shows.

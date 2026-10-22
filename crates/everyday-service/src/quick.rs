@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use everyday_core::Vault;
-use everyday_core::llm::LLMModelConfig;
+use everyday_core::llm::{LLMModelConfig, ReasoningEffort};
 // Aliased: `rig_agent::prelude` brings its own `Prompt`, and that one is the
 // trait carrying `.prompt()`.
 use everyday_core::quick::Prompt as QuickPrompt;
@@ -61,6 +61,26 @@ use crate::error::{CommandError, CommandResult, codes};
 /// that a suggestion which has not arrived by now has stopped being a
 /// suggestion. The clock covers the whole exchange, not one request.
 pub const TIMEOUT: Duration = Duration::from_secs(12);
+
+/// How long an ask to `model` may take: [`TIMEOUT`], unless the model was
+/// told to think at length.
+///
+/// The same exchange carries the mail features that run on Medium --
+/// summaries, drafts, suggested replies -- and Medium may be set to think
+/// hard, which a person chose knowing it is slower. Holding that to twelve
+/// seconds would make the setting break the features rather than improve
+/// them. Small cannot be set above Low (`SMALL_MAX_EFFORT`), so the asks
+/// that run as somebody types keep the short clock.
+pub fn timeout_for(model: &LLMModelConfig) -> Duration {
+    match model.reasoning_effort {
+        None | Some(ReasoningEffort::None | ReasoningEffort::Minimal | ReasoningEffort::Low) => {
+            TIMEOUT
+        }
+        Some(ReasoningEffort::Medium) => Duration::from_secs(30),
+        Some(ReasoningEffort::High) => Duration::from_secs(60),
+        Some(ReasoningEffort::Xhigh | ReasoningEffort::Max) => Duration::from_secs(120),
+    }
+}
 
 /// Turns a quick ask may take.
 ///
@@ -148,20 +168,31 @@ pub async fn run_prompt(
 
     // The timeout wraps the whole exchange rather than one request, because
     // the failure it exists for is a model that answers slowly twice.
-    let turn = tokio::time::timeout(TIMEOUT, agent.prompt(user).max_turns(MAX_TURNS));
+    let timeout = timeout_for(model);
+    let turn = tokio::time::timeout(timeout, agent.prompt(user).max_turns(MAX_TURNS));
     match turn.await {
         Ok(Ok(_)) => {}
         // A model that ran out of turns may still have called `submit` on the
         // way, so the answer is checked before the error is believed.
         Ok(Err(e)) => {
             if answer.lock().expect("not poisoned").is_none() {
-                return Err(CommandError::new(codes::QUICK, crate::llm::friendly(&e.to_string())));
+                return Err(CommandError::new(
+                    codes::QUICK,
+                    crate::llm::friendly_for(&e.to_string(), model),
+                ));
             }
         }
         Err(_) => {
+            // Said when the effort is what made it slow, because that is the
+            // one cause here a person can do something about.
+            let why = if timeout > TIMEOUT {
+                "; a lower reasoning effort in Settings → Models answers sooner"
+            } else {
+                ""
+            };
             return Err(CommandError::new(
                 codes::QUICK,
-                format!("the model took longer than {}s", TIMEOUT.as_secs()),
+                format!("the model took longer than {}s{why}", timeout.as_secs()),
             ));
         }
     }
@@ -171,4 +202,22 @@ pub async fn run_prompt(
         .expect("the quick answer slot is never poisoned")
         .take()
         .ok_or_else(|| CommandError::new(codes::QUICK, "the model did not answer"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_told_to_think_longer_is_given_longer() {
+        let at = |effort| LLMModelConfig { reasoning_effort: effort, ..LLMModelConfig::quick() };
+        assert_eq!(timeout_for(&at(None)), TIMEOUT);
+        assert_eq!(timeout_for(&at(Some(ReasoningEffort::Low))), TIMEOUT, "what Small may be");
+        let mut last = TIMEOUT;
+        for effort in [ReasoningEffort::Medium, ReasoningEffort::High, ReasoningEffort::Max] {
+            let t = timeout_for(&at(Some(effort)));
+            assert!(t > last, "{effort:?} gets longer than the level below it");
+            last = t;
+        }
+    }
 }

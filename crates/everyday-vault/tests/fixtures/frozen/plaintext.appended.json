@@ -1102,6 +1102,7 @@
           "maxTokens": null,
           "model": "fixture-large-f4240",
           "provider": "openAi",
+          "reasoningEffort": null,
           "temperature": null
         },
         "medium": {
@@ -1109,6 +1110,7 @@
           "maxTokens": null,
           "model": "gpt-5.1-mini",
           "provider": "openAi",
+          "reasoningEffort": null,
           "temperature": null
         },
         "small": null

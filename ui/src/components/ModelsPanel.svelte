@@ -19,7 +19,13 @@
   import { isLoopback } from '../lib/agent'
   import { models } from '../lib/models.svelte'
   import { quick } from '../lib/quick.svelte'
-  import type { LLMConfig, ModelSettings, ModelTier, QuickAskRow } from '../lib/types'
+  import type {
+    LLMConfig,
+    ModelSettings,
+    ModelTier,
+    QuickAskRow,
+    ReasoningEffort,
+  } from '../lib/types'
   import Icon from './Icon.svelte'
 
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
@@ -64,15 +70,44 @@
     /** What a card switched on starts as. `null` for Medium, which is never off. */
     fresh: Omit<LLMConfig, 'provider' | 'baseUrl'> | null
     placeholder: string
+    /** Under the reasoning effort: what to weigh when picking one for this work. */
+    effortHint: string
+    /** The levels this card offers. */
+    efforts: { value: ReasoningEffort; label: string }[]
   }
+
+  /**
+   * Every level any endpoint takes, in order. No per-model list: model names
+   * are free text, and one that does not take a level says so when it is
+   * next asked -- see `ReasoningEffort` in `crates/everyday-core/src/llm.rs`.
+   */
+  const EFFORTS: { value: ReasoningEffort; label: string }[] = [
+    { value: 'none', label: 'None' },
+    { value: 'minimal', label: 'Minimal' },
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+    { value: 'xhigh', label: 'Extra high' },
+    { value: 'max', label: 'Max' },
+  ]
+
+  /**
+   * Small's levels: Low and below. The save refuses more
+   * (`SMALL_MAX_EFFORT` in `crates/everyday-core/src/llm.rs`), because a quick
+   * ask spends its few tokens and seconds thinking and never answers.
+   */
+  const SMALL_EFFORTS = EFFORTS.filter((e) => ['none', 'minimal', 'low'].includes(e.value))
 
   const CARDS: Card[] = [
     {
       tier: 'large',
       title: 'Large',
       uses: 'Deep research: the jobs the assistant goes away to work on, reading pages and writing up what it found as a note.',
-      fresh: { model: 'gpt-5.1', temperature: null, maxTokens: null },
+      fresh: { model: 'gpt-5.1', temperature: null, maxTokens: null, reasoningEffort: null },
       placeholder: 'gpt-5.1',
+      effortHint:
+        'How long it thinks before it acts. A research job runs unattended, so this is where High is worth what it costs.',
+      efforts: EFFORTS,
     },
     {
       tier: 'medium',
@@ -80,13 +115,19 @@
       uses: 'The assistant: conversations, routines, dreams, meeting notes, and the mail features that write prose — summaries and drafts.',
       fresh: null,
       placeholder: 'gpt-5.1-mini',
+      effortHint:
+        'How long it thinks before it answers or reaches for a tool. Higher is slower and costs more, and plans multi-step work better — mail summaries and drafts wait for it too.',
+      efforts: EFFORTS,
     },
     {
       tier: 'small',
       title: 'Small',
       uses: 'Quick, one-shot work: filling in fields and suggesting things as you type, sorting mail, and suggesting short replies.',
-      fresh: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024 },
+      fresh: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024, reasoningEffort: null },
       placeholder: 'gpt-5.1-nano',
+      effortHint:
+        'Low at most: these run as you type, and thinking comes out of the few tokens and seconds a quick answer is given.',
+      efforts: SMALL_EFFORTS,
     },
   ]
 
@@ -204,7 +245,8 @@
       Three models, one for each size of work, each with its own provider and model name. Anything
       that speaks the OpenAI chat API works — leave the address empty for OpenAI itself. What you
       ask about is sent to the provider of whichever model does the work; a model on this machine
-      sends nothing anywhere.
+      sends nothing anywhere. A reasoning effort left at the provider's default is the provider's
+      choice, and can be no thinking at all — OpenAI's gpt-5.1 defaults to None.
     </p>
 
     {#each CARDS as card (card.tier)}
@@ -266,6 +308,22 @@
             <span>Model name</span>
             <input bind:value={config.model} placeholder={card.placeholder} spellcheck="false" />
           </label>
+
+          <label class="setting">
+            <span>Reasoning effort</span>
+            <select
+              value={config.reasoningEffort ?? ''}
+              onchange={(e) =>
+                (config.reasoningEffort = (e.currentTarget.value ||
+                  null) as ReasoningEffort | null)}
+            >
+              <option value="">The provider's default</option>
+              {#each card.efforts as effort (effort.value)}
+                <option value={effort.value}>{effort.label}</option>
+              {/each}
+            </select>
+          </label>
+          <p class="hint">{card.effortHint}</p>
 
           {#if keyed}
             <div class="stored">
@@ -429,7 +487,8 @@
     font-weight: 550;
     color: var(--fg-muted);
   }
-  input {
+  input,
+  select {
     width: 100%;
     min-width: 0;
     padding: var(--sp-2) var(--sp-3);
@@ -441,7 +500,8 @@
     font-size: var(--text-base);
     user-select: text;
   }
-  input:focus {
+  input:focus,
+  select:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);

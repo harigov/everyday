@@ -260,7 +260,85 @@ pub struct LLMModelConfig {
     /// Cap on a single reply. `None` means the endpoint's own limit.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// How long a reasoning model thinks before it answers. `None` sends
+    /// nothing and leaves it to the endpoint -- see [`ReasoningEffort`] for
+    /// why that is not the same as a middling setting.
+    ///
+    /// A level this build does not know reads as `None` rather than failing:
+    /// see [`known_effort`].
+    #[serde(default, deserialize_with = "known_effort")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
+
+/// Read a stored effort, taking one this build has no variant for as unset.
+///
+/// The effort lives inside the one sealed record that holds every tier, so a
+/// level written by a newer build -- or another branch's, against the same
+/// vault -- would otherwise fail the whole record: no model for any tier, and
+/// no Save to fix it with, since a save reads the record first. Unset is what
+/// the field meant before it existed, so it is the safe reading. The string
+/// is parsed by the derived `Deserialize`, so the spelling still lives in one
+/// place.
+fn known_effort<'de, D>(d: D) -> std::result::Result<Option<ReasoningEffort>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::IntoDeserializer;
+    let Some(raw) = Option::<String>::deserialize(d)? else { return Ok(None) };
+    let parsed: std::result::Result<ReasoningEffort, serde::de::value::Error> =
+        ReasoningEffort::deserialize(raw.as_str().into_deserializer());
+    Ok(parsed.ok())
+}
+
+/// How hard a reasoning model is asked to think, as `reasoning_effort` on a
+/// chat completions request.
+///
+/// Settable because the endpoint's own default is not a middle setting. It
+/// is whatever the provider last decided: OpenAI's `gpt-5.1` defaults to
+/// `none`, which is no reasoning at all, so an assistant on it that was
+/// never told otherwise plans a multi-step job without thinking first --
+/// the "lazy" it reads as. Nothing is sent unless somebody picks a level,
+/// because a model that does not reason can refuse the field outright
+/// (Ollama does, for a model without thinking), and a setting that worked
+/// yesterday must not start failing because this one was added.
+///
+/// One spelling for every endpoint, and every value any of them takes:
+/// OpenRouter reads the same top-level field as OpenAI and maps it onto
+/// Anthropic's and Gemini's own budgets, and a level a given model does not
+/// support comes back as a 400 that `everyday_service::llm::friendly_for`
+/// turns into a sentence pointing at the setting. No per-model list: model
+/// names are free text, and which levels a model takes changes with every
+/// release. The one limit is Small's -- see [`SMALL_MAX_EFFORT`].
+///
+/// Ordered from least thinking to most, so a ceiling is a comparison. Spelt
+/// on the wire and in the record by serde alone; the request is built by
+/// serialising this, not from a second table of names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// Do not reason at all. `gpt-5.1` and later; Gemini.
+    None,
+    /// The least that still reasons. `gpt-5` and its sizes.
+    Minimal,
+    Low,
+    Medium,
+    High,
+    /// `gpt-5.1-codex-max`, `gpt-5.2` and later; OpenRouter.
+    Xhigh,
+    /// OpenRouter's top level, for the models that take one.
+    Max,
+}
+
+/// The most thinking the Small model may be asked for.
+///
+/// Its asks are capped at [`QUICK_MAX_TOKENS`] and a few seconds, and on
+/// OpenAI's reasoning models the thinking comes out of the same token cap
+/// as the answer. Above Low, the model spends the budget or the clock
+/// thinking and never calls `submit`, and what a person sees is a
+/// suggestion that quietly stops appearing. Refused when the models are
+/// saved, where it can still be changed, rather than discovered keystroke
+/// by keystroke.
+pub const SMALL_MAX_EFFORT: ReasoningEffort = ReasoningEffort::Low;
 
 impl Default for LLMModelConfig {
     fn default() -> Self {
@@ -294,13 +372,23 @@ impl LLMModelConfig {
     /// The assistant's default: the endpoint's own temperature, its own
     /// reply limit, and a model that can call tools.
     pub fn assistant() -> Self {
-        Self { model: DEFAULT_MODEL.into(), temperature: None, max_tokens: None }
+        Self {
+            model: DEFAULT_MODEL.into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+        }
     }
 
     /// The large model's default. The endpoint's own temperature and reply
     /// limit, as the assistant's: a write-up is prose, not an extraction.
     pub fn large() -> Self {
-        Self { model: DEFAULT_LARGE_MODEL.into(), temperature: None, max_tokens: None }
+        Self {
+            model: DEFAULT_LARGE_MODEL.into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+        }
     }
 
     /// The small model's default.
@@ -316,6 +404,7 @@ impl LLMModelConfig {
             model: DEFAULT_QUICK_MODEL.into(),
             temperature: Some(0.0),
             max_tokens: Some(QUICK_MAX_TOKENS),
+            reasoning_effort: None,
         }
     }
 
@@ -362,7 +451,8 @@ impl ModelTier {
 
 /// One model: where it is, and which one to ask there.
 ///
-/// Flat on the wire -- `{ provider, baseUrl, model, temperature, maxTokens }`
+/// Flat on the wire -- `{ provider, baseUrl, model, temperature, maxTokens,
+/// reasoningEffort }`
 /// -- because the pane edits it as one card; split in here because the
 /// request layer wants the halves separately, and a key is found by the
 /// first.
@@ -446,6 +536,15 @@ impl ModelSettings {
                     other => other,
                 })?;
             }
+        }
+        if let Some(small) = &self.small
+            && small.model.reasoning_effort.is_some_and(|e| e > SMALL_MAX_EFFORT)
+        {
+            return Err(Error::Invalid(
+                "Small: a reasoning effort above Low leaves a quick ask no room to answer in; \
+                 choose Low or less, or the provider's default"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -678,6 +777,7 @@ mod tests {
                     model: "x/y".into(),
                     temperature: Some(0.3),
                     max_tokens: Some(2048),
+                    reasoning_effort: Some(ReasoningEffort::Xhigh),
                 },
             },
             small: Some(LLMConfig::small()),
@@ -686,6 +786,9 @@ mod tests {
         assert_eq!(json["medium"]["baseUrl"], "https://openrouter.ai/api/v1");
         assert_eq!(json["medium"]["model"], "x/y");
         assert_eq!(json["medium"]["maxTokens"], 2048);
+        // Spelt as the request spells it, so the pane, the record and the
+        // wire all say the same word.
+        assert_eq!(json["medium"]["reasoningEffort"], "xhigh");
         assert!(json["large"].is_null());
         let back: ModelSettings = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
@@ -699,6 +802,53 @@ mod tests {
         assert_eq!(sparse.connection.base_url, None);
         assert_eq!(sparse.model.temperature, Some(0.0));
         assert_eq!(sparse.model.max_tokens, None);
+        // And every record saved before there was an effort to set: nothing
+        // is sent, so nothing about what they ask changes.
+        assert_eq!(sparse.model.reasoning_effort, None);
+    }
+
+    /// A level from a newer build must not cost the vault every model.
+    #[test]
+    fn an_effort_this_build_does_not_know_reads_as_unset() {
+        let config: LLMConfig = serde_json::from_value(serde_json::json!({
+            "provider": "openAi", "model": "m", "reasoningEffort": "ultra"
+        }))
+        .expect("the tier still reads");
+        assert_eq!(config.model.reasoning_effort, None);
+
+        let config: LLMConfig = serde_json::from_value(serde_json::json!({
+            "provider": "openAi", "model": "m", "reasoningEffort": "xhigh"
+        }))
+        .unwrap();
+        assert_eq!(config.model.reasoning_effort, Some(ReasoningEffort::Xhigh));
+    }
+
+    #[test]
+    fn the_small_model_may_think_only_a_little() {
+        let with = |effort| ModelSettings {
+            small: Some(LLMConfig {
+                model: LLMModelConfig { reasoning_effort: Some(effort), ..LLMModelConfig::quick() },
+                ..LLMConfig::small()
+            }),
+            ..ModelSettings::default()
+        };
+        for ok in [ReasoningEffort::None, ReasoningEffort::Minimal, ReasoningEffort::Low] {
+            assert!(with(ok).validate().is_ok(), "{ok:?}");
+        }
+        let err = with(ReasoningEffort::Medium).validate().unwrap_err().to_string();
+        assert!(err.contains("Small") && err.contains("Low"), "{err}");
+
+        // The others may think as hard as they are told to.
+        let mut s = ModelSettings::default();
+        s.medium.model.reasoning_effort = Some(ReasoningEffort::Max);
+        s.large = Some(LLMConfig {
+            model: LLMModelConfig {
+                reasoning_effort: Some(ReasoningEffort::Xhigh),
+                ..LLMModelConfig::large()
+            },
+            ..LLMConfig::large()
+        });
+        assert!(s.validate().is_ok());
     }
 
     #[test]

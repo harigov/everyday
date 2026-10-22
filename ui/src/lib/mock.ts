@@ -3507,6 +3507,7 @@ let modelSettings: ModelSettings = {
     model: 'gpt-5.1-mini',
     temperature: null,
     maxTokens: null,
+    reasoningEffort: null,
   },
   small: {
     provider: 'openAi',
@@ -3514,6 +3515,7 @@ let modelSettings: ModelSettings = {
     model: 'gpt-5.1-nano',
     temperature: 0,
     maxTokens: 1024,
+    reasoningEffort: null,
   },
 }
 const modelKeys = new Set<string>(['https://api.openai.com/v1'])

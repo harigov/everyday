@@ -2757,7 +2757,12 @@ export interface LLMModelConfig {
   model: string
   temperature: number | null
   maxTokens: number | null
+  /** Sent as `reasoning_effort`. `null` sends nothing: the endpoint's default. */
+  reasoningEffort: ReasoningEffort | null
 }
+
+/** How hard a reasoning model thinks -- `everyday_core::llm::ReasoningEffort`. */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** Which of the three models. */
 export type ModelTier = 'large' | 'medium' | 'small'
