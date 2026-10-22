@@ -80,11 +80,37 @@ pub struct Question {
     pub choices: Vec<Choice>,
 }
 
+/// A picture the owner sent, as it came off the service: its bytes, and
+/// what it was called.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Picture {
+    /// What the sender's device called it, for the thread to show. May be
+    /// empty; the vault names it then.
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for Picture {
+    /// The name and the size, not the bytes: a log line or a failed
+    /// assertion has no use for a few megabytes of numbers.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Picture")
+            .field("filename", &self.filename)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
 /// What the owner did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
     /// They wrote something.
     Said { chat: ChatId, text: String, at: Timestamp },
+    /// They sent a picture, with `caption` -- what they wrote with it, or
+    /// nothing. One picture each: a service that sends several at once
+    /// sends them as several messages, and the relay gathers them up with
+    /// what is said next. See `relay`'s `PICTURE_WAIT`.
+    Showed { chat: ChatId, picture: Picture, caption: String, at: Timestamp },
     /// They picked an answer to a [`Question`] this side asked.
     Chose { chat: ChatId, question: MessageRef, choice: Choice, at: Timestamp },
     /// They sent something this side could not read -- an encrypted message
@@ -96,6 +122,7 @@ impl Incoming {
     pub fn chat(&self) -> &ChatId {
         match self {
             Incoming::Said { chat, .. }
+            | Incoming::Showed { chat, .. }
             | Incoming::Chose { chat, .. }
             | Incoming::Unreadable { chat, .. } => chat,
         }
@@ -104,6 +131,7 @@ impl Incoming {
     pub fn at(&self) -> Timestamp {
         match self {
             Incoming::Said { at, .. }
+            | Incoming::Showed { at, .. }
             | Incoming::Chose { at, .. }
             | Incoming::Unreadable { at, .. } => *at,
         }

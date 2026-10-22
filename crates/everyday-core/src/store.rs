@@ -975,6 +975,13 @@ pub trait JournalStore: Send + Sync {
         if let Some(news) = self.news() {
             live.extend(news.blob_refs()?);
         }
+        // And the assistant: a picture somebody sent it is held by the
+        // message it came with and by nothing else. Missing this walk would
+        // make the first sweep after a day take every picture out of every
+        // conversation, the thread still drawing a frame for each.
+        if let Some(agent) = self.agent() {
+            live.extend(agent.attachment_blob_refs()?);
+        }
         let mut removed = 0;
         for id in self.list_blobs()? {
             if live.contains(&id) {

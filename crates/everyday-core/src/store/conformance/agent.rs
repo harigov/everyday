@@ -533,3 +533,51 @@ fn unicode_survives_an_agent_round_trip(store: &dyn AgentStore) {
     store.delete_skill(skill.id).unwrap();
     store.delete_conversation(c.id).unwrap();
 }
+
+/// A picture sent to the assistant must survive the garbage collector.
+///
+/// Not part of [`run_agent_suite`], because it is a question about the
+/// *journal* store: garbage collection decides what is live by walking every
+/// record that can hold a blob, and a message's picture is held by that
+/// message and nothing else. Missing the walk would make the first sweep
+/// after a day's grace take every picture out of every conversation, with
+/// no error anywhere and the thread still pointing at each one.
+pub(super) fn garbage_collection_keeps_pictures_sent_to_the_assistant(store: &dyn JournalStore) {
+    let Some(agent) = store.agent() else { return };
+    // Whatever an earlier suite left unreferenced goes first, so the counts
+    // below are this test's alone.
+    store.collect_garbage(std::time::Duration::ZERO).unwrap();
+
+    let picture = store.put_blob(b"a photo of a receipt").unwrap();
+    let orphan = store.put_blob(b"a picture nobody sent").unwrap();
+
+    let c = seeded_conversation(agent, "What is this?");
+    let attachment = Attachment {
+        blob: picture,
+        kind: MediaKind::Image,
+        mime: "image/jpeg".into(),
+        filename: "receipt.jpg".into(),
+        byte_len: 20,
+        width: Some(800),
+        height: Some(600),
+        duration_ms: None,
+        caption: String::new(),
+    };
+    let asked = Message::user(c.id, "what did I spend?").with_attachments(vec![attachment.clone()]);
+    agent.append_message(&asked).unwrap();
+    assert_eq!(
+        agent.list_messages(c.id).unwrap()[0].attachments,
+        vec![attachment],
+        "a message's pictures must round-trip"
+    );
+
+    let removed = store.collect_garbage(std::time::Duration::ZERO).unwrap();
+    assert_eq!(removed, 1, "exactly the unreferenced blob should be collected");
+    assert!(store.has_blob(picture).unwrap(), "a picture in a conversation is a live reference");
+    assert!(!store.has_blob(orphan).unwrap());
+
+    // ...and it stops being one when the conversation goes.
+    agent.delete_conversation(c.id).unwrap();
+    assert_eq!(store.collect_garbage(std::time::Duration::ZERO).unwrap(), 1);
+    assert!(!store.has_blob(picture).unwrap(), "a picture nothing points at is collectable");
+}

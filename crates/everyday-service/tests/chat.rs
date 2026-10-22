@@ -806,7 +806,7 @@ async fn a_chat_turn_creates_its_conversation_marked_with_where_it_came_from() {
     let (via, conversation) = (via(), ConversationId::new());
 
     let turned = svc
-        .chat_turn(via.clone(), conversation, "What is due today?".into(), silent())
+        .chat_turn(via.clone(), conversation, "What is due today?".into(), Vec::new(), silent())
         .await
         .expect("a chat turn");
     assert_eq!(turned.text, "Two things are due today.");
@@ -821,7 +821,9 @@ async fn a_chat_turn_creates_its_conversation_marked_with_where_it_came_from() {
 
     // A second message in the same chat carries on the same conversation,
     // and does not lose where it came from.
-    svc.chat_turn(via.clone(), conversation, "And tomorrow?".into(), silent()).await.unwrap();
+    svc.chat_turn(via.clone(), conversation, "And tomorrow?".into(), Vec::new(), silent())
+        .await
+        .unwrap();
     assert_eq!(vault.conversation(conversation).unwrap().via, Some(via));
 
     // The thread changed, and the change says a chat did it, so a window
@@ -840,7 +842,9 @@ async fn a_chat_turn_tells_the_model_the_person_is_not_at_this_screen() {
     let model = fake_model(says("Done.")).await;
     let (svc, _dir) = assistant_service(&model.endpoint);
 
-    svc.chat_turn(via(), ConversationId::new(), "hello".into(), silent()).await.unwrap();
+    svc.chat_turn(via(), ConversationId::new(), "hello".into(), Vec::new(), silent())
+        .await
+        .unwrap();
     let asked = model.requests.lock().unwrap().clone();
     assert_eq!(asked.len(), 1);
     assert!(
@@ -881,7 +885,9 @@ async fn the_assistant_asks_for_the_reasoning_effort_its_model_is_set_to() {
         serde_json::from_str(request.split_once("\r\n\r\n").expect("a body").1).unwrap()
     };
 
-    svc.chat_turn(via(), ConversationId::new(), "hello".into(), silent()).await.unwrap();
+    svc.chat_turn(via(), ConversationId::new(), "hello".into(), Vec::new(), silent())
+        .await
+        .unwrap();
     let asked = body(&model.requests.lock().unwrap()[0]);
     assert!(asked.get("reasoning_effort").is_none(), "unset sends nothing");
     assert_eq!(asked["temperature"], 0.2);
@@ -889,7 +895,9 @@ async fn the_assistant_asks_for_the_reasoning_effort_its_model_is_set_to() {
     models.medium.model.reasoning_effort = Some(everyday_core::llm::ReasoningEffort::High);
     vault.save_model_settings(&models).unwrap();
 
-    svc.chat_turn(via(), ConversationId::new(), "hello again".into(), silent()).await.unwrap();
+    svc.chat_turn(via(), ConversationId::new(), "hello again".into(), Vec::new(), silent())
+        .await
+        .unwrap();
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(requests.len(), 2);
     let asked = body(&requests[1]);
@@ -934,7 +942,7 @@ async fn delete_through_a_chat(
         })
     };
     let turned = svc
-        .chat_turn(via(), ConversationId::new(), "Delete the paint task.".into(), sink)
+        .chat_turn(via(), ConversationId::new(), "Delete the paint task.".into(), Vec::new(), sink)
         .await
         .expect("the turn finishes once the question is answered");
     let events = events.lock().unwrap().clone();
@@ -1015,4 +1023,165 @@ async fn the_rail_still_honours_the_setting_that_a_chat_ignores() {
         "nobody was asked: {events:?}"
     );
     assert!(vault.task(task.id).is_err(), "it was deleted");
+}
+
+// ---- pictures -----------------------------------------------------------------
+
+/// A photograph-sized JPEG: bigger than the model is shown, so it has to be
+/// made smaller on its way in.
+fn photograph() -> Vec<u8> {
+    let image = image::RgbImage::from_fn(2400, 1800, |x, y| {
+        image::Rgb([(x % 251) as u8, (y % 241) as u8, ((x + y) % 239) as u8])
+    });
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90).encode_image(&image).unwrap();
+    out
+}
+
+/// How many pictures one request to the model carried.
+fn pictures_in(request: &str) -> usize {
+    request.matches("data:image/").count()
+}
+
+#[tokio::test]
+async fn a_picture_from_a_chat_is_kept_with_the_message_and_shown_to_the_model() {
+    let model = fake_model(says("That is a monstera.")).await;
+    let (svc, _dir) = assistant_service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let (via, conversation) = (via(), ConversationId::new());
+
+    let turned = svc
+        .chat_turn(
+            via.clone(),
+            conversation,
+            "What plant is this?".into(),
+            vec![(photograph(), "IMG_2041.jpg".into())],
+            silent(),
+        )
+        .await
+        .expect("a turn with a picture");
+    assert_eq!(turned.text, "That is a monstera.");
+
+    // Kept with the person's message, made the size a model is shown.
+    let thread = vault.messages(conversation).unwrap();
+    let asked = thread.iter().find(|m| m.content == "What plant is this?").unwrap();
+    assert_eq!(asked.attachments.len(), 1);
+    let picture = &asked.attachments[0];
+    assert_eq!(picture.filename, "IMG_2041.jpg");
+    assert_eq!(picture.mime, "image/jpeg");
+    assert_eq!((picture.width, picture.height), (Some(2048), Some(1536)));
+    assert!(vault.blob(picture.blob).is_ok(), "the picture is in the vault");
+
+    // And sent to the model, as a picture part beside the words.
+    let requests = model.requests.lock().unwrap().clone();
+    assert_eq!(pictures_in(&requests[0]), 1);
+    assert!(requests[0].contains(r#""type":"image_url""#), "{}", &requests[0][..2000]);
+    assert!(requests[0].contains("What plant is this?"));
+}
+
+#[tokio::test]
+async fn a_picture_is_shown_again_for_two_turns_and_then_only_named() {
+    let model = fake_model(says("Noted.")).await;
+    let (svc, _dir) = assistant_service(&model.endpoint);
+    let (via, conversation) = (via(), ConversationId::new());
+
+    let pictures = vec![(photograph(), "receipt.jpg".into())];
+    svc.chat_turn(via.clone(), conversation, "How much?".into(), pictures, silent()).await.unwrap();
+    for follow_up in ["And the tip?", "Was that cash?", "Thanks."] {
+        svc.chat_turn(via.clone(), conversation, follow_up.into(), Vec::new(), silent())
+            .await
+            .unwrap();
+    }
+
+    let requests = model.requests.lock().unwrap().clone();
+    let shown: Vec<usize> = requests.iter().map(|r| pictures_in(r)).collect();
+    assert_eq!(shown, [1, 1, 1, 0], "the picture's own turn and the next two");
+    assert!(
+        requests[3].contains("receipt.jpg") && requests[3].contains("no longer shown"),
+        "after that the model is told there was one, and what it was called"
+    );
+}
+
+#[tokio::test]
+async fn the_rail_sends_a_picture_prepared_from_a_blob() {
+    let model = fake_model(says("A receipt.")).await;
+    let (svc, _dir) = assistant_service(&model.endpoint);
+    let vault = svc.get().unwrap();
+
+    // The composer's two steps: the file's bytes in as a blob, then made a
+    // picture for the model.
+    let original = vault.put_blob(&photograph()).unwrap();
+    let attachment = call(
+        &svc,
+        "prepare_picture",
+        json!({ "blob": original.to_hex(), "filename": "/home/me/receipt.jpg" }),
+    )
+    .await;
+    assert_eq!(attachment["filename"], "receipt.jpg");
+    assert_eq!(attachment["width"], 2048);
+    assert_ne!(attachment["blob"], original.to_hex(), "a smaller copy, not the original");
+
+    let conversation = ConversationId::new();
+    svc.send_message(
+        Ctx::local(),
+        json!({
+            "conversationId": conversation.to_string(),
+            "prompt": "",
+            "attachments": [attachment],
+        }),
+        silent(),
+    )
+    .await
+    .unwrap();
+
+    let thread = vault.messages(conversation).unwrap();
+    assert_eq!(thread[0].attachments.len(), 1, "a picture with nothing said is a message");
+    assert_eq!(vault.conversation(conversation).unwrap().title, "receipt.jpg");
+    assert_eq!(pictures_in(&model.requests.lock().unwrap()[0]), 1);
+}
+
+#[tokio::test]
+async fn what_is_not_a_picture_is_refused_before_anything_is_written() {
+    let model = fake_model(says("Never asked.")).await;
+    let (svc, _dir) = assistant_service(&model.endpoint);
+    let vault = svc.get().unwrap();
+
+    let notes = vault.put_blob(b"%PDF-1.7 minutes of the meeting").unwrap();
+    let e = fails(&svc, "prepare_picture", json!({ "blob": notes.to_hex() })).await;
+    assert_eq!(e.code, "not_an_image");
+
+    // And a message naming one anyway -- an older client, or a hand-written
+    // call -- is refused whole.
+    let conversation = ConversationId::new();
+    let forged = json!({
+        "blob": notes.to_hex(), "kind": "image", "mime": "image/png",
+        "filename": "minutes.png", "byteLen": 31,
+    });
+    let e = svc
+        .send_message(
+            Ctx::local(),
+            json!({ "conversationId": conversation.to_string(), "prompt": "Summarise this",
+                    "attachments": [forged] }),
+            silent(),
+        )
+        .await
+        .expect_err("not a picture");
+    assert_eq!(e.code, "not_an_image");
+    assert!(vault.messages(conversation).unwrap_or_default().is_empty());
+    assert!(model.requests.lock().unwrap().is_empty(), "the model was never asked");
+
+    // A chat's unreadable picture fails its turn with a sentence to show.
+    let Err(e) = svc
+        .chat_turn(
+            via(),
+            ConversationId::new(),
+            "What is this?".into(),
+            vec![(b"not a picture".to_vec(), "x.heic".into())],
+            silent(),
+        )
+        .await
+    else {
+        panic!("not a picture");
+    };
+    assert!(e.message.contains("could not be read"), "{}", e.message);
 }

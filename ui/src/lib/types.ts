@@ -3156,6 +3156,10 @@ export interface AgentMessage {
   /** See [[MailLink]]. `null` for every message but a successful mail
    *  write's own tool result. */
   mailLink?: MailLink | null
+  /** Pictures the person sent with this message -- only ever on a `user`
+   *  turn, each already made the size a model is shown. Absent when there
+   *  are none: the Rust side leaves an empty list off the wire. */
+  attachments?: Attachment[]
   createdAt: string
 }
 

@@ -22,6 +22,7 @@
   import { onDestroy, untrack } from 'svelte'
   import { activity, elapsed, isPlan, planOf, workSummary, type Turn } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
+  import { api, mediaUrl } from '../lib/api'
   import { APPS } from '../lib/apps'
   import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
@@ -30,7 +31,7 @@
   import { headline, toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
   import { onScreenNow } from '../lib/screen.svelte'
-  import type { Job } from '../lib/types'
+  import type { Attachment, Job } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import JobCard from './JobCard.svelte'
@@ -316,20 +317,140 @@
     agent.composing = false
   })
 
+  // ── Pictures ────────────────────────────────────────────────────────
+  //
+  // Chosen with the paperclip, pasted, or dropped on the composer. Each is
+  // stored and made ready for the model the moment it arrives -- shrunk,
+  // turned upright, stripped of where it was taken; see `pictures.rs` -- so a
+  // file that cannot be sent says so while somebody is still choosing, rather
+  // than after they have typed a question and waited for an answer. Until
+  // then its chip shows the file as it is on disk, and Send waits for it.
+
+  /** The most pictures one message carries; the service holds to the same. */
+  const MAX_PICTURES = 4
+
+  interface Picking {
+    /** For the `{#each}`: a picture is not stored until it is ready. */
+    key: number
+    name: string
+    /** The file as chosen, drawn at once while it is being stored. */
+    preview: string
+    /** What `sendMessage` is given, once it is ready. */
+    ready: Attachment | null
+  }
+
+  let picking = $state<Picking[]>([])
+  let pictureError = $state<string | null>(null)
+  let nextPicture = 0
+  let chooser = $state<HTMLInputElement | null>(null)
+  /** Whether something with files in it is being dragged over the composer. */
+  let dragging = $state(false)
+  const preparing = $derived(picking.some((p) => p.ready === null))
+  const canSend = $derived(!preparing && (draft.trim() !== '' || picking.length > 0))
+
+  /** Store and prepare `files`, skipping what is not a picture. */
+  function addPictures(files: File[]) {
+    const images = files.filter((f) => f.type.startsWith('image/'))
+    pictureError = null
+    if (images.length < files.length) {
+      pictureError = 'Only pictures can be sent to the assistant.'
+    }
+    const room = MAX_PICTURES - picking.length
+    if (images.length > room) {
+      pictureError = `At most ${MAX_PICTURES} pictures go with one message.`
+    }
+    for (const file of images.slice(0, Math.max(0, room))) {
+      const key = ++nextPicture
+      picking.push({ key, name: file.name, preview: URL.createObjectURL(file), ready: null })
+      void (async () => {
+        try {
+          const blob = await api.putBlob(new Uint8Array(await file.arrayBuffer()))
+          const ready = await api.preparePicture(blob, file.name)
+          const at = picking.findIndex((p) => p.key === key)
+          // Removed while it was being stored: the blob is left for the
+          // garbage collector, as an unsaved editor's picture is.
+          if (at >= 0) picking[at]!.ready = ready
+        } catch (e) {
+          removePicture(key)
+          pictureError = e instanceof Error ? e.message : String(e)
+        }
+      })()
+    }
+    box?.focus()
+  }
+
+  function removePicture(key: number) {
+    const at = picking.findIndex((p) => p.key === key)
+    if (at < 0) return
+    URL.revokeObjectURL(picking[at]!.preview)
+    picking.splice(at, 1)
+  }
+
+  function clearPictures() {
+    for (const p of picking) URL.revokeObjectURL(p.preview)
+    picking = []
+  }
+  onDestroy(clearPictures)
+
+  function onChosen(e: Event) {
+    const input = e.currentTarget as HTMLInputElement
+    addPictures(Array.from(input.files ?? []))
+    // So choosing the same file again, after removing it, is a change.
+    input.value = ''
+  }
+
+  /** A pasted picture -- a screenshot on the clipboard -- is attached; a
+   *  paste of text is left to the box. */
+  function onPaste(e: ClipboardEvent) {
+    const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+      f.type.startsWith('image/'),
+    )
+    if (files.length === 0) return
+    e.preventDefault()
+    addPictures(files)
+  }
+
+  function carriesFiles(e: DragEvent): boolean {
+    return Array.from(e.dataTransfer?.types ?? []).includes('Files')
+  }
+
+  function onDragOver(e: DragEvent) {
+    if (!carriesFiles(e)) return
+    e.preventDefault()
+    dragging = true
+  }
+
+  function onDrop(e: DragEvent) {
+    dragging = false
+    if (!carriesFiles(e)) return
+    e.preventDefault()
+    addPictures(Array.from(e.dataTransfer?.files ?? []))
+  }
+
   async function send(text = draft) {
-    if (agent.busy || !text.trim()) return
+    const pictures = picking.flatMap((p) => (p.ready ? [p.ready] : []))
+    if (agent.busy || preparing || (!text.trim() && pictures.length === 0)) return
     // Cleared optimistically, because leaving the question in the box reads
     // as though nothing was sent. Put back if the store refuses it -- which
     // it does when there is no thread open -- so a paragraph is never
-    // silently eaten.
+    // silently eaten, and nor are the pictures that went with it.
     const was = draft
+    const held = picking
     draft = ''
+    picking = []
+    pictureError = null
     const accepted = await agent.send(
       text,
       variant === 'rail' && withScreen ? toWire(screen.app, screen.showing) : null,
+      pictures,
     )
     withScreen = true
-    if (!accepted) draft = was
+    if (accepted) {
+      for (const p of held) URL.revokeObjectURL(p.preview)
+    } else {
+      draft = was
+      picking = held
+    }
     box?.focus()
   }
 
@@ -429,6 +550,27 @@
                  not otherwise see, so it is folded rather than dropped -- see
                  `splitDigest` and docs/plans/dreaming.md. -->
             {@const { text, digest } = splitDigest(turn.text)}
+            {#if turn.pictures.length}
+              <div class="pictures" class:single={turn.pictures.length === 1}>
+                {#each turn.pictures as picture (picture.blob)}
+                  <a
+                    class="picture"
+                    href={mediaUrl(picture.blob)}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={picture.filename}
+                  >
+                    <img
+                      src={mediaUrl(picture.blob)}
+                      alt={picture.filename}
+                      width={picture.width}
+                      height={picture.height}
+                      loading="lazy"
+                    />
+                  </a>
+                {/each}
+              </div>
+            {/if}
             {#if text}<p class="said">{text}</p>{/if}
             {#if digest}
               <details class="digest">
@@ -591,7 +733,15 @@
     <p class="failed banner">{agent.error}</p>
   {/if}
 
-  <div class="composer">
+  <!-- The whole composer is where a picture can be dropped; the paperclip
+       is the way in from the keyboard. -->
+  <div
+    class="composer"
+    class:dragging
+    ondragover={onDragOver}
+    ondragleave={() => (dragging = false)}
+    ondrop={onDrop}
+  >
     {#if variant === 'rail'}
       <button
         class="seen"
@@ -610,11 +760,49 @@
         {/if}
       </button>
     {/if}
+    {#if picking.length || pictureError}
+      <div class="picking">
+        {#each picking as p (p.key)}
+          <div class="chip" class:waiting={p.ready === null} title={p.name}>
+            <img src={p.preview} alt={p.name} />
+            <button
+              class="unpick"
+              onclick={() => removePicture(p.key)}
+              aria-label="Remove {p.name}"
+              title="Remove"
+            >
+              <Icon name="close" size={10} weight={2} />
+            </button>
+          </div>
+        {/each}
+        {#if pictureError}<p class="picture-error">{pictureError}</p>{/if}
+      </div>
+    {/if}
     <div class="compose">
+      <input
+        bind:this={chooser}
+        class="chooser"
+        type="file"
+        accept="image/*"
+        multiple
+        onchange={onChosen}
+        tabindex="-1"
+        aria-hidden="true"
+      />
+      <button
+        class="attach"
+        onclick={() => chooser?.click()}
+        disabled={picking.length >= MAX_PICTURES}
+        title="Add a picture — or paste or drop one here"
+        aria-label="Add a picture"
+      >
+        <Icon name="paperclip" size={16} />
+      </button>
       <textarea
         bind:this={box}
         bind:value={draft}
         onkeydown={onKeydown}
+        onpaste={onPaste}
         placeholder={variant === 'page'
           ? 'Ask anything, or tell it what to do…'
           : 'Ask, or tell it what to do…'}
@@ -632,8 +820,8 @@
         <button
           class="send"
           onclick={() => void send()}
-          disabled={draft.trim() === ''}
-          title="Send (Enter)"
+          disabled={!canSend}
+          title={preparing ? 'Getting the picture ready…' : 'Send (Enter)'}
         >
           <Icon name="arrow-up" size={16} />
         </button>
@@ -766,6 +954,36 @@
   .page .said {
     max-width: 80%;
     padding: var(--sp-2) var(--sp-4);
+  }
+  /* Pictures sit over the person's words, on the same side, as a row of
+     tiles -- or one larger picture when there is only the one. */
+  .pictures {
+    align-self: flex-end;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--sp-1);
+    max-width: 88%;
+  }
+  .picture {
+    display: block;
+    overflow: hidden;
+    border-radius: var(--radius-lg);
+    border: 1px solid var(--border);
+    background: var(--bg-hover);
+  }
+  .picture img {
+    display: block;
+    width: 96px;
+    height: 96px;
+    object-fit: cover;
+  }
+  .pictures.single .picture img {
+    width: auto;
+    height: auto;
+    max-width: min(320px, 100%);
+    max-height: 240px;
+    object-fit: contain;
   }
   .reply {
     font-size: var(--text-base);
@@ -1185,6 +1403,86 @@
   .composer {
     padding: var(--sp-2);
     border-top: 1px solid var(--border);
+  }
+  .composer.dragging .compose {
+    outline: 2px dashed var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-lg);
+  }
+
+  /* Pictures waiting to go with the next message, over the box. */
+  .picking {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: 0 0 var(--sp-2);
+  }
+  .chip {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    background: var(--bg-hover);
+  }
+  .chip img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: inherit;
+  }
+  /* Still being stored and made ready: dimmed, and Send waits for it. */
+  .chip.waiting img {
+    opacity: 0.45;
+  }
+  .unpick {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    display: grid;
+    place-items: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    background: var(--bg-raised);
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  .unpick:hover {
+    color: var(--fg);
+  }
+  .picture-error {
+    flex-basis: 100%;
+    margin: 0;
+    color: var(--danger);
+    font-size: var(--text-xs);
+  }
+  .chooser {
+    display: none;
+  }
+  .attach {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: var(--radius);
+    background: none;
+    color: var(--fg-muted);
+    cursor: pointer;
+  }
+  .attach:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .attach:disabled {
+    opacity: 0.4;
+    cursor: default;
   }
 
   /* What goes along with the message: one quiet line over the box, the

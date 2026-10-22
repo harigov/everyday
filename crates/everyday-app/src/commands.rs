@@ -521,6 +521,11 @@ pub async fn send_message(
     // typed argument here would refuse, before the service ever saw it, the
     // very message that leniency exists to let through.
     on_screen: Option<serde_json::Value>,
+    // Pictures sent with the prompt, each made ready by `prepare_picture`.
+    // Passed through as JSON for the service to check against the vault --
+    // see `everyday_service::pictures::checked`. Optional, so a window built
+    // before pictures could be sent still sends what it always has.
+    attachments: Option<Vec<serde_json::Value>>,
     channel: tauri::ipc::Channel<AgentEvent>,
 ) -> CommandResult<()> {
     let session = state.session().as_session();
@@ -534,6 +539,7 @@ pub async fn send_message(
                 "conversationId": conversation_id,
                 "prompt": prompt,
                 "onScreen": on_screen,
+                "attachments": attachments.unwrap_or_default(),
             }),
             sink,
         )

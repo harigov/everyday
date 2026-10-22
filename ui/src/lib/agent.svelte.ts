@@ -23,7 +23,14 @@ import { applyEvent, emptyTurn, liveTurn, replay, settle, type Turn } from './ag
 import { models } from './models.svelte'
 import { pref } from './prefs'
 import { app, handle, isLocked, quietly } from './state.svelte'
-import type { AgentSettings, ConversationId, ConversationSummary, Memory, OnScreen } from './types'
+import type {
+  AgentSettings,
+  Attachment,
+  ConversationId,
+  ConversationSummary,
+  Memory,
+  OnScreen,
+} from './types'
 
 export type { ToolCard, Turn } from './agent'
 
@@ -238,10 +245,17 @@ class AgentState {
    * panel shows what was asked even while the model is still thinking about
    * it — and if the request fails, the question is still on screen rather
    * than having vanished with it.
+   *
+   * `pictures` go with it, each made ready by `api.preparePicture`. A picture
+   * with nothing typed is a message too.
    */
-  async send(prompt: string, onScreen: OnScreen | null): Promise<boolean> {
+  async send(
+    prompt: string,
+    onScreen: OnScreen | null,
+    pictures: Attachment[] = [],
+  ): Promise<boolean> {
     const text = prompt.trim()
-    if (!text || this.busy) return false
+    if ((!text && pictures.length === 0) || this.busy) return false
     if (!this.conversationId) {
       // Nothing to send into: an unlock cleared the thread, or minting one
       // failed. Said out loud, because the composer clears on the strength
@@ -252,7 +266,7 @@ class AgentState {
 
     this.error = null
     this.busy = true
-    this.turns.push(emptyTurn('user', this.#nextLocalId(), text))
+    this.turns.push(emptyTurn('user', this.#nextLocalId(), text, pictures))
 
     // Pushed first, then read back out. `turns` is `$state`, so pushing an
     // object stores a *proxy* of it and the reference handed in is not the
@@ -266,7 +280,9 @@ class AgentState {
     const conversationId = this.conversationId
 
     try {
-      await sendMessage(conversationId, text, onScreen, (event) => applyEvent(reply, event))
+      await sendMessage(conversationId, text, onScreen, pictures, (event) =>
+        applyEvent(reply, event),
+      )
       // The thread has a title now, and has moved to the top of the list.
       this.threads = await api.conversations(50)
     } catch (e) {

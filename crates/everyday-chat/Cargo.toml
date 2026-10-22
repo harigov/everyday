@@ -32,5 +32,8 @@ matrix-sdk = { version = "0.19.1", default-features = false, features = [
 
 [dev-dependencies]
 everyday-vault.workspace = true
+# The type of a picture `matrix_live` sends as the owner; matrix-sdk takes
+# one and does not re-export the crate.
+mime = "0.3"
 tempfile = "3"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }

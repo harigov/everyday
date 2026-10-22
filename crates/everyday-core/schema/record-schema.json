@@ -387,6 +387,70 @@
   },
   "AgentMessage": {
     "$defs": {
+      "Attachment": {
+        "description": "Metadata for a piece of media embedded in an entry.\n\nThe bytes themselves live in the backend's blob store, addressed by\n`blob`. Several entries may reference the same blob.",
+        "properties": {
+          "blob": {
+            "$ref": "#/$defs/BlobId"
+          },
+          "byteLen": {
+            "description": "Size of the *plaintext* payload in bytes.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "caption": {
+            "default": "",
+            "description": "Alt text / caption. Indexed for search.",
+            "type": "string"
+          },
+          "durationMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "height": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/MediaKind"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "blob",
+          "kind",
+          "mime",
+          "filename",
+          "byteLen"
+        ],
+        "type": "object"
+      },
+      "BlobId": {
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "type": "string"
+      },
       "MailLink": {
         "description": "What [`Message::mail_link`] carries: enough to open Mail at the thread a\nwrite actually touched, and to say so before the click.",
         "properties": {
@@ -402,6 +466,15 @@
           "subject"
         ],
         "type": "object"
+      },
+      "MediaKind": {
+        "enum": [
+          "image",
+          "video",
+          "audio",
+          "file"
+        ],
+        "type": "string"
       },
       "Role": {
         "description": "Who said something.",
@@ -453,6 +526,13 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "One turn in a conversation.",
     "properties": {
+      "attachments": {
+        "description": "Pictures the person sent with this message. Only ever non-empty on\n[`Role::User`].\n\nEach is a picture already made the size the model is shown -- see\n`everyday_service::pictures` -- and kept for as long as the message\nis: they are what the model was asked about, and the thread has to\ngo on showing them. That is why [`JournalStore::collect_garbage`]\nwalks every message's attachments; without it, the first sweep after\na day would take every picture out of every conversation.\n\n[`JournalStore::collect_garbage`]: crate::store::JournalStore::collect_garbage",
+        "items": {
+          "$ref": "#/$defs/Attachment"
+        },
+        "type": "array"
+      },
       "content": {
         "description": "The prose. Empty on an assistant turn that only called tools, which\nis normal and must round-trip as empty rather than as absent.",
         "type": "string"

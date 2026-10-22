@@ -53,7 +53,7 @@
 //! rest is plumbing, and is tested end to end in `tests/relay.rs` against a
 //! fake connector and a fake model.
 
-use crate::connector::{ChatId, Choice, Connector, Incoming, MessageRef, Question};
+use crate::connector::{ChatId, Choice, Connector, Incoming, MessageRef, Picture, Question};
 use everyday_core::chat::{ChatLink, Via};
 use everyday_core::{ChatLinkId, Conversation, ConversationId, ConversationQuery, Vault};
 use everyday_service::agent::{AgentEvent, ConfirmAnswer, Pending, Sink, Turned};
@@ -85,14 +85,27 @@ pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// can send it again.
 pub const STALE_AFTER: SignedDuration = SignedDuration::from_hours(12);
 
+/// How long a picture sent with nothing written beside it waits for the
+/// words that go with it.
+///
+/// A phone sends a picture and the question about it as two messages more
+/// often than as one: the photo goes, then "what is this plant?" is typed
+/// under it. Answering the picture the moment it lands would answer a
+/// question nobody asked yet, and then the real one separately. So it is
+/// held, and goes with whatever is said next -- or alone, once a minute has
+/// passed with nothing more, which is ample time to type a question and
+/// short enough that a picture sent on its own is not left unanswered.
+/// Further pictures sent meanwhile are gathered with it.
+pub const PICTURE_WAIT: Duration = Duration::from_secs(60);
+
 /// How long the relay gives its workers to finish when it is stopped, before
 /// abandoning them. Inside the supervisor's own five seconds, so the relay
 /// ends cleanly rather than by being aborted.
 pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 /// The relay's clocks, gathered so a test can shorten them. Everything else
-/// about the relay's behaviour is fixed; these are the three numbers that
-/// would otherwise make a test wait half an hour or fake a twelve-hour-old
+/// about the relay's behaviour is fixed; these are the numbers that would
+/// otherwise make a test wait half an hour or fake a twelve-hour-old
 /// message.
 #[derive(Debug, Clone, Copy)]
 pub struct Timing {
@@ -102,6 +115,8 @@ pub struct Timing {
     pub stale_after: SignedDuration,
     /// See [`SHUTDOWN_GRACE`].
     pub shutdown_grace: Duration,
+    /// See [`PICTURE_WAIT`].
+    pub picture_wait: Duration,
 }
 
 impl Default for Timing {
@@ -110,6 +125,7 @@ impl Default for Timing {
             confirm_timeout: CONFIRM_TIMEOUT,
             stale_after: STALE_AFTER,
             shutdown_grace: SHUTDOWN_GRACE,
+            picture_wait: PICTURE_WAIT,
         }
     }
 }
@@ -774,6 +790,10 @@ pub(crate) fn parse_command(text: &str) -> Option<Command> {
 pub(crate) enum Work {
     /// Run this as a turn.
     Say(String),
+    /// A picture, and what was written with it. Held by the worker until
+    /// what is said next, when nothing was -- see [`PICTURE_WAIT`] -- and
+    /// otherwise run as a turn at once, with any pictures already held.
+    Show { picture: Picture, caption: String },
     /// `!new`.
     New,
     /// `!help`.
@@ -816,6 +836,8 @@ pub(crate) enum Route {
 ///   `!new` and `!stop` included: a command from last night is not an
 ///   instruction for now.
 /// * `!stop` is never queued.
+/// * A picture never answers a question. It is the owner moving on, as
+///   typed text that is not an answer is.
 pub(crate) fn route(
     item: &Incoming,
     asked: Asked<'_>,
@@ -829,6 +851,17 @@ pub(crate) fn route(
             Asked::Unsent => Route::Hold { question: question.clone(), choice: *choice },
             Asked::Sent(_) | Asked::Nothing | Asked::Open => Route::Ignore,
         },
+        Incoming::Showed { picture, caption, at, .. } => {
+            if let Some(hours) = stale_hours(*at, now, stale_after) {
+                return Route::Queue(Work::Reply(catch_up_reply(hours)));
+            }
+            let work = Work::Show { picture: picture.clone(), caption: caption.trim().to_string() };
+            match asked {
+                Asked::Nothing => Route::Queue(work),
+                // A picture answers no question: the owner has moved on.
+                Asked::Unsent | Asked::Sent(_) | Asked::Open => Route::DeclineThen(work),
+            }
+        }
         Incoming::Said { text, at, .. } => {
             let text = text.trim();
             if text.is_empty() {
@@ -1001,42 +1034,114 @@ async fn worker(
     mut work: mpsc::UnboundedReceiver<Job>,
 ) {
     let mut memory = Memory::default();
-    while let Some(item) = work.recv().await {
+    // Pictures sent with nothing written beside them, waiting for the words
+    // that go with them. See `PICTURE_WAIT`.
+    let mut held: Vec<Picture> = Vec::new();
+    loop {
+        let next = if held.is_empty() {
+            work.recv().await
+        } else {
+            match tokio::time::timeout(context.timing.picture_wait, work.recv()).await {
+                Ok(next) => next,
+                // Nothing more came: the pictures are the whole message.
+                Err(_) => Some(Job::Owner(Work::Say(String::new()))),
+            }
+        };
+        let Some(item) = next else { break };
         // Stopped with messages still queued: they are not run, and nobody is
         // told. The owner's next message, after the vault unlocks, is a new
         // one.
         if context.stopping() {
             break;
         }
-        // A panic in one turn must not take the chat with it: the typing
-        // notice would stay on for ever, and every message after it would
-        // queue behind a worker that is gone.
-        let done = AssertUnwindSafe(do_work(&context, &chat, &shared, &mut memory, item))
-            .catch_unwind()
-            .await;
-        if done.is_err() {
-            tracing::error!(chat = %chat.0, "a chat turn panicked; carrying on with the next message");
-            {
-                let mut shared = shared.lock().unwrap();
-                shared.running = None;
-                shared.waiting = None;
+        let (item, pictures) = match gather(&mut held, item) {
+            Gathered::Hold => continue,
+            Gathered::Run(item, pictures) => (item, pictures),
+            // Something else to do while pictures wait: they go first, on
+            // their own, so they are answered in the order they were sent.
+            Gathered::First(pictures, item) => {
+                let alone = Job::Owner(Work::Say(String::new()));
+                run_caught(&context, &chat, &shared, &mut memory, alone, pictures).await;
+                (item, Vec::new())
             }
-            context.typing(&chat, false).await;
-            if !context.stopping() {
-                context
-                    .tell(&chat, "Something went wrong: the assistant stopped unexpectedly.")
-                    .await;
-            }
+        };
+        run_caught(&context, &chat, &shared, &mut memory, item, pictures).await;
+    }
+}
+
+/// What a worker does with the next thing queued, given the pictures it is
+/// holding. See [`gather`].
+enum Gathered {
+    /// A picture with nothing said: hold it, and wait for more.
+    Hold,
+    /// Run this, with these pictures.
+    Run(Job, Vec<Picture>),
+    /// Run the pictures held, alone, and then this.
+    First(Vec<Picture>, Job),
+}
+
+/// Fold `item` into the pictures `held`, or run it.
+///
+/// A picture with nothing written beside it is held. Anything the owner
+/// says -- a picture's caption included -- takes every picture held with
+/// it. Anything else (a command, a routine's message) finds them sent on
+/// their own first.
+fn gather(held: &mut Vec<Picture>, item: Job) -> Gathered {
+    match item {
+        Job::Owner(Work::Show { picture, caption }) if caption.is_empty() => {
+            held.push(picture);
+            Gathered::Hold
+        }
+        Job::Owner(Work::Show { picture, caption }) => {
+            held.push(picture);
+            Gathered::Run(Job::Owner(Work::Say(caption)), std::mem::take(held))
+        }
+        Job::Owner(Work::Say(text)) => {
+            Gathered::Run(Job::Owner(Work::Say(text)), std::mem::take(held))
+        }
+        other if held.is_empty() => Gathered::Run(other, Vec::new()),
+        other => Gathered::First(std::mem::take(held), other),
+    }
+}
+
+/// [`do_work`], with a panic in it caught. A panic in one turn must not take
+/// the chat with it: the typing notice would stay on for ever, and every
+/// message after it would queue behind a worker that is gone.
+async fn run_caught(
+    context: &Arc<Context>,
+    chat: &ChatId,
+    shared: &Arc<Mutex<Shared>>,
+    memory: &mut Memory,
+    item: Job,
+    pictures: Vec<Picture>,
+) {
+    let done = AssertUnwindSafe(do_work(context, chat, shared, memory, item, pictures))
+        .catch_unwind()
+        .await;
+    if done.is_err() {
+        tracing::error!(chat = %chat.0, "a chat turn panicked; carrying on with the next message");
+        {
+            let mut shared = shared.lock().unwrap();
+            shared.running = None;
+            shared.waiting = None;
+        }
+        context.typing(chat, false).await;
+        if !context.stopping() {
+            context.tell(chat, "Something went wrong: the assistant stopped unexpectedly.").await;
         }
     }
 }
 
+/// Do one thing queued for a chat. `pictures` go with a turn -- the owner's
+/// words, or a picture's caption -- and with nothing else; [`gather`] sees
+/// that they only ever come with one.
 async fn do_work(
     context: &Context,
     chat: &ChatId,
     shared: &Mutex<Shared>,
     memory: &mut Memory,
     job: Job,
+    pictures: Vec<Picture>,
 ) {
     let work = match job {
         Job::Owner(work) => work,
@@ -1052,7 +1157,11 @@ async fn do_work(
             let name = context.assistant_name().await;
             context.tell(chat, &help_text(&name)).await;
         }
-        Work::Say(text) => converse(context, chat, shared, memory, text).await,
+        Work::Say(text) => converse(context, chat, shared, memory, text, pictures).await,
+        Work::Show { picture, caption } => {
+            let pictures = pictures.into_iter().chain([picture]).collect();
+            converse(context, chat, shared, memory, caption, pictures).await
+        }
     }
 }
 
@@ -1110,6 +1219,7 @@ async fn converse(
     shared: &Mutex<Shared>,
     memory: &mut Memory,
     text: String,
+    pictures: Vec<Picture>,
 ) {
     // Claimed before anything slow, so a `!stop` that lands while the
     // conversation is being looked for finds something to stop.
@@ -1148,7 +1258,8 @@ async fn converse(
     context.typing(chat, true).await;
 
     let mut told = String::new();
-    let mut turn = Box::pin(context.service.chat_turn(via, conversation, text, sink));
+    let pictures = pictures.into_iter().map(|p| (p.bytes, p.filename)).collect();
+    let mut turn = Box::pin(context.service.chat_turn(via, conversation, text, pictures, sink));
     let result = loop {
         tokio::select! {
             biased;
@@ -1590,6 +1701,107 @@ mod tests {
 
     fn routed(item: &Incoming, asked: Asked<'_>) -> Route {
         route(item, asked, now(), STALE_AFTER)
+    }
+
+    // ---- pictures ----
+
+    fn picture(name: &str) -> Picture {
+        Picture { filename: name.into(), bytes: name.as_bytes().to_vec() }
+    }
+
+    fn showed_at(caption: &str, at: Timestamp) -> Incoming {
+        Incoming::Showed {
+            chat: chat(),
+            picture: picture("plant.jpg"),
+            caption: caption.into(),
+            at,
+        }
+    }
+
+    #[test]
+    fn a_picture_is_queued_with_its_caption_trimmed() {
+        assert_eq!(
+            routed(&showed_at("  what plant is this?  ", now()), Asked::Nothing),
+            Route::Queue(Work::Show {
+                picture: picture("plant.jpg"),
+                caption: "what plant is this?".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_picture_never_answers_a_waiting_question() {
+        let question = MessageRef("$q".into());
+        for asked in [Asked::Unsent, Asked::Sent(&question), Asked::Open] {
+            assert!(
+                matches!(
+                    routed(&showed_at("yes", now()), asked),
+                    Route::DeclineThen(Work::Show { .. })
+                ),
+                "{asked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_picture_from_last_night_is_not_looked_at() {
+        assert!(matches!(
+            routed(&showed_at("what is it?", ago(13)), Asked::Nothing),
+            Route::Queue(Work::Reply(_))
+        ));
+    }
+
+    fn owner(work: Work) -> Job {
+        Job::Owner(work)
+    }
+
+    fn show(name: &str, caption: &str) -> Job {
+        owner(Work::Show { picture: picture(name), caption: caption.into() })
+    }
+
+    fn names(pictures: &[Picture]) -> Vec<&str> {
+        pictures.iter().map(|p| p.filename.as_str()).collect()
+    }
+
+    #[test]
+    fn a_picture_with_nothing_said_waits_for_what_is_said_next() {
+        let mut held = Vec::new();
+        assert!(matches!(gather(&mut held, show("one.jpg", "")), Gathered::Hold));
+        assert!(matches!(gather(&mut held, show("two.jpg", "")), Gathered::Hold));
+        match gather(&mut held, owner(Work::Say("which is ripe?".into()))) {
+            Gathered::Run(Job::Owner(Work::Say(text)), pictures) => {
+                assert_eq!(text, "which is ripe?");
+                assert_eq!(names(&pictures), ["one.jpg", "two.jpg"]);
+            }
+            _ => panic!("the words should take the pictures with them"),
+        }
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_captioned_picture_goes_at_once_with_any_held_before_it() {
+        let mut held = vec![picture("one.jpg")];
+        match gather(&mut held, show("two.jpg", "compare these")) {
+            Gathered::Run(Job::Owner(Work::Say(text)), pictures) => {
+                assert_eq!(text, "compare these");
+                assert_eq!(names(&pictures), ["one.jpg", "two.jpg"], "in the order sent");
+            }
+            _ => panic!("a caption is something said"),
+        }
+        assert!(held.is_empty());
+    }
+
+    #[test]
+    fn a_command_while_pictures_wait_sends_them_first() {
+        let mut held = vec![picture("one.jpg")];
+        match gather(&mut held, owner(Work::Help)) {
+            Gathered::First(pictures, Job::Owner(Work::Help)) => {
+                assert_eq!(names(&pictures), ["one.jpg"]);
+            }
+            _ => panic!("the pictures go first, on their own"),
+        }
+        assert!(held.is_empty());
+        assert!(matches!(gather(&mut held, owner(Work::New)), Gathered::Run(_, p) if p.is_empty()));
     }
 
     // ---- commands ----

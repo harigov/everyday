@@ -422,9 +422,9 @@ turned off.
 
 ## Not in phase 1
 
-Images, files and voice notes (the speech pipeline could transcribe them
-later). Messages typed on the desktop do not echo into the chat. Bridged
-rooms. Other services.
+Files and voice notes (the speech pipeline could transcribe them later).
+Messages typed on the desktop do not echo into the chat. Bridged rooms.
+Other services. (Pictures came later: see `docs/plans/pictures.md`.)
 
 ## Routines in the chat (phase 2)
 

@@ -371,6 +371,33 @@ function msg(over) {
   assert.equal(turns[2].text, 'Added it.')
 }
 
+// A picture the person sent comes back with their words, and a message that
+// was only a picture is still their turn. Everyone else's turn has none.
+{
+  const picture = {
+    blob: 'a'.repeat(64),
+    kind: 'image',
+    mime: 'image/jpeg',
+    filename: 'receipt.jpg',
+    byteLen: 40_000,
+    width: 2048,
+    height: 1536,
+    caption: '',
+  }
+  const turns = replay([
+    msg({ id: 'm1', role: 'user', content: 'how much was this?', attachments: [picture] }),
+    msg({ id: 'm2', role: 'assistant', content: '£12.40.' }),
+    msg({ id: 'm3', role: 'user', content: '', attachments: [picture, picture] }),
+    msg({ id: 'm4', role: 'user', content: 'and this?' }),
+  ])
+  assert.deepEqual(
+    turns.map((t) => t.pictures.length),
+    [1, 0, 2, 0],
+  )
+  assert.equal(turns[0].pictures[0].filename, 'receipt.jpg')
+  assert.equal(turns[2].role, 'user', 'a picture with nothing said is still the person speaking')
+}
+
 // A stored tool turn that failed is replayed as failed. The flag is on the
 // record precisely so the interface never has to read the prose to decide.
 {

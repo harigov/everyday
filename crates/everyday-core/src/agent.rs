@@ -542,6 +542,19 @@ pub struct Message {
     /// tool that only read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail_link: Option<MailLink>,
+    /// Pictures the person sent with this message. Only ever non-empty on
+    /// [`Role::User`].
+    ///
+    /// Each is a picture already made the size the model is shown -- see
+    /// `everyday_service::pictures` -- and kept for as long as the message
+    /// is: they are what the model was asked about, and the thread has to
+    /// go on showing them. That is why [`JournalStore::collect_garbage`]
+    /// walks every message's attachments; without it, the first sweep after
+    /// a day would take every picture out of every conversation.
+    ///
+    /// [`JournalStore::collect_garbage`]: crate::store::JournalStore::collect_garbage
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::model::Attachment>,
     pub created_at: Timestamp,
 }
 
@@ -580,6 +593,7 @@ impl Message {
             tool_call_id: None,
             failed: false,
             mail_link: None,
+            attachments: Vec::new(),
             created_at: Timestamp::now(),
         }
     }
@@ -607,6 +621,11 @@ impl Message {
 
     pub fn with_tool_calls(mut self, calls: Vec<ToolCall>) -> Self {
         self.tool_calls = calls;
+        self
+    }
+
+    pub fn with_attachments(mut self, attachments: Vec<crate::model::Attachment>) -> Self {
+        self.attachments = attachments;
         self
     }
 }

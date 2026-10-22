@@ -16,7 +16,7 @@
 #[allow(dead_code)]
 mod support;
 
-use everyday_chat::connector::{ChatError, Choice, Connector, Incoming, Setup};
+use everyday_chat::connector::{ChatError, Choice, Connector, Incoming, Picture, Setup};
 use everyday_chat::relay::Timing;
 use everyday_chat::run_link_with;
 use everyday_core::agent::Role;
@@ -745,4 +745,100 @@ async fn a_routines_question_nobody_answers_comes_back_empty_and_says_so() {
     h.connector.wait_for_sent(2).await;
     h.finish().await;
     assert!(h.connector.sent()[1].starts_with("No answer"), "{:?}", h.connector.sent());
+}
+
+// ---- pictures ------------------------------------------------------------------
+//
+// A phone sends a photo and the question about it as two messages more often
+// than as one. The relay holds a picture sent with nothing written beside it
+// for what is said next, and sends it alone only once nothing more comes.
+
+/// A two-pixel PNG: small enough to write out, and a real picture, so the
+/// service's own check that it can be read passes.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x02, 0x00, 0x00, 0x00, 0xfd, 0xd4, 0x9a,
+    0x73, 0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x38, 0x51, 0xa1, 0x01,
+    0x44, 0x0c, 0x10, 0x0a, 0x00, 0x29, 0xee, 0x05, 0xa1, 0x8c, 0x09, 0xce, 0x88, 0x00, 0x00, 0x00,
+    0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+fn showed(caption: &str) -> Incoming {
+    Incoming::Showed {
+        chat: room(),
+        picture: Picture { filename: "plant.png".into(), bytes: PNG.to_vec() },
+        caption: caption.into(),
+        at: Timestamp::now(),
+    }
+}
+
+/// The person's messages in the one conversation, with how many pictures
+/// each came with.
+fn their_messages(h: &Harness) -> Vec<(String, usize)> {
+    let conversations = h.conversations();
+    assert_eq!(conversations.len(), 1);
+    h.vault
+        .messages(conversations[0].id)
+        .unwrap()
+        .into_iter()
+        .filter(|m| m.role == Role::User)
+        .map(|m| (m.content, m.attachments.len()))
+        .collect()
+}
+
+#[tokio::test]
+async fn a_picture_sent_alone_goes_with_the_question_typed_after_it() {
+    let mut h = Harness::start(|_| says("A monstera."), Timing::default()).await;
+
+    h.deliver(showed("")).await;
+    h.say("what plant is this?").await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+
+    assert_eq!(h.connector.sent(), vec!["A monstera."], "one question, one answer");
+    assert_eq!(their_messages(&h), vec![("what plant is this?".to_string(), 1)]);
+}
+
+#[tokio::test]
+async fn a_captioned_picture_is_answered_at_once() {
+    let timing = Timing { picture_wait: Duration::from_secs(3600), ..Timing::default() };
+    let mut h = Harness::start(|_| says("A monstera."), timing).await;
+
+    h.deliver(showed("what plant is this?")).await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+
+    assert_eq!(their_messages(&h), vec![("what plant is this?".to_string(), 1)]);
+}
+
+#[tokio::test]
+async fn a_picture_nobody_says_anything_about_is_answered_on_its_own() {
+    let timing = Timing { picture_wait: Duration::from_millis(200), ..Timing::default() };
+    let mut h = Harness::start(|_| says("That looks like a monstera."), timing).await;
+
+    h.deliver(showed("")).await;
+    h.deliver(showed("")).await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+
+    assert_eq!(h.connector.sent(), vec!["That looks like a monstera."]);
+    assert_eq!(their_messages(&h), vec![(String::new(), 2)], "both pictures, in one turn");
+}
+
+#[tokio::test]
+async fn a_picture_that_cannot_be_read_is_said_to_be_so() {
+    let mut h = Harness::start(|_| says("Never asked."), Timing::default()).await;
+
+    h.deliver(Incoming::Showed {
+        chat: room(),
+        picture: Picture { filename: "IMG_0001.HEIC".into(), bytes: b"ftypheic....".to_vec() },
+        caption: "what is this?".into(),
+        at: Timestamp::now(),
+    })
+    .await;
+    h.connector.wait_for_sent(1).await;
+    h.finish().await;
+
+    let sent = h.connector.sent();
+    assert!(sent[0].contains("could not be read"), "{sent:?}");
 }

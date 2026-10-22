@@ -16,6 +16,7 @@ import type {
   AgentMessage,
   AgentSettings,
   ArchiveManifest,
+  Attachment,
   AwaitedSignIn,
   BalanceReport,
   BegunSignIn,
@@ -488,6 +489,7 @@ export interface Commands {
   newsletterSenders: { args: { days?: number | null }; result: NewsletterSender[] }
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
+  preparePicture: { args: { blob: string; filename?: string }; result: Attachment }
   previewMeetingTemplate: { args: { body: string }; result: string }
   profile: { args: Record<string, never>; result: Profile }
   quickAsks: { args: Record<string, never>; result: QuickAskRow[] }
@@ -609,7 +611,12 @@ export interface Commands {
     result: Draft
   }
   sendMessage: {
-    args: { conversationId: ConversationId; prompt: string; onScreen?: OnScreen | null }
+    args: {
+      conversationId: ConversationId
+      prompt: string
+      onScreen?: OnScreen | null
+      attachments?: Attachment[]
+    }
     result: void
   }
   setAgentAccess: {
@@ -854,6 +861,7 @@ export const COMMAND_NAMES = {
   newsletterSenders: 'newsletter_senders',
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
+  preparePicture: 'prepare_picture',
   previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
   quickAsks: 'quick_asks',
@@ -1177,6 +1185,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'newsletter_senders',
   'note_tags',
   'poll_auto_lock',
+  'prepare_picture',
   'preview_meeting_template',
   'profile',
   'quick_asks',
@@ -1396,6 +1405,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'name_speaker',
   'new_draft',
   'poll_auto_lock',
+  'prepare_picture',
   'rebuild_mail_index',
   'recategorize_mail',
   'refresh_news',

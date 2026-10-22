@@ -445,6 +445,16 @@ async fn every_offline_write_announces_what_was_written_down() {
     let picture = svc.put_blob(&Ctx::local(), b"not a picture: kept as it came".to_vec()).await;
     run(&svc, &h, "shrink_cover", json!({ "blob": picture.unwrap() })).await;
 
+    // A picture for the assistant, the same way: no record changes until the
+    // message it goes with is sent, and `send_message` announces the thread.
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 4))
+        .write_to(&mut png, image::ImageFormat::Png)
+        .unwrap();
+    let picture = svc.put_blob(&Ctx::local(), png.into_inner()).await;
+    run(&svc, &h, "prepare_picture", json!({ "blob": picture.unwrap(), "filename": "dot.png" }))
+        .await;
+
     // ---- accounts ---------------------------------------------------------
     //
     // `services.mail` is left off on this one: `save_account_password` would

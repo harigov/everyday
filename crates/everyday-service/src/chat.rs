@@ -444,19 +444,42 @@ impl Service {
     /// and the context tells the model where the person is writing from.
     /// Raises the same change events `send_message` does, stamped with the
     /// origin `"chat"`.
+    ///
+    /// `pictures` are what the owner sent with `prompt`, as the chat service
+    /// handed them over, each with its name. They are made into pictures for
+    /// the model and stored first -- see [`crate::pictures`] -- and one that
+    /// cannot be read fails the turn with a sentence saying so, before
+    /// anything is written, so the owner can send another.
     pub async fn chat_turn(
         self: &Arc<Self>,
         via: Via,
         conversation: ConversationId,
         prompt: String,
+        pictures: Vec<(Vec<u8>, String)>,
         sink: Sink,
     ) -> CommandResult<Turned> {
+        let vault = self.require()?;
+        if pictures.len() > crate::pictures::MAX_PER_MESSAGE {
+            return Err(crate::error::CommandError::new(
+                crate::error::codes::INVALID,
+                format!(
+                    "That is more pictures than I can look at at once. Send at most {} with \
+                     one question.",
+                    crate::pictures::MAX_PER_MESSAGE
+                ),
+            ));
+        }
+        let mut stored = Vec::with_capacity(pictures.len());
+        for (bytes, filename) in pictures {
+            stored.push(crate::pictures::store(&vault, bytes, filename).await?);
+        }
         let turned = crate::agent::run_turn(Turn {
             service: self.clone(),
-            vault: self.require()?,
+            vault,
             pending: self.pending(),
             conversation,
             prompt,
+            pictures: stored,
             // Whoever is writing from a phone cannot be looking at this
             // application's screen, so there is nothing on it to describe.
             on_screen: None,

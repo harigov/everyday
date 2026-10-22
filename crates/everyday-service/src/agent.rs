@@ -108,7 +108,7 @@ use everyday_core::agent::{
 };
 use everyday_core::llm::{ModelAccess, ModelTier};
 use everyday_core::mail::Origin as MailOrigin;
-use everyday_core::model::system_tz;
+use everyday_core::model::{Attachment, system_tz};
 use everyday_core::proposal::{ProposalKind, ProposalSource};
 use everyday_core::quick::{ExtractAnswer, QuickContext, RESEARCH_EXTRACT};
 use everyday_core::record::RecordKind;
@@ -2690,6 +2690,19 @@ pub struct Turn {
     pub pending: Arc<Pending>,
     pub conversation: ConversationId,
     pub prompt: String,
+    /// Pictures the person sent with `prompt`, already in the vault and
+    /// made the size a model is shown -- see [`crate::pictures`]. Empty for
+    /// every turn nobody sent a picture with, which is every turn but the
+    /// rail's and a chat's.
+    ///
+    /// Kept with the person's message, and shown to the model with it --
+    /// and again with the next few turns, as [`replay`] decides. While any
+    /// picture is in what the model is shown, the turn is held to the rules
+    /// for a turn that has read mail: a picture is very often a screenshot
+    /// of somebody else's words, and a model that has read them may have
+    /// been told what to search for or which page to open. See
+    /// [`ConfirmGate::mail_read_this_turn`].
+    pub pictures: Vec<Attachment>,
     /// What the person has on screen, if the interface said -- by
     /// reference, and described by [`run_turn`] itself; see
     /// [`everyday_core::agent::onscreen`].
@@ -2953,6 +2966,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         pending,
         conversation,
         prompt,
+        pictures,
         on_screen,
         channel,
         unattended,
@@ -2963,6 +2977,8 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         follow_up,
         max_steps,
     } = turn;
+    // The application's own words never come with a picture.
+    let pictures = if follow_up.is_some() { Vec::new() } else { pictures };
     // Only a scheduled run reaches anybody; a turn somebody is watching has
     // them right there.
     let reach = if unattended.is_some() { reach } else { Reach::default() };
@@ -3016,12 +3032,27 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let asked = if follow_up.is_some() {
         VaultMessage::system(conversation, prompt.clone())
     } else {
-        VaultMessage::user(conversation, prompt.clone())
+        VaultMessage::user(conversation, prompt.clone()).with_attachments(pictures.clone())
     };
     vault.save_message(&asked)?;
 
     let thread = vault.messages(conversation)?;
-    let (history, history_trimmed) = replay(&thread, asked.id);
+    let (history, history_trimmed) = replay(&thread, asked.id, |a| shown_picture(&vault, a));
+    // This turn's own pictures, read back as the model is sent them. One the
+    // vault cannot give back is said to be missing rather than failing the
+    // turn: the question still stands without it.
+    let mut shown = Vec::new();
+    let mut missing = Vec::new();
+    for picture in &pictures {
+        match shown_picture(&vault, picture) {
+            Some(content) => shown.push(content),
+            None => missing.push(picture),
+        }
+    }
+    // Whether the model is shown a picture at all this turn -- this one's or
+    // one replayed -- which holds the turn to the rules for one that has
+    // read mail. See `Turn::pictures`.
+    let sees_pictures = !shown.is_empty() || history.iter().any(has_picture);
     // Every address the person has typed into this thread, this prompt
     // included -- it was saved just above -- is one `read_web_page` may
     // open without asking. See `webpage::Provenance`.
@@ -3144,7 +3175,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         park_unattended: settings.park_unattended,
         asker: reach.asker.clone(),
         ledger: ledger.clone(),
-        mail_read_this_turn: Arc::new(AtomicBool::new(screen_quotes_mail)),
+        mail_read_this_turn: Arc::new(AtomicBool::new(screen_quotes_mail || sees_pictures)),
         provenance: Arc::new(Mutex::new(provenance)),
         note_budget,
     };
@@ -3153,15 +3184,23 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // the application's, and says so, because to the model the latest input
     // is otherwise the person talking.
     let input = if follow_up.is_some() { application_note(&prompt) } else { prompt };
-    let outcome = stream(&agent, gate, &input, history, &channel, max_steps, running.stop_signal())
+    let input = with_pictures(input, &missing, shown);
+    let outcome = stream(&agent, gate, input, history, &channel, max_steps, running.stop_signal())
         .await
-        // `stream` has only the provider's text to go on; this is where
-        // the model is known, and so whether an effort was sent to be
-        // refused. See `llm::refused_effort`.
+        // `stream` hands back the provider's own text; this is where the
+        // model is known, and so whether an effort was sent to be refused --
+        // or pictures were sent to a model that cannot see them -- before the
+        // usual reading of it. See `llm::refused_effort` and
+        // `llm::refused_pictures`. Read raw, because the usual reading turns
+        // a 404 into "check the model name", and OpenRouter refuses a picture
+        // with one.
         .map_err(|mut e| {
-            if let Some(said) = crate::llm::refused_effort(&e.message, &access.config.model) {
-                e.message = said;
-            }
+            let model = &access.config.model;
+            e.message = crate::llm::refused_effort(&e.message, model)
+                .or_else(|| {
+                    sees_pictures.then(|| crate::llm::refused_pictures(&e.message, model)).flatten()
+                })
+                .unwrap_or_else(|| crate::llm::friendly(&e.message));
             e
         });
 
@@ -3278,11 +3317,29 @@ const HISTORY_MESSAGES: usize = 80;
 /// preamble, the tools and the work. See [`window`].
 const HISTORY_CHARS: usize = 60_000;
 
+/// How many of the person's most recent messages are shown to the model
+/// with their pictures, this turn's own included. Older pictures are named
+/// in a line instead -- see [`replay`].
+///
+/// Every picture shown is uploaded again, and costs a thousand tokens or so
+/// again, on every turn it is shown in; the rail is one conversation that
+/// goes on for weeks. Three is the picture itself and the two follow-ups
+/// that are usually about it ("and the one on the left?").
+const PICTURE_TURNS: usize = 3;
+
+/// What one picture shown again counts for against [`HISTORY_CHARS`]: about
+/// the thousand tokens a model spends looking at one.
+const PICTURE_CHARS: usize = 4_000;
+
 /// The thread so far, in rig's shape, and whether the start of it was left
 /// out.
 ///
 /// Only what a model needs to continue: the prose either party produced, in
-/// order. Tool calls and their results are deliberately *not* replayed --
+/// order -- and the pictures the person sent with their last few messages
+/// (see [`PICTURE_TURNS`]), each read through `picture`. A picture older
+/// than that, or one `picture` cannot give back, is named in a line after
+/// the words it came with instead, so the model knows the conversation was
+/// about something it can no longer see, and does not pretend otherwise. Tool calls and their results are deliberately *not* replayed --
 /// they are kept in the vault so the panel can draw what happened, but
 /// feeding a model back its own calls from a previous turn invites it to
 /// treat them as still pending. What it needs from a finished turn is the
@@ -3304,23 +3361,127 @@ const HISTORY_CHARS: usize = 60_000;
 fn replay(
     thread: &[VaultMessage],
     current: MessageId,
+    picture: impl Fn(&Attachment) -> Option<rig_agent::completion::message::UserContent>,
 ) -> (Vec<rig_agent::completion::Message>, bool) {
-    let said: Vec<(Role, &str)> = thread
+    let spoken: Vec<&VaultMessage> = thread
         .iter()
         .filter(|m| m.id != current)
         .filter(|m| matches!(m.role, Role::User | Role::Assistant))
-        .filter(|m| !m.content.trim().is_empty())
-        .map(|m| (m.role, m.content.as_str()))
+        .filter(|m| !m.content.trim().is_empty() || !m.attachments.is_empty())
         .collect();
-    let (kept, trimmed) = window(&said, HISTORY_MESSAGES, HISTORY_CHARS);
+    // Where the messages whose pictures are shown again begin: the person's
+    // last few before this one, which is the first of `PICTURE_TURNS`.
+    let theirs: Vec<usize> =
+        spoken.iter().enumerate().filter(|(_, m)| m.role == Role::User).map(|(i, _)| i).collect();
+    let earlier = PICTURE_TURNS.saturating_sub(1);
+    let shown_from = if earlier == 0 {
+        spoken.len()
+    } else {
+        theirs.len().checked_sub(earlier).map_or(0, |i| theirs[i])
+    };
+
+    // Each message's pictures, read now so that one the vault cannot give
+    // back is named in the text instead -- and the text's length, with what
+    // the pictures shown will cost, is what the window is measured in.
+    let mut pictures: Vec<Vec<rig_agent::completion::message::UserContent>> = Vec::new();
+    let mut lines: Vec<(Role, String, usize)> = Vec::new();
+    for (i, m) in spoken.iter().enumerate() {
+        let (shown, unseen): (Vec<_>, Vec<_>) = if i >= shown_from {
+            let read: Vec<_> = m.attachments.iter().map(|a| (a, picture(a))).collect();
+            let unseen = read.iter().filter(|(_, c)| c.is_none()).map(|(a, _)| *a).collect();
+            (read.into_iter().filter_map(|(_, c)| c).collect(), unseen)
+        } else {
+            (Vec::new(), m.attachments.iter().collect())
+        };
+        let text = with_unseen(&m.content, &unseen);
+        lines.push((m.role, text, shown.len() * PICTURE_CHARS));
+        pictures.push(shown);
+    }
+    let borrowed: Vec<(Role, &str, usize)> =
+        lines.iter().map(|(role, text, weight)| (*role, text.as_str(), *weight)).collect();
+    let (kept, trimmed) = window(&borrowed, HISTORY_MESSAGES, HISTORY_CHARS);
+    // What `window` keeps is always the end of what it was given.
+    let first = spoken.len() - kept.len();
     let history = kept
         .into_iter()
-        .map(|(role, text)| match role {
-            Role::User => rig_agent::completion::Message::user(text),
+        .zip(pictures.drain(first..))
+        .map(|((role, text), shown)| match role {
+            Role::User => user_message(text, shown),
             _ => rig_agent::completion::Message::assistant(text),
         })
         .collect();
     (history, trimmed)
+}
+
+/// `picture` as the model is sent it, or `None` if the vault cannot give it
+/// back or it is not a type a provider takes -- which nothing stored through
+/// [`crate::pictures`] can be.
+fn shown_picture(
+    vault: &Vault,
+    picture: &Attachment,
+) -> Option<rig_agent::completion::message::UserContent> {
+    use base64::Engine as _;
+    use rig_agent::completion::message::{ImageMediaType, UserContent};
+    let media_type = match picture.mime.as_str() {
+        "image/jpeg" => ImageMediaType::JPEG,
+        "image/png" => ImageMediaType::PNG,
+        _ => return None,
+    };
+    let bytes = vault.blob(picture.blob).ok()?;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some(UserContent::image_base64(data, Some(media_type), None))
+}
+
+/// Whether `message` shows the model a picture.
+fn has_picture(message: &rig_agent::completion::Message) -> bool {
+    use rig_agent::completion::message::UserContent;
+    matches!(message, rig_agent::completion::Message::User { content }
+        if content.iter().any(|c| matches!(c, UserContent::Image(_))))
+}
+
+/// The person's message as the model is sent it: their words, then each
+/// picture shown -- and a line naming any that could not be.
+fn with_pictures(
+    text: String,
+    unseen: &[&Attachment],
+    shown: Vec<rig_agent::completion::message::UserContent>,
+) -> rig_agent::completion::Message {
+    user_message(with_unseen(&text, unseen), shown)
+}
+
+/// A user message of `text` and `pictures`. Words first, and left out when
+/// there are none: a picture sent with nothing said is still a message.
+fn user_message(
+    text: String,
+    pictures: Vec<rig_agent::completion::message::UserContent>,
+) -> rig_agent::completion::Message {
+    use rig_agent::completion::message::UserContent;
+    if pictures.is_empty() {
+        return rig_agent::completion::Message::user(text);
+    }
+    let mut content = Vec::with_capacity(pictures.len() + 1);
+    if !text.trim().is_empty() {
+        content.push(UserContent::text(text));
+    }
+    content.extend(pictures);
+    rig_agent::completion::Message::User { content }
+}
+
+/// `text`, with a line after it naming pictures that came with it and that
+/// the model is not shown. The names are the person's own, so the model can
+/// say which one it means when it asks for it again.
+fn with_unseen(text: &str, unseen: &[&Attachment]) -> String {
+    if unseen.is_empty() {
+        return text.to_string();
+    }
+    let names: Vec<&str> = unseen.iter().map(|a| a.filename.as_str()).collect();
+    let what = if unseen.len() == 1 { "a picture" } else { "pictures" };
+    let note = format!(
+        "[They sent {what} with this message ({}), which you are no longer shown. \
+         Ask them to send it again if you need to look at it.]",
+        names.join(", ")
+    );
+    if text.trim().is_empty() { note } else { format!("{text}\n\n{note}") }
 }
 
 /// The most recent part of a thread that fits in `max_messages` and
@@ -3337,18 +3498,23 @@ fn replay(
 /// then drops any replies at its start, so it opens on something the person
 /// said -- unless that would leave nothing at all.
 ///
+/// A message is measured by its characters and the third of its numbers:
+/// what the pictures shown with it cost, in characters' worth (see
+/// [`PICTURE_CHARS`]). What is kept is always the end of `said`, which is
+/// how [`replay`] finds each kept message's pictures again.
+///
 /// What falls out of the window is not lost: it stays in the vault and on
 /// screen, and [`Guidance`] tells the model that durable facts belong in
 /// memory rather than in a thread it will not always be shown in full.
 fn window(
-    said: &[(Role, &str)],
+    said: &[(Role, &str, usize)],
     max_messages: usize,
     max_chars: usize,
 ) -> (Vec<(Role, String)>, bool) {
     let mut chars = 0usize;
     let mut start = said.len();
-    for (i, (_, text)) in said.iter().enumerate().rev() {
-        let n = text.chars().count();
+    for (i, (_, text, pictures)) in said.iter().enumerate().rev() {
+        let n = text.chars().count() + pictures;
         let kept = said.len() - start;
         if kept > 0 && (kept >= max_messages || chars + n > max_chars) {
             break;
@@ -3358,7 +3524,7 @@ fn window(
     }
     let mut trimmed = start > 0;
     let mut kept: Vec<(Role, String)> =
-        said[start..].iter().map(|(role, text)| (*role, text.to_string())).collect();
+        said[start..].iter().map(|(role, text, _)| (*role, text.to_string())).collect();
 
     let cut = kept.last().and_then(|(_, text)| text.char_indices().nth(max_chars)).map(|(i, _)| i);
     if let (Some(cut), Some((_, text))) = (cut, kept.last_mut()) {
@@ -3397,7 +3563,7 @@ struct Streamed {
 async fn stream(
     agent: &Agent,
     gate: ConfirmGate,
-    prompt: &str,
+    prompt: rig_agent::completion::Message,
     history: Vec<rig_agent::completion::Message>,
     channel: &Sink,
     max_turns: usize,
@@ -3431,9 +3597,9 @@ async fn stream(
         let content = match item {
             Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => content,
             Ok(_) => continue,
-            Err(e) => {
-                return Err(CommandError::new(codes::AGENT, crate::llm::friendly(&e.to_string())));
-            }
+            // The provider's own words, made friendly by `run_turn`, which
+            // knows the model and what it was sent.
+            Err(e) => return Err(CommandError::new(codes::AGENT, e.to_string())),
         };
         match content {
             // Prose. Everything about a tool call *running* reaches the
@@ -3919,8 +4085,8 @@ mod tests {
             .collect()
     }
 
-    fn borrowed(said: &[(Role, String)]) -> Vec<(Role, &str)> {
-        said.iter().map(|(r, t)| (*r, t.as_str())).collect()
+    fn borrowed(said: &[(Role, String)]) -> Vec<(Role, &str, usize)> {
+        said.iter().map(|(r, t)| (*r, t.as_str(), 0)).collect()
     }
 
     #[test]
@@ -4915,7 +5081,7 @@ mod tests {
         let follow_up = VaultMessage::system(conversation, "The job finished; answer them.");
         let thread = vec![asked, started, card, follow_up.clone()];
 
-        let (history, trimmed) = replay(&thread, follow_up.id);
+        let (history, trimmed) = replay(&thread, follow_up.id, |_| None);
         assert!(!trimmed);
         assert_eq!(
             history,
@@ -4936,7 +5102,7 @@ mod tests {
         let three = VaultMessage::user(conversation, "three");
         let thread = vec![one, two, three.clone()];
 
-        let (history, _) = replay(&thread, three.id);
+        let (history, _) = replay(&thread, three.id, |_| None);
         assert_eq!(
             history,
             vec![

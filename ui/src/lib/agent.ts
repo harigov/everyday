@@ -28,7 +28,14 @@
 // quietly -- a status line stuck on "Searching" after the search came back is
 // not an exception anybody sees.
 
-import type { AgentEvent, AgentMessage, ConfirmKind, ConversationSummary, MailLink } from './types'
+import type {
+  AgentEvent,
+  AgentMessage,
+  Attachment,
+  ConfirmKind,
+  ConversationSummary,
+  MailLink,
+} from './types'
 
 /**
  * One tool call as the panel draws it.
@@ -79,6 +86,8 @@ export interface Turn {
   id: string
   role: 'user' | 'assistant' | 'system'
   text: string
+  /** Pictures the person sent with a `user` turn. Empty on every other. */
+  pictures: Attachment[]
   cards: ToolCard[]
   /** Set on a turn that failed, so the panel draws it as an error. */
   error: string | null
@@ -98,11 +107,17 @@ export interface Turn {
   endedAt: number | null
 }
 
-export function emptyTurn(role: Turn['role'], id: string, text = ''): Turn {
+export function emptyTurn(
+  role: Turn['role'],
+  id: string,
+  text = '',
+  pictures: Attachment[] = [],
+): Turn {
   return {
     id,
     role,
     text,
+    pictures,
     cards: [],
     error: null,
     thinking: '',
@@ -257,7 +272,7 @@ export function replay(messages: AgentMessage[]): Turn[] {
   const turns: Turn[] = []
   for (const m of messages) {
     if (m.role === 'user') {
-      turns.push(emptyTurn('user', m.id, m.content))
+      turns.push(emptyTurn('user', m.id, m.content, m.attachments ?? []))
       continue
     }
     if (m.role === 'assistant') {

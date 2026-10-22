@@ -14,6 +14,8 @@ use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Kind, Op};
 use crate::service::{Service, blocking};
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message, Skill};
+use everyday_core::id::BlobId;
+use everyday_core::model::Attachment;
 use everyday_core::store::agent::ConversationQuery;
 use everyday_core::{ConversationId, MemoryId, SkillId};
 use serde::{Deserialize, Serialize};
@@ -126,6 +128,22 @@ pub struct SendMessage {
     /// interface -- costs the context rather than refusing the message.
     #[serde(default)]
     pub on_screen: Option<serde_json::Value>,
+    /// Pictures sent with `prompt`, each stored first through
+    /// `prepare_picture`. Checked against the vault before the turn begins
+    /// -- see [`crate::pictures::checked`]. Defaulted, so a client that has
+    /// never sent one sends exactly what it always has.
+    #[serde(default)]
+    pub attachments: Vec<Attachment>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparePicture {
+    /// The picture as it came, already in the vault through `put_blob`.
+    pub blob: BlobId,
+    /// What it was called where it came from, for the thread to show.
+    #[serde(default)]
+    pub filename: String,
 }
 
 /// How the assistant is configured. Which model it runs on, and the key, are
@@ -384,6 +402,32 @@ async fn send_message(_svc: Arc<Service>, _ctx: Ctx, _args: SendMessage) -> Comm
     Err(CommandError::new(codes::UNKNOWN_COMMAND, "send_message answers with a stream"))
 }
 
+/// Make a picture already in the vault into one for the assistant, and
+/// return it as the attachment `send_message` takes.
+///
+/// For a picture chosen, pasted or dropped into the composer. It arrives
+/// through `put_blob` like any attachment, because that is the one path
+/// bytes take into the vault, and is then made the size a model is shown --
+/// see [`crate::pictures`]. Done when the picture is attached rather than
+/// when the message is sent, so one that cannot be read is said while the
+/// person is still choosing what to send.
+///
+/// The original is not deleted here, for the reason `shrink_cover` gives:
+/// nothing refers to it once the message is sent, and garbage collection
+/// takes it on the usual grace period. It may be in a journal entry too.
+async fn prepare_picture(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: PreparePicture,
+) -> CommandResult<Attachment> {
+    let vault = svc.require()?;
+    let bytes = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.blob(args.blob)?)).await?
+    };
+    crate::pictures::store(&vault, bytes, args.filename).await
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "agent_settings", scope: Agent, effect: Read,
@@ -431,8 +475,15 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("conversationId", "ConversationId", true),
             ("prompt", "string", true),
             ("onScreen", "OnScreen | null", false),
+            ("attachments", "Attachment[]", false),
         ],
         run: send_message,
+    },
+    command! {
+        name: "prepare_picture", scope: Agent, effect: Write,
+        args: PreparePicture, returns: "Attachment",
+        signature: &[("blob", "string", true), ("filename", "string", false)],
+        run: prepare_picture,
     },
     command! {
         name: "confirm_tool_call", scope: Agent, effect: Write,
