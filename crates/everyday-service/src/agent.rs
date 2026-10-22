@@ -3153,8 +3153,17 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // the application's, and says so, because to the model the latest input
     // is otherwise the person talking.
     let input = if follow_up.is_some() { application_note(&prompt) } else { prompt };
-    let outcome =
-        stream(&agent, gate, &input, history, &channel, max_steps, running.stop_signal()).await;
+    let outcome = stream(&agent, gate, &input, history, &channel, max_steps, running.stop_signal())
+        .await
+        // `stream` has only the provider's text to go on; this is where
+        // the model is known, and so whether an effort was sent to be
+        // refused. See `llm::refused_effort`.
+        .map_err(|mut e| {
+            if let Some(said) = crate::llm::refused_effort(&e.message, &access.config.model) {
+                e.message = said;
+            }
+            e
+        });
 
     // Whatever happened, none of *this turn's* questions may still be waiting
     // on a person: a confirmation card that outlived its run would answer the

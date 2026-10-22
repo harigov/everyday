@@ -106,9 +106,10 @@ impl AssistantSummariser {
 
         match tokio::time::timeout(SUMMARISE_TIMEOUT, agent.prompt(user).max_turns(1)).await {
             Ok(Ok(text)) => Ok(text),
-            Ok(Err(e)) => {
-                Err(CommandError::new(codes::AGENT, crate::llm::friendly(&e.to_string())))
-            }
+            Ok(Err(e)) => Err(CommandError::new(
+                codes::AGENT,
+                crate::llm::friendly_for(&e.to_string(), &model),
+            )),
             Err(_) => Err(CommandError::new(
                 codes::TIMED_OUT,
                 format!(

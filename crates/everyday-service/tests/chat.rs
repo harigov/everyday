@@ -864,25 +864,37 @@ async fn a_chat_turn_tells_the_model_the_person_is_not_at_this_screen() {
 
 /// The tier's reasoning effort reaches the request, and an unset one sends
 /// nothing -- the endpoint's own default, which is what every vault saved
-/// before there was a setting goes on getting.
+/// before there was a setting goes on getting. A model told to reason is not
+/// also sent a temperature, which OpenAI's reasoning models refuse.
 #[tokio::test]
 async fn the_assistant_asks_for_the_reasoning_effort_its_model_is_set_to() {
     let model = fake_model(says("Done.")).await;
     let (svc, _dir) = assistant_service(&model.endpoint);
-
-    svc.chat_turn(via(), ConversationId::new(), "hello".into(), silent()).await.unwrap();
-    let asked = model.requests.lock().unwrap().clone();
-    assert!(!asked[0].contains("reasoning_effort"), "unset sends nothing");
-
     let vault = svc.get().unwrap();
     let mut models = vault.model_settings().unwrap();
+    models.medium.model.temperature = Some(0.2);
+    vault.save_model_settings(&models).unwrap();
+
+    // The request's own fields, not its text: a tool's schema may well say
+    // "temperature".
+    let body = |request: &str| -> Value {
+        serde_json::from_str(request.split_once("\r\n\r\n").expect("a body").1).unwrap()
+    };
+
+    svc.chat_turn(via(), ConversationId::new(), "hello".into(), silent()).await.unwrap();
+    let asked = body(&model.requests.lock().unwrap()[0]);
+    assert!(asked.get("reasoning_effort").is_none(), "unset sends nothing");
+    assert_eq!(asked["temperature"], 0.2);
+
     models.medium.model.reasoning_effort = Some(everyday_core::llm::ReasoningEffort::High);
     vault.save_model_settings(&models).unwrap();
 
     svc.chat_turn(via(), ConversationId::new(), "hello again".into(), silent()).await.unwrap();
-    let asked = model.requests.lock().unwrap().clone();
-    assert_eq!(asked.len(), 2);
-    assert!(asked[1].contains(r#""reasoning_effort":"high""#), "{}", asked[1]);
+    let requests = model.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    let asked = body(&requests[1]);
+    assert_eq!(asked["reasoning_effort"], "high");
+    assert!(asked.get("temperature").is_none(), "a reasoning model picks its own");
 }
 
 /// Ask the assistant, through a chat, to delete a task it has been given, and

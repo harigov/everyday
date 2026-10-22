@@ -90,10 +90,21 @@ provider and model name, configured in **Settings → Models**.
   `none`, no reasoning at all, which an assistant planning a multi-step job
   reads as lazy. Unset sends nothing, so no saved vault asks differently
   until somebody picks a level, and a model that refuses the field (Ollama's
-  without thinking) is not broken by the field existing. No per-model list of
-  levels; a refused one comes back through `llm::friendly` as a sentence
-  pointing at the setting. On Small, thinking counts against
-  `QUICK_MAX_TOKENS`, and the pane says so.
+  without thinking) is not broken by the field existing. No per-model list
+  of levels. Around it:
+  - a model told to reason is sent no temperature -- OpenAI's reasoning
+    models refuse one above effort `none`, and Small's hidden temperature of
+    nought would otherwise break it from a setting the pane does not show;
+  - Small is refused above Low on save (`SMALL_MAX_EFFORT`): its thinking
+    comes out of `QUICK_MAX_TOKENS` and a twelve-second clock, and it would
+    never answer;
+  - `quick::run_prompt`, which also carries Medium's mail summaries and
+    drafts, gives a model set to Medium or above longer (`timeout_for`), and
+    says so when it still runs out;
+  - a refused level comes back through `llm::friendly_for` as a sentence
+    pointing at the setting -- only when an effort was actually sent;
+  - a stored level this build does not know reads as unset rather than
+    failing the one sealed record every tier lives in.
 
 ## Not done
 

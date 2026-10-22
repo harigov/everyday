@@ -72,6 +72,8 @@
     placeholder: string
     /** Under the reasoning effort: what to weigh when picking one for this work. */
     effortHint: string
+    /** The levels this card offers. */
+    efforts: { value: ReasoningEffort; label: string }[]
   }
 
   /**
@@ -89,6 +91,13 @@
     { value: 'max', label: 'Max' },
   ]
 
+  /**
+   * Small's levels: Low and below. The save refuses more
+   * (`SMALL_MAX_EFFORT` in `crates/everyday-core/src/llm.rs`), because a quick
+   * ask spends its few tokens and seconds thinking and never answers.
+   */
+  const SMALL_EFFORTS = EFFORTS.filter((e) => ['none', 'minimal', 'low'].includes(e.value))
+
   const CARDS: Card[] = [
     {
       tier: 'large',
@@ -98,6 +107,7 @@
       placeholder: 'gpt-5.1',
       effortHint:
         'How long it thinks before it acts. A research job runs unattended, so this is where High is worth what it costs.',
+      efforts: EFFORTS,
     },
     {
       tier: 'medium',
@@ -106,7 +116,8 @@
       fresh: null,
       placeholder: 'gpt-5.1-mini',
       effortHint:
-        'How long it thinks before it answers or reaches for a tool. Higher is slower and costs more, and plans multi-step work better.',
+        'How long it thinks before it answers or reaches for a tool. Higher is slower and costs more, and plans multi-step work better — mail summaries and drafts wait for it too.',
+      efforts: EFFORTS,
     },
     {
       tier: 'small',
@@ -115,7 +126,8 @@
       fresh: { model: 'gpt-5.1-nano', temperature: 0, maxTokens: 1024, reasoningEffort: null },
       placeholder: 'gpt-5.1-nano',
       effortHint:
-        'Thinking counts against a quick answer’s 1,024 tokens, and these run as you type — keep it at Low or below.',
+        'Low at most: these run as you type, and thinking comes out of the few tokens and seconds a quick answer is given.',
+      efforts: SMALL_EFFORTS,
     },
   ]
 
@@ -306,7 +318,7 @@
                   null) as ReasoningEffort | null)}
             >
               <option value="">The provider's default</option>
-              {#each EFFORTS as effort (effort.value)}
+              {#each card.efforts as effort (effort.value)}
                 <option value={effort.value}>{effort.label}</option>
               {/each}
             </select>
