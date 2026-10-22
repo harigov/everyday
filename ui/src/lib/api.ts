@@ -116,6 +116,7 @@ import type {
   TrackerKind,
   TrayMenuItem,
   VaultStatus,
+  VerificationAnswer,
   VoiceprintId,
   VoiceprintInfo,
 } from './types'
@@ -1670,6 +1671,16 @@ export const api = {
     call('saveChatLink', { link, password }),
   /** Stop a link and forget it, its sign-in and what it kept on this machine. */
   removeChatLink: (id: ChatLinkId) => call('removeChatLink', { id }),
+  /**
+   * Answer the emoji comparison a link's bot is in: they match, they do not,
+   * or stop. `flow` is `ChatVerification.flow`, so an answer cannot land on a
+   * newer verification than the one on screen.
+   */
+  answerChatVerification: (id: ChatLinkId, flow: string, answer: VerificationAnswer) =>
+    call('answerChatVerification', { id, flow, answer }),
+  /** Have a link's bot ask its owner to verify it; their chat app shows the
+   *  request. Rejects when the bot is not running here. */
+  startChatVerification: (id: ChatLinkId) => call('startChatVerification', { id }),
 }
 
 /**

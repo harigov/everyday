@@ -2,12 +2,14 @@
 //!
 //! A link is one bot account on a chat service, through which its owner talks
 //! to the assistant from another device -- see `everyday_core::chat` for what
-//! one is and [`crate::chat`] for the task each one runs as. These four
-//! commands are the whole of how a person manages them: list, mint a blank,
-//! save, remove. They sit in the `Agent` scope beside `save_agent_settings`,
-//! because letting somebody reach the assistant from a phone is the same
-//! decision as letting it exist, and a client that may not change the
-//! assistant's settings has no business adding a way in.
+//! one is and [`crate::chat`] for the task each one runs as. Four commands
+//! are the whole of how a person manages them: list, mint a blank, save,
+//! remove. Two more answer for a running bot when its owner verifies it,
+//! since the bot has no screen to compare emoji on. All six sit in the
+//! `Agent` scope beside `save_agent_settings`, because letting somebody
+//! reach the assistant from a phone is the same decision as letting it
+//! exist, and a client that may not change the assistant's settings has no
+//! business adding a way in.
 //!
 //! # What a client is told, and what it is not
 //!
@@ -28,10 +30,13 @@
 //! only then is anything wiped.
 
 use super::Nothing;
-use crate::chat::{ChatStatus, reconcile, restart_link, state_dir, task_key};
+use crate::chat::{
+    ChatStatus, ChatVerification, ChatVerifier, VerificationAnswer, reconcile, restart_link,
+    state_dir, task_key,
+};
 use crate::command;
 use crate::ctx::Ctx;
-use crate::error::CommandResult;
+use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::chat::{ChatLink, ChatSecret};
 use everyday_core::{ChatLinkId, Error, Vault};
@@ -58,6 +63,13 @@ pub struct ChatLinkView {
     /// Whether a password is stored waiting to be used. It is dropped once a
     /// session exists, so this is true for a new link and false after.
     pub has_password: bool,
+    /// Whether the bot has verified its owner's encryption identity. `None`
+    /// when it cannot say -- it is not running, or has not seen the owner's
+    /// keys yet.
+    pub owner_verified: Option<bool>,
+    /// The verification the bot is in, or was last in this run. Settings
+    /// shows its emoji and takes the answer.
+    pub verification: Option<ChatVerification>,
 }
 
 #[derive(Deserialize)]
@@ -75,6 +87,16 @@ pub struct SaveChatLink {
 #[serde(rename_all = "camelCase")]
 pub struct ChatLinkRef {
     pub id: ChatLinkId,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerChatVerification {
+    pub id: ChatLinkId,
+    /// The verification being answered -- `ChatVerification::flow` -- so an
+    /// answer meant for one cannot land on a newer one.
+    pub flow: String,
+    pub answer: VerificationAnswer,
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -96,10 +118,13 @@ fn read_links(vault: &Vault) -> CommandResult<Vec<(ChatLink, ChatSecret)>> {
 /// [`Service::resolved_chat_status`].
 fn view(svc: &Service, link: ChatLink, secret: &ChatSecret, writable: bool) -> ChatLinkView {
     let status = svc.resolved_chat_status(&link, writable);
+    let trust = svc.chat_trust(link.id);
     ChatLinkView {
         status,
         signed_in: secret.session.is_some(),
         has_password: secret.password.as_deref().is_some_and(|p| !p.is_empty()),
+        owner_verified: trust.owner_verified,
+        verification: trust.verification,
         link,
     }
 }
@@ -253,6 +278,36 @@ async fn remove_chat_link(svc: Arc<Service>, _ctx: Ctx, args: ChatLinkRef) -> Co
     Ok(())
 }
 
+/// The verifier of a link that is running here, or why there is none.
+fn verifier(svc: &Service, id: ChatLinkId) -> CommandResult<Arc<dyn ChatVerifier>> {
+    svc.chat_verifier(id).ok_or_else(|| {
+        CommandError::new(
+            codes::CONFLICT,
+            "The bot is not running here, so it cannot verify anybody. Switch it on and wait \
+             until it is online.",
+        )
+    })
+}
+
+/// Answer the emoji comparison the bot is in: they match, they do not, or
+/// stop.
+async fn answer_chat_verification(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: AnswerChatVerification,
+) -> CommandResult<()> {
+    verifier(&svc, args.id)?.answer(args.flow, args.answer).await
+}
+
+/// Have the bot ask its owner to verify it.
+async fn start_chat_verification(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ChatLinkRef,
+) -> CommandResult<()> {
+    verifier(&svc, args.id)?.start().await
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "chat_links", scope: Agent, effect: Read,
@@ -279,5 +334,24 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: ChatLinkRef, returns: "void",
         signature: &[("id", "ChatLinkId", true)],
         run: remove_chat_link,
+    },
+    // Neither writes to the vault: what they change is the bot's standing
+    // with its owner, on the chat server. Writes all the same, because each
+    // vouches for somebody's keys -- not a thing a read-only client may do.
+    command! {
+        name: "answer_chat_verification", scope: Agent, effect: Write,
+        args: AnswerChatVerification, returns: "void",
+        signature: &[
+            ("id", "ChatLinkId", true),
+            ("flow", "string", true),
+            ("answer", "VerificationAnswer", true),
+        ],
+        run: answer_chat_verification,
+    },
+    command! {
+        name: "start_chat_verification", scope: Agent, effect: Write,
+        args: ChatLinkRef, returns: "void",
+        signature: &[("id", "ChatLinkId", true)],
+        run: start_chat_verification,
     },
 ];

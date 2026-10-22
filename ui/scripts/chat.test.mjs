@@ -10,6 +10,7 @@ const { module: chat, close } = await load('/src/lib/chat.ts')
 const {
   HOURS_INVALID,
   PASSWORD_NEEDED,
+  canStartVerification,
   hoursToMinutes,
   linkTitle,
   minutesToHours,
@@ -22,6 +23,9 @@ const {
   tidyLink,
   validateLink,
   validateMatrixLink,
+  verificationOver,
+  verificationShown,
+  verificationTitle,
   viaTitle,
 } = chat
 
@@ -297,6 +301,93 @@ assert.equal(
 assert.equal(
   viaTitle({ link: 'chat-1', service: 'Matrix', chat: '!room:example.org' }),
   'Started in Matrix',
+)
+
+// ── verifying the owner ──────────────────────────────────────────────
+
+const verification = (over = {}) => ({
+  flow: 'flow-1',
+  stage: 'comparing',
+  weStarted: false,
+  device: 'Element on iPhone',
+  emoji: [],
+  decimals: null,
+  detail: '',
+  since: '2026-10-21T09:00:00Z',
+  ...over,
+})
+
+assert.equal(verificationOver(verification({ stage: 'done' })), true)
+assert.equal(verificationOver(verification({ stage: 'cancelled' })), true)
+assert.equal(verificationOver(verification({ stage: 'confirmed' })), false)
+
+assert.equal(verificationShown(null, []), false)
+assert.equal(
+  verificationShown(verification(), ['flow-1']),
+  true,
+  'one in progress is shown whatever was dismissed',
+)
+assert.equal(verificationShown(verification({ stage: 'done' }), []), true, 'a result is read once')
+assert.equal(
+  verificationShown(verification({ stage: 'done' }), ['flow-1']),
+  false,
+  'and goes once OK is pressed',
+)
+assert.equal(
+  verificationShown(verification({ stage: 'cancelled', flow: 'flow-2' }), ['flow-1']),
+  true,
+  'dismissing one verification does not hide the next',
+)
+
+assert.equal(
+  verificationTitle(verification({ stage: 'requested' }), '@me:example.org'),
+  'Element on iPhone wants to verify the bot',
+)
+assert.equal(
+  verificationTitle(verification({ stage: 'requested', device: null }), '@me:example.org'),
+  'Your device wants to verify the bot',
+)
+assert.equal(
+  verificationTitle(verification({ stage: 'requested', weStarted: true }), '@me:example.org'),
+  'Asked @me:example.org to verify the bot',
+)
+assert.equal(
+  verificationTitle(verification(), '@me:example.org'),
+  'Compare these with Element on iPhone',
+)
+assert.equal(verificationTitle(verification({ stage: 'done' }), '@me:example.org'), 'Verified')
+
+const online = (over = {}) => ({
+  link: link(),
+  status: { state: 'online', detail: '', since: '2026-10-21T09:00:00Z' },
+  signedIn: true,
+  hasPassword: false,
+  ownerVerified: false,
+  verification: null,
+  ...over,
+})
+assert.equal(canStartVerification(online()), true)
+assert.equal(canStartVerification(online({ ownerVerified: true })), false, 'already verified')
+assert.equal(
+  canStartVerification(online({ ownerVerified: null })),
+  false,
+  'not before the bot has looked: the owner may well be verified',
+)
+assert.equal(
+  canStartVerification(online({ verification: verification() })),
+  false,
+  'not while one is going on',
+)
+assert.equal(
+  canStartVerification(online({ verification: verification({ stage: 'cancelled' }) })),
+  true,
+)
+assert.equal(
+  canStartVerification(
+    online({ status: { state: 'connecting', detail: '', since: '2026-10-21T09:00:00Z' } }),
+  ),
+  false,
+  'only a bot that is online can ask',
 )
 
 await close()

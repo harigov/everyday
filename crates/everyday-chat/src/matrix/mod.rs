@@ -12,6 +12,8 @@
 //!   bot as verified.
 //! - `listen` and `hearing`: the order things start in, the sync loop, and
 //!   the handlers that decide whose words reach the assistant.
+//! - `verification`: the owner verifying the bot by comparing emoji, the bot's
+//!   half shown in Settings rather than in the chat.
 //! - `rooms`: finding, or making, the bot's private room with the owner.
 //! - `speaking`: messages, questions answered by reaction, and typing.
 //! - `rules` and `errors`: the decisions that need no network, so they
@@ -25,13 +27,14 @@ mod rooms;
 mod rules;
 mod signin;
 mod speaking;
+mod verification;
 
 use crate::connector::{
     ChatError, ChatId, Connector, Incoming, MessageRef, Question, Report, Setup,
 };
 use async_trait::async_trait;
 use everyday_core::chat::ChatService;
-use everyday_service::chat::ChatState;
+use everyday_service::chat::{ChatState, ChatVerifier};
 use matrix_sdk::Client;
 use matrix_sdk::ruma::{OwnedUserId, UserId};
 use matrix_sdk::store::StateStoreDataKey;
@@ -39,6 +42,7 @@ use speaking::{Questions, TypingTask};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
+use verification::{Verifier, Verifying};
 
 /// A signed-in Matrix bot account.
 pub struct MatrixConnector {
@@ -60,6 +64,8 @@ pub struct MatrixConnector {
     questions: Arc<Questions>,
     /// A task per chat that is keeping its typing notice alive.
     typing: Mutex<HashMap<ChatId, TypingTask>>,
+    /// The owner verifying the bot, and the bot them.
+    verifying: Arc<Verifying>,
 }
 
 impl MatrixConnector {
@@ -110,6 +116,12 @@ impl MatrixConnector {
         }
 
         let skip_history = !has_synced_before(&client).await;
+        let verifying = Arc::new(Verifying::new(
+            client.clone(),
+            bot.clone(),
+            owner.clone(),
+            Arc::clone(&setup.trust),
+        ));
         Ok(Self {
             client,
             bot,
@@ -120,6 +132,7 @@ impl MatrixConnector {
             report: Arc::clone(&setup.report),
             questions: Arc::new(Questions::default()),
             typing: Mutex::new(HashMap::new()),
+            verifying,
         })
     }
 }
@@ -161,5 +174,9 @@ impl Connector for MatrixConnector {
 
     async fn typing(&self, chat: &ChatId, on: bool) -> Result<(), ChatError> {
         self.typing_impl(chat, on).await
+    }
+
+    fn verifier(&self) -> Option<Arc<dyn ChatVerifier>> {
+        Some(Arc::new(Verifier(Arc::clone(&self.verifying))))
     }
 }

@@ -22,11 +22,18 @@
   // route here. While this tab is open the list is read again every few
   // seconds instead -- from here, not from the store, so that closing the tab
   // stops it.
+  //
+  // The poll is also how a verification shows up. When the owner verifies
+  // the bot from Element, the bot has no screen to show its seven emoji on,
+  // so they appear here under its row, with the answer buttons; see
+  // `everyday_service::chat`'s "Verifying the owner". The emoji never go into
+  // the chat itself: that is the channel the comparison is there to check.
 
   import { chat } from '../lib/chat.svelte'
   import {
     HOURS_INVALID,
     PASSWORD_NEEDED,
+    canStartVerification,
     hoursToMinutes,
     linkTitle,
     minutesToHours,
@@ -37,13 +44,16 @@
     statusPill,
     tidyLink,
     validateLink,
+    verificationOver,
+    verificationShown,
+    verificationTitle,
   } from '../lib/chat'
   import { focusOnMount } from '../lib/focus'
   import { keysLabel } from '../lib/keys'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { app } from '../lib/state.svelte'
-  import type { ChatLink, ChatLinkView } from '../lib/types'
+  import type { ChatLink, ChatLinkView, ChatVerification, VerificationAnswer } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
 
@@ -141,6 +151,34 @@
     if ((await chat.remove(view.link.id)) && draft?.id === view.link.id) close()
   }
 
+  // ── Verifying ────────────────────────────────────────────────────────
+
+  /** Finished verifications somebody has read and pressed OK on. Only this
+   *  open panel's business: the service keeps the last one until the bot
+   *  restarts, and a reopened tab showing it once more is no harm. */
+  let dismissed = $state<string[]>([])
+  /** An answer or a request on its way, so it is not sent twice. */
+  let verifying = $state(false)
+  /** Why the last answer or request did not go, for the link it was for. */
+  let verifyError = $state<{ id: string; message: string } | null>(null)
+
+  /** Run one verification call for `view`'s bot, once at a time, and keep
+   *  its reason if it did not go. */
+  async function verify(view: ChatLinkView, send: () => Promise<string | null>) {
+    if (verifying) return
+    verifying = true
+    verifyError = null
+    const problem = await send()
+    verifying = false
+    if (problem) verifyError = { id: view.link.id, message: sentence(problem) }
+  }
+
+  const answer = (view: ChatLinkView, v: ChatVerification, reply: VerificationAnswer) =>
+    verify(view, () => chat.answerVerification(view.link.id, v.flow, reply))
+
+  const startVerifying = (view: ChatLinkView) =>
+    verify(view, () => chat.startVerification(view.link.id))
+
   function rowMenu(view: ChatLinkView): MenuItem[] {
     return tidyMenu([
       { label: 'Edit…', icon: 'pencil', run: () => begin(view.link) },
@@ -191,6 +229,15 @@
             <span class="detail">{pill.detail}</span>
           </button>
 
+          {#if view.ownerVerified === true}
+            <span
+              class="tag verified"
+              title="The bot and {view.link.service.owner} have verified each other's keys"
+            >
+              <Icon name="check" size={11} /> Verified
+            </span>
+          {/if}
+
           <span class="tag state tone-{pill.tone}">
             <span class="dot"></span>
             {pill.label}
@@ -205,6 +252,78 @@
             <Icon name="chevron" size={13} />
           </button>
         </li>
+
+        {@const v = verificationShown(view.verification, dismissed) ? view.verification : null}
+        {#if v}
+          <li class="verify" class:comparing={v.stage === 'comparing'} aria-live="polite">
+            <span class="verify-title">{verificationTitle(v, view.link.service.owner)}</span>
+            <span class="detail">{v.detail}</span>
+
+            {#if v.stage === 'comparing' && v.emoji.length > 0}
+              <ol class="emoji" aria-label="The bot's emoji, in order">
+                {#each v.emoji as emoji, i (i)}
+                  <li>
+                    <span class="symbol">{emoji.symbol}</span><span class="name">{emoji.name}</span>
+                  </li>
+                {/each}
+              </ol>
+            {:else if v.stage === 'comparing' && v.decimals}
+              <p class="decimals">{v.decimals.join('  ')}</p>
+            {/if}
+
+            {#if verifyError?.id === view.link.id}
+              <p class="error" role="alert">{verifyError.message}</p>
+            {/if}
+
+            <div class="sheet-row">
+              {#if verificationOver(v)}
+                <span class="spacer"></span>
+                <button class="btn" onclick={() => (dismissed = [...dismissed, v.flow])}>OK</button>
+              {:else}
+                <button
+                  class="btn"
+                  disabled={verifying || !writable}
+                  onclick={() => answer(view, v, 'cancel')}
+                >
+                  Cancel
+                </button>
+                <span class="spacer"></span>
+                {#if v.stage === 'comparing'}
+                  <button
+                    class="btn btn-ghost-danger"
+                    disabled={verifying || !writable}
+                    onclick={() => answer(view, v, 'mismatch')}
+                  >
+                    They don't match
+                  </button>
+                  <button
+                    class="btn btn-primary"
+                    disabled={verifying || !writable}
+                    onclick={() => answer(view, v, 'match')}
+                  >
+                    They match
+                  </button>
+                {/if}
+              {/if}
+            </div>
+          </li>
+        {:else if canStartVerification(view)}
+          <li class="verify-offer">
+            <span class="detail">
+              Not verified yet. Verify the bot from your chat app, or have it send you a request.
+            </span>
+            <button
+              class="btn"
+              disabled={verifying || !writable}
+              onclick={() => startVerifying(view)}
+            >
+              Send a request
+            </button>
+            {#if verifyError?.id === view.link.id}
+              <p class="error" role="alert">{verifyError.message}</p>
+            {/if}
+          </li>
+        {/if}
       {/each}
     </ul>
   {/if}
@@ -445,6 +564,85 @@
   .state.tone-wait .dot,
   .state.tone-off .dot {
     opacity: 0.55;
+  }
+
+  /* "Verified": the owner and the bot have compared emoji. The accent, like
+     the online pill, rather than a green this app does not otherwise use. */
+  .verified {
+    flex: none;
+    gap: 4px;
+    border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
+    color: var(--accent);
+  }
+
+  /* A verification, under its bot's row: the bot's half of the comparison,
+     since it has no screen of its own. */
+  .verify {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    margin: 0 0 var(--sp-2);
+    padding: var(--sp-3);
+    background: var(--bg-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+  .verify.comparing {
+    border-color: color-mix(in oklab, var(--accent) 35%, var(--border));
+  }
+  .verify-title {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .verify .sheet-row {
+    margin-top: 0;
+  }
+
+  /* Seven in a row, as Element lays them out, so the two can be read side
+     by side; they wrap on a narrow window but keep their order. */
+  .emoji {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+    margin: var(--sp-1) 0;
+    padding: 0;
+    list-style: none;
+  }
+  .emoji li {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 64px;
+  }
+  .symbol {
+    font-size: 30px;
+    line-height: 1.2;
+  }
+  .name {
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
+  }
+  .decimals {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-lg);
+    letter-spacing: 0.05em;
+  }
+
+  .verify-offer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    padding: 0 var(--sp-2) var(--sp-2);
+  }
+  .verify-offer .error {
+    flex-basis: 100%;
+    margin: 0;
   }
 
   .more {

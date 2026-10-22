@@ -29,6 +29,15 @@
 //! link a routine names. No outlet means the link is not running here right
 //! now, and the routine says so in its log rather than waiting for one.
 //!
+//! # Verifying the owner
+//!
+//! The owner can verify the bot from their chat client the way they verify
+//! anybody, by comparing emoji. The bot has no screen to show its half on,
+//! so its half is Settings → Chat: a link's task registers a
+//! [`ChatVerifier`] while it runs, reports what it sees as [`ChatTrust`],
+//! and the pane answers through `answer_chat_verification`. Only the owner's
+//! requests are ever taken up; that is the connector's to enforce.
+//!
 //! The supervisor keeps a task's factory after the task stops (that is how a
 //! lock and an unlock bring it back), and has no way to forget one. A link
 //! that was switched off or removed therefore still has a factory on file,
@@ -121,6 +130,101 @@ pub trait ChatOutlet: Send + Sync + 'static {
     ) -> BoxFuture<'static, Option<String>>;
 }
 
+/// A running link's half of interactive verification: the owner comparing
+/// emoji between their chat client and this application, so each side knows
+/// the other's encryption keys are the ones they appear to be.
+///
+/// Registered by the link's task while its connector is listening. The bot
+/// has no screen of its own, so the emoji it sees are shown in Settings →
+/// Chat ([`ChatTrust`]) and the answer comes from there -- never from the
+/// chat itself, which is the very channel the comparison is meant to check.
+pub trait ChatVerifier: Send + Sync + 'static {
+    /// Answer the comparison in verification `flow`, or cancel it. `Err`
+    /// says why it could not be done, in words for the settings pane, with a
+    /// code that tells a verification that is over or not ready yet
+    /// (`conflict`) from a server that could not be reached (`network`).
+    fn answer(
+        &self,
+        flow: String,
+        answer: VerificationAnswer,
+    ) -> BoxFuture<'static, CommandResult<()>>;
+
+    /// Ask the owner to verify the bot, from this side: their chat client
+    /// shows the request, and the emoji appear here once they accept it.
+    fn start(&self) -> BoxFuture<'static, CommandResult<()>>;
+}
+
+/// What the person said about the emoji.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationAnswer {
+    /// They are the same on both screens.
+    Match,
+    /// They are not: something is between the two, and the other side is
+    /// told so.
+    Mismatch,
+    /// Stop without saying either.
+    Cancel,
+}
+
+/// How far a verification has got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationStage {
+    /// Asked for, by either side; the emoji are not ready yet.
+    Requested,
+    /// The emoji are ready to compare, and an answer is wanted here.
+    Comparing,
+    /// They matched here; waiting for the other side to say so too.
+    Confirmed,
+    /// Both sides said they matched: verified.
+    Done,
+    /// Stopped, by either side or by a timeout. `detail` says why.
+    Cancelled,
+}
+
+/// One of the seven pictures a verification compares.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerificationEmoji {
+    pub symbol: String,
+    /// Its name as the specification gives it, which chat clients show under
+    /// the picture: "Dog", "Rocket".
+    pub name: String,
+}
+
+/// The verification a link's bot is in, or was last in.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatVerification {
+    /// The service's id for this verification, which an answer names so that
+    /// it cannot land on a newer one.
+    pub flow: String,
+    pub stage: VerificationStage,
+    /// Whether this side asked, from Settings.
+    pub we_started: bool,
+    /// The owner's device on the other end, by the name they gave it, or its
+    /// id. `None` until it is known.
+    pub device: Option<String>,
+    /// Seven, while comparing; empty before.
+    pub emoji: Vec<VerificationEmoji>,
+    /// The same comparison as three numbers, for a client that shows those.
+    pub decimals: Option<[u16; 3]>,
+    /// A sentence about where it stands: why it was cancelled, mostly.
+    pub detail: String,
+    pub since: Timestamp,
+}
+
+/// What a link's bot knows of trust between itself and its owner.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatTrust {
+    /// Whether the bot has verified the owner's identity. `None` when it
+    /// cannot say: not running, or the owner's keys are not known yet.
+    pub owner_verified: Option<bool>,
+    pub verification: Option<ChatVerification>,
+}
+
 /// The supervisor key a link's task runs under.
 pub fn task_key(link: ChatLinkId) -> String {
     format!("chat:{link}")
@@ -162,6 +266,10 @@ pub struct ChatHub {
     pub(crate) status: RwLock<HashMap<ChatLinkId, ChatStatus>>,
     /// The outlet each running link's relay has registered.
     pub(crate) outlets: RwLock<HashMap<ChatLinkId, Arc<dyn ChatOutlet>>>,
+    /// What each running link last said about trust with its owner.
+    pub(crate) trust: RwLock<HashMap<ChatLinkId, ChatTrust>>,
+    /// The verifier each running link has registered.
+    pub(crate) verifiers: RwLock<HashMap<ChatLinkId, Arc<dyn ChatVerifier>>>,
 }
 
 impl Service {
@@ -206,6 +314,15 @@ impl Service {
     ) {
         let status = ChatStatus { state, detail: detail.into(), since: Timestamp::now() };
         self.chat.status.write().unwrap().insert(link, status);
+        self.chat_link_changed(link);
+    }
+
+    /// Tell any open settings pane that what it shows of `link` moved.
+    ///
+    /// The change carries the link's supervisor key, the id the
+    /// supervisor's own announcements for that task use, so one rule in the
+    /// pane covers the task, its status and its trust alike.
+    fn chat_link_changed(&self, link: ChatLinkId) {
         self.events().changed(Change {
             kind: Kind::BackgroundTask,
             op: Op::Updated,
@@ -270,9 +387,53 @@ impl Service {
         self.chat.outlets.read().unwrap().get(&link).cloned()
     }
 
+    /// Record what `link`'s bot knows of trust with its owner, and tell any
+    /// open settings pane -- with the same change a status report raises.
+    pub fn report_chat_trust(&self, link: ChatLinkId, trust: ChatTrust) {
+        self.chat.trust.write().unwrap().insert(link, trust);
+        self.chat_link_changed(link);
+    }
+
+    /// What `link`'s bot last said about trust; nothing known if it has not.
+    pub fn chat_trust(&self, link: ChatLinkId) -> ChatTrust {
+        self.chat.trust.read().unwrap().get(&link).cloned().unwrap_or_default()
+    }
+
+    /// Make `verifier` the way to answer `link`'s verifications, until
+    /// [`Service::close_chat_verifier`]. A link's task calls this once its
+    /// connector is signed in.
+    pub fn open_chat_verifier(&self, link: ChatLinkId, verifier: Arc<dyn ChatVerifier>) {
+        self.chat.verifiers.write().unwrap().insert(link, verifier);
+    }
+
+    /// Withdraw `verifier`, if it is still the one registered for `link`, and
+    /// forget what it said about trust: a bot that is not running is in no
+    /// verification, and cannot vouch for anybody's keys.
+    pub fn close_chat_verifier(&self, link: ChatLinkId, verifier: &Arc<dyn ChatVerifier>) {
+        let closed = {
+            let mut verifiers = self.chat.verifiers.write().unwrap();
+            let ours = verifiers.get(&link).is_some_and(|open| Arc::ptr_eq(open, verifier));
+            if ours {
+                verifiers.remove(&link);
+            }
+            ours
+        };
+        // Said, so a pane showing the emoji of a verification that just died
+        // takes them away rather than offering buttons nobody can answer.
+        if closed && self.chat.trust.write().unwrap().remove(&link).is_some() {
+            self.chat_link_changed(link);
+        }
+    }
+
+    /// How to answer `link`'s verifications, if it is running here.
+    pub fn chat_verifier(&self, link: ChatLinkId) -> Option<Arc<dyn ChatVerifier>> {
+        self.chat.verifiers.read().unwrap().get(&link).cloned()
+    }
+
     /// Forget what `link` last reported -- once the link itself is gone.
     pub(crate) fn forget_chat_status(&self, link: ChatLinkId) {
         self.chat.status.write().unwrap().remove(&link);
+        self.chat.trust.write().unwrap().remove(&link);
     }
 
     /// One turn that arrived through a chat link: the rail's

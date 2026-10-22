@@ -15,7 +15,7 @@ import { errorMessage, isLocked } from './errors'
 import { app, handle } from './state.svelte'
 import { latest } from './store/latest'
 import { guardedRefresh } from './store/refresh'
-import type { ChatLink, ChatLinkId, ChatLinkView } from './types'
+import type { ChatLink, ChatLinkId, ChatLinkView, VerificationAnswer } from './types'
 
 /** How a save turned out. The panel shows `error` beside the form itself,
  *  not as the window-wide banner every other store's failure becomes: the
@@ -115,6 +115,39 @@ class ChatState {
     } catch (e) {
       if (isLocked(e)) await handle(e)
       return { ok: false, error: errorMessage(e) }
+    }
+  }
+
+  /**
+   * Answer the emoji comparison a link's bot is in. `null` when the answer
+   * went, otherwise why not, for the panel to show beside the emoji rather
+   * than as a banner. The list is read again straight away so the stage
+   * moves on without waiting for the next poll.
+   */
+  async answerVerification(
+    id: ChatLinkId,
+    flow: string,
+    answer: VerificationAnswer,
+  ): Promise<string | null> {
+    return this.#verify(() => api.answerChatVerification(id, flow, answer))
+  }
+
+  /** Have a link's bot ask its owner to verify it. `null` when the request
+   *  went, otherwise why not. */
+  async startVerification(id: ChatLinkId): Promise<string | null> {
+    return this.#verify(() => api.startChatVerification(id))
+  }
+
+  /** Send one verification call, then read the list again; `null` when it
+   *  went, otherwise why not. A lock still goes to the lock screen. */
+  async #verify(send: () => Promise<void>): Promise<string | null> {
+    try {
+      await send()
+      void this.refresh()
+      return null
+    } catch (e) {
+      if (isLocked(e)) await handle(e)
+      return errorMessage(e)
     }
   }
 

@@ -168,6 +168,33 @@
         {
           "name": "id",
           "required": true,
+          "type": "ChatLinkId"
+        },
+        {
+          "name": "flow",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "answer",
+          "required": true,
+          "type": "VerificationAnswer"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "answer_chat_verification",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "JobId"
         }
       ],
@@ -5352,6 +5379,23 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ChatLinkId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "start_chat_verification",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },

@@ -126,7 +126,14 @@ import { addDays, blockKindFor, isoDate, minutesBetween } from './time'
 import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
 import { DIGEST_MARKER, ordinal } from './dream'
 import type { Draft, ImproveMode, MailCategory } from './types'
-import type { ChatLink, ChatLinkView, ChatState, ChatStatus } from './types'
+import type {
+  ChatLink,
+  ChatLinkView,
+  ChatState,
+  ChatStatus,
+  ChatVerification,
+  VerificationAnswer,
+} from './types'
 import { sameAccount, validateLink } from './chat'
 import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
 import {
@@ -2372,12 +2379,71 @@ function chatStatus(state: ChatState, detail: string): ChatStatus {
 
 function settleChatLinks() {
   for (const view of chatLinks) {
+    advanceChatVerification(view)
     if (!chatSettling.delete(view.link.id)) continue
     const m = view.link.service
     view.signedIn = true
     view.hasPassword = false
+    view.ownerVerified = false
     view.status = chatStatus('online', `Signed in as ${m.userId}. Talking to ${m.owner}.`)
   }
+}
+
+// A verification moves on the same way, one stage per `chat_links`: a
+// request sent from Settings has its emoji by the next poll, and a match
+// said here is matched by "the owner's device" by the one after. The seven
+// are fixed, from the specification's table, so a screenshot is the same
+// every time.
+const MOCK_EMOJI = [
+  { symbol: '🐶', name: 'Dog' },
+  { symbol: '🚀', name: 'Rocket' },
+  { symbol: '🍄', name: 'Mushroom' },
+  { symbol: '🎸', name: 'Guitar' },
+  { symbol: '🔑', name: 'Key' },
+  { symbol: '🌍', name: 'Globe' },
+  { symbol: '⚓', name: 'Anchor' },
+]
+
+function verificationStep(
+  v: ChatVerification,
+  stage: ChatVerification['stage'],
+  detail: string,
+): ChatVerification {
+  return { ...v, stage, detail, since: new Date().toISOString() }
+}
+
+function advanceChatVerification(view: ChatLinkView) {
+  const v = view.verification
+  if (!v) return
+  if (v.stage === 'requested') {
+    view.verification = {
+      ...verificationStep(v, 'comparing', 'Do these match what your device shows?'),
+      device: 'Element on iPhone',
+      emoji: MOCK_EMOJI,
+      decimals: [4123, 7781, 2054],
+    }
+  } else if (v.stage === 'confirmed') {
+    view.verification = verificationStep(
+      v,
+      'done',
+      "Verified. You and the bot now trust each other's keys.",
+    )
+    view.ownerVerified = true
+  }
+}
+
+function chatVerificationOf(id: string, flow?: string): ChatLinkView {
+  const view = chatLinks.find((v) => v.link.id === id)
+  if (!view || view.status.state !== 'online') {
+    throw new VaultError(
+      'conflict',
+      'The bot is not running here, so it cannot verify anybody. Switch it on and wait until it is online.',
+    )
+  }
+  if (flow !== undefined && view.verification?.flow !== flow) {
+    throw new VaultError('network', 'That verification is over. Start another one to try again.')
+  }
+  return view
 }
 
 /** Each seeded account's sync progress, as `sync_status` reads it back --
@@ -6673,10 +6739,69 @@ export const mockInvoke = async <T>(
         status = chatStatus('connecting', `Signing in as ${saved.service.userId}…`)
         chatSettling.add(saved.id)
       }
-      const view: ChatLinkView = { link: saved, status, signedIn, hasPassword }
+      const view: ChatLinkView = {
+        link: saved,
+        status,
+        signedIn,
+        hasPassword,
+        // A restarted bot has not looked yet, and is in no verification.
+        ownerVerified: null,
+        verification: null,
+      }
       if (at >= 0) chatLinks[at] = view
       else chatLinks.push(view)
       return structuredClone(view) as T
+    }
+
+    case 'start_chat_verification': {
+      requireUnlocked()
+      const view = chatVerificationOf(str(args.id))
+      view.verification = {
+        flow: `flow-${nextId++}`,
+        stage: 'requested',
+        weStarted: true,
+        device: null,
+        emoji: [],
+        decimals: null,
+        detail: `Asked ${view.link.service.owner} to verify the bot. Accept the request in your chat app.`,
+        since: new Date().toISOString(),
+      }
+      return undefined as T
+    }
+
+    case 'answer_chat_verification': {
+      requireUnlocked()
+      const view = chatVerificationOf(str(args.id), str(args.flow))
+      const v = view.verification!
+      const answer = args.answer as VerificationAnswer
+      if (v.stage === 'done' || v.stage === 'cancelled') {
+        throw new VaultError(
+          'network',
+          'That verification is over. Start another one to try again.',
+        )
+      }
+      if (answer !== 'cancel' && v.stage !== 'comparing') {
+        throw new VaultError('network', 'The emoji are not ready to compare yet.')
+      }
+      view.verification =
+        answer === 'match'
+          ? verificationStep(
+              v,
+              'confirmed',
+              'They match here. Waiting for your device to say so too.',
+            )
+          : {
+              ...verificationStep(
+                v,
+                'cancelled',
+                answer === 'mismatch'
+                  ? 'Cancelled here: The short authentication string did not match.'
+                  : 'Cancelled here: The user cancelled the verification.',
+              ),
+              emoji: [],
+              decimals: null,
+            }
+      return undefined as T
     }
 
     case 'remove_chat_link': {

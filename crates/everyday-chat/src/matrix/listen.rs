@@ -15,7 +15,8 @@
 //!    so the backlog of a room it has only just joined is not answered.
 //! 3. **A room for the owner.** When that sync is done, the bot knows what
 //!    rooms it is in. If none is a private room with the owner, it makes one.
-//! 4. **Online.** Only then does Settings say so.
+//! 4. **Online.** Only then does Settings say so. Whether the owner's keys
+//!    are verified follows on its own, from a task beside the sync.
 //! 5. **Sync until told to stop.**
 
 use super::MatrixConnector;
@@ -23,6 +24,7 @@ use super::errors::classify;
 use super::hearing::{Hearing, Invitations};
 use super::rooms;
 use super::rules;
+use super::verification::Verifying;
 use crate::connector::{ChatError, Incoming, Report};
 use everyday_service::chat::ChatState;
 use futures::StreamExt;
@@ -94,15 +96,21 @@ impl MatrixConnector {
         ));
         let invitations = Arc::new(Invitations::new(self.owner.clone()));
 
-        // Handlers come off when these drop, however this function ends.
+        // Handlers come off when these drop, however this function ends; so
+        // does any verification in progress, which nothing could reach once
+        // the sync has stopped.
+        let _stop_verifying = StopVerifying(&self.verifying);
         let mut guards: Vec<EventHandlerDropGuard> = vec![
             invitations.listen(client, &self.bot),
             watch_owner_joining(client, &standing, &self.owner),
         ];
         invitations.accept_waiting(client).await;
 
+        // Verification requests are heard from the same moment as messages,
+        // so one left over in a backlog is not taken up either.
         if !self.skip_history {
             guards.extend(hearing.listen(client));
+            guards.extend(self.verifying.listen(client));
         }
 
         // 2. The first sync. No long poll: with nothing new the server should
@@ -118,6 +126,7 @@ impl MatrixConnector {
         }
         if self.skip_history {
             guards.extend(hearing.listen(client));
+            guards.extend(self.verifying.listen(client));
         }
         invitations.settled(INVITATIONS_PATIENCE).await;
 
@@ -187,6 +196,15 @@ impl MatrixConnector {
                 }
             }
         }
+    }
+}
+
+/// Stops following any verification when dropped.
+struct StopVerifying<'a>(&'a Verifying);
+
+impl Drop for StopVerifying<'_> {
+    fn drop(&mut self) {
+        self.0.stop();
     }
 }
 

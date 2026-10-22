@@ -189,6 +189,7 @@ import type {
   TrackerKind,
   Transcript,
   VaultStatus,
+  VerificationAnswer,
   VoiceprintId,
   VoiceprintInfo,
   WeatherReport,
@@ -212,6 +213,10 @@ export interface Commands {
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   allowRemoteImages: {
     args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
+    result: void
+  }
+  answerChatVerification: {
+    args: { id: ChatLinkId; flow: string; answer: VerificationAnswer }
     result: void
   }
   answerJob: { args: { id: JobId }; result: void }
@@ -619,6 +624,7 @@ export interface Commands {
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
   speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
+  startChatVerification: { args: { id: ChatLinkId }; result: void }
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
   startResearch: {
@@ -668,6 +674,7 @@ export const COMMAND_NAMES = {
   addStoryToLibrary: 'add_story_to_library',
   agentSettings: 'agent_settings',
   allowRemoteImages: 'allow_remote_images',
+  answerChatVerification: 'answer_chat_verification',
   answerJob: 'answer_job',
   appendRecordingChunk: 'append_recording_chunk',
   applyMetadata: 'apply_metadata',
@@ -930,6 +937,7 @@ export const COMMAND_NAMES = {
   snooze: 'snooze',
   speechModels: 'speech_models',
   star: 'star',
+  startChatVerification: 'start_chat_verification',
   startExport: 'start_export',
   startImport: 'start_import',
   startResearch: 'start_research',
@@ -986,6 +994,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_story_to_library',
   'agent_settings',
   'allow_remote_images',
+  'answer_chat_verification',
   'answer_job',
   'append_recording_chunk',
   'apply_metadata',
@@ -1247,6 +1256,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'snooze',
   'speech_models',
   'star',
+  'start_chat_verification',
   'start_export',
   'start_import',
   'start_research',
@@ -1296,6 +1306,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_news_source',
   'add_story_to_library',
   'allow_remote_images',
+  'answer_chat_verification',
   'answer_job',
   'append_recording_chunk',
   'apply_metadata',
@@ -1429,6 +1440,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'shrink_cover',
   'snooze',
   'star',
+  'start_chat_verification',
   'start_research',
   'subscribe_account_calendar',
   'subscribe_calendar',

@@ -14,7 +14,7 @@
 
 use async_trait::async_trait;
 use everyday_core::chat::{ChatLink, ChatSecret};
-use everyday_service::chat::ChatState;
+use everyday_service::chat::{ChatState, ChatTrust, ChatVerifier};
 use jiff::Timestamp;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -129,6 +129,11 @@ pub type SaveSecret = Arc<dyn Fn(&ChatSecret) -> Result<(), ChatError> + Send + 
 /// Tells the settings pane where a link stands.
 pub type Report = Arc<dyn Fn(ChatState, String) + Send + Sync>;
 
+/// Tells the settings pane what the bot knows of trust with its owner: a
+/// verification in progress, with its emoji, and whether the owner's keys
+/// are verified. Each call replaces the last.
+pub type TrustReport = Arc<dyn Fn(ChatTrust) + Send + Sync>;
+
 /// Everything a connector starts from.
 pub struct Setup {
     pub link: ChatLink,
@@ -143,6 +148,7 @@ pub struct Setup {
     /// What to encrypt that local state with.
     pub store_passphrase: String,
     pub report: Report,
+    pub trust: TrustReport,
     /// What the person named their assistant, for the greeting. Empty means
     /// it has no name: "the assistant".
     pub assistant_name: String,
@@ -182,6 +188,13 @@ pub trait Connector: Send + Sync + 'static {
     /// until it is turned off, however long that is: a service whose typing
     /// notice expires is the connector's to keep renewing.
     async fn typing(&self, chat: &ChatId, on: bool) -> Result<(), ChatError>;
+
+    /// How Settings answers the owner verifying the bot, for a service that
+    /// has interactive verification. Only works while [`Connector::listen`]
+    /// runs: that is when the owner's requests are heard.
+    fn verifier(&self) -> Option<Arc<dyn ChatVerifier>> {
+        None
+    }
 }
 
 #[cfg(test)]

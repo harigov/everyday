@@ -169,6 +169,58 @@ assert.equal(chat.view(link.id).status.state, 'online', 'and it stays there')
   assert.equal(chat.view(link.id).status.state, 'off', 'and a poll does not turn it on')
 }
 
+// ── verifying the owner ───────────────────────────────────────────────
+//
+// The mock moves a verification on one stage per `chat_links`, as it does a
+// sign-in; the store reads the list again after every answer, so each step
+// below is visible once that read has landed.
+
+{
+  assert.match(
+    await chat.startVerification(link.id),
+    /not running here/,
+    'a bot that is off cannot ask anybody',
+  )
+
+  await chat.save(link, 'pw')
+  await chat.refresh()
+  assert.equal(chat.view(link.id).status.state, 'online')
+  assert.equal(chat.view(link.id).ownerVerified, false, 'online, and the owner not verified yet')
+  assert.equal(chat.view(link.id).verification, null)
+
+  assert.equal(await chat.startVerification(link.id), null, 'the request goes')
+  await chat.refresh()
+  const comparing = chat.view(link.id).verification
+  assert.equal(comparing.stage, 'comparing', 'and by the next poll the emoji are ready')
+  assert.equal(comparing.weStarted, true)
+  assert.equal(comparing.emoji.length, 7)
+
+  assert.match(
+    await chat.answerVerification(link.id, 'some-older-flow', 'match'),
+    /over/,
+    'an answer for another verification does not land on this one',
+  )
+  assert.equal(await chat.answerVerification(link.id, comparing.flow, 'match'), null)
+  await chat.refresh()
+  assert.equal(chat.view(link.id).verification.stage, 'done', 'both sides said they match')
+  assert.equal(chat.view(link.id).ownerVerified, true)
+
+  assert.equal(await chat.startVerification(link.id), null)
+  await chat.refresh()
+  const again = chat.view(link.id).verification
+  assert.notEqual(again.flow, comparing.flow, 'a new verification is a new flow')
+  assert.equal(await chat.answerVerification(link.id, again.flow, 'mismatch'), null)
+  await chat.refresh()
+  const refused = chat.view(link.id).verification
+  assert.equal(refused.stage, 'cancelled', 'a mismatch ends it')
+  assert.deepEqual(refused.emoji, [], 'and the emoji are not left on screen')
+  assert.match(
+    await chat.answerVerification(link.id, again.flow, 'match'),
+    /over/,
+    'a verification that ended cannot be answered',
+  )
+}
+
 // ── remove ───────────────────────────────────────────────────────────
 
 assert.equal(await chat.remove(link.id), true)

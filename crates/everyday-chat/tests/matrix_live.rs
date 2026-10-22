@@ -55,13 +55,18 @@ use everyday_chat::Runner;
 use everyday_core::chat::{ChatLink, ChatService, MatrixLink};
 use everyday_core::{AgentSettings, ChatLinkId, Task, Vault, VaultConfig};
 use everyday_service::Service;
-use everyday_service::chat::{ChatState, FromRun, task_key};
+use everyday_service::chat::{ChatState, ChatVerification, FromRun, VerificationStage, task_key};
 use everyday_service::ctx::Ctx;
 use everyday_service::supervisor::Supervisor;
 use matrix_sdk::config::SyncSettings;
+use matrix_sdk::encryption::verification::{SasVerification, VerificationRequestState};
 use matrix_sdk::room::MessagesOptions;
 use matrix_sdk::ruma::api::client::account::register::v3::Request as RegistrationRequest;
-use matrix_sdk::ruma::api::client::uiaa::{AuthData, AuthType, Dummy, RegistrationToken, UiaaInfo};
+use matrix_sdk::ruma::api::client::uiaa::{
+    AuthData, AuthType, Dummy, MatrixUserIdentifier, Password, RegistrationToken, UiaaInfo,
+    UserIdentifier,
+};
+use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
@@ -69,6 +74,7 @@ use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId};
 use matrix_sdk::{Client, RoomMemberships};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -849,6 +855,77 @@ fn step(what: &str) {
     eprintln!("matrix_live: {what}");
 }
 
+/// Poll `probe` until it has an answer, or fail saying what was awaited.
+async fn eventually<T, F, Fut>(what: &str, mut probe: F) -> T
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Option<T>>,
+{
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Some(found) = probe().await {
+            return found;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out after {WAIT:?} waiting for {what}");
+        }
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Give `person` cross-signing keys, as Element does when somebody sets up
+/// recovery: without them there is no identity to verify, or to verify with.
+async fn cross_sign(person: &Person, password: &str) {
+    let encryption = person.client.encryption();
+    let Err(error) = encryption.bootstrap_cross_signing(None).await else { return };
+    let Some(info) = error.as_uiaa_response() else {
+        panic!("{} could not make cross-signing keys: {error}", person.id);
+    };
+    let mut auth = Password::new(
+        UserIdentifier::Matrix(MatrixUserIdentifier::new(person.id.to_string())),
+        password.to_owned(),
+    );
+    auth.session = info.session.clone();
+    encryption
+        .bootstrap_cross_signing(Some(AuthData::Password(auth)))
+        .await
+        .unwrap_or_else(|e| panic!("{} could not make cross-signing keys: {e}", person.id));
+}
+
+/// The verification Settings shows for `link`, once `ready` accepts it.
+async fn shown_verification(
+    svc: &Arc<Service>,
+    link: ChatLinkId,
+    what: &str,
+    ready: impl Fn(&ChatVerification) -> bool,
+) -> ChatVerification {
+    eventually(what, || {
+        let found = svc.chat_trust(link).verification.filter(|v| ready(v));
+        async move { found }
+    })
+    .await
+}
+
+/// The emoji `sas` shows, once it has them.
+async fn emoji_of(sas: &SasVerification, whose: &str) -> Vec<String> {
+    eventually(&format!("{whose} emoji"), || {
+        let emoji = sas.emoji().map(|all| all.iter().map(|e| e.symbol.to_owned()).collect());
+        async move { emoji }
+    })
+    .await
+}
+
+/// Answer the bot's half of a verification, as the Settings pane does.
+async fn answer_in_settings(svc: &Arc<Service>, link: ChatLinkId, flow: &str, answer: &str) {
+    svc.call(
+        Ctx::local(),
+        "answer_chat_verification",
+        json!({ "id": link, "flow": flow, "answer": answer }),
+    )
+    .await
+    .unwrap_or_else(|e| panic!("answer_chat_verification {answer}: {e}"));
+}
+
 /// Wait for the link to report `Online`, or say why it did not.
 async fn wait_online(svc: &Arc<Service>, link: ChatLinkId) {
     let deadline = Instant::now() + WAIT;
@@ -1117,6 +1194,176 @@ async fn an_owner_talks_to_the_assistant_over_encrypted_matrix_and_a_stranger_do
             body(&leak)
         ));
     }
+
+    // ---- scenario 4: verifying, owner-only ------------------------------
+    // The bot's half of the emoji is shown in Settings, never in the chat,
+    // and only the owner's requests are taken up.
+    step("scenario 4: verification");
+    cross_sign(&owner, &owner_password).await;
+    cross_sign(&stranger, &stranger_password).await;
+
+    step("scenario 4a: a stranger asks to verify the bot's device, and is ignored");
+    let bot_device = eventually("the bot's device, as the stranger sees it", || {
+        let client = stranger.client.clone();
+        let bot = bot.clone();
+        async move {
+            let devices = client.encryption().get_user_devices(&bot).await.ok()?;
+            devices.devices().next()
+        }
+    })
+    .await;
+    let strangers = bot_device
+        .request_verification_with_methods(vec![VerificationMethod::SasV1])
+        .await
+        .unwrap_or_else(|e| panic!("the stranger could not send a verification request: {e}"));
+    tokio::time::sleep(STRANGER_QUIET).await;
+    if strangers.is_ready() {
+        problems.push("the bot accepted a stranger's verification request".into());
+    }
+    if rig.svc.chat_trust(link.id).verification.is_some() {
+        problems.push("a stranger's verification request reached Settings".into());
+    }
+    let _ = strangers.cancel().await;
+
+    step("scenario 4b: the owner verifies the bot, and the emoji are matched in Settings");
+    let bot_identity = eventually("the bot's identity, as the owner sees it", || {
+        let client = owner.client.clone();
+        let bot = bot.clone();
+        async move { client.encryption().request_user_identity(&bot).await.ok().flatten() }
+    })
+    .await;
+    let request = bot_identity
+        .request_verification_with_methods(vec![VerificationMethod::SasV1])
+        .await
+        .unwrap_or_else(|e| panic!("the owner could not ask to verify the bot: {e}"));
+    eventually("the bot to accept the owner's request", || {
+        let ready = request.is_ready();
+        async move { ready.then_some(()) }
+    })
+    .await;
+    let sas = request
+        .start_sas()
+        .await
+        .unwrap_or_else(|e| panic!("the owner could not start the emoji: {e}"))
+        .expect("the bot offers emoji");
+    let owners = emoji_of(&sas, "the owner's").await;
+    let shown = shown_verification(&rig.svc, link.id, "the bot's emoji in Settings", |v| {
+        v.stage == VerificationStage::Comparing
+    })
+    .await;
+    assert_eq!(
+        shown.emoji.iter().map(|e| e.symbol.clone()).collect::<Vec<_>>(),
+        owners,
+        "Settings shows the same seven emoji, in the same order, as the owner's device"
+    );
+    assert!(!shown.we_started, "the owner asked");
+    let views = rig
+        .svc
+        .call(Ctx::local(), "chat_links", json!({}))
+        .await
+        .unwrap_or_else(|e| panic!("chat_links: {e}"));
+    assert_eq!(
+        views[0]["verification"]["stage"], "comparing",
+        "the view the pane reads carries the verification"
+    );
+    let pointer =
+        owner.wait_for(&mut seen, "the bot saying where its emoji are", text_from(&bot)).await;
+    assert!(
+        body(&pointer).contains("Settings → Chat"),
+        "the bot should say where to look, got: {:?}",
+        body(&pointer)
+    );
+    assert!(
+        owners.iter().all(|symbol| !body(&pointer).contains(symbol.as_str())),
+        "the emoji themselves must stay out of the chat, got: {:?}",
+        body(&pointer)
+    );
+
+    answer_in_settings(&rig.svc, link.id, &shown.flow, "match").await;
+    sas.confirm().await.unwrap_or_else(|e| panic!("the owner could not confirm: {e}"));
+    eventually("the owner's side to finish", || {
+        let done = sas.is_done();
+        async move { done.then_some(()) }
+    })
+    .await;
+    shown_verification(&rig.svc, link.id, "Settings to say verified", |v| {
+        v.flow == shown.flow && v.stage == VerificationStage::Done
+    })
+    .await;
+    eventually("the bot to count the owner as verified", || {
+        let verified = rig.svc.chat_trust(link.id).owner_verified == Some(true);
+        async move { verified.then_some(()) }
+    })
+    .await;
+    let trusted = owner
+        .client
+        .encryption()
+        .request_user_identity(&bot)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|identity| identity.is_verified());
+    if !trusted {
+        problems.push("the owner's client does not count the bot as verified afterwards".into());
+    }
+    if rig
+        .svc
+        .call(
+            Ctx::local(),
+            "answer_chat_verification",
+            json!({ "id": link.id, "flow": shown.flow, "answer": "match" }),
+        )
+        .await
+        .is_ok()
+    {
+        problems.push("a verification that had finished took another answer".into());
+    }
+
+    step("scenario 4c: the bot asks from Settings, and the emoji are refused");
+    rig.svc
+        .call(Ctx::local(), "start_chat_verification", json!({ "id": link.id }))
+        .await
+        .unwrap_or_else(|e| panic!("start_chat_verification: {e}"));
+    let asked = shown_verification(&rig.svc, link.id, "the bot's own request", |v| {
+        v.we_started && v.flow != shown.flow
+    })
+    .await;
+    let request = eventually("the bot's request to reach the owner", || {
+        let client = owner.client.clone();
+        let (bot, flow) = (bot.clone(), asked.flow.clone());
+        async move { client.encryption().get_verification_request(&bot, flow).await }
+    })
+    .await;
+    request
+        .accept_with_methods(vec![VerificationMethod::SasV1])
+        .await
+        .unwrap_or_else(|e| panic!("the owner could not accept the bot's request: {e}"));
+    let sas = eventually("the emoji the bot starts", || {
+        let sas = match request.state() {
+            VerificationRequestState::Transitioned { verification } => verification.sas(),
+            _ => None,
+        };
+        async move { sas }
+    })
+    .await;
+    sas.accept().await.unwrap_or_else(|e| panic!("the owner could not accept the emoji: {e}"));
+    let owners = emoji_of(&sas, "the owner's").await;
+    let compared = shown_verification(&rig.svc, link.id, "the bot's emoji, the second time", |v| {
+        v.flow == asked.flow && v.stage == VerificationStage::Comparing
+    })
+    .await;
+    assert_eq!(compared.emoji.iter().map(|e| e.symbol.clone()).collect::<Vec<_>>(), owners);
+    answer_in_settings(&rig.svc, link.id, &asked.flow, "mismatch").await;
+    eventually("the owner's side to hear it was refused", || {
+        let cancelled = sas.is_cancelled();
+        async move { cancelled.then_some(()) }
+    })
+    .await;
+    let refused = shown_verification(&rig.svc, link.id, "Settings to say it stopped", |v| {
+        v.flow == asked.flow && v.stage == VerificationStage::Cancelled
+    })
+    .await;
+    assert!(refused.emoji.is_empty(), "a refused comparison leaves no emoji on screen");
 
     // ---- the owner still works after all that ---------------------------
     step("the owner is still answered after the stranger");

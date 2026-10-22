@@ -6,11 +6,20 @@
 // password is still needed; turning the stored "quiet for this many minutes"
 // into the hours the form asks for and back; and the few words the rest of
 // the interface uses for a link (its name in a list, the tooltip on the
-// assistant history's "Matrix" marker).
+// assistant history's "Matrix" marker); and what to show of the owner
+// verifying the bot, whose half of the emoji only this window can show.
 //
 // Everything that touches the network lives in `chat.svelte.ts` instead.
 
-import type { ChatLink, ChatLinkView, ChatState, ChatStatus, MatrixLink, Via } from './types'
+import type {
+  ChatLink,
+  ChatLinkView,
+  ChatState,
+  ChatStatus,
+  ChatVerification,
+  MatrixLink,
+  Via,
+} from './types'
 
 // ── Where a link stands ──────────────────────────────────────────────────
 
@@ -233,6 +242,67 @@ export function quietNote(minutes: number): string {
       ? `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`
       : `${hours} ${hours === 1 ? 'hour' : 'hours'}`
   return `A message after ${span} of quiet starts a new conversation. Type !new to start one sooner.`
+}
+
+// ── Verifying the owner ──────────────────────────────────────────────────
+//
+// The owner verifies the bot the way they verify anybody in Element: both
+// sides show seven emoji, and a person says whether they are the same. The
+// bot has no screen, so its seven are shown here -- see `everyday_service::
+// chat`'s "Verifying the owner".
+
+/** A verification that has finished, one way or the other, and wants no
+ *  answer: done or cancelled. */
+export function verificationOver(v: ChatVerification): boolean {
+  return v.stage === 'done' || v.stage === 'cancelled'
+}
+
+/**
+ * Should the panel show this verification? One in progress, always. One
+ * that has finished, until somebody has read it and pressed OK -- `dismissed`
+ * is the flows they have.
+ */
+export function verificationShown(
+  v: ChatVerification | null,
+  dismissed: readonly string[],
+): v is ChatVerification {
+  if (!v) return false
+  return !verificationOver(v) || !dismissed.includes(v.flow)
+}
+
+/** The heading over a verification: who is verifying, and where it is. */
+export function verificationTitle(v: ChatVerification, owner: string): string {
+  const device = v.device ?? 'your device'
+  switch (v.stage) {
+    case 'requested':
+      return v.weStarted
+        ? `Asked ${owner} to verify the bot`
+        : `${capital(device)} wants to verify the bot`
+    case 'comparing':
+      return `Compare these with ${device}`
+    case 'confirmed':
+      return `Waiting for ${device}`
+    case 'done':
+      return 'Verified'
+    case 'cancelled':
+      return 'Verification stopped'
+  }
+}
+
+function capital(text: string): string {
+  return text ? text[0]!.toUpperCase() + text.slice(1) : text
+}
+
+/**
+ * Should the panel offer to start a verification from here? For a bot that
+ * is online and knows its owner is not verified, with none already going
+ * on. Not for `ownerVerified: null`: a bot that has only just come online
+ * says that until it has looked, and an owner who is verified must not be
+ * told otherwise in the meantime.
+ */
+export function canStartVerification(view: ChatLinkView): boolean {
+  if (view.status.state !== 'online' || view.ownerVerified !== false) return false
+  return !view.verification || verificationOver(view.verification)
 }
 
 // ── Naming a link ────────────────────────────────────────────────────────

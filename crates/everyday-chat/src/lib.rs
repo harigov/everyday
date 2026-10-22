@@ -12,11 +12,11 @@ pub mod connector;
 pub mod matrix;
 pub mod relay;
 
-use crate::connector::{ChatError, Connector, Report, SaveSecret, Setup};
+use crate::connector::{ChatError, Connector, Report, SaveSecret, Setup, TrustReport};
 use crate::matrix::MatrixConnector;
 use everyday_core::chat::{ChatLink, ChatSecret, ChatService};
 use everyday_core::{ChatLinkId, Vault};
-use everyday_service::chat::{ChatRunner, ChatState, state_dir, store_passphrase};
+use everyday_service::chat::{ChatRunner, ChatState, ChatTrust, state_dir, store_passphrase};
 use everyday_service::service::Service;
 use everyday_service::supervisor::{Outcome, TaskFuture, TaskResult};
 use std::future::Future;
@@ -134,6 +134,7 @@ where
         state_dir: loaded.state_dir,
         store_passphrase: loaded.store_passphrase,
         report: report_through(&service, link_id),
+        trust: trust_through(&service, link_id),
         assistant_name: loaded.assistant_name,
     };
 
@@ -147,6 +148,12 @@ where
         Ok(connector) => connector,
         Err(e) => return give_up(&service, link_id, &stop, e),
     };
+    // Withdrawn below, however the link ends; nothing between here and there
+    // returns early.
+    let verifier = connector.verifier();
+    if let Some(verifier) = &verifier {
+        service.open_chat_verifier(link_id, verifier.clone());
+    }
 
     // The relay gets a stop of its own. The supervisor's reaches it directly,
     // and so does the connector ending: a connector whose listening has failed
@@ -179,6 +186,9 @@ where
         }
     };
     let (heard, (), ()) = tokio::join!(listening, relaying, halting);
+    if let Some(verifier) = &verifier {
+        service.close_chat_verifier(link_id, verifier);
+    }
 
     match heard {
         Ok(()) if *stop.borrow() => Ok(Outcome::Done),
@@ -289,6 +299,13 @@ fn save_secret_into(vault: &Arc<Vault>, link_id: ChatLinkId) -> SaveSecret {
     Arc::new(move |secret: &ChatSecret| {
         vault.save_chat_secret(link_id, secret).map_err(|e| ChatError::Transient(e.to_string()))
     })
+}
+
+/// The closure a connector reports trust with the owner through: what
+/// Settings → Chat shows of a verification, and answers.
+fn trust_through(service: &Arc<Service>, link_id: ChatLinkId) -> TrustReport {
+    let service = service.clone();
+    Arc::new(move |trust: ChatTrust| service.report_chat_trust(link_id, trust))
 }
 
 /// The closure a connector reports where it stands through: the service's

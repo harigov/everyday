@@ -3180,6 +3180,52 @@ export interface ChatLinkView {
   signedIn: boolean
   /** A password is stored, waiting to be used to sign in. */
   hasPassword: boolean
+  /** Whether the bot has verified its owner's encryption keys. `null` when it
+   *  cannot say: it is not running, or has not seen the owner's keys yet. */
+  ownerVerified: boolean | null
+  /** The verification the bot is in, or the last one this run. */
+  verification: ChatVerification | null
+}
+
+export const VERIFICATION_STAGES = [
+  'requested',
+  'comparing',
+  'confirmed',
+  'done',
+  'cancelled',
+] as const
+/**
+ * How far the owner verifying the bot has got. `comparing` is the one that
+ * wants an answer here: the emoji are ready, and the bot -- which has no
+ * screen -- shows its half in Settings → Chat.
+ */
+export type VerificationStage = (typeof VERIFICATION_STAGES)[number]
+
+/** What the person says about the emoji. */
+export type VerificationAnswer = 'match' | 'mismatch' | 'cancel'
+
+/** One of the seven pictures a verification compares. */
+export interface VerificationEmoji {
+  symbol: string
+  /** Its name in the specification, which chat clients show under it. */
+  name: string
+}
+
+/** One interactive verification between a link's bot and its owner. */
+export interface ChatVerification {
+  /** The service's id for it, which an answer names. */
+  flow: string
+  stage: VerificationStage
+  /** Asked from Settings rather than from the owner's chat app. */
+  weStarted: boolean
+  /** The owner's device on the other end, by name or id. */
+  device: string | null
+  /** Seven while comparing, otherwise empty. */
+  emoji: VerificationEmoji[]
+  decimals: [number, number, number] | null
+  /** Where it stands, as a sentence: why it was cancelled, mostly. */
+  detail: string
+  since: string
 }
 
 export interface Memory {

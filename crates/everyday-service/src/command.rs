@@ -728,6 +728,13 @@ mod tests {
             // command's answer is even back, so there is no list left
             // waiting on a `Settings` change to notice it.
             "dismiss_meeting_offer",
+            // A chat bot's verification with its owner. Nothing in the vault
+            // changes; what the pane redraws -- the stage, the emoji -- moves
+            // when the bot reports it, and `Service::report_chat_trust`
+            // raises the link's `BackgroundTask` change then, the same one a
+            // status report raises.
+            "answer_chat_verification",
+            "start_chat_verification",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

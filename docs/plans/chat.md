@@ -187,8 +187,10 @@ A save always restarts that link's task, so new settings take effect at once.
 | `new_chat_link` | Read | `{}` → `ChatLink` (a fresh id, switched on, empty Matrix fields) |
 | `save_chat_link` | Write, `Settings/Updated` | `{ link: ChatLink, password?: string \| null }` → `ChatLinkView` |
 | `remove_chat_link` | Destructive, `Settings/Updated` | `{ id: ChatLinkId }` → `void` |
+| `answer_chat_verification` | Write | `{ id, flow: string, answer: 'match' \| 'mismatch' \| 'cancel' }` → `void` |
+| `start_chat_verification` | Write | `{ id: ChatLinkId }` → `void` |
 
-`ChatLinkView` is `{ link, status: ChatStatus, signedIn: boolean, hasPassword: boolean }`.
+`ChatLinkView` is `{ link, status: ChatStatus, signedIn: boolean, hasPassword: boolean, ownerVerified: boolean | null, verification: ChatVerification | null }`.
 `ChatStatus` is `{ state: 'off' | 'connecting' | 'online' | 'needsSignIn' | 'failing', detail, since }`.
 
 **`save_chat_link`**:
@@ -311,6 +313,58 @@ for a session I don't have. Try sending it again."
 - So Element shows the bot as verified, and clients that withhold keys from
   unverified devices still share with it.
 
+**Interactive verification with the owner** (`matrix/verification.rs`). The
+identity above makes the bot's *account* vouch for its device. This is the
+owner vouching for the bot, and the bot for the owner, by comparing emoji as
+two people do in Element.
+- **Only the owner's requests are taken up.** A request from anyone else,
+  including another session of the bot's own account, is ignored rather than
+  declined, for the same reason strangers' messages get silence.
+- **Both kinds of request are heard:** to-device (verifying the bot's
+  session) and in-room (verifying the bot as a user). They are heard from the
+  same moment messages are, so a request left in a fresh login's backlog is
+  not taken up.
+- **The bot accepts with emoji (`m.sas.v1`) only.** It cannot scan or show a
+  QR code.
+- **The emoji are compared in Settings → Chat, not in the chat.** The
+  comparison exists to catch something sitting between the bot and the
+  owner, and a room message is exactly what such a thing could rewrite. So
+  the connector reports what it sees as `ChatTrust` (the stage, the seven
+  emoji, the owner's device, and whether the owner's identity is verified).
+  It registers a `ChatVerifier` while it runs, and the pane answers through
+  `answer_chat_verification { id, flow, answer: match | mismatch | cancel }`.
+  When the owner started from their phone, the bot posts one line in the chat
+  saying where its emoji are. That line contains no emoji.
+- **The bot can also ask.** `start_chat_verification { id }` sends the owner
+  a user-verification request in the bot's direct room. When the owner
+  accepts, the bot starts the emoji.
+  - The SDK picks that room from the account's `m.direct` list, and makes a
+    new room when the list names none. That happens for a room the owner
+    made in Element and invited the bot to.
+  - So the bot first checks that the room the SDK would pick is its private
+    room with the owner. If not, it marks the private room as direct and
+    waits for the sync to bring that back. If it still isn't, the bot
+    refuses rather than leave a new room behind.
+- **One verification at a time.** A new request cancels the one before it.
+  A flow that runs longer than 15 minutes is cancelled.
+- **A bot that stops cancels its verification with the owner's device,**
+  which would otherwise wait out the protocol's timeout. After it stops, it
+  starts nothing new and reports nothing more. The service has already
+  forgotten the link's trust, with a change event, so the pane drops the
+  emoji.
+- **Errors carry codes:** `conflict` when a verification is over, not ready,
+  or cannot start; `network` when the server could not be reached.
+- **`ownerVerified` follows the SDK's identity stream,** not a single read
+  after "done". The first look runs beside the sync, so a slow `/keys/query`
+  never holds up listening. The pane offers "Send a request" only for
+  `false`, never for the `null` a freshly started bot reports before it has
+  looked. The bot's signature on the owner's keys is uploaded a moment
+  after both sides finish, and it counts only once the SDK reads the keys
+  back. The same watch notices an owner who resets their keys.
+- **Both commands are `Write` with no change event.** Nothing in the vault
+  changes. They are still writes, because each one vouches for somebody's
+  keys.
+
 **Who it answers.** A message reaches `Incoming` only if all of these hold:
 - its sender is `link.owner`;
 - the room's joined members are exactly the bot and the owner (anything wider
@@ -355,7 +409,13 @@ turned off.
 - `everyday-chat/tests/matrix_live.rs`, ignored unless
   `EVERYDAY_TEST_MATRIX_URL` names a throwaway homeserver with open
   registration. It registers a bot and an owner, and runs the whole path over
-  encrypted Matrix with the fake model. `make test-matrix` starts a
+  encrypted Matrix with the fake model. Scenario 4 covers verification:
+  - a stranger's to-device request is ignored;
+  - the owner verifies the bot, and Settings shows the same seven emoji and
+    answers "match";
+  - the bot asks from Settings, and "mismatch" cancels it on both sides.
+
+  `make test-matrix` starts a
   throwaway Conduit 0.10.12 in Docker and runs it; never point it at a real
   server (it refuses an address that is not loopback or private unless told
   otherwise).

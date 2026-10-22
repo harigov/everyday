@@ -247,6 +247,7 @@ async fn run_tool_call(
 /// `effect: Write` row is here or was run) and for staleness (nothing here
 /// was, despite that, actually run) at the bottom of the test.
 const SKIPPED_COMMANDS: &[(&str, &str)] = &[
+    ("answer_chat_verification", "needs a chat bot in a verification on a real Matrix server"),
     ("answer_job", "spawns the follow-up turn in the background, which needs a model"),
     ("attach_oauth_sign_in", "OAuth: attaches a real sign-in's tokens to an account"),
     ("begin_oauth_sign_in", "OAuth: a loopback redirect to a real provider"),
@@ -263,6 +264,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("respond_to_invite", "needs an ICS-bearing message in the local pack store, and sends"),
     ("retry_recording", "resumes the same background pipeline finish_recording does"),
     ("send_message", "streams: true, unreachable through Service::call at all"),
+    ("start_chat_verification", "needs a chat bot signed in to a real Matrix server"),
     ("subscribe_account_calendar", "fetches a remote account's calendar over the network"),
     ("subscribe_calendar", "fetches a remote ICS feed over the network"),
     ("sync_account", "starts a supervised sync task against a real mail server"),

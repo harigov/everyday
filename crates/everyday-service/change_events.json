@@ -1178,6 +1178,10 @@
   ],
   "skippedCommands": [
     {
+      "name": "answer_chat_verification",
+      "reason": "needs a chat bot in a verification on a real Matrix server"
+    },
+    {
       "name": "answer_job",
       "reason": "spawns the follow-up turn in the background, which needs a model"
     },
@@ -1240,6 +1244,10 @@
     {
       "name": "send_message",
       "reason": "streams: true, unreachable through Service::call at all"
+    },
+    {
+      "name": "start_chat_verification",
+      "reason": "needs a chat bot signed in to a real Matrix server"
     },
     {
       "name": "subscribe_account_calendar",
