@@ -437,6 +437,7 @@ impl AgentSettings {
                 model: m.model.clone(),
                 temperature: m.temperature,
                 max_tokens: m.max_tokens,
+                reasoning_effort: None,
             })
         });
         if connection.is_none() && assistant.is_none() && self.legacy_quick_model.is_none() {

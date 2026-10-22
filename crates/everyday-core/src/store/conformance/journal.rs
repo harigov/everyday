@@ -562,6 +562,7 @@ fn the_models_round_trip_and_start_unsaved(store: &dyn JournalStore) {
                 model: "anthropic/claude-opus".into(),
                 temperature: Some(0.7),
                 max_tokens: Some(16_000),
+                reasoning_effort: Some(crate::llm::ReasoningEffort::High),
             },
         }),
         medium: crate::llm::LLMConfig::medium(),

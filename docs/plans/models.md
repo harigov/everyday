@@ -81,6 +81,20 @@ provider and model name, configured in **Settings → Models**.
   `save_model_settings`, `set_model_key`, `clear_model_key`) need what
   `set_agent_key` needed.
 
+- **A reasoning effort per tier, unset by default.** `LLMModelConfig.reasoning_effort`
+  (`none` … `xhigh`, `max`), sent as a top-level `reasoning_effort` -- which
+  OpenAI, OpenRouter (mapping it onto Anthropic's and Gemini's budgets),
+  Ollama, vLLM and LM Studio all read -- through rig's `additional_params`
+  in `llm::configure`, the one place every request is built. Settable
+  because the endpoint's default is not a middle setting: `gpt-5.1`'s is
+  `none`, no reasoning at all, which an assistant planning a multi-step job
+  reads as lazy. Unset sends nothing, so no saved vault asks differently
+  until somebody picks a level, and a model that refuses the field (Ollama's
+  without thinking) is not broken by the field existing. No per-model list of
+  levels; a refused one comes back through `llm::friendly` as a sentence
+  pointing at the setting. On Small, thinking counts against
+  `QUICK_MAX_TOKENS`, and the pane says so.
+
 ## Not done
 
 - **A second wire protocol.** `Provider` still has one variant, OpenAI's chat
@@ -88,4 +102,5 @@ provider and model name, configured in **Settings → Models**.
   speak. A native Anthropic client is a new `Provider` variant and an arm in
   `everyday_service::llm::client`.
 - **Temperature and token limits in the pane.** Carried and honoured, not
-  shown -- as before.
+  shown -- as before. The reasoning effort is the one request setting the
+  pane shows.

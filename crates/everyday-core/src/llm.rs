@@ -260,6 +260,60 @@ pub struct LLMModelConfig {
     /// Cap on a single reply. `None` means the endpoint's own limit.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// How long a reasoning model thinks before it answers. `None` sends
+    /// nothing and leaves it to the endpoint -- see [`ReasoningEffort`] for
+    /// why that is not the same as a middling setting.
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// How hard a reasoning model is asked to think, as `reasoning_effort` on a
+/// chat completions request.
+///
+/// Settable because the endpoint's own default is not a middle setting. It
+/// is whatever the provider last decided: OpenAI's `gpt-5.1` defaults to
+/// `none`, which is no reasoning at all, so an assistant on it that was
+/// never told otherwise plans a multi-step job without thinking first --
+/// the "lazy" it reads as. Nothing is sent unless somebody picks a level,
+/// because a model that does not reason can refuse the field outright
+/// (Ollama does, for a model without thinking), and a setting that worked
+/// yesterday must not start failing because this one was added.
+///
+/// One spelling for every endpoint, and every value any of them takes:
+/// OpenRouter reads the same top-level field as OpenAI and maps it onto
+/// Anthropic's and Gemini's own budgets, and a level a given model does not
+/// support comes back as a 400 that `everyday_service::llm::friendly` turns
+/// into a sentence pointing at the setting. No per-model list: model names
+/// are free text, and which levels a model takes changes with every release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// Do not reason at all. `gpt-5.1` and later; Gemini.
+    None,
+    /// The least that still reasons. `gpt-5` and its sizes.
+    Minimal,
+    Low,
+    Medium,
+    High,
+    /// `gpt-5.1-codex-max`, `gpt-5.2` and later; OpenRouter.
+    Xhigh,
+    /// OpenRouter's top level, for the models that take one.
+    Max,
+}
+
+impl ReasoningEffort {
+    /// As the request spells it, and as it is stored.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
 }
 
 impl Default for LLMModelConfig {
@@ -294,13 +348,23 @@ impl LLMModelConfig {
     /// The assistant's default: the endpoint's own temperature, its own
     /// reply limit, and a model that can call tools.
     pub fn assistant() -> Self {
-        Self { model: DEFAULT_MODEL.into(), temperature: None, max_tokens: None }
+        Self {
+            model: DEFAULT_MODEL.into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+        }
     }
 
     /// The large model's default. The endpoint's own temperature and reply
     /// limit, as the assistant's: a write-up is prose, not an extraction.
     pub fn large() -> Self {
-        Self { model: DEFAULT_LARGE_MODEL.into(), temperature: None, max_tokens: None }
+        Self {
+            model: DEFAULT_LARGE_MODEL.into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+        }
     }
 
     /// The small model's default.
@@ -316,6 +380,7 @@ impl LLMModelConfig {
             model: DEFAULT_QUICK_MODEL.into(),
             temperature: Some(0.0),
             max_tokens: Some(QUICK_MAX_TOKENS),
+            reasoning_effort: None,
         }
     }
 
@@ -362,7 +427,8 @@ impl ModelTier {
 
 /// One model: where it is, and which one to ask there.
 ///
-/// Flat on the wire -- `{ provider, baseUrl, model, temperature, maxTokens }`
+/// Flat on the wire -- `{ provider, baseUrl, model, temperature, maxTokens,
+/// reasoningEffort }`
 /// -- because the pane edits it as one card; split in here because the
 /// request layer wants the halves separately, and a key is found by the
 /// first.
@@ -678,6 +744,7 @@ mod tests {
                     model: "x/y".into(),
                     temperature: Some(0.3),
                     max_tokens: Some(2048),
+                    reasoning_effort: Some(ReasoningEffort::Xhigh),
                 },
             },
             small: Some(LLMConfig::small()),
@@ -686,6 +753,9 @@ mod tests {
         assert_eq!(json["medium"]["baseUrl"], "https://openrouter.ai/api/v1");
         assert_eq!(json["medium"]["model"], "x/y");
         assert_eq!(json["medium"]["maxTokens"], 2048);
+        // Spelt as the request spells it, so the pane, the record and the
+        // wire all say the same word.
+        assert_eq!(json["medium"]["reasoningEffort"], ReasoningEffort::Xhigh.as_str());
         assert!(json["large"].is_null());
         let back: ModelSettings = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
@@ -699,6 +769,19 @@ mod tests {
         assert_eq!(sparse.connection.base_url, None);
         assert_eq!(sparse.model.temperature, Some(0.0));
         assert_eq!(sparse.model.max_tokens, None);
+        // And every record saved before there was an effort to set: nothing
+        // is sent, so nothing about what they ask changes.
+        assert_eq!(sparse.model.reasoning_effort, None);
+    }
+
+    #[test]
+    fn an_effort_is_stored_as_the_request_spells_it() {
+        use ReasoningEffort::*;
+        for effort in [None, Minimal, Low, Medium, High, Xhigh, Max] {
+            let json = serde_json::to_value(effort).unwrap();
+            assert_eq!(json, effort.as_str(), "{effort:?}");
+            assert_eq!(serde_json::from_value::<ReasoningEffort>(json).unwrap(), effort);
+        }
     }
 
     #[test]

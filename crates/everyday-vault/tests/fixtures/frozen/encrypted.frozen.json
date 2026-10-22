@@ -569,6 +569,7 @@
           "maxTokens": null,
           "model": "gpt-5.1-mini",
           "provider": "openAi",
+          "reasoningEffort": null,
           "temperature": null
         },
         "small": null
