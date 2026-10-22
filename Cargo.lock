@@ -2450,6 +2450,7 @@ dependencies = [
  "futures",
  "jiff",
  "matrix-sdk",
+ "mime",
  "serde",
  "serde_json",
  "tempfile",

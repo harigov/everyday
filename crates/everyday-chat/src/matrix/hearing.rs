@@ -12,14 +12,22 @@
 //! could take long: sending to the relay can only block while the relay is
 //! busy with a message already (it queues), and joining a room, which can
 //! retry for a minute, runs as a task of its own.
+//!
+//! With one exception: a picture is downloaded where it is heard, within
+//! [`DOWNLOAD_TIMEOUT`]. The order the owner's messages arrive in is part of
+//! what they mean -- a photo, then "what is this?" -- and a download left to
+//! a task of its own could hand the relay the question before the picture
+//! it is about.
 
 use super::rooms::kind_of;
 use super::rules::{self, RoomKind};
 use super::speaking::Questions;
-use crate::connector::{Choice, Incoming};
+use crate::connector::{Choice, Incoming, Picture};
 use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::event_handler::EventHandlerDropGuard;
+use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
 use matrix_sdk::ruma::events::reaction::OriginalSyncReactionEvent;
+use matrix_sdk::ruma::events::room::MediaSource;
 use matrix_sdk::ruma::events::room::encrypted::{
     OriginalSyncRoomEncryptedEvent, Relation as EncryptedRelation,
 };
@@ -41,6 +49,14 @@ const JOIN_ATTEMPTS: u32 = 6;
 
 /// The wait before the second try; it doubles after each failure.
 const FIRST_JOIN_RETRY: Duration = Duration::from_secs(2);
+
+/// How long a picture the owner sent may take to download before the bot
+/// gives up on it and says so. The sync waits on it -- see the module doc --
+/// so this is also the longest the bot can go deaf for one picture.
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// What the owner is told when a picture they sent could not be fetched.
+const DOWNLOAD_FAILED: &str = "I couldn't download that picture. Try sending it again.";
 
 /// Everything the message handlers share.
 pub(super) struct Hearing {
@@ -119,7 +135,7 @@ impl Hearing {
         if event.sender != self.owner {
             return;
         }
-        let Some(text) = said_text(&event.content) else {
+        let Some(heard) = heard_of(&event.content) else {
             return;
         };
         if !rules::arrived_acceptably(room.encryption_state().is_encrypted(), encrypted) {
@@ -130,12 +146,22 @@ impl Hearing {
             self.explain_once(&room).await;
             return;
         }
-        self.deliver(Incoming::Said {
-            chat: rules::chat_id(room.room_id()),
-            text,
-            at: rules::sent_at(event.origin_server_ts),
-        })
-        .await;
+        let chat = rules::chat_id(room.room_id());
+        let at = rules::sent_at(event.origin_server_ts);
+        let incoming = match heard {
+            Heard::Text(text) => Incoming::Said { chat, text, at },
+            Heard::Picture { source, filename, caption } => {
+                let Some(bytes) = download(&room, source).await else {
+                    let notice = RoomMessageEventContent::notice_plain(DOWNLOAD_FAILED);
+                    if let Err(error) = room.send(notice).await {
+                        tracing::debug!("couldn't say a picture was lost: {error}");
+                    }
+                    return;
+                };
+                Incoming::Showed { chat, picture: Picture { filename, bytes }, caption, at }
+            }
+        };
+        self.deliver(incoming).await;
     }
 
     async fn heard_reaction(&self, event: OriginalSyncReactionEvent, room: Room) {
@@ -199,6 +225,73 @@ impl Hearing {
             RoomMessageEventContent::notice_plain(rules::not_private_notice(self.owner.as_str()));
         if let Err(error) = room.send(notice).await {
             tracing::debug!("couldn't explain why the bot is silent: {error}");
+        }
+    }
+}
+
+/// Something the owner sent that the bot answers.
+#[derive(Debug)]
+enum Heard {
+    /// Words.
+    Text(String),
+    /// A picture: where to fetch it, what it is called, and what was written
+    /// with it -- empty when nothing was.
+    Picture { source: MediaSource, filename: String, caption: String },
+}
+
+/// What the owner sent, if it is something to answer: [`said_text`]'s
+/// words, or a picture.
+///
+/// A picture is an image message, or a file whose type says it is an image
+/// -- what a client sends when asked to send a photo "as a file" to spare it
+/// being recompressed. Its caption is what Matrix calls one: the body, when
+/// the message names its file separately (`caption()` reads that rule), so a
+/// client that only ever writes the filename into the body sends a picture
+/// with nothing said. An edit is skipped, as an edited text is.
+fn heard_of(content: &RoomMessageEventContent) -> Option<Heard> {
+    if matches!(content.relates_to, Some(Relation::Replacement(_))) {
+        return None;
+    }
+    let picture = |source: &MediaSource, filename: &str, caption: Option<&str>| Heard::Picture {
+        source: source.clone(),
+        filename: filename.to_owned(),
+        caption: caption.unwrap_or_default().trim().to_owned(),
+    };
+    match &content.msgtype {
+        MessageType::Image(image) => {
+            Some(picture(&image.source, image.filename(), image.caption()))
+        }
+        MessageType::File(file)
+            if file
+                .info
+                .as_ref()
+                .and_then(|info| info.mimetype.as_deref())
+                .is_some_and(|mime| mime.starts_with("image/")) =>
+        {
+            Some(picture(&file.source, file.filename(), file.caption()))
+        }
+        _ => said_text(content).map(Heard::Text),
+    }
+}
+
+/// Fetch a picture the owner sent, decrypting it if it came encrypted, or
+/// `None` if that failed or took longer than [`DOWNLOAD_TIMEOUT`].
+///
+/// Not kept in the SDK's own media cache: the picture is about to be kept in
+/// the vault, sealed, for as long as the conversation is, and a second copy
+/// in the bot's state directory would outlive the conversation's deletion.
+async fn download(room: &Room, source: MediaSource) -> Option<Vec<u8>> {
+    let request = MediaRequestParameters { source, format: MediaFormat::File };
+    let media = room.client().media();
+    match tokio::time::timeout(DOWNLOAD_TIMEOUT, media.get_media_content(&request, false)).await {
+        Ok(Ok(bytes)) => Some(bytes),
+        Ok(Err(error)) => {
+            tracing::warn!(room = %room.room_id(), "couldn't download a picture the owner sent: {error}");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(room = %room.room_id(), "gave up downloading a picture the owner sent");
+            None
         }
     }
 }
@@ -418,5 +511,80 @@ mod tests {
             "body": "> <@bot:example.org> two meetings\n\nis that right?",
         }));
         assert!(said_text(&not_a_reply).unwrap().starts_with("> <@bot"));
+    }
+
+    fn picture_of(heard: Option<Heard>) -> (String, String) {
+        match heard {
+            Some(Heard::Picture { filename, caption, .. }) => (filename, caption),
+            other => panic!("expected a picture, heard {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_picture_is_heard_with_its_caption_when_it_has_one() {
+        // A current client: the file named apart from the body, which is
+        // then the caption.
+        let captioned = content(json!({
+            "msgtype": "m.image",
+            "body": "  what plant is this?  ",
+            "filename": "IMG_2041.jpg",
+            "url": "mxc://example.org/abc",
+            "info": { "mimetype": "image/jpeg" },
+        }));
+        assert_eq!(
+            picture_of(heard_of(&captioned)),
+            ("IMG_2041.jpg".into(), "what plant is this?".into())
+        );
+
+        // An older one: the body is the filename, and nothing was said.
+        let bare = content(json!({
+            "msgtype": "m.image",
+            "body": "IMG_2041.jpg",
+            "url": "mxc://example.org/abc",
+        }));
+        assert_eq!(picture_of(heard_of(&bare)), ("IMG_2041.jpg".into(), String::new()));
+    }
+
+    #[test]
+    fn a_photo_sent_as_a_file_is_a_picture_and_any_other_file_is_not() {
+        let photo = content(json!({
+            "msgtype": "m.file",
+            "body": "receipt.png",
+            "url": "mxc://example.org/def",
+            "info": { "mimetype": "image/png" },
+        }));
+        assert_eq!(picture_of(heard_of(&photo)), ("receipt.png".into(), String::new()));
+
+        let document = content(json!({
+            "msgtype": "m.file",
+            "body": "minutes.pdf",
+            "url": "mxc://example.org/ghi",
+            "info": { "mimetype": "application/pdf" },
+        }));
+        assert!(heard_of(&document).is_none());
+    }
+
+    #[test]
+    fn an_edited_picture_is_not_a_new_one() {
+        let edit = content(json!({
+            "msgtype": "m.image",
+            "body": "* what plant is this?",
+            "filename": "IMG_2041.jpg",
+            "url": "mxc://example.org/abc",
+            "m.new_content": {
+                "msgtype": "m.image",
+                "body": "what plant is this?",
+                "filename": "IMG_2041.jpg",
+                "url": "mxc://example.org/abc",
+            },
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$first:example.org" },
+        }));
+        assert!(heard_of(&edit).is_none());
+    }
+
+    #[test]
+    fn words_are_heard_as_they_always_were() {
+        let said = heard_of(&RoomMessageEventContent::text_plain("what's on?"));
+        assert!(matches!(said, Some(Heard::Text(text)) if text == "what's on?"));
     }
 }

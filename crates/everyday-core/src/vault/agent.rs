@@ -157,6 +157,13 @@ impl Vault {
             c.updated_at = message.created_at.max(c.updated_at);
             if c.title.is_empty() && message.role == crate::agent::Role::User {
                 c.title = Conversation::title_from(&message.content);
+                // A picture sent with nothing said is named by its file,
+                // rather than leaving a thread with no name at all.
+                if c.title.is_empty()
+                    && let Some(picture) = message.attachments.first()
+                {
+                    c.title = Conversation::title_from(&picture.filename);
+                }
             }
             self.save_conversation(&c)
         });

@@ -64,6 +64,7 @@ pub mod maps;
 pub mod meeting;
 pub mod news;
 pub mod outbox;
+pub mod pictures;
 pub mod quick;
 pub mod retry;
 pub(crate) mod runtime;

@@ -13,6 +13,7 @@ import type {
   AgentEvent,
   OnScreen,
   AgentMailAccess,
+  Attachment,
   AgentSettings,
   BadgeSources,
   BlockId,
@@ -274,6 +275,9 @@ export let onMeetingOffer: (handler: (offer: MeetingOfferPayload) => void) => vo
  * reply arrives on a channel and this resolves only when the turn is over.
  * Rejects with the same `VaultError` every other command does.
  *
+ * `attachments` are pictures sent with `prompt`, each made ready by
+ * `api.preparePicture` first.
+ *
  * Replaced with the mock implementation in dev-without-Tauri, so the panel is
  * as usable in a browser as the rest of the interface.
  */
@@ -281,6 +285,7 @@ export let sendMessage: (
   conversationId: ConversationId,
   prompt: string,
   onScreen: OnScreen | null,
+  attachments: Attachment[],
   onEvent: (event: AgentEvent) => void,
 ) => Promise<void> = async () => {
   throw new VaultError('unavailable', 'The assistant could not reach its backend.')
@@ -322,13 +327,19 @@ if (!MOCK) {
   }
 
   const mod = await import('@tauri-apps/api/core')
-  sendMessage = async (conversationId, prompt, onScreen, onEvent) => {
+  sendMessage = async (conversationId, prompt, onScreen, attachments, onEvent) => {
     const channel = new mod.Channel<AgentEvent>()
     channel.onmessage = onEvent
     // By name, not through `call`: a turn answers with a stream rather than a
     // value, so the shell has a command of its own for it. The generated
     // `SERVICE_COMMANDS` leaves the streaming ones out for the same reason.
-    await mod.invoke<void>('send_message', { conversationId, prompt, onScreen, channel })
+    await mod.invoke<void>('send_message', {
+      conversationId,
+      prompt,
+      onScreen,
+      attachments,
+      channel,
+    })
   }
   invoke = async <T>(cmd: string, args?: InvokeArgs, requestId?: string): Promise<T> => {
     try {
@@ -1100,6 +1111,15 @@ export const api = {
    * the disk, which arrives through `putBlob` like any attachment.
    */
   shrinkCover: (blob: string) => call('shrinkCover', { blob }),
+  /**
+   * Make a picture already in the vault into one for the assistant -- the
+   * right way up, no larger than a model is shown, and stripped of where it
+   * was taken -- and return it as the attachment `sendMessage` takes. For a
+   * file chosen, pasted or dropped into the composer, which arrives through
+   * `putBlob` like any attachment. Rejects, with a sentence to show, a file
+   * that is not a picture the assistant can be sent.
+   */
+  preparePicture: (blob: string, filename: string) => call('preparePicture', { blob, filename }),
   /**
    * Look for pictures of something: Bing, then Wikimedia Commons when Bing
    * has nothing. Addresses only; nothing is fetched or kept.

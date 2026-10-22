@@ -58,6 +58,7 @@ use everyday_service::Service;
 use everyday_service::chat::{ChatState, ChatVerification, FromRun, VerificationStage, task_key};
 use everyday_service::ctx::Ctx;
 use everyday_service::supervisor::Supervisor;
+use matrix_sdk::attachment::AttachmentConfig;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::encryption::verification::{SasVerification, VerificationRequestState};
 use matrix_sdk::room::MessagesOptions;
@@ -69,7 +70,7 @@ use matrix_sdk::ruma::api::client::uiaa::{
 use matrix_sdk::ruma::events::key::verification::VerificationMethod;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::ruma::events::room::message::{RoomMessageEventContent, TextMessageEventContent};
 use matrix_sdk::ruma::{OwnedEventId, OwnedRoomId, OwnedUserId, RoomId, UserId};
 use matrix_sdk::{Client, RoomMemberships};
 use serde_json::{Value, json};
@@ -81,6 +82,15 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+
+/// A two-pixel orange PNG, for the owner to send as a picture.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x02, 0x00, 0x00, 0x00, 0xfd, 0xd4, 0x9a,
+    0x73, 0x00, 0x00, 0x00, 0x10, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x38, 0x51, 0xa1, 0x01,
+    0x44, 0x0c, 0x10, 0x0a, 0x00, 0x29, 0xee, 0x05, 0xa1, 0x8c, 0x09, 0xce, 0x88, 0x00, 0x00, 0x00,
+    0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+];
 
 /// How long to wait for any one thing that has to happen: a sign-in, a
 /// greeting, an answer. Generous on purpose -- a cold Conduit, an encrypted
@@ -705,6 +715,21 @@ impl Person {
             .unwrap_or_else(|e| panic!("{} could not send {text:?}: {e}", self.id));
     }
 
+    /// Send a picture to `room`, encrypted if the room is, with `caption`
+    /// written beside it -- or nothing, as a phone does when the photo goes
+    /// first and the question after it.
+    async fn show(&self, room: &RoomId, filename: &str, bytes: &[u8], caption: Option<&str>) {
+        let joined = self
+            .client
+            .get_room(room)
+            .unwrap_or_else(|| panic!("{} is not in {room}\n{}", self.id, self.describe()));
+        let config = AttachmentConfig::new().caption(caption.map(TextMessageEventContent::plain));
+        joined
+            .send_attachment(filename, &mime::IMAGE_PNG, bytes.to_vec(), config)
+            .await
+            .unwrap_or_else(|e| panic!("{} could not send {filename}: {e}", self.id));
+    }
+
     /// React to `event` in `room`, as tapping an emoji under a message does.
     async fn react(&self, room: &RoomId, event: &OwnedEventId, key: &str) {
         let joined = self
@@ -1052,6 +1077,38 @@ async fn an_owner_talks_to_the_assistant_over_encrypted_matrix_and_a_stranger_do
         model.requests().iter().any(|r| r.contains("hello")),
         "the model should have been shown what the owner wrote"
     );
+
+    // ---- scenario 1b: pictures ------------------------------------------
+    //
+    // Sent encrypted, so the bot has to fetch and decrypt the file before
+    // the model can be shown it. Once with a caption, answered at once; once
+    // bare and followed by the question, which must arrive after it.
+    step("scenario 1b: a picture with a caption");
+    let asked = model.requests().len();
+    model.push(says("It is orange."));
+    owner.show(&room, "swatch.png", PNG, Some("what colour is this?")).await;
+    let reply = owner.wait_for(&mut seen, "the answer about the picture", text_from(&bot)).await;
+    assert_eq!(body(&reply), "It is orange.");
+    let request = model.requests().get(asked).cloned().unwrap_or_default();
+    assert!(
+        request.contains("data:image/") && request.contains("what colour is this?"),
+        "the model should have been shown the picture and its caption"
+    );
+
+    step("scenario 1c: a picture, then the question");
+    let asked = model.requests().len();
+    model.push(says("Still orange."));
+    owner.show(&room, "swatch.png", PNG, None).await;
+    owner.say(&room, "and this one?").await;
+    let reply =
+        owner.wait_for(&mut seen, "the answer about the second picture", text_from(&bot)).await;
+    assert_eq!(body(&reply), "Still orange.");
+    if let Some(extra) = owner.anything_more(seen, QUIET, text_from(&bot)).await {
+        panic!("a picture and its question should be one turn, but: {:?}", body(&extra));
+    }
+    let requests = model.requests();
+    assert_eq!(requests.len(), asked + 1, "one request for the picture and its question");
+    assert!(requests[asked].contains("and this one?") && requests[asked].contains("data:image/"));
 
     // ---- commands -------------------------------------------------------
     step("!help");

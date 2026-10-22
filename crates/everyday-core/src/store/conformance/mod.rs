@@ -188,7 +188,13 @@ pub fn run_all(store: &dyn JournalStore) {
 
     // And the assistant, on the same terms again.
     match store.agent() {
-        Some(agent) => run_agent_suite(agent),
+        Some(agent) => {
+            run_agent_suite(agent);
+            // Not part of the agent suite, for the reason the library's is
+            // not: garbage collection walks every record that can hold a
+            // blob, and a picture sent to the assistant is one of them.
+            agent::garbage_collection_keeps_pictures_sent_to_the_assistant(store);
+        }
         None => eprintln!("backend {name:?} stores no assistant; skipping the agent suite"),
     }
 

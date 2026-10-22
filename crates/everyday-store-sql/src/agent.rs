@@ -30,7 +30,7 @@
 use everyday_core::agent::{AgentSettings, Conversation, Memory, Message, Skill};
 use everyday_core::chat::ChatSettings;
 use everyday_core::error::{Error, Result};
-use everyday_core::id::{ConversationId, MemoryId, MessageId, SkillId};
+use everyday_core::id::{BlobId, ConversationId, MemoryId, MessageId, SkillId};
 use everyday_core::store::agent::{
     AgentStore, ConversationQuery, chat_settings_aad, conversation_aad, memory_aad, message_aad,
     secret_aad, settings_aad, skill_aad,
@@ -268,6 +268,15 @@ impl AgentStore for SqlStore {
     fn delete_message(&self, id: MessageId) -> Result<()> {
         self.delete_by_id::<Message>(id)?;
         Ok(())
+    }
+
+    fn attachment_blob_refs(&self) -> Result<Vec<BlobId>> {
+        // One pass over the table rather than the default's one query per
+        // conversation. Every row is opened, because which messages carry a
+        // picture is written only inside the sealed payload.
+        let rows = self.read().records("SELECT id, data FROM messages", &[])?;
+        let messages: Vec<Message> = self.collect(rows, message_aad)?;
+        Ok(messages.iter().flat_map(|m| m.attachments.iter().map(|a| a.blob)).collect())
     }
 
     fn count_messages(&self, id: ConversationId) -> Result<u64> {

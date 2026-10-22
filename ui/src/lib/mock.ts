@@ -107,6 +107,7 @@ import type {
   AgentEvent,
   AgentMessage,
   AgentSettings,
+  Attachment,
   Conversation,
   DeclineReason,
   DreamScope,
@@ -4303,9 +4304,10 @@ export const mockInvoke = async <T>(
   payload: Record<string, unknown> | Uint8Array = {},
 ): Promise<T> => {
   // `put_blob` is the one command whose payload is a bare buffer rather than
-  // a bag of named arguments -- see `api.putBlob`. Nothing in the mock reads
-  // those bytes, so the shape is normalised here and every case below can go
-  // on assuming an object.
+  // a bag of named arguments -- see `api.putBlob`. Only it reads those bytes,
+  // so the shape is normalised here and every case below can go on assuming
+  // an object.
+  const bytes = payload instanceof Uint8Array ? payload : null
   const args: Record<string, unknown> = payload instanceof Uint8Array ? {} : payload
   // A touch of latency, so loading states are exercised rather than skipped.
   await new Promise((r) => setTimeout(r, 40))
@@ -4876,9 +4878,41 @@ export const mockInvoke = async <T>(
       return hits.slice(0, Number(args.limit ?? 10)) as T
     }
 
-    case 'put_blob':
+    case 'put_blob': {
       requireUnlocked()
-      return 'd'.repeat(64) as T
+      // Kept, by an address of its own, so a picture put in the composer can
+      // be drawn back -- in the thread, and as its thumbnail before it is sent.
+      const id = (++uploadCount).toString(16).padStart(64, 'e')
+      if (bytes)
+        UPLOADS.set(id, { url: URL.createObjectURL(new Blob([bytes.slice()])), size: bytes.length })
+      return id as T
+    }
+
+    case 'prepare_picture': {
+      // The real one shrinks, turns and re-encodes; the mock keeps the bytes
+      // and reads the picture's size back, which is all the composer shows.
+      requireUnlocked()
+      const blob = str(args.blob)
+      const upload = UPLOADS.get(blob)
+      const name = str(args.filename).split(/[\\/]/).pop()?.trim() || 'picture.jpg'
+      const size = upload ? await pictureSize(upload.url) : null
+      if (upload && !size) {
+        throw new VaultError(
+          'not_an_image',
+          'That picture could not be read. JPEG, PNG, WebP, GIF and BMP pictures can be sent to the assistant.',
+        )
+      }
+      return {
+        blob,
+        kind: 'image',
+        mime: 'image/jpeg',
+        filename: name,
+        byteLen: upload?.size ?? 0,
+        width: size?.width,
+        height: size?.height,
+        caption: '',
+      } as T
+    }
 
     // There is no window to close in the mock, but the command must exist
     // so the close handshake does not throw if something calls it.
@@ -7557,6 +7591,7 @@ export async function mockSendMessage(
   conversationId: string,
   prompt: string,
   onScreen: OnScreen | null,
+  attachments: Attachment[],
   onEvent: (event: AgentEvent) => void,
 ): Promise<void> {
   requireUnlocked()
@@ -7572,6 +7607,7 @@ export async function mockSendMessage(
   if (thread) {
     thread.updatedAt = now
     if (!thread.title) thread.title = prompt.split(/\s+/).slice(0, 8).join(' ')
+    if (!thread.title && attachments.length) thread.title = attachments[0]!.filename
   }
   agentMessages.push({
     id: `msg-${nextId++}`,
@@ -7581,6 +7617,7 @@ export async function mockSendMessage(
     toolCalls: [],
     toolCallId: null,
     failed: false,
+    ...(attachments.length ? { attachments } : {}),
     createdAt: now,
   })
 
@@ -7653,6 +7690,31 @@ export async function mockSendMessage(
   let reply: string
 
   try {
+    // There is no model to look at a picture, so the mock says what it was
+    // sent -- which is what checking the composer against it needs.
+    if (attachments.length) {
+      await pause(400)
+      const names = attachments.map((a) => `**${a.filename}** (${a.width}×${a.height})`)
+      reply = `I was sent ${attachments.length === 1 ? 'a picture' : `${attachments.length} pictures`}: ${names.join(', ')}.${prompt.trim() ? ` You asked: “${prompt.trim()}”.` : ''}`
+      for (const w of reply.split(/(?<= )/)) {
+        if (run.stopped) break
+        await pause(20)
+        onEvent({ type: 'delta', text: w })
+      }
+      onEvent({ type: 'finished', messageId })
+      agentMessages.push({
+        id: messageId,
+        conversationId,
+        role: 'assistant',
+        content: reply,
+        toolCalls: [],
+        toolCallId: null,
+        failed: false,
+        createdAt: new Date().toISOString(),
+      })
+      return
+    }
+
     // What the real service would describe from these references -- the
     // mock has no vault-side describer, so it reads back what it was sent,
     // which is what checking the composer's strip against it needs.
@@ -7986,5 +8048,25 @@ export async function mockSendMessage(
 }
 
 export function mockMediaUrl(blob: string): string {
-  return BLOBS[blob] ?? COVERS[blob] ?? swatch('#8a8a8a', '#4a4a4a', 'missing media')
+  return (
+    UPLOADS.get(blob)?.url ??
+    BLOBS[blob] ??
+    COVERS[blob] ??
+    swatch('#8a8a8a', '#4a4a4a', 'missing media')
+  )
+}
+
+/** Bytes put through `put_blob` this session, as object URLs. */
+const UPLOADS = new Map<string, { url: string; size: number }>()
+let uploadCount = 0
+
+/** A picture's size, or `null` if the browser cannot draw it. */
+function pictureSize(url: string): Promise<{ width: number; height: number } | null> {
+  if (typeof Image === 'undefined') return Promise.resolve({ width: 0, height: 0 })
+  return new Promise((resolve) => {
+    const img = new Image()
+    img.onload = () => resolve({ width: img.naturalWidth, height: img.naturalHeight })
+    img.onerror = () => resolve(null)
+    img.src = url
+  })
 }

@@ -1013,12 +1013,21 @@ impl Service {
         let args: crate::domains::assistant::SendMessage =
             crate::command::parse("send_message", args)?;
         let vault = self.require()?;
+        // Pictures the interface says it stored, checked against the vault
+        // before anything is written: a message that names a picture that
+        // is not there, or not one a model takes, is refused whole rather
+        // than sent without it.
+        let pictures = {
+            let (vault, attachments) = (vault.clone(), args.attachments);
+            blocking(move || crate::pictures::checked(&vault, attachments)).await?
+        };
         let turned = crate::agent::run_turn(crate::agent::Turn {
             service: self.clone(),
             vault,
             pending: self.pending(),
             conversation: args.conversation_id,
             prompt: args.prompt,
+            pictures,
             on_screen: args
                 .on_screen
                 .as_ref()

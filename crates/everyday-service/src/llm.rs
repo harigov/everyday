@@ -163,6 +163,41 @@ pub fn refused_effort(raw: &str, model: &LLMModelConfig) -> Option<String> {
     })
 }
 
+/// The sentence for a provider refusing the pictures a turn sent `model`, if
+/// that is what `raw` is.
+///
+/// Only asked about a turn that did send one, so an error that merely
+/// mentions images cannot send somebody looking for a setting that is fine.
+/// Every provider words it differently: OpenAI says `image_url` is only for
+/// certain models, OpenRouter that no endpoint takes image input, LM Studio
+/// and Ollama that the model does not support images, vLLM that it is not a
+/// multimodal model.
+///
+/// Some local servers say nothing at all and drop the picture, and the
+/// model then answers as though it had not been sent. Nothing here can
+/// tell that apart from an answer.
+pub fn refused_pictures(raw: &str, model: &LLMModelConfig) -> Option<String> {
+    let lower = raw.to_lowercase();
+    let refused = [
+        "image_url",
+        "image input",
+        "support image",
+        "supports image",
+        "multimodal",
+        "multi-modal",
+        "vision",
+    ]
+    .iter()
+    .any(|phrase| lower.contains(phrase));
+    refused.then(|| {
+        format!(
+            "The model the assistant runs on ({}) cannot look at pictures. Choose one that can \
+             for Medium in Settings → Models, or send the message without them.",
+            model.model
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +223,26 @@ mod tests {
             assert!(said.contains("reasoning effort"), "{raw} -> {said}");
         }
         assert!(friendly_for("404 model_not_found", &set).contains("model name"));
+    }
+
+    #[test]
+    fn a_model_that_cannot_see_is_named_when_it_refuses_a_picture() {
+        let model = LLMModelConfig { model: "llama3:8b".into(), ..LLMModelConfig::assistant() };
+        for raw in [
+            // OpenAI, on a model without vision.
+            "CompletionError: ProviderError: 400 Invalid content type. image_url is only \
+             supported by certain models.",
+            // OpenRouter, with no endpoint for the model that takes pictures.
+            r#"404 {"error":{"message":"No endpoints found that support image input"}}"#,
+            // LM Studio.
+            r#"400 {"error":"Model does not support images. Please use a model that does."}"#,
+            // vLLM.
+            "400 llama3 is not a multimodal model",
+        ] {
+            let said = refused_pictures(raw, &model).unwrap_or_else(|| panic!("{raw}"));
+            assert!(said.contains("llama3:8b") && said.contains("pictures"), "{said}");
+        }
+        assert_eq!(refused_pictures("401 invalid_api_key", &model), None);
     }
 
     #[test]

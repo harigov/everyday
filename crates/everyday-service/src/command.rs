@@ -646,6 +646,10 @@ mod tests {
             // The same, for a file chosen as a cover: a smaller blob, which
             // nothing names until the item is saved with it.
             "shrink_cover",
+            // The same, for a picture for the assistant: a smaller blob,
+            // which nothing names until the message it goes with is sent,
+            // and `send_message` announces the thread.
+            "prepare_picture",
             // Writes a blob and updates one message's own `Body.parts`
             // entry to name it -- on `fetch_image`'s own reasoning above.
             // Neither a message nor a thread's clear columns change, so

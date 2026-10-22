@@ -3396,6 +3396,28 @@
     {
       "args": [
         {
+          "name": "blob",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "filename",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "prepare_picture",
+      "orScope": null,
+      "returns": "Attachment",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "body",
           "required": true,
           "type": "string"
@@ -4995,6 +5017,11 @@
           "name": "onScreen",
           "required": false,
           "type": "OnScreen | null"
+        },
+        {
+          "name": "attachments",
+          "required": false,
+          "type": "Attachment[]"
         }
       ],
       "changes": {

@@ -74,27 +74,36 @@ pub const QUALITY: u8 = 85;
 /// milliseconds. [`store`] runs it on the blocking pool; so must anything
 /// else that calls it.
 pub fn shrink(bytes: &[u8]) -> Option<Vec<u8>> {
-    let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?;
-    reader.limits(limits());
-    let mut decoder = reader.into_decoder().ok()?;
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-    let mut image = DynamicImage::from_decoder(decoder).ok()?;
-    image.apply_orientation(orientation);
+    let (image, upright) = decoded_upright(bytes)?;
 
     let (width, height) = (image.width(), image.height());
     let fits = width.max(height) <= MAX_SIDE;
-    let small = if fits { image } else { scaled_down(&image) };
+    let small = if fits { image } else { scaled_down(&image, MAX_SIDE) };
     let encoded = jpeg(&flattened(&small))?;
 
     // Already a cover's size and the right way up: kept as it came unless
     // re-encoding saves at least a fifth -- a second, lossier generation of a
     // picture is not worth a few kilobytes. One that had to be turned is
     // re-encoded whatever the saving, since only the new copy is upright.
-    let upright = orientation == Orientation::NoTransforms;
     if fits && upright && encoded.len() * 5 > bytes.len() * 4 {
         return None;
     }
     Some(encoded)
+}
+
+/// `bytes` decoded, within [`limits`], and turned the right way up from the
+/// orientation a camera wrote into it -- with whether it already was.
+/// `None` for anything that cannot be read. Shared with
+/// [`crate::pictures`], which makes pictures for the assistant the same way
+/// with a different size in mind.
+pub(crate) fn decoded_upright(bytes: &[u8]) -> Option<(DynamicImage, bool)> {
+    let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?;
+    reader.limits(limits());
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut image = DynamicImage::from_decoder(decoder).ok()?;
+    image.apply_orientation(orientation);
+    Some((image, orientation == Orientation::NoTransforms))
 }
 
 /// Make `bytes` a cover and put it in the vault's blob store: [`shrink`],
@@ -123,15 +132,16 @@ fn limits() -> Limits {
     limits
 }
 
-/// `image` with its longer side brought down to [`MAX_SIDE`].
+/// `image` with its longer side brought down to `max_side` -- [`MAX_SIDE`],
+/// for a cover.
 ///
 /// In two steps when it is far larger: a fast box filter to twice the size
 /// wanted, then Lanczos for the last halving. The box filter alone leaves a
 /// cover soft at the end, and Lanczos alone over a phone's photograph is
 /// most of a second of work for detail the box filter would have averaged
 /// away anyway.
-fn scaled_down(image: &DynamicImage) -> DynamicImage {
-    let near = MAX_SIDE * 2;
+pub(crate) fn scaled_down(image: &DynamicImage, max_side: u32) -> DynamicImage {
+    let near = max_side * 2;
     let staged;
     let from = if image.width().max(image.height()) > near {
         staged = image.thumbnail(near, near);
@@ -139,11 +149,11 @@ fn scaled_down(image: &DynamicImage) -> DynamicImage {
     } else {
         image
     };
-    from.resize(MAX_SIDE, MAX_SIDE, FilterType::Lanczos3)
+    from.resize(max_side, max_side, FilterType::Lanczos3)
 }
 
 /// `image` as plain RGB, anything see-through laid over white.
-fn flattened(image: &DynamicImage) -> RgbImage {
+pub(crate) fn flattened(image: &DynamicImage) -> RgbImage {
     if !image.has_alpha() {
         return image.to_rgb8();
     }
@@ -176,7 +186,7 @@ fn flattened(image: &DynamicImage) -> RgbImage {
 ///
 /// `None` only for a picture the encoder cannot take -- one more than 65,535
 /// pixels on a side, which [`MAX_SIDE`] has already made impossible.
-fn jpeg(image: &RgbImage) -> Option<Vec<u8>> {
+pub(crate) fn jpeg(image: &RgbImage) -> Option<Vec<u8>> {
     let width = u16::try_from(image.width()).ok()?;
     let height = u16::try_from(image.height()).ok()?;
     let mut out = Vec::new();

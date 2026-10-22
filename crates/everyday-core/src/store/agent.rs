@@ -224,6 +224,28 @@ pub trait AgentStore: Send + Sync {
     /// history pane wants only the number.
     fn count_messages(&self, id: ConversationId) -> Result<u64>;
 
+    /// Every blob a message in any conversation holds as an attachment --
+    /// the pictures somebody sent the assistant.
+    ///
+    /// Only [`JournalStore::collect_garbage`] needs this, and it needs all
+    /// of it: a picture is in no other record, so one this misses is one the
+    /// next sweep deletes while the thread goes on pointing at it.
+    ///
+    /// The default walks every conversation, chats and routine runs alike,
+    /// and every message in each. A backend that can answer more cheaply
+    /// may.
+    ///
+    /// [`JournalStore::collect_garbage`]: super::JournalStore::collect_garbage
+    fn attachment_blob_refs(&self) -> Result<Vec<crate::id::BlobId>> {
+        let mut refs = Vec::new();
+        for conversation in self.list_conversations(&ConversationQuery::default())? {
+            for message in self.list_messages(conversation.id)? {
+                refs.extend(message.attachments.iter().map(|a| a.blob));
+            }
+        }
+        Ok(refs)
+    }
+
     // ---- memory ---------------------------------------------------------
 
     /// Everything the assistant has been asked to remember, oldest first.

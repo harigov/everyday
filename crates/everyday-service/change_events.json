@@ -329,6 +329,10 @@
       "events": []
     },
     {
+      "command": "prepare_picture",
+      "events": []
+    },
+    {
       "command": "save_account",
       "events": [
         {
