@@ -66,6 +66,7 @@ pub fn bundle() -> Value {
         schema_of::<crate::routine::Routine>("Routine"),
         schema_of::<crate::routine::RoutineRun>("RoutineRun"),
         schema_of::<crate::job::Job>("Job"),
+        schema_of::<crate::writing::WritingAssist>("WritingAssist"),
         schema_of::<crate::proposal::Proposal>("Proposal"),
         schema_of::<crate::agent::Conversation>("Conversation"),
         schema_of::<crate::agent::Message>("AgentMessage"),

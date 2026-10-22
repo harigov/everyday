@@ -18,5 +18,13 @@ export default defineConfig({
     target: ['es2022', 'safari15'],
     sourcemap: false,
     chunkSizeWarningLimit: 900,
+    // Two pages: the application, and writing help's popup -- a window of
+    // its own that loads none of the application. See src/writing/.
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        writing: 'writing.html',
+      },
+    },
   },
 })

@@ -314,6 +314,9 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::MailMessage | RecordKind::Op => Err(()),
             // Folded into `Kind::Conversation` -- see this impl's docs.
             RecordKind::Message => Err(()),
+            // Never announced: nothing on screen lists writing help yet. See
+            // `domains::writing`'s command table.
+            RecordKind::WritingAssist => Err(()),
         }
     }
 }

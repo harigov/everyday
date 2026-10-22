@@ -8153,5 +8153,121 @@
     ],
     "title": "Voiceprint",
     "type": "object"
+  },
+  "WritingAssist": {
+    "$defs": {
+      "WritingAction": {
+        "description": "What was asked of the selected text.",
+        "oneOf": [
+          {
+            "const": "improve",
+            "description": "Clearer and better put, in the same voice and at about the same\nlength.",
+            "type": "string"
+          },
+          {
+            "const": "grammar",
+            "description": "Spelling, grammar and punctuation only; every word choice kept.",
+            "type": "string"
+          },
+          {
+            "const": "concise",
+            "description": "Shorter, keeping every fact and every ask.",
+            "type": "string"
+          }
+        ]
+      },
+      "WritingOutcome": {
+        "description": "What became of an answer.",
+        "oneOf": [
+          {
+            "const": "pending",
+            "description": "The model answered and nothing has been done with it yet -- or the\nshell that was putting it back went away before it could say.",
+            "type": "string"
+          },
+          {
+            "const": "replaced",
+            "description": "The answer was pasted over the selection.",
+            "type": "string"
+          },
+          {
+            "const": "copied",
+            "description": "The answer could not be pasted, and was left on the clipboard instead.",
+            "type": "string"
+          },
+          {
+            "const": "cancelled",
+            "description": "Somebody dismissed the popup before the answer was used.",
+            "type": "string"
+          },
+          {
+            "const": "failed",
+            "description": "The model could not be asked, or did not answer. `error` says why.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One use of writing help.",
+    "properties": {
+      "action": {
+        "$ref": "#/$defs/WritingAction"
+      },
+      "app": {
+        "default": null,
+        "description": "The application the text was selected in, where the desktop says.\nWayland does not, so this is often `None` there.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "error": {
+        "default": null,
+        "description": "Why it failed, when it did.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "model": {
+        "default": "",
+        "description": "The model that answered, as configured -- `gpt-5.1`, say.",
+        "type": "string"
+      },
+      "original": {
+        "description": "The selection, exactly as it was captured -- not trimmed, so that a\nlater look at the mistakes in it sees what was typed.",
+        "type": "string"
+      },
+      "outcome": {
+        "$ref": "#/$defs/WritingOutcome"
+      },
+      "result": {
+        "default": "",
+        "description": "What the model gave back. Empty when it failed.",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "createdAt",
+      "updatedAt",
+      "action",
+      "original",
+      "outcome"
+    ],
+    "title": "WritingAssist",
+    "type": "object"
   }
 }

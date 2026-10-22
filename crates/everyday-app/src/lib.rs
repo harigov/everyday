@@ -21,6 +21,8 @@ mod mcp;
 // (`tests/meeting_e2e.rs`) drives a recording through it with no Tauri
 // window at all. Everything else in this module stays private.
 pub mod meeting;
+#[cfg(target_os = "linux")]
+mod portal;
 mod protocol;
 mod remote;
 mod remotes;
@@ -28,6 +30,7 @@ mod sharing;
 mod state;
 mod transfer;
 mod tray;
+mod writing;
 
 // Re-exported, not the whole (otherwise private) `state` module: the one
 // piece of it `meeting::begin_headless`'s public signature needs a test to
@@ -90,6 +93,10 @@ pub fn run() {
         // Counts nothing until the interface says what to count -- off by
         // default, see `badge.rs`.
         .manage(Badge::default())
+        // Which global keys are wanted and how they are claimed -- see
+        // `hotkey` -- and writing help's popup, which one of them opens.
+        .manage(hotkey::Hotkeys::default())
+        .manage(writing::Writing::default())
         .setup(|app| {
             // The window, from its entry in `tauri.conf.json` -- marked
             // `create: false` so that it is built here, where it can be told
@@ -128,6 +135,7 @@ pub fn run() {
             // ordinary case on Wayland, so this is not a failure to report:
             // the settings pane says whether it was granted, and the tray is
             // the way in regardless. See `hotkey`.
+            writing::detect(&handle);
             hotkey::install(&handle);
             // The assistant's routines. On Tauri's own runtime, never a second
             // one: two runtimes would double the blocking pool and, worse,
@@ -233,6 +241,14 @@ pub fn run() {
             // The OS-wide key to the palette.
             commands::hotkey_status,
             commands::set_hotkey,
+            // Writing help over text selected in any application: its popup
+            // and its setting. See `writing.rs`.
+            writing::writing_selection,
+            writing::writing_apply,
+            writing::writing_dismiss,
+            writing::writing_open_main,
+            writing::writing_settings,
+            writing::set_writing_settings,
             // The two that are not JSON in and JSON out: one takes a raw
             // body, the other answers with a stream. Reading bytes back is
             // neither -- that is the `everyday://` handler in `protocol.rs`.
@@ -257,6 +273,22 @@ pub fn run() {
             meeting::voice_enrol,
         ])
         .on_window_event(|window, event| {
+            // Writing help's popup is not the application: closing it is
+            // dismissing it, and it goes when the main window does, or a
+            // hidden popup would keep the process alive with no way back.
+            if window.label() == writing::LABEL {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                return;
+            }
+            if let WindowEvent::Destroyed = event {
+                if let Some(popup) = window.app_handle().get_webview_window(writing::LABEL) {
+                    let _ = popup.destroy();
+                }
+                return;
+            }
             if let WindowEvent::CloseRequested { api, .. } = event {
                 // Closing the window is not always quitting any more.
                 //

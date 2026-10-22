@@ -171,7 +171,8 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::Voiceprint
             | RecordKind::Job
             | RecordKind::NewsSource
-            | RecordKind::Story => Err(()),
+            | RecordKind::Story
+            | RecordKind::WritingAssist => Err(()),
         }
     }
 }
@@ -390,7 +391,8 @@ impl TryFrom<RecordKind> for AboutKind {
             | RecordKind::Skill
             | RecordKind::Job
             | RecordKind::NewsSource
-            | RecordKind::Story => Err(()),
+            | RecordKind::Story
+            | RecordKind::WritingAssist => Err(()),
         }
     }
 }

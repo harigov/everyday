@@ -31,7 +31,7 @@ use crate::id::{
     AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
     JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId,
     NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
-    SkillId, StoryId, TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    SkillId, StoryId, TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId, WritingId,
 };
 
 /// The kind of one persisted record — every table `everyday-store-sql`
@@ -93,6 +93,8 @@ pub enum RecordKind {
     NewsSource,
     /// A story a source brought -- see [`crate::news::Story`].
     Story,
+    /// One use of writing help -- see [`crate::writing::WritingAssist`].
+    WritingAssist,
 }
 
 impl RecordKind {
@@ -142,6 +144,7 @@ impl RecordKind {
             RecordKind::Voiceprint => "voiceprint",
             RecordKind::NewsSource => "news_source",
             RecordKind::Story => "story",
+            RecordKind::WritingAssist => "writing_assist",
         }
     }
 
@@ -187,7 +190,8 @@ impl RecordKind {
             | RecordKind::Transcript
             | RecordKind::Voiceprint
             | RecordKind::NewsSource
-            | RecordKind::Story => None,
+            | RecordKind::Story
+            | RecordKind::WritingAssist => None,
         }
     }
 
@@ -232,7 +236,8 @@ impl RecordKind {
             | RecordKind::Transcript
             | RecordKind::Voiceprint
             | RecordKind::NewsSource
-            | RecordKind::Story => None,
+            | RecordKind::Story
+            | RecordKind::WritingAssist => None,
         }
     }
 
@@ -284,6 +289,7 @@ impl RecordKind {
             RecordKind::Voiceprint => "voiceprint",
             RecordKind::NewsSource => "news_source",
             RecordKind::Story => "story",
+            RecordKind::WritingAssist => "writing_assist",
         }
     }
 }
@@ -676,6 +682,17 @@ impl RecordDescriptor for crate::news::Story {
     }
 }
 
+impl RecordDescriptor for crate::writing::WritingAssist {
+    const KIND: RecordKind = RecordKind::WritingAssist;
+    type Id = WritingId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::writing::writing_assist_aad(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ties [`RecordKind::aad_word`] to every [`RecordDescriptor::aad`],
@@ -739,6 +756,7 @@ mod tests {
         check::<crate::meeting::Voiceprint>(id());
         check::<crate::news::NewsSource>(id());
         check::<crate::news::Story>(id());
+        check::<crate::writing::WritingAssist>(id());
     }
 
     #[test]
@@ -756,7 +774,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 34] = [
+    const ALL: [RecordKind; 35] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -791,5 +809,6 @@ mod tests {
         RecordKind::Voiceprint,
         RecordKind::NewsSource,
         RecordKind::Story,
+        RecordKind::WritingAssist,
     ];
 }

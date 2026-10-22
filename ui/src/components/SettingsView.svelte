@@ -69,7 +69,7 @@
   import SkillsPanel from './SkillsPanel.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
-  import type { BadgeSources, HotkeyStatus } from '../lib/types'
+  import type { BadgeSources, HotkeyStatus, WritingSettings } from '../lib/types'
 
   let changing = $state(false)
   let current = $state('')
@@ -106,6 +106,63 @@
       }
     } catch (e) {
       hotkeyNotice = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  /**
+   * Writing help: the OS-wide key over text selected in any application.
+   * `null` where there is no shell to ask -- the mock backend -- and the
+   * section is left out.
+   */
+  let writing = $state<WritingSettings | null>(null)
+  let writingNotice = $state<string | null>(null)
+  let writingKey = $state('')
+  let writingBusy = $state(false)
+
+  void api
+    .writingSettings()
+    .then((s) => {
+      writing = s
+      writingKey = s.shortcut
+    })
+    .catch(() => (writing = null))
+
+  async function saveWriting(enabled: boolean, shortcut: string | null) {
+    writingNotice = null
+    writingBusy = true
+    try {
+      writing = await api.setWritingSettings(enabled, shortcut)
+      writingKey = writing.shortcut
+      if (writing.enabled && !writing.key.registered && writing.key.problem) {
+        writingNotice = writing.key.problem
+      }
+    } catch (e) {
+      writingNotice = e instanceof Error ? e.message : String(e)
+    } finally {
+      writingBusy = false
+    }
+  }
+
+  /** What the switch's small print says, by desktop. */
+  function writingBlurb(w: WritingSettings): string {
+    const what =
+      'Select text in any application and press it to improve it, correct its grammar or make ' +
+      'it concise. The answer is pasted over the selection, and every use is kept in this vault.'
+    switch (w.platform) {
+      case 'wayland':
+        return (
+          what +
+          ' The desktop asks once which key to use and once whether Every Day may paste; change ' +
+          'the key in its own keyboard settings. Switched off, the key stays reserved there and ' +
+          'does nothing.'
+        )
+      case 'macos':
+        return (
+          what +
+          ' macOS asks once for Accessibility access, which is how the text is copied and pasted.'
+        )
+      default:
+        return what
     }
   }
 
@@ -503,6 +560,56 @@
           </button>
         </div>
       </section>
+
+      {#if writing}
+        <section>
+          <span class="eyebrow">Writing help</span>
+          <label class="toggle">
+            <input
+              type="checkbox"
+              checked={writing.enabled}
+              disabled={writingBusy}
+              onchange={(e) => saveWriting(e.currentTarget.checked, null)}
+            />
+            <span>
+              <b>Rewrite selected text anywhere with {writing.key.shortcut || writing.shortcut}</b>
+              <small>
+                {#if writingNotice}
+                  {writingNotice}
+                {:else}
+                  {writingBlurb(writing)}
+                {/if}
+              </small>
+            </span>
+          </label>
+          {#if writing.enabled && !writing.key.desktopManaged}
+            <form
+              onsubmit={(e) => {
+                e.preventDefault()
+                void saveWriting(true, writingKey)
+              }}
+            >
+              <input
+                class="field"
+                aria-label="Writing help shortcut"
+                placeholder="Ctrl+Alt+Space"
+                bind:value={writingKey}
+              />
+              <div class="row">
+                <button
+                  class="btn btn-primary"
+                  type="submit"
+                  disabled={writingBusy ||
+                    !writingKey.trim() ||
+                    writingKey.trim() === writing.shortcut}
+                >
+                  Use this shortcut
+                </button>
+              </div>
+            </form>
+          {/if}
+        </section>
+      {/if}
     {:else}
       {#if status?.encrypted}
         <section>

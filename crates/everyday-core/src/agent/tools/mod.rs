@@ -337,6 +337,9 @@ impl TryFrom<RecordKind> for Domain {
             RecordKind::NewsSource | RecordKind::Story => Ok(Domain::News),
             // Proposed work, not a domain a tool list is offered for.
             RecordKind::Proposal => Err(()),
+            // No tools read writing help yet. The feedback pass that will is
+            // why it is kept -- see `crate::writing`.
+            RecordKind::WritingAssist => Err(()),
         }
     }
 }

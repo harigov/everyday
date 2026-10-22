@@ -735,6 +735,13 @@ mod tests {
             // status report raises.
             "answer_chat_verification",
             "start_chat_verification",
+            // Writing help over text selected in another application. What
+            // it writes is a history nothing on screen lists yet -- it is
+            // kept for a feedback pass that reads it when it runs -- and the
+            // popup that asked already has the answer in hand. See
+            // `domains::writing`.
+            "rewrite_selection",
+            "settle_writing_assist",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

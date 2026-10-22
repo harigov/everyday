@@ -41,6 +41,7 @@ pub mod transfer;
 pub mod vault;
 pub mod weather;
 pub mod web;
+pub mod writing;
 
 use crate::command::Command;
 use serde::Deserialize;
@@ -98,6 +99,7 @@ pub fn catalog() -> &'static [&'static Command] {
             models::COMMANDS,
             chat::COMMANDS,
             quick::COMMANDS,
+            writing::COMMANDS,
             meta::COMMANDS,
         ]
         .into_iter()
