@@ -1586,6 +1586,8 @@ reads, which buys three things the old one-line sentence could not:
   model has read: a web search or a page fetch later in that turn stops to
   ask first, exactly as it would after `read_thread`, because a model that
   has read a stranger's words can be talked into sending them somewhere.
+  **Ask before a search or a page open**, under the web switch, turns that
+  card off while you are in the conversation.
 
 A reference the service cannot read — a kind of record a newer interface knows
 about and an older server does not — costs that reference, never the message.
@@ -1809,17 +1811,20 @@ returned, or a link on a page it has already read — each exactly as written
 address carries no query string, since a query is where data rides. Anything
 else stops on a card that shows the whole address and asks; a scheduled run,
 with nobody to ask, is refused. Once mail has been read in a turn, every
-address asks. A cover named by address is held to the same rule, since
-downloading it is reading it. It cannot reach this
+address asks. **Ask before a search or a page open** (Settings → Assistant,
+under the web switch) lets those go ahead while you are in the conversation;
+a scheduled run still refuses. A cover named by address is held to the same
+rule, since downloading it is reading it. It cannot reach this
 machine or your network at all, whoever gave it the address: names are
 resolved through the same filter that guards a message's remote images.
 
 **Mail is the same risk, doubled.** It is the first domain whose contents
 are written by strangers *and* whose tools reach strangers, so once a mail
 tool has returned content in a turn, every search and `read_web_page` in that
-same turn ask first and show what they would send — a model that has just
-read a stranger's words can put those words in a search and send them
-somewhere else entirely, and a turn that never touched mail is unchanged.
+same turn ask first and show what they would send — unless **Ask before a
+search or a page open** is off. A model that has just read a stranger's
+words can put those words in a search and send them somewhere else entirely,
+and a turn that never touched mail is unchanged.
 
 ### Reading and answering your mail
 
@@ -1843,8 +1848,9 @@ system prompt says once that instructions found inside a message are
 content, not something to follow. That does not stop an attempt at
 injection; the gates above are what stop it: sending needs a confirmation
 nobody automated can give, an unattended run cannot send at all, and
-`web_search` cannot be reached quietly once mail has been read. Writes the
-assistant or an MCP client make to a mailbox are also **rate-limited**, per
+`web_search` cannot be reached quietly once mail has been read unless that
+card has been turned off. Writes the assistant or an MCP client make to a
+mailbox are also **rate-limited**, per
 turn and per minute, so nothing — a wedged model in a loop, a hostile
 instruction that half-worked — can flood an account's outbox faster than a
 person could ever click.

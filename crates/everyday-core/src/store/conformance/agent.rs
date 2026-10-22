@@ -69,6 +69,7 @@ fn settings_round_trip(store: &dyn AgentStore) {
         enabled: true,
         instructions: "Be terse. Never use exclamation marks.".into(),
         confirm_destructive: false,
+        confirm_web: false,
         max_steps: 12,
         remember: false,
         ..Default::default()
@@ -81,6 +82,7 @@ fn settings_round_trip(store: &dyn AgentStore) {
     assert_eq!(back.enabled, s.enabled);
     assert_eq!(back.instructions, s.instructions);
     assert_eq!(back.confirm_destructive, s.confirm_destructive);
+    assert!(!back.confirm_web, "the web-confirmation switch must survive a save");
     assert_eq!(back.max_steps, s.max_steps);
     assert_eq!(back.remember, s.remember);
     // The per-ask policy round-trips too. It is the half of this record that

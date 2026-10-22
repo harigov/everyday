@@ -417,11 +417,29 @@
             sends your question (and, preparing for a meeting, the names of the people in it) to a
             search engine; reading a page tells that site the page was asked for; a forecast sends a
             place name to Open-Meteo, and a place search or a route sends place names to
-            OpenStreetMap and Transitous. An address nobody gave it asks you first. Everything else
-            stays between here and the model endpoints under Models.
+            OpenStreetMap and Transitous. Everything else stays between here and the model endpoints
+            under Models.
           </small>
         </span>
       </label>
+      {#if draft.web}
+        <label class="toggle">
+          <input
+            type="checkbox"
+            checked={draft.confirmWeb ?? true}
+            onchange={(e) => draft && (draft.confirmWeb = e.currentTarget.checked)}
+          />
+          <span>
+            <b>Ask before a search or a page open</b>
+            <small>
+              On, a search stops after mail has been read, and a page stops when you did not give it
+              the address — you see the query or the address first. Off, those always go ahead.
+              Deleting and sending mail still ask. A routine or a background job, with nobody
+              watching, still stops.
+            </small>
+          </span>
+        </label>
+      {/if}
       <label class="setting narrow">
         <span>Steps per request</span>
         <input type="number" min="1" max="100" bind:value={draft.maxSteps} />

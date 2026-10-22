@@ -3483,6 +3483,7 @@ let agentSettings: AgentSettings = {
   quickAsks: {},
   instructions: '',
   confirmDestructive: true,
+  confirmWeb: true,
   maxSteps: 24,
   remember: true,
   web: false,

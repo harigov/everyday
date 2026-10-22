@@ -2906,6 +2906,13 @@ export interface AgentSettings {
   instructions: string
   /** Whether a destructive tool call stops and asks first. */
   confirmDestructive: boolean
+  /**
+   * Whether a search or a page open that could carry something out stops and
+   * asks first. On unless turned off. Optional only because a backend older
+   * than the field leaves it out, which reads as on — those turns asked.
+   * A routine or a background job still stops either way.
+   */
+  confirmWeb?: boolean
   /** Model turns one request may take before the loop gives up. */
   maxSteps: number
   /** Whether the assistant may write memories. */

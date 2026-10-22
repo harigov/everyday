@@ -254,6 +254,20 @@ pub struct AgentSettings {
     /// directly because they are recoverable by hand; deletes and bulk
     /// updates are not.
     pub confirm_destructive: bool,
+    /// Whether a search or a page open that could carry something out of the
+    /// vault stops and asks first.
+    ///
+    /// Defaults on, and a record written before the switch existed reads as
+    /// on — that is what those turns did. A search after mail has been read
+    /// this turn, and a page whose address the model composed (or any page,
+    /// once mail has been read), shows the query or the address before
+    /// anything is sent. Off, those go ahead while somebody is in the
+    /// conversation. Sending mail and deleting are not this switch, and
+    /// neither is a turn with nobody watching: a routine or a background job
+    /// still stops, because the switch means "don't ask me while I am here",
+    /// and nobody is there to have meant it.
+    #[serde(default = "confirm_web_default")]
+    pub confirm_web: bool,
     /// How many model turns one request may take before the loop gives up.
     ///
     /// A ceiling rather than a target. Its job is to bound a model that has
@@ -318,6 +332,7 @@ impl Default for AgentSettings {
             legacy_model: None,
             instructions: String::new(),
             confirm_destructive: true,
+            confirm_web: true,
             max_steps: DEFAULT_MAX_STEPS,
             remember: true,
             timezone: None,
@@ -327,6 +342,13 @@ impl Default for AgentSettings {
             park_unattended: false,
         }
     }
+}
+
+/// A settings record with no `confirmWeb` key still asks. `bool`'s own
+/// [`Default`] is `false`, which would quietly stop asking on every vault
+/// written before the switch existed.
+fn confirm_web_default() -> bool {
+    true
 }
 
 /// Turns one request may take. Enough for a real multi-step task — read the
@@ -1196,6 +1218,7 @@ mod tests {
         let s = AgentSettings::default();
         assert!(!s.enabled, "the assistant must not be on before anyone asks for it");
         assert!(s.confirm_destructive, "destructive calls must confirm by default");
+        assert!(s.confirm_web, "a search or a page open still asks until this is turned off");
         assert!(!s.dreaming, "dreaming reads the journal and must not begin on its own");
         assert!(!s.park_unattended, "a routine must give up on the spot until this is turned on");
     }
@@ -1541,6 +1564,30 @@ mod tests {
         assert_eq!(written["companion"], serde_json::Value::Null);
         let again: AgentSettings = serde_json::from_value(written).unwrap();
         assert_eq!(again.companion, None);
+    }
+
+    #[test]
+    fn a_record_from_before_the_web_switch_still_asks() {
+        // Every vault written before this field existed has no key for it,
+        // and those turns asked. `false` would be the switch quietly turning
+        // itself off on the upgrade.
+        let before = serde_json::json!({
+            "enabled": true,
+            "instructions": "",
+            "confirmDestructive": true,
+            "maxSteps": 24,
+            "remember": true,
+        });
+        let settings: AgentSettings = serde_json::from_value(before).unwrap();
+        assert!(settings.confirm_web, "missing means keep asking");
+        let written = serde_json::to_value(&settings).unwrap();
+        assert_eq!(written["confirmWeb"], true);
+
+        let mut off = written;
+        off["confirmWeb"] = serde_json::Value::Bool(false);
+        let settings: AgentSettings = serde_json::from_value(off).unwrap();
+        assert!(!settings.confirm_web);
+        assert_eq!(serde_json::to_value(&settings).unwrap()["confirmWeb"], false);
     }
 
     #[test]
