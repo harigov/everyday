@@ -720,6 +720,16 @@ pub struct Thread {
     /// never actually seen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_priority_asked_at_count: Option<u32>,
+    /// Which of the person's own categories (Settings → Mail sorting) a
+    /// decision model sorted this thread into -- see [`super::SortedAs`],
+    /// including why it names the message it was decided for. `None` for a
+    /// thread no decision model has sorted, or one that has moved on since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sorted_as: Option<super::SortedAs>,
+    /// When a decision model was last asked about this thread, whatever it
+    /// answered -- see [`super::SortMark`]. `None`: never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai_sorted: Option<super::SortMark>,
 }
 
 // ---- drafts ---------------------------------------------------------------

@@ -746,6 +746,12 @@ mod tests {
             // `domains::writing`.
             "rewrite_selection",
             "settle_writing_assist",
+            // Starting or stopping a sort of older mail writes session state
+            // (`Service::set_mail_older_sort`), not a record; the pane that
+            // asked has the answer, and the threads it later files raise
+            // `Thread` from the pass that files them. See `crate::mailsort`.
+            "sort_older_mail",
+            "stop_sorting_older_mail",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

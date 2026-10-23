@@ -42,6 +42,9 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     a_model_set_category_survives_the_backfill(store);
     a_persons_own_mark_outranks_the_model_and_the_backfill(store);
     priority_asked_marker_round_trips(store);
+    mail_sorting_round_trips(store);
+    a_sorted_label_lasts_until_the_thread_moves_on(store);
+    a_tie_on_date_still_labels_the_message_listed_last(store);
     removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
     deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
     archiving_survives_a_later_flag_change(store);
@@ -1103,6 +1106,123 @@ fn priority_asked_marker_round_trips(store: &dyn JournalStore) {
     m.set_thread_ai_priority_asked(thread_id, 1).unwrap();
     let (thread, _) = m.thread(thread_id).unwrap();
     assert_eq!(thread.ai_priority_asked_at_count, Some(1));
+
+    cleanup_account(store, account);
+}
+
+/// Two messages with the same date: the thread's own list, the label and
+/// the thread's category must agree on which is newest, or a label written
+/// for the one a caller saw last is silently never shown.
+fn a_tie_on_date_still_labels_the_message_listed_last(store: &dyn JournalStore) {
+    use crate::mail::Category;
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+    let thread_id = ThreadId::new();
+    let at = Timestamp::now() - SignedDuration::from_hours(1);
+    let a = message(account, thread_id, "Alert", "bot@example.com", at);
+    let b = message(account, thread_id, "Alert", "bot@example.com", at);
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: a, mailbox: mailbox.id, uid: 1 },
+            IngestMessage { message: b, mailbox: mailbox.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+
+    let (_, messages) = m.thread(thread_id).unwrap();
+    let last = messages.last().unwrap().id;
+    assert!(m.sort_message(last, Category::Notification, "notifications").unwrap());
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.sorted_as.map(|s| s.message), Some(last));
+    assert_eq!(thread.category, Some(Category::Notification));
+
+    cleanup_account(store, account);
+}
+
+/// The sorting categories are one sealed singleton: the starting list until
+/// somebody saves one, then exactly what they saved.
+fn mail_sorting_round_trips(store: &dyn JournalStore) {
+    use crate::mail::{Category, MailSorting, SortCategory};
+
+    let m = mail_store(store);
+    assert_eq!(m.mail_sorting().unwrap(), MailSorting::default(), "the starting list");
+
+    let mine = MailSorting {
+        categories: vec![SortCategory {
+            id: "travel".into(),
+            name: "Travel".into(),
+            description: "Flights, trains, hotels.".into(),
+            treat_as: Category::Important,
+        }],
+        window_days: 7,
+    };
+    m.put_mail_sorting(&mine).unwrap();
+    assert_eq!(m.mail_sorting().unwrap(), mine);
+    m.put_mail_sorting(&MailSorting::default()).unwrap();
+    assert_eq!(m.mail_sorting().unwrap(), MailSorting::default(), "replaced, not merged");
+}
+
+/// [`MailStore::sort_message`] files the message and labels its thread in
+/// one go; the label survives what does not change the thread (a flag), and
+/// is dropped by what does -- a newer message, or a person filing it.
+fn a_sorted_label_lasts_until_the_thread_moves_on(store: &dyn JournalStore) {
+    use crate::mail::{Category, SortedAs};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+
+    let thread_id = ThreadId::new();
+    let t0 = Timestamp::now() - SignedDuration::from_hours(2);
+    let first = message(account, thread_id, "Your order", "shop@example.com", t0);
+    m.ingest(account, vec![IngestMessage { message: first.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+
+    assert!(m.sort_message(first.id, Category::Notification, "receipts").unwrap());
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Notification));
+    assert_eq!(thread.sorted_as, Some(SortedAs { category: "receipts".into(), message: first.id }));
+    assert_eq!(m.get_message(first.id).unwrap().category_source, CategorySource::Model);
+
+    m.update_flags(mailbox.id, 1, MessageFlags { seen: true, ..Default::default() }).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert!(thread.sorted_as.is_some(), "reading it does not unsort it");
+
+    let second = message(
+        account,
+        thread_id,
+        "Re: Your order",
+        "shop@example.com",
+        t0 + SignedDuration::from_hours(1),
+    );
+    m.ingest(account, vec![IngestMessage { message: second.clone(), mailbox: mailbox.id, uid: 2 }])
+        .unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.sorted_as, None, "a newer message has not been sorted yet");
+
+    // Sorting an older message labels nothing: the label is the newest's.
+    assert!(m.sort_message(first.id, Category::Notification, "receipts").unwrap());
+    assert_eq!(m.thread(thread_id).unwrap().0.sorted_as, None);
+
+    assert!(m.sort_message(second.id, Category::Important, "people").unwrap());
+    assert_eq!(m.thread(thread_id).unwrap().0.sorted_as.unwrap().category, "people");
+
+    m.set_message_category_with_source(second.id, Category::Priority, CategorySource::Person)
+        .unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.category, Some(Category::Priority));
+    assert_eq!(thread.sorted_as, None, "a person filed it; the model's label is not theirs");
+
+    assert!(
+        !m.sort_message(second.id, Category::Other, "other").unwrap(),
+        "a person's own mark is never the model's to replace"
+    );
+    assert_eq!(m.thread(thread_id).unwrap().0.category, Some(Category::Priority));
 
     cleanup_account(store, account);
 }

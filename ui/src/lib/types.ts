@@ -1906,6 +1906,61 @@ export interface Thread {
   starred: boolean
   /** True when any message in the thread has at least one attachment. */
   hasAttachments: boolean
+  /** Which Mail sorting category a decision model sorted it into, if any. */
+  sortedAs?: SortedAs | null
+  /** When a decision model was last asked about it -- `SortMark`. */
+  aiSorted?: SortMark | null
+}
+
+/** `everyday_core::mail::SortMark`. */
+export interface SortMark {
+  messageCount: number
+  at: string
+}
+
+/** `everyday_core::mail::SortedAs`. */
+export interface SortedAs {
+  /** A `SortCategory.id`. One no longer in the list names nothing. */
+  category: string
+  /** The message it was decided for -- the thread's newest at the time. */
+  message: MailMessageId
+}
+
+/** One of the categories mail is sorted into -- `everyday_core::mail::SortCategory`. */
+export interface SortCategory {
+  /** Stable across renames. */
+  id: string
+  /** The option's name, as the model sees it. */
+  name: string
+  /** What belongs here and what does not; the model sees it too. */
+  description: string
+  /** The inbox tab mail sorted here files under. */
+  treatAs: MailCategory
+}
+
+/** Settings → Mail sorting -- `everyday_core::mail::MailSorting`. */
+export interface MailSorting {
+  categories: SortCategory[]
+  /** How many days back mail is sorted without being asked. */
+  windowDays: number
+}
+
+/** An asked-for sort of older mail, while it runs. */
+export interface OlderSortView {
+  accountId: AccountId
+  /** How far back; `null` is everything. */
+  since: string | null
+  again: boolean
+  asked: number
+  started: string
+}
+
+/** What every mail sorting command answers. */
+export interface MailSortingView {
+  sorting: MailSorting
+  /** `model at address`, or `null` when no decision model is switched on. */
+  decisionModel: string | null
+  older: OlderSortView[]
 }
 
 /** All three fields ANDed; `null`/absent means "do not filter on this." */
@@ -2829,6 +2884,27 @@ export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | '
 /** Which of the three models. */
 export type ModelTier = 'large' | 'medium' | 'small'
 
+/** One of the four cards in Settings → Models: a tier, or the decision model. */
+export type ModelSlot = ModelTier | 'decision'
+
+/**
+ * Which request a decision model takes -- `everyday_core::llm::DecisionApi`.
+ * `typeSafe` is TypeSafe's System One (Jev, directly or through OpenRouter);
+ * `openAi` is OpenAI's Decisions API.
+ */
+export type DecisionApi = 'typeSafe' | 'openAi'
+
+/**
+ * A decision model: it answers a question with one of a fixed set of options
+ * rather than writing. What sorts mail into the Mail sorting categories.
+ */
+export interface DecisionConfig {
+  api: DecisionApi
+  /** The full URL requests are posted to. `null`: the API's own maker's. */
+  url: string | null
+  model: string
+}
+
 /** One model: where it is, and which to ask there. Flat on the wire. */
 export interface LLMConfig extends LLMProviderConfig, LLMModelConfig {}
 
@@ -2845,6 +2921,8 @@ export interface ModelSettings {
    * assistant's rates would be a bill nobody could account for.
    */
   small: LLMConfig | null
+  /** Sorts mail into the Mail sorting categories, in place of `small`. */
+  decision: DecisionConfig | null
 }
 
 /** What every models command answers. */

@@ -660,10 +660,10 @@
       <span class="eyebrow">Mail assistant</span>
       <p class="hint">
         Categorising, drafting ahead and summarising all run in the background, through the models
-        set under Settings → Models -- sorting and drafting ahead on the small one, summaries on the
-        assistant's -- not as something you ask for in chat. Off until the "I understand" checkbox
-        above is ticked, since they read this account's mail the same way the assistant's own tools
-        do.
+        set under Settings → Models -- sorting on the decision model if one is set and otherwise the
+        small one, drafting ahead on the small one, summaries on the assistant's -- not as something
+        you ask for in chat. Off until the "I understand" checkbox above is ticked, since they read
+        this account's mail the same way the assistant's own tools do.
       </p>
       {#each MAIL_AI_SWITCHES as sw (sw.key)}
         {@const acknowledged =

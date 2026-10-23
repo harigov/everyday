@@ -16,6 +16,8 @@ import type {
   Endpoint,
   MailAi,
   MailProvider,
+  DecisionApi,
+  DecisionConfig,
   ModelSettings,
   OAuthPreset,
   Services,
@@ -73,7 +75,7 @@ export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string 
   {
     key: 'categorize',
     label: 'Categorise',
-    hint: 'Sort new mail into Priority, Important, Other, Newsletters and Notifications.',
+    hint: 'Sort new mail into Priority, Important, Other, Newsletters and Notifications, or into your own categories under Settings → Mail sorting. Reads who it is from and to, the subject, and the start of the message.',
   },
   {
     key: 'autoDraft',
@@ -247,6 +249,64 @@ export function providerLabel(baseUrl: string | null | undefined): string {
   }
 }
 
+/**
+ * The decision models the pane offers in one click: which request shape, at
+ * which address, and the model to ask there -- `DecisionApi` in
+ * `crates/everyday-core/src/llm.rs`. `provider` is what a sentence calls it.
+ */
+export const KNOWN_DECISION_ENDPOINTS: {
+  label: string
+  provider: string
+  api: DecisionApi
+  url: string
+  model: string
+}[] = [
+  {
+    label: 'Jev, from TypeSafe',
+    provider: 'TypeSafe',
+    api: 'typeSafe',
+    url: 'https://api.typesafe.ai/v1/systemone',
+    model: 'jev-latest',
+  },
+  {
+    label: 'Jev on OpenRouter',
+    provider: 'OpenRouter',
+    api: 'typeSafe',
+    url: 'https://openrouter.ai/api/alpha/decisions',
+    model: '~typesafe/jev-latest',
+  },
+  {
+    label: 'OpenAI',
+    provider: 'OpenAI',
+    api: 'openAi',
+    url: 'https://api.openai.com/v1/decisions',
+    model: 'gpt-6-luna',
+  },
+]
+
+/**
+ * Where a decision model's requests go, spelt as `DecisionConfig::endpoint`
+ * spells it -- its trailing slashes off, or its API's own maker's address --
+ * which is what its key is stored under.
+ */
+export function decisionEndpointOf(d: Pick<DecisionConfig, 'api' | 'url'>): string {
+  return (
+    (d.url ?? '').replace(/\/+$/, '') || KNOWN_DECISION_ENDPOINTS.find((k) => k.api === d.api)!.url
+  )
+}
+
+/** What to call a decision model's provider in a sentence. */
+export function decisionProviderLabel(d: Pick<DecisionConfig, 'api' | 'url'>): string {
+  const endpoint = decisionEndpointOf(d)
+  const known = KNOWN_DECISION_ENDPOINTS.find((k) => k.url === endpoint)
+  if (known) return known.provider
+  try {
+    return new URL(endpoint).hostname
+  } catch {
+    return endpoint
+  }
+}
+
 /** Where a model's requests go when no base URL is set --
  *  `Provider::OpenAi.default_base_url()` in `crates/everyday-core/src/llm.rs`. */
 const OPENAI_BASE_URL = 'https://api.openai.com/v1'
@@ -274,7 +334,8 @@ export function endpointOf(baseUrl: string | null | undefined): string {
 
 /**
  * What to call where the models are, in a sentence: each configured tier's
- * provider, once -- "OpenAI", "OpenAI and Ollama". Every tier can carry mail
+ * provider, and the decision model's, once -- "OpenAI", "OpenAI and Ollama".
+ * Every one of them can carry mail
  * (see `ModelSettings::acknowledgement_name`), so the sentence a person agrees
  * to names all of them.
  */
@@ -283,7 +344,12 @@ export function providersLabel(settings: ModelSettings | null | undefined): stri
   const tiers = [settings.large, settings.medium, settings.small].filter(
     (t): t is NonNullable<typeof t> => t != null,
   )
-  const labels = [...new Set(tiers.map((t) => providerLabel(t.baseUrl)))]
+  const labels = [
+    ...new Set([
+      ...tiers.map((t) => providerLabel(t.baseUrl)),
+      ...(settings.decision ? [decisionProviderLabel(settings.decision)] : []),
+    ]),
+  ]
   if (labels.length <= 1) return labels[0] ?? 'OpenAI'
   return `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`
 }

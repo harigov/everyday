@@ -7283,6 +7283,44 @@
           "notification"
         ],
         "type": "string"
+      },
+      "SortMark": {
+        "description": "When a decision model was last asked about a thread, and how many\nmessages it had then -- [`super::Thread::ai_sorted`].\n\nIts own marker rather than the small model's\n`ai_categorize_asked_at_count`: that one says a thread was asked about\nthe *five tabs*, which is not an answer to the person's own categories,\nand sharing it would leave every thread Small had already looked at\nunsorted the day a decision model is switched on. The time is what lets\nan asked-for re-sort tell a thread it has reached from one sorted before\nit began, without remembering every thread it has been through.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "messageCount": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "messageCount",
+          "at"
+        ],
+        "type": "object"
+      },
+      "SortedAs": {
+        "description": "Which of somebody's categories a decision model sorted a thread into,\nand for which message.\n\nOn the [`super::Thread`] rather than on each message: it is what a\nthread row shows, and a thread's category is its newest message's. The\nmessage it was decided for is kept so that the moment a newer message\narrives -- or a person moves the thread themselves -- the label stops\nbeing shown, rather than naming a sorting nobody made of what the thread\nnow is. `everyday_store_sql::mail::write::recompute_thread` does that.",
+        "properties": {
+          "category": {
+            "description": "[`SortCategory::id`]. One since deleted from the list names nothing,\nand is drawn as nothing.",
+            "type": "string"
+          },
+          "message": {
+            "description": "The message it was decided for: the thread's newest at the time.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "message"
+        ],
+        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -7318,6 +7356,17 @@
           "integer",
           "null"
         ]
+      },
+      "aiSorted": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SortMark"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "When a decision model was last asked about this thread, whatever it\nanswered -- see [`super::SortMark`]. `None`: never."
       },
       "category": {
         "anyOf": [
@@ -7365,6 +7414,17 @@
           "string",
           "null"
         ]
+      },
+      "sortedAs": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/SortedAs"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Which of the person's own categories (Settings → Mail sorting) a\ndecision model sorted this thread into -- see [`super::SortedAs`],\nincluding why it names the message it was decided for. `None` for a\nthread no decision model has sorted, or one that has moved on since."
       },
       "starred": {
         "default": false,

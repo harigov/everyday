@@ -180,6 +180,7 @@ impl Service {
                 clock.now(),
                 Self::MAIL_CATEGORIZE_PER_MINUTE,
                 Self::MAIL_AUTODRAFT_PER_MINUTE,
+                Self::MAIL_SORT_PER_MINUTE,
             ),
             clock: RwLock::new(clock),
             meetings: MeetingRuntime::default(),
@@ -195,6 +196,9 @@ impl Service {
     /// As above, for the auto-draft pass -- lower, because a draft is a
     /// bigger request than a label and a wrong one costs more to notice.
     pub const MAIL_AUTODRAFT_PER_MINUTE: u32 = 5;
+    /// As above, for sorting on a decision model -- one short, cheap answer
+    /// per thread, so a minute can carry many more of them.
+    pub const MAIL_SORT_PER_MINUTE: u32 = 120;
 
     /// Take up to `want` tokens from the categorisation budget, right now,
     /// and say how many were actually available -- never more than `want`,
@@ -205,6 +209,52 @@ impl Service {
 
     pub fn mail_autodraft_take(&self, want: u32) -> u32 {
         self.mail.autodraft_take(self.now(), want)
+    }
+
+    /// As [`Service::mail_categorize_take`], for sorting on a decision model.
+    pub fn mail_sort_take(&self, want: u32) -> u32 {
+        self.mail.sort_take(self.now(), want)
+    }
+
+    /// `account`'s asked-for sort of older mail, while one runs.
+    pub fn mail_older_sort(&self, account: AccountId) -> Option<crate::mailsort::OlderSort> {
+        self.mail.older_sort(account)
+    }
+
+    /// Every sort of older mail still running.
+    pub fn mail_older_sorts(&self) -> Vec<(AccountId, crate::mailsort::OlderSort)> {
+        self.mail.older_sorts()
+    }
+
+    /// Move `account`'s sort of older mail on, if it is still run `run` --
+    /// see `MailRuntime::update_older_sort`.
+    pub fn update_mail_older_sort(
+        &self,
+        account: AccountId,
+        run: u64,
+        f: impl FnOnce(&mut crate::mailsort::OlderSort) -> bool,
+    ) {
+        self.mail.update_older_sort(account, run, f);
+    }
+
+    /// When `account`'s recent mail was last read back to the window.
+    pub fn mail_sort_full_look(&self, account: AccountId) -> Option<jiff::Timestamp> {
+        self.mail.sort_full_look(account)
+    }
+
+    /// Remember (or, with `None`, forget) when `account`'s recent mail was
+    /// last read back to the window.
+    pub fn set_mail_sort_full_look(&self, account: AccountId, at: Option<jiff::Timestamp>) {
+        self.mail.set_sort_full_look(account, at);
+    }
+
+    /// Start, move on or (with `None`) finish `account`'s sort of older mail.
+    pub fn set_mail_older_sort(
+        &self,
+        account: AccountId,
+        sort: Option<crate::mailsort::OlderSort>,
+    ) {
+        self.mail.set_older_sort(account, sort);
     }
 
     /// Where `account`'s next categorisation pass should page from -- see

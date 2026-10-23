@@ -473,6 +473,7 @@ impl AgentSettings {
                 model: assistant.unwrap_or_else(LLMModelConfig::assistant),
             },
             small: self.legacy_quick_model.clone().map(|model| LLMConfig { connection, model }),
+            decision: None,
         })
     }
 }

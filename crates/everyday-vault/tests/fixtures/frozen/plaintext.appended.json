@@ -142,6 +142,7 @@
       "settings": {
         "companion": {},
         "confirmDestructive": true,
+        "confirmWeb": true,
         "dreaming": false,
         "enabled": true,
         "instructions": "Be a fixture.",
@@ -1097,6 +1098,7 @@
         "small": null
       },
       "settings": {
+        "decision": null,
         "large": {
           "baseUrl": "https://openrouter.ai/api/v1",
           "maxTokens": null,

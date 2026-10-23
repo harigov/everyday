@@ -269,6 +269,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("retry_recording", "resumes the same background pipeline finish_recording does"),
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
+    ("sort_older_mail", "refuses without a decision model, which would be asked over the network"),
     ("start_chat_verification", "needs a chat bot signed in to a real Matrix server"),
     ("subscribe_account_calendar", "fetches a remote account's calendar over the network"),
     ("subscribe_calendar", "fetches a remote ICS feed over the network"),
@@ -579,6 +580,11 @@ async fn every_offline_write_announces_what_was_written_down() {
     // recording, not a gap in one.
     run(&svc, &h, "recategorize_mail", json!({})).await;
     run(&svc, &h, "rebuild_mail_index", json!({ "id": null })).await;
+    let sorting = call(&svc, &h, "mail_sorting", json!({})).await;
+    run(&svc, &h, "save_mail_sorting", json!({ "sorting": sorting["sorting"] })).await;
+    // Forgets a sort of older mail that is not running: session state only,
+    // announced by nothing.
+    run(&svc, &h, "stop_sorting_older_mail", json!({})).await;
 
     // ---- drafts -----------------------------------------------------------
     let mut draft = run(&svc, &h, "new_draft", json!({ "account": mail_account_id.to_string(), "inReplyTo": null, "forwardOf": null, "replyAll": false })).await;

@@ -173,7 +173,7 @@ fn categorize_schema() -> Value {
     })
 }
 
-fn display_address(a: &Address) -> String {
+pub(crate) fn display_address(a: &Address) -> String {
     if a.name.is_empty() { a.email.clone() } else { format!("{} <{}>", a.name, a.email) }
 }
 
@@ -191,6 +191,28 @@ pub async fn categorize_tick(service: &Arc<Service>) {
         return;
     }
     let Ok(accounts) = vault.accounts() else { return };
+    // A decision model, when one is switched on, does the sorting instead
+    // -- see `crate::mailsort`. One that is switched on but cannot be used
+    // (no key yet) is not quietly replaced by the small model: somebody
+    // chose where their mail is sorted, and the error says why it is not.
+    match vault.decision_access() {
+        Ok(decision) => {
+            crate::mailsort::sort_tick(service, &vault, &accounts, &decision).await;
+            return;
+        }
+        Err(e) => {
+            // Nothing is sorting older mail now, whatever was asked for: the
+            // pane must not go on showing one as running, and turning the
+            // model back on months later must not quietly resume it.
+            for (account, _) in service.mail_older_sorts() {
+                service.set_mail_older_sort(account, None);
+            }
+            if vault.model_settings().is_ok_and(|m| m.decision.is_some()) {
+                tracing::debug!(error = %e, "mail sorting is waiting on the decision model");
+                return;
+            }
+        }
+    }
     // One snapshot of the small model for the whole tick -- sorting is
     // small-model work, and with none there is nothing to do -- and every
     // account checked against *its* acknowledgement: the endpoints the
@@ -294,7 +316,8 @@ async fn categorize_account(
     candidates.truncate(granted);
 
     // Sender, subject and snippet only -- never a full body, per the plan's
-    // own words for this feature.
+    // own words for this pass. (The priority pass below, and sorting on a
+    // decision model, add a short excerpt; the switch's hint says so.)
     let mut items: Vec<CategorizeCandidate> = Vec::new();
     for thread in &candidates {
         let tid = thread.id;
@@ -1204,7 +1227,7 @@ async fn has_existing_draft(
     .await
 }
 
-fn own_addresses(account: &Account) -> HashSet<String> {
+pub(crate) fn own_addresses(account: &Account) -> HashSet<String> {
     std::iter::once(account.address.to_lowercase())
         .chain(account.identities.iter().map(|i| i.address.to_lowercase()))
         .collect()
@@ -1348,6 +1371,8 @@ mod tests {
             ai_categorize_asked_at_count: None,
             ai_auto_draft_asked_at_count: None,
             ai_priority_asked_at_count: None,
+            sorted_as: None,
+            ai_sorted: None,
         }
     }
 

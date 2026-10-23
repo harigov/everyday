@@ -43,8 +43,8 @@
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, CategoryRules, CategorySource, ContactBook, Draft, Invite, Mailbox, Message,
-    MessageFlags, Op, RemoteImageSettings, Thread,
+    Body, Category, CategoryRules, CategorySource, ContactBook, Draft, Invite, MailSorting,
+    Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
 };
 use crate::packstore::PackRef;
 use jiff::Timestamp;
@@ -571,6 +571,10 @@ pub trait MailStore: Send + Sync {
     /// [`crate::mail::Thread::ai_priority_asked_at_count`].
     fn set_thread_ai_priority_asked(&self, thread: ThreadId, message_count: u32) -> Result<()>;
 
+    /// As [`MailStore::set_thread_ai_categorize_asked`], for sorting on a
+    /// decision model -- see [`crate::mail::Thread::ai_sorted`].
+    fn set_thread_ai_sorted(&self, thread: ThreadId, mark: crate::mail::SortMark) -> Result<()>;
+
     /// Every thread, across every account, whose `snoozed_until` is set and
     /// has passed `now` -- what the minute scheduler reads to decide which
     /// threads return to the inbox this tick. Oldest-due first, capped at
@@ -764,6 +768,29 @@ pub trait MailStore: Send + Sync {
         target: crate::mail::CategoryMatch,
         category: Category,
     ) -> Result<u32>;
+
+    // ---- sorting by a decision model ------------------------------------
+
+    /// The categories mail is sorted into -- see [`crate::mail::sorting`].
+    /// [`MailSorting::default`] (the starting list) when nothing has been
+    /// saved, on the same reasoning [`MailStore::remote_image_settings`]
+    /// answers a real default.
+    fn mail_sorting(&self) -> Result<MailSorting>;
+
+    fn put_mail_sorting(&self, sorting: &MailSorting) -> Result<()>;
+
+    /// A decision model's answer for one message: its category set to
+    /// `category`, [`crate::mail::CategorySource::Model`] written beside it,
+    /// its thread recomputed, and the thread's
+    /// [`crate::mail::Thread::sorted_as`] set to `sorted_as` for this
+    /// message -- in one transaction, so a thread is never shown filed
+    /// under one tab with the label of another.
+    ///
+    /// On [`MailStore::set_message_category`]'s terms otherwise: a message
+    /// carrying [`crate::mail::CategorySource::Person`] is left as it is,
+    /// and one this store does not have is a no-op. Answers whether it
+    /// wrote anything.
+    fn sort_message(&self, id: MailMessageId, category: Category, sorted_as: &str) -> Result<bool>;
 }
 
 // ---- associated data --------------------------------------------------
@@ -807,6 +834,12 @@ pub fn op_aad(id: OpId) -> Vec<u8> {
 /// id, because there is exactly one of these per vault.
 pub fn remote_image_settings_aad() -> Vec<u8> {
     b"everyday.mail_remote_image_settings.v1".to_vec()
+}
+
+/// The one row of [`crate::mail::MailSorting`], sealed on the same terms
+/// [`remote_image_settings_aad`] is.
+pub fn mail_sorting_aad() -> Vec<u8> {
+    b"everyday.mail_sorting.v1".to_vec()
 }
 
 /// The one row of [`crate::mail::ContactBook`], sealed on the same terms

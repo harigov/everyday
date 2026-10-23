@@ -665,6 +665,8 @@ mod tests {
             ai_categorize_asked_at_count: None,
             ai_auto_draft_asked_at_count: None,
             ai_priority_asked_at_count: None,
+            sorted_as: None,
+            ai_sorted: None,
         }
     }
 

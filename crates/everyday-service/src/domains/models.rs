@@ -11,7 +11,7 @@ use crate::error::CommandResult;
 use crate::events::{Kind, Op};
 use crate::service::{Service, blocking};
 use everyday_core::Vault;
-use everyday_core::llm::{ModelSettings, ModelTier};
+use everyday_core::llm::{ModelSettings, ModelSlot};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -51,14 +51,16 @@ pub struct SaveModels {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetModelKey {
-    pub tier: ModelTier,
+    /// A tier, or `decision` -- the four cards. Named `tier` on the wire
+    /// still, as it was when there were three.
+    pub tier: ModelSlot,
     pub key: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TierRef {
-    pub tier: ModelTier,
+    pub tier: ModelSlot,
 }
 
 async fn model_settings(
@@ -148,14 +150,14 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "set_model_key", scope: Agent, effect: Write,
         change: Settings / Updated,
         args: SetModelKey, returns: "ModelSettingsView",
-        signature: &[("tier", "ModelTier", true), ("key", "string", true)],
+        signature: &[("tier", "ModelSlot", true), ("key", "string", true)],
         run: set_model_key,
     },
     command! {
         name: "clear_model_key", scope: Agent, effect: Write,
         change: Settings / Updated,
         args: TierRef, returns: "ModelSettingsView",
-        signature: &[("tier", "ModelTier", true)],
+        signature: &[("tier", "ModelSlot", true)],
         run: clear_model_key,
     },
 ];

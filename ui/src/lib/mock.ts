@@ -109,14 +109,17 @@ import type {
   AgentSettings,
   Attachment,
   Conversation,
+  DecisionConfig,
   DeclineReason,
   DreamScope,
   LLMConfig,
+  MailSorting,
+  MailSortingView,
   Memory,
   MemoryOrigin,
   ModelSettings,
   ModelSettingsView,
-  ModelTier,
+  ModelSlot,
   Proposal,
   ProposalQuery,
   ProposedRecord,
@@ -187,8 +190,13 @@ import {
   mockMarkUnread,
   mockMoveToMailbox,
   mockNewDraft,
+  mockMailSorting,
+  mockOlderSortViews,
   mockRecategorizeMail,
   mockRespondToInvite,
+  mockSaveMailSorting,
+  mockSortOlderMail,
+  mockStopSortingOlderMail,
   mockSaveDraft,
   mockSearchMail,
   mockSendDraft,
@@ -3519,21 +3527,38 @@ let modelSettings: ModelSettings = {
     maxTokens: 1024,
     reasoningEffort: null,
   },
+  decision: null,
 }
 const modelKeys = new Set<string>(['https://api.openai.com/v1'])
+
+/** `DecisionConfig::endpoint`: the URL, or the API's own maker's. */
+function mockDecisionEndpoint(d: DecisionConfig): string {
+  return (
+    (d.url ?? '').replace(/\/+$/, '') ||
+    (d.api === 'openAi'
+      ? 'https://api.openai.com/v1/decisions'
+      : 'https://api.typesafe.ai/v1/systemone')
+  )
+}
+
+/** Every endpoint a configured card points at, sorted, each once. */
+function mockModelEndpoints(): string[] {
+  return [
+    ...new Set([
+      ...[modelSettings.large, modelSettings.medium, modelSettings.small]
+        .filter((t): t is LLMConfig => t != null)
+        .map((t) => mockEndpoint(t.baseUrl)),
+      ...(modelSettings.decision ? [mockDecisionEndpoint(modelSettings.decision)] : []),
+    ]),
+  ].sort()
+}
 
 function mockEndpoint(baseUrl: string | null): string {
   return (baseUrl ?? '').trim().replace(/\/+$/, '') || 'https://api.openai.com/v1'
 }
 
 function modelSettingsView(): ModelSettingsView {
-  const endpoints = [
-    ...new Set(
-      [modelSettings.large, modelSettings.medium, modelSettings.small]
-        .filter((t): t is LLMConfig => t != null)
-        .map((t) => mockEndpoint(t.baseUrl)),
-    ),
-  ].sort()
+  const endpoints = mockModelEndpoints()
   return {
     settings: structuredClone(modelSettings),
     keyed: endpoints.filter((e) => modelKeys.has(e)),
@@ -3541,11 +3566,28 @@ function modelSettingsView(): ModelSettingsView {
   }
 }
 
-function modelTier(args: Record<string, unknown>): LLMConfig {
-  const tier = args.tier as ModelTier
+/** The endpoint the card named by `args.tier` points at -- what its key is filed under. */
+function modelSlotEndpoint(args: Record<string, unknown>): string {
+  const tier = args.tier as ModelSlot
+  if (tier === 'decision') {
+    if (!modelSettings.decision) {
+      throw new VaultError('invalid', 'no decision model is configured')
+    }
+    return mockDecisionEndpoint(modelSettings.decision)
+  }
   const config = modelSettings[tier]
   if (!config) throw new VaultError('invalid', `no ${tier} model is configured`)
-  return config
+  return mockEndpoint(config.baseUrl)
+}
+
+/** What every mail sorting command answers. */
+function mailSortingView(): MailSortingView {
+  const d = modelSettings.decision
+  return {
+    sorting: mockMailSorting(),
+    decisionModel: d ? `${d.model.trim()} at ${mockDecisionEndpoint(d)}` : null,
+    older: mockOlderSortViews(),
+  }
 }
 const conversations: Conversation[] = []
 const agentMessages: AgentMessage[] = []
@@ -6392,12 +6434,9 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const before = modelSettingsView().acknowledgement
       modelSettings = structuredClone(args.settings as ModelSettings)
+      modelSettings.decision ??= null
       // As the real one: a key no model points at any more is forgotten.
-      const inUse = new Set(
-        [modelSettings.large, modelSettings.medium, modelSettings.small]
-          .filter((t): t is LLMConfig => t != null)
-          .map((t) => mockEndpoint(t.baseUrl)),
-      )
+      const inUse = new Set(mockModelEndpoints())
       for (const endpoint of [...modelKeys]) if (!inUse.has(endpoint)) modelKeys.delete(endpoint)
       // And clears every account's mail acknowledgement when the endpoints
       // change -- see `Vault::save_model_settings`.
@@ -6410,12 +6449,12 @@ export const mockInvoke = async <T>(
     case 'set_model_key':
       requireUnlocked()
       if (!str(args.key).trim()) throw new VaultError('invalid', 'an API key cannot be blank')
-      modelKeys.add(mockEndpoint(modelTier(args).baseUrl))
+      modelKeys.add(modelSlotEndpoint(args))
       return modelSettingsView() as T
 
     case 'clear_model_key':
       requireUnlocked()
-      modelKeys.delete(mockEndpoint(modelTier(args).baseUrl))
+      modelKeys.delete(modelSlotEndpoint(args))
       return modelSettingsView() as T
 
     case 'list_conversations': {
@@ -7141,6 +7180,50 @@ export const mockInvoke = async <T>(
     case 'recategorize_mail':
       requireUnlocked()
       return mockRecategorizeMail(args.account as string | null | undefined) as T
+
+    case 'mail_sorting':
+      requireUnlocked()
+      return mailSortingView() as T
+
+    case 'save_mail_sorting':
+      requireUnlocked()
+      mockSaveMailSorting(args.sorting as MailSorting)
+      return mailSortingView() as T
+
+    case 'sort_older_mail': {
+      requireUnlocked()
+      if (!modelSettings.decision) {
+        throw new VaultError(
+          'invalid',
+          'sorting older mail needs a decision model: no decision model is configured; set one in Settings → Models',
+        )
+      }
+      const ack = modelSettingsView().acknowledgement
+      const allowed = accounts.filter(
+        (a) =>
+          a.services.mail &&
+          (args.account == null || a.id === args.account) &&
+          a.mailAi?.categorize &&
+          a.assistantProviderAcknowledged === ack,
+      )
+      if (allowed.length === 0) {
+        throw new VaultError(
+          'forbidden',
+          'no account allows its mail to be sorted by the models; switch on sorting under Settings → Accounts',
+        )
+      }
+      mockSortOlderMail(
+        allowed.map((a) => a.id),
+        (args.days as number | null | undefined) ?? null,
+        Boolean(args.again),
+      )
+      return mailSortingView() as T
+    }
+
+    case 'stop_sorting_older_mail':
+      requireUnlocked()
+      mockStopSortingOlderMail(args.account as string | null | undefined)
+      return mailSortingView() as T
 
     // ── What an agent did with mail -- Settings → Sharing and the
     //    assistant's own settings ───────────────────────────────────────

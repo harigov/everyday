@@ -38,6 +38,7 @@ pub mod contacts;
 pub mod outbox;
 pub mod rate_limit;
 pub mod records;
+pub mod sorting;
 pub mod voice;
 
 pub use ai_gate::{MailAiFeature, MailAiRefusal, mail_ai_allowed};
@@ -49,3 +50,4 @@ pub use outbox::{
 };
 pub use rate_limit::{RateLimitState, TokenBucket};
 pub use records::*;
+pub use sorting::{MailSorting, SortCategory, SortMark, SortedAs};

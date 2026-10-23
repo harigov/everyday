@@ -84,6 +84,8 @@ import type {
   MailCategory,
   MailMessageId,
   MailProviderInfo,
+  MailSorting,
+  MailSortingView,
   MailSyncProgress,
   Mailbox,
   MailboxId,
@@ -96,7 +98,7 @@ import type {
   ModelBenchmark,
   ModelSettings,
   ModelSettingsView,
-  ModelTier,
+  ModelSlot,
   NewSource,
   NewsSource,
   NewsSourceId,
@@ -266,7 +268,7 @@ export interface Commands {
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
-  clearModelKey: { args: { tier: ModelTier }; result: ModelSettingsView }
+  clearModelKey: { args: { tier: ModelSlot }; result: ModelSettingsView }
   collectGarbage: { args: Record<string, never>; result: number }
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
@@ -438,6 +440,7 @@ export interface Commands {
     result: MailActionByOrigin[]
   }
   mailActivity: { args: { from: string; to: string; tz?: string }; result: MailActivity }
+  mailSorting: { args: Record<string, never>; result: MailSortingView }
   markAllStoriesRead: { args: { sources: NewsSourceId[]; upTo: string }; result: StoryId[] }
   markJobsSeen: { args: { ids?: JobId[] }; result: void }
   markProposalsSeen: { args: { ids?: ProposalId[] }; result: void }
@@ -574,6 +577,7 @@ export interface Commands {
   saveJournal: { args: { journal: Journal }; result: void }
   saveKind: { args: { kind: Kind }; result: void }
   saveLog: { args: { log: LogEntry }; result: void }
+  saveMailSorting: { args: { sorting: MailSorting }; result: MailSortingView }
   saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
   saveModelSettings: { args: { settings: ModelSettings }; result: ModelSettingsView }
@@ -632,7 +636,7 @@ export interface Commands {
   }
   setItemStatus: { args: { id: ItemId; status: ItemStatus; log: boolean }; result: Item }
   setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
-  setModelKey: { args: { tier: ModelTier; key: string }; result: ModelSettingsView }
+  setModelKey: { args: { tier: ModelSlot; key: string }; result: ModelSettingsView }
   setQuickAsk: { args: { name: string; on: boolean }; result: QuickAskRow[] }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
@@ -640,6 +644,10 @@ export interface Commands {
   settleWritingAssist: { args: { id: WritingId; outcome: WritingOutcome }; result: WritingAssist }
   shrinkCover: { args: { blob: string }; result: string }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
+  sortOlderMail: {
+    args: { account?: AccountId | null; days?: number | null; again?: boolean }
+    result: MailSortingView
+  }
   speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
   startChatVerification: { args: { id: ChatLinkId }; result: void }
@@ -650,6 +658,7 @@ export interface Commands {
     result: Job
   }
   status: { args: Record<string, never>; result: VaultStatus }
+  stopSortingOlderMail: { args: { account?: AccountId | null }; result: MailSortingView }
   subscribeAccountCalendar: { args: { account: AccountId; remoteId: string }; result: CalendarInfo }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
   suggestAddresses: { args: { prefix: string; limit?: number | null }; result: MailAddress[] }
@@ -827,6 +836,7 @@ export const COMMAND_NAMES = {
   lookupMetadata: 'lookup_metadata',
   mailActionsByOrigin: 'mail_actions_by_origin',
   mailActivity: 'mail_activity',
+  mailSorting: 'mail_sorting',
   markAllStoriesRead: 'mark_all_stories_read',
   markJobsSeen: 'mark_jobs_seen',
   markProposalsSeen: 'mark_proposals_seen',
@@ -919,6 +929,7 @@ export const COMMAND_NAMES = {
   saveJournal: 'save_journal',
   saveKind: 'save_kind',
   saveLog: 'save_log',
+  saveMailSorting: 'save_mail_sorting',
   saveMeetingSettings: 'save_meeting_settings',
   saveMemory: 'save_memory',
   saveModelSettings: 'save_model_settings',
@@ -957,6 +968,7 @@ export const COMMAND_NAMES = {
   settleWritingAssist: 'settle_writing_assist',
   shrinkCover: 'shrink_cover',
   snooze: 'snooze',
+  sortOlderMail: 'sort_older_mail',
   speechModels: 'speech_models',
   star: 'star',
   startChatVerification: 'start_chat_verification',
@@ -964,6 +976,7 @@ export const COMMAND_NAMES = {
   startImport: 'start_import',
   startResearch: 'start_research',
   status: 'status',
+  stopSortingOlderMail: 'stop_sorting_older_mail',
   subscribeAccountCalendar: 'subscribe_account_calendar',
   subscribeCalendar: 'subscribe_calendar',
   suggestAddresses: 'suggest_addresses',
@@ -1151,6 +1164,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lookup_metadata',
   'mail_actions_by_origin',
   'mail_activity',
+  'mail_sorting',
   'mark_all_stories_read',
   'mark_jobs_seen',
   'mark_proposals_seen',
@@ -1243,6 +1257,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_journal',
   'save_kind',
   'save_log',
+  'save_mail_sorting',
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
@@ -1280,6 +1295,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'settle_writing_assist',
   'shrink_cover',
   'snooze',
+  'sort_older_mail',
   'speech_models',
   'star',
   'start_chat_verification',
@@ -1287,6 +1303,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'start_import',
   'start_research',
   'status',
+  'stop_sorting_older_mail',
   'subscribe_account_calendar',
   'subscribe_calendar',
   'suggest_addresses',
@@ -1434,6 +1451,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_journal',
   'save_kind',
   'save_log',
+  'save_mail_sorting',
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
@@ -1468,9 +1486,11 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'settle_writing_assist',
   'shrink_cover',
   'snooze',
+  'sort_older_mail',
   'star',
   'start_chat_verification',
   'start_research',
+  'stop_sorting_older_mail',
   'subscribe_account_calendar',
   'subscribe_calendar',
   'sync_account',
@@ -1576,6 +1596,7 @@ export const CHANGE_KINDS = {
   save_journal: 'journal',
   save_kind: 'shelf',
   save_log: 'log',
+  save_mail_sorting: 'settings',
   save_meeting_settings: 'settings',
   save_memory: 'memory',
   save_model_settings: 'settings',

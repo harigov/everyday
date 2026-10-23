@@ -495,6 +495,143 @@ impl LLMConfig {
     }
 }
 
+/// Which request shape a decision model takes.
+///
+/// A decision model ("System One", in TypeSafe's words) does not write. It
+/// is handed some content and a set of typed questions -- pick one of these
+/// options, is this true, where on this scale -- and answers each with a
+/// probability. Two shapes of that request exist today:
+///
+/// - **TypeSafe's** `POST /v1/systemone`: a `state`, and `questions` keyed by
+///   name, each with `criteria`. OpenRouter serves Jev at
+///   `/api/alpha/decisions` with exactly this body.
+/// - **OpenAI's** `POST /v1/decisions`: an `input`, and `questions` as a list,
+///   each naming itself, with `choices`.
+///
+/// The address is separate ([`DecisionConfig::url`]): the same shape is
+/// served at more than one place, and which place is somebody's choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DecisionApi {
+    /// TypeSafe's System One request: Jev, directly or through OpenRouter.
+    #[default]
+    TypeSafe,
+    /// OpenAI's Decisions API.
+    OpenAi,
+}
+
+impl DecisionApi {
+    /// Where requests go when [`DecisionConfig::url`] is unset: the
+    /// shape's own maker.
+    pub fn default_url(self) -> &'static str {
+        match self {
+            Self::TypeSafe => "https://api.typesafe.ai/v1/systemone",
+            Self::OpenAi => "https://api.openai.com/v1/decisions",
+        }
+    }
+
+    /// What a decision model starts as when it is switched on.
+    pub fn default_model(self) -> &'static str {
+        match self {
+            Self::TypeSafe => "jev-latest",
+            Self::OpenAi => "gpt-6-luna",
+        }
+    }
+}
+
+/// A decision model: which request shape, at which address, and which
+/// model there.
+///
+/// Not an [`LLMConfig`]. There is no temperature, no token cap and no
+/// reasoning effort to set -- a decision model answers with probabilities,
+/// not text -- and its address is the full URL requests are posted to rather
+/// than a base a path is joined onto, because the places that serve one do
+/// not agree on a path (`/v1/systemone`, `/api/alpha/decisions`,
+/// `/v1/decisions`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecisionConfig {
+    #[serde(default)]
+    pub api: DecisionApi,
+    /// Overrides [`DecisionApi::default_url`]. Stored with no trailing
+    /// slash; see [`DecisionConfig::endpoint`].
+    #[serde(default)]
+    pub url: Option<String>,
+    /// As the endpoint spells it: `jev-latest`, `typesafe/jev-1.13`,
+    /// `gpt-6-luna`.
+    pub model: String,
+}
+
+impl DecisionConfig {
+    /// What the card starts as when it is switched on: Jev, from TypeSafe.
+    pub fn fresh() -> Self {
+        let api = DecisionApi::default();
+        Self { api, url: None, model: api.default_model().into() }
+    }
+
+    /// The URL requests are posted to, trailing slash removed -- and what
+    /// its key is stored under, spelt as [`LLMProviderConfig::endpoint`]
+    /// spells a base URL, so one address typed two ways finds one key.
+    pub fn endpoint(&self) -> &str {
+        self.url
+            .as_deref()
+            .map(|u| u.trim_end_matches('/'))
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| self.api.default_url())
+    }
+
+    /// Whether a key is needed: always, except on this machine.
+    pub fn needs_key(&self) -> bool {
+        Provider::OpenAi.needs_key(self.url.as_deref())
+    }
+
+    /// The same address rules as a chat model's -- https unless local, one
+    /// address, no spaces -- and a model name.
+    pub fn validate(&self) -> Result<()> {
+        LLMProviderConfig { provider: Provider::OpenAi, base_url: self.url.clone() }.validate()?;
+        if self.model.trim().is_empty() {
+            return Err(Error::Invalid("a model name is required".into()));
+        }
+        Ok(())
+    }
+}
+
+/// One of the four cards in Settings → Models, for the commands that act on
+/// a card's key: the three tiers, and the decision model.
+///
+/// Separate from [`ModelTier`] because a decision model is not a size of
+/// the same work. Nothing resolves to it and it resolves to nothing; every
+/// `match` over the tiers would otherwise grow an arm that had to say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelSlot {
+    Large,
+    Medium,
+    Small,
+    Decision,
+}
+
+impl ModelSlot {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Large => "Large",
+            Self::Medium => "Medium",
+            Self::Small => "Small",
+            Self::Decision => "Decision",
+        }
+    }
+}
+
+impl From<ModelTier> for ModelSlot {
+    fn from(tier: ModelTier) -> Self {
+        match tier {
+            ModelTier::Large => Self::Large,
+            ModelTier::Medium => Self::Medium,
+            ModelTier::Small => Self::Small,
+        }
+    }
+}
+
 /// Every model this vault asks for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -516,11 +653,16 @@ pub struct ModelSettings {
     /// fall back to [`medium`](Self::medium); see the module docs.
     #[serde(default)]
     pub small: Option<LLMConfig>,
+    /// What sorts mail into the categories under Settings → Mail sorting, in
+    /// place of Small. `None` leaves sorting on Small, as before there was
+    /// one. See [`DecisionConfig`].
+    #[serde(default)]
+    pub decision: Option<DecisionConfig>,
 }
 
 impl Default for ModelSettings {
     fn default() -> Self {
-        Self { large: None, medium: LLMConfig::medium(), small: None }
+        Self { large: None, medium: LLMConfig::medium(), small: None, decision: None }
     }
 }
 
@@ -546,7 +688,24 @@ impl ModelSettings {
                     .into(),
             ));
         }
+        if let Some(decision) = &self.decision {
+            decision.validate().map_err(|e| match e {
+                Error::Invalid(why) => Error::Invalid(format!("Decision: {why}")),
+                other => other,
+            })?;
+        }
         Ok(())
+    }
+
+    /// Where `slot`'s card points, if it is switched on -- what a key set on
+    /// that card is filed under.
+    pub fn endpoint_of(&self, slot: ModelSlot) -> Option<&str> {
+        match slot {
+            ModelSlot::Large => self.large.as_ref().map(LLMConfig::endpoint),
+            ModelSlot::Medium => Some(self.medium.endpoint()),
+            ModelSlot::Small => self.small.as_ref().map(LLMConfig::endpoint),
+            ModelSlot::Decision => self.decision.as_ref().map(DecisionConfig::endpoint),
+        }
     }
 
     /// The tier as configured, with no fallback.
@@ -573,10 +732,15 @@ impl ModelSettings {
         }
     }
 
-    /// Every endpoint a configured tier points at, sorted, each once.
+    /// Every endpoint a configured tier -- or the decision model -- points
+    /// at, sorted, each once.
     pub fn endpoints(&self) -> Vec<&str> {
-        let mut all: Vec<&str> =
-            ModelTier::ALL.iter().filter_map(|t| self.get(*t)).map(LLMConfig::endpoint).collect();
+        let mut all: Vec<&str> = ModelTier::ALL
+            .iter()
+            .filter_map(|t| self.get(*t))
+            .map(LLMConfig::endpoint)
+            .chain(self.decision.as_ref().map(DecisionConfig::endpoint))
+            .collect();
         all.sort_unstable();
         all.dedup();
         all
@@ -589,7 +753,8 @@ impl ModelSettings {
     /// The whole list rather than the one a feature is about to use, because
     /// the sentence a person agreed to is "my mail may go to these" and every
     /// tier can carry mail -- the assistant's tools on Medium, a research
-    /// job's on Large, sorting on Small. A change to any endpoint stops it
+    /// job's on Large, sorting on Small or the decision model, whose address
+    /// is in the list once it is switched on. A change to any endpoint stops it
     /// matching, which is the point: somebody who acknowledged OpenAI did
     /// not acknowledge the gateway Large was moved to afterwards. Unconfigured
     /// tiers are left out, so a vault whose tiers share one endpoint names
@@ -638,6 +803,27 @@ impl std::fmt::Debug for ModelAccess {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModelAccess")
             .field("tier", &self.tier)
+            .field("config", &self.config)
+            .field("key", &self.key.as_ref().map(|_| "<redacted>"))
+            .field("acknowledgement", &self.acknowledgement)
+            .finish()
+    }
+}
+
+/// The decision model ready to be asked -- [`ModelAccess`]'s counterpart,
+/// from [`Vault::decision_access`](crate::Vault::decision_access).
+#[derive(Clone)]
+pub struct DecisionAccess {
+    pub config: DecisionConfig,
+    /// `None` only where none is needed -- a model on this machine.
+    pub key: Option<String>,
+    /// As [`ModelAccess::acknowledgement`].
+    pub acknowledgement: String,
+}
+
+impl std::fmt::Debug for DecisionAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecisionAccess")
             .field("config", &self.config)
             .field("key", &self.key.as_ref().map(|_| "<redacted>"))
             .field("acknowledgement", &self.acknowledgement)
@@ -781,6 +967,7 @@ mod tests {
                 },
             },
             small: Some(LLMConfig::small()),
+            decision: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["medium"]["baseUrl"], "https://openrouter.ai/api/v1");
@@ -892,10 +1079,68 @@ mod tests {
                 "http://localhost:11434/v1, https://api.openai.com/v1, https://openrouter.ai/api/v1",
             ),
         ] {
-            let s =
-                ModelSettings { large: large.map(at), medium: at(medium), small: small.map(at) };
+            let s = ModelSettings {
+                large: large.map(at),
+                medium: at(medium),
+                small: small.map(at),
+                decision: None,
+            };
             assert_eq!(s.acknowledgement_name(), want);
         }
+    }
+
+    #[test]
+    fn a_decision_model_is_an_endpoint_like_any_other() {
+        let mut s = ModelSettings::default();
+        assert_eq!(s.endpoint_of(ModelSlot::Decision), None);
+        s.decision = Some(DecisionConfig::fresh());
+        assert_eq!(
+            s.endpoint_of(ModelSlot::Decision),
+            Some("https://api.typesafe.ai/v1/systemone"),
+            "Jev, from TypeSafe, when nothing else is said"
+        );
+        // Mail goes to it, so an acknowledgement has to name it.
+        assert_eq!(
+            s.acknowledgement_name(),
+            "https://api.openai.com/v1, https://api.typesafe.ai/v1/systemone"
+        );
+
+        s.decision = Some(DecisionConfig {
+            api: DecisionApi::TypeSafe,
+            url: Some("https://openrouter.ai/api/alpha/decisions/".into()),
+            model: "typesafe/jev-1.13".into(),
+        });
+        assert_eq!(
+            s.endpoint_of(ModelSlot::Decision),
+            Some("https://openrouter.ai/api/alpha/decisions")
+        );
+        assert!(s.validate().is_ok());
+
+        s.decision =
+            Some(DecisionConfig { api: DecisionApi::OpenAi, url: None, model: " ".into() });
+        let err = s.validate().unwrap_err().to_string();
+        assert!(err.contains("Decision") && err.contains("model name"), "{err}");
+
+        s.decision = Some(DecisionConfig {
+            api: DecisionApi::OpenAi,
+            url: Some("http://decisions.example.com/v1/decisions".into()),
+            model: "gpt-6-luna".into(),
+        });
+        assert!(s.validate().is_err(), "a key is not sent over plain http");
+    }
+
+    #[test]
+    fn a_vault_saved_before_decision_models_reads_without_one() {
+        let s: ModelSettings = serde_json::from_value(serde_json::json!({
+            "medium": { "provider": "openAi", "model": "gpt-5.1-mini" }
+        }))
+        .unwrap();
+        assert_eq!(s.decision, None);
+
+        let d: DecisionConfig =
+            serde_json::from_value(serde_json::json!({ "model": "jev-latest" })).unwrap();
+        assert_eq!(d.api, DecisionApi::TypeSafe);
+        assert_eq!(serde_json::to_value(DecisionApi::OpenAi).unwrap(), "openAi");
     }
 
     #[test]
@@ -907,5 +1152,11 @@ mod tests {
             acknowledgement: String::new(),
         };
         assert!(!format!("{access:?}").contains("sk-secret"));
+        let access = DecisionAccess {
+            config: DecisionConfig::fresh(),
+            key: Some("ts-secret".into()),
+            acknowledgement: String::new(),
+        };
+        assert!(!format!("{access:?}").contains("ts-secret"));
     }
 }

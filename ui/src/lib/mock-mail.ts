@@ -31,6 +31,7 @@ import type {
   MailCorrespondent,
   MailInvite,
   MailSender,
+  MailSorting,
   Mailbox,
   MailboxId,
   MailboxRole,
@@ -39,6 +40,7 @@ import type {
   MailMessageId,
   Op,
   OpKind,
+  OlderSortView,
   RecentAction,
   RemoteImageSettings,
   Thread,
@@ -459,6 +461,12 @@ function buildSeed(): Seeded {
       snippet: last.snippet,
       starred,
       hasAttachments,
+      // Half the inbox has been through the decision model, so the label a
+      // sorted row carries is there to look at.
+      sortedAs:
+        role === 'inbox' && i % 2 === 0
+          ? { category: mockSortedCategoryFor(category, i), message: last.id }
+          : null,
     }
     threads.push(thread)
     threadMailboxes.set(threadId, [mailboxId(account, role)])
@@ -1023,7 +1031,8 @@ export function mockUnsnooze(ids: ThreadId[]): void {
 // ── The split inbox's category rules and summaries (phase 7) ───────────
 
 export function mockSetThreadCategory(ids: ThreadId[], category: MailCategory): void {
-  for (const id of ids) thread(id).category = category
+  // A person filed it: the model's label is not theirs, as the store drops it.
+  for (const id of ids) Object.assign(thread(id), { category, sortedAs: null })
 }
 
 /** `set_thread_priority` -- this thread only, never the standing per-sender
@@ -1032,7 +1041,126 @@ export function mockSetThreadCategory(ids: ThreadId[], category: MailCategory): 
  *  simplification `mail.setPriority`'s own optimistic patch makes, so the
  *  mock and the store never disagree about what the toggle's other side is. */
 export function mockSetThreadPriority(ids: ThreadId[], priority: boolean): void {
-  for (const id of ids) thread(id).category = priority ? 'priority' : 'important'
+  for (const id of ids) {
+    Object.assign(thread(id), { category: priority ? 'priority' : 'important', sortedAs: null })
+  }
+}
+
+// ── Mail sorting (a decision model's categories) ───────────────────────
+
+/** Which of `MOCK_SORTING`'s categories a seeded thread was "sorted" into. */
+function mockSortedCategoryFor(category: MailCategory, i: number): string {
+  switch (category) {
+    case 'priority':
+      return 'needs-you'
+    case 'important':
+      return i % 4 === 2 ? 'needs-you' : 'people'
+    case 'newsletter':
+      return 'newsletters'
+    case 'notification':
+      return i % 3 === 0 ? 'receipts' : 'notifications'
+    default:
+      return 'other'
+  }
+}
+
+/** `MailSorting::default()` in `crates/everyday-core/src/mail/sorting.rs`. */
+export function mockDefaultSorting(): MailSorting {
+  const c = (id: string, name: string, description: string, treatAs: MailCategory) => ({
+    id,
+    name,
+    description,
+    treatAs,
+  })
+  return {
+    categories: [
+      c(
+        'needs-you',
+        'Needs you',
+        "A real person directly asks you to do, answer or decide something; a deadline or a time-sensitive matter involves you; or someone is waiting on you. Not: FYI updates, anything automated, threads you are only cc'd on.",
+        'priority',
+      ),
+      c(
+        'people',
+        'People',
+        'Written by a real person, to you, and worth reading: conversations, replies, introductions and updates from people you know or work with, that do not need anything from you soon.',
+        'important',
+      ),
+      c(
+        'newsletters',
+        'Newsletters',
+        'Mail you subscribed to or were added to a list for: newsletters, digests, blog posts, announcements, marketing and promotions.',
+        'newsletter',
+      ),
+      c(
+        'receipts',
+        'Receipts',
+        'Orders, receipts, invoices, payment confirmations, bills and shipping or delivery updates.',
+        'notification',
+      ),
+      c(
+        'notifications',
+        'Notifications',
+        'Automated messages from apps and services: alerts, account and security notices, sign-in codes, calendar notices, comments and mentions.',
+        'notification',
+      ),
+      c('other', 'Other', 'Anything that fits none of the other categories.', 'other'),
+    ],
+    windowDays: 30,
+  }
+}
+
+let mockSorting: MailSorting = mockDefaultSorting()
+const mockOlderSorts = new Map<AccountId, OlderSortView>()
+
+export function mockMailSorting(): MailSorting {
+  return structuredClone(mockSorting)
+}
+
+export function mockSaveMailSorting(sorting: MailSorting): void {
+  // The checks `MailSorting::validate` makes, so the pane's errors are real.
+  if (sorting.categories.length === 0) {
+    throw new VaultError('invalid', 'mail sorting needs at least one category')
+  }
+  const names = new Set<string>()
+  for (const [i, c] of sorting.categories.entries()) {
+    const name = c.name.trim()
+    if (!name) throw new VaultError('invalid', `category ${i + 1} needs a name`)
+    if (names.has(name.toLowerCase())) {
+      throw new VaultError('invalid', `there are two categories called ${name}`)
+    }
+    names.add(name.toLowerCase())
+  }
+  if (sorting.windowDays < 1 || sorting.windowDays > 90) {
+    throw new VaultError('invalid', 'mail is sorted unasked for between 1 and 90 days back')
+  }
+  mockSorting = structuredClone(sorting)
+}
+
+export function mockOlderSortViews(): OlderSortView[] {
+  return [...mockOlderSorts.values()].map((v) => ({ ...v }))
+}
+
+export function mockSortOlderMail(
+  accounts: AccountId[],
+  days: number | null,
+  again: boolean,
+): void {
+  const since = days == null ? null : new Date(Date.now() - days * 86_400_000).toISOString()
+  for (const accountId of accounts) {
+    mockOlderSorts.set(accountId, {
+      accountId,
+      since,
+      again,
+      asked: 0,
+      started: new Date().toISOString(),
+    })
+  }
+}
+
+export function mockStopSortingOlderMail(account?: AccountId | null): void {
+  if (account) mockOlderSorts.delete(account)
+  else mockOlderSorts.clear()
 }
 
 /** `scheduled_sends` -- every draft `mockSendDraft` queued far enough out

@@ -23,7 +23,7 @@ use everyday_core::error::{Error, Result};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
     Address, Category, CategoryMatch, CategoryRules, CategorySource, Invite, Message, MessageFlags,
-    Thread,
+    SortedAs, Thread,
     categorize::{self, CategorizeInput},
 };
 use everyday_core::packstore::PackRef;
@@ -286,6 +286,57 @@ pub(super) fn set_message_category(
     tx.commit()
 }
 
+/// See [`everyday_core::store::mail::MailStore::sort_message`].
+///
+/// [`set_message_category`], with the thread's label written in the same
+/// transaction once [`recompute_thread`] has settled what the thread now
+/// is -- and only if this message is still its newest, since the label is
+/// for the message it was decided about, and recompute clears one that is
+/// not (see there).
+pub(super) fn sort_message(
+    store: &SqlStore,
+    id: MailMessageId,
+    category: Category,
+    sorted_as: &str,
+) -> Result<bool> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(mut message) = message_by_id(store, tx.as_mut(), id)? else {
+        return Ok(false);
+    };
+    if message.category_source == CategorySource::Person {
+        return Ok(false);
+    }
+    let thread_id = message.thread_id;
+    message.category = Some(category);
+    message.category_source = CategorySource::Model;
+    let sealed = store.seal(&message_aad(id), &message)?;
+    let (sql, args) = upsert_stmt(&message, sealed);
+    tx.execute(&sql, &args)?;
+    recompute_thread(store, tx.as_mut(), thread_id, &[])?;
+
+    let newest = tx.query_opt(
+        "SELECT id FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC, id DESC LIMIT 1",
+        &vals![thread_id.to_string()],
+    )?;
+    let is_newest = match &newest {
+        Some(row) => row.text(0)? == id.to_string(),
+        None => false,
+    };
+    if is_newest
+        && let Some(row) =
+            tx.query_opt("SELECT data FROM threads WHERE id = ?1", &vals![thread_id.to_string()])?
+    {
+        let mut thread: Thread = store.unseal(&thread_aad(thread_id), &row.bytes(0)?)?;
+        thread.sorted_as = Some(SortedAs { category: sorted_as.to_string(), message: id });
+        let sealed = store.seal(&thread_aad(thread_id), &thread)?;
+        let (sql, args) = upsert_stmt(&thread, sealed);
+        tx.execute(&sql, &args)?;
+    }
+    tx.commit()?;
+    Ok(true)
+}
+
 /// See
 /// [`everyday_core::store::mail::MailStore::set_message_category_with_source`].
 pub(super) fn set_message_category_with_source(
@@ -426,6 +477,15 @@ pub(super) fn set_thread_ai_categorize_asked(
     message_count: u32,
 ) -> Result<()> {
     patch_thread(store, thread, |t| t.ai_categorize_asked_at_count = Some(message_count))
+}
+
+/// See [`everyday_core::store::mail::MailStore::set_thread_ai_sorted`].
+pub(super) fn set_thread_ai_sorted(
+    store: &SqlStore,
+    thread: ThreadId,
+    mark: everyday_core::mail::SortMark,
+) -> Result<()> {
+    patch_thread(store, thread, |t| t.ai_sorted = Some(mark))
 }
 
 /// See
@@ -770,10 +830,10 @@ pub(super) fn recompute_thread(
     let agg = tx.query_opt(
         "SELECT COUNT(*), COALESCE(SUM(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
          COALESCE(MAX(date_us), 0), \
-         (SELECT category FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC LIMIT 1), \
+         (SELECT category FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC, id DESC LIMIT 1), \
          COALESCE(MAX(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END), 0), \
          COALESCE(MAX(CASE WHEN has_attachments THEN 1 ELSE 0 END), 0), \
-         (SELECT id FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC LIMIT 1) \
+         (SELECT id FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC, id DESC LIMIT 1) \
          FROM mail_messages WHERE thread_id = ?1",
         &vals![thread_id.to_string()],
     )?;
@@ -830,7 +890,18 @@ pub(super) fn recompute_thread(
     thread.category = category;
     thread.starred = starred;
     thread.has_attachments = has_attachments;
-    thread.snippet = newest_snippet(store, tx, hints, newest_id.as_deref())?;
+    let (snippet, newest_source) = newest_snippet(store, tx, hints, newest_id.as_deref())?;
+    thread.snippet = snippet;
+    // A decision model's label is for the message it was decided about. A
+    // newer one arriving, or a person settling the category themselves,
+    // leaves a label that no longer describes what the thread is filed as
+    // -- so it goes, and the next sorting pass (if any) decides afresh.
+    if let Some(sorted) = &thread.sorted_as
+        && (newest_id.as_deref() != Some(sorted.message.to_string().as_str())
+            || newest_source == Some(CategorySource::Person))
+    {
+        thread.sorted_as = None;
+    }
 
     let sealed = store.seal(&thread_aad(thread_id), &thread)?;
     let (sql, args) = upsert_stmt(&thread, sealed);
@@ -874,6 +945,8 @@ fn seed_thread(
             ai_categorize_asked_at_count: None,
             ai_auto_draft_asked_at_count: None,
             ai_priority_asked_at_count: None,
+            sorted_as: None,
+            ai_sorted: None,
         });
     }
 
@@ -920,6 +993,8 @@ fn seed_thread(
         ai_categorize_asked_at_count: None,
         ai_auto_draft_asked_at_count: None,
         ai_priority_asked_at_count: None,
+        sorted_as: None,
+        ai_sorted: None,
     })
 }
 
@@ -933,20 +1008,24 @@ fn seed_thread(
 /// one decrypt per recompute, whatever the thread's size -- the same
 /// "extend, don't add a second pass" trade [`recompute_thread`]'s own docs
 /// describe.
+/// The newest message's snippet, and where its category came from -- read
+/// together because both come out of the one decrypt.
 fn newest_snippet(
     store: &SqlStore,
     tx: &mut dyn Sql,
     hints: &[&Message],
     newest_id: Option<&str>,
-) -> Result<String> {
-    let Some(newest_id) = newest_id else { return Ok(String::new()) };
+) -> Result<(String, Option<CategorySource>)> {
+    let Some(newest_id) = newest_id else { return Ok((String::new(), None)) };
     if let Some(m) = hints.iter().find(|m| m.id.to_string() == newest_id) {
-        return Ok(m.snippet.clone());
+        return Ok((m.snippet.clone(), Some(m.category_source)));
     }
     let mid: MailMessageId = newest_id
         .parse()
         .map_err(|e: <MailMessageId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
-    Ok(message_by_id(store, tx, mid)?.map(|m| m.snippet).unwrap_or_default())
+    Ok(message_by_id(store, tx, mid)?
+        .map(|m| (m.snippet, Some(m.category_source)))
+        .unwrap_or_default())
 }
 
 fn merge_participants(participants: &mut Vec<Address>, hints: &[&Message]) {

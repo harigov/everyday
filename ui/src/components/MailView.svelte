@@ -25,6 +25,7 @@
     type ListRow,
   } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
+  import { sorting } from '../lib/sorting.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { compactCount, plural, relativeTime } from '../lib/format'
@@ -50,6 +51,9 @@
   import VirtualList from './VirtualList.svelte'
 
   void mail.start()
+  // The names of the categories a decision model sorted threads into, for
+  // the label a sorted row carries.
+  void sorting.load()
 
   /** Is the list column one of the "All accounts" rows -- every account's
    *  threads in one list, so each row says whose it is. */
@@ -507,6 +511,7 @@
   {@const picked = mail.checked.has(t.id)}
   {@const other = vipSenderFor(t)}
   {@const preview = snippetText(t.snippet)}
+  {@const sorted = sorting.categoryOf(t)}
   <button
     class="row list-row"
     class:sel={mail.selectedThread === t.id}
@@ -545,6 +550,9 @@
         <span class="subject">{t.subject || '(no subject)'}</span>
         {#if t.category === 'priority'}
           <span class="mark priority" title="Priority"><Icon name="flag" size={13} /></span>
+        {/if}
+        {#if sorted}
+          <span class="sorted" title="Sorted as {sorted.name}">{sorted.name}</span>
         {/if}
         {#if t.starred}
           <span class="mark starred" title="Starred"><Icon name="star" size={13} filled /></span>
@@ -736,6 +744,13 @@
           {#if open.thread.category === 'priority'}
             <span class="sep">·</span>
             <span class="priority-mark"><Icon name="flag" size={12} /> Priority</span>
+          {/if}
+          {#if sorting.categoryOf(open.thread)}
+            <span class="sep">·</span>
+            <span class="sorted-mark" title="Sorted by the decision model">
+              <Icon name="tag" size={12} />
+              {sorting.categoryOf(open.thread)?.name}
+            </span>
           {/if}
         </p>
         {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
@@ -1096,6 +1111,31 @@
   }
   .row.sel .line2 .count {
     background: var(--bg-raised);
+  }
+  /* The category a decision model sorted the thread into: a quiet word, not
+     a coloured pill -- the tab it is filed under already says what kind of
+     mail it is; this says which of the person's own names for it. */
+  .line2 .sorted {
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    padding: 1px 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 550;
+    color: var(--fg-subtle);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .sorted-mark {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--fg-muted);
   }
   /* Two lines of the message, not one squeezed in beside the subject: enough
      to tell a question from an announcement without opening either. Always
