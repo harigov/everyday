@@ -557,6 +557,22 @@
       "events": []
     },
     {
+      "command": "save_mail_sorting",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "stop_sorting_older_mail",
+      "events": []
+    },
+    {
       "command": "new_draft",
       "events": [
         {
@@ -1256,6 +1272,10 @@
     {
       "name": "settle_writing_assist",
       "reason": "needs an assist, which needs a model; announces nothing either"
+    },
+    {
+      "name": "sort_older_mail",
+      "reason": "refuses without a decision model, which would be asked over the network"
     },
     {
       "name": "start_chat_verification",

@@ -586,7 +586,7 @@
         {
           "name": "tier",
           "required": true,
-          "type": "ModelTier"
+          "type": "ModelSlot"
         }
       ],
       "changes": {
@@ -2761,6 +2761,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "mail_sorting",
+      "orScope": null,
+      "returns": "MailSortingView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "sources",
@@ -4582,6 +4593,26 @@
     {
       "args": [
         {
+          "name": "sorting",
+          "required": true,
+          "type": "MailSorting"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_mail_sorting",
+      "orScope": null,
+      "returns": "MailSortingView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "settings",
           "required": true,
           "type": "MeetingSettings"
@@ -5265,7 +5296,7 @@
         {
           "name": "tier",
           "required": true,
-          "type": "ModelTier"
+          "type": "ModelSlot"
         },
         {
           "name": "key",
@@ -5445,6 +5476,33 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "account",
+          "required": false,
+          "type": "AccountId | null"
+        },
+        {
+          "name": "days",
+          "required": false,
+          "type": "number | null"
+        },
+        {
+          "name": "again",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "sort_older_mail",
+      "orScope": null,
+      "returns": "MailSortingView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -5574,6 +5632,23 @@
       "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "account",
+          "required": false,
+          "type": "AccountId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "stop_sorting_older_mail",
+      "orScope": null,
+      "returns": "MailSortingView",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

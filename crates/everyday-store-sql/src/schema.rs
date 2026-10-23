@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -106,6 +106,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v15(d),
         v16(d),
         v17(d),
+        v18(d),
     ]
 }
 
@@ -1458,6 +1459,26 @@ fn v17(d: Dialect) -> Vec<String> {
         ),
         "CREATE INDEX IF NOT EXISTS writing_assists_by_time ON writing_assists (created_us)".into(),
     ]
+}
+
+/// Version 18: mail sorting -- the categories a decision model sorts mail
+/// into, as somebody wrote them. See `everyday_core::mail::sorting`.
+///
+/// One singleton, in the shape `mail_remote_image_settings` and
+/// `mail_contacts` already are (`v9`): one row, pinned by a `CHECK`, holding
+/// one sealed record, nothing in the clear -- not even how many categories
+/// there are. Which category a thread was sorted into is sealed inside the
+/// thread's own record rather than a column here or on `threads`: it is
+/// what a row draws, never what a list is filtered by, and the tab a thread
+/// is filed under is already the clear `category` it has always had.
+fn v18(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS mail_sorting (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
 }
 
 #[cfg(test)]

@@ -347,6 +347,7 @@ fn a_key_belongs_to_its_endpoint_and_not_to_its_tier() {
         large: Some(LLMConfig { connection: openrouter.clone(), ..LLMConfig::large() }),
         medium: LLMConfig::medium(),
         small: Some(LLMConfig::small()),
+        decision: None,
     };
     vault.save_model_settings(&models).unwrap();
     vault.set_model_key(ModelTier::Medium, "sk-openai").unwrap();

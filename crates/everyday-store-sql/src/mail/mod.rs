@@ -20,13 +20,13 @@ use everyday_core::id::{
 };
 use everyday_core::mail::{
     Body, Category, CategoryMatch, CategoryRules, CategorySource, ContactBook, Draft, Invite,
-    Mailbox, Message, MessageFlags, Op, OpTarget, RemoteImageSettings, Thread,
+    MailSorting, Mailbox, Message, MessageFlags, Op, OpTarget, RemoteImageSettings, Thread,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
     CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad,
-    category_rules_aad, contacts_aad, draft_aad, mailbox_aad, message_aad, op_aad,
-    remote_image_settings_aad,
+    category_rules_aad, contacts_aad, draft_aad, mail_sorting_aad, mailbox_aad, message_aad,
+    op_aad, remote_image_settings_aad,
 };
 use jiff::Timestamp;
 
@@ -206,7 +206,7 @@ impl MailStore for SqlStore {
     fn thread(&self, id: ThreadId) -> Result<(Thread, Vec<Message>)> {
         let thread: Thread = self.get(id)?;
         let rows = self.read().records(
-            "SELECT id, data FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us",
+            "SELECT id, data FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us, id",
             &vals![id.to_string()],
         )?;
         let messages: Vec<Message> = self.collect(rows, message_aad)?;
@@ -549,6 +549,14 @@ impl MailStore for SqlStore {
         write::set_thread_ai_priority_asked(self, thread, message_count)
     }
 
+    fn set_thread_ai_sorted(
+        &self,
+        thread: ThreadId,
+        mark: everyday_core::mail::SortMark,
+    ) -> Result<()> {
+        write::set_thread_ai_sorted(self, thread, mark)
+    }
+
     fn due_snoozed_threads(&self, now: Timestamp, limit: u32) -> Result<Vec<ThreadId>> {
         let mut sql = "SELECT id FROM threads WHERE snoozed_until_us IS NOT NULL \
              AND snoozed_until_us <= ?1"
@@ -752,5 +760,29 @@ impl MailStore for SqlStore {
         category: Category,
     ) -> Result<u32> {
         write::correct_category(self, account, target, category)
+    }
+
+    // ---- sorting by a decision model -------------------------------------
+
+    fn mail_sorting(&self) -> Result<MailSorting> {
+        let sealed = self.read().sealed("SELECT data FROM mail_sorting WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&mail_sorting_aad(), &sealed),
+            None => Ok(MailSorting::default()),
+        }
+    }
+
+    fn put_mail_sorting(&self, sorting: &MailSorting) -> Result<()> {
+        let data = self.seal(&mail_sorting_aad(), sorting)?;
+        self.write().execute(
+            "INSERT INTO mail_sorting (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
+    fn sort_message(&self, id: MailMessageId, category: Category, sorted_as: &str) -> Result<bool> {
+        write::sort_message(self, id, category, sorted_as)
     }
 }

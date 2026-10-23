@@ -205,6 +205,7 @@ fn mail_domain_aad_labels_are_pinned() {
         b"everyday.mail_remote_image_settings.v1".to_vec()
     );
     assert_eq!(store::mail::contacts_aad(), b"everyday.mail_contacts.v1".to_vec());
+    assert_eq!(store::mail::mail_sorting_aad(), b"everyday.mail_sorting.v1".to_vec());
 }
 
 // ---- notes ------------------------------------------------------------

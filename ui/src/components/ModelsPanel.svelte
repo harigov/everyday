@@ -15,13 +15,23 @@
   // key to somebody else's gateway.
 
   import { onDestroy } from 'svelte'
-  import { KNOWN_LLM_ENDPOINTS, endpointOf, providerLabel } from '../lib/accounts'
+  import {
+    KNOWN_DECISION_ENDPOINTS,
+    KNOWN_LLM_ENDPOINTS,
+    decisionEndpointOf,
+    decisionProviderLabel,
+    endpointOf,
+    providerLabel,
+  } from '../lib/accounts'
   import { isLoopback } from '../lib/agent'
   import { models } from '../lib/models.svelte'
   import { quick } from '../lib/quick.svelte'
   import type {
+    DecisionApi,
+    DecisionConfig,
     LLMConfig,
     ModelSettings,
+    ModelSlot,
     ModelTier,
     QuickAskRow,
     ReasoningEffort,
@@ -31,7 +41,7 @@
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
   // be what the next message is sent to.
   let draft = $state<ModelSettings | null>(null)
-  let keys = $state<Record<ModelTier, string>>({ large: '', medium: '', small: '' })
+  let keys = $state<Record<ModelSlot, string>>({ large: '', medium: '', small: '', decision: '' })
   let notice = $state<string | null>(null)
   let saving = $state(false)
   /** Clears "Saved." after a moment, and only that -- see `AgentPanel`. */
@@ -146,6 +156,30 @@
     draft[tier] = on ? { provider: 'openAi', baseUrl: draft.medium.baseUrl, ...card.fresh } : null
   }
 
+  /**
+   * The decision model: off, or Jev from TypeSafe to start with. Not a tier
+   * -- there is no temperature or effort to set, and its address is the full
+   * URL a request is posted to, because the places that serve one do not
+   * agree on a path.
+   */
+  function toggleDecision(on: boolean) {
+    if (!draft) return
+    const first = KNOWN_DECISION_ENDPOINTS[0]!
+    draft.decision = on ? { api: first.api, url: first.url, model: first.model } : null
+  }
+
+  function pickDecision(d: DecisionConfig, preset: (typeof KNOWN_DECISION_ENDPOINTS)[number]) {
+    d.api = preset.api
+    d.url = preset.url
+    // A model name typed for another provider means nothing at this one.
+    d.model = preset.model
+  }
+
+  const DECISION_APIS: { value: DecisionApi; label: string }[] = [
+    { value: 'typeSafe', label: 'TypeSafe System One (Jev, and Jev on OpenRouter)' },
+    { value: 'openAi', label: 'OpenAI Decisions' },
+  ]
+
   function configOf(tier: ModelTier): LLMConfig | null {
     return draft?.[tier] ?? null
   }
@@ -210,7 +244,10 @@
         const key = keys[card.tier].trim()
         if (key && draft[card.tier]) await models.setKey(card.tier, key)
       }
-      keys = { large: '', medium: '', small: '' }
+      if (keys.decision.trim() && draft.decision) {
+        await models.setKey('decision', keys.decision.trim())
+      }
+      keys = { large: '', medium: '', small: '', decision: '' }
       draft = structuredClone($state.snapshot(models.settings!))
       confirm('Saved.')
     } catch (e) {
@@ -220,7 +257,7 @@
     }
   }
 
-  async function removeKey(tier: ModelTier) {
+  async function removeKey(tier: ModelSlot) {
     clearNotice()
     try {
       await models.clearKey(tier)
@@ -242,11 +279,12 @@
 {:else}
   <div class="panes">
     <p class="hint lead">
-      Three models, one for each size of work, each with its own provider and model name. Anything
-      that speaks the OpenAI chat API works — leave the address empty for OpenAI itself. What you
-      ask about is sent to the provider of whichever model does the work; a model on this machine
-      sends nothing anywhere. A reasoning effort left at the provider's default is the provider's
-      choice, and can be no thinking at all — OpenAI's gpt-5.1 defaults to None.
+      Three models, one for each size of work, each with its own provider and model name, and a
+      decision model for sorting mail. Anything that speaks the OpenAI chat API works — leave the
+      address empty for OpenAI itself. What you ask about is sent to the provider of whichever model
+      does the work; a model on this machine sends nothing anywhere. A reasoning effort left at the
+      provider's default is the provider's choice, and can be no thinking at all — OpenAI's gpt-5.1
+      defaults to None.
     </p>
 
     {#each CARDS as card (card.tier)}
@@ -383,6 +421,103 @@
         {/if}
       </section>
     {/each}
+
+    <section class="card" aria-labelledby="model-decision">
+      <div class="head">
+        <span class="eyebrow" id="model-decision">Decision</span>
+        <label class="toggle compact">
+          <input
+            type="checkbox"
+            checked={draft.decision != null}
+            onchange={(e) => toggleDecision(e.currentTarget.checked)}
+          />
+          <span>{draft.decision ? 'On' : 'Off'}</span>
+        </label>
+      </div>
+      <p class="hint">
+        Sorting mail into your own categories, under Settings → Mail sorting. A decision model does
+        not write: it is shown a message and your categories, and picks one — in a fraction of a
+        second, for a fraction of what a chat model costs.
+      </p>
+      {#if !draft.decision}
+        <p class="hint">Off: mail is sorted on the Small model, into the five inbox tabs.</p>
+      {:else}
+        {@const decision = draft.decision}
+        {@const endpoint = decisionEndpointOf(decision)}
+        {@const local = isLoopback(decision.url)}
+        {@const keyed = models.hasKeyAt(endpoint)}
+        <div class="presets" role="group" aria-label="Decision provider">
+          {#each KNOWN_DECISION_ENDPOINTS as preset (preset.label)}
+            <button
+              class="chip"
+              class:on={endpoint === preset.url}
+              aria-pressed={endpoint === preset.url}
+              onclick={() => pickDecision(decision, preset)}
+            >
+              {preset.label}
+            </button>
+          {/each}
+        </div>
+
+        <label class="setting">
+          <span>Request format</span>
+          <select
+            value={decision.api}
+            onchange={(e) => (decision.api = e.currentTarget.value as DecisionApi)}
+          >
+            {#each DECISION_APIS as api (api.value)}
+              <option value={api.value}>{api.label}</option>
+            {/each}
+          </select>
+        </label>
+
+        <label class="setting">
+          <span>Server</span>
+          <input
+            value={decision.url ?? ''}
+            oninput={(e) => (decision.url = e.currentTarget.value.trim() || null)}
+            placeholder={decisionEndpointOf({ api: decision.api, url: null })}
+            spellcheck="false"
+          />
+        </label>
+        <p class="hint">The whole address requests are posted to, path and all.</p>
+
+        <label class="setting">
+          <span>Model name</span>
+          <input
+            bind:value={decision.model}
+            placeholder={KNOWN_DECISION_ENDPOINTS.find((k) => k.api === decision.api)?.model}
+            spellcheck="false"
+          />
+        </label>
+
+        {#if keyed}
+          <div class="stored">
+            <span>
+              <Icon name="lock" size={14} />
+              A key for {decisionProviderLabel(decision)} is stored.
+            </span>
+            {#if models.settings?.decision && decisionEndpointOf(models.settings.decision) === endpoint}
+              <button class="link" onclick={() => void removeKey('decision')}>Remove</button>
+            {/if}
+          </div>
+        {/if}
+        <label class="setting">
+          <span>{keyed ? 'Replace the key' : 'API key'}</span>
+          <input
+            type="password"
+            bind:value={keys.decision}
+            placeholder={local ? 'Not needed for a model on this machine' : 'Its API key'}
+            spellcheck="false"
+            autocomplete="off"
+          />
+        </label>
+        <p class="hint">
+          Switching it on, or moving it, changes where mail may go, so each account's “I understand”
+          under Settings → Accounts needs ticking again before anything is sorted.
+        </p>
+      {/if}
+    </section>
 
     <p class="hint">
       Keys are encrypted with everything else in the vault, so they are unreadable while it is

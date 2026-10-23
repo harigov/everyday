@@ -14,6 +14,7 @@ provider and model name, configured in **Settings → Models**.
 | Large | research jobs (`JobKind::Research`) | research runs on Medium |
 | Medium | conversations, routines, dreams, meeting summaries, mail summaries, `draft_with_ai`, `improve_writing` | -- always set |
 | Small | quick asks, mail sorting and priority, auto-drafts, `suggest_replies` (Medium if unset) | not done |
+| Decision | mail sorting into the person's own categories, in place of Small -- see `mail-sorting.md` | Small sorts, as before |
 
 ## Decisions
 

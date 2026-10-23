@@ -448,6 +448,46 @@ impl Vault {
         self.with_mail(|m| m.put_remote_image_settings(settings))
     }
 
+    // ---- sorting by a decision model ---------------------------------------
+
+    /// The categories mail is sorted into -- see [`crate::mail::sorting`].
+    pub fn mail_sorting(&self) -> Result<crate::mail::MailSorting> {
+        self.with_mail(|m| m.mail_sorting())
+    }
+
+    /// Replace the categories. Mail already sorted keeps its label until it
+    /// is sorted again -- a category deleted here is simply drawn as nothing
+    /// -- because re-sorting is `sort_older_mail`'s, asked for, not a side
+    /// effect of fixing a typo.
+    pub fn save_mail_sorting(&self, sorting: &crate::mail::MailSorting) -> Result<()> {
+        self.writable()?;
+        sorting.validate()?;
+        self.with_mail(|m| m.put_mail_sorting(sorting))
+    }
+
+    /// A decision model's answer for one message -- see
+    /// [`crate::store::mail::MailStore::sort_message`]. Answers whether
+    /// anything was written: a person's own mark is never replaced.
+    pub fn sort_mail_message(
+        &self,
+        id: MailMessageId,
+        category: Category,
+        sorted_as: &str,
+    ) -> Result<bool> {
+        self.writable()?;
+        let wrote = self.with_mail(|m| m.sort_message(id, category, sorted_as))?;
+        if wrote {
+            self.wrote(RecordKind::MailMessage, id);
+        }
+        Ok(wrote)
+    }
+
+    /// `account`'s Inbox, if it has one yet -- on Gmail, the `\Inbox`
+    /// label's row.
+    pub fn mail_inbox(&self, account: AccountId) -> Result<Option<MailboxId>> {
+        self.with_mail(|m| inbox_mailbox(m, account))
+    }
+
     /// The sealed contact index -- see
     /// [`crate::store::mail::MailStore::contacts`].
     pub fn mail_contacts(&self) -> Result<ContactBook> {
@@ -585,6 +625,16 @@ impl Vault {
     ) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.set_thread_ai_auto_draft_asked(thread, message_count))
+    }
+
+    /// See [`crate::store::mail::MailStore::set_thread_ai_sorted`].
+    pub fn set_thread_ai_sorted(
+        &self,
+        thread: ThreadId,
+        mark: crate::mail::SortMark,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_sorted(thread, mark))
     }
 
     /// See

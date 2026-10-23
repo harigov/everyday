@@ -25,8 +25,8 @@ use std::collections::BTreeMap;
 use super::Vault;
 use crate::error::{Error, Result};
 use crate::llm::{
-    MODEL_KEYS_OWNER_ID, MODEL_KEYS_OWNER_KIND, ModelAccess, ModelKeys, ModelSettings, ModelTier,
-    Provider,
+    DecisionAccess, MODEL_KEYS_OWNER_ID, MODEL_KEYS_OWNER_KIND, ModelAccess, ModelKeys,
+    ModelSettings, ModelSlot, ModelTier, Provider,
 };
 use crate::store::JournalStore;
 
@@ -105,14 +105,15 @@ impl Vault {
         Ok(())
     }
 
-    /// Store the key for the endpoint `tier` points at, replacing any key
+    /// Store the key for the endpoint `slot` points at, replacing any key
     /// stored for it before.
     ///
-    /// By tier rather than by address, so that where a key goes is decided by
+    /// By card rather than by address, so that where a key goes is decided by
     /// the saved settings and not by whoever is calling: the pane saves the
-    /// address first and the key second. Every other tier at the same
+    /// address first and the key second. Every other card at the same
     /// endpoint uses the same key from then on -- see [`crate::llm`].
-    pub fn set_model_key(&self, tier: ModelTier, key: &str) -> Result<()> {
+    pub fn set_model_key(&self, slot: impl Into<ModelSlot>, key: &str) -> Result<()> {
+        let slot = slot.into();
         self.writable()?;
         let key = key.trim();
         if key.is_empty() {
@@ -122,22 +123,23 @@ impl Vault {
             let store = u.store.as_ref();
             carry_over(store)?;
             let settings = Models::read(store)?.settings;
-            let endpoint = settings.get(tier).ok_or_else(|| switched_off(tier))?.endpoint();
+            let endpoint = settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))?;
             let mut keys = read_keys(store)?;
             keys.insert(endpoint.to_string(), key.to_string());
             write_keys(store, &keys)
         })
     }
 
-    /// Forget the key for the endpoint `tier` points at -- which is every
-    /// tier's at that endpoint, since they share it.
-    pub fn clear_model_key(&self, tier: ModelTier) -> Result<()> {
+    /// Forget the key for the endpoint `slot` points at -- which is every
+    /// card's at that endpoint, since they share it.
+    pub fn clear_model_key(&self, slot: impl Into<ModelSlot>) -> Result<()> {
+        let slot = slot.into();
         self.writable()?;
         self.write(|u| {
             let store = u.store.as_ref();
             carry_over(store)?;
             let settings = Models::read(store)?.settings;
-            let endpoint = settings.get(tier).ok_or_else(|| switched_off(tier))?.endpoint();
+            let endpoint = settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))?;
             let mut keys = read_keys(store)?;
             if keys.remove(endpoint).is_some() {
                 write_keys(store, &keys)?;
@@ -164,7 +166,8 @@ impl Vault {
     pub fn model_access(&self, tier: ModelTier) -> Result<ModelAccess> {
         self.read(|u| {
             let models = Models::read(u.store.as_ref())?;
-            let (used, config) = models.settings.resolve(tier).ok_or_else(|| switched_off(tier))?;
+            let (used, config) =
+                models.settings.resolve(tier).ok_or_else(|| switched_off(tier.into()))?;
             config.validate().map_err(|e| match e {
                 Error::Invalid(why) => Error::Invalid(format!(
                     "the {} model cannot be used: {why}; fix it in Settings → Models",
@@ -183,6 +186,44 @@ impl Vault {
             }
             Ok(ModelAccess {
                 tier: used,
+                config: config.clone(),
+                key,
+                acknowledgement: models.settings.acknowledgement_name(),
+            })
+        })
+    }
+
+    /// The decision model, with the key it needs -- [`Vault::model_access`]
+    /// for the one card that is not a tier, and on the same terms: the only
+    /// way its key leaves the vault, failing rather than answering keyless
+    /// when a key is needed, and carrying the acknowledgement of the same
+    /// read so mail's gate checks the snapshot the request is made under.
+    ///
+    /// Not switched on is an error, as Small's is: mail sorting reads it as
+    /// "sort on the small model instead".
+    pub fn decision_access(&self) -> Result<DecisionAccess> {
+        self.read(|u| {
+            let models = Models::read(u.store.as_ref())?;
+            let config = models
+                .settings
+                .decision
+                .as_ref()
+                .ok_or_else(|| switched_off(ModelSlot::Decision))?;
+            config.validate().map_err(|e| match e {
+                Error::Invalid(why) => Error::Invalid(format!(
+                    "the decision model cannot be used: {why}; fix it in Settings → Models"
+                )),
+                other => other,
+            })?;
+            let key = models.key_for(config.endpoint()).map(str::to_string);
+            if key.is_none() && config.needs_key() {
+                return Err(Error::Invalid(format!(
+                    "no API key is set for the decision model's endpoint ({}); add one in \
+                     Settings → Models",
+                    config.endpoint()
+                )));
+            }
+            Ok(DecisionAccess {
                 config: config.clone(),
                 key,
                 acknowledgement: models.settings.acknowledgement_name(),
@@ -303,9 +344,9 @@ fn write_keys(store: &dyn JournalStore, keys: &ModelKeys) -> Result<()> {
     secrets.put_secret(MODEL_KEYS_OWNER_KIND, MODEL_KEYS_OWNER_ID, &bytes)
 }
 
-fn switched_off(tier: ModelTier) -> Error {
+fn switched_off(slot: ModelSlot) -> Error {
     Error::Invalid(format!(
         "no {} model is configured; set one in Settings → Models",
-        tier.label().to_lowercase()
+        slot.label().to_lowercase()
     ))
 }

@@ -58,6 +58,20 @@ pub(crate) struct MailRuntime {
     /// As [`MailRuntime::categorize_budget`], for the auto-draft background
     /// pass.
     autodraft_budget: Mutex<TokenBucket>,
+    /// As [`MailRuntime::categorize_budget`], for sorting on a decision
+    /// model (`crate::mailsort`) -- larger, because one of those answers is
+    /// a fraction of a second and a few hundred tokens of input, and an
+    /// asked-for sort of older mail would otherwise take all day.
+    sort_budget: Mutex<TokenBucket>,
+    /// Each account's asked-for sort of older mail, while it runs -- see
+    /// [`crate::mailsort::OlderSort`]. Session state: a restart forgets one
+    /// half done, and asking again picks up where it stopped, since what is
+    /// already sorted is skipped.
+    older_sorts: Mutex<HashMap<AccountId, crate::mailsort::OlderSort>>,
+    /// When each account's recent mail was last read all the way back to
+    /// the window -- see `crate::mailsort::FULL_LOOK_EVERY` for why the
+    /// ticks in between read only the top of the Inbox.
+    sort_full_looks: Mutex<HashMap<AccountId, Timestamp>>,
     /// `summarize_thread`'s cache: a thread's summary, keyed by how many
     /// messages it had when it was written. A thread that has grown since
     /// -- a new message landed -- misses the cache and is summarised again;
@@ -101,12 +115,14 @@ impl MailRuntime {
     pub(crate) fn reseed_budgets(&self, now: Timestamp) {
         self.categorize_budget.lock().unwrap().reseed(now);
         self.autodraft_budget.lock().unwrap().reseed(now);
+        self.sort_budget.lock().unwrap().reseed(now);
     }
 
     pub(crate) fn new(
         now: Timestamp,
         categorize_per_minute: u32,
         autodraft_per_minute: u32,
+        sort_per_minute: u32,
     ) -> Self {
         Self {
             state: RwLock::new(None),
@@ -123,6 +139,13 @@ impl MailRuntime {
                 f64::from(autodraft_per_minute) / 60.0,
                 now,
             )),
+            sort_budget: Mutex::new(TokenBucket::new(
+                sort_per_minute,
+                f64::from(sort_per_minute) / 60.0,
+                now,
+            )),
+            older_sorts: Mutex::new(HashMap::new()),
+            sort_full_looks: Mutex::new(HashMap::new()),
             summary_cache: Mutex::new(HashMap::new()),
             categorize_cursor: Mutex::new(HashMap::new()),
             autodraft_cursor: Mutex::new(HashMap::new()),
@@ -220,6 +243,66 @@ impl MailRuntime {
 
     pub(crate) fn autodraft_take(&self, now: Timestamp, want: u32) -> u32 {
         take_tokens(&self.autodraft_budget, now, want)
+    }
+
+    pub(crate) fn sort_take(&self, now: Timestamp, want: u32) -> u32 {
+        take_tokens(&self.sort_budget, now, want)
+    }
+
+    pub(crate) fn older_sort(&self, account: AccountId) -> Option<crate::mailsort::OlderSort> {
+        self.older_sorts.lock().unwrap().get(&account).cloned()
+    }
+
+    pub(crate) fn older_sorts(&self) -> Vec<(AccountId, crate::mailsort::OlderSort)> {
+        self.older_sorts.lock().unwrap().iter().map(|(a, s)| (*a, s.clone())).collect()
+    }
+
+    /// Apply `f` to `account`'s older sort, but only if it is still the run
+    /// numbered `run`: one stopped or restarted while a tick was asking about
+    /// its threads is not written back over. `f` answering `false` ends it.
+    pub(crate) fn update_older_sort(
+        &self,
+        account: AccountId,
+        run: u64,
+        f: impl FnOnce(&mut crate::mailsort::OlderSort) -> bool,
+    ) {
+        let mut sorts = self.older_sorts.lock().unwrap();
+        let Some(sort) = sorts.get_mut(&account).filter(|s| s.run == run) else { return };
+        if !f(sort) {
+            sorts.remove(&account);
+        }
+    }
+
+    pub(crate) fn sort_full_look(&self, account: AccountId) -> Option<Timestamp> {
+        self.sort_full_looks.lock().unwrap().get(&account).copied()
+    }
+
+    pub(crate) fn set_sort_full_look(&self, account: AccountId, at: Option<Timestamp>) {
+        let mut looks = self.sort_full_looks.lock().unwrap();
+        match at {
+            Some(at) => {
+                looks.insert(account, at);
+            }
+            None => {
+                looks.remove(&account);
+            }
+        }
+    }
+
+    pub(crate) fn set_older_sort(
+        &self,
+        account: AccountId,
+        sort: Option<crate::mailsort::OlderSort>,
+    ) {
+        let mut sorts = self.older_sorts.lock().unwrap();
+        match sort {
+            Some(s) => {
+                sorts.insert(account, s);
+            }
+            None => {
+                sorts.remove(&account);
+            }
+        }
     }
 
     pub(crate) fn categorize_cursor(&self, account: AccountId) -> Option<String> {
@@ -336,6 +419,12 @@ impl MailRuntime {
         self.priority_cursor.lock().unwrap().clear();
     }
 
+    /// A sort of older mail is of this vault's mail.
+    fn forget_older_sorts(&self) {
+        self.older_sorts.lock().unwrap().clear();
+        self.sort_full_looks.lock().unwrap().clear();
+    }
+
     /// A profile and suggestions are both read from this vault's mail, so
     /// neither may outlive it being open.
     fn forget_writing_caches(&self) {
@@ -356,6 +445,7 @@ impl MailRuntime {
         self.forget_categorize_cursor();
         self.forget_autodraft_cursor();
         self.forget_priority_cursor();
+        self.forget_older_sorts();
         self.forget_writing_caches();
     }
 }

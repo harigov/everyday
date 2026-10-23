@@ -61,13 +61,14 @@ import type {
   MailAgentOriginKind,
   MailboxId,
   MailMessageId,
+  MailSorting,
   McpStatus,
   MeetingSettings,
   Memory,
   MemoryId,
   MemoryOrigin,
   ModelSettings,
-  ModelTier,
+  ModelSlot,
   NewSource,
   NewsSource,
   NewsSourceId,
@@ -1292,11 +1293,12 @@ export const api = {
   saveModelSettings: (settings: ModelSettings) => call('saveModelSettings', { settings }),
 
   /**
-   * Store the key for the endpoint `tier` points at -- every tier there
-   * shares it. There is deliberately no call that reads one back.
+   * Store the key for the endpoint `tier`'s card points at -- every card
+   * there shares it, the decision model's included. There is deliberately no
+   * call that reads one back.
    */
-  setModelKey: (tier: ModelTier, key: string) => call('setModelKey', { tier, key }),
-  clearModelKey: (tier: ModelTier) => call('clearModelKey', { tier }),
+  setModelKey: (tier: ModelSlot, key: string) => call('setModelKey', { tier, key }),
+  clearModelKey: (tier: ModelSlot) => call('clearModelKey', { tier }),
 
   conversations: (limit?: number) => call('listConversations', { limit }),
 
@@ -1484,6 +1486,17 @@ export const api = {
   thread: (id: ThreadId) => call('getThread', { id }),
   /** `mailbox`'s threads counted by category -- the inbox tabs' badges. */
   categoryCounts: (mailbox: MailboxId) => call('categoryCounts', { mailbox }),
+
+  // ── Mail sorting: the categories a decision model sorts into ─────────
+
+  mailSorting: () => call('mailSorting', {}),
+  saveMailSorting: (sorting: MailSorting) => call('saveMailSorting', { sorting }),
+  /** Sort older mail too, `days` back (`null`: all of it), in the background.
+   *  `again` re-asks about threads already sorted. */
+  sortOlderMail: (days: number | null, again: boolean, account?: AccountId | null) =>
+    call('sortOlderMail', { account: account ?? null, days, again }),
+  stopSortingOlderMail: (account?: AccountId | null) =>
+    call('stopSortingOlderMail', { account: account ?? null }),
   /** A part left `available: false` on a `MailMessageDetail` -- over the
    *  attachment cap, with no blob yet. */
   fetchAttachment: (messageId: MailMessageId, index: number) =>

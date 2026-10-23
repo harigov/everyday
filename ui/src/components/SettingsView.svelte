@@ -61,6 +61,7 @@
   import AssistantPanes from './AssistantPanes.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import DataPanel from './DataPanel.svelte'
+  import MailSortingPanel from './MailSortingPanel.svelte'
   import MeetingsPanel from './MeetingsPanel.svelte'
   import ModelsPanel from './ModelsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
@@ -177,6 +178,9 @@
     // a label for one of them.
     { id: 'profile', label: 'About You', icon: 'star' },
     { id: 'accounts', label: 'Accounts', icon: 'inbox' },
+    // Under Accounts: whose mail it sorts. Shown with the models, which do
+    // the sorting, on a backend that carries mail.
+    { id: 'sorting', label: 'Mail sorting', icon: 'tag', sub: true },
     // Before the assistant rather than under it: research and the quick asks
     // run on these too, and the assistant's own tab is who it is and how it
     // behaves, not which model it is.
@@ -234,7 +238,8 @@
     )
       .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
-      .filter((t) => t.id !== 'meetings' || meetings.supported),
+      .filter((t) => t.id !== 'meetings' || meetings.supported)
+      .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail)),
   )
 
   async function changePassword(e: Event) {
@@ -406,6 +411,8 @@
       <ProfilePanel />
     {:else if tab === 'accounts'}
       <AccountsPanel />
+    {:else if tab === 'sorting'}
+      <MailSortingPanel />
     {:else if tab === 'data'}
       <DataPanel />
     {:else if tab === 'general'}

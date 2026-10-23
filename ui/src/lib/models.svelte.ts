@@ -16,7 +16,7 @@ import { endpointOf } from './accounts'
 import { isLoopback } from './agent'
 import { api } from './api'
 import { app, errorMessage, isLocked, quietly } from './state.svelte'
-import type { LLMConfig, ModelSettings, ModelSettingsView, ModelTier } from './types'
+import type { LLMConfig, ModelSettings, ModelSettingsView, ModelSlot, ModelTier } from './types'
 
 class ModelsState {
   view = $state<ModelSettingsView | null>(null)
@@ -50,6 +50,11 @@ class ModelsState {
   /** Whether a key is stored for the endpoint `config` points at. */
   hasKey(config: Pick<LLMConfig, 'baseUrl'>): boolean {
     return this.view?.keyed.includes(endpointOf(config.baseUrl)) ?? false
+  }
+
+  /** Whether a key is stored for the address a decision model posts to. */
+  hasKeyAt(endpoint: string): boolean {
+    return this.view?.keyed.includes(endpoint) ?? false
   }
 
   /**
@@ -97,11 +102,11 @@ class ModelsState {
     this.view = await api.saveModelSettings(settings)
   }
 
-  async setKey(tier: ModelTier, key: string) {
+  async setKey(tier: ModelSlot, key: string) {
     this.view = await api.setModelKey(tier, key)
   }
 
-  async clearKey(tier: ModelTier) {
+  async clearKey(tier: ModelSlot) {
     this.view = await api.clearModelKey(tier)
   }
 }

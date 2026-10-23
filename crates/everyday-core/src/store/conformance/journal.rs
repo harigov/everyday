@@ -573,6 +573,11 @@ fn the_models_round_trip_and_start_unsaved(store: &dyn JournalStore) {
             },
             model: crate::llm::LLMModelConfig::quick(),
         }),
+        decision: Some(crate::llm::DecisionConfig {
+            api: crate::llm::DecisionApi::OpenAi,
+            url: Some("https://api.openai.com/v1/decisions".into()),
+            model: "gpt-6-luna".into(),
+        }),
     };
     match store.put_model_settings(&mine) {
         Ok(()) => {}
