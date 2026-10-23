@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use everyday_core::id::{AccountId, MailMessageId, MailboxId};
 use everyday_core::mail::categorize::{self, CategorizeInput};
-use everyday_core::mail::{Body, MailboxRole, Message, PartRef};
+use everyday_core::mail::{Body, Category, MailboxRole, Message, PartRef};
 use everyday_core::packstore::{PackRef, PackStore};
 use everyday_core::store::mail::IngestMessage;
 use everyday_core::{MailDoc, MailSearch, Vault};
@@ -240,6 +240,10 @@ pub async fn sync_headers<S: MailSession>(
     labels: &mut LabelMailboxes,
     threads: &mut ThreadIndex,
 ) -> SessionResult<UidSet> {
+    // Captured before a `UIDVALIDITY` reset zeroes `uidnext` below. A
+    // mailbox that has finished a pass has a real `uidnext`; one that has
+    // never been synced does not. See `arrivals::ingest_is_news`.
+    let mailbox_known = mailbox.row.uidnext != 0;
     let state = session.select(&mailbox.remote_name).await?;
 
     // A `UIDVALIDITY` change: forget this mailbox's membership and start
@@ -391,6 +395,7 @@ pub async fn sync_headers<S: MailSession>(
         headers.sort_by(|a, b| b.uid.cmp(&a.uid).then(b.internal_date.cmp(&a.internal_date)));
 
         let mut ingest_batch = Vec::with_capacity(headers.len());
+        let mut arrivals = Vec::new();
         for header in &headers {
             let mut resolved = match ingest::resolve_header(
                 ctx.vault,
@@ -414,6 +419,32 @@ pub async fn sync_headers<S: MailSession>(
             // what it does and, as importantly, what it deliberately leaves
             // alone.
             categorize_new_message(&mut resolved, &category_rules, ctx.contacts.as_deref());
+            // Held until the batch is stored, then noted for the account
+            // task to announce once the whole pass is over -- a headers
+            // batch is the wrong place to post, and a first sync of
+            // thousands of messages would otherwise post thousands of
+            // times. The decision of which messages are news at all lives
+            // in `arrivals`.
+            if crate::arrivals::ingest_is_news(&crate::arrivals::IngestFacts {
+                is_new: resolved.is_new,
+                priority: resolved.message.category == Some(Category::Priority),
+                unread: resolved.message.flags.unread(),
+                in_inbox: crate::arrivals::in_inbox(mailbox.row.role, &resolved.message.labels),
+                deleted: resolved.message.flags.deleted,
+                draft: resolved.message.flags.draft,
+                mailbox_known,
+                sent_at: resolved.message.date,
+                now: jiff::Timestamp::now(),
+            }) {
+                arrivals.push(crate::arrivals::PriorityMail {
+                    message_id: resolved.message.id.to_string(),
+                    from: crate::arrivals::sender_label(
+                        &resolved.message.from.name,
+                        &resolved.message.from.email,
+                    ),
+                    subject: resolved.message.subject.clone(),
+                });
+            }
             ingest_batch.push(IngestMessage {
                 message: resolved.message.clone(),
                 mailbox: mailbox.row.id,
@@ -479,8 +510,17 @@ pub async fn sync_headers<S: MailSession>(
                 }
             }
         }
-        if let Err(e) = ctx.vault.ingest_mail(ctx.account_id, ingest_batch) {
-            tracing::warn!(error = %e, "could not ingest a batch of headers");
+        match ctx.vault.ingest_mail(ctx.account_id, ingest_batch) {
+            // Only a stored message is news. One that failed to store comes
+            // back as new on the next pass, with a fresh id, and is noted
+            // then -- noting it now as well would announce it twice, the
+            // first time for mail that is not in the vault.
+            Ok(_) => {
+                for arrival in arrivals {
+                    ctx.statuses.note_priority_mail(ctx.account_id, arrival);
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "could not ingest a batch of headers"),
         }
         // Saved as the pass goes, not only once `sync_once` finishes -- see
         // `ContactIndex::persist_if_due` for what stopping half way used to

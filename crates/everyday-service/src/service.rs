@@ -851,6 +851,12 @@ impl Service {
         self.meetings.offer_seen(calendar, uid)
     }
 
+    /// Mark `(calendar, uid)` as already reminded, and say whether this was
+    /// the first time. See [`crate::runtime::meeting::MeetingRuntime::reminder_seen`].
+    pub fn calendar_reminder_seen(&self, calendar: CalendarId, uid: &str) -> bool {
+        self.meetings.reminder_seen(calendar, uid)
+    }
+
     /// Record that `id` had a chunk appended just now, in this process.
     pub fn meeting_touch_append(&self, id: RecordingId) {
         self.meetings.touch_append(id, self.instant());

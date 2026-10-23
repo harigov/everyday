@@ -94,7 +94,22 @@ struct Shared {
     /// Accounts whose sync has written something a thread list would show
     /// since the account task last asked -- see [`StatusRegistry::mark_changed`].
     changed: Mutex<HashSet<AccountId>>,
+    /// High-priority messages a pass has stored and not yet announced.
+    /// Taken once, when the pass finishes, the same way [`Self::changed`] is.
+    arrivals: Mutex<HashMap<AccountId, Arrivals>>,
 }
+
+/// One account's [`Shared::arrivals`]: every message id noted, so a message
+/// filed under two mailboxes counts once, and the first few in full.
+#[derive(Default)]
+struct Arrivals {
+    ids: HashSet<String>,
+    kept: Vec<crate::arrivals::PriorityMail>,
+}
+
+/// How many noted messages a pass keeps whole. A notification names three;
+/// the rest only count, through [`Arrivals::ids`].
+const ARRIVALS_KEPT: usize = 32;
 
 impl StatusRegistry {
     pub fn new() -> Self {
@@ -187,11 +202,48 @@ impl StatusRegistry {
         self.0.changed.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id)
     }
 
+    /// Remember a high-priority message this pass stored, so the account
+    /// task can raise one notification when the pass is over. A message
+    /// seen under two mailboxes in the same pass is recorded once.
+    pub fn note_priority_mail(
+        &self,
+        account_id: AccountId,
+        arrival: crate::arrivals::PriorityMail,
+    ) {
+        let mut map = self.0.arrivals.lock().unwrap_or_else(|e| e.into_inner());
+        let noted = map.entry(account_id).or_default();
+        if !noted.ids.insert(arrival.message_id.clone()) {
+            return;
+        }
+        // A pass does not need more than a handful of names. Past this,
+        // further messages are counted rather than held.
+        if noted.kept.len() < ARRIVALS_KEPT {
+            noted.kept.push(arrival);
+        }
+    }
+
+    /// The priority messages noted since the last take, the first few of
+    /// them whole, and how many there were in all -- and then none.
+    pub fn take_priority_mail(
+        &self,
+        account_id: AccountId,
+    ) -> (Vec<crate::arrivals::PriorityMail>, usize) {
+        let noted = self
+            .0
+            .arrivals
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&account_id)
+            .unwrap_or_default();
+        (noted.kept, noted.ids.len())
+    }
+
     /// Forget an account entirely -- called when it is deleted.
     pub fn forget(&self, account_id: AccountId) {
         self.0.progress.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
         self.0.nudges.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
         self.0.changed.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
+        self.0.arrivals.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
     }
 
     /// Every account this session has ever reported on.
@@ -228,6 +280,45 @@ mod tests {
         registry.mark_changed(a);
         registry.forget(a);
         assert!(!registry.take_changed(a));
+    }
+
+    #[test]
+    fn priority_mail_is_taken_once_deduped_and_dropped_with_the_account() {
+        let registry = StatusRegistry::new();
+        let a = AccountId::new();
+        let arrival = |id: &str| crate::arrivals::PriorityMail {
+            message_id: id.into(),
+            from: "Ada".into(),
+            subject: "Hi".into(),
+        };
+        registry.note_priority_mail(a, arrival("1"));
+        registry.note_priority_mail(a, arrival("1"));
+        registry.note_priority_mail(a, arrival("2"));
+        let (kept, total) = registry.take_priority_mail(a);
+        assert_eq!((kept.len(), total), (2, 2), "noted twice, stored once");
+        assert_eq!(registry.take_priority_mail(a).1, 0, "taking clears it");
+
+        registry.note_priority_mail(a, arrival("3"));
+        registry.forget(a);
+        assert_eq!(registry.take_priority_mail(a).1, 0);
+    }
+
+    #[test]
+    fn priority_mail_past_the_kept_few_is_still_counted() {
+        let registry = StatusRegistry::new();
+        let a = AccountId::new();
+        for i in 0..50 {
+            registry.note_priority_mail(
+                a,
+                crate::arrivals::PriorityMail {
+                    message_id: i.to_string(),
+                    from: "Ada".into(),
+                    subject: "Hi".into(),
+                },
+            );
+        }
+        let (kept, total) = registry.take_priority_mail(a);
+        assert_eq!((kept.len(), total), (ARRIVALS_KEPT, 50));
     }
 
     #[test]

@@ -217,6 +217,10 @@ pub async fn tick(service: &Arc<Service>) {
         let _ = blocking(move || {
             crate::meeting::watch::tick(&service, &vault);
             crate::meeting::spool::expire_failed_tick(&service, &vault);
+            // "Design sync starts in 8 minutes" -- distinct from the notes
+            // offer just above, which only fires for an online call and
+            // only as it begins. See `crate::arrivals`.
+            crate::arrivals::tick_calendars(&service, &vault);
             Ok(())
         })
         .await;

@@ -177,7 +177,7 @@ fn display_address(a: &Address) -> String {
     if a.name.is_empty() { a.email.clone() } else { format!("{} <{}>", a.name, a.email) }
 }
 
-fn excerpt(s: &str, cap: usize) -> String {
+pub(crate) fn excerpt(s: &str, cap: usize) -> String {
     if s.chars().count() <= cap { s.to_string() } else { s.chars().take(cap).collect() }
 }
 
@@ -565,7 +565,8 @@ async fn prioritize_account(
         crate::quick::run_prompt(client, model, PRIORITIZE_SYSTEM, &user, priority_schema())
             .await?;
 
-    apply_priority_answer(vault, &items, answer).await;
+    let promoted = apply_priority_answer(vault, &items, answer).await;
+    announce_promoted_priority(service, vault, account_id, &promoted).await;
     // Every thread this tick actually asked about is marked as such,
     // whatever the model said -- including a `false` -- which is what
     // makes the filter above skip it next tick until a new message
@@ -606,7 +607,12 @@ fn parse_priority_answer(answer: &Value) -> Vec<(usize, bool)> {
 /// (a bad index) is silently ignored, on [`apply_categorize_answer`]'s
 /// own terms, and a store error is swallowed the same way -- a thread
 /// deleted out from under this tick is not this pass's problem to report.
-async fn apply_priority_answer(vault: &Arc<Vault>, items: &[PriorityCandidate], answer: Value) {
+async fn apply_priority_answer(
+    vault: &Arc<Vault>,
+    items: &[PriorityCandidate],
+    answer: Value,
+) -> Vec<MailMessageId> {
+    let mut promoted = Vec::new();
     for (index, priority) in parse_priority_answer(&answer) {
         if !priority {
             continue;
@@ -617,9 +623,68 @@ async fn apply_priority_answer(vault: &Arc<Vault>, items: &[PriorityCandidate], 
         }
         let message_id = item.message_id;
         let vault = vault.clone();
-        let _ =
-            blocking(move || Ok(vault.set_mail_message_category(message_id, Category::Priority)?))
-                .await;
+        if blocking(move || Ok(vault.set_mail_message_category(message_id, Category::Priority)?))
+            .await
+            .is_ok()
+        {
+            promoted.push(message_id);
+        }
+    }
+    promoted
+}
+
+/// A thread the model just moved to Priority, when the message is still
+/// unread, still recent and in the inbox. The pass also sorts a backlog the
+/// first time it runs, and mail filtered past the inbox; neither is mail
+/// arriving. See `arrivals::promoted_is_news`.
+async fn announce_promoted_priority(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account_id: AccountId,
+    ids: &[MailMessageId],
+) {
+    if ids.is_empty() {
+        return;
+    }
+    let now = service.now();
+    let mut mail = Vec::new();
+    for id in ids {
+        let id = *id;
+        let vault = vault.clone();
+        let Ok((msg, in_inbox)) = blocking(move || {
+            let msg = vault.mail_message(id)?;
+            // Gmail files the inbox as a label row of its own, so any of
+            // the message's mailboxes being the inbox is enough.
+            let mut in_inbox = false;
+            for (mailbox, _) in vault.mail_message_locations(id)? {
+                in_inbox |= crate::arrivals::in_inbox(vault.mailbox(mailbox)?.role, &msg.labels);
+            }
+            Ok((msg, in_inbox))
+        })
+        .await
+        else {
+            continue;
+        };
+        if !crate::arrivals::promoted_is_news(&crate::arrivals::PromotedFacts {
+            unread: msg.flags.unread(),
+            in_inbox,
+            deleted: msg.flags.deleted,
+            draft: msg.flags.draft,
+            sent_at: msg.date,
+            now,
+        }) {
+            continue;
+        }
+        mail.push(crate::arrivals::PriorityMail {
+            message_id: msg.id.to_string(),
+            from: crate::arrivals::sender_label(&msg.from.name, &msg.from.email),
+            subject: msg.subject,
+        });
+    }
+    if let Some(notice) =
+        crate::arrivals::priority_mail_notice(&account_id.to_string(), &mail, mail.len())
+    {
+        service.events().notify(notice);
     }
 }
 
