@@ -48,7 +48,6 @@ use rig_agent::AgentBuilder;
 use rig_agent::agent::OutputMode;
 use rig_agent::core::client::completion::CompletionClient;
 use rig_agent::core::message::ToolChoice;
-use rig_agent::core::providers::openai;
 use rig_agent::core::tool::{PortableDynamicTool, ToolOutput};
 use rig_agent::prelude::*;
 use serde_json::{Value, json};
@@ -121,7 +120,7 @@ pub async fn run(vault: Arc<Vault>, prompt: QuickPrompt) -> CommandResult<Value>
 /// [`everyday_core::mail::mail_ai_allowed`]. Saying the request-building rule
 /// once here, rather than copying it, is the whole point.
 pub async fn run_prompt(
-    client: openai::CompletionsClient,
+    client: crate::llm::Client,
     model: &LLMModelConfig,
     system: &str,
     user: &str,

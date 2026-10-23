@@ -63,6 +63,9 @@ futures = "0.3.34"
 # see `delivery::html_of`. Already in the tree through the Matrix SDK.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rig-core = "0.42"
+# The body of a request rig hands its HTTP client, which `llm::CacheMarks`
+# rewrites to mark prompt-cache breakpoints. Already in the tree under rig.
+bytes = "1"
 rig-agent = "0.42"
 # A cover made the size it is drawn at: decoded, shrunk and re-encoded as a
 # JPEG before it is stored -- see `covers.rs`. Without `default-features`,

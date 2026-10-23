@@ -905,6 +905,112 @@ async fn the_assistant_asks_for_the_reasoning_effort_its_model_is_set_to() {
     assert!(asked.get("temperature").is_none(), "a reasoning model picks its own");
 }
 
+/// Each turn's request starts with exactly what the one before it sent,
+/// short of its last message -- the system prompt, the tools and the thread
+/// so far -- whatever the clock says and whatever is on screen. That shared
+/// start is all a provider's prompt cache can serve, and while the clock and
+/// the screen were in the system prompt it was nothing at all.
+#[tokio::test]
+async fn a_turn_starts_with_what_the_turn_before_it_sent_so_a_cache_can_serve_it() {
+    let model = fake_model(says("Noted.")).await;
+    let (svc, _dir) = assistant_service(&model.endpoint);
+    let conversation = ConversationId::new().to_string();
+
+    for (prompt, app) in [("one", "todo"), ("two", "calendar"), ("three", "mail")] {
+        svc.send_message(
+            Ctx::local(),
+            json!({
+                "conversationId": conversation,
+                "prompt": prompt,
+                "onScreen": { "app": app },
+            }),
+            silent(),
+        )
+        .await
+        .unwrap();
+    }
+
+    let bodies: Vec<Value> = model
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| serde_json::from_str(r.split_once("\r\n\r\n").expect("a body").1).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 3);
+    for pair in bodies.windows(2) {
+        let (before, after) = (&pair[0], &pair[1]);
+        assert_eq!(before["tools"], after["tools"], "the same tools, in the same order");
+        let before = before["messages"].as_array().unwrap();
+        let after = after["messages"].as_array().unwrap();
+        let shared = before.len() - 1;
+        assert_eq!(before[..shared], after[..shared], "only the newest message differs");
+        assert!(
+            !after[shared]["content"].to_string().contains("<application_note>"),
+            "the note on a turn is not kept with it once it is history"
+        );
+    }
+
+    let last = bodies[2]["messages"].as_array().unwrap();
+    let system = last[0]["content"].to_string();
+    assert!(!system.contains("on their screen as they send this"), "no screen: {system}");
+    let newest = last.last().unwrap()["content"].to_string();
+    assert!(newest.contains("<application_note>\\nIt is"), "the clock: {newest}");
+    assert!(newest.contains("on their screen as they send this"), "the screen: {newest}");
+    assert!(newest.contains("three"), "and their words: {newest}");
+    let earlier = last[1]["content"].to_string();
+    assert!(earlier.contains("one") && !earlier.contains("<application_note>"), "{earlier}");
+}
+
+/// A Claude model caches only what the request marks, so the assistant's
+/// request marks the system prompt, the thread so far and this turn's
+/// message. The model above, served under no such name from a loopback
+/// address, is sent none.
+#[tokio::test]
+async fn a_claude_model_is_told_where_to_cache() {
+    let model = fake_model(says("Noted.")).await;
+    let (svc, _dir) = assistant_service(&model.endpoint);
+    let vault = svc.get().unwrap();
+    let mut models = vault.model_settings().unwrap();
+    models.medium.model.model = "anthropic/claude-sonnet-4.5".into();
+    vault.save_model_settings(&models).unwrap();
+
+    let conversation = ConversationId::new().to_string();
+    for prompt in ["one", "two"] {
+        svc.send_message(
+            Ctx::local(),
+            json!({ "conversationId": conversation, "prompt": prompt }),
+            silent(),
+        )
+        .await
+        .unwrap();
+    }
+
+    let requests = model.requests.lock().unwrap().clone();
+    let body: Value =
+        serde_json::from_str(requests[1].split_once("\r\n\r\n").expect("a body").1).unwrap();
+    let messages = body["messages"].as_array().unwrap();
+    let marked: Vec<&str> = messages
+        .iter()
+        .filter(|m| m.to_string().contains("cache_control"))
+        .map(|m| m["role"].as_str().unwrap())
+        .collect();
+    assert_eq!(marked, ["system", "assistant", "user"], "{body:#}");
+    assert!(messages.last().unwrap().to_string().contains("two"));
+
+    let plain = fake_model(says("Noted.")).await;
+    let (svc, _dir) = assistant_service(&plain.endpoint);
+    svc.send_message(
+        Ctx::local(),
+        json!({ "conversationId": ConversationId::new().to_string(), "prompt": "one" }),
+        silent(),
+    )
+    .await
+    .unwrap();
+    let requests = std::mem::take(&mut *plain.requests.lock().unwrap());
+    assert!(!requests[0].contains("cache_control"), "not for a model that caches by itself");
+}
+
 /// Ask the assistant, through a chat, to delete a task it has been given, and
 /// answer the question it asks with `answer`. What the turn said, what it
 /// asked, and whether the task survived.
