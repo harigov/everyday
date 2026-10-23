@@ -296,6 +296,14 @@ pub struct AgentSettings {
     /// chose.
     #[serde(default)]
     pub web: bool,
+    /// Whether the assistant may drive a browser: open pages in a private,
+    /// throwaway copy of Chrome or Chromium on this computer, click, and
+    /// type into forms. Only with [`web`](Self::web) on, and off until
+    /// somebody turns it on -- it runs a stranger's scripts on this machine
+    /// and can put words into a stranger's form, which reading a page cannot.
+    /// Typing always asks first. See `everyday_service::browser`.
+    #[serde(default)]
+    pub browser: bool,
     /// Whether the assistant dreams: reads the day overnight, revises what it
     /// has inferred about the person, and leaves proposals to accept or
     /// decline. Off until somebody turns it on, because it reads the journal.
@@ -337,6 +345,7 @@ impl Default for AgentSettings {
             remember: true,
             timezone: None,
             web: false,
+            browser: false,
             dreaming: false,
             proposals: crate::proposal::ProposalPolicy::default(),
             park_unattended: false,

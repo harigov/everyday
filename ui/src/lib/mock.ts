@@ -3495,6 +3495,7 @@ let agentSettings: AgentSettings = {
   maxSteps: 24,
   remember: true,
   web: false,
+  browser: false,
   dreaming: false,
   proposals: {},
   parkUnattended: false,

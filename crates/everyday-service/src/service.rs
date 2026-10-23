@@ -538,6 +538,9 @@ impl Service {
         self.transfers.clear();
         self.sign_ins.clear();
         self.token_cache.clear().await;
+        // The assistant's browsers: whatever a page has open in one is part
+        // of a conversation the key no longer unlocks.
+        crate::browser::close_all();
         self.supervisor().stop_all().await;
         // After the tasks that were writing through it have stopped, never
         // before: a pack store or index pulled out from under a sync task

@@ -57,7 +57,7 @@ base64 = "0.22"
 # segments or `chunking_strategy` to go, so this crate speaks the endpoint
 # directly. See `meeting/transcribe/openai.rs`'s module doc.
 reqwest = { version = "0.13", features = ["gzip", "multipart"] }
-tokio = { version = "1.53.1", features = ["sync", "rt", "time", "macros", "net"] }
+tokio = { version = "1.53.1", features = ["sync", "rt", "time", "macros", "net", "io-util"] }
 futures = "0.3.34"
 # A routine's emailed result: the model's Markdown as the message's HTML --
 # see `delivery::html_of`. Already in the tree through the Matrix SDK.
@@ -187,6 +187,12 @@ bzip2 = "0.6"
 # set. See `.github/workflows/check.yml` for how CI caches that archive
 # rather than re-downloading it every run.
 sherpa-onnx = { version = "1.13", optional = true }
+
+# `browser::launch` hands Chrome its end of the DevTools pipe on file
+# descriptors 3 and 4 between fork and exec (`dup2`), and tells it to die with
+# this process (`prctl`). Already in the tree through half the workspace.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 base64 = "0.22"

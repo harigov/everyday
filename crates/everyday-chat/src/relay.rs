@@ -1562,6 +1562,17 @@ pub(crate) fn confirmation_question(kind: &str, subject: &str, can_park: bool) -
                 format!("{head}\n\n`{}`", one_line(subject).replace('`', "'"))
             }
         }
+        // Typing into a page in the assistant's browser: the text, the field
+        // and the site, which the site can read the moment it is typed.
+        "type" => with_quote(
+            "**Type this into a web page?** The site can read it as soon as it is typed.",
+            subject,
+        ),
+        "click" => with_quote(
+            "**Click this in the browser?** I've read your mail in this conversation, so I'm \
+             checking that the mail isn't choosing where I go.",
+            subject,
+        ),
         _ => with_quote("**Go ahead with this?**", subject),
     };
     markdown.push_str("\n\n");
@@ -2116,6 +2127,21 @@ mod tests {
         let q = confirmation_question("fetch", "https://example.com/?q=a`b", false);
         assert!(q.markdown.contains("`https://example.com/?q=a'b`"), "{}", q.markdown);
         assert!(q.markdown.contains("Open this address"));
+    }
+
+    #[test]
+    fn typing_into_a_page_shows_the_text_the_field_and_the_site() {
+        let q = confirmation_question(
+            "type",
+            "\u{201c}red shoes\u{201d} into the field \u{201c}Search\u{201d} on shop.example",
+            false,
+        );
+        assert!(q.markdown.contains("Type this into a web page"), "{}", q.markdown);
+        assert!(q.markdown.contains("on shop.example"), "{}", q.markdown);
+        assert_eq!(q.choices, vec![Choice::Yes, Choice::No]);
+        let q =
+            confirmation_question("click", "the button \u{201c}Next\u{201d} on a.example", false);
+        assert!(q.markdown.contains("read your mail"), "{}", q.markdown);
     }
 
     #[test]

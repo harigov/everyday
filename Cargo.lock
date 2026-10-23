@@ -2726,6 +2726,7 @@ dependencies = [
  "image",
  "jiff",
  "jpeg-encoder",
+ "libc",
  "libdav",
  "pulldown-cmark",
  "rand 0.9.5",

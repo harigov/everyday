@@ -37,7 +37,8 @@
     read_web_page: 'globe',
     get_weather: 'sun',
   }
-  const icon = $derived(ICONS[card.name] ?? null)
+  /** Every browser tool is the web, and drawn as it. */
+  const icon = $derived(ICONS[card.name] ?? (card.name.startsWith('browser_') ? 'globe' : null))
 
   /**
    * Whether this card is asking about something leaving the vault rather
@@ -47,7 +48,11 @@
    * all". See `ConfirmKind` in `lib/types.ts`.
    */
   const outward = $derived(
-    card.confirmKind === 'outward' || card.confirmKind === 'search' || card.confirmKind === 'fetch',
+    card.confirmKind === 'outward' ||
+      card.confirmKind === 'search' ||
+      card.confirmKind === 'fetch' ||
+      card.confirmKind === 'type' ||
+      card.confirmKind === 'click',
   )
 
   /** The question, and the button that says yes to it, per kind. */
@@ -62,6 +67,16 @@
     fetch: {
       ask: 'Neither you nor a search gave it this address. Opening it tells that site it was asked for.',
       yes: 'Open',
+      icon: 'globe',
+    },
+    type: {
+      ask: 'This types into a web page. The site can read it as soon as it is typed — check the site is the one you mean.',
+      yes: 'Type',
+      icon: 'globe',
+    },
+    click: {
+      ask: 'Mail was read in this conversation, so this click could be one the mail chose.',
+      yes: 'Click',
       icon: 'globe',
     },
   } as const satisfies Record<string, { ask: string; yes: string; icon: IconName }>
