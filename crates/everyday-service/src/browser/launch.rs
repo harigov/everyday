@@ -30,7 +30,7 @@
 //! Windows passes handles in a different way this does not implement yet.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 /// The environment variable that names a browser to use instead of looking.
 pub const BROWSER_ENV: &str = "EVERYDAY_BROWSER";
@@ -40,10 +40,19 @@ pub const BROWSER_ENV: &str = "EVERYDAY_BROWSER";
 /// coordinates needs -- and a page lays out the same way every time.
 pub const VIEWPORT: (u32, u32) = (1280, 800);
 
-/// The browser to drive, if this computer has one. Looked for once.
-pub fn executable() -> Option<&'static Path> {
-    static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
-    FOUND.get_or_init(find).as_deref()
+/// The browser to drive, if this computer has one.
+///
+/// One that was found is remembered for as long as it is still there; not
+/// finding one is not, so a browser installed while the app is open -- what
+/// the assistant tells somebody to do when there is none -- is found the next
+/// time anything asks.
+pub fn executable() -> Option<PathBuf> {
+    static FOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
+    let mut found = FOUND.lock().unwrap();
+    if found.as_ref().is_none_or(|p| !p.is_file()) {
+        *found = find();
+    }
+    found.clone()
 }
 
 fn find() -> Option<PathBuf> {
@@ -168,8 +177,40 @@ pub struct Launched {
 }
 
 /// Start `executable` headless, with a fresh profile, behind `proxy`.
+///
+/// On a thread kept for nothing else, for the life of the process. Linux's
+/// "die with your parent" (`PR_SET_PDEATHSIG`) is about the parent *thread*,
+/// not the process: a browser forked from one of tokio's blocking threads
+/// would be killed the moment that thread retired, ten idle seconds later.
 #[cfg(unix)]
 pub fn launch(executable: &Path, proxy: std::net::SocketAddr) -> Result<Launched, String> {
+    type Request =
+        (PathBuf, std::net::SocketAddr, std::sync::mpsc::Sender<Result<Launched, String>>);
+    static LAUNCHER: Mutex<Option<std::sync::mpsc::Sender<Request>>> = Mutex::new(None);
+    let (answer, answered) = std::sync::mpsc::channel();
+    {
+        let mut launcher = LAUNCHER.lock().unwrap();
+        let sender = launcher.get_or_insert_with(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<Request>();
+            std::thread::Builder::new()
+                .name("browser-launcher".into())
+                .spawn(move || {
+                    for (executable, proxy, answer) in rx {
+                        let _ = answer.send(launch_here(&executable, proxy));
+                    }
+                })
+                .expect("a thread can be started");
+            tx
+        });
+        sender
+            .send((executable.to_path_buf(), proxy, answer))
+            .map_err(|_| "the browser launcher has stopped".to_string())?;
+    }
+    answered.recv().map_err(|_| "the browser launcher has stopped".to_string())?
+}
+
+#[cfg(unix)]
+fn launch_here(executable: &Path, proxy: std::net::SocketAddr) -> Result<Launched, String> {
     use std::os::fd::{AsRawFd, OwnedFd};
     use std::os::unix::fs::DirBuilderExt;
     use std::os::unix::process::CommandExt;
@@ -230,7 +271,13 @@ pub fn launch(executable: &Path, proxy: std::net::SocketAddr) -> Result<Launched
             // together. See `end`.
             libc::setpgid(0, 0);
             #[cfg(target_os = "linux")]
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                // The launcher could have gone between fork and here.
+                if libc::getppid() == 1 {
+                    libc::_exit(1);
+                }
+            }
             Ok(())
         });
     }

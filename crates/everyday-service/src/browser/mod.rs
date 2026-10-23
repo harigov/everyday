@@ -163,6 +163,7 @@ fn reap_when_idle(conversation: ConversationId, session: std::sync::Weak<Session
 pub fn close(conversation: ConversationId) {
     let closed = SESSIONS.lock().unwrap().remove(&conversation);
     drop(closed);
+    APPROVALS.lock().unwrap().remove(&conversation);
 }
 
 /// Close every browser: the vault has locked, and nothing the assistant was
@@ -170,6 +171,7 @@ pub fn close(conversation: ConversationId) {
 pub fn close_all() {
     let all: Vec<Arc<Session>> = SESSIONS.lock().unwrap().drain().map(|(_, s)| s).collect();
     drop(all);
+    APPROVALS.lock().unwrap().clear();
 }
 
 /// The address of the page `conversation`'s browser is on and every address
@@ -192,31 +194,47 @@ pub fn approval_key(tool: &str, arguments: &Value) -> String {
     format!("{tool} {arguments}")
 }
 
+/// What the gate let through and has not run yet, by conversation and then
+/// by [`approval_key`]. Apart from any one browser, so that an approval
+/// outlives a browser that crashed between the gate and the call, and a page
+/// open approved before there was a browser at all is found by the one it
+/// starts. Emptied when a conversation's browser is closed, and when the
+/// vault locks.
+type Approvals = HashMap<String, Vec<Approval>>;
+static APPROVALS: LazyLock<Mutex<HashMap<ConversationId, Approvals>>> =
+    LazyLock::new(Mutex::default);
+
 /// Record that the gate let `tool` with `arguments` through, having seen
-/// what `approval` says. A page open with no browser yet keeps its approval
-/// until the browser it starts can hold it.
+/// what `approval` says.
 pub fn approve(conversation: ConversationId, tool: &str, arguments: &Value, approval: Approval) {
     let key = approval_key(tool, arguments);
-    match existing(conversation) {
-        Some(session) => session.approve(key, approval),
-        None => {
-            PENDING_OPENS.lock().unwrap().entry(conversation).or_default().push((key, approval))
-        }
-    }
+    let mut approvals = APPROVALS.lock().unwrap();
+    approvals.entry(conversation).or_default().entry(key).or_default().push(approval);
 }
 
-/// Page opens approved before their conversation had a browser, by
-/// [`approval_key`].
-type Waiting = Vec<(String, Approval)>;
-
-/// Page opens approved before their conversation had a browser.
-static PENDING_OPENS: LazyLock<Mutex<HashMap<ConversationId, Waiting>>> =
-    LazyLock::new(Mutex::default);
+/// The approval the gate gave the call `key` names, taken: each is used once.
+fn take_approval(conversation: ConversationId, key: &str) -> Option<Approval> {
+    let mut approvals = APPROVALS.lock().unwrap();
+    let mine = approvals.get_mut(&conversation)?;
+    let list = mine.get_mut(key)?;
+    let found = list.pop();
+    if list.is_empty() {
+        mine.remove(key);
+    }
+    if mine.is_empty() {
+        approvals.remove(&conversation);
+    }
+    found
+}
 
 /// Run one browser tool call for `conversation`: what the tool hands back.
 async fn run(conversation: ConversationId, tool: &str, arguments: Value) -> Result<Value, String> {
     let action = BrowserAction::from_call(tool, &arguments)?;
-    let key = approval_key(tool, &arguments);
+    // Nothing is done that the gate did not let through.
+    let approval = take_approval(conversation, &approval_key(tool, &arguments)).ok_or(
+        "That was not approved. Every browser action goes through the confirmation gate; try \
+         it again.",
+    )?;
     if action == BrowserAction::Close {
         close(conversation);
         return Ok(json!({ "closed": true }));
@@ -225,12 +243,7 @@ async fn run(conversation: ConversationId, tool: &str, arguments: Value) -> Resu
         BrowserAction::Open { .. } => open(conversation).await?,
         _ => existing(conversation).ok_or("No page is open. Use browser_open first.")?,
     };
-    if let Some(waiting) = PENDING_OPENS.lock().unwrap().remove(&conversation) {
-        for (key, approval) in waiting {
-            session.approve(key, approval);
-        }
-    }
-    let seen = session.perform(&key, &action).await?;
+    let seen = session.perform(&action, approval).await?;
     Ok(seen.to_json())
 }
 
@@ -412,3 +425,20 @@ pub fn summarise(result: &Value) -> String {
 
 #[cfg(test)]
 mod live;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn nothing_runs_that_the_gate_did_not_approve_and_closing_forgets_approvals() {
+        let conversation = ConversationId::new();
+        let refused = run(conversation, action::LOOK, json!({})).await.unwrap_err();
+        assert!(refused.contains("not approved"), "{refused}");
+
+        let url = json!({ "url": "https://example.com/" });
+        approve(conversation, action::OPEN, &url, Approval::open("https://example.com/"));
+        close(conversation);
+        assert!(take_approval(conversation, &approval_key(action::OPEN, &url)).is_none());
+    }
+}

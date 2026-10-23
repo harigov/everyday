@@ -110,9 +110,6 @@ impl Cdp {
         method: &str,
         params: Value,
     ) -> Result<Value, String> {
-        if self.shared.closed.load(Ordering::Acquire) {
-            return Err("the browser has closed".into());
-        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut message = json!({ "id": id, "method": method, "params": params });
         if let Some(session) = session {
@@ -120,6 +117,15 @@ impl Cdp {
         }
         let (tx, rx) = oneshot::channel();
         self.shared.waiting.lock().unwrap().insert(id, tx);
+        // Looked at only once the waiter is in: the reader marks the pipe
+        // closed *before* it fails every waiter, so either it is seen closed
+        // here or this waiter is among those it fails. Looked at first, a
+        // waiter put in just after the reader had failed the rest would wait
+        // out the whole timeout for an answer that cannot come.
+        if self.shared.closed.load(Ordering::Acquire) {
+            self.shared.waiting.lock().unwrap().remove(&id);
+            return Err("the browser has closed".into());
+        }
         let bytes = serde_json::to_vec(&message).map_err(|e| e.to_string())?;
         if self.out.send(bytes).is_err() {
             self.shared.waiting.lock().unwrap().remove(&id);

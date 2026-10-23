@@ -12,7 +12,7 @@ use axum::routing::get;
 use serde_json::{Value, json};
 
 use super::action::{BrowserAction, Verdict, judge};
-use super::{Approval, Observation, Session, approval_key, launch, proxy};
+use super::{Approval, Observation, Session, launch, proxy};
 
 const HOME: &str = r#"<!doctype html><html><head><title>Test shop</title></head><body>
 <h1>Welcome to the shop</h1>
@@ -38,6 +38,14 @@ const HOME: &str = r#"<!doctype html><html><head><title>Test shop</title></head>
 </script>
 </body></html>"#;
 
+const TRICKS: &str = r#"<!doctype html><html><head><title>Tricks</title></head><body>
+<div style="background-image:linear-gradient(#123,#123);color:#fff;padding:8px">White words on a dark banner, plainly visible to anybody who looks.</div>
+<div id="panel" style="opacity:0">The details of the thing, shown only once somebody asks for them.</div>
+<button onclick="document.getElementById('panel').style.opacity = 1">Show details</button>
+<label for="nick">Nickname</label><input id="nick" type="text" onfocus="document.getElementById('other').focus()">
+<label for="other">Other</label><input id="other" type="text">
+</body></html>"#;
+
 const OTHER: &str = r#"<!doctype html><html><head><title>Other</title></head><body>
 <p>The other page.</p><script>alert('hello from the page')</script></body></html>"#;
 
@@ -45,6 +53,7 @@ async fn serve() -> std::net::SocketAddr {
     let app = Router::new()
         .route("/", get(|| async { Html(HOME) }))
         .route("/other", get(|| async { Html(OTHER) }))
+        .route("/tricks", get(|| async { Html(TRICKS) }))
         .route(
             "/search",
             get(|Query(q): Query<std::collections::HashMap<String, String>>| async move {
@@ -75,9 +84,7 @@ async fn act(session: &Session, tool: &str, arguments: Value) -> Result<Observat
             Approval::of(&facts)
         }
     };
-    let key = approval_key(tool, &arguments);
-    session.approve(key.clone(), approval);
-    session.perform(&key, &action).await
+    session.perform(&action, approval).await
 }
 
 /// The reference of the first line of `page` mentioning `needle`.
@@ -87,6 +94,21 @@ fn reference(page: &str, needle: &str) -> String {
             panic!("no element mentioning {needle:?} in:\n{page}");
         });
     line[1..line.find(']').unwrap()].to_string()
+}
+
+/// Let `session` go, and wait for its browser to be ended and its profile
+/// deleted -- which happens on a thread of its own, after this test would
+/// otherwise have returned.
+async fn finish(session: Arc<Session>) {
+    let profile = session.profile();
+    drop(session);
+    for _ in 0..100 {
+        if !profile.exists() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("{} was left behind", profile.display());
 }
 
 fn skip() -> bool {
@@ -146,16 +168,42 @@ async fn a_hostile_page_gets_nothing_it_tried_for() {
     assert!(seen.dialogs.iter().any(|d| d.contains("hello from the page")), "{:?}", seen.dialogs);
 
     // An approval for one site is no good on another.
-    let action = BrowserAction::Look;
-    let key = approval_key("browser_look", &json!({}));
-    session.approve(
-        key.clone(),
-        Approval { site: Some("bank.example".into()), ..Approval::default() },
-    );
-    let refused = session.perform(&key, &action).await.unwrap_err();
+    let elsewhere = Approval { site: Some("bank.example".into()), ..Approval::default() };
+    let refused = session.perform(&BrowserAction::Look, elsewhere).await.unwrap_err();
     assert!(refused.contains("moved"), "{refused}");
-    // And nothing happens without one at all.
-    assert!(session.perform(&key, &action).await.is_err());
+    finish(session).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_the_page_hides_or_redirects_does_not_change_what_is_read_or_typed() {
+    if skip() {
+        return;
+    }
+    let site = serve().await;
+    let session: Arc<Session> = Session::start(proxy::start(true).await.unwrap()).await.unwrap();
+    let home = format!("http://localhost:{}/tricks", site.port());
+    let seen = act(&session, "browser_open", json!({ "url": home })).await.unwrap();
+
+    // White on a dark gradient is read; a panel not shown yet is not, until
+    // it is.
+    assert!(seen.page.contains("White words on a dark banner"), "{}", seen.page);
+    assert!(!seen.page.contains("The details of the thing"), "{}", seen.page);
+    let show = reference(&seen.page, "Show details");
+    let seen = act(&session, "browser_click", json!({ "element": show })).await.unwrap();
+    assert!(seen.page.contains("The details of the thing"), "{}", seen.page);
+
+    // A field that hands its focus to another still gets the text, and the
+    // other gets nothing.
+    let nickname = reference(&seen.page, "Nickname");
+    let seen = act(&session, "browser_type", json!({ "element": nickname, "text": "robin" }))
+        .await
+        .unwrap();
+    let line = |label: &str| {
+        seen.page.lines().find(|l| l.starts_with("[e") && l.contains(label)).unwrap().to_string()
+    };
+    assert!(line("Nickname").contains("robin"), "{}", seen.page);
+    assert!(!line("Other").contains("robin"), "{}", seen.page);
+    finish(session).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -177,4 +225,5 @@ async fn this_machine_is_out_of_reach_through_the_real_proxy() {
         assert!(said.contains("private network"), "{address}: {said:?}");
         assert!(!said.contains("Welcome"), "{address}: {said:?}");
     }
+    finish(session).await;
 }

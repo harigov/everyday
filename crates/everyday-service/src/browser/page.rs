@@ -121,7 +121,10 @@ pub struct Session {
     /// The document `refs` were given out in.
     document: Mutex<String>,
     dialogs: Arc<Mutex<Vec<String>>>,
-    approvals: Mutex<std::collections::HashMap<String, Vec<Approval>>>,
+    /// This application's own JavaScript world in the current document: the
+    /// document's loader id, and the world's context. Made once per
+    /// document rather than once per question.
+    world: Mutex<Option<(String, i64)>>,
     /// The last page's address and links, which a later turn may open
     /// without asking -- see `super::seen`.
     seen: Mutex<String>,
@@ -131,9 +134,18 @@ pub struct Session {
 }
 
 impl Drop for Session {
+    /// Ended on a thread of its own: killing a browser, waiting for it and
+    /// deleting its profile is blocking work, and the last handle is often
+    /// let go of on an async thread -- the one the proxy runs on, for one.
     fn drop(&mut self) {
         if let Some(mut child) = self.child.lock().unwrap().take() {
-            launch::end(&mut child, &self.profile);
+            let profile = std::mem::take(&mut self.profile);
+            let ended = std::thread::Builder::new()
+                .name("browser-end".into())
+                .spawn(move || launch::end(&mut child, &profile));
+            if let Err(e) = ended {
+                tracing::warn!(error = %e, "could not end a browser");
+            }
         }
     }
 }
@@ -187,9 +199,8 @@ pub fn warnings(url: &str) -> Vec<String> {
 impl Session {
     /// Start a browser behind `proxy` and open a blank tab in it.
     pub async fn start(proxy: std::net::SocketAddr) -> Result<Arc<Session>, String> {
-        let executable = launch::executable()
-            .ok_or("no Chrome or Chromium was found on this computer")?
-            .to_path_buf();
+        let executable =
+            launch::executable().ok_or("no Chrome or Chromium was found on this computer")?;
         let launched = tokio::task::spawn_blocking(move || launch::launch(&executable, proxy))
             .await
             .map_err(|e| e.to_string())??;
@@ -204,7 +215,7 @@ impl Session {
                 refs: Mutex::new(Refs::default()),
                 document: Mutex::default(),
                 dialogs: Arc::default(),
-                approvals: Mutex::default(),
+                world: Mutex::default(),
                 seen: Mutex::default(),
                 last_used: Mutex::new(Instant::now()),
                 busy: tokio::sync::Mutex::new(()),
@@ -297,6 +308,12 @@ impl Session {
         });
     }
 
+    /// Where this browser's throwaway profile is.
+    #[cfg(test)]
+    pub fn profile(&self) -> PathBuf {
+        self.profile.clone()
+    }
+
     /// Whether the browser has gone.
     pub fn is_closed(&self) -> bool {
         self.cdp.is_closed()
@@ -316,21 +333,6 @@ impl Session {
         self.seen.lock().unwrap().clone()
     }
 
-    /// Record what the gate let through. See [`Approval`].
-    pub fn approve(&self, key: String, approval: Approval) {
-        self.approvals.lock().unwrap().entry(key).or_default().push(approval);
-    }
-
-    fn take_approval(&self, key: &str) -> Option<Approval> {
-        let mut approvals = self.approvals.lock().unwrap();
-        let list = approvals.get_mut(key)?;
-        let found = list.pop();
-        if list.is_empty() {
-            approvals.remove(key);
-        }
-        found
-    }
-
     async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         self.cdp.call(Some(&self.tab), method, params).await
     }
@@ -340,32 +342,51 @@ impl Session {
         location(&self.cdp, &self.tab).await
     }
 
-    /// A fresh context in this application's own JavaScript world.
+    /// The context of this application's own JavaScript world in the
+    /// current document, made the first time it is needed there.
     async fn world(&self) -> Result<i64, String> {
-        let tree = self.call("Page.getFrameTree", json!({})).await?;
-        let frame = tree
-            .pointer("/frameTree/frame/id")
-            .and_then(Value::as_str)
-            .ok_or("the page has no frame")?;
+        let (frame, document) = self.main_frame().await?;
+        if let Some((made_in, context)) = self.world.lock().unwrap().as_ref()
+            && *made_in == document
+        {
+            return Ok(*context);
+        }
         let world = self
             .call(
                 "Page.createIsolatedWorld",
                 json!({ "frameId": frame, "worldName": WORLD, "grantUniveralAccess": false }),
             )
             .await?;
-        world.get("executionContextId").and_then(Value::as_i64).ok_or("no world".into())
+        let context = world.get("executionContextId").and_then(Value::as_i64).ok_or("no world")?;
+        *self.world.lock().unwrap() = Some((document, context));
+        Ok(context)
+    }
+
+    /// Forget the world, when the browser says its context has gone.
+    fn lost_world(&self, error: &str) -> bool {
+        let lost = error.contains("context") && !gone(error);
+        if lost {
+            self.world.lock().unwrap().take();
+        }
+        lost
     }
 
     /// Run `expression` in this application's own world, by value.
     async fn evaluate(&self, expression: &str) -> Result<Value, String> {
-        let context = self.world().await?;
-        let answer = self
-            .call(
-                "Runtime.evaluate",
-                json!({ "expression": expression, "contextId": context, "returnByValue": true }),
-            )
-            .await?;
-        value_of(&answer)
+        let mut tries = 0;
+        loop {
+            let context = self.world().await?;
+            let answer = self
+                .call(
+                    "Runtime.evaluate",
+                    json!({ "expression": expression, "contextId": context, "returnByValue": true }),
+                )
+                .await;
+            match answer {
+                Err(e) if tries == 0 && self.lost_world(&e) => tries += 1,
+                answer => return value_of(&answer?),
+            }
+        }
     }
 
     /// Call `function` with `this` as `node`, in this application's own
@@ -376,30 +397,40 @@ impl Session {
         function: &str,
         arguments: Vec<Value>,
     ) -> Result<Value, String> {
-        let context = self.world().await?;
-        let resolved = self
-            .call(
-                "DOM.resolveNode",
-                json!({ "backendNodeId": node, "executionContextId": context }),
-            )
-            .await?;
-        let object = resolved
-            .pointer("/object/objectId")
-            .and_then(Value::as_str)
-            .ok_or("that element is gone")?;
         let arguments: Vec<Value> = arguments.into_iter().map(|v| json!({ "value": v })).collect();
-        let answer = self
-            .call(
-                "Runtime.callFunctionOn",
-                json!({
-                    "functionDeclaration": function,
-                    "objectId": object,
-                    "arguments": arguments,
-                    "returnByValue": true,
-                }),
-            )
-            .await?;
-        value_of(&answer)
+        let mut tries = 0;
+        loop {
+            let context = self.world().await?;
+            let resolved = self
+                .call(
+                    "DOM.resolveNode",
+                    json!({ "backendNodeId": node, "executionContextId": context }),
+                )
+                .await;
+            let resolved = match resolved {
+                Err(e) if tries == 0 && self.lost_world(&e) => {
+                    tries += 1;
+                    continue;
+                }
+                resolved => resolved?,
+            };
+            let object = resolved
+                .pointer("/object/objectId")
+                .and_then(Value::as_str)
+                .ok_or("that element is gone")?;
+            let answer = self
+                .call(
+                    "Runtime.callFunctionOn",
+                    json!({
+                        "functionDeclaration": function,
+                        "objectId": object,
+                        "arguments": arguments,
+                        "returnByValue": true,
+                    }),
+                )
+                .await?;
+            return value_of(&answer);
+        }
     }
 
     /// What `node` is, or `None` when it is no longer on the page.
@@ -439,6 +470,9 @@ impl Session {
     /// What the gate needs to know to judge `action` on this page.
     pub async fn facts(&self, action: &BrowserAction) -> Facts {
         let _busy = self.busy.lock().await;
+        // Being judged is being used: a browser must not be closed as idle
+        // while its next action waits for somebody's answer.
+        self.touch();
         let url = self.location().await.map(|(url, _)| url).unwrap_or_default();
         let page_open = url.starts_with("http://") || url.starts_with("https://");
         let element = match action.target() {
@@ -448,15 +482,15 @@ impl Session {
         Facts { page_open, site: site_of(&url), element }
     }
 
-    /// Do `action`, which the gate approved under `key`, and look at the
-    /// page afterwards.
-    pub async fn perform(&self, key: &str, action: &BrowserAction) -> Result<Observation, String> {
+    /// Do `action`, which the gate approved having seen what `approval`
+    /// records, and look at the page afterwards.
+    pub async fn perform(
+        &self,
+        action: &BrowserAction,
+        approval: Approval,
+    ) -> Result<Observation, String> {
         let _busy = self.busy.lock().await;
         self.touch();
-        let approval = self.take_approval(key).ok_or(
-            "That was not approved. Every browser action goes through the confirmation gate; \
-             try it again.",
-        )?;
         let mut done = None;
         match action {
             BrowserAction::Open { url } => {
@@ -553,14 +587,27 @@ impl Session {
                         let _ = self
                             .call("DOM.scrollIntoViewIfNeeded", json!({ "backendNodeId": node }))
                             .await;
-                        self.call_on(node, FOCUS_AND_SELECT, Vec::new()).await?;
+                        // A text field gets its text set on the field itself,
+                        // by the browser's own setter: nothing a page does
+                        // with the focus can send it somewhere else.
+                        match self.call_on(node, PUT_TEXT, vec![json!(text)]).await?.as_str() {
+                            Some("set") => {}
+                            Some("focused") => {
+                                self.call("Input.insertText", json!({ "text": text })).await?;
+                            }
+                            _ => {
+                                return Err("The page moved the focus to somewhere else, so \
+                                            nothing was typed. Look at the page again."
+                                    .into());
+                            }
+                        }
                     }
                     Target::Point { .. } => {
                         let (x, y) = self.aim(target, element).await?;
                         self.click_at(x, y).await?;
+                        self.call("Input.insertText", json!({ "text": text })).await?;
                     }
                 }
-                self.call("Input.insertText", json!({ "text": text })).await?;
                 if *submit {
                     self.press(super::action::Key::Enter).await?;
                 }
@@ -917,20 +964,33 @@ const HIT_TEST: &str = r#"function (x, y) {
   return (hit.tagName || 'something').toLowerCase();
 }"#;
 
-/// Focus a field and select what is in it, so what is typed replaces it.
-const FOCUS_AND_SELECT: &str = r#"function () {
+/// Put `text` into this field, replacing what is in it. An `<input>` or a
+/// `<textarea>` has its value set through the browser's own setter (which a
+/// page's framework sees as an edit, and which no focus trick can redirect)
+/// and is answered `set`; anything else that is editable is focused, its
+/// contents selected, and answered `focused`, for the browser to type into --
+/// unless the focus has gone elsewhere by then, which is answered `moved`.
+const PUT_TEXT: &str = r#"function (text) {
+  const deepest = () => {
+    let active = document.activeElement;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement) active = active.shadowRoot.activeElement;
+    return active;
+  };
   this.focus();
-  try {
-    if (typeof this.select === 'function') { this.select(); return true; }
-  } catch (e) {}
-  if (this.isContentEditable) {
-    const range = document.createRange();
-    range.selectNodeContents(this);
-    const selection = getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
+  if (this instanceof HTMLInputElement || this instanceof HTMLTextAreaElement) {
+    const proto = this instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value').set.call(this, text);
+    this.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+    this.dispatchEvent(new Event('change', { bubbles: true }));
+    return 'set';
   }
-  return true;
+  if (deepest() !== this) return 'moved';
+  const range = document.createRange();
+  range.selectNodeContents(this);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return 'focused';
 }"#;
 
 /// Choose an option of a `<select>` by what it says, or by its value.
@@ -954,7 +1014,20 @@ const SELECT_OPTION: &str = r#"function (wanted) {
 /// a screen-reader-only label on an icon button is a few words, and the
 /// button needs it to have a name. What a page hides to talk to a model is
 /// sentences.
+///
+/// Worked out afresh at every look: what this marked last time is unmarked
+/// first, so a tab panel or a dialog that was hidden then and is shown now is
+/// read. Only what this marked is unmarked -- an `aria-hidden` the page set
+/// itself is the page's. `display: none` and `visibility: hidden` are left to
+/// the accessibility tree, which already leaves them out; so is
+/// `content-visibility: auto`, which is text further down the page, not
+/// text hidden from anybody.
 const HIDE_INVISIBLE: &str = r#"(() => {
+  const MARK = 'data-everyday-hidden';
+  for (const el of document.querySelectorAll('[' + MARK + ']')) {
+    el.removeAttribute('aria-hidden');
+    el.removeAttribute(MARK);
+  }
   const MIN = 40;
   const root = document.body || document.documentElement;
   if (!root) return 0;
@@ -964,15 +1037,24 @@ const HIDE_INVISIBLE: &str = r#"(() => {
   const docW = Math.max(document.documentElement.scrollWidth, innerWidth);
   const docH = Math.max(document.documentElement.scrollHeight, innerHeight);
   const rgb = (s) => (s.match(/[\d.]+/g) || []).map(Number);
+  // The colour behind an element, or null when it cannot be told: a picture
+  // or a gradient behind the text is not a flat colour to compare with.
   const background = (el) => {
     for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
-      const c = rgb(getComputedStyle(n).backgroundColor);
+      const style = getComputedStyle(n);
+      if (style.backgroundImage && style.backgroundImage !== 'none') return null;
+      const c = rgb(style.backgroundColor);
       if (c.length >= 3 && (c.length < 4 || c[3] > 0.5)) return c;
     }
     return [255, 255, 255];
   };
   const invisible = (el) => {
-    if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) return true;
+    if (el.checkVisibility && !el.checkVisibility({ opacityProperty: true, visibilityProperty: true })) return true;
+    // Faded out, by the element or anything around it -- not every browser
+    // version's `checkVisibility` looks at opacity.
+    let opacity = 1;
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) opacity *= parseFloat(getComputedStyle(n).opacity);
+    if (opacity < 0.1) return true;
     const s = getComputedStyle(el);
     if (parseFloat(s.fontSize) < 4) return true;
     const colour = rgb(s.color);
@@ -981,7 +1063,7 @@ const HIDE_INVISIBLE: &str = r#"(() => {
     if (r.width < 2 || r.height < 2) return true;
     if (r.right + scrollX <= 0 || r.bottom + scrollY <= 0 || r.left + scrollX >= docW || r.top + scrollY >= docH) return true;
     const bg = background(el);
-    if (colour.length >= 3 && Math.abs(colour[0] - bg[0]) + Math.abs(colour[1] - bg[1]) + Math.abs(colour[2] - bg[2]) < 24) return true;
+    if (bg && colour.length >= 3 && Math.abs(colour[0] - bg[0]) + Math.abs(colour[1] - bg[1]) + Math.abs(colour[2] - bg[2]) < 24) return true;
     return false;
   };
   while ((node = walker.nextNode()) && count < 5000) {
@@ -990,8 +1072,9 @@ const HIDE_INVISIBLE: &str = r#"(() => {
     const el = node.parentElement;
     if (!el || looked.has(el)) continue;
     looked.add(el);
+    if (el.closest('[aria-hidden="true"]')) continue;
     if (el.closest('a,button,input,select,textarea,label,summary,[role=button],[role=link],[contenteditable]')) continue;
-    if (invisible(el)) { el.setAttribute('aria-hidden', 'true'); hidden++; }
+    if (invisible(el)) { el.setAttribute('aria-hidden', 'true'); el.setAttribute(MARK, ''); hidden++; }
   }
   return hidden;
 })()"#;
