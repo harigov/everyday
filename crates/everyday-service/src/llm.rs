@@ -37,6 +37,27 @@ pub type Client = openai::CompletionsClient<CacheMarks>;
 ///
 /// [`CommandError`]: crate::error::CommandError
 pub fn client(conn: &LLMProviderConfig, key: Option<String>) -> Result<Client, String> {
+    open(conn, key, CacheMarks::default())
+}
+
+/// Open a connection for a conversation with `access`'s model -- the
+/// assistant's turns, a routine's, a research job's -- whose requests repeat
+/// one another from the start, and so are worth marking for a provider that
+/// caches only what it is told to. See [`CacheMarks`].
+///
+/// Not for a one-shot request, which is never repeated: a mark on it buys a
+/// cache write at a premium that nothing ever reads.
+pub fn conversation_client(access: &ModelAccess) -> Result<Client, String> {
+    let conn = &access.config.connection;
+    let marks = CacheMarks::for_conversation(conn.endpoint(), &access.config.model.model);
+    open(conn, access.key.clone(), marks)
+}
+
+fn open(
+    conn: &LLMProviderConfig,
+    key: Option<String>,
+    marks: CacheMarks,
+) -> Result<Client, String> {
     match conn.provider {
         // Chat Completions, not the Responses API. Rig's default OpenAI
         // client speaks the newer Responses API, but the whole point of the
@@ -46,7 +67,7 @@ pub fn client(conn: &LLMProviderConfig, key: Option<String>) -> Result<Client, S
         // setting that exists for local models work everywhere except local
         // models.
         Provider::OpenAi => openai::CompletionsClient::builder()
-            .http_client(CacheMarks::for_endpoint(conn.endpoint()))
+            .http_client(marks)
             .base_url(conn.endpoint())
             // A local model needs no credential and is usually configured
             // without one, and the endpoint ignores whatever is sent -- so a
@@ -66,8 +87,8 @@ pub fn client_for(access: &ModelAccess) -> Result<Client, String> {
     client(&access.config.connection, access.key.clone())
 }
 
-/// rig's HTTP client, writing prompt-cache breakpoints into every chat
-/// request that goes where they are understood.
+/// rig's HTTP client, writing prompt-cache breakpoints into a conversation's
+/// chat requests when its provider wants them.
 ///
 /// Most providers cache on their own, from the start of a request up to the
 /// first thing that differs from one they have seen: OpenAI, DeepSeek, Z.ai's
@@ -78,46 +99,59 @@ pub fn client_for(access: &ModelAccess) -> Result<Client, String> {
 /// ends -- a `cache_control` on a content block -- and reading a request
 /// that does not costs the full price every turn.
 ///
-/// So the marks go where somebody reads them: anything sent to OpenRouter,
-/// which passes them to the providers that want them and translates them for
-/// OpenAI's newest models; and a Claude model anywhere else, which only
-/// a gateway that speaks Anthropic's dialect serves under that name. Not to
-/// OpenAI, DeepSeek or Z.ai directly, whose own APIs have no such field,
-/// cache without one, and may refuse a field they do not know -- and not to
-/// a model on this machine, which has no cache to fill.
+/// So the marks go where somebody reads them, which is decided once, from
+/// the endpoint and the model, when the connection is opened:
+///
+/// - a Claude model, wherever it is served -- only a gateway that speaks
+///   Anthropic's dialect serves one under that name;
+/// - anything sent to OpenRouter, which passes them to the providers that
+///   want them, translates them for OpenAI's newest models and lets the
+///   rest cache as they would have -- except Gemini, which reads only the
+///   last mark, the turn's own message, and so would be made to write a
+///   cache every turn that the next turn cannot use;
+/// - anything sent to Alibaba's own endpoints, which is Qwen.
+///
+/// Not to OpenAI, DeepSeek or Z.ai directly, whose own APIs have no such
+/// field, cache without one, and may refuse a field they do not know -- and
+/// not to a model on this machine, which has no cache to fill. Where nothing
+/// is marked, a request goes as it came, unread.
 ///
 /// See [`mark_cache_breakpoints`] for where they go.
 #[derive(Clone, Debug, Default)]
 pub struct CacheMarks {
     inner: reqwest::Client,
-    /// Whether every request here is marked, whatever the model.
-    openrouter: bool,
+    /// Whether this connection's chat requests are marked.
+    on: bool,
 }
 
 impl CacheMarks {
-    pub fn for_endpoint(endpoint: &str) -> Self {
+    /// The marks for a conversation with `model` at `endpoint`.
+    pub fn for_conversation(endpoint: &str, model: &str) -> Self {
         let host = reqwest::Url::parse(endpoint)
             .ok()
             .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
             .unwrap_or_default();
-        let openrouter = host == "openrouter.ai" || host.ends_with(".openrouter.ai");
-        Self { inner: reqwest::Client::new(), openrouter }
+        let on_host = |domain: &str| host == domain || host.ends_with(&format!(".{domain}"));
+        let model = model.to_lowercase();
+        let on = model.contains("claude")
+            || (on_host("openrouter.ai") && !model.contains("gemini"))
+            || on_host("aliyuncs.com");
+        Self { inner: reqwest::Client::new(), on }
     }
 
-    /// `req`, with its breakpoints written in if it is a chat request that
-    /// wants them. Anything else -- or a body that is not JSON -- goes as it
-    /// came.
+    /// `req`, with its breakpoints written in if this connection marks and
+    /// it is a chat request. Anything else -- or a body that is not JSON --
+    /// goes as it came.
     fn marked<T: Into<Bytes>>(&self, req: Request<T>) -> Request<Bytes> {
         let (mut parts, body) = req.into_parts();
         let body: Bytes = body.into();
-        if !parts.uri.path().ends_with("/chat/completions") {
+        if !self.on || !parts.uri.path().ends_with("/chat/completions") {
             return Request::from_parts(parts, body);
         }
         let Ok(mut json) = serde_json::from_slice::<Value>(&body) else {
             return Request::from_parts(parts, body);
         };
-        let claude = json["model"].as_str().is_some_and(|m| m.to_lowercase().contains("claude"));
-        if !(self.openrouter || claude) || !mark_cache_breakpoints(&mut json) {
+        if !mark_cache_breakpoints(&mut json) {
             return Request::from_parts(parts, body);
         }
         // The length changed; reqwest works it out again from the body.
@@ -177,7 +211,10 @@ impl HttpClientExt for CacheMarks {
 ///   looks back from a mark for a place it has cached before.
 /// - **This turn's message.** Every step of a turn that calls tools repeats
 ///   everything up to it, so the second step onwards reads it from the
-///   cache.
+///   cache. The next turn does not: it replays this message without its
+///   `turn_note`. So a turn that calls nothing pays the write premium on
+///   its own message -- only that, the rest having been read from the mark
+///   before it -- for the steps a turn that does call something saves.
 ///
 /// Nothing after this turn's message is marked. rig sends a tool result as
 /// a string, which not every provider takes as blocks, and a call made
@@ -402,7 +439,7 @@ mod tests {
                 { "role": "user", "content": "one" },
                 { "role": "assistant", "content": "Noted." },
                 { "role": "user", "content": [
-                    { "type": "text", "text": "[From the application: …] two" },
+                    { "type": "text", "text": "<application_note>…</application_note> two" },
                     { "type": "image_url", "image_url": { "url": "data:image/png;base64,AA" } },
                 ] },
                 { "role": "assistant", "content": null, "tool_calls": [] },
@@ -443,10 +480,13 @@ mod tests {
             { "role": "system", "content": "rules" },
             { "role": "user", "content": "hello" },
         ]);
-        let openrouter = CacheMarks::for_endpoint("https://openrouter.ai/api/v1");
+        let marks = CacheMarks::for_conversation;
         for model in ["deepseek/deepseek-v3.2", "z-ai/glm-4.6", "anthropic/claude-opus-4.1"] {
+            let openrouter = marks("https://openrouter.ai/api/v1", model);
             assert_eq!(marked_at(&sent(&openrouter, &chat(model, messages.clone()))), [0, 1]);
         }
+        let qwen = marks("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen-max");
+        assert_eq!(marked_at(&sent(&qwen, &chat("qwen-max", messages.clone()))), [0, 1]);
 
         // DeepSeek, Z.ai and OpenAI cache by themselves, and have no field
         // for a mark.
@@ -455,20 +495,30 @@ mod tests {
             ("https://api.z.ai/api/paas/v4", "glm-4.6"),
             ("https://api.openai.com/v1", "gpt-5.1"),
             ("http://127.0.0.1:11434/v1", "qwen3:32b"),
+            // Gemini reads only the last mark, which never repeats.
+            ("https://openrouter.ai/api/v1", "google/gemini-2.5-pro"),
+            ("https://notopenrouter.ai/v1", "deepseek-chat"),
         ] {
             let body = chat(model, messages.clone());
-            assert_eq!(sent(&CacheMarks::for_endpoint(endpoint), &body), body, "{endpoint}");
+            assert_eq!(sent(&marks(endpoint, model), &body), body, "{endpoint} {model}");
         }
 
         // A gateway serving Claude by that name speaks Anthropic's dialect.
-        let gateway = CacheMarks::for_endpoint("https://llm.example.org/v1");
-        assert_eq!(marked_at(&sent(&gateway, &chat("claude-sonnet-4-5", messages))), [0, 1]);
-        assert!(!CacheMarks::for_endpoint("https://notopenrouter.ai/v1").openrouter);
+        let gateway = marks("https://llm.example.org/v1", "claude-sonnet-4-5");
+        assert_eq!(
+            marked_at(&sent(&gateway, &chat("claude-sonnet-4-5", messages.clone()))),
+            [0, 1]
+        );
+
+        // And a one-shot request is never marked, wherever it goes.
+        let one_shot = CacheMarks::default();
+        let body = chat("anthropic/claude-opus-4.1", messages);
+        assert_eq!(sent(&one_shot, &body), body);
     }
 
     #[test]
     fn a_request_that_is_not_a_chat_goes_as_it_came() {
-        let marks = CacheMarks::for_endpoint("https://openrouter.ai/api/v1");
+        let marks = CacheMarks::for_conversation("https://openrouter.ai/api/v1", "z-ai/glm-4.6");
         let req = Request::builder()
             .uri("https://openrouter.ai/api/v1/embeddings")
             .body(b"{\"messages\":[{\"role\":\"user\",\"content\":\"x\"}]}".to_vec())

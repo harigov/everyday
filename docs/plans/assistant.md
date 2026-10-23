@@ -217,18 +217,21 @@ takes its `today` and `tz` from the same zone, so "due this week" in a
 tool and "this week" in the prompt agree.
 
 *Changed October 2026:* the clock and what is on screen left
-`system_prompt` for `turn_note`, a bracketed note sent ahead of the
-person's words in each turn's message and never saved with it. The clock
-to the minute made every turn's system prompt new to the provider's
-prompt cache, and with it the tool schemas and the whole conversation
-after it, so every turn paid full price for all of them. For the same
-reason, `window` moves the start of a trimmed thread sixteen messages at a
-time rather than one per turn.
+`system_prompt` for `turn_note`, a note between `<application_note>` tags
+sent ahead of the person's words in each turn's message and never saved
+with it. The clock to the minute made every turn's system prompt new to
+the provider's prompt cache, and with it the tool schemas and the whole
+conversation after it, so every turn paid full price for all of them. What
+holds for one conversation only -- a routine's, a chat's -- now goes last,
+after the guidance. For the same reason, `window` moves the start of a
+trimmed thread in steps of 12,000 characters' worth rather than one message
+per turn.
 Providers that cache only what a request marks -- Claude, Qwen on
-Alibaba -- are sent `cache_control` breakpoints by `llm::CacheMarks`, the
-HTTP client every model request goes out on: on the system prompt, the
-thread so far and the turn's own message, for anything sent to OpenRouter
-and for a Claude model anywhere. OpenAI, DeepSeek and Z.ai's own APIs cache
+Alibaba -- are sent `cache_control` breakpoints by `llm::CacheMarks` on
+the system prompt, the thread so far and the turn's own message. Only a
+conversation's requests (`llm::conversation_client`) are marked, never a
+one-shot ask, and only for a Claude model, anything on OpenRouter but
+Gemini, and Alibaba's endpoints. OpenAI, DeepSeek and Z.ai's own APIs cache
 without being asked and are sent none.
 
 `Conversation` gains `#[serde(default)] run_id: Option<RoutineRunId>` inside

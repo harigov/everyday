@@ -1727,10 +1727,9 @@ fn build(
 ) -> CommandResult<Agent> {
     let model = &access.config.model;
 
-    let client =
-        crate::llm::client(&access.config.connection, access.key.clone()).map_err(|e| {
-            CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
-        })?;
+    let client = crate::llm::conversation_client(access).map_err(|e| {
+        CommandError::new(codes::AGENT, format!("could not start the assistant: {e}"))
+    })?;
 
     // Which core tools this vault can serve, worked out before the preamble
     // because the preamble's skill index depends on it: an index that says
@@ -1784,7 +1783,6 @@ fn build(
         &memories,
         &skills,
         settings.now().date(),
-        context,
     );
 
     // Only the tools this vault can actually serve, and -- for mail -- only
@@ -1874,6 +1872,17 @@ fn build(
         }
         .to_string(),
     );
+
+    // Where this conversation is happening -- on a scheduled run, that
+    // nobody is watching; from a chat, which one. Last, after the guidance,
+    // because it is the part most likely to differ from one conversation to
+    // the next, and a provider's cache shares everything above it between
+    // them all. (The guidance changes too, once, the turn a long thread
+    // first has its start left out; one turn's miss, and then it holds.)
+    if let Some(context) = context.map(str::trim).filter(|c| !c.is_empty()) {
+        preamble.push_str("\n\n");
+        preamble.push_str(context);
+    }
 
     let builder = AgentBuilder::new(client.completion_model(&model.model))
         .preamble(&preamble)
@@ -3517,9 +3526,10 @@ const HISTORY_MESSAGES: usize = 80;
 /// preamble, the tools and the work. See [`window`].
 const HISTORY_CHARS: usize = 60_000;
 
-/// How far the start of a trimmed thread moves at a time, in messages. See
+/// How far the start of a trimmed thread moves at a time, in characters'
+/// worth -- a fifth of [`HISTORY_CHARS`], or sixteen short messages. See
 /// [`window`].
-const HISTORY_STEP: usize = 16;
+const HISTORY_STEP: usize = 12_000;
 
 /// How many of the person's most recent messages are shown to the model
 /// with their pictures, this turn's own included. Older pictures are named
@@ -3529,6 +3539,11 @@ const HISTORY_STEP: usize = 16;
 /// again, on every turn it is shown in; the rail is one conversation that
 /// goes on for weeks. Three is the picture itself and the two follow-ups
 /// that are usually about it ("and the one on the left?").
+///
+/// The message a picture came with changes when the picture stops being
+/// shown, so a provider's prompt cache finds the thread new from there on,
+/// once, on that turn. That is the cheaper side: shown for every turn
+/// after, it would cost its thousand tokens again on each of them.
 const PICTURE_TURNS: usize = 3;
 
 /// What one picture shown again counts for against [`HISTORY_CHARS`]: about
@@ -3707,15 +3722,21 @@ fn with_unseen(text: &str, unseen: &[&Attachment]) -> String {
 /// [`PICTURE_CHARS`]). What is kept is always the end of `said`, which is
 /// how [`replay`] finds each kept message's pictures again.
 ///
-/// Once the thread no longer fits, where it starts moves `step` messages at
-/// a time -- to the next multiple of `step` at or after the first message
-/// that fits -- rather than one message every turn. A provider's prompt
-/// cache serves a request only up to the first thing that differs from one
-/// it has seen, and a window whose oldest message changed every turn made
-/// the whole replayed thread new on every turn of a long conversation. This
-/// way it is new once every `step` messages, and in between the window only
-/// grows at its end. It costs some of the oldest messages that would have
-/// fitted, never one that would not.
+/// Once the thread no longer fits, where it starts moves in steps of `step`
+/// rather than one message every turn. A provider's prompt cache serves a
+/// request only up to the first thing that differs from one it has seen,
+/// and a window whose oldest message changed every turn made the whole
+/// replayed thread new on every turn of a long conversation. This way it is
+/// new once a step, and in between the window only grows at its end.
+///
+/// The steps are measured from the start of the thread in what each message
+/// weighs -- its characters, but never less than `max_chars / max_messages`,
+/// so that both budgets are counted in the one unit -- and the window
+/// starts at the first message at or past the next step after the first
+/// message that fits. What that costs is some of the oldest messages that
+/// would have fitted, never one that would not: at most `step`'s worth and
+/// the one message that straddles it -- a few long ones where they are
+/// long, or sixteen short ones, out of the eighty.
 ///
 /// What falls out of the window is not lost: it stays in the vault and on
 /// screen, and [`Guidance`] tells the model that durable facts belong in
@@ -3738,7 +3759,7 @@ fn window(
         start = i;
     }
     if start > 0 {
-        start = start.div_ceil(step.max(1)).saturating_mul(step.max(1)).min(said.len() - 1);
+        start = on_the_step(said, start, max_chars / max_messages.max(1), step.max(1));
     }
     let mut trimmed = start > 0;
     let mut kept: Vec<(Role, String)> =
@@ -3758,6 +3779,23 @@ fn window(
         }
     }
     (kept, trimmed)
+}
+
+/// The first message at or after `start` that begins on or past a step --
+/// see [`window`] -- and never past the newest.
+fn on_the_step(said: &[(Role, &str, usize)], start: usize, least: usize, step: usize) -> usize {
+    let weights: Vec<usize> = said
+        .iter()
+        .map(|(_, text, pictures)| (text.chars().count() + pictures).max(least))
+        .collect();
+    let mut at: usize = weights[..start].iter().sum();
+    let mark = at.div_ceil(step) * step;
+    let mut i = start;
+    while at < mark && i + 1 < said.len() {
+        at += weights[i];
+        i += 1;
+    }
+    i
 }
 
 /// What [`stream`] ended with: the prose so far, and whether that is all of
@@ -4457,7 +4495,7 @@ mod tests {
         let starts: Vec<String> = (0..8)
             .map(|turn| {
                 let thread = said(101 + 2 * turn, 10);
-                let (kept, trimmed) = window(&borrowed(&thread), 80, 60_000, 16);
+                let (kept, trimmed) = window(&borrowed(&thread), 80, 60_000, 12_000);
                 assert!(trimmed);
                 assert!(kept.len() <= 80 && kept.len() > 80 - 16, "{}", kept.len());
                 assert_eq!(kept[0].0, Role::User);
@@ -4472,8 +4510,26 @@ mod tests {
     #[test]
     fn a_step_never_drops_the_newest_message() {
         let thread = said(5, 1_000);
-        let (kept, _) = window(&borrowed(&thread), 80, 1_500, 16);
+        let (kept, _) = window(&borrowed(&thread), 80, 1_500, 12_000);
         assert_eq!(kept.last(), thread.last());
+    }
+
+    #[test]
+    fn a_thread_of_long_messages_loses_only_a_few_to_the_step() {
+        // Long replies -- or pictures, which weigh as much -- so fifteen fit
+        // the characters and the eighty-message cap is nowhere near. A step
+        // counted in messages once kept one of the fifteen.
+        let mut first_kept = Vec::new();
+        for n in 16..60 {
+            let thread = said(n, 4_000);
+            let (kept, trimmed) = window(&borrowed(&thread), 80, 60_000, 12_000);
+            assert!(trimmed);
+            assert!(kept.len() >= 15 - 4 - 1, "{n} messages kept {}", kept.len());
+            assert_eq!(kept.last(), thread.last());
+            first_kept.push(n - kept.len());
+        }
+        let moves = first_kept.windows(2).filter(|pair| pair[0] != pair[1]).count();
+        assert!(moves <= first_kept.len() / 3, "it holds still between steps: {first_kept:?}");
     }
 
     #[test]

@@ -946,7 +946,7 @@ async fn a_turn_starts_with_what_the_turn_before_it_sent_so_a_cache_can_serve_it
         let shared = before.len() - 1;
         assert_eq!(before[..shared], after[..shared], "only the newest message differs");
         assert!(
-            !after[shared]["content"].to_string().contains("[From the application"),
+            !after[shared]["content"].to_string().contains("<application_note>"),
             "the note on a turn is not kept with it once it is history"
         );
     }
@@ -955,11 +955,11 @@ async fn a_turn_starts_with_what_the_turn_before_it_sent_so_a_cache_can_serve_it
     let system = last[0]["content"].to_string();
     assert!(!system.contains("on their screen as they send this"), "no screen: {system}");
     let newest = last.last().unwrap()["content"].to_string();
-    assert!(newest.contains("[From the application: it is"), "the clock: {newest}");
+    assert!(newest.contains("<application_note>\\nIt is"), "the clock: {newest}");
     assert!(newest.contains("on their screen as they send this"), "the screen: {newest}");
     assert!(newest.contains("three"), "and their words: {newest}");
     let earlier = last[1]["content"].to_string();
-    assert!(earlier.contains("one") && !earlier.contains("[From the application"), "{earlier}");
+    assert!(earlier.contains("one") && !earlier.contains("<application_note>"), "{earlier}");
 }
 
 /// A Claude model caches only what the request marks, so the assistant's
