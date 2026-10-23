@@ -2703,6 +2703,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "blake3",
+ "bytes",
  "bzip2 0.6.1",
  "calcard",
  "chrono",

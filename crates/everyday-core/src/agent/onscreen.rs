@@ -226,7 +226,8 @@ impl OnScreen {
 /// What [`describe`] wrote, and what the turn has to know about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Described {
-    /// The paragraph for the system prompt.
+    /// The paragraph sent with the turn's message -- see
+    /// [`super::turn_note`].
     pub text: String,
     /// Whether it quotes mail -- a subject, a sender, a reply's recipients
     /// -- which is somebody else's writing arriving in the model's context
@@ -238,7 +239,7 @@ pub struct Described {
     pub quotes_mail: bool,
 }
 
-/// The paragraph the system prompt carries about what is on screen.
+/// The paragraph the turn's message carries about what is on screen.
 ///
 /// `ctx` is the context the assistant's own tools run under for this turn --
 /// its caller and provider are what the mail gate reads, so a thread is
