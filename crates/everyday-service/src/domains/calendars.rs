@@ -388,7 +388,7 @@ async fn sync_calendar(
 ) -> CommandResult<SyncReport> {
     let vault = svc.require()?;
     let calendar = vault.calendar(args.id)?;
-    let report = sync_dispatch(&svc, &vault, &calendar).await?;
+    let report = sync_telling_about_new_events(&svc, &vault, &calendar).await?;
     // A hand-driven refresh that works ends the outage as much as a background
     // one does, so the next failure is news again. Without this, a feed fixed
     // from the sidebar would never notify a second time.
@@ -433,7 +433,7 @@ async fn sync_due_calendars(
     let mut out = Vec::new();
     for (id, name) in due {
         let Ok(calendar) = vault.calendar(id) else { continue };
-        match sync_dispatch(&svc, &vault, &calendar).await {
+        match sync_telling_about_new_events(&svc, &vault, &calendar).await {
             Ok(report) => {
                 svc.feed_recovered(id);
                 out.push(report);
@@ -471,13 +471,53 @@ async fn sync_due_calendars(
     Ok(out)
 }
 
+/// Sync one calendar, and say so when the sync added an event the calendar
+/// did not already hold.
+///
+/// The first sync of a subscription is its history -- every event would
+/// look new -- and a hidden calendar is one the person has asked not to be
+/// shown. Both stay quiet. A snapshot that cannot be read stays quiet too:
+/// announcing against an empty "before" would be the first-sync flood again.
+///
+/// The snapshot is taken before the network round-trip, so an event written
+/// from here while the sync is out (or brought back by a write's own
+/// resync) is missing from it. `arrivals::select_fresh` leaves the
+/// account's own events out for exactly that reason.
+async fn sync_telling_about_new_events(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    calendar: &Calendar,
+) -> CommandResult<SyncReport> {
+    let before = if calendar.visible && calendar.last_synced_at.is_some() {
+        let (svc, vault, calendar) = (svc.clone(), vault.clone(), calendar.clone());
+        blocking(move || Ok(crate::arrivals::event_identities(&vault, &calendar, svc.now())?))
+            .await
+            .ok()
+    } else {
+        None
+    };
+    let report = sync_dispatch(svc, vault, calendar).await?;
+    if let Some(before) = before {
+        let svc = svc.clone();
+        let vault = vault.clone();
+        let calendar = calendar.clone();
+        let _ = blocking(move || {
+            crate::arrivals::announce_fresh_events(&svc, &vault, &calendar, &before);
+            Ok(())
+        })
+        .await;
+    }
+    Ok(report)
+}
+
 /// One calendar's sync, whichever kind of subscription it is.
 ///
 /// The split this dispatches over is exactly [`CalendarOrigin`]'s: a `Url`
 /// goes through `feeds.rs`, an `Account` through `accountcal::sync`, and a
 /// `File` is never `is_due`, so it never reaches here at all -- both
-/// [`sync_calendar`] and [`sync_due_calendars`] call this rather than
-/// choosing themselves, so the choice is made in exactly one place.
+/// [`sync_calendar`] and [`sync_due_calendars`] go through
+/// [`sync_telling_about_new_events`], which calls this, so the choice is
+/// made in exactly one place.
 async fn sync_dispatch(
     svc: &Arc<Service>,
     vault: &Arc<Vault>,

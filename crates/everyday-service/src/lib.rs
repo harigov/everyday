@@ -41,6 +41,7 @@
 
 pub mod accountcal;
 pub mod agent;
+pub mod arrivals;
 pub mod chat;
 pub mod clock;
 pub mod command;

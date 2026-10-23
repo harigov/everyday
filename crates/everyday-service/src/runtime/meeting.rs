@@ -24,6 +24,13 @@ pub(crate) struct MeetingRuntime {
     /// relocks and unlocks -- `everyday_service::meeting::watch` is the
     /// only reader and writer.
     offered: RwLock<HashSet<(CalendarId, String)>>,
+    /// Calendar events this process has already reminded about, keyed the
+    /// same way as [`Self::offered`]. A reminder is once per process: the
+    /// minute tick would otherwise say "starts in 8 minutes" and then
+    /// "starts in 7" until the event began. Not cleared on lock, on the
+    /// same terms as `offered` -- relocking the screen is not a reason to
+    /// be told about the same meeting again.
+    reminded: RwLock<HashSet<(CalendarId, String)>>,
     /// When each recording last had a chunk appended to it, in this
     /// process. What `everyday_service::meeting::spool`'s unlock recovery
     /// reads to tell a call still being captured from one a crash or a quit
@@ -47,6 +54,7 @@ impl Default for MeetingRuntime {
     fn default() -> Self {
         Self {
             offered: RwLock::new(HashSet::new()),
+            reminded: RwLock::new(HashSet::new()),
             last_append: Mutex::new(HashMap::new()),
             expiry_warned: RwLock::new(HashSet::new()),
         }
@@ -59,6 +67,15 @@ impl MeetingRuntime {
     /// later ask.
     pub(crate) fn offer_seen(&self, calendar: CalendarId, uid: &str) -> bool {
         self.offered.write().unwrap().insert((calendar, uid.to_string()))
+    }
+
+    /// Mark `(calendar, uid)` as reminded this session, and say whether it
+    /// was new -- `true` the first time, `false` on every later ask. What
+    /// keeps [`crate::arrivals`]'s minute tick from raising the same
+    /// "starting soon" notice on every pass while the event is still inside
+    /// its window.
+    pub(crate) fn reminder_seen(&self, calendar: CalendarId, uid: &str) -> bool {
+        self.reminded.write().unwrap().insert((calendar, uid.to_string()))
     }
 
     /// Record that `id` had a chunk appended just now, in this process.
