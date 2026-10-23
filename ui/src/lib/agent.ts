@@ -450,6 +450,46 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
         text: running ? 'Updating the plan' : done ? 'Updated the plan' : 'Update the plan',
         detail: null,
       }
+    case 'browser_open': {
+      const url = arg(args, 'url')
+      return {
+        text: running ? 'Opening' : done ? 'Opened' : 'Open',
+        detail: url ? hostOf(url) : 'a page in the browser',
+      }
+    }
+    case 'browser_click':
+      // The reference (`e12`) means nothing to a person; the page it led to
+      // is the card's summary.
+      return { text: running ? 'Clicking' : done ? 'Clicked' : 'Click', detail: null }
+    case 'browser_type':
+      return {
+        text: running ? 'Typing' : done ? 'Typed' : 'Type',
+        detail: arg(args, 'text'),
+      }
+    case 'browser_select':
+      return {
+        text: running ? 'Choosing' : done ? 'Chose' : 'Choose',
+        detail: arg(args, 'option'),
+      }
+    case 'browser_press':
+      return { text: running ? 'Pressing' : done ? 'Pressed' : 'Press', detail: arg(args, 'key') }
+    case 'browser_scroll':
+      return {
+        text: running ? 'Scrolling the page' : done ? 'Scrolled the page' : 'Scroll the page',
+        detail: null,
+      }
+    case 'browser_back':
+      return { text: running ? 'Going back' : done ? 'Went back' : 'Go back', detail: null }
+    case 'browser_look':
+      return {
+        text: running ? 'Looking at the page' : done ? 'Looked at the page' : 'Look at the page',
+        detail: null,
+      }
+    case 'browser_close':
+      return {
+        text: running ? 'Closing the browser' : done ? 'Closed the browser' : 'Close the browser',
+        detail: null,
+      }
     case 'read_skill':
       return {
         text: running ? 'Following' : done ? 'Followed' : 'Follow',

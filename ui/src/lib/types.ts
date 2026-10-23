@@ -3013,6 +3013,13 @@ export interface AgentSettings {
    */
   web: boolean
   /**
+   * Whether the assistant may drive a browser: a private, throwaway copy of
+   * the Chrome or Chromium on this computer, to click and fill in forms. Only
+   * with `web` on, and off until turned on. Typing into a page always asks.
+   * Optional because a backend older than the field leaves it out.
+   */
+  browser?: boolean
+  /**
    * Whether the assistant dreams: reads the day overnight, revises what it
    * has noticed about the person, and leaves proposals. Off by default,
    * because it reads the journal. Turning it on creates the three dream
@@ -3544,10 +3551,13 @@ export interface ProposalPolicy {
  * after mail was read this turn, and `'fetch'` is `read_web_page` asked to
  * open an address nobody gave it -- not the person, not a search, not a page
  * it read -- which is the shape a model talked into sending something out
- * would take. See `agent::tools::mail`'s module docs in the Rust core, and
- * `ConfirmGate` in the service, for the whole of the reasoning behind each.
+ * would take. `'type'` is the browser about to type into a page -- always
+ * asked, with the text, the field and the site -- and `'click'` is a click
+ * in the browser after mail was read this turn. See `agent::tools::mail`'s
+ * module docs in the Rust core, `ConfirmGate` in the service, and the
+ * service's `browser` module, for the whole of the reasoning behind each.
  */
-export const CONFIRM_KINDS = ['destructive', 'outward', 'search', 'fetch'] as const
+export const CONFIRM_KINDS = ['destructive', 'outward', 'search', 'fetch', 'type', 'click'] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 
 /**

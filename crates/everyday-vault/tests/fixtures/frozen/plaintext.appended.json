@@ -140,6 +140,7 @@
     "kind": "agent_settings",
     "record": {
       "settings": {
+        "browser": false,
         "companion": {},
         "confirmDestructive": true,
         "confirmWeb": true,

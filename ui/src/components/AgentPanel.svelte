@@ -426,6 +426,23 @@
         <label class="toggle">
           <input
             type="checkbox"
+            checked={draft.browser ?? false}
+            onchange={(e) => draft && (draft.browser = e.currentTarget.checked)}
+          />
+          <span>
+            <b>Let it use a browser</b>
+            <small>
+              For sites a page read is not enough for — a site's own search box, a form, buttons. It
+              opens them in a private copy of the Chrome or Chromium on this computer, signed in to
+              nothing and thrown away afterwards, that cannot reach this computer or your network.
+              It always asks before typing anything into a page, and never types passwords, codes or
+              card details.
+            </small>
+          </span>
+        </label>
+        <label class="toggle">
+          <input
+            type="checkbox"
             checked={draft.confirmWeb ?? true}
             onchange={(e) => draft && (draft.confirmWeb = e.currentTarget.checked)}
           />
