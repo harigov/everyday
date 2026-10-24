@@ -53,6 +53,15 @@ const TRAY_ID: &str = "everyday";
 /// Chosen by the shell, not the interface -- see [`Tray::set_recording`].
 pub const STOP_RECORDING_ID: &str = "everyday:stop-recording";
 
+/// The two ways to start taking notes from the tray, chosen by the shell for
+/// the same reason `STOP_RECORDING_ID` is: there is no quick action behind
+/// either. "Take notes for ..." answers the oldest pending offer (see
+/// [`Tray::set_offer`]); "Take notes now" starts a recording with no
+/// meeting behind it, and is there whenever nothing is being recorded and
+/// nothing is on offer. Both handled directly in [`on_menu_event`].
+const TAKE_OFFER_ID: &str = "everyday:take-offer";
+const TAKE_NOTES_ID: &str = "everyday:take-notes";
+
 /// The optional "current/next meeting" line -- see [`meeting_line`] -- and
 /// its "Join" item, both chosen by the shell for the same reason
 /// `STOP_RECORDING_ID` is: there is no quick action behind either, so there
@@ -353,6 +362,10 @@ pub struct Tray {
     /// the same way `SHOW_ID`/`QUIT_ID` are the shell's own rather than
     /// something a quick action could collide with.
     recording: Mutex<Option<String>>,
+    /// `Some(title)` while an offer to take notes is waiting for an answer
+    /// -- the oldest one; see [`Tray::set_offer`] and `offers.rs`, which is
+    /// the one caller.
+    offer: Mutex<Option<String>>,
     /// The "show the next meeting" preference -- off by default, like every
     /// `bool` field this struct's `#[derive(Default)]` gives a fresh value.
     /// Set by [`Tray::set_meeting_enabled`], the one caller, which is
@@ -403,6 +416,28 @@ impl Tray {
         self.rebuild(app, &items)
     }
 
+    /// Put a "Take notes for ..." item at the top of the menu while `title`
+    /// is `Some`, so an offer the person did not see -- the window was
+    /// hidden, the notification went by -- can still be said yes to from
+    /// the one place that is always on screen; take it away when `None`.
+    /// Rebuilds around whatever else was last set, like
+    /// [`Tray::set_recording`].
+    ///
+    /// Unlike `set_recording`, this never puts an icon up on a desktop that
+    /// has none: an offer is not the one thing that must be reachable (the
+    /// banner and the notification carry it), and a person who switched the
+    /// tray off should not have it come back because a meeting started.
+    /// With no icon showing the title is only remembered, for the next
+    /// rebuild.
+    pub fn set_offer(&self, app: &AppHandle, title: Option<&str>) -> CommandResult<bool> {
+        *self.offer.lock().unwrap() = title.map(str::to_string);
+        if !self.is_showing() {
+            return Ok(false);
+        }
+        let items = self.last_items.lock().unwrap().clone();
+        self.rebuild(app, &items)
+    }
+
     fn rebuild(&self, app: &AppHandle, items: &[TrayItem]) -> CommandResult<bool> {
         // Built before either lock is taken. Every menu call here hops to the
         // main thread and blocks until it answers, so holding a lock across
@@ -426,6 +461,32 @@ impl Tray {
                 .map_err(menu_error)?,
             ),
             None => None,
+        };
+        // Something to start, when nothing is running. An offer to take
+        // notes of a particular meeting goes first, above everything, because
+        // it is the one item that is time-sensitive; "Take notes now" is
+        // what is left when there is no offer, and sits where "Stop
+        // recording" does, since the two are never both there.
+        let offer = self.offer.lock().unwrap().clone();
+        let take_offer = match (&recording, &offer) {
+            (None, Some(title)) => Some(
+                MenuItem::with_id(
+                    app,
+                    TAKE_OFFER_ID,
+                    format!("Take notes for \u{201c}{title}\u{201d}"),
+                    true,
+                    NO_ACCEL,
+                )
+                .map_err(menu_error)?,
+            ),
+            _ => None,
+        };
+        let take_now = match (&recording, &offer) {
+            (None, None) => Some(
+                MenuItem::with_id(app, TAKE_NOTES_ID, "Take notes now", true, NO_ACCEL)
+                    .map_err(menu_error)?,
+            ),
+            _ => None,
         };
         // Computed fresh every rebuild, same as `assistant_line` below --
         // see this file's "optional 'current/next meeting' line" section.
@@ -474,7 +535,10 @@ impl Tray {
         // assistant/show/quit is skipped when the meeting block already put
         // one there and nothing else did.
         let mut all: Vec<&dyn IsMenuItem<Wry>> = Vec::new();
-        let has_meeting_items = meeting_item.is_some();
+        let has_meeting_items = meeting_item.is_some() || take_offer.is_some();
+        if let Some(item) = &take_offer {
+            all.push(item);
+        }
         if let Some(item) = &meeting_item {
             all.push(item);
         }
@@ -484,6 +548,9 @@ impl Tray {
         let quick_start = all.len();
         all.extend(quick.iter().map(Box::as_ref));
         if let Some(item) = &stop_recording {
+            all.push(item);
+        }
+        if let Some(item) = &take_now {
             all.push(item);
         }
         let has_quick_items = all.len() > quick_start;
@@ -742,6 +809,8 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     match id {
         SHOW_ID => raise_window(app),
         STOP_RECORDING_ID => crate::meeting::stop_from_tray(app.clone()),
+        TAKE_OFFER_ID => crate::offers::take_oldest(app),
+        TAKE_NOTES_ID => crate::offers::take_now(app),
         OPEN_MEETING_ID => {
             raise_window(app);
             // The interface's own half -- switching to the calendar app --

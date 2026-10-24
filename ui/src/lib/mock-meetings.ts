@@ -16,8 +16,12 @@
 // the functions below; `api.ts` wires the three event names to
 // `mockOnMeetingStatus` and its two siblings.
 //
-// Dev-only triggers -- `mock_trigger_meeting_offer` and
-// `mock_trigger_still_on` -- are mock-only commands, called through
+// The shell owns pending offers in the real app (`meeting_offers`,
+// `meeting_offer_answer`, and the `meeting-offer-settled` / `-failed` /
+// `-setup` events); `pendingOffers` below stands in for that list.
+//
+// Dev-only triggers -- `mock_trigger_meeting_offer`,
+// `mock_trigger_mic_offer` and `mock_trigger_still_on` -- are mock-only commands, called through
 // `meetings.svelte.ts`'s own use of the untyped `callCommand` escape hatch
 // in `api.ts`, the same one a real build never has a reason to reach for.
 // There is no real command of either name; they exist so the offer banner
@@ -46,7 +50,7 @@ import type {
   VoiceprintId,
   VoiceprintInfo,
 } from './types'
-import type { MeetingOfferPayload } from './api'
+import type { MeetingOfferAnswer, MeetingOfferPayload } from './api'
 
 // ── Small local helpers, independent of mock.ts's own ──────────────────
 
@@ -108,6 +112,7 @@ const templates: NoteTemplate[] = [
 let settings: MeetingSettings = {
   enabled: false,
   offer: 'ask',
+  micOffer: true,
   calendars: { calendarIds: [], roleIds: [] } satisfies CalendarFilter,
   skippedSeries: [],
   transcriber: null,
@@ -732,6 +737,11 @@ let captureTimer: ReturnType<typeof setInterval> | null = null
 const statusHandlers = new Set<(s: CaptureStatus | null) => void>()
 const stillOnHandlers = new Set<(id: RecordingId) => void>()
 const offerHandlers = new Set<(o: MeetingOfferPayload) => void>()
+const offerSettledHandlers = new Set<(key: string) => void>()
+const offerFailedHandlers = new Set<(key: string, message: string) => void>()
+const offerSetupHandlers = new Set<(key: string) => void>()
+/** The shell's list of unanswered offers, oldest first. */
+const pendingOffers: MeetingOfferPayload[] = []
 
 export function mockOnMeetingStatus(handler: (s: CaptureStatus | null) => void): void {
   statusHandlers.add(handler)
@@ -741,6 +751,16 @@ export function mockOnMeetingStillOn(handler: (id: RecordingId) => void): void {
 }
 export function mockOnMeetingOffer(handler: (o: MeetingOfferPayload) => void): void {
   offerHandlers.add(handler)
+}
+
+export function mockOnMeetingOfferSettled(handler: (key: string) => void): void {
+  offerSettledHandlers.add(handler)
+}
+export function mockOnMeetingOfferFailed(handler: (key: string, message: string) => void): void {
+  offerFailedHandlers.add(handler)
+}
+export function mockOnMeetingOfferSetup(handler: (key: string) => void): void {
+  offerSetupHandlers.add(handler)
 }
 
 function emitStatus() {
@@ -894,23 +914,110 @@ function runPipeline(r: Recording) {
 // commands -- see the module doc. Called by `MeetingsPanel`'s "Simulate"
 // section, shown only when `isMock`.
 
+/** Could a recording start now -- what the shell's `ready` says. */
+function offersReady(): boolean {
+  return settings.enabled && view().usable
+}
+
+function raiseOffer(payload: MeetingOfferPayload): void {
+  if (!payload.automatic) pendingOffers.push(payload)
+  for (const h of offerHandlers) h(payload)
+}
+
 export function mockTriggerMeetingOffer(automatic: boolean): void {
   const eventId = newId('evt-offer')
+  const calendarId = newId('cal-offer')
+  const uid = `evt-offer-${eventId}`
   const payload: MeetingOfferPayload = {
+    key: `event:${calendarId}:${uid}`,
+    source: 'calendar',
     eventId,
-    calendarId: newId('cal-offer'),
-    uid: `evt-offer-${eventId}`,
+    calendarId,
+    uid,
     title: 'Design sync',
     start: new Date().toISOString(),
     end: minutesFromNow(30),
     calendarName: 'Priya — Work',
+    app: null,
+    // Half of them have a link, so both button layouts can be seen.
+    joinUrl: counter % 2 === 0 ? 'https://meet.google.com/abc-defg-hij' : null,
+    ready: automatic || offersReady(),
     automatic,
   }
   if (automatic) {
     const r = mockMeetingStart({ eventId, title: payload.title, automatic: true })
     payload.recordingId = r.id
   }
-  for (const h of offerHandlers) h(payload)
+  raiseOffer(payload)
+}
+
+/** Another app took the microphone, with or without a calendar meeting on. */
+export function mockTriggerMicOffer(withEvent: boolean): void {
+  const base = {
+    source: 'microphone' as const,
+    app: 'Zoom',
+    ready: offersReady(),
+    automatic: false,
+  }
+  if (!withEvent) {
+    raiseOffer({
+      ...base,
+      key: newId('mic'),
+      eventId: null,
+      calendarId: null,
+      uid: null,
+      title: 'Call',
+      start: null,
+      end: null,
+      calendarName: null,
+      joinUrl: null,
+    })
+    return
+  }
+  const eventId = newId('evt-offer')
+  const calendarId = newId('cal-offer')
+  const uid = `evt-offer-${eventId}`
+  raiseOffer({
+    ...base,
+    key: `event:${calendarId}:${uid}`,
+    eventId,
+    calendarId,
+    uid,
+    title: 'Design sync',
+    start: new Date().toISOString(),
+    end: minutesFromNow(30),
+    calendarName: 'Priya — Work',
+    joinUrl: null,
+  })
+}
+
+/** `meeting_offers`: what is still waiting for an answer. */
+export function mockMeetingOffers(): MeetingOfferPayload[] {
+  return pendingOffers.map((o) => ({ ...o }))
+}
+
+/** `meeting_offer_answer`, as the shell would do it. */
+export function mockMeetingOfferAnswer(key: string, answer: MeetingOfferAnswer): Recording | null {
+  const at = pendingOffers.findIndex((o) => o.key === key)
+  const offer = at === -1 ? null : pendingOffers[at]!
+  if (!offer) throw new VaultError('not_found', 'That offer has already been answered.')
+  let recording: Recording | null = null
+  if (answer === 'take' || answer === 'join') {
+    if (!offersReady()) {
+      throw new VaultError('unusable', 'Meeting notes are not set up yet.')
+    }
+    recording = mockMeetingStart({ eventId: offer.eventId, title: offer.title })
+  } else if (answer === 'never') {
+    if (offer.source === 'microphone') {
+      settings = { ...settings, micOffer: false }
+    } else if (offer.uid) {
+      mockDismissMeetingOffer(offer.uid, offer.series ?? null, true)
+    }
+  }
+  pendingOffers.splice(at, 1)
+  // The shell settles the notification and the tray item along with it.
+  for (const h of offerSettledHandlers) h(key)
+  return recording
 }
 
 export function mockTriggerStillOn(): void {

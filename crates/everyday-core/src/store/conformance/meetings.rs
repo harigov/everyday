@@ -72,6 +72,7 @@ fn blank_settings() -> MeetingSettings {
     MeetingSettings {
         enabled: false,
         offer: Offer::Ask,
+        mic_offer: false,
         calendars: CalendarFilter::default(),
         skipped_series: std::collections::BTreeSet::new(),
         transcriber: None,

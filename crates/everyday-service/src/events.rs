@@ -39,9 +39,12 @@
 //! banner from (a title, a time range, which calendar) or to act on (the
 //! desktop shell starting capture itself when "Always" chose for you). It
 //! gets its own event, [`MeetingOffer`], raised by
-//! `everyday_service::meeting::watch` alongside an ordinary [`Notification`]
-//! with [`Reach::User`] so the offer still reaches somebody who is not
-//! looking at the window.
+//! `everyday_service::meeting::watch` -- and, on the desktop shell, by the
+//! microphone watcher's own answer from `meeting_now`. No ordinary
+//! [`Notification`] goes alongside it: the desktop shell raises its own
+//! actionable desktop notification for each offer, with buttons, so the offer
+//! still reaches somebody who is not looking at the window; a client with no
+//! shell just shows the banner.
 
 use everyday_core::id::{CalendarId, EventId};
 use everyday_core::record::RecordKind;
@@ -399,7 +402,8 @@ impl Change {
     }
 }
 
-/// "Take notes for Design sync?" -- a detected call starting now. Mirrors
+/// "Take notes for Design sync?" -- a meeting starting now, or one the
+/// microphone says is under way. Mirrors
 /// the TS `MeetingOfferPayload` in `ui/src/lib/api.ts`, minus the shell-only
 /// `recordingId` that type also carries: this event exists before any
 /// recording does, and the desktop shell is what fills that field in once
@@ -439,6 +443,19 @@ pub struct MeetingOffer {
     /// Detected on a calendar set to "Always": the shell has already begun
     /// recording, and this is a toast rather than a question.
     pub automatic: bool,
+    /// The event's join link, if it has one (`detect::join_link`), for a
+    /// "Join & take notes" button.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_url: Option<String>,
+    /// Whether a recording can start now: meeting notes are on and the
+    /// transcriber is usable. `false` makes the offer a prompt to set
+    /// meeting notes up, and never [`MeetingOffer::automatic`].
+    #[serde(default = "ready_by_default")]
+    pub ready: bool,
+}
+
+fn ready_by_default() -> bool {
+    true
 }
 
 /// Where the service's own remarks go.

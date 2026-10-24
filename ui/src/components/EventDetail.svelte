@@ -25,8 +25,9 @@
     timeOfDay,
     toLocalTimeValue,
   } from '../lib/format'
-  import { eventInProgress, looksLikeOnlineCall } from '../lib/meeting-hosts'
+  import { joinHref, joinLink, takeNotesWindow } from '../lib/meeting-hosts'
   import { meetings } from '../lib/meetings.svelte'
+  import { openExternal } from '../lib/open-external'
   import { minutesBetween, offsetInDay } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
   import {
@@ -180,14 +181,38 @@
   // `MeetingOfferBanner`'s and `NotesNav`'s own "take notes" controls, and
   // vice versa, so the three surfaces cannot race each other into starting
   // two recordings at once.
-  async function takeNotes(ev: CalendarEvent) {
+  //
+  // Offered on any timed event with somebody else invited, from five minutes
+  // before it starts (`takeNotesWindow`), not only an online call -- a
+  // meeting in a room is as worth a transcript, and the shell's own offers
+  // are broadened the same way. If meeting notes are not set up the button
+  // says so and opens Settings instead of starting something that would fail.
+  async function takeNotes(ev: CalendarEvent, join: string | null = null) {
     startNotesError = null
+    if (needsSetup) {
+      panels.openSettings('meetings')
+      return
+    }
     try {
+      // The link first, so the call is opening while the recording starts;
+      // a build that cannot open one (no browser to hand it to) still takes
+      // the notes.
+      if (join) void openExternal(joinHref(join))
       await meetings.startCapture({ eventId: ev.id, title: ev.title })
     } catch (e) {
       startNotesError = e instanceof Error ? e.message : String(e)
     }
   }
+
+  // Meeting notes' own settings decide whether "Take notes" can work, and
+  // the store only holds them once something has asked -- so ask once, here.
+  $effect(() => {
+    if (meetings.supported) void meetings.load()
+  })
+  /** Settings are known and say a recording could not start. */
+  const needsSetup = $derived(
+    meetings.view != null && !(meetings.view.settings.enabled && meetings.view.usable),
+  )
 
   const selected = $derived(calendar.selected)
   const block = $derived(
@@ -543,11 +568,22 @@
             <Icon name="play" size={14} />
             I'm in it now
           </button>
-          {#if meetings.supported && !meetings.capture && looksLikeOnlineCall(event) && eventInProgress(event)}
+          {#if meetings.supported && !meetings.capture && takeNotesWindow(event)}
+            {@const join = joinLink(event)}
             <button class="btn" disabled={meetings.starting} onclick={() => void takeNotes(event)}>
               <Icon name="mic" size={14} />
-              {meetings.starting ? 'Starting…' : 'Take notes'}
+              {needsSetup ? 'Set up meeting notes' : meetings.starting ? 'Starting…' : 'Take notes'}
             </button>
+            {#if join && !needsSetup}
+              <button
+                class="btn"
+                disabled={meetings.starting}
+                onclick={() => void takeNotes(event, join)}
+              >
+                <Icon name="globe" size={14} />
+                Join &amp; take notes
+              </button>
+            {/if}
           {/if}
         </div>
         {#if eventError}<p class="notes-error">{eventError}</p>{/if}

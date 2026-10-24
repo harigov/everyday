@@ -21,6 +21,9 @@ mod mcp;
 // (`tests/meeting_e2e.rs`) drives a recording through it with no Tauri
 // window at all. Everything else in this module stays private.
 pub mod meeting;
+mod micwatch;
+mod notice;
+mod offers;
 #[cfg(target_os = "linux")]
 mod portal;
 mod protocol;
@@ -97,6 +100,10 @@ pub fn run() {
         // `hotkey` -- and writing help's popup, which one of them opens.
         .manage(hotkey::Hotkeys::default())
         .manage(writing::Writing::default())
+        // Offers to take notes, from the calendar or the microphone -- see
+        // `offers` and `micwatch`.
+        .manage(offers::Offers::default())
+        .manage(micwatch::MicWatch::default())
         .setup(|app| {
             // The window, from its entry in `tauri.conf.json` -- marked
             // `create: false` so that it is built here, where it can be told
@@ -137,6 +144,9 @@ pub fn run() {
             // the way in regardless. See `hotkey`.
             writing::detect(&handle);
             hotkey::install(&handle);
+            // Another application taking the microphone is the second way a
+            // call is noticed, beside the calendar. See `micwatch`.
+            micwatch::spawn(&handle);
             // The assistant's routines. On Tauri's own runtime, never a second
             // one: two runtimes would double the blocking pool and, worse,
             // would mean the vault's single-writer rule was being kept by two
@@ -271,6 +281,8 @@ pub fn run() {
             meeting::meeting_stop,
             meeting::meeting_status,
             meeting::voice_enrol,
+            offers::meeting_offer_answer,
+            offers::meeting_offers,
         ])
         .on_window_event(|window, event| {
             // Writing help's popup is not the application: closing it is

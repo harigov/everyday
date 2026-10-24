@@ -14,14 +14,23 @@
 //! in two places would mean answering it differently within a release. So the
 //! shell states the *facts* and `ui/src/lib/notify.svelte.ts` decides where
 //! they go. The plugin is registered so the webview can reach it; this side
-//! never posts directly.
+//! never posts directly -- with the one exception below.
 //!
 //! # The fourth event
 //!
 //! A meeting offer is not a fact this window merely states, unlike the
-//! three above: for an automatic ("Always") offer, this is also where the
-//! shell decides to start capturing, before the interface ever hears about
-//! it -- see [`crate::meeting::on_meeting_offer`].
+//! three above, and it does not go to the interface alone. It is handed to
+//! [`crate::offers`], which owns every offer to take notes: this one, from
+//! the calendar, and the ones [`crate::micwatch`] raises when another
+//! application takes the microphone. For an automatic ("Always") offer that
+//! is also where the shell decides to start capturing, before the interface
+//! ever hears about it. For any other it is where the banner's event, the
+//! tray's item and a desktop notification all come from -- the
+//! notification raised by the shell itself ([`crate::notice`]) rather than
+//! routed through `notify.svelte.ts`, because it carries buttons, and
+//! whether to raise one at all is decided there from whether the window is
+//! already in front. The service therefore sends no `Notification` beside
+//! an offer. See [`crate::offers::on_calendar_offer`].
 
 use everyday_service::events::{Change, EventSink, Kind, MeetingOffer, Notification};
 use tauri::{AppHandle, Emitter, Manager};
@@ -110,9 +119,14 @@ impl EventSink for WindowSink {
         if let Some(badge) = self.app.try_state::<crate::badge::Badge>() {
             badge.schedule_refresh(&self.app);
         }
+        // Offers to take notes name meetings, so they go with the key too:
+        // pending and held-back ones, the tray's item, the notifications.
+        if locked {
+            crate::offers::on_locked(&self.app);
+        }
     }
 
     fn meeting_offer(&self, offer: MeetingOffer) {
-        crate::meeting::on_meeting_offer(&self.app, offer);
+        crate::offers::on_calendar_offer(&self.app, offer);
     }
 }

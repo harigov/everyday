@@ -803,12 +803,12 @@ impl EventSink for OfferSink {
 }
 
 /// "Always" makes `watch::tick` raise an automatic offer, and
-/// [`begin_headless`] -- the same call `everyday-app`'s `on_meeting_offer`
+/// [`begin_headless`] -- the same call `everyday-app`'s `offers::on_calendar_offer`
 /// makes through `start_automatic` when it sees `automatic: true` -- turns
 /// that straight into a running capture, with no press. "Ask" raises an
-/// offer with `automatic: false`, which `on_meeting_offer` never passes to
-/// `start_automatic` at all (see `meeting::starts_automatically`, unit
-/// tested in `everyday-app`'s own `meeting.rs` for the plain decision); this
+/// offer with `automatic: false`, which `offers::on_calendar_offer` never passes to
+/// `start_automatic` at all (see `offers::starts_automatically`, unit
+/// tested in `everyday-app`'s own `offers.rs` for the plain decision); this
 /// scenario proves the *consequence* of that decision by simply not calling
 /// `begin_headless` for it either, and checking nothing started.
 #[tokio::test]
@@ -840,7 +840,7 @@ async fn the_watcher_offers_always_mode_starts_capture_and_ask_mode_does_not() {
 
     eprintln!(
         "[watch] Always: starting capture through begin_headless, exactly as \
-               `on_meeting_offer`/`start_automatic` would..."
+               `on_calendar_offer`/`start_automatic` would..."
     );
     let recording = begin(&harness, Some(offers[0].event_id), true).await;
     assert!(recording.automatic);

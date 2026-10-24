@@ -14,9 +14,20 @@
 // vault write, so nothing raises a change for it, and `MODELS_POLL_MS`
 // below is that gap's whole fix, same as `speech.rs`'s own doc explains.
 
-import { api, callCommand, isMock, onMeetingOffer, onMeetingStatus, onMeetingStillOn } from './api'
-import type { MeetingOfferPayload } from './api'
+import {
+  api,
+  callCommand,
+  isMock,
+  onMeetingOffer,
+  onMeetingOfferFailed,
+  onMeetingOfferSettled,
+  onMeetingOfferSetup,
+  onMeetingStatus,
+  onMeetingStillOn,
+} from './api'
+import type { MeetingOfferAnswer, MeetingOfferPayload } from './api'
 import { notify } from './notify.svelte'
+import { panels } from './panels.svelte'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import type {
   CaptureStatus,
@@ -59,8 +70,21 @@ class MeetingsState {
   starting = $state(false)
   /** Set while the "still on the call?" prompt should be showing. */
   stillOn = $state<RecordingId | null>(null)
-  /** Offers awaiting a decision -- "Take notes for X?" -- oldest first. */
+  /**
+   * Offers awaiting a decision -- "Take notes for X?" -- oldest first, each
+   * keyed by its `key`. The desktop shell owns the real list (it raises a
+   * notification and a tray item for each, and can be answered from any of
+   * the three); this is the window's copy of it, kept in step by the
+   * `meeting-offer` and `meeting-offer-settled` events and seeded from
+   * `meetingOffers` at start.
+   */
   offers = $state<MeetingOfferPayload[]>([])
+  /**
+   * Why answering an offer failed, by offer key -- set when the shell reports
+   * a failure from the notification or the tray, which the banner could not
+   * see for itself. `MeetingOfferBanner` shows it beside the offer.
+   */
+  offerErrors = $state<Record<string, string>>({})
 
   /** Recordings still in the pipeline, or failed -- the notes list's cards. */
   recordings = $state<Recording[]>([])
@@ -91,6 +115,7 @@ class MeetingsState {
     this.capture = null
     this.stillOn = null
     this.offers = []
+    this.offerErrors = {}
     this.recordings = []
     this.recordingsError = null
     this.models = []
@@ -130,9 +155,26 @@ class MeetingsState {
         })
         void this.refreshRecordings()
       } else {
-        this.offers = [...this.offers, offer]
+        this.#upsertOffer(offer)
       }
     })
+    onMeetingOfferSettled((key) => this.#dropOffer(key))
+    onMeetingOfferFailed((key, message) => {
+      if (key) this.offerErrors = { ...this.offerErrors, [key]: message }
+      // The banner shows a keyed failure beside its offer, but the window
+      // may be behind another, or showing a different offer first; a toast
+      // makes sure it is seen. The tray's generic "Take notes now" has no
+      // offer to show it beside, so it is the only place, and offers the
+      // way to fix the usual cause.
+      notify.error('Couldn’t start taking notes', {
+        body: message,
+        key: `meeting-offer-failed:${key}`,
+        action: key
+          ? undefined
+          : { label: 'Open settings', run: () => panels.openSettings('meetings') },
+      })
+    })
+    onMeetingOfferSetup(() => panels.openSettings('meetings'))
 
     void api
       .meetingStatus()
@@ -142,6 +184,18 @@ class MeetingsState {
         // the pill simply never shows, which is the right degrading.
       })
     void this.refreshRecordings()
+
+    // Offers raised before this window was listening -- it was opened from
+    // the tray, say, or reloaded. Merged rather than assigned, so one that
+    // arrived by event while this was in flight is not lost.
+    void api
+      .meetingOffers()
+      .then((pending) => {
+        for (const offer of pending) this.#upsertOffer(offer)
+      })
+      .catch(() => {
+        // No shell, so no offers to recover.
+      })
   }
 
   // ── Settings ──────────────────────────────────────────────────────
@@ -335,32 +389,67 @@ class MeetingsState {
 
   // ── Offers ────────────────────────────────────────────────────────
 
-  // Keyed by calendarId + uid, not eventId -- the same durable pair
-  // `dismissMeetingOffer` itself is keyed by, so dropping an offer here and
-  // dismissing it on the service side agree about which one even after a
-  // feed resync has changed the eventId. See `MeetingOfferPayload`'s own
-  // doc in `api.ts`.
-  #dropOffer(calendarId: string, uid: string) {
-    this.offers = this.offers.filter((o) => !(o.calendarId === calendarId && o.uid === uid))
+  /** A new offer joins the end; one with a key already here replaces it in
+   *  place, so a re-raised offer (its readiness changed, say) does not jump
+   *  the queue or show twice. */
+  #upsertOffer(offer: MeetingOfferPayload) {
+    const at = this.offers.findIndex((o) => o.key === offer.key)
+    if (at === -1) {
+      this.offers = [...this.offers, offer]
+    } else {
+      this.offers = this.offers.map((o, i) => (i === at ? offer : o))
+    }
   }
 
-  async dismissOffer(calendarId: string, uid: string, series: string | null, never: boolean) {
-    this.#dropOffer(calendarId, uid)
-    await api.dismissMeetingOffer(calendarId, uid, series, never)
+  #dropOffer(key: string) {
+    this.offers = this.offers.filter((o) => o.key !== key)
+    if (key in this.offerErrors) {
+      const rest = { ...this.offerErrors }
+      delete rest[key]
+      this.offerErrors = rest
+    }
   }
 
   /**
-   * "Take notes" on an offer. The offer is dropped from the list only once
-   * `startCapture` has actually succeeded -- previously it was dropped
-   * first, so a failed start (the mic already claimed, the vault refusing
-   * to begin) lost the offer along with the error, leaving nothing on
-   * screen for the person to retry. `MeetingOfferBanner` is what surfaces
-   * a thrown error now; this just has to not hide the offer behind one.
+   * Could taking notes start right now? The offer says so itself when the
+   * shell raised it, but an offer made before meeting notes were set up
+   * becomes takeable the moment the person finishes setting them up -- the
+   * settings view this store already holds says so -- without the offer
+   * having to be raised again.
    */
-  async acceptOffer(offer: MeetingOfferPayload): Promise<Recording> {
-    const recording = await this.startCapture({ eventId: offer.eventId, title: offer.title })
-    this.#dropOffer(offer.calendarId, offer.uid)
-    return recording
+  offerReady(offer: MeetingOfferPayload): boolean {
+    return offer.ready || (this.view?.settings.enabled === true && this.view.usable)
+  }
+
+  /**
+   * Answer an offer, by asking the shell to -- it owns the offer, and
+   * settles its notification and tray item along with this banner. The offer
+   * is dropped from the list only once the shell has actually answered:
+   * previously it was dropped first, so a failed start (the mic already
+   * claimed, the vault refusing to begin) lost the offer along with the
+   * error, leaving nothing on screen to retry. `MeetingOfferBanner` shows
+   * what is thrown; this just has to not hide the offer behind it.
+   *
+   * `take` and `join` share `startCapture`'s `starting` flag, so every
+   * "Take notes" control in the window disables together.
+   */
+  async answerOffer(
+    offer: MeetingOfferPayload,
+    answer: MeetingOfferAnswer,
+  ): Promise<Recording | null> {
+    const begins = answer === 'take' || answer === 'join'
+    if (begins) this.starting = true
+    try {
+      const recording = await api.meetingOfferAnswer(offer.key, answer)
+      this.#dropOffer(offer.key)
+      if (begins) {
+        this.capture = await api.meetingStatus().catch(() => null)
+        await this.refreshRecordings()
+      }
+      return recording
+    } finally {
+      if (begins) this.starting = false
+    }
   }
 
   // ── Dev-only mock triggers ───────────────────────────────────────
@@ -372,6 +461,11 @@ class MeetingsState {
   async mockTriggerOffer(automatic: boolean) {
     if (!isMock) return
     await callCommand('mock_trigger_meeting_offer', { automatic })
+  }
+
+  async mockTriggerMicOffer(withEvent: boolean) {
+    if (!isMock) return
+    await callCommand('mock_trigger_mic_offer', { withEvent })
   }
 
   async mockTriggerStillOn() {

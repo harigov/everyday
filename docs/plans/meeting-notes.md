@@ -69,6 +69,59 @@
 > transcription tests and a summary from a real assistant model are written
 > but were not run, for want of a working key.
 
+## Offers, revisited (Oct 2026)
+
+What "offers" means changed after the plan below was written, and where this
+section and the plan disagree, this section wins:
+
+- **Any meeting with other people is offered, not only online calls.** A
+  timed, busy, not-cancelled event with an attendee besides the owner
+  (`detect::is_meeting`) gets the offer; a join link is no longer required,
+  and an in-room meeting is recorded from the microphone alone. The
+  "Online calls only" decision below was relaxed because the person asked for
+  it: they would rather be asked and say no than have a hallway-sized
+  meeting go unrecorded. The poorer diarisation of one shared microphone is
+  accepted.
+- **Never set up means "set it up", not silence.** With no transcriber
+  chosen, the offer is still made, with `ready: false`, and the interface
+  turns it into a "Set up meeting notes" prompt; it is never automatic. Set
+  up and then turned off is an answer, and offers nothing, as does
+  `Offer::Off`.
+- **The microphone is a second way in.** The desktop shell watches for
+  another application taking the microphone (`everyday-app`'s `micwatch`;
+  PipeWire on Linux -- macOS and Windows are not done yet). A capture stream
+  counts only while it is *running*, not merely open, and never when it is
+  ours: cpal does not copy our process id onto its streams, so its
+  `node.group = cpal-{pid}` mark is what identifies them. It then asks the
+  service, through `meeting_now`, which meeting is on and whether it may
+  offer. The answer is the calendar meeting under way if there is one, so the
+  recording is tied to it, or a plain recording if not. `mic_offer` in the
+  settings turns this off on its own.
+- **The shell raises its own notification.** Each offer becomes an actionable
+  desktop notification from `everyday-app` (`offers.rs`, `notice.rs`), with
+  buttons to take notes, to join and take notes (when the event has a link)
+  and to say not now -- or, before meeting notes are set up, to set them up.
+  Buttons are Linux-only for now (`org.freedesktop.Notifications` over
+  zbus); elsewhere the notification is plain and the banner has the buttons.
+  "Never" stays in the banner, where there is room to say what it means. The
+  service no longer sends the plain
+  `Notification` it used to send beside the offer, and a client with no shell
+  just shows the banner. This also closes the "clicking the notification does
+  not do anything" gap noted above. The tray offers the same choice as an
+  item of its own, for when the notification has gone.
+- **A recording the microphone noticed ends with the other application.**
+  When the application that held the microphone lets go of it, auto-stop (if
+  it is on) ends the recording the same way it does when a call's audio goes
+  quiet, so a call joined from a browser tab does not leave notes running.
+  A call only counts as the recording's own if it began with the recording
+  or within five minutes of it; one that starts later (a voice message sent
+  during an in-room meeting) is something else, and its end changes nothing.
+- **Back-to-back meetings are still offered.** An offer that arrives while
+  another meeting is being recorded is held back, not dropped, and made when
+  that recording ends -- as a question, even under "Always". Locking the
+  vault takes every offer down, tray and notifications included, since each
+  names a meeting.
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it
@@ -102,9 +155,10 @@ away.
 
 ## Decisions already made
 
-- **Online calls only.** In-room meetings on one microphone are a different
-  problem: no channel split and far worse diarisation. They are out, and
-  the design does not bend to accommodate them.
+- **Online calls only.** *(Relaxed: see "Offers, revisited" above.)* In-room
+  meetings on one microphone are a different problem: no channel split and
+  far worse diarisation. They were out, and the design does not bend to
+  accommodate them -- they are recorded as one track and nothing more.
 - **No consent tooling.** No announcement, no chat message, no
   per-jurisdiction logic. The person running the app answers for that.
 - **The audio is not kept.** The transcript text is kept, with timings and

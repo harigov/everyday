@@ -37,22 +37,25 @@ const TOKEN_STOP: [char; 4] = ['<', '>', '"', '\''];
 /// after "join here: https://zoom.us/j/123.", a closing bracket around it.
 const TRAILING_PUNCTUATION: [char; 11] = ['.', ',', ';', ':', ')', ']', '}', '>', '"', '\'', '!'];
 
-/// Is this event an online call worth offering to record?
+/// Is this event a meeting worth offering to take notes for?
 ///
-/// Busy, not cancelled, not all day, at least one attendee besides the
-/// owner (`owner_addresses`, compared case-insensitively), and a meeting
-/// host in its url, location or description.
-pub fn is_online_call(event: &Event, owner_addresses: &[String]) -> bool {
+/// Busy, not cancelled, not all day, and at least one attendee besides the
+/// owner (`owner_addresses`, compared case-insensitively). A join link is
+/// not required: an in-room meeting is recorded from the microphone alone.
+pub fn is_meeting(event: &Event, owner_addresses: &[String]) -> bool {
     if !event.busy || event.all_day {
         return false;
     }
     if event.status == crate::calendar::EventStatus::Cancelled {
         return false;
     }
-    if !has_other_attendee(event, owner_addresses) {
-        return false;
-    }
-    join_link(event).is_some()
+    has_other_attendee(event, owner_addresses)
+}
+
+/// Is this event an online call: [`is_meeting`], with a meeting host in its
+/// url, location or description?
+pub fn is_online_call(event: &Event, owner_addresses: &[String]) -> bool {
+    is_meeting(event, owner_addresses) && join_link(event).is_some()
 }
 
 /// Does this event have at least one attendee who is not the owner?
@@ -381,6 +384,50 @@ mod tests {
 
         event.status = EventStatus::Cancelled;
         assert!(!is_online_call(&event, &[]));
+    }
+
+    #[test]
+    fn a_meeting_needs_no_join_link() {
+        // An in-room meeting with a colleague: nothing to join, but still one
+        // worth recording from the microphone alone.
+        let mut event = base_event();
+        event.location = "Conference Room 4B".into();
+        assert!(is_meeting(&event, &["alice@example.com".into()]));
+        assert!(
+            !is_online_call(&event, &["alice@example.com".into()]),
+            "an online call is a meeting that also has a link"
+        );
+
+        event.url = "https://meet.google.com/abc-defg-hij".into();
+        assert!(is_online_call(&event, &["alice@example.com".into()]));
+    }
+
+    #[test]
+    fn a_meeting_with_only_the_owner_invited_is_not_a_meeting() {
+        let mut event = base_event();
+        event.attendees = vec!["Alice <alice@example.com>".into()];
+        assert!(!is_meeting(&event, &["alice@example.com".into()]));
+
+        event.attendees.clear();
+        assert!(!is_meeting(&event, &["alice@example.com".into()]), "nobody invited at all");
+    }
+
+    #[test]
+    fn a_free_all_day_or_cancelled_event_is_never_a_meeting() {
+        let event = base_event();
+        assert!(is_meeting(&event, &["alice@example.com".into()]));
+
+        let mut free = event.clone();
+        free.busy = false;
+        assert!(!is_meeting(&free, &[]));
+
+        let mut all_day = event.clone();
+        all_day.all_day = true;
+        assert!(!is_meeting(&all_day, &[]));
+
+        let mut cancelled = event;
+        cancelled.status = EventStatus::Cancelled;
+        assert!(!is_meeting(&cancelled, &[]));
     }
 
     #[test]

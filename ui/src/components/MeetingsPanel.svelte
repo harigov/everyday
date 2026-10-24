@@ -272,7 +272,7 @@
         <b>Take meeting notes</b>
         <small>
           {#if meetings.view?.usable}
-            Offers to record an online call when one starts, and writes a note from it.
+            Offers to take notes when a meeting starts, and writes a note from the call.
           {:else}
             {meetings.view?.problem ?? 'Choose a transcriber below first.'}
           {/if}
@@ -487,12 +487,23 @@
       </div>
       <p class="hint">
         {#if draft.offer === 'off'}
-          Meeting notes are never offered, even for a detected call.
+          Meeting notes are never offered, for a calendar meeting or a call on the microphone.
         {:else if draft.offer === 'ask'}
-          A banner offers to record a detected call. Nothing records until you say yes.
+          An offer comes for any calendar meeting with other people in it, about a minute before it
+          starts — a banner here, and a notification if the app is behind other windows. Nothing
+          records until you say yes.
         {:else}
-          Records every detected call on these calendars without asking.
+          Records every calendar meeting with other people in it, on these calendars, without
+          asking.
         {/if}
+      </p>
+      <label class="toggle small">
+        <input type="checkbox" bind:checked={draft.micOffer} disabled={draft.offer === 'off'} />
+        <span>Also offer when another app starts using the microphone</span>
+      </label>
+      <p class="hint">
+        Catches calls that aren’t on your calendar — Zoom, Meet or Teams in a browser. Linux only
+        for now.
       </p>
 
       {#if calendar.calendars.length > 0}
@@ -699,6 +710,12 @@
           </button>
           <button class="btn" onclick={() => void meetings.mockTriggerOffer(true)}>
             Trigger an automatic recording
+          </button>
+          <button class="btn" onclick={() => void meetings.mockTriggerMicOffer(false)}>
+            Microphone offer
+          </button>
+          <button class="btn" onclick={() => void meetings.mockTriggerMicOffer(true)}>
+            Microphone offer during a meeting
           </button>
           <button class="btn" onclick={() => void meetings.mockTriggerStillOn()}>
             Trigger "still on the call?"

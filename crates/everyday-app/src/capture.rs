@@ -1530,6 +1530,12 @@ fn clear_stale_slot(app: &Option<AppHandle>, recording_id: RecordingId) {
     if stale && let Some(tray) = app.try_state::<crate::tray::Tray>() {
         let _ = tray.set_recording(app, None);
     }
+    // The offers hub's half of "nothing is recording any more" -- see
+    // `offers::on_recording_stopped` -- under the same gate, for the same
+    // reason.
+    if stale {
+        crate::offers::on_recording_stopped(app);
+    }
 }
 
 #[cfg(test)]

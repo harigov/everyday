@@ -511,6 +511,10 @@ pub struct MeetingSettings {
     /// and usable.
     pub enabled: bool,
     pub offer: Offer,
+    /// Also offer when another application starts using the microphone --
+    /// the desktop shell's `micwatch` -- not only when a calendar meeting
+    /// starts. On by default; [`Offer::Off`] turns this off too.
+    pub mic_offer: bool,
     pub calendars: CalendarFilter,
     /// "Never for this meeting": series keys. See [`EventRef::series_key`].
     pub skipped_series: BTreeSet<String>,
@@ -545,6 +549,7 @@ impl Default for MeetingSettings {
         Self {
             enabled: false,
             offer: Offer::Ask,
+            mic_offer: true,
             calendars: CalendarFilter::default(),
             skipped_series: BTreeSet::new(),
             transcriber: None,

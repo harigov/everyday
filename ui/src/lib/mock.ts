@@ -125,6 +125,7 @@ import type {
   ProposedRecord,
   Skill,
 } from './types'
+import type { MeetingOfferAnswer } from './api'
 import { DEFAULT_COLORS } from './colors'
 import { addDays, blockKindFor, isoDate, minutesBetween } from './time'
 import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
@@ -230,6 +231,8 @@ import {
   mockListRecordings,
   mockListVoiceprints,
   mockLintMeetingTemplate,
+  mockMeetingOfferAnswer,
+  mockMeetingOffers,
   mockMeetingSettings,
   mockMeetingsInit,
   mockMeetingsSeedNotes,
@@ -239,6 +242,9 @@ import {
   mockNameSpeaker,
   mockNewMeetingTemplate,
   mockOnMeetingOffer,
+  mockOnMeetingOfferFailed,
+  mockOnMeetingOfferSetup,
+  mockOnMeetingOfferSettled,
   mockOnMeetingStatus,
   mockOnMeetingStillOn,
   mockPreviewMeetingTemplate,
@@ -249,6 +255,7 @@ import {
   mockSpeechModels,
   mockTestTranscriber,
   mockTriggerMeetingOffer,
+  mockTriggerMicOffer,
   mockTriggerStillOn,
   mockTriggerSystemSilent,
 } from './mock-meetings'
@@ -4341,7 +4348,15 @@ const mockRemoteImageSettings: RemoteImageSettings = { senders: [], domains: [] 
 
 // Re-exported so `api.ts`'s mock branch can wire the three meeting events
 // the way it wires everything else emitted by the (here, simulated) shell.
-export { mockOnChange, mockOnMeetingOffer, mockOnMeetingStatus, mockOnMeetingStillOn }
+export {
+  mockOnChange,
+  mockOnMeetingOffer,
+  mockOnMeetingOfferFailed,
+  mockOnMeetingOfferSettled,
+  mockOnMeetingOfferSetup,
+  mockOnMeetingStatus,
+  mockOnMeetingStillOn,
+}
 
 export const mockInvoke = async <T>(
   cmd: string,
@@ -7561,6 +7576,12 @@ export const mockInvoke = async <T>(
     case 'meeting_status':
       requireUnlocked()
       return mockMeetingStatus() as T
+    case 'meeting_offers':
+      requireUnlocked()
+      return mockMeetingOffers() as T
+    case 'meeting_offer_answer':
+      requireUnlocked()
+      return mockMeetingOfferAnswer(str(args.key), args.answer as MeetingOfferAnswer) as T
     case 'voice_enrol':
       requireUnlocked()
       return (await mockEnrolVoice()) as T
@@ -7571,6 +7592,10 @@ export const mockInvoke = async <T>(
     case 'mock_trigger_meeting_offer':
       requireUnlocked()
       mockTriggerMeetingOffer(Boolean(args.automatic))
+      return undefined as T
+    case 'mock_trigger_mic_offer':
+      requireUnlocked()
+      mockTriggerMicOffer(Boolean(args.withEvent))
       return undefined as T
     case 'mock_trigger_still_on':
       requireUnlocked()

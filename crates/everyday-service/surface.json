@@ -2952,6 +2952,17 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "meeting_now",
+      "orScope": null,
+      "returns": "MeetingNow",
+      "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "meeting_settings",
       "orScope": null,
       "returns": "MeetingSettingsView",

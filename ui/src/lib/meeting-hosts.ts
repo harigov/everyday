@@ -1,8 +1,9 @@
-// Which calendar events are online calls, in TypeScript.
+// Which calendar events are meetings worth notes, and where their call is, in
+// TypeScript.
 //
 // A duplicate of `crates/everyday-core/src/meeting/detect.rs`'s own list and
-// logic, kept here because the event popover has to answer "does this look
-// like a call?" without a round trip to the backend -- it is deciding
+// logic, kept here because the event popover has to answer "is this a
+// meeting, and is there a link to join?" without a round trip to the backend -- it is deciding
 // whether to draw a button at all. `MEETING_HOSTS` must be kept in step with
 // the Rust list by hand; there is no code generation between the two crates
 // and the interface, so a host added on one side and not the other is a
@@ -50,31 +51,62 @@ export function joinLink(
   return null
 }
 
-/**
- * Is this event an online call worth offering to record?
- *
- * Busy, not cancelled, and a meeting host somewhere in its url, location or
- * description. The full backend rule also checks attendees against the
- * owner's own addresses, which this side does not have; this is
- * deliberately the looser half -- good enough to decide whether a "Take
- * notes" button is worth drawing, not the final word on whether a recording
- * is offered automatically.
- */
-export function looksLikeOnlineCall(
-  event: Pick<CalendarEvent, 'url' | 'location' | 'description' | 'status' | 'busy'>,
-): boolean {
-  if (event.status === 'cancelled') return false
-  if (!event.busy) return false
-  return joinLink(event) !== null
-}
+/** How long before an event starts "Take notes" is offered on it. */
+export const TAKE_NOTES_LEAD_MS = 5 * 60_000
 
-/** Is `now` between the event's start and end -- "in progress"? */
-export function eventInProgress(
-  event: Pick<CalendarEvent, 'start' | 'end'>,
+/**
+ * Is this an event worth taking notes on right now?
+ *
+ * Any timed, busy event with somebody besides its organizer invited, from
+ * five minutes before it starts until it ends -- not only an online call, as
+ * it used to be: a meeting in a room is as worth a transcript as one on a
+ * link. This is the interface's half of the backend's `detect::is_meeting`,
+ * which compares attendees against the owner's own addresses; this side has
+ * no list of those, so it compares them against the organizer instead,
+ * which is what tells a solo event (the owner inviting only themselves)
+ * apart from a meeting. All-day events are left out because they are not
+ * meetings (a birthday, a holiday), and so are cancelled and free ones.
+ * Whether anything is already being recorded, and whether meeting notes
+ * are set up, are the caller's to check; this only answers about the event
+ * and the clock.
+ */
+export function takeNotesWindow(
+  event: Pick<
+    CalendarEvent,
+    'start' | 'end' | 'allDay' | 'attendees' | 'status' | 'busy' | 'organizer'
+  >,
   now: Date = new Date(),
 ): boolean {
+  if (event.allDay || event.status === 'cancelled' || !event.busy) return false
+  if (!hasSomebodyElse(event.attendees ?? [], event.organizer ?? '')) return false
   const start = new Date(event.start).getTime()
   const end = new Date(event.end).getTime()
   const t = now.getTime()
-  return t >= start && t < end
+  return t >= start - TAKE_NOTES_LEAD_MS && t < end
+}
+
+/** The address in "Name <addr>" or a bare "addr"; `null` for a bare name. */
+function addressOf(raw: string): string | null {
+  const bracketed = /<([^<>]+@[^<>]+)>/.exec(raw)
+  if (bracketed) return bracketed[1]!.trim().toLowerCase()
+  const bare = raw.trim()
+  return bare.includes('@') ? bare.toLowerCase() : null
+}
+
+/** Is anybody on `attendees` not the organizer? A bare name always is. */
+function hasSomebodyElse(attendees: string[], organizer: string): boolean {
+  const own = addressOf(organizer)
+  return attendees.some((raw) => {
+    const address = addressOf(raw)
+    return address === null || address !== own
+  })
+}
+
+/**
+ * A join link as something a browser can be sent to. `joinLink` widens to
+ * the whole token a host sits in, which can be a bare `zoom.us/j/1` out of a
+ * description; the system opener only takes `https://` addresses.
+ */
+export function joinHref(link: string): string {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(link) ? link : `https://${link}`
 }

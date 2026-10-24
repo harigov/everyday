@@ -100,6 +100,10 @@ cpal = { version = "0.18", features = ["pipewire"] }
 # `set_badge_count`. Already in the build: the opener and single-instance
 # plugins use the same crate, with the same default features.
 zbus = "5"
+# Who else has the microphone open: `micwatch` lists PipeWire's capture
+# streams to notice a call that is not on the calendar. The same version
+# cpal's `pipewire` host already builds.
+pipewire = "0.10"
 # Writing help on Wayland, and the global keys there: the GlobalShortcuts
 # portal claims a key for the whole desktop (no Wayland protocol lets an
 # application do it), and the RemoteDesktop portal is the one sanctioned way

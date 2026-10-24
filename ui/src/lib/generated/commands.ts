@@ -90,6 +90,7 @@ import type {
   Mailbox,
   MailboxId,
   MeetingActivity,
+  MeetingNow,
   MeetingSettings,
   MeetingSettingsView,
   Memory,
@@ -449,6 +450,7 @@ export interface Commands {
   markStoriesRead: { args: { ids: StoryId[]; read: boolean }; result: void }
   markUnread: { args: { threads: ThreadId[] }; result: Op[] }
   meetingActivity: { args: { from: string; to: string; tz?: string }; result: MeetingActivity }
+  meetingNow: { args: Record<string, never>; result: MeetingNow }
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   modelSettings: { args: Record<string, never>; result: ModelSettingsView }
@@ -845,6 +847,7 @@ export const COMMAND_NAMES = {
   markStoriesRead: 'mark_stories_read',
   markUnread: 'mark_unread',
   meetingActivity: 'meeting_activity',
+  meetingNow: 'meeting_now',
   meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
   modelSettings: 'model_settings',
@@ -1173,6 +1176,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_stories_read',
   'mark_unread',
   'meeting_activity',
+  'meeting_now',
   'meeting_settings',
   'merge_trackers',
   'model_settings',

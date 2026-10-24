@@ -13,13 +13,13 @@
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use everyday_core::id::{CalendarId, EventId, RecordingId, TemplateId};
+use everyday_core::id::{EventId, TemplateId};
 use everyday_core::meeting::Recording;
 use everyday_service::Ctx;
 use everyday_service::error::{CommandError, CommandResult};
-use everyday_service::events::{EventSink, MeetingOffer};
+use everyday_service::events::EventSink;
 use serde_json::{Value, json};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::capture::{
     self, CaptureHandle, CaptureSlot, CaptureStatus, RecordingHandle, RecordingSink,
@@ -27,88 +27,6 @@ use crate::capture::{
 use crate::remote::Session;
 use crate::state::{AppState, SessionHandle};
 use crate::tray::Tray;
-
-/// The Tauri event carrying a `MeetingOfferPayload` -- what
-/// `everyday_service::meeting::watch` raised as a [`MeetingOffer`], turned
-/// into the shape `onMeetingOffer` in `ui/src/lib/api.ts` reads. Its other
-/// half is that function.
-pub const OFFER_EVENT: &str = "meeting-offer";
-
-/// Mirrors the TS `MeetingOfferPayload`, field for field. `calendarId`,
-/// `uid` and `series` ride along beside `eventId` for `dismissMeetingOffer`
-/// to use -- see [`MeetingOffer`]'s own doc on why that command is keyed by
-/// the triple that survives a feed resync rather than by `eventId`, which
-/// does not, and `series`'s own doc on why `calendarId`/`uid` alone are not
-/// enough for a recurring Google or Graph event.
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct OfferPayload {
-    event_id: EventId,
-    calendar_id: CalendarId,
-    uid: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    series: Option<String>,
-    title: String,
-    start: jiff::Timestamp,
-    end: jiff::Timestamp,
-    calendar_name: String,
-    automatic: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recording_id: Option<RecordingId>,
-}
-
-impl From<MeetingOffer> for OfferPayload {
-    fn from(offer: MeetingOffer) -> Self {
-        Self {
-            event_id: offer.event_id,
-            calendar_id: offer.calendar_id,
-            uid: offer.uid,
-            series: offer.series,
-            title: offer.title,
-            start: offer.start,
-            end: offer.end,
-            calendar_name: offer.calendar_name,
-            automatic: offer.automatic,
-            recording_id: None,
-        }
-    }
-}
-
-/// What a [`MeetingOffer`] from the service becomes in this window.
-///
-/// For "Always" (`automatic: true`), the offer is not a question: the call
-/// has already been recorded without asking on every other window watching
-/// this vault, so this one starts capturing too -- through
-/// [`start_automatic`], the same hook a press of "Take notes" goes through
-/// -- and forwards the event so `meetings.svelte.ts`'s handler can show its
-/// toast and refresh the recordings list. For an ordinary offer, nothing
-/// starts on its own and the event is simply forwarded, for
-/// `MeetingOfferBanner.svelte` to ask about.
-///
-/// `recordingId` is left empty either way: `start_automatic` begins the
-/// microphone on its own spawned task rather than blocking this call on it,
-/// and the one place in the interface that reads an automatic offer today
-/// (`meetings.svelte.ts`'s own `onMeetingOffer`) does not need it -- it
-/// re-polls `active_recording` instead, which is how the pill finds the
-/// recording that resulted.
-pub fn on_meeting_offer(app: &AppHandle, offer: MeetingOffer) {
-    if starts_automatically(&offer) {
-        start_automatic(app.clone(), offer.event_id);
-    }
-    let payload = OfferPayload::from(offer);
-    if let Err(e) = app.emit(OFFER_EVENT, payload) {
-        tracing::debug!(error = %e, "a meeting offer could not reach the interface");
-    }
-}
-
-/// Whether an offer should start capture on its own, without a press --
-/// the one condition [`on_meeting_offer`] checks before calling
-/// [`start_automatic`]. Broken out so it is a plain, window-free fact to
-/// assert against both an "Always" and an "Ask" offer, rather than
-/// something only provable by driving a whole Tauri window.
-fn starts_automatically(offer: &MeetingOffer) -> bool {
-    offer.automatic
-}
 
 /// Begin recording, on the service and then the microphone. `eventId` ties
 /// the recording to a calendar event (auto-stop watches its end);
@@ -134,8 +52,8 @@ pub async fn meeting_start(
 /// Same as [`meeting_start`], but for a call detected on a calendar the
 /// person has set to "Always" -- see `docs/plans/meeting-notes.md`'s
 /// "'Always' mode". Not a command: nothing in the interface asks for this
-/// by name; [`on_meeting_offer`] calls it directly when the service's
-/// offer says `automatic`. Failures are logged rather than surfaced, the
+/// by name; [`crate::offers`] calls it directly when an offer says
+/// `automatic`. Failures are logged rather than surfaced, the
 /// way a routine's are: there is no dialog to put them in, and a call that
 /// could not be recorded automatically is still a call the person can
 /// record by hand from the notes app.
@@ -155,11 +73,12 @@ pub fn start_automatic(app: AppHandle, event_id: EventId) {
     });
 }
 
-fn state_already_recording(app: &AppHandle) -> bool {
+/// Whether a recording is running, or starting -- the slot is taken.
+pub(crate) fn state_already_recording(app: &AppHandle) -> bool {
     app.state::<AppState>().capture().lock().unwrap().is_some()
 }
 
-async fn begin(
+pub(crate) async fn begin(
     app: AppHandle,
     event_id: Option<EventId>,
     title: Option<String>,
@@ -181,6 +100,9 @@ async fn begin(
     if let Some(tray) = app.try_state::<Tray>() {
         let _ = tray.set_recording(&app, Some(&recording.title));
     }
+    // After the tray: this settles the offers that are now moot, and that
+    // rebuilds the tray again without their "Take notes" item.
+    crate::offers::on_recording_started(&app);
     Ok(recording)
 }
 
@@ -364,7 +286,7 @@ fn finish_reservation(
 /// only reads this once, at the start of a recording, so an outage here
 /// costs one recording's auto-stop rather than turning the setting off
 /// silently for good.
-async fn read_auto_stop(session: &Session) -> bool {
+pub(crate) async fn read_auto_stop(session: &Session) -> bool {
     match session.call(Ctx::local(), "meeting_settings", json!({})).await {
         Ok(value) => value
             .get("settings")
@@ -395,7 +317,7 @@ pub fn stop_from_tray(app: AppHandle) {
     });
 }
 
-async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
+pub(crate) async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
     let state = app.state::<AppState>();
     // A slot still `CaptureSlot::Starting` (a start's `begin_recording`
     // round trip has not returned yet) has no `CaptureHandle` to stop --
@@ -413,6 +335,7 @@ async fn stop(app: &AppHandle, discard: bool) -> CommandResult<()> {
         CaptureSlot::Starting => None,
     });
     let Some(handle) = handle else { return Ok(()) };
+    crate::offers::on_recording_stopped(app);
     if let Some(tray) = app.try_state::<Tray>() {
         let _ = tray.set_recording(app, None);
     }
@@ -478,30 +401,7 @@ pub async fn voice_enrol(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn offer(automatic: bool) -> MeetingOffer {
-        MeetingOffer {
-            event_id: EventId::new(),
-            calendar_id: CalendarId::new(),
-            uid: "evt-1@example.com".into(),
-            series: None,
-            title: "Design sync".into(),
-            start: jiff::Timestamp::now(),
-            end: jiff::Timestamp::now(),
-            calendar_name: "Work".into(),
-            automatic,
-        }
-    }
-
-    #[test]
-    fn an_always_offer_starts_automatically() {
-        assert!(starts_automatically(&offer(true)));
-    }
-
-    #[test]
-    fn an_ask_offer_does_not_start_on_its_own() {
-        assert!(!starts_automatically(&offer(false)));
-    }
+    use everyday_core::id::RecordingId;
 
     // ---- the reservation race -------------------------------------------
 

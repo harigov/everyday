@@ -1,6 +1,6 @@
 //! Meeting notes: settings, the recording history, transcripts and
 //! voiceprints, and recording itself: `begin`/`append`/`finish`/`discard`/
-//! `retry` and `dismiss_meeting_offer`, each a thin wire wrapper over
+//! `retry`, `dismiss_meeting_offer` and `meeting_now`, each a thin wire wrapper over
 //! `everyday_service::meeting::spool` and `everyday_service::meeting::watch`,
 //! which hold the actual behaviour. `everyday_core::meeting` decides what a
 //! call needs to be one; `everyday_core::vault::Vault` holds it; this is the
@@ -80,6 +80,26 @@ pub struct BeginRecording {
     pub template_id: Option<TemplateId>,
     #[serde(default)]
     pub automatic: bool,
+}
+
+/// `meeting_now`'s answer: what the desktop shell needs to decide whether,
+/// and how, to offer to take notes when another application has just taken
+/// the microphone. See `everyday-app`'s `offers`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingNow {
+    /// Offers are wanted at all: `offer` is not `Off`, and meeting notes are
+    /// either on or have never been set up (no transcriber chosen yet).
+    pub offers: bool,
+    /// `MeetingSettings::mic_offer`.
+    pub mic_offer: bool,
+    /// A recording could start now. `false` makes any offer a prompt to set
+    /// meeting notes up.
+    pub ready: bool,
+    /// The calendar meeting going on now, if there is one worth tying a
+    /// recording to -- an offer for it, in exactly the shape the watcher
+    /// raises, so the shell treats both alike.
+    pub event: Option<crate::events::MeetingOffer>,
 }
 
 /// One spooled chunk, over the wire. `pcm` is little-endian `i16` samples,
@@ -380,7 +400,18 @@ async fn save_meeting_settings(
         let mut settings = args.settings;
         validate_templates(&settings.templates)?;
 
-        if settings.enabled {
+        // Refused when the save would leave meeting notes on with nothing
+        // to transcribe through: turning them on, or changing how speech
+        // becomes text while they are on. Anything else -- the offer mode,
+        // the calendars, the microphone switch, a template -- is saved even
+        // while the transcriber is broken (a key removed, a model deleted),
+        // or "Don't ask when the mic turns on" would be refused for the
+        // very reason its offer was showing a set-up prompt.
+        let saved = vault.meeting_settings()?;
+        let transcription_changed = !saved.enabled
+            || saved.transcriber != settings.transcriber
+            || saved.use_assistant_key != settings.use_assistant_key;
+        if settings.enabled && transcription_changed {
             let checked = view(&vault, settings.clone())?;
             if !checked.usable {
                 let why = checked.problem.unwrap_or_else(|| "the transcriber is not usable".into());
@@ -638,6 +669,15 @@ async fn dismiss_meeting_offer(
     .await
 }
 
+/// The desktop shell's microphone watcher asking "what meeting is on now,
+/// and may I offer?" -- see [`MeetingNow`] and `watch::now`. A read: it marks
+/// nothing offered, because the shell de-duplicates its own offers and the
+/// watcher's minute tick must still be free to raise one for the same event.
+async fn meeting_now(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<MeetingNow> {
+    let vault = svc.require()?;
+    blocking(move || Ok(watch::now(&svc, &vault)?)).await
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "meeting_settings", scope: Meetings, effect: Read,
@@ -768,6 +808,11 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: dismiss_meeting_offer,
     },
     command! {
+        name: "meeting_now", scope: Meetings, effect: Read,
+        args: Nothing, returns: "MeetingNow", signature: &[],
+        run: meeting_now,
+    },
+    command! {
         name: "get_transcript", scope: Meetings, effect: Read,
         args: GetTranscript, returns: "Transcript | null",
         signature: &[("noteId", "NoteId", true)],
@@ -835,6 +880,57 @@ mod tests {
         let err = append_recording_chunk(svc, Ctx::local(), args).await.unwrap_err();
 
         assert_eq!(err.code, codes::TOO_LARGE);
+    }
+
+    /// Meeting notes on, with an OpenAI transcriber that has no key -- the
+    /// state a removed key leaves behind -- saved straight into the vault,
+    /// past the command's own check.
+    fn on_but_broken() -> (Arc<Service>, tempfile::TempDir, MeetingSettings) {
+        let dir = tempfile::tempdir().unwrap();
+        let vault = everyday_vault::create(
+            dir.path(),
+            everyday_core::VaultConfig {
+                password: Some("correct horse battery staple".into()),
+                kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        let settings = MeetingSettings {
+            enabled: true,
+            transcriber: Some(openai("gpt-4o-transcribe")),
+            ..Default::default()
+        };
+        vault.save_meeting_settings(&settings).unwrap();
+        (svc, dir, settings)
+    }
+
+    /// "Don't ask when the mic turns on" saves the whole settings back with
+    /// one switch changed, and is offered exactly when the transcriber is
+    /// broken. Refusing every save while it is broken refused that too.
+    #[tokio::test]
+    async fn a_save_that_leaves_transcription_alone_goes_through_while_it_is_broken() {
+        let (svc, _dir, settings) = on_but_broken();
+        let quieter = MeetingSettings { mic_offer: false, ..settings.clone() };
+        let saved = save_meeting_settings(
+            svc.clone(),
+            Ctx::local(),
+            SaveMeetingSettings { settings: quieter },
+        )
+        .await
+        .unwrap();
+        assert!(!saved.settings.mic_offer);
+
+        // Changing how speech becomes text, to something just as unusable,
+        // is still refused while meeting notes are on.
+        let other =
+            MeetingSettings { transcriber: Some(openai("gpt-4o-transcribe-diarize")), ..settings };
+        let err = save_meeting_settings(svc, Ctx::local(), SaveMeetingSettings { settings: other })
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("cannot turn meeting notes on"), "{}", err.message);
     }
 
     #[test]

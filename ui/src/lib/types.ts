@@ -3879,6 +3879,9 @@ export interface NoteTemplate {
 export interface MeetingSettings {
   enabled: boolean
   offer: Offer
+  /** Also offer when another app starts using the microphone, not only when a
+   *  calendar meeting starts. Off when `offer` is `off`, whatever this says. */
+  micOffer: boolean
   calendars: CalendarFilter
   skippedSeries: string[]
   transcriber?: TranscriberConfig | null
@@ -3906,6 +3909,43 @@ export interface MeetingSettingsView {
   remote: boolean
   /** Local speech is compiled into this build. */
   localSpeech: boolean
+}
+
+/**
+ * A calendar meeting worth offering notes for, as the service describes it --
+ * `everyday_service::events::MeetingOffer`. The shell turns one of these into
+ * a `MeetingOfferPayload` (see `api.ts`) by adding a `key`, a `source` and
+ * the rest of what only it knows.
+ */
+export interface MeetingOffer {
+  eventId: EventId
+  calendarId: CalendarId
+  uid: string
+  series?: string | null
+  title: string
+  start: string
+  end: string
+  calendarName: string
+  automatic: boolean
+  joinUrl?: string | null
+  /** Meeting notes are set up and a recording could start now. */
+  ready: boolean
+}
+
+/**
+ * What `meeting_now` answers. The interface never calls it -- the desktop
+ * shell does, when another application takes the microphone -- but it is on
+ * the generated command surface, so its return type has to exist here.
+ */
+export interface MeetingNow {
+  /** Offers are wanted at all: not switched off, and notes on or never set up. */
+  offers: boolean
+  /** `MeetingSettings.micOffer`. */
+  micOffer: boolean
+  /** A recording could start now. */
+  ready: boolean
+  /** The calendar meeting on now, if there is one worth tying a recording to. */
+  event: MeetingOffer | null
 }
 
 /** A downloadable local model: a recogniser, or the speech kit. */

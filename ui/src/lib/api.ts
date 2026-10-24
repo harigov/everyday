@@ -242,8 +242,20 @@ export let onOpenCalendar: (handler: () => void) => void = () => {}
 /**
  * What `meeting-offer` carries. Not a stored record -- see the module doc.
  *
+ * An offer is pending in the desktop shell until somebody answers it -- from
+ * the banner, from the notification the shell raises, or from its tray --
+ * so the shell, not this window, owns the list: `meetingOffers` reads it,
+ * `meetingOfferAnswer` answers it, and `meeting-offer-settled` says one was
+ * answered elsewhere (or the call ended). A calendar offer is about an event
+ * with other people in it, about a minute before it starts, whether or not it
+ * has a join link; a microphone offer is raised when another application
+ * takes the microphone, tied to the calendar meeting on now if there is one
+ * (then `eventId` and the rest are set) and standalone if not (then they are
+ * null). `ready: false` means meeting notes are not set up yet, so the offer
+ * asks to set them up rather than to record.
+ *
  * `calendarId`, `uid` and `series` ride along beside `eventId` for
- * `dismissMeetingOffer` to use: `eventId` is a feed event's own id, not
+ * the shell's dismissal of a calendar offer to use: `eventId` is a feed event's own id, not
  * stable across a resync, so a "Never for this meeting" click that lands
  * after one would look up the wrong event, or none. `calendarId` and `uid`
  * are what survives that. `series` is needed too, and separately from
@@ -252,18 +264,51 @@ export let onOpenCalendar: (handler: () => void) => void = () => {}
  * one occurrence could only ever skip that one, not the series.
  */
 export interface MeetingOfferPayload {
-  eventId: string
-  calendarId: string
-  uid: string
+  /**
+   * `event:{calendarId}:{uid}` for an offer about a calendar event (however
+   * it was noticed), `mic:{n}` for a microphone offer with no event. What
+   * `meetingOfferAnswer` and the shell's `meeting-offer-settled` event name
+   * an offer by.
+   */
+  key: string
+  /** How the meeting was noticed: its calendar event starting, or another app taking the microphone. */
+  source: 'calendar' | 'microphone'
+  eventId: string | null
+  calendarId: string | null
+  uid: string | null
   series?: string | null
   title: string
-  start: string
-  end: string
-  calendarName: string
+  start: string | null
+  end: string | null
+  calendarName: string | null
+  /** The application using the microphone, for a microphone offer. */
+  app: string | null
+  /** The event's join link, for "Join & take notes". */
+  joinUrl: string | null
+  /** False: meeting notes are not set up yet, so the offer asks to set them up. */
+  ready: boolean
   /** The shell has already started recording; this is a toast, not an ask. */
   automatic: boolean
   recordingId?: string | null
 }
+
+/** How an offer was answered. `never`: for a calendar offer, never for this
+ *  meeting's series; for a microphone offer, stop offering when the
+ *  microphone turns on. */
+export type MeetingOfferAnswer = 'take' | 'join' | 'notNow' | 'never'
+
+// The other three offer events, besides `meeting-offer` itself.
+//
+// `meeting-offer-settled` -- the offer was answered somewhere else, or the
+// call or event it was about is over; drop it. `meeting-offer-failed` --
+// answering from the notification or tray failed (`key` is "" for the
+// tray's generic "Take notes now"). `meeting-offer-setup` -- "Set up meeting
+// notes" was pressed on a notification, so open Settings -> Meetings.
+export let onMeetingOfferSettled: (handler: (key: string) => void) => void = () => {}
+export let onMeetingOfferFailed: (
+  handler: (key: string, message: string) => void,
+) => void = () => {}
+export let onMeetingOfferSetup: (handler: (key: string) => void) => void = () => {}
 
 export let onMeetingStatus: (handler: (status: CaptureStatus | null) => void) => void = () => {}
 export let onMeetingStillOn: (handler: (recordingId: RecordingId) => void) => void = () => {}
@@ -327,6 +372,17 @@ if (!MOCK) {
   onMeetingOffer = (handler) => {
     void listen<MeetingOfferPayload>('meeting-offer', (e) => handler(e.payload))
   }
+  onMeetingOfferSettled = (handler) => {
+    void listen<{ key: string }>('meeting-offer-settled', (e) => handler(e.payload.key))
+  }
+  onMeetingOfferFailed = (handler) => {
+    void listen<{ key: string; message: string }>('meeting-offer-failed', (e) =>
+      handler(e.payload.key, e.payload.message),
+    )
+  }
+  onMeetingOfferSetup = (handler) => {
+    void listen<{ key: string }>('meeting-offer-setup', (e) => handler(e.payload.key))
+  }
 
   const mod = await import('@tauri-apps/api/core')
   sendMessage = async (conversationId, prompt, onScreen, attachments, onEvent) => {
@@ -374,6 +430,9 @@ if (!MOCK) {
     mockInvoke,
     mockOnChange,
     mockOnMeetingOffer,
+    mockOnMeetingOfferFailed,
+    mockOnMeetingOfferSettled,
+    mockOnMeetingOfferSetup,
     mockOnMeetingStatus,
     mockOnMeetingStillOn,
   } = await import('./mock')
@@ -389,6 +448,9 @@ if (!MOCK) {
   onMeetingStatus = mockOnMeetingStatus
   onMeetingStillOn = mockOnMeetingStillOn
   onMeetingOffer = mockOnMeetingOffer
+  onMeetingOfferSettled = mockOnMeetingOfferSettled
+  onMeetingOfferFailed = mockOnMeetingOfferFailed
+  onMeetingOfferSetup = mockOnMeetingOfferSetup
 }
 
 /**
@@ -626,6 +688,17 @@ export const api = {
   }) => invoke<Recording>('meeting_start', opts),
   meetingStop: (discard: boolean) => invoke<void>('meeting_stop', { discard }),
   meetingStatus: () => invoke<CaptureStatus | null>('meeting_status'),
+
+  /**
+   * Answer a pending offer, in the shell, which owns them -- it also raises
+   * the notification and tray item for each, and settles all three together.
+   * Resolves with the recording a `take` or `join` started, or null for
+   * `notNow` and `never`.
+   */
+  meetingOfferAnswer: (key: string, answer: MeetingOfferAnswer) =>
+    invoke<Recording | null>('meeting_offer_answer', { key, answer }),
+  /** The offers pending in the shell, oldest first. */
+  meetingOffers: () => invoke<MeetingOfferPayload[]>('meeting_offers', {}),
 
   /**
    * Record a 20-second sample and turn it into a voiceprint, natively.
