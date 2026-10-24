@@ -17,11 +17,21 @@
 //! module's own copy of the one boundary `caldav::to_jiff` already is: the
 //! only place in this crate a `chrono` type becomes a `jiff` one.
 //!
+//! What this module does *not* borrow is the recurrence engine itself. A
+//! banner needs the first occurrence, which RFC 5545 makes `DTSTART`
+//! whatever the rule says, and [`parse_invite`] runs on every synced message
+//! that carries a `text/calendar` part -- so anyone can send one, and
+//! calcard builds every match in a rule's period before yielding the first:
+//! one `VEVENT` with every `BYMONTHDAY`, `BYHOUR`, `BYMINUTE` and `BYSECOND`
+//! is some thirty million date-times. [`start_end`] therefore never hands
+//! calcard a rule at all.
+//!
 //! # What an invitation *is*, here
 //!
 //! One `VEVENT` — the first that is not a `RECURRENCE-ID` override, on the
 //! reasoning that an invitation banner shows the *series*, not one already
-//! rescheduled occurrence of it — read into an [`everyday_core::mail::Invite`]
+//! rescheduled occurrence of it, looked for among the first
+//! [`MAX_VEVENTS`] — read into an [`everyday_core::mail::Invite`]
 //! that never leaves this module's understanding of iCalendar behind: no
 //! `chrono` type, no `calcard` type, crosses back out of [`parse_invite`].
 //!
@@ -49,13 +59,11 @@ use jiff::Timestamp;
 
 use everyday_core::mail::{Address, AttendeeResponse, Invite, InviteAttendee, InviteMethod};
 
-/// Occurrences are only ever needed for the first one — an invitation names
-/// a series ("every Tuesday", via [`Invite::recurrence`]'s raw `RRULE`
-/// text), not a list of future dates — so this is small and bounded, unlike
-/// `everyday_service::accountcal::caldav::EXPAND_LIMIT`, the much larger
-/// bound a calendar sync needs for the same call when it actually has to
-/// materialise every occurrence a feed's window covers.
-const FIRST_OCCURRENCE_LIMIT: usize = 8;
+/// How many `VEVENT`s [`master_vevent`] looks through for the one a banner
+/// is drawn from. The master comes first in every invitation a real client
+/// sends, with any rescheduled occurrences after it; a sender packing in
+/// thousands more should not make every sync of that message walk them.
+const MAX_VEVENTS: usize = 50;
 
 /// Reads `calendar_bytes` — the raw bytes of a message's `text/calendar`
 /// part — into an [`Invite`], or `None` when it is not a shape this
@@ -76,10 +84,10 @@ pub fn parse_invite(calendar_bytes: &[u8], my_addresses: &[String]) -> Option<In
     let parsed = ICalendar::parse(text).ok()?;
     let method = top_level_method(&parsed)?;
 
-    let (comp_id, comp) = master_vevent(&parsed)?;
+    let comp = master_vevent(&parsed)?;
     let uid = text_property(comp, ICalendarProperty::Uid)?;
     let organizer = organizer_of(comp)?;
-    let (start, end) = start_end(&parsed, comp_id as u32)?;
+    let (start, end) = start_end(&parsed, comp)?;
 
     let summary = text_property(comp, ICalendarProperty::Summary).unwrap_or_default();
     let location = text_property(comp, ICalendarProperty::Location).filter(|s| !s.is_empty());
@@ -137,7 +145,7 @@ pub fn build_reply(
 ) -> Option<Vec<u8>> {
     let text = std::str::from_utf8(invite_calendar_bytes).ok()?;
     let parsed = ICalendar::parse(text).ok()?;
-    let (_, comp) = master_vevent(&parsed)?;
+    let comp = master_vevent(&parsed)?;
 
     let uid = text_property(comp, ICalendarProperty::Uid)?;
     let organizer = organizer_of(comp)?;
@@ -227,35 +235,48 @@ fn top_level_method(parsed: &ICalendar) -> Option<InviteMethod> {
 /// recurring series), falling back to the first `VEVENT` at all when every
 /// one of them is an override -- a shape no real sender produces, but one
 /// this function still has to answer *something* for rather than panic.
-fn master_vevent(parsed: &ICalendar) -> Option<(usize, &ICalendarComponent)> {
-    parsed
+/// Only the first [`MAX_VEVENTS`] are looked at.
+fn master_vevent(parsed: &ICalendar) -> Option<&ICalendarComponent> {
+    let mut vevents = parsed
         .components
         .iter()
-        .enumerate()
-        .find(|(_, c)| c.component_type == ICalendarComponentType::VEvent && !has_recurrence_id(c))
-        .or_else(|| {
-            parsed
-                .components
-                .iter()
-                .enumerate()
-                .find(|(_, c)| c.component_type == ICalendarComponentType::VEvent)
-        })
+        .filter(|c| c.component_type == ICalendarComponentType::VEvent)
+        .take(MAX_VEVENTS);
+    let first = vevents.clone().next();
+    vevents.find(|c| !has_recurrence_id(c)).or(first)
 }
 
 fn has_recurrence_id(comp: &ICalendarComponent) -> bool {
     comp.entries.iter().any(|e| e.name == ICalendarProperty::RecurrenceId)
 }
 
-/// `(start, end)` for the master `VEVENT`'s own first occurrence, both
-/// zoned by `calcard`'s own `VTIMEZONE`/`TZID` resolution -- see the module
-/// docs for why this reuses [`ICalendar::expand_dates`] rather than reading
-/// `DTSTART`/`DTEND` by hand. A `DTEND` given as a `DURATION` is added onto
-/// the resolved start rather than read as its own instant, the same as
+/// `(start, end)` for the master `VEVENT`'s own first occurrence -- its
+/// `DTSTART`, which RFC 5545 §3.8.5.3 makes the first instance of any
+/// recurrence set -- both zoned by `calcard`'s own `VTIMEZONE`/`TZID`
+/// resolution: see the module docs for why this reuses
+/// [`ICalendar::expand_dates`] rather than reading `DTSTART`/`DTEND` by
+/// hand. A `DTEND` given as a `DURATION` is added onto the resolved start
+/// rather than read as its own instant, the same as
 /// `accountcal::caldav::events_from_ics` does.
-fn start_end(parsed: &ICalendar, comp_id: u32) -> Option<(Timestamp, Timestamp)> {
-    let expanded = parsed.expand_dates(Tz::Floating, FIRST_OCCURRENCE_LIMIT);
+///
+/// What is expanded is not `parsed` but a calendar of its `VTIMEZONE`s and
+/// one copy of `master` with its `RRULE`, `RDATE` and `EXDATE` taken off --
+/// calcard resolves a `TZID` from a `VTIMEZONE`'s own lines, never its
+/// `STANDARD`/`DAYLIGHT` children -- so the cost is one `VEVENT`'s, however
+/// many the message carries and whatever its rule asks for (see the module
+/// docs). The rule is still shown, as text, by [`rrule_text`].
+fn start_end(parsed: &ICalendar, master: &ICalendarComponent) -> Option<(Timestamp, Timestamp)> {
+    let mut first = master.clone();
+    first.entries.retain(|e| {
+        !matches!(
+            e.name,
+            ICalendarProperty::Rrule | ICalendarProperty::Rdate | ICalendarProperty::Exdate
+        )
+    });
+    let mut components: Vec<ICalendarComponent> = parsed.timezones().cloned().collect();
+    components.push(first);
     let occurrence =
-        expanded.events.into_iter().filter(|e| e.comp_id == comp_id).min_by_key(|e| e.start)?;
+        ICalendar { components }.expand_dates(Tz::Floating, 1).events.into_iter().next()?;
     let start = to_jiff(occurrence.start);
     let end = match occurrence.end {
         TimeOrDelta::Time(t) => to_jiff(t),
@@ -505,6 +526,51 @@ mod tests {
         assert_eq!(invite.summary, "Weekly standup");
         // 09:00 America/New_York on 2026-03-02 (before the DST change) is 14:00 UTC.
         assert_eq!(invite.start.to_string(), "2026-03-02T14:00:00Z");
+        assert_eq!(invite.end.to_string(), "2026-03-02T14:30:00Z");
+    }
+
+    /// Any sender can put this in front of every sync: a rule whose first
+    /// year alone is some thirty million date-times, on three hundred
+    /// `VEVENT`s. Expanded, the first one costs about a gigabyte; read as
+    /// the banner reads it, the whole message is its master's `DTSTART`.
+    #[test]
+    fn a_rule_asking_for_millions_of_occurrences_is_read_at_once_from_its_dtstart() {
+        let list = |range: std::ops::RangeInclusive<u32>| {
+            range.map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        };
+        let rule = format!(
+            "FREQ=YEARLY;BYMONTH={};BYMONTHDAY={};BYHOUR={};BYMINUTE={};BYSECOND={}",
+            list(1..=12),
+            list(1..=31),
+            list(0..=23),
+            list(0..=59),
+            list(0..=59)
+        );
+        let vevent = |n: usize| {
+            format!(
+                "BEGIN:VEVENT\r\nUID:flood-{n}@example.com\r\nDTSTART:20261005T090000Z\r\n\
+                 DTEND:20261005T093000Z\r\nRRULE:{rule}\r\nORGANIZER:mailto:priya@example.com\r\n\
+                 SUMMARY:Flood\r\nEND:VEVENT\r\n"
+            )
+        };
+        let ics = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nMETHOD:REQUEST\r\n{}END:VCALENDAR\r\n",
+            (0..300).map(vevent).collect::<String>()
+        );
+
+        let started = std::time::Instant::now();
+        let invite = parse_invite(ics.as_bytes(), &hari()).expect("parses");
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(10), "took {took:?}");
+
+        assert_eq!(invite.uid, "flood-0@example.com");
+        assert_eq!(invite.start.to_string(), "2026-10-05T09:00:00Z");
+        assert_eq!(invite.end.to_string(), "2026-10-05T09:30:00Z");
+        assert!(
+            invite.recurrence.as_deref().is_some_and(|r| r.starts_with("FREQ=YEARLY")),
+            "the rule is still shown, as text: {:?}",
+            invite.recurrence
+        );
     }
 
     #[test]

@@ -52,7 +52,8 @@
       card.confirmKind === 'search' ||
       card.confirmKind === 'fetch' ||
       card.confirmKind === 'type' ||
-      card.confirmKind === 'click',
+      card.confirmKind === 'click' ||
+      card.confirmKind === 'routine',
   )
 
   /** The question, and the button that says yes to it, per kind. */
@@ -79,8 +80,25 @@
       yes: 'Click',
       icon: 'globe',
     },
+    routine: {
+      ask: 'Neither you nor a search gave it this address. The routine will open it every time it runs, without asking.',
+      yes: 'Save',
+      icon: 'globe',
+    },
   } as const satisfies Record<string, { ask: string; yes: string; icon: IconName }>
   const asking = $derived(ASKS[card.confirmKind ?? 'destructive'])
+
+  /**
+   * A question's subject is one line naming what the call acts on -- drawn
+   * in bold beside the label, as it always was -- and, for a message about
+   * to be sent or an invitation's description, the whole of that text on
+   * the lines after it. The backend sends all of it on purpose (a preview
+   * is what injected text hides below), so none of it is cut here: it gets
+   * a block of its own that keeps its line breaks and scrolls.
+   */
+  const newline = $derived(card.subject.indexOf('\n'))
+  const subjectLine = $derived(newline < 0 ? card.subject : card.subject.slice(0, newline))
+  const subjectText = $derived(newline < 0 ? '' : card.subject.slice(newline + 1).trim())
 </script>
 
 <div
@@ -108,7 +126,7 @@
              would be fetched from, the task a delete would remove -- because
              that is what is being decided. Otherwise the short form: a host,
              a query, a place. -->
-        {#if card.subject}<b>{card.subject}</b>{:else if label.detail}<b>{label.detail}</b>{/if}
+        {#if card.subject}<b>{subjectLine}</b>{:else if label.detail}<b>{label.detail}</b>{/if}
       </span>
       {#if card.state === 'done' && card.mailLink}
         <!-- What the plan calls "the transcript links to what the assistant
@@ -136,6 +154,11 @@
   </div>
 
   {#if card.state === 'waiting'}
+    {#if subjectText}
+      <!-- Only while it is being decided: once answered, the card goes
+           back to being one line in the transcript. -->
+      <div class="long">{subjectText}</div>
+    {/if}
     <p class="ask">{asking.ask}</p>
     <div class="answer">
       <button class="no" onclick={() => onanswer('decline')}>Don't</button>
@@ -302,6 +325,22 @@
     .spin {
       animation: pulse 1.1s ease-in-out infinite;
     }
+  }
+
+  /* The text a question is about -- a message's whole body, an
+     invitation's description -- as written, line breaks and all, scrolling
+     inside the card rather than stretching it past the panel. */
+  .long {
+    max-height: 16rem;
+    margin-top: var(--sp-2);
+    padding: var(--sp-2);
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-raised);
+    color: var(--fg);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
   }
 
   .ask {

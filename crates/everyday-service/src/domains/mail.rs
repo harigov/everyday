@@ -303,11 +303,23 @@ async fn move_to_mailbox(
     batch_op(svc, args.threads, OpKind::Move { to: args.to }).await
 }
 
+/// Refuse a label that is empty or carries a control character, before
+/// any thread is changed or any op queued -- see
+/// [`everyday_core::mail::label_problem`].
+fn check_label(label: &str) -> CommandResult<()> {
+    match everyday_core::mail::label_problem(label) {
+        Some(problem) => Err(CommandError::new(codes::INVALID, problem)),
+        None => Ok(()),
+    }
+}
+
 async fn label(svc: Arc<Service>, _ctx: Ctx, args: LabelThreads) -> CommandResult<Vec<Op>> {
+    check_label(&args.label)?;
     batch_op(svc, args.threads, OpKind::Label { label: args.label }).await
 }
 
 async fn unlabel(svc: Arc<Service>, _ctx: Ctx, args: LabelThreads) -> CommandResult<Vec<Op>> {
+    check_label(&args.label)?;
     batch_op(svc, args.threads, OpKind::Unlabel { label: args.label }).await
 }
 
@@ -1736,3 +1748,18 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: mail_actions_by_origin,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_label_refuses_line_breaks_and_other_control_characters() {
+        assert!(check_label("Work").is_ok());
+        assert!(check_label("Say \"Hi\" \\ to Bob").is_ok());
+        for bad in ["x\r\nZ1 UID MOVE 1:* [Gmail]/Trash\r\nZ2", "a\nb", "a\rb", "a\0b", "", " "] {
+            let refused = check_label(bad).unwrap_err();
+            assert_eq!(refused.code, codes::INVALID, "{bad:?}");
+        }
+    }
+}

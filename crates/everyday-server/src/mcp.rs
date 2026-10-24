@@ -177,12 +177,13 @@ pub const CONFIG_FILE: &str = "mcp.json";
 /// plaintext does not already have to concede.
 ///
 /// Two things mitigate it. [`Config::save`] writes this file `0600` on
-/// unix, the same idiom `restrict_socket` uses in `lib.rs`, so only this
-/// user's own processes can read it. And revoking access is deleting the
-/// device from [`Registry`] -- which is the one list "what can reach this
-/// vault" has ever had -- and that invalidates the token regardless of
-/// what this file still says, because [`Registry::authenticate`] is what a
-/// request is actually checked against, never this file.
+/// unix -- created that way, not restricted after the token is already in
+/// it -- so only this user's own processes can read it. And revoking
+/// access is deleting the device from [`Registry`] -- which is the one list
+/// "what can reach this vault" has ever had -- and that invalidates the
+/// token regardless of what this file still says, because
+/// [`Registry::authenticate`] is what a request is actually checked
+/// against, never this file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
@@ -224,31 +225,23 @@ impl Config {
             .unwrap_or_default()
     }
 
+    /// Write this file, readable by nobody but this user from the moment it
+    /// exists -- see [`Config`]'s own doc for why it holds plaintext at all.
+    /// A save that cannot be made private fails rather than landing anyway.
     pub fn save(&self, dir: &Path) -> CommandResult<()> {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| CommandError::new("io", format!("{}: {e}", dir.display())))?;
+        everyday_core::fsutil::create_private_dir(dir)
+            .map_err(|e| CommandError::new("io", e.to_string()))?;
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| CommandError::new("internal", e.to_string()))?;
         let path = dir.join(CONFIG_FILE);
-        everyday_core::fsutil::write_atomic(&path, text.as_bytes(), "mcp")
-            .map_err(|e| CommandError::new("io", e.to_string()))?;
-        restrict_config(&path);
-        Ok(())
+        everyday_core::fsutil::write_atomic_private(
+            &path,
+            text.as_bytes(),
+            &everyday_core::fsutil::unique_tag(),
+        )
+        .map_err(|e| CommandError::new("io", e.to_string()))
     }
 }
-
-/// Keep the plaintext token readable by nobody but this user. See
-/// [`Config`]'s own doc for why the file holds plaintext at all.
-#[cfg(unix)]
-fn restrict_config(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-        tracing::warn!(error = %e, "could not restrict mcp.json's permissions");
-    }
-}
-
-#[cfg(not(unix))]
-fn restrict_config(_path: &Path) {}
 
 /// The name a token minted by [`issue_token`] is recorded under.
 ///

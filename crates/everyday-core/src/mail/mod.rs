@@ -51,3 +51,21 @@ pub use outbox::{
 pub use rate_limit::{RateLimitState, TokenBucket};
 pub use records::*;
 pub use sorting::{MailSorting, SortCategory, SortMark, SortedAs};
+
+/// What is wrong with `label` as a mail label, or `None` if nothing is.
+///
+/// A label is sent to Gmail inside an IMAP command, and a line break in one
+/// ends that command and starts another (`x\r\nZ1 UID MOVE 1:* [Gmail]/Trash`).
+/// `everyday_mail::imap` refuses to send such a label at all, but only once
+/// the outbox reaches it, by which time it has been applied here and has to
+/// be unwound. The assistant's `label_thread` tool and the `label` and
+/// `unlabel` commands turn it away first, in words, with this one rule.
+pub fn label_problem(label: &str) -> Option<&'static str> {
+    if label.trim().is_empty() {
+        Some("a label needs a name")
+    } else if label.chars().any(char::is_control) {
+        Some("a label is one line of plain text, with no line break or other control character")
+    } else {
+        None
+    }
+}

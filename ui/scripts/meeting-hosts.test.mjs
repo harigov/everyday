@@ -41,6 +41,25 @@ assert.equal(
 assert.equal(joinLink(event({ location: 'Conference Room 4B' })), null, 'no host, no link')
 assert.equal(joinLink(event()), null, 'nothing set at all')
 
+// A link is matched on the host a browser would visit, not on a host that
+// merely appears in it: each of these goes to evil.example.
+for (const spoof of [
+  'https://evil.example?@meet.google.com/abc-defg-hij',
+  'https://evil.example#@meet.google.com/abc-defg-hij',
+  'https://evil.example\\@meet.google.com/abc-defg-hij',
+  'https://evil.example/meet.google.com/abc',
+  'https://meet.google.com@evil.example/abc',
+  'https://user@meet.google.com/abc',
+  'https://meet.google.com.evil.example/abc',
+]) {
+  assert.equal(joinLink(event({ url: spoof })), null, spoof)
+}
+assert.equal(
+  joinLink(event({ url: 'https://us02web.zoom.us:443/j/1?pwd=x.' })),
+  'https://us02web.zoom.us:443/j/1?pwd=x',
+  'a subdomain, a port and a sentence-ending full stop',
+)
+
 // URL wins over location, which wins over description -- the same order
 // `is_online_call` reads them in.
 assert.equal(

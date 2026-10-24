@@ -102,11 +102,15 @@ pub struct Device {
     /// "not MCP" for a row that actually was one silently restores exactly
     /// the bypass this field exists to close, the moment this binary is
     /// upgraded under an existing vault. Guessing "MCP" for a row that
-    /// was an ordinary paired device only narrows what it can do through
-    /// `run_tool`/`list_tools` -- the two commands this matters for -- until
-    /// it pairs again, which is inconvenient but never unsafe. So an
+    /// was an ordinary paired device shuts it out of the sharing listener
+    /// until it pairs again, which is inconvenient but never unsafe. So an
     /// unmarked, pre-existing device is treated as MCP: fail closed rather
     /// than fail open.
+    ///
+    /// Shut out, because the sharing listener refuses an MCP device
+    /// outright -- see `routes::authenticate`. An MCP token is a key to the
+    /// MCP endpoint, whose own limits (the destructive-tools switch, each
+    /// account's MCP access, the filtered catalogue) are not on `/v1/call`.
     #[serde(default = "default_mcp_unmarked")]
     pub mcp: bool,
 }

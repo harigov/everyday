@@ -120,7 +120,7 @@ impl BlobBackend for TableBlobs<'_> {
                 store.driver.backend_id(),
             )));
         }
-        let id = BlobId::of(bytes);
+        let id = blobstore::address(store.cipher.as_ref(), bytes);
         // Content-addressed: identical bytes, identical row. Checking first
         // also avoids sealing a 400 MB video to throw it away.
         if self.has(id)? {

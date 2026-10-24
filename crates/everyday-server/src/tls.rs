@@ -78,13 +78,19 @@ impl Identity {
         }
 
         let identity = Self::create(names)?;
-        std::fs::create_dir_all(dir)
-            .map_err(|e| CommandError::new("io", format!("{}: {e}", dir.display())))?;
+        everyday_core::fsutil::create_private_dir(dir)
+            .map_err(|e| CommandError::new("io", e.to_string()))?;
         everyday_core::fsutil::write_atomic(&cert_path, identity.cert_pem.as_bytes(), "cert")
             .map_err(|e| CommandError::new("io", e.to_string()))?;
-        everyday_core::fsutil::write_atomic(&key_path, identity.key_pem.as_bytes(), "key")
-            .map_err(|e| CommandError::new("io", e.to_string()))?;
-        restrict(&key_path);
+        // Private from the moment the file exists, and a failure to make it
+        // so is a failure to start: a key somebody else may have read is a
+        // certificate that pins nothing.
+        everyday_core::fsutil::write_atomic_private(
+            &key_path,
+            identity.key_pem.as_bytes(),
+            &everyday_core::fsutil::unique_tag(),
+        )
+        .map_err(|e| CommandError::new("io", e.to_string()))?;
         everyday_core::fsutil::write_atomic(&names_path, wanted.as_bytes(), "names")
             .map_err(|e| CommandError::new("io", e.to_string()))?;
         Ok(identity)
@@ -168,20 +174,6 @@ pub fn fingerprint_of(der: &[u8]) -> String {
         })
         .expect("the ring provider offers SHA-256");
     sha256.hash(der).as_ref().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Take the private key's permissions down to the owner, where the platform
-/// has such a thing.
-fn restrict(path: &Path) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-            tracing::warn!(error = %e, "could not restrict the server key's permissions");
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = path;
 }
 
 /// The names to put in the certificate.
@@ -307,5 +299,18 @@ mod tests {
         Identity::load_or_create(dir.path(), &["localhost".into()]).unwrap();
         let mode = std::fs::metadata(dir.path().join(KEY_FILE)).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "the key is readable by somebody else");
+    }
+
+    /// The directory the key lands in is this user's alone when it is made
+    /// here -- the first start on a machine that has never had one.
+    #[cfg(unix)]
+    #[test]
+    fn a_config_directory_made_for_the_key_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("everyday");
+        Identity::load_or_create(&config, &["localhost".into()]).unwrap();
+        let mode = std::fs::metadata(&config).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "the directory is open to somebody else");
     }
 }

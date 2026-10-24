@@ -224,7 +224,9 @@ async fn connect(
     account: &Account,
 ) -> CommandResult<WebDavClient<Client>> {
     let credential = tokens::credential(svc, vault, account, tokens::Resource::Native).await?;
-    Ok(WebDavClient::new(base_uri(account)?, client_for(credential)?))
+    let base = base_uri(account)?;
+    let client = client_for(credential, &base)?;
+    Ok(WebDavClient::new(base, client))
 }
 
 /// The collection a calendar mirrors: [`CalendarOrigin::Account`]'s

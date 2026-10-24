@@ -22,6 +22,7 @@ mod mcp;
 // window at all. Everything else in this module stays private.
 pub mod meeting;
 mod micwatch;
+mod navigation;
 mod notice;
 mod offers;
 #[cfg(target_os = "linux")]
@@ -130,6 +131,8 @@ pub fn run() {
                 .ok_or("tauri.conf.json has no main window")?;
             tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                 .decorations(cfg!(target_os = "macos"))
+                // Never anywhere but the interface itself -- see `navigation`.
+                .on_navigation(navigation::guard(navigation::dev_url(app.handle())))
                 .build()?;
 
             let handle = app.handle().clone();

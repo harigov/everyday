@@ -130,7 +130,7 @@ pub fn handle<R: Runtime>(
     // custom scheme has no host of its own to carry it.
     if mail_path(&request).is_some() {
         tauri::async_runtime::spawn(async move {
-            responder.respond(serve_mail(session, &request).await);
+            responder.respond(harden(serve_mail(session, &request).await));
         });
         return;
     }
@@ -139,7 +139,7 @@ pub fn handle<R: Runtime>(
     // same way and for the same reason.
     if news_path(&request).is_some() {
         tauri::async_runtime::spawn(async move {
-            responder.respond(serve_news(session, &request).await);
+            responder.respond(harden(serve_news(session, &request).await));
         });
         return;
     }
@@ -152,16 +152,39 @@ pub fn handle<R: Runtime>(
         // outbound connection is still one this process makes.
         Some(SessionHandle::Remote(remote)) => {
             tauri::async_runtime::spawn(async move {
-                responder.respond(serve_remote(&remote, &request).await);
+                responder.respond(harden(serve_remote(&remote, &request).await));
             });
         }
         _ => {
             // Reading media decrypts chunks off disk; keep it off the UI thread.
             tauri::async_runtime::spawn_blocking(move || {
-                responder.respond(serve(&app, &request));
+                responder.respond(harden(serve(&app, &request)));
             });
         }
     }
+}
+
+/// The policy every `everyday:` response carries, whatever it holds.
+///
+/// Tauri counts a document loaded from a scheme the application registered
+/// as local, with the main window's whole IPC -- and what this scheme serves
+/// is, in the end, whatever bytes somebody put into the vault: a mail
+/// attachment that starts `<svg`, at an address anyone who chose those bytes
+/// can work out. As an `<img>` or a `<video>`, which is all the interface
+/// ever asks for, a response's policy does nothing at all; the only time it
+/// applies is when one of these addresses is opened as a *document*. Then
+/// `sandbox` gives it an opaque origin with no script, so there is nothing
+/// left to call the shell with. `nosniff` keeps the declared type the type.
+/// `navigation.rs` is the other half: the windows themselves refuse to go
+/// anywhere a stranger names.
+const DOCUMENT_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+fn harden(mut response: Response<Vec<u8>>) -> Response<Vec<u8>> {
+    let headers = response.headers_mut();
+    headers
+        .insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static(DOCUMENT_POLICY));
+    headers.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+    response
 }
 
 fn error(status: StatusCode, message: &str) -> Response<Vec<u8>> {
@@ -941,6 +964,36 @@ mod news_route_tests {
                     .get(header::ACCESS_CONTROL_EXPOSE_HEADERS)
                     .and_then(|v| v.to_str().ok()),
                 Some("x-news-images-hidden")
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    /// A blob that is an SVG -- the shape a mail attachment can take at an
+    /// address its sender can predict -- still answers as one, for an
+    /// `<img>`, but opened as a document it would be sandboxed with no
+    /// script. See [`DOCUMENT_POLICY`].
+    #[test]
+    fn every_response_is_sandboxed_as_a_document() {
+        let svg = b"<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>";
+        let plan = media::plan(svg.len() as u64, None);
+        for response in
+            [harden(respond(plan, svg.to_vec())), harden(error(StatusCode::NOT_FOUND, "no"))]
+        {
+            let policy = response.headers().get(header::CONTENT_SECURITY_POLICY);
+            let policy = policy.and_then(|v| v.to_str().ok()).unwrap_or_default();
+            assert!(policy.split(';').any(|d| d.trim() == "sandbox"), "{policy}");
+            assert!(policy.contains("default-src 'none'"), "{policy}");
+            assert_eq!(
+                response
+                    .headers()
+                    .get(header::X_CONTENT_TYPE_OPTIONS)
+                    .and_then(|v| v.to_str().ok()),
+                Some("nosniff")
             );
         }
     }

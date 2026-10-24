@@ -29,26 +29,89 @@ export const MEETING_HOSTS: readonly string[] = [
   'meet.jit.si',
 ]
 
-/** The first meeting-host link in the event's url, location or description. */
+/**
+ * The first meeting-host link in the event's url, location or description.
+ *
+ * Read the way `detect.rs` reads it, which is the way a browser does: the
+ * link this returns is opened as written by "Join & take notes", so a host
+ * that merely *appears* in it is not enough. `https://evil.example?@meet.google.com/x`
+ * goes to evil.example, and so would the button.
+ */
 export function joinLink(
   event: Pick<CalendarEvent, 'url' | 'location' | 'description'>,
 ): string | null {
   for (const field of [event.url, event.location, event.description]) {
-    if (!field) continue
+    const link = field ? firstMeetingLink(field) : null
+    if (link) return link
+  }
+  return null
+}
+
+/** What ends a link besides whitespace -- `detect.rs`'s `TOKEN_STOP`. */
+const TOKEN_STOP = /[\s<>"']/
+/** What a sentence leaves stuck to a link's end -- `TRAILING_PUNCTUATION`. */
+const TRAILING_PUNCTUATION = /[.,;:)\]}>"'!]+$/
+
+/**
+ * Scan left to right for the first link -- schemed, or bare at a word
+ * boundary as Google Meet's own invitations write it -- whose host matches
+ * `MEETING_HOSTS`. A bare one is returned as written; `joinHref` gives it
+ * its scheme.
+ */
+function firstMeetingLink(text: string): string | null {
+  const lower = text.toLowerCase()
+  for (let i = 0; i < text.length; i++) {
+    if (text.startsWith('https://', i) || text.startsWith('http://', i)) {
+      const token = takeToken(text.slice(i))
+      const parts = hostAndPath(token.slice(token.indexOf('://') + 3))
+      if (parts && matchesMeetingHost(parts.host, parts.path)) return token
+      continue
+    }
+    const before = i === 0 ? '' : text[i - 1]!
+    if (before && /[\p{L}\p{N}.\-@/]/u.test(before)) continue
     for (const host of MEETING_HOSTS) {
-      const at = field.indexOf(host)
-      if (at === -1) continue
-      // Widen to the whole token the host sits in, so what is offered is a
-      // followable link rather than a bare "zoom.us" clipped out of a
-      // sentence around it.
-      let start = at
-      while (start > 0 && !/\s/.test(field[start - 1]!)) start -= 1
-      let end = at + host.length
-      while (end < field.length && !/\s/.test(field[end]!)) end += 1
-      return field.slice(start, end)
+      if (host.includes('/') || !lower.startsWith(host, i)) continue
+      const after = text[i + host.length]
+      if (after === undefined || /[\s/?#]/.test(after) || TOKEN_STOP.test(after)) {
+        return takeToken(text.slice(i))
+      }
     }
   }
   return null
+}
+
+function takeToken(s: string): string {
+  const end = s.search(TOKEN_STOP)
+  return (end === -1 ? s : s.slice(0, end)).replace(TRAILING_PUNCTUATION, '')
+}
+
+/**
+ * The host a browser would visit (lower-cased) and the rest of the link, or
+ * `null` for one whose host this will not vouch for: the host ends at the
+ * first `/`, `?`, `#` or `\`, a `user@` in front of it is refused rather than
+ * stripped, and so is anything but plain letters, digits, dots and hyphens.
+ */
+function hostAndPath(noScheme: string): { host: string; path: string } | null {
+  const end = noScheme.search(/[/?#\\]/)
+  const authority = end === -1 ? noScheme : noScheme.slice(0, end)
+  if (authority.includes('@')) return null
+  const colon = authority.indexOf(':')
+  const host = colon === -1 ? authority : authority.slice(0, colon)
+  const port = colon === -1 ? '' : authority.slice(colon + 1)
+  if (!/^[A-Za-z0-9.-]+$/.test(host) || !/^\d*$/.test(port)) return null
+  return { host: host.toLowerCase(), path: end === -1 ? '' : noScheme.slice(end) }
+}
+
+/** A host matches an entry, or is a subdomain of it; an entry with a path needs that path too. */
+function matchesMeetingHost(host: string, path: string): boolean {
+  return MEETING_HOSTS.some((entry) => {
+    const slash = entry.indexOf('/')
+    const entryHost = slash === -1 ? entry : entry.slice(0, slash)
+    const hostOk = host === entryHost || host.endsWith(`.${entryHost}`)
+    return slash === -1
+      ? hostOk
+      : hostOk && path.toLowerCase().startsWith(entry.slice(slash).toLowerCase())
+  })
 }
 
 /** How long before an event starts "Take notes" is offered on it. */

@@ -48,6 +48,17 @@ use crate::sse::Broadcaster;
 /// come this way; they have their own route and their own limit.
 const MAX_JSON_BYTES: usize = 32 * 1024 * 1024;
 
+/// Most a body may be buffered to before anybody has proved who they are.
+///
+/// The router used to set its default limit to the attachment ceiling, half a
+/// gigabyte, and `call`, `stream` and `put_blob` took `Bytes` -- which axum
+/// buffers before a handler runs -- so anybody who could reach the port could
+/// make the server hold that much per request without ever showing a token.
+/// Those three now take the raw body and read it themselves once the caller
+/// is known (see [`read_body`]). The one body still read beforehand is a
+/// pairing request: a code, a device name and a scope list.
+const UNAUTHENTICATED_BODY_BYTES: usize = 64 * 1024;
+
 /// How many requests one device may have in flight.
 ///
 /// Each one can be holding a blocking thread, so an unbounded client could
@@ -113,9 +124,13 @@ pub enum Transport {
 }
 
 pub fn router(server: Arc<Server>, transport: Transport) -> Router {
+    use axum::extract::DefaultBodyLimit;
     Router::new()
         .route("/v1/hello", get(hello))
-        .route("/v1/pair", post(pair))
+        // Its own limit, not only the router's below, so that widening the
+        // default for some later route can never widen what a stranger with
+        // no token may make this server buffer.
+        .route("/v1/pair", post(pair).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_BYTES)))
         .route("/v1/call/{name}", post(call))
         .route("/v1/stream/{name}", post(stream))
         .route("/v1/blob", post(put_blob))
@@ -131,7 +146,11 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/news/body/{story}", get(get_news_body))
         .route("/v1/news/img/{story}/{token}", get(get_news_image))
         .route("/v1/events", get(events))
-        .layer(axum::extract::DefaultBodyLimit::max(Service::MAX_ATTACHMENT_BYTES))
+        // What an extractor that buffers -- `Json`, `Bytes` -- may take when a
+        // route says nothing. It does not govern a raw `Body`, which is why
+        // `call`, `stream` and `put_blob` can still take up to their own
+        // limits: they read through `read_body`, after `authenticate`.
+        .layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_BYTES))
         .with_state((server, transport))
 }
 
@@ -320,14 +339,12 @@ async fn call(
     State((server, transport)): Ctxt,
     Path(name): Path<String>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Answer<Response> {
     check_protocol(&headers)?;
-    if body.len() > MAX_JSON_BYTES {
-        return Err(CommandError::new("too_large", "that request is too large").into());
-    }
     let mut ctx = authenticate(&server, transport, &headers)?;
     ctx.request_id = header_str(&headers, "x-everyday-request");
+    let body = read_body(body, MAX_JSON_BYTES).await?;
 
     let args: Value = if body.is_empty() {
         Value::Null
@@ -340,13 +357,12 @@ async fn call(
     // attempt burns 64 MiB of Argon2 by design, so they run one at a time and
     // a device that keeps guessing is turned away. See `auth`.
     //
-    // Both commands that do it are here. `verify_password` is what a client
-    // asks when its own screen was locked and the vault behind it never
-    // closed; it opens nothing, but it is the same guess at the same secret
-    // for the same price, so it goes through the same gate and counts against
-    // the same lockout. A screen that was cheaper to guess at than a vault
-    // would simply become the way in.
-    if name == "unlock" || name == "verify_password" {
+    // Every command that does it is here -- see `derives_a_key` for the list
+    // and why each is on it. Whatever else they do, each is a guess at the
+    // same secret for the same price, so each goes through the same gate and
+    // counts against the same lockout. A command that was cheaper to guess
+    // through than `unlock` would simply become the way in.
+    if derives_a_key(&name) {
         // ...but they are not the same *policy*. `--no-remote-unlock` says a
         // sealed vault is opened at the machine holding it and nowhere else.
         // Applied to `verify_password` as well, it locked people out of a
@@ -354,11 +370,13 @@ async fn call(
         // out could never answer for itself again, and there was nothing to do
         // at the host either, because the vault it holds was never locked.
         //
-        // So the refusal is `unlock`'s, plus the one case where verifying
+        // So the refusal is `unlock`'s, plus the one case where the others
         // would be a way around it -- a sealed vault, where an answer of "yes,
         // that is the password" is exactly the thing the flag is keeping on
-        // the other machine. With the vault open there is no such answer to
-        // buy: the caller is already holding a token that reads it.
+        // the other machine. `change_password` gives that answer too, and
+        // replaces the password on a right guess besides. With the vault open
+        // there is no such answer to buy: the caller is already holding a
+        // token that reads it.
         let sealed = server.service.get().is_none_or(|v| !v.is_unlocked());
         if !server.allow_remote_unlock()
             && transport == Transport::Network
@@ -372,13 +390,71 @@ async fn call(
         }
         let gate = server.registry.unlock_gate(&ctx.caller).await?;
         let outcome = server.service.call(ctx, &name, args).await;
-        gate.record(outcome.is_ok());
+        // `change_password` can fail before it has guessed at anything -- a
+        // new password too short to accept, a vault opened read-only -- and
+        // somebody who mistyped the *new* password has not guessed at the old
+        // one. Only a verdict on `current` counts for or against them.
+        let not_a_guess = name == "change_password"
+            && outcome
+                .as_ref()
+                .is_err_and(|e| e.code != everyday_service::error::codes::BAD_PASSWORD);
+        if !not_a_guess {
+            gate.record(outcome.is_ok());
+        }
         return Ok(Json(outcome?).into_response());
     }
 
     let _permit = server.in_flight.clone().acquire_owned().await.ok();
     let value = server.service.call(ctx, &name, args).await?;
     Ok(Json(value).into_response())
+}
+
+/// The commands that derive a key from a password the caller sent, and so go
+/// through [`Registry::unlock_gate`].
+///
+/// One list, so the gate and the refusal in [`call`] cannot disagree about it.
+/// `unlock` opens the vault. `verify_password` opens nothing -- it is what a
+/// client asks when its own screen locked and the vault behind it never
+/// closed -- but costs the same derivation. `change_password` derives a key
+/// from `current` to unwrap the vault's own, whether or not the vault is open,
+/// which made it an ungated way to ask "is this the password?" that also
+/// replaced the password on a right answer.
+fn derives_a_key(name: &str) -> bool {
+    matches!(name, "unlock" | "verify_password" | "change_password")
+}
+
+/// Read a request's body, refusing it once it passes `limit`.
+///
+/// For the three routes that take a body worth having -- `call`, `stream` and
+/// `put_blob` -- and only ever called after [`authenticate`], which is the
+/// point: see [`UNAUTHENTICATED_BODY_BYTES`]. They take the raw `Body`, which
+/// no `DefaultBodyLimit` governs, so this is the only limit on it.
+///
+/// Its own loop rather than `axum::body::to_bytes`, whose error says whether
+/// the limit was hit or the client went away only through a type from
+/// `http-body-util`, which this crate does not depend on -- and the two want
+/// different answers.
+async fn read_body(body: axum::body::Body, limit: usize) -> Result<Vec<u8>, Failure> {
+    use futures::StreamExt;
+    let too_large = || Failure::from(CommandError::new("too_large", "that request is too large"));
+    // A declared length past the limit is refused without reading a byte.
+    let declared = axum::body::HttpBody::size_hint(&body).lower();
+    if declared > limit as u64 {
+        return Err(too_large());
+    }
+    let mut out = Vec::with_capacity(declared as usize);
+    let mut chunks = body.into_data_stream();
+    while let Some(chunk) = chunks.next().await {
+        let chunk = chunk.map_err(|e| {
+            CommandError::new("invalid", format!("the request did not arrive whole: {e}"))
+        })?;
+        // ...and an undeclared one at the chunk that would carry it past.
+        if out.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        out.extend_from_slice(&chunk);
+    }
+    Ok(out)
 }
 
 /// The one command that answers with a stream.
@@ -395,7 +471,7 @@ async fn stream(
     State((server, transport)): Ctxt,
     Path(name): Path<String>,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Answer<Response> {
     check_protocol(&headers)?;
     let ctx = authenticate(&server, transport, &headers)?;
@@ -406,6 +482,9 @@ async fn stream(
         )
         .into());
     }
+    // A turn's arguments are a prompt and references -- pictures arrive
+    // through `put_blob` first -- so a command's limit is plenty.
+    let body = read_body(body, MAX_JSON_BYTES).await?;
     let args: Value = if body.is_empty() {
         Value::Null
     } else {
@@ -451,11 +530,12 @@ async fn stream(
 async fn put_blob(
     State((server, transport)): Ctxt,
     headers: HeaderMap,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Answer<Json<String>> {
     check_protocol(&headers)?;
     let ctx = authenticate(&server, transport, &headers)?;
-    Ok(Json(server.service.put_blob(&ctx, body.to_vec()).await?))
+    let bytes = read_body(body, Service::MAX_ATTACHMENT_BYTES).await?;
+    Ok(Json(server.service.put_blob(&ctx, bytes).await?))
 }
 
 #[derive(Deserialize)]
@@ -772,6 +852,18 @@ fn check_protocol(headers: &HeaderMap) -> Result<(), Failure> {
 /// Over the socket, nobody had to prove anything: the peer is a process
 /// belonging to this user, which is a stronger statement than any token. Over
 /// the network, a bearer token is required and is what carries the scopes.
+///
+/// # Not an MCP token
+///
+/// An MCP client's token is a row in the same device list a paired phone's
+/// is -- one list, so revoking either is the same act -- but it is a key to
+/// the MCP endpoint and nothing else. That endpoint is where its limits live:
+/// the switch for destructive tools, each account's own MCP access, a tool
+/// catalogue filtered to match. Accepted here, the same token reached the
+/// whole command table with none of them. So it is refused by kind, from the
+/// identity [`Registry::authenticate`] stamped on it, not from anything the
+/// request says about itself. A device paired before rows were marked counts
+/// as MCP too -- see `auth::Device::mcp` -- and pairs again, hence the message.
 fn authenticate(
     server: &Arc<Server>,
     transport: Transport,
@@ -790,7 +882,18 @@ fn authenticate(
                 .ok_or_else(|| {
                     CommandError::new("unauthorized", "this request carried no device token")
                 })?;
-            Ok(server.registry.authenticate(&token)?)
+            let ctx = server.registry.authenticate(&token)?;
+            if let Caller::Device(id) = &ctx.caller
+                && everyday_core::agent::tools::is_mcp_device_id(id)
+            {
+                return Err(CommandError::new(
+                    "forbidden",
+                    "this token was issued for an MCP client, and those only work on the MCP \
+                     endpoint. If this is a device you paired, pair it again.",
+                )
+                .into());
+            }
+            Ok(ctx)
         }
     }
 }
@@ -1192,5 +1295,157 @@ mod news_route_tests {
         let (router, _config_dir) = socket_router(service);
         let response = get(router, &format!("/v1/news/body/{}", StoryId::new())).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}
+
+/// What is refused before a command runs: a body from somebody who has not
+/// said who they are, an MCP token on this listener, and a password change
+/// that would be a free guess. Driven through the real [`Router`], as
+/// `mail_route_tests` is, because each of these is about the order in which
+/// a handler does things -- which only the router can show.
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tower::ServiceExt;
+
+    /// No vault at all: everything these tests check happens before a
+    /// command would need one.
+    fn server(allow_remote_unlock: bool) -> (Arc<Server>, tempfile::TempDir) {
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Registry::open(config_dir.path().join("devices.json")).unwrap());
+        let server = Server::new(
+            Arc::new(Service::new()),
+            registry,
+            Arc::new(Broadcaster::new()),
+            "Test".into(),
+            String::new(),
+            allow_remote_unlock,
+        );
+        (server, config_dir)
+    }
+
+    async fn post(
+        app: Router,
+        path: &str,
+        token: Option<&str>,
+        body: axum::body::Body,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("x-everyday-protocol", PROTOCOL.to_string());
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        let response = app.oneshot(request.body(body).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn json_body(value: Value) -> axum::body::Body {
+        axum::body::Body::from(serde_json::to_vec(&value).unwrap())
+    }
+
+    /// A body that notes whether anybody ever asked it for a byte.
+    fn watched_body(touched: Arc<AtomicBool>) -> axum::body::Body {
+        axum::body::Body::from_stream(futures::stream::once(async move {
+            touched.store(true, Ordering::SeqCst);
+            Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(vec![b'x'; 1024]))
+        }))
+    }
+
+    #[tokio::test]
+    async fn a_body_is_not_read_for_somebody_with_no_token() {
+        let (server, _dir) = server(true);
+        for path in ["/v1/call/list_journals", "/v1/stream/send_message", "/v1/blob"] {
+            let touched = Arc::new(AtomicBool::new(false));
+            let app = router(server.clone(), Transport::Network);
+            let (status, _) = post(app, path, None, watched_body(touched.clone())).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+            assert!(!touched.load(Ordering::SeqCst), "{path} read a body before authenticating");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_past_its_limit_is_too_large_and_one_under_it_is_not() {
+        let (server, _dir) = server(true);
+
+        // Streamed with no declared length, so it is the running count that
+        // has to catch it rather than the size hint.
+        let chunk = axum::body::Bytes::from(vec![b' '; 1024 * 1024]);
+        let chunks = MAX_JSON_BYTES / chunk.len() + 1;
+        let body = axum::body::Body::from_stream(futures::stream::iter(
+            std::iter::repeat_n(chunk, chunks).map(Ok::<_, std::convert::Infallible>),
+        ));
+        let app = router(server.clone(), Transport::Socket);
+        let (status, answer) = post(app, "/v1/call/list_journals", None, body).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(answer["code"], "too_large");
+
+        // Well past the router's small default, which a raw body is not held
+        // to: this one reaches the service, which has no vault to answer with.
+        let padded = json_body(json!({ "pad": "x".repeat(3 * 1024 * 1024) }));
+        let app = router(server, Transport::Socket);
+        let (status, answer) = post(app, "/v1/call/list_journals", None, padded).await;
+        assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE, "{answer}");
+    }
+
+    #[tokio::test]
+    async fn an_mcp_token_is_refused_on_this_listener() {
+        let (server, _dir) = server(true);
+        let (mcp, _) = server.registry.issue("Claude Code", vec![Scope::All], true).unwrap();
+        let (paired, _) = server.registry.issue("Laptop", vec![Scope::All], false).unwrap();
+
+        let app = router(server.clone(), Transport::Network);
+        let (status, answer) =
+            post(app, "/v1/call/list_journals", Some(&mcp), json_body(json!({}))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+        assert_eq!(answer["code"], "forbidden");
+
+        // A device paired the ordinary way, holding the same scope, gets past
+        // authentication to the service.
+        let app = router(server, Transport::Network);
+        let (status, answer) =
+            post(app, "/v1/call/list_journals", Some(&paired), json_body(json!({}))).await;
+        assert!(
+            status != StatusCode::FORBIDDEN && status != StatusCode::UNAUTHORIZED,
+            "{status} {answer}"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_command_that_derives_a_key_is_refused_when_remote_unlock_is_off() {
+        // No vault is a sealed one, which is the case the refusal is for.
+        let (server, _dir) = server(false);
+        let (token, _) = server.registry.issue("Laptop", vec![Scope::All], false).unwrap();
+        for name in ["unlock", "verify_password", "change_password"] {
+            let args = json!({ "password": "a guess", "current": "a guess", "next": "a new one!" });
+            let app = router(server.clone(), Transport::Network);
+            let (status, answer) =
+                post(app, &format!("/v1/call/{name}"), Some(&token), json_body(args)).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{name}: {answer}");
+        }
+    }
+
+    #[tokio::test]
+    async fn changing_the_password_counts_against_the_same_lockout_as_unlocking() {
+        let (server, _dir) = server(true);
+        let (token, id) = server.registry.issue("Laptop", vec![Scope::All], false).unwrap();
+
+        // Spend this device's attempts the way wrong guesses at `unlock` would.
+        let caller = Caller::Device(id);
+        for _ in 0..100 {
+            let Ok(gate) = server.registry.unlock_gate(&caller).await else { break };
+            gate.record(false);
+        }
+
+        let args = json!({ "current": "one more guess", "next": "a new password" });
+        let app = router(server, Transport::Network);
+        let (status, answer) =
+            post(app, "/v1/call/change_password", Some(&token), json_body(args)).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{answer}");
+        assert_eq!(answer["code"], "too_many_attempts");
     }
 }

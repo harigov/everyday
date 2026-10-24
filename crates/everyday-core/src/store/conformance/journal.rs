@@ -342,7 +342,9 @@ fn blobs_are_content_addressed_and_deduplicated(store: &dyn JournalStore) {
     let bytes = b"\x89PNG\r\n\x1a\n and then some pixels";
     let id = store.put_blob(bytes).unwrap();
 
-    assert_eq!(id, BlobId::of(bytes), "blob id must be the BLAKE3 of the plaintext");
+    // Which hash the address is -- bare, or keyed in an encrypted vault --
+    // is `blobstore::address`'s to decide and its own tests' to check; what
+    // every backend owes is that the same bytes always get the same one.
     assert!(store.has_blob(id).unwrap());
     assert_eq!(store.get_blob(id).unwrap(), bytes, "blob must round-trip byte-identically");
 

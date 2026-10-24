@@ -117,7 +117,7 @@ impl AppState {
             return Ok(registry.clone());
         }
         let dir = everyday_vault::config_dir();
-        std::fs::create_dir_all(&dir)
+        everyday_core::fsutil::create_private_dir(&dir)
             .map_err(|e| CommandError::new("io", format!("{}: {e}", dir.display())))?;
         let registry = Arc::new(Registry::open(dir.join(everyday_server::DEVICES_FILE))?);
         *slot = Some(registry.clone());

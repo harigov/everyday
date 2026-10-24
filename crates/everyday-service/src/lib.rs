@@ -86,6 +86,7 @@ pub mod websearch;
 
 pub use command::{Command, Signature};
 pub use ctx::{Caller, Ctx, Scope};
+pub use delivery::inert as inert_markdown;
 pub use error::{CommandError, CommandResult};
 pub use events::{Change, EventSink, Kind, Level, Notification, Op, Reach, Silent};
 pub use service::{PROTOCOL, Service, blocking};

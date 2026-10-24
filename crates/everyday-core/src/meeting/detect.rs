@@ -91,12 +91,11 @@ fn first_meeting_link(text: &str) -> Option<String> {
         let rest = &text[i..];
         if rest.starts_with("https://") || rest.starts_with("http://") {
             let token = take_token(rest);
-            if let Some((_, no_scheme)) = token.split_once("://") {
-                let (authority, path) = split_authority(no_scheme);
-                let host = host_of(authority);
-                if matches_meeting_host(&host, path) {
-                    return Some(token.to_string());
-                }
+            if let Some((_, no_scheme)) = token.split_once("://")
+                && let Some((host, path)) = host_and_path(no_scheme)
+                && matches_meeting_host(&host, path)
+            {
+                return Some(token.to_string());
             }
             continue;
         }
@@ -121,21 +120,37 @@ fn take_token(s: &str) -> &str {
     s[..end].trim_end_matches(|c: char| TRAILING_PUNCTUATION.contains(&c))
 }
 
-/// Split `host[:port]/path?query` (no scheme) into the authority and the
-/// path onward (empty when there is none).
-fn split_authority(no_scheme: &str) -> (&str, &str) {
-    match no_scheme.find('/') {
-        Some(idx) => (&no_scheme[..idx], &no_scheme[idx..]),
-        None => (no_scheme, ""),
+/// The host a browser would visit for a link (scheme already removed),
+/// lower-cased, and the rest of the link after it -- or `None` for a link
+/// whose host this will not vouch for.
+///
+/// This has to read the link the way a browser does, not merely plausibly,
+/// because the link it approves is opened as written by the tray's "Join"
+/// item and the notification's "Join & take notes" button. A browser ends
+/// the host at the first `/`, `?`, `#` or `\`. Splitting at `/` alone read
+/// `https://evil.example?@meet.google.com/abc` as Google Meet, and the app's
+/// own button sent somebody to evil.example.
+///
+/// A `user@` in front of the host is refused rather than stripped: no
+/// meeting service puts one in a join link, and it is how a link dresses up
+/// as one. A host that is not plain letters, digits, dots and hyphens is
+/// refused too: a browser percent-decodes and IDNA-maps a host before using
+/// it, and turning such a host away is cheaper than repeating that and
+/// getting it wrong.
+fn host_and_path(no_scheme: &str) -> Option<(String, &str)> {
+    let end = no_scheme.find(['/', '?', '#', '\\']).unwrap_or(no_scheme.len());
+    let (authority, rest) = no_scheme.split_at(end);
+    if authority.contains('@') {
+        return None;
     }
-}
-
-/// The host out of an authority, lower-cased, with any `user:pass@` and
-/// `:port` stripped.
-fn host_of(authority: &str) -> String {
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    let host = host_port.split(':').next().unwrap_or(host_port);
-    host.to_ascii_lowercase()
+    let (host, port) = match authority.split_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    };
+    let plain_host = !host.is_empty()
+        && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-');
+    let plain_port = port.is_none_or(|p| p.bytes().all(|b| b.is_ascii_digit()));
+    (plain_host && plain_port).then(|| (host.to_ascii_lowercase(), rest))
 }
 
 /// Does `host` (and, where the entry asks for one, `path`) match one of
@@ -325,6 +340,59 @@ mod tests {
         event.description = "Dial in at https://notzoom.us/j/123".into();
         assert_eq!(join_link(&event), None);
         assert!(!is_online_call(&event, &["alice@example.com".into()]));
+    }
+
+    #[test]
+    fn a_meeting_host_after_the_real_host_is_not_matched() {
+        // Each of these opens evil.example in a browser, which ends the host
+        // at the first `?`, `#` or `\`: what follows is query, fragment or
+        // path, however much it looks like Google Meet.
+        for link in [
+            "https://evil.example?@meet.google.com/abc-defg-hij",
+            "https://evil.example#@meet.google.com/abc-defg-hij",
+            "https://evil.example\\@meet.google.com/abc-defg-hij",
+        ] {
+            let mut event = base_event();
+            event.description = format!("Join here: {link}");
+            assert_eq!(join_link(&event), None, "{link} was taken for a Meet link");
+            assert!(!is_online_call(&event, &["alice@example.com".into()]), "{link}");
+        }
+    }
+
+    #[test]
+    fn a_link_with_a_user_in_front_of_its_host_is_refused() {
+        // Refused, not stripped: a browser would go to the host after the
+        // `@`, but no join link has one, and it is how a link disguises
+        // where it goes.
+        for link in [
+            "https://user@meet.google.com/abc-defg-hij",
+            "https://user:pass@us02web.zoom.us/j/85551112222",
+            "https://meet.google.com@evil.example/abc-defg-hij",
+        ] {
+            let mut event = base_event();
+            event.url = link.into();
+            assert_eq!(join_link(&event), None, "{link} was accepted");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_link_still_matches_whatever_ends_its_host() {
+        for link in [
+            "https://meet.google.com/abc-defg-hij",
+            "https://Meet.Google.COM/abc-defg-hij",
+            "https://us02web.zoom.us:443/j/85551112222?pwd=abc",
+            "https://meet.google.com?authuser=1",
+            "https://meet.google.com#abc",
+        ] {
+            let mut event = base_event();
+            event.url = link.into();
+            assert_eq!(join_link(&event).as_deref(), Some(link));
+        }
+
+        // And a bare one with no scheme, as before.
+        let mut event = base_event();
+        event.description = "Dial in: zoom.us/j/1".into();
+        assert_eq!(join_link(&event).as_deref(), Some("https://zoom.us/j/1"));
     }
 
     #[test]

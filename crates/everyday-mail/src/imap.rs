@@ -459,14 +459,16 @@ impl MailSession for ImapSession {
             return Ok(());
         }
         let set = uids.to_imap();
+        // Both lists are quoted before either command goes out, so a refused
+        // label in `remove` cannot leave `add` half applied.
+        let add = if add.is_empty() { None } else { Some(gmail_label_list(add)?) };
+        let remove = if remove.is_empty() { None } else { Some(gmail_label_list(remove)?) };
         let session = self.session_mut()?;
-        if !add.is_empty() {
-            let list = gmail_label_list(add);
+        if let Some(list) = add {
             let command = format!("UID STORE {set} +X-GM-LABELS.SILENT {list}");
             run_fetch_command(session, &command, |_, _| {}).await?;
         }
-        if !remove.is_empty() {
-            let list = gmail_label_list(remove);
+        if let Some(list) = remove {
             let command = format!("UID STORE {set} -X-GM-LABELS.SILENT {list}");
             run_fetch_command(session, &command, |_, _| {}).await?;
         }
@@ -519,7 +521,7 @@ impl MailSession for ImapSession {
     async fn append(&mut self, mailbox: &str, raw: &[u8], flags: Flags) -> Result<Option<Uid>> {
         let flags_part = flags.to_imap_list().map(|f| format!(" {f}")).unwrap_or_default();
         let command =
-            format!("APPEND {}{flags_part} {{{}}}", quote_imap_string(mailbox), raw.len());
+            format!("APPEND {}{flags_part} {{{}}}", quote_imap_string(mailbox)?, raw.len());
         let session = self.session_mut()?;
 
         let id = session.run_command(&command).await.map_err(classify)?;
@@ -595,7 +597,7 @@ impl MailSession for ImapSession {
         // an unescaped interpolation into a quoted IMAP string is exactly
         // the shape that stops being safe the moment anything else ever
         // calls this with a value it did not mint itself.
-        let query = format!("HEADER Message-ID {}", quote_imap_string(message_id));
+        let query = format!("HEADER Message-ID {}", quote_imap_string(message_id)?);
         let found: std::collections::HashSet<Uid> =
             session.uid_search(&query).await.map_err(classify)?;
         Ok(found.into_iter().next())
@@ -1275,12 +1277,26 @@ fn decode_modified_base64(chars: &[u8]) -> Vec<u16> {
 }
 
 /// IMAP string-literal quoting, matching `async-imap`'s own private `quote!`
-/// macro exactly (backslash and double-quote escaped, wrapped in quotes),
-/// needed everywhere a command is built by hand rather than through a typed
+/// macro (backslash and double-quote escaped, wrapped in quotes), needed
+/// everywhere a command is built by hand rather than through a typed
 /// method: [`ImapSession::append`]'s mailbox name, [`gmail_label_list`]'s
 /// labels, and [`ImapSession::search_message_id`]'s `Message-ID` value.
-fn quote_imap_string(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+///
+/// Refuses CR, LF and NUL, which that macro lets through and RFC 3501's
+/// quoted string cannot carry at all. A line break is not an escaping
+/// problem but the end of the command: async-imap's `run_command` writes
+/// the string as it is, so a label of `x\r\nZ1 UID MOVE 1:* [Gmail]/Trash`
+/// would reach the server as a second command of the sender's choosing --
+/// and a label can come from the assistant, which reads mail written by
+/// anybody. Refused rather than stripped, so nothing is ever sent under a
+/// name that is not the one asked for.
+fn quote_imap_string(value: &str) -> Result<String> {
+    if value.contains(['\r', '\n', '\0']) {
+        return Err(MailError::Protocol(
+            "a name containing a line break or a NUL character cannot be sent to the server".into(),
+        ));
+    }
+    Ok(format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"")))
 }
 
 /// The parenthesised, space-separated label list an `X-GM-LABELS` `STORE`
@@ -1289,9 +1305,11 @@ fn quote_imap_string(value: &str) -> String {
 /// person's own label can contain spaces, so every entry is quoted the same
 /// way [`quote_imap_string`] quotes a mailbox name; a system label's leading
 /// backslash survives that quoting untouched, which is exactly what Gmail's
-/// own `STORE` syntax expects.
-fn gmail_label_list(labels: &[String]) -> String {
-    format!("({})", labels.iter().map(|l| quote_imap_string(l)).collect::<Vec<_>>().join(" "))
+/// own `STORE` syntax expects. Fails, sending nothing, if any one label is
+/// refused there.
+fn gmail_label_list(labels: &[String]) -> Result<String> {
+    let quoted = labels.iter().map(|l| quote_imap_string(l)).collect::<Result<Vec<_>>>()?;
+    Ok(format!("({})", quoted.join(" ")))
 }
 
 /// Mirrors `async_imap::client::Connection::check_status_ok`, which is
@@ -1656,8 +1674,25 @@ mod tests {
 
     #[test]
     fn quote_imap_string_escapes_quotes_and_backslashes() {
-        assert_eq!(quote_imap_string("Sent"), "\"Sent\"");
-        assert_eq!(quote_imap_string("a\"b\\c"), "\"a\\\"b\\\\c\"");
+        assert_eq!(quote_imap_string("Sent").unwrap(), "\"Sent\"");
+        assert_eq!(quote_imap_string("a\"b\\c").unwrap(), "\"a\\\"b\\\\c\"");
+    }
+
+    /// A line break ends an IMAP command, so a quoted value carrying one
+    /// would smuggle a second command of its own -- see `quote_imap_string`.
+    #[test]
+    fn quote_imap_string_refuses_line_breaks_and_nul() {
+        for value in ["x\r\nZ1 UID MOVE 1:* [Gmail]/Trash\r\nZ2", "a\rb", "a\nb", "a\0b"] {
+            let refused = quote_imap_string(value);
+            assert!(matches!(refused, Err(MailError::Protocol(_))), "{value:?}: {refused:?}");
+        }
+    }
+
+    #[test]
+    fn gmail_label_list_refuses_the_whole_list_when_one_label_carries_a_command() {
+        let labels =
+            ["Work".to_string(), "x\r\nZ1 UID MOVE 1:* [Gmail]/Trash\r\nZ2 NOOP".to_string()];
+        assert!(matches!(gmail_label_list(&labels), Err(MailError::Protocol(_))));
     }
 
     /// The STORE half of the round trip: once a system label has been
@@ -1671,12 +1706,12 @@ mod tests {
     /// (removing `\Inbox`) send the wrong label entirely.
     #[test]
     fn gmail_label_list_quotes_a_system_label_for_the_wire_once_unescaped() {
-        assert_eq!(gmail_label_list(&["\\Inbox".to_string()]), "(\"\\\\Inbox\")");
+        assert_eq!(gmail_label_list(&["\\Inbox".to_string()]).unwrap(), "(\"\\\\Inbox\")");
     }
 
     #[test]
     fn gmail_label_list_quotes_a_user_label_with_spaces_and_quotes() {
-        assert_eq!(gmail_label_list(&["Say \"Hi\"".to_string()]), "(\"Say \\\"Hi\\\"\")");
+        assert_eq!(gmail_label_list(&["Say \"Hi\"".to_string()]).unwrap(), "(\"Say \\\"Hi\\\"\")");
     }
 
     /// End to end: what `imap-proto` hands back for a quoted system label
@@ -1687,7 +1722,7 @@ mod tests {
     fn a_doubled_backslash_label_unescapes_and_requotes_to_the_correct_wire_form() {
         let parsed = unescape_imap_quoted("\\\\Inbox");
         assert_eq!(parsed, "\\Inbox");
-        assert_eq!(gmail_label_list(&[parsed]), "(\"\\\\Inbox\")");
+        assert_eq!(gmail_label_list(&[parsed]).unwrap(), "(\"\\\\Inbox\")");
     }
 
     #[test]
@@ -1700,7 +1735,7 @@ mod tests {
         // reads it as data rather than the string's own terminator -- so
         // this checks the exact escaped form, not merely "no bare quote
         // survived".
-        let quoted = quote_imap_string("evil\" OR 1=1 \"");
+        let quoted = quote_imap_string("evil\" OR 1=1 \"").unwrap();
         assert_eq!(quoted, "\"evil\\\" OR 1=1 \\\"\"");
     }
 

@@ -412,7 +412,26 @@ fn apply_update_routine_args(
     Ok(routine)
 }
 
+/// The arguments that change what a routine does or where its results go,
+/// rather than when it runs.
+const WHAT_AND_WHERE: [&str; 5] =
+    ["instructions", "send_to_chat", "ask_in_chat", "email_me", "email_account"];
+
 fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    // `create_routine`'s refusal, for the half of an update that amounts to
+    // writing a new routine. A run's instructions are what the next run takes
+    // as the person's own words, addresses and all, so a scheduled run that
+    // has read a stranger's page or message must not be able to write them
+    // -- that would hand the next run whatever the stranger asked for, with
+    // nobody having seen it. Moving it, pausing it or renaming it is still
+    // fine.
+    if ctx.unattended && WHAT_AND_WHERE.iter().any(|field| args.get(field).is_some()) {
+        return Err(Error::Invalid(
+            "a scheduled run may not change a routine's instructions or where its results go. \
+             If it should change, say so in your reply and they can change it."
+                .into(),
+        ));
+    }
     let routine: Routine = load_by_id(args, "routine_id", "routine", |id| ctx.vault.routine(id))?;
     let routine = apply_update_routine_args(ctx, args, routine)?;
     ctx.vault.save_routine(&routine)?;

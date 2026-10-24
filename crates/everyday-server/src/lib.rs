@@ -361,8 +361,9 @@ pub async fn serve_socket(
     // and the vault, and a live server would still be holding it.
     let _ = std::fs::remove_file(&path);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
+        everyday_core::fsutil::create_private_dir(parent)
             .map_err(|e| CommandError::new("io", format!("{}: {e}", parent.display())))?;
+        refuse_a_shared_directory(parent)?;
     }
     let listener = tokio::net::UnixListener::bind(&path)
         .map_err(|e| CommandError::new("io", format!("could not bind {}: {e}", path.display())))?;
@@ -384,6 +385,34 @@ pub async fn serve_socket(
     Ok(shutdown)
 }
 
+/// Refuse to put the socket in a directory anybody but its owner can reach
+/// into.
+///
+/// Nothing that connects to the socket shows a token -- the directory it is
+/// in is what keeps other users out -- and the socket's own mode is only set
+/// once it exists, a moment after anybody who can reach it could connect.
+/// A directory with no group or other permissions that this process could
+/// create a socket in is this user's: anybody else's would have refused the
+/// bind. One with more -- a directory somebody else made at the expected path
+/// in the shared temporary one, say -- is refused here, before anything is
+/// listening in it.
+#[cfg(unix)]
+fn refuse_a_shared_directory(dir: &Path) -> CommandResult<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(dir)
+        .map_err(|e| CommandError::new("io", format!("{}: {e}", dir.display())))?;
+    if !meta.is_dir() || meta.permissions().mode() & 0o077 != 0 {
+        return Err(CommandError::new(
+            "io",
+            format!(
+                "{} can be reached by other users, so the local socket was not put there",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn restrict_socket(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
@@ -394,16 +423,20 @@ fn restrict_socket(path: &Path) {
 
 /// Where this user's local socket for `vault` lives.
 ///
-/// Under the runtime directory where there is one, because that is the
-/// directory the operating system already restricts to this user and clears on
-/// logout. Named after the vault path's hash so two vaults open at once do not
-/// collide.
+/// In a directory of its own -- named after the vault path's hash, so two
+/// vaults open at once do not collide -- under the runtime directory where
+/// there is one, because that is the directory the operating system already
+/// restricts to this user and clears on logout, and under the temporary one
+/// where there is not (a service started outside a login session; macOS).
+/// `serve_socket` makes that directory owner-only and refuses to use one that
+/// is not, so the socket is never somewhere anybody else could reach it,
+/// whatever its parent is. Short, too: macOS allows a socket path 104 bytes,
+/// and its temporary directory alone is half of that.
 pub fn socket_path(vault: &Path) -> PathBuf {
     let key = blake3::hash(vault.to_string_lossy().as_bytes()).to_hex();
-    let name = format!("everyday-{}.sock", &key[..16]);
-    let dir =
+    let base =
         std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    dir.join(name)
+    base.join(format!("everyday-{}", &key[..16])).join("vault.sock")
 }
 
 fn tls_config(identity: &tls::Identity) -> CommandResult<rustls::ServerConfig> {

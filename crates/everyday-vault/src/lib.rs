@@ -168,7 +168,10 @@ fn read_pointer(file: &Path) -> Option<PathBuf> {
 
 fn write_pointer(file: &Path, path: &Path) -> Result<()> {
     if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        // The application's config directory, usually made here first: the
+        // MCP token and the server's private key end up beside this pointer,
+        // so it is created owner-only. See `fsutil::create_private_dir`.
+        everyday_core::fsutil::create_private_dir(parent)?;
     }
     std::fs::write(file, path.to_string_lossy().as_bytes()).map_err(|e| Error::io(file, e))
 }

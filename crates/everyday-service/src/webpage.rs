@@ -535,10 +535,21 @@ pub enum Trust {
 /// anybody can read the answers to. A host found on a page or in a search
 /// result is never trusted whole: those are strangers' words, and a stranger
 /// naming a host is not the person choosing it.
+///
+/// And a whole site is trusted only until the first stranger's words arrive
+/// -- a page, a search's results, whatever the browser is looking at. The
+/// path carries data as well as a query does: once a page on a site the
+/// person named has been read, `https://that.site/x/<their journal>` is an
+/// address that page could have asked for, and the site being one they
+/// chose does not mean everything on it was written by somebody they trust.
+/// From then on only exact addresses stand: the ones they typed and the ones
+/// those pages and searches actually handed back.
 #[derive(Debug, Default, Clone)]
 pub struct Provenance {
     exact: HashSet<String>,
     hosts: HashSet<String>,
+    /// Whether [`Provenance::found`] has been told anything this turn.
+    strangers: bool,
 }
 
 impl Provenance {
@@ -565,8 +576,10 @@ impl Provenance {
 
     /// Learn every `http(s)` address in text a tool returned -- a page's
     /// own link list, or a search result's address -- exactly, and nothing
-    /// about their hosts.
+    /// about their hosts. Ends whole-site trust for the rest of the turn:
+    /// see the type's doc.
     pub fn found(&mut self, text: &str) {
+        self.strangers = true;
         for candidate in urls_in(text) {
             if let Ok(url) = Url::parse(candidate)
                 && url.host_str().is_some()
@@ -579,7 +592,8 @@ impl Provenance {
     /// Whether `address` may be read without asking.
     pub fn check(&self, address: &str) -> Trust {
         let Ok(url) = parse(address) else { return Trust::NotAnAddress };
-        let host_trusted = url.query().is_none() && self.hosts.contains(&host_key(&url));
+        let host_trusted =
+            !self.strangers && url.query().is_none() && self.hosts.contains(&host_key(&url));
         if host_trusted || self.exact.contains(&key(&url)) { Trust::Seen } else { Trust::Unseen }
     }
 }
@@ -885,6 +899,24 @@ mod tests {
             seen.check("https://news.bbc.co.uk/"),
             Trust::Unseen,
             "a subdomain is another host"
+        );
+    }
+
+    #[test]
+    fn a_site_is_trusted_whole_only_until_a_strangers_words_arrive() {
+        let mut seen = Provenance::default();
+        seen.person("summarise https://blog.example/post", true);
+        assert_eq!(seen.check("https://blog.example/about"), Trust::Seen);
+
+        // The post is read, and says to open an address with something in
+        // its path.
+        seen.found("Read the post. [1]: https://blog.example/next");
+        assert_eq!(seen.check("https://blog.example/post"), Trust::Seen, "typed, exactly");
+        assert_eq!(seen.check("https://blog.example/next"), Trust::Seen, "found, exactly");
+        assert_eq!(
+            seen.check("https://blog.example/x/ZGVhciBkaWFyeQ"),
+            Trust::Unseen,
+            "the site is no longer trusted whole"
         );
     }
 

@@ -1573,6 +1573,17 @@ pub(crate) fn confirmation_question(kind: &str, subject: &str, can_park: bool) -
              checking that the mail isn't choosing where I go.",
             subject,
         ),
+        // A routine whose instructions name an address nobody gave: as code,
+        // as `fetch` shows one, so it is read rather than tapped.
+        "routine" => {
+            let head = "**Save a routine that opens this?** Neither you nor a search gave me \
+                        this address, and the routine's runs will open it without asking.";
+            if subject.is_empty() {
+                head.to_string()
+            } else {
+                format!("{head}\n\n`{}`", one_line(subject).replace('`', "'"))
+            }
+        }
         _ => with_quote("**Go ahead with this?**", subject),
     };
     markdown.push_str("\n\n");
@@ -2127,6 +2138,10 @@ mod tests {
         let q = confirmation_question("fetch", "https://example.com/?q=a`b", false);
         assert!(q.markdown.contains("`https://example.com/?q=a'b`"), "{}", q.markdown);
         assert!(q.markdown.contains("Open this address"));
+
+        let q = confirmation_question("routine", "https://evil.example/x/ZGVhcg", true);
+        assert!(q.markdown.contains("`https://evil.example/x/ZGVhcg`"), "{}", q.markdown);
+        assert!(q.markdown.contains("Save a routine"), "{}", q.markdown);
     }
 
     #[test]

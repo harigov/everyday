@@ -27,6 +27,7 @@
   } from '../lib/format'
   import { joinHref, joinLink, takeNotesWindow } from '../lib/meeting-hosts'
   import { meetings } from '../lib/meetings.svelte'
+  import { isWebUrl } from '../lib/feed'
   import { openExternal } from '../lib/open-external'
   import { minutesBetween, offsetInDay } from '../lib/time'
   import { menu } from '../lib/menu.svelte'
@@ -162,6 +163,15 @@
         if (target) void calendar.moveBlockToCalendar(id, target)
       }),
     )
+  }
+
+  // An event's link is whatever its calendar said -- a subscribed feed's
+  // publisher, or anyone who can write to a shared calendar -- so it goes to
+  // the system browser, and only when it is a web address. A plain anchor
+  // here would navigate this window itself.
+  function openEventLink(e: MouseEvent, url: string) {
+    e.preventDefault()
+    void openExternal(url)
   }
 
   /** `Ann Lee <ann@x.com>` as a name to show and an address to hover. */
@@ -476,8 +486,13 @@
           </div>
         {/if}
         {#if event.url}
+          {@const link = event.url}
           <p class="meta">
-            <Icon name="link" size={14} /><a href={event.url} rel="noreferrer">{event.url}</a>
+            <Icon name="link" size={14} />{#if isWebUrl(link)}<a
+                href={link}
+                rel="noreferrer"
+                onclick={(e) => openEventLink(e, link)}>{link}</a
+              >{:else}<span>{link}</span>{/if}
           </p>
         {/if}
         {#if event.description}

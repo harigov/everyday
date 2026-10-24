@@ -387,7 +387,7 @@ async fn unlocking_is_serialised_so_it_cannot_be_used_to_burn_the_machine_down()
 #[tokio::test]
 async fn the_local_socket_needs_no_token() {
     let h = Harness::start().await;
-    let socket = h._config_dir.path().join("test.sock");
+    let socket = h._config_dir.path().join("run").join("test.sock");
     let _stop =
         everyday_server::serve_socket(h.running.server.clone(), socket.clone()).await.unwrap();
 
@@ -414,7 +414,7 @@ async fn the_local_socket_needs_no_token() {
 #[tokio::test]
 async fn pairing_is_refused_over_the_local_socket() {
     let h = Harness::start().await;
-    let socket = h._config_dir.path().join("pair.sock");
+    let socket = h._config_dir.path().join("run").join("pair.sock");
     let _stop =
         everyday_server::serve_socket(h.running.server.clone(), socket.clone()).await.unwrap();
     let code = h.running.server.registry.new_pairing_code();

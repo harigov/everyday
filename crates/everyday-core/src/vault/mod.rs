@@ -80,7 +80,9 @@ pub const FORMAT_VERSION: u32 = 1;
 
 pub const HEADER_FILENAME: &str = "vault.json";
 
-/// The spare copy of the header, kept one write behind the live one.
+/// The spare copy of the header, kept one write behind the live one -- except
+/// across a password change, which leaves it matching the live one so that
+/// no copy of the old wrapped key survives it.
 pub const HEADER_BACKUP_FILENAME: &str = "vault.json.bak";
 
 const STORE_DIRNAME: &str = "store";
@@ -201,7 +203,11 @@ impl Vault {
         if !registry.ids().contains(&cfg.backend.as_str()) {
             return Err(Error::UnknownBackend(cfg.backend.clone()));
         }
-        std::fs::create_dir_all(root).map_err(|e| Error::io(root, e))?;
+        // Owner-only when this is what makes it: the header in it is an
+        // offline guessing target for the password, and on an unencrypted
+        // vault everything in it is plain. A folder somebody picked that
+        // already exists keeps the mode they gave it.
+        crate::fsutil::create_private_dir(root)?;
 
         let (mut header, dek) = match cfg.password.as_deref() {
             Some(password) => {

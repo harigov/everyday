@@ -26,7 +26,9 @@
 
 use serde_json::{Value, json};
 
-use super::{Args, CalendarWriter, Tool, ToolContext, day, flag, list, one_of, schema, text};
+use super::{
+    Args, CalendarWriter, Tool, ToolContext, day, flag, list, one_line, one_of, schema, text,
+};
 use crate::calendar::{
     Attendee, Calendar, CalendarAccess, CalendarOrigin, EditableEvent, EventDraft, EventScope,
 };
@@ -542,10 +544,22 @@ fn invites_anybody(_ctx: &ToolContext<'_>, args: &Args<'_>) -> bool {
     !args.strings("attendees").is_empty()
 }
 
+/// The card a `create_event` with guests is confirmed on: everything the
+/// invitation will tell them -- title, when, where, and the description in
+/// full on the lines below, since an invitation carries it to every guest
+/// and a card that left it out was one a person could approve without
+/// having seen what it said. See `mail::card_text` for the one bound.
 fn describe_create_event(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     let (draft, target) = draft_from_args(ctx, args).ok()?;
+    Some(create_event_card(&draft, &target.name()))
+}
+
+fn create_event_card(draft: &EventDraft, calendar: &str) -> String {
     let mut out =
-        format!("Create \u{201c}{}\u{201d} on {}, {}", draft.title, target.name(), when(&draft));
+        format!("Create \u{201c}{}\u{201d} on {calendar}, {}", one_line(&draft.title), when(draft));
+    if !draft.location.is_empty() {
+        out.push_str(&format!(", at {}", one_line(&draft.location)));
+    }
     if let Some(rule) = &draft.recurrence {
         out.push_str(&format!(", repeating {}", rule.describe()));
     }
@@ -553,7 +567,11 @@ fn describe_create_event(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<Strin
         let guests: Vec<&str> = draft.attendees.iter().map(|a| a.email.as_str()).collect();
         out.push_str(&format!(", and email an invitation to {}", guests.join(", ")));
     }
-    Some(out)
+    if !draft.description.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(&super::mail::card_text(&draft.description, "the description"));
+    }
+    out
 }
 
 fn run_create_event(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
@@ -778,10 +796,29 @@ fn apply_update(
     Ok((draft, scope))
 }
 
+/// The card an `update_event` that reaches guests is confirmed on. Names
+/// the new title, location and description rather than only saying they
+/// change -- the guests are sent the new words, so the person approving
+/// has to see them too; a new description goes in full on the lines below.
 fn describe_update_event(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     let id = event_id(args).ok()?;
     let event = ctx.vault.event(id).ok()?;
+    update_event_card(&event.title, event.local_date, &event.attendees, &event.description, args)
+}
+
+/// `description` is the event's own, as it stands: a guest being invited is
+/// sent it, so with nothing new in its place it goes on the card instead.
+fn update_event_card(
+    title: &str,
+    date: jiff::civil::Date,
+    guests: &[String],
+    description_now: &str,
+    args: &Args<'_>,
+) -> Option<String> {
+    // Read as `apply_update` reads them, so the card says what will be sent.
+    let new_text = |key: &str| args.opt_str(key).unwrap_or_default().trim().to_string();
     let mut parts = Vec::new();
+    let mut description = None;
     for (key, label) in [
         ("title", "rename it"),
         ("date", "move it"),
@@ -792,13 +829,36 @@ fn describe_update_event(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<Strin
         ("repeat", "change how it repeats"),
         ("stop_repeating", "stop it repeating"),
     ] {
-        if args.has_key(key) && !parts.contains(&label.to_string()) {
-            parts.push(label.to_string());
+        if !args.has_key(key) {
+            continue;
+        }
+        let part = match key {
+            // An empty title is not applied -- `apply_update` reads it with
+            // `opt_str` -- so it is not on the card either.
+            "title" if new_text(key).is_empty() => continue,
+            "title" => format!("rename it to \u{201c}{}\u{201d}", one_line(&new_text(key))),
+            "location" | "description" if new_text(key).is_empty() => {
+                format!("clear its {key}")
+            }
+            "location" => format!("change its location to {}", one_line(&new_text(key))),
+            "description" => {
+                description = Some(new_text(key));
+                "change its description to what follows".to_string()
+            }
+            _ => label.to_string(),
+        };
+        if !parts.contains(&part) {
+            parts.push(part);
         }
     }
     let adding = args.strings("add_attendees");
     if !adding.is_empty() {
         parts.push(format!("invite {}", adding.join(", ")));
+        // Whoever is invited is sent the description, new or not.
+        if description.is_none() && !description_now.trim().is_empty() {
+            parts.push("and send them its description, which follows".to_string());
+            description = Some(description_now.trim().to_string());
+        }
     }
     let removing = args.strings("remove_attendees");
     if !removing.is_empty() {
@@ -809,10 +869,13 @@ fn describe_update_event(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<Strin
         EventScope::Occurrence => "",
     };
     let changes = if parts.is_empty() { "change it".to_string() } else { parts.join(", ") };
-    let mut out =
-        format!("\u{201c}{}\u{201d} on {}{scope}: {changes}", event.title, event.local_date);
-    if !event.attendees.is_empty() {
-        out.push_str(&format!(". Its guests are told: {}", event.attendees.join(", ")));
+    let mut out = format!("\u{201c}{}\u{201d} on {date}{scope}: {changes}", one_line(title));
+    if !guests.is_empty() {
+        out.push_str(&format!(". Its guests are told: {}", guests.join(", ")));
+    }
+    if let Some(description) = description {
+        out.push_str("\n\n");
+        out.push_str(&super::mail::card_text(&description, "the description"));
     }
     Some(out)
 }
@@ -884,4 +947,90 @@ fn run_delete_event(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         "id": id.to_string(),
         "scope": scope.as_str(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOTES: &str = "Agenda: the budget.\n\nAlso, between us: the door code is 9876 and the \
+                         account is 1234.";
+
+    fn sync_with_guests() -> EventDraft {
+        EventDraft {
+            title: "Sync".into(),
+            description: NOTES.into(),
+            location: "Room 4".into(),
+            start: "2026-10-07T09:00:00Z".parse().unwrap(),
+            end: "2026-10-07T10:00:00Z".parse().unwrap(),
+            all_day: false,
+            tz: "UTC".into(),
+            attendees: vec![Attendee::new("sam@example.com")],
+            recurrence: None,
+        }
+    }
+
+    /// The invitation carries the description to every guest, so the card
+    /// the person approves it on carries it too, whole.
+    #[test]
+    fn the_create_event_card_carries_the_whole_description_below_its_first_line() {
+        let card = create_event_card(&sync_with_guests(), "Work");
+        let (head, below) = card.split_once("\n\n").expect("the description goes below");
+        assert!(head.starts_with("Create \u{201c}Sync\u{201d} on Work, "), "{head}");
+        assert!(head.contains("at Room 4"), "{head}");
+        assert!(head.contains("invitation to sam@example.com"), "{head}");
+        assert_eq!(below, NOTES);
+
+        let plain = EventDraft { description: String::new(), ..sync_with_guests() };
+        assert!(!create_event_card(&plain, "Work").contains('\n'));
+    }
+
+    #[test]
+    fn the_update_event_card_names_the_new_words_and_carries_the_new_description() {
+        let date = jiff::civil::date(2026, 10, 7);
+        let guests = ["sam@example.com".to_string()];
+        let value = json!({
+            "event_id": "ignored here",
+            "title": "Budget sync",
+            "location": "Room 5",
+            "description": NOTES,
+        });
+        let card = update_event_card("Sync", date, &guests, "", &Args::new("update_event", &value))
+            .unwrap();
+        let (head, below) = card.split_once("\n\n").expect("the description goes below");
+        assert!(head.contains("rename it to \u{201c}Budget sync\u{201d}"), "{head}");
+        assert!(head.contains("change its location to Room 5"), "{head}");
+        assert!(head.contains("change its description to what follows"), "{head}");
+        assert!(head.contains("guests are told: sam@example.com"), "{head}");
+        assert_eq!(below, NOTES);
+
+        let value = json!({ "event_id": "ignored here", "description": "" });
+        let card = update_event_card("Sync", date, &guests, "", &Args::new("update_event", &value))
+            .unwrap();
+        assert!(card.contains("clear its description"), "{card}");
+        assert!(!card.contains('\n'), "{card}");
+
+        // An empty title is not applied, so it is not promised either.
+        let value = json!({ "event_id": "ignored here", "title": " " });
+        let card = update_event_card("Sync", date, &guests, "", &Args::new("update_event", &value))
+            .unwrap();
+        assert!(!card.contains("rename"), "{card}");
+    }
+
+    #[test]
+    fn inviting_somebody_shows_the_description_they_will_be_sent() {
+        let date = jiff::civil::date(2026, 10, 7);
+        let value = json!({ "event_id": "x", "add_attendees": ["new@example.com"] });
+        let card = update_event_card(
+            "Sync",
+            date,
+            &[],
+            "The door code is 9876.",
+            &Args::new("update_event", &value),
+        )
+        .unwrap();
+        let (head, below) = card.split_once("\n\n").expect("the description goes below");
+        assert!(head.contains("invite new@example.com"), "{head}");
+        assert_eq!(below, "The door code is 9876.");
+    }
 }

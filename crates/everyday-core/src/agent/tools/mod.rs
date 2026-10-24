@@ -1299,6 +1299,14 @@ pub fn find(name: &str) -> Option<&'static Tool> {
     all().iter().find(|t| t.name == name)
 }
 
+/// `text` on one line, whitespace runs folded to a space -- for a title, a
+/// subject or a location on a confirmation card's first line, which is what
+/// the chat panel and the Matrix question both treat as the card's own line,
+/// everything after it being the long text below.
+pub(crate) fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// What a destructive call is about to act on, in the person's own words.
 ///
 /// The confirmation gate exists so somebody can catch a misreading, and it

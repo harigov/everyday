@@ -100,17 +100,18 @@ pub fn load_config() -> Config {
 fn save_config(config: &Config) -> Result<(), String> {
     let path = config_path();
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        everyday_core::fsutil::create_private_dir(dir).map_err(|e| e.to_string())?;
     }
     let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
-    everyday_core::fsutil::write_atomic(&path, &bytes, "writing").map_err(|e| e.to_string())?;
     // The restore token is a standing grant to type into other windows, so
-    // the file is the owner's alone.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    // the file is the owner's alone -- from the moment it exists, not from a
+    // chmod after it has been readable under its final name.
+    everyday_core::fsutil::write_atomic_private(
+        &path,
+        &bytes,
+        &everyday_core::fsutil::unique_tag(),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -281,6 +282,7 @@ fn window(app: &AppHandle) -> Result<WebviewWindow, String> {
         .always_on_top(true)
         .visible(false)
         .focused(true)
+        .on_navigation(crate::navigation::guard(crate::navigation::dev_url(app)))
         .build()
         .map_err(|e| e.to_string())
 }

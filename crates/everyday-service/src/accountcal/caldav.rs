@@ -18,6 +18,19 @@
 //! `cargo tree -d` check that confirms it shares `reqwest`'s TLS stack
 //! rather than adding a new one.
 //!
+//! # Whose requests carry the credential
+//!
+//! Only the account's own server's. When the configured address does not
+//! answer as CalDAV, `libdav`'s discovery asks plain DNS for a
+//! `_caldavs._tcp` SRV record and sends its next requests -- following
+//! redirects -- to whatever host that names; `AddAuthorization` on its own
+//! would put the app password or token on every one of them, handing it to
+//! anybody on the path who can reset one connection and forge one DNS
+//! answer. [`OwnServerAuth`] wraps it and lets the header through only to
+//! the scheme, host and port of [`base_uri`] (see [`is_own_server`]), and
+//! [`discover`] keeps a discovered address only when it is on that same
+//! server -- [`sync`] and every write talk to `base_uri` regardless.
+//!
 //! What `libdav` does *not* implement is RFC 6578's `sync-collection`
 //! REPORT -- its own `names` module defines the property names the standard
 //! uses, but there is no high-level request type for it, the same gap the
@@ -93,8 +106,21 @@ use crate::service::{Service, blocking};
 /// of work, not an unbounded one.
 const EXPAND_LIMIT: usize = 4_000;
 
+/// Most date-times one period of an `RRULE` -- a year of `FREQ=YEARLY`, a
+/// month of `MONTHLY`, a day of `DAILY` -- may stand for before
+/// [`events_from_ics`] declines to expand it. [`EXPAND_LIMIT`] does not
+/// bound this on its own: calcard's `RRuleIter` builds every match in a
+/// period before it yields the first, so `FREQ=YEARLY;BYMONTHDAY=1,...,31;
+/// BYHOUR=0,...,23;BYMINUTE=0,...,59;BYSECOND=0,...,59` is some thirty
+/// million date-times -- about a gigabyte -- before the limit is consulted
+/// once, and anybody who can put an event on this calendar (an invitation a
+/// server files by itself will do) can write one. A period that alone holds
+/// more than the whole expansion may keep is not a calendar anybody meant,
+/// so the same number serves.
+const PERIOD_LIMIT: u64 = EXPAND_LIMIT as u64;
+
 type Connector = hyper_rustls::HttpsConnector<HttpConnector>;
-type Client = AddAuthorization<LegacyClient<Connector, String>>;
+type Client = OwnServerAuth<LegacyClient<Connector, String>>;
 
 fn https_connector() -> CommandResult<Connector> {
     // The provider is named, not taken from rustls's process default: this
@@ -124,14 +150,106 @@ fn https_connector() -> CommandResult<Connector> {
         .build())
 }
 
-fn client_for(credential: Credential) -> CommandResult<Client> {
+/// A transport that signs requests to `server` -- the account's own, its
+/// [`base_uri`] -- with `credential`, and no others. See [`OwnServerAuth`].
+/// The server is an argument rather than something worked out later so that
+/// no caller can build a client that has to guess it.
+fn client_for(credential: Credential, server: &Uri) -> CommandResult<Client> {
     let https = https_connector()?;
     let raw: LegacyClient<Connector, String> =
         LegacyClient::builder(TokioExecutor::new()).build(https);
-    Ok(match credential {
+    let authorized = match credential {
         Credential::Bearer(token) => AddAuthorization::bearer(raw, &token),
         Credential::Basic(basic) => AddAuthorization::basic(raw, &basic.username, &basic.password),
-    })
+    };
+    // Sensitive, so `libdav`'s trace log of every request's headers prints
+    // `Sensitive` where the password would be.
+    Ok(OwnServerAuth::new(authorized.as_sensitive(true), server))
+}
+
+/// Scheme, host and port -- RFC 6454's origin, the same thing a browser
+/// compares before it sends a site's cookies. The port is filled in from the
+/// scheme when an address leaves it out, so `https://caldav.icloud.com` and
+/// `https://caldav.icloud.com:443`, which is how `libdav` spells the same
+/// host when it builds a `.well-known` address, are one origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Origin {
+    scheme: String,
+    host: String,
+    port: u16,
+}
+
+impl Origin {
+    /// `None` for anything but an absolute `http`/`https` address -- a bare
+    /// path, or a `caldavs://` the transport cannot open anyway -- which
+    /// [`is_own_server`] then never matches.
+    fn of(uri: &Uri) -> Option<Origin> {
+        let scheme = uri.scheme_str()?.to_ascii_lowercase();
+        let default_port = match scheme.as_str() {
+            "https" => 443,
+            "http" => 80,
+            _ => return None,
+        };
+        let host = uri.host().filter(|h| !h.is_empty())?.to_ascii_lowercase();
+        Some(Origin { port: uri.port_u16().unwrap_or(default_port), scheme, host })
+    }
+}
+
+/// Whether a request to `uri` may carry the account's credential: only when
+/// it goes to `server`, the account's own -- scheme, host and port compared
+/// whole. Not "the same registrable domain": an iCloud calendar home may
+/// name a `pNN-caldav.icloud.com` host, but [`discover`] keeps only the
+/// paths it finds and [`sync`] and every write send them to [`base_uri`]
+/// itself, so no request this module means to make goes anywhere else -- and
+/// a looser rule is exactly what a forged SRV record naming another host
+/// under a shared suffix would need.
+fn is_own_server(server: Option<&Origin>, uri: &Uri) -> bool {
+    server.is_some_and(|server| Origin::of(uri).as_ref() == Some(server))
+}
+
+/// `tower_http`'s `AddAuthorization`, for the account's own server only: a
+/// request to any other origin goes out without the header. See the module
+/// docs, "Whose requests carry the credential".
+#[derive(Debug, Clone)]
+struct OwnServerAuth<S> {
+    authorized: AddAuthorization<S>,
+    /// Requests to this origin carry the credential. `None` -- an address
+    /// with no `http`/`https` origin at all -- means none do.
+    server: Option<Origin>,
+}
+
+impl<S> OwnServerAuth<S> {
+    /// Only requests to `server`'s origin carry the credential.
+    fn new(authorized: AddAuthorization<S>, server: &Uri) -> Self {
+        OwnServerAuth { authorized, server: Origin::of(server) }
+    }
+}
+
+impl<S, ReqBody, ResBody> tower_service::Service<Request<ReqBody>> for OwnServerAuth<S>
+where
+    S: tower_service::Service<Request<ReqBody>, Response = http::Response<ResBody>>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        tower_service::Service::<Request<ReqBody>>::poll_ready(&mut self.authorized, cx)
+    }
+
+    fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
+        if is_own_server(self.server.as_ref(), request.uri()) {
+            tower_service::Service::call(&mut self.authorized, request)
+        } else {
+            // The very service `AddAuthorization` hands every request to,
+            // minus the one header it adds -- so both branches share the
+            // one readiness `poll_ready` above reported.
+            tower_service::Service::call(self.authorized.get_mut(), request)
+        }
+    }
 }
 
 fn base_uri(account: &Account) -> CommandResult<Uri> {
@@ -180,16 +298,22 @@ pub async fn discover(
 ) -> CommandResult<Vec<RemoteCalendar>> {
     let credential = tokens::credential(svc, vault, account, tokens::Resource::Native).await?;
     let base = base_uri(account)?;
-    let client = client_for(credential)?;
+    let client = client_for(credential, &base)?;
     let webdav = WebDavClient::new(base.clone(), client);
 
     // `.well-known/caldav` (and, where `domain` can resolve it, SRV) first;
     // a provider that answers on its own address without redirecting keeps
     // using it, which is what `bootstrap_via_service_discovery` already
-    // falls back to on its own.
+    // falls back to on its own. A context address on any other server is
+    // not taken: the client would not sign in there (see `OwnServerAuth`),
+    // and `sync` asks `base` for the hrefs found here regardless, so they
+    // have to be `base`'s own.
+    let own = Origin::of(&base);
     let webdav = match CalDavClient::bootstrap_via_service_discovery(webdav.clone()).await {
-        Ok(bootstrapped) => bootstrapped.webdav_client,
-        Err(_) => webdav,
+        Ok(found) if is_own_server(own.as_ref(), &found.webdav_client.base_url) => {
+            found.webdav_client
+        }
+        _ => webdav,
     };
 
     let principal = webdav
@@ -269,7 +393,7 @@ pub async fn sync(
     };
     let credential = tokens::credential(svc, vault, account, tokens::Resource::Native).await?;
     let base = base_uri(account)?;
-    let client = client_for(credential)?;
+    let client = client_for(credential, &base)?;
     let webdav = WebDavClient::new(base, client);
     // Who "we" are, for which events are this account's own to move.
     let me = write::Me::of(account);
@@ -707,8 +831,17 @@ fn events_from_ics(
     // went. One resource holds one `UID`, so its `SEQUENCE`s say nothing
     // here worth keeping; dropping them before expanding makes every
     // override meet the occurrence it names. Nothing below reads them.
+    //
+    // A rule that would have calcard build more than [`PERIOD_LIMIT`]
+    // date-times for one period goes too, leaving its `VEVENT` with its
+    // `DTSTART` occurrence and no more -- what `everyday_core::ics` does with
+    // a rule it cannot expand, visibly wrong rather than silently gone -- and
+    // the resource no longer counts as recurring, since nothing about it now
+    // moves with the window.
     for component in &mut parsed.components {
-        component.entries.retain(|e| e.name != calcard::icalendar::ICalendarProperty::Sequence);
+        component.entries.retain(|e| {
+            e.name != calcard::icalendar::ICalendarProperty::Sequence && !is_runaway_rule(e)
+        });
     }
     let recurring = is_recurring(&parsed);
     let tz: calcard::common::timezone::Tz =
@@ -829,6 +962,57 @@ fn is_recurring(parsed: &calcard::icalendar::ICalendar) -> bool {
             .iter()
             .any(|e| matches!(e.name, ICalendarProperty::Rrule | ICalendarProperty::Rdate))
     })
+}
+
+/// An `RRULE` one of whose periods [`matches_per_period`] puts past
+/// [`PERIOD_LIMIT`].
+fn is_runaway_rule(entry: &calcard::icalendar::ICalendarEntry) -> bool {
+    use calcard::icalendar::{ICalendarProperty, ICalendarValue};
+    entry.name == ICalendarProperty::Rrule
+        && entry.values.iter().any(|value| {
+            matches!(value, ICalendarValue::RecurrenceRule(rule)
+                if matches_per_period(rule) > PERIOD_LIMIT)
+        })
+}
+
+/// An upper bound on how many date-times calcard builds for one period of
+/// `rule`. Each `BY` list counts its distinct values (calcard drops repeats
+/// before expanding), and an empty one counts as the single value calcard
+/// fills in from `DTSTART`. A period's days are all of it only when a
+/// day-picking part (`BYDAY`, `BYMONTHDAY`, `BYYEARDAY`, `BYWEEKNO`) is
+/// there; otherwise calcard fills in `DTSTART`'s own day -- once per
+/// `BYMONTH` month for a yearly rule. `BYSETPOS`, which only ever thins a
+/// period out, is ignored, so this can overcount but never undercount.
+fn matches_per_period(rule: &calcard::icalendar::ICalendarRecurrenceRule) -> u64 {
+    use calcard::icalendar::ICalendarFrequency as Freq;
+    fn distinct<T: Ord + Clone>(values: &[T]) -> u64 {
+        let mut values = values.to_vec();
+        values.sort_unstable();
+        values.dedup();
+        values.len().max(1) as u64
+    }
+    let (hours, minutes, seconds) =
+        (distinct(&rule.byhour), distinct(&rule.byminute), distinct(&rule.bysecond));
+    // A sub-daily rule's period is one hour, minute or second; only the
+    // finer lists multiply inside it.
+    let times = match rule.freq {
+        Freq::Hourly => minutes * seconds,
+        Freq::Minutely => seconds,
+        Freq::Secondly => 1,
+        _ => hours * minutes * seconds,
+    };
+    let picks_days = !(rule.byday.is_empty()
+        && rule.bymonthday.is_empty()
+        && rule.byyearday.is_empty()
+        && rule.byweekno.is_empty());
+    let days = match rule.freq {
+        Freq::Yearly if picks_days => 366,
+        Freq::Yearly => distinct(&rule.bymonth),
+        Freq::Monthly if picks_days => 31,
+        Freq::Weekly if picks_days => 7,
+        _ => 1,
+    };
+    days.saturating_mul(times)
 }
 
 fn to_jiff(dt: chrono::DateTime<calcard::common::timezone::Tz>) -> jiff::Timestamp {
@@ -1404,5 +1588,164 @@ mod tests {
             Some("old".into()),
             "two unresolved hrefs, of either shape, are still a reason to hold the token back"
         );
+    }
+
+    // ---- the credential stays on the account's own server ----------------
+
+    #[test]
+    fn the_credential_goes_only_to_the_accounts_own_server() {
+        let own = Origin::of(&Uri::from_static("https://caldav.icloud.com")).expect("an origin");
+        let carries = |uri: &'static str| is_own_server(Some(&own), &Uri::from_static(uri));
+        assert!(carries("https://caldav.icloud.com/123/principal/"));
+        assert!(
+            carries("https://caldav.icloud.com:443/.well-known/caldav"),
+            "libdav spells the default port out when it builds a .well-known address"
+        );
+        assert!(carries("https://CalDAV.iCloud.com/"), "host names are not case-sensitive");
+        assert!(
+            !carries("https://attacker.example/.well-known/caldav"),
+            "a host a forged SRV record named"
+        );
+        assert!(
+            !carries("https://p42-caldav.icloud.com/123/calendars/"),
+            "nor another host of the same provider"
+        );
+        assert!(!carries("https://caldav.icloud.com.attacker.example/"), "nor a lookalike");
+        assert!(!carries("http://caldav.icloud.com/"), "nor the same host over plain http");
+        assert!(!carries("https://caldav.icloud.com:8443/"), "nor another port");
+        assert!(!carries("/123/principal/"), "nor a request with no origin of its own");
+        assert!(
+            !is_own_server(None, &Uri::from_static("https://caldav.icloud.com/")),
+            "an account address with no origin sends the credential nowhere"
+        );
+    }
+
+    /// Records each request's address and `Authorization` header in place of
+    /// sending it.
+    /// One request as [`Recorder`] saw it: its address, and its
+    /// `Authorization` header if it had one.
+    type Seen = (String, Option<String>);
+
+    #[derive(Clone, Default)]
+    struct Recorder(Arc<std::sync::Mutex<Vec<Seen>>>);
+
+    impl tower_service::Service<Request<String>> for Recorder {
+        type Response = http::Response<String>;
+        type Error = std::convert::Infallible;
+        type Future = std::future::Ready<Result<Self::Response, Self::Error>>;
+
+        fn poll_ready(
+            &mut self,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Result<(), Self::Error>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn call(&mut self, request: Request<String>) -> Self::Future {
+            let authorization = request
+                .headers()
+                .get(http::header::AUTHORIZATION)
+                .map(|v| v.to_str().unwrap_or_default().to_string());
+            self.0.lock().unwrap().push((request.uri().to_string(), authorization));
+            std::future::ready(Ok(http::Response::new(String::new())))
+        }
+    }
+
+    /// A `GET` of `uri` through `client`, as `libdav` would send one.
+    fn send(client: &mut OwnServerAuth<Recorder>, uri: &str) {
+        let request = Request::builder().uri(uri).body(String::new()).unwrap();
+        tower_service::Service::call(client, request).into_inner().unwrap();
+    }
+
+    #[test]
+    fn a_request_discovery_sends_to_another_host_goes_without_the_token() {
+        let seen = Recorder::default();
+        let mut client = OwnServerAuth::new(
+            AddAuthorization::bearer(seen.clone(), "secret"),
+            &Uri::from_static("https://caldav.fastmail.com"),
+        );
+        send(&mut client, "https://caldav.fastmail.com/dav/principals/");
+        send(&mut client, "https://attacker.example:443/.well-known/caldav");
+        let seen = seen.0.lock().unwrap();
+        assert_eq!(seen[0].1.as_deref(), Some("Bearer secret"));
+        assert_eq!(seen[1].1, None, "the host a forged SRV record named never sees the token");
+    }
+
+    // ---- one period of a rule cannot cost unbounded memory -----------------
+
+    /// `RRULE:{text}`, parsed the way a synced resource's is.
+    fn rule(text: &str) -> calcard::icalendar::ICalendarRecurrenceRule {
+        let ics = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:r@example.com\r\n\
+             DTSTART:20261005T090000Z\r\nRRULE:{text}\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        );
+        let parsed = calcard::icalendar::ICalendar::parse(&ics).expect("parses");
+        parsed
+            .components
+            .iter()
+            .flat_map(|c| &c.entries)
+            .find_map(|e| match e.values.first() {
+                Some(calcard::icalendar::ICalendarValue::RecurrenceRule(rule)) => {
+                    Some((**rule).clone())
+                }
+                _ => None,
+            })
+            .expect("an RRULE")
+    }
+
+    /// `FREQ=YEARLY` with every month, month-day, hour, minute and second:
+    /// some thirty million date-times in its first year alone.
+    fn runaway_rule() -> String {
+        let list = |range: std::ops::RangeInclusive<u32>| {
+            range.map(|n| n.to_string()).collect::<Vec<_>>().join(",")
+        };
+        format!(
+            "FREQ=YEARLY;BYMONTH={};BYMONTHDAY={};BYHOUR={};BYMINUTE={};BYSECOND={}",
+            list(1..=12),
+            list(1..=31),
+            list(0..=23),
+            list(0..=59),
+            list(0..=59)
+        )
+    }
+
+    #[test]
+    fn ordinary_rules_are_well_inside_the_period_limit() {
+        for ordinary in [
+            "FREQ=WEEKLY;COUNT=6",
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+            "FREQ=MONTHLY;BYDAY=-1FR",
+            "FREQ=YEARLY;BYMONTH=3;BYDAY=2SU",
+            "FREQ=DAILY;BYHOUR=9,12,15;BYMINUTE=0,30",
+            "FREQ=YEARLY;BYHOUR=9,10,11,12,13,14,15,16,17;BYMINUTE=0,15,30,45",
+        ] {
+            assert!(matches_per_period(&rule(ordinary)) <= PERIOD_LIMIT, "{ordinary}");
+        }
+        assert!(matches_per_period(&rule(&runaway_rule())) > PERIOD_LIMIT);
+    }
+
+    #[test]
+    fn a_rule_that_would_fill_one_period_with_millions_keeps_only_its_dtstart() {
+        let ics = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\n\
+             UID:flood@example.com\r\nDTSTART:20261005T090000Z\r\nDTEND:20261005T093000Z\r\n\
+             RRULE:{}\r\nSUMMARY:Flood\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+            runaway_rule()
+        );
+        let window = (jiff::civil::date(2026, 1, 1), jiff::civil::date(2027, 1, 1));
+        let (events, skipped, recurring) = events_from_ics(
+            &ics,
+            CalendarId::new(),
+            "/cal/flood.ics",
+            "UTC",
+            &me(),
+            window,
+            jiff::Timestamp::now(),
+        );
+        assert_eq!(skipped, 0);
+        assert_eq!(events.len(), 1, "DTSTART's occurrence and no more");
+        assert_eq!(events[0].start, "2026-10-05T09:00:00Z".parse::<jiff::Timestamp>().unwrap());
+        assert_eq!(events[0].end, "2026-10-05T09:30:00Z".parse::<jiff::Timestamp>().unwrap());
+        assert!(!recurring, "nothing about it moves with the window any more");
     }
 }

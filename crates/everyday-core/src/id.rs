@@ -200,6 +200,17 @@ typed_id!(ChatLinkId, "chat_link");
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into
 /// two entries is stored once, and so that a corrupted blob is detectable.
+///
+/// In an encrypted vault the address is BLAKE3 *keyed* by a subkey of the
+/// vault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not
+/// the bare hash. The address is the one thing about a blob that is never
+/// sealed: it is a file's name on disk and a column on a Postgres server.
+/// A bare hash of the plaintext would let anybody holding a copy check it
+/// against files they already have -- a site's favicon, a book's cover, a
+/// newsletter's picture -- and so learn which sites are followed, which books
+/// are on a shelf and which stories were opened, which is exactly what the
+/// encryption is there to keep. Keyed, the same bytes still get the same
+/// address within one vault, and a different one in every other.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
@@ -210,8 +221,15 @@ pub struct BlobId(
 );
 
 impl BlobId {
+    /// The unkeyed address: an unencrypted vault's, which hides nothing
+    /// anyway, and a test's.
     pub fn of(bytes: &[u8]) -> Self {
         Self(*blake3::hash(bytes).as_bytes())
+    }
+
+    /// The address under `key`. See the type's doc.
+    pub fn keyed(key: &[u8; 32], bytes: &[u8]) -> Self {
+        Self(*blake3::keyed_hash(key, bytes).as_bytes())
     }
 
     pub fn to_hex(self) -> String {

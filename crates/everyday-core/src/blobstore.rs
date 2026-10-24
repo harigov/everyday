@@ -86,6 +86,26 @@ fn header_bytes(overhead: u32, plain_len: u64) -> [u8; HEADER_LEN] {
     header
 }
 
+/// The address `bytes` are stored under in a vault sealed with `cipher`:
+/// keyed by a subkey of the vault's own key when it is encrypting, so that
+/// the address says nothing to somebody without that key; plain BLAKE3 when
+/// it is not. See [`BlobId`]'s doc.
+///
+/// Changing this changes no existing blob: an address is only ever compared,
+/// never recomputed from the bytes it names, so a blob stored under its old
+/// bare-hash address reads exactly as it did. The same bytes stored again
+/// simply get the new address beside it.
+pub fn address(cipher: &dyn Cipher, bytes: &[u8]) -> BlobId {
+    if cipher.is_encrypting() {
+        BlobId::keyed(cipher.derive_subkey(BLOB_ADDRESS_LABEL).expose(), bytes)
+    } else {
+        BlobId::of(bytes)
+    }
+}
+
+/// The [`Cipher::derive_subkey`] label for [`address`].
+const BLOB_ADDRESS_LABEL: &str = "everyday 2026-10 blob address v1";
+
 /// Seal `bytes` into one complete container: header followed by chunks.
 ///
 /// The whole thing at once, which suits a caller that is going to hand the
@@ -262,7 +282,7 @@ impl FileBlobStore {
     /// renamed into place, so a crash mid-write cannot leave a blob that
     /// exists but fails to decrypt.
     pub fn put(&self, bytes: &[u8]) -> Result<BlobId> {
-        let id = BlobId::of(bytes);
+        let id = address(self.cipher.as_ref(), bytes);
         let path = self.path_for(id);
         if path.is_file() {
             return Ok(id); // content-addressed: identical bytes, identical file
@@ -453,6 +473,26 @@ mod tests {
             Arc::new(NullCipher)
         };
         FileBlobStore::open(dir, cipher).unwrap()
+    }
+
+    #[test]
+    fn an_encrypted_vaults_addresses_are_keyed_and_a_plain_ones_are_not() {
+        let bytes = b"a favicon everybody has";
+        let dir = tempfile::tempdir().unwrap();
+
+        let plain = store(dir.path(), false).put(bytes).unwrap();
+        assert_eq!(plain, BlobId::of(bytes), "nothing to hide, nothing keyed");
+
+        let dir = tempfile::tempdir().unwrap();
+        let sealed = store(dir.path(), true);
+        let id = sealed.put(bytes).unwrap();
+        assert_ne!(id, BlobId::of(bytes), "a known file must not be findable by its hash");
+        assert_eq!(sealed.put(bytes).unwrap(), id, "still deduplicated within the vault");
+        assert_eq!(sealed.get(id).unwrap(), bytes);
+
+        // Another key, another address for the same bytes.
+        let other = AeadCipher::new(&SecretKey::from_bytes([4u8; 32]));
+        assert_ne!(address(&other, bytes), id);
     }
 
     /// Phase 0.1 of `docs/plans/architecture-refactor.md`: `chunk_aad` is

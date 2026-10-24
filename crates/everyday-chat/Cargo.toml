@@ -18,6 +18,10 @@ thiserror.workspace = true
 uuid.workspace = true
 async-trait = "0.1"
 futures = "0.3.34"
+# Replies are rendered to HTML here rather than by ruma's own `text_markdown`,
+# so that an image in the model's text arrives as a link and never as an
+# `<img>` the owner's client fetches by itself. See `matrix/speaking.rs`.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 tokio = { version = "1.53.1", features = ["rt", "sync", "time", "macros"] }
 # 0.19 is the first line on rusqlite 0.40, the version the rest of the
 # workspace links; 0.18 and older pull rusqlite 0.37, and the two cannot share

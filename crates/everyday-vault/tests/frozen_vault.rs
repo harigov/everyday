@@ -34,13 +34,19 @@ fn golden_path(name: &str, generation: &str) -> PathBuf {
 
 /// The entry attachment's blob, fetched and checked byte for byte -- the
 /// dump only carries its UTF-8 text, so this is the independent check the
-/// plan asks for. Blobs are content-addressed (see
-/// `everyday_core::id::BlobId::of`), so the id needs no lookup: it is
-/// exactly the hash of the bytes [`blob_bytes_for`] fixes.
+/// plan asks for. Found through the entries that hold it rather than
+/// recomputed from its bytes: an encrypted vault's blob addresses are keyed
+/// by its own key (see `everyday_core::blobstore::address`), and the frozen
+/// generation's predate that, so neither hash can be assumed.
 fn assert_blob_bytes(vault: &everyday_core::Vault, generation: u128) {
     let expected = blob_bytes_for(generation);
-    let id = everyday_core::id::BlobId::of(&expected);
-    assert_eq!(vault.blob(id).unwrap(), expected, "generation {generation:x}'s attachment blob");
+    let held = vault
+        .all_entries()
+        .unwrap()
+        .into_iter()
+        .flat_map(|entry| entry.attachments)
+        .any(|attachment| vault.blob(attachment.blob).ok().as_deref() == Some(&expected[..]));
+    assert!(held, "generation {generation:x}'s attachment blob");
 }
 
 fn run(name: &str, password: Option<&str>) {

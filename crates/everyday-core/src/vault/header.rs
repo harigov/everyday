@@ -152,9 +152,11 @@ pub(super) fn read_header(root: &Path) -> Result<VaultHeader> {
 ///   here is not a lost setting -- it is a vault whose data key is gone.
 ///
 /// * The header it replaces is copied to `vault.json.bak` first, so there is
-///   always a second copy of a *working* wrapped key on disk. `change_password`
-///   in particular rewrites the salt and the wrapped key together; without the
-///   spare, that one write is the whole vault's single point of failure.
+///   always a second copy of a *working* wrapped key on disk.
+///
+/// Not for a header whose wrapped key has changed: the one it replaces holds
+/// the key wrapped under the *old* password, which is exactly what must not
+/// be kept. That goes through [`write_rekeyed_header`].
 pub(super) fn write_header(root: &Path, header: &VaultHeader) -> Result<()> {
     let path = root.join(HEADER_FILENAME);
     let backup = root.join(HEADER_BACKUP_FILENAME);
@@ -177,6 +179,59 @@ pub(super) fn write_header(root: &Path, header: &VaultHeader) -> Result<()> {
     // that is precisely the window the spare exists to cover.
     if !backup.is_file() {
         let _ = fsutil::write_atomic(&backup, &json, &fsutil::unique_tag());
+    }
+    Ok(())
+}
+
+/// Write a header whose wrapped key has just been replaced, and make the
+/// spare a copy of it rather than of the header it replaces.
+///
+/// [`write_header`]'s spare is the outgoing header, which is right for every
+/// other change and wrong for this one. A password change rewraps the data
+/// key without rotating it, so the outgoing header is that same key wrapped
+/// under the old password: kept as the spare, it would let anyone who knew
+/// the old password and later got a copy of this directory unwrap the key the
+/// new password was meant to protect. Turning encryption on has the same
+/// shape -- the outgoing header is an unencrypted one, and recovering from it
+/// would reopen the vault with no cipher at all. The spare's job is a second
+/// copy of a *working* key, and the new header is the working one.
+///
+/// The live file goes first: until it lands the old header is still the
+/// vault's, and its spare still matches it. `slot` -- the header held in
+/// memory -- follows the moment it does, before anything else can fail,
+/// because a later write from a stale copy would put the old wrapped key back.
+/// A spare that cannot be rewritten is removed instead, and the next header
+/// write seeds a fresh one. One that can be neither is logged, loudly, and
+/// is still not an error: by then the new password is the vault's, and an
+/// error would tell the person it was not.
+pub(super) fn write_rekeyed_header(
+    root: &Path,
+    slot: &mut VaultHeader,
+    next: VaultHeader,
+) -> Result<()> {
+    let path = root.join(HEADER_FILENAME);
+    let backup = root.join(HEADER_BACKUP_FILENAME);
+
+    let json = serde_json::to_vec_pretty(&next)?;
+    fsutil::write_atomic(&path, &json, &fsutil::unique_tag())?;
+    *slot = next;
+
+    if let Err(e) = fsutil::write_atomic(&backup, &json, &fsutil::unique_tag()) {
+        match std::fs::remove_file(&backup) {
+            Ok(()) => fsutil::sync_dir(root),
+            Err(gone) if gone.kind() == std::io::ErrorKind::NotFound => {}
+            Err(stuck) => {
+                tracing::error!(
+                    error = %e,
+                    removing = %stuck,
+                    path = %backup.display(),
+                    "the header's spare copy could be neither refreshed nor removed, so it still \
+                     opens with the old password; delete it by hand"
+                );
+                return Ok(());
+            }
+        }
+        tracing::warn!(error = %e, "could not refresh the header's spare copy, so removed it");
     }
     Ok(())
 }

@@ -7,7 +7,7 @@
 
 use super::header::{
     cipher_for, from_hex, key_check_passes, open_settings, seal_key_check, seal_settings, to_hex,
-    write_header,
+    write_header, write_rekeyed_header,
 };
 use super::session::Unlocked;
 use super::{STORE_DIRNAME, Vault};
@@ -261,8 +261,30 @@ impl Vault {
             }
         }
 
-        write_header(&self.root, &next)?;
-        *self.header_write() = next;
+        // The derivations above ran without the header's lock -- each is a
+        // second of Argon2 -- so anything else that wrote the header in the
+        // meantime (a new auto-lock time, say) is in the copy held now, not
+        // in `header`. Only the key's own fields come from `next`; and if the
+        // key itself moved, this answer was to a question nobody is asking
+        // any more.
+        let mut held = self.header_write();
+        if held.salt != header.salt || held.wrapped_key != header.wrapped_key {
+            return Err(Error::Invalid(
+                "the password was changed somewhere else at the same time; try again".into(),
+            ));
+        }
+        let mut rekeyed = held.clone();
+        rekeyed.cipher = next.cipher;
+        rekeyed.kdf = next.kdf;
+        rekeyed.salt = next.salt;
+        rekeyed.wrapped_key = next.wrapped_key;
+        rekeyed.key_check = next.key_check;
+
+        // Not `write_header`, whose spare would be the header this replaces
+        // -- the same data key, wrapped under the old password. See
+        // `write_rekeyed_header`, which also brings the header in memory up
+        // to date.
+        write_rekeyed_header(&self.root, &mut held, rekeyed)?;
 
         // Same data key, so an unlocked session stays valid.
         Ok(())
@@ -450,5 +472,118 @@ impl Vault {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{HEADER_BACKUP_FILENAME, HEADER_FILENAME, VaultConfig, VaultHeader};
+    use super::*;
+    use crate::crypto::KdfParams;
+    use crate::testing::registry;
+    use std::path::Path;
+
+    fn cfg(password: Option<&str>) -> VaultConfig {
+        VaultConfig {
+            name: "Test".into(),
+            backend: "memory".into(),
+            settings: BackendSettings::default(),
+            password: password.map(str::to_string),
+            kdf: KdfParams::insecure_fast(),
+            auto_lock_seconds: 0,
+            forget_key_seconds: 0,
+        }
+    }
+
+    /// Both header files that are on disk, by name. The spare is optional:
+    /// a vault without one has nothing in it to leak.
+    fn headers_on_disk(root: &Path) -> Vec<(&'static str, VaultHeader)> {
+        [HEADER_FILENAME, HEADER_BACKUP_FILENAME]
+            .into_iter()
+            .filter_map(|name| {
+                let bytes = std::fs::read(root.join(name)).ok()?;
+                Some((name, serde_json::from_slice(&bytes).unwrap()))
+            })
+            .collect()
+    }
+
+    /// Does `password` unwrap the data key in `header`? Asked of the file
+    /// directly, the way somebody holding a copy of the directory would.
+    fn unwraps_with(header: &VaultHeader, password: &str) -> bool {
+        let (Some(kdf), Some(salt), Some(wrapped)) =
+            (header.kdf, header.salt.as_deref(), header.wrapped_key.as_deref())
+        else {
+            return false;
+        };
+        let kek = derive_key(password, &from_hex(salt).unwrap(), kdf).unwrap();
+        unwrap_key(&kek, &from_hex(wrapped).unwrap()).is_ok()
+    }
+
+    #[test]
+    fn a_password_change_leaves_no_copy_of_the_key_under_the_old_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let reg = registry();
+        let v = Vault::create(dir.path(), cfg(Some("old pw")), reg.clone()).unwrap();
+        // A setting changed first, so the spare is a header of its own one
+        // write behind -- the state an ordinary vault is in.
+        v.set_auto_lock(60).unwrap();
+        v.change_password(Some("old pw"), Some("new pw")).unwrap();
+
+        let headers = headers_on_disk(dir.path());
+        assert!(headers.iter().any(|(name, _)| *name == HEADER_FILENAME));
+        for (name, header) in &headers {
+            assert!(!unwraps_with(header, "old pw"), "{name} still opens with the old password");
+            assert!(unwraps_with(header, "new pw"), "{name} does not open with the new one");
+        }
+
+        // The spare still does the job it is there for.
+        drop(v);
+        std::fs::remove_file(dir.path().join(HEADER_FILENAME)).unwrap();
+        let v = Vault::open(dir.path(), reg).unwrap();
+        assert_eq!(v.unlock(Some("old pw")).unwrap_err().code(), "bad_password");
+        v.unlock(Some("new pw")).unwrap();
+    }
+
+    #[test]
+    fn the_next_setting_change_after_a_password_change_keeps_the_new_key_in_the_spare() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(Some("old pw")), registry()).unwrap();
+        v.change_password(Some("old pw"), Some("new pw")).unwrap();
+        v.set_forget_key(300).unwrap();
+
+        for (name, header) in &headers_on_disk(dir.path()) {
+            assert!(!unwraps_with(header, "old pw"), "{name} still opens with the old password");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_vault_directory_is_private_and_an_existing_one_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = tempfile::tempdir().unwrap();
+
+        let made = dir.path().join("everyday");
+        Vault::create(&made, cfg(Some("pw")), registry()).unwrap();
+        assert_eq!(mode(&made) & 0o077, 0, "a vault directory made here is open to others");
+
+        let picked = dir.path().join("picked");
+        std::fs::create_dir(&picked).unwrap();
+        std::fs::set_permissions(&picked, std::fs::Permissions::from_mode(0o750)).unwrap();
+        Vault::create(&picked, cfg(Some("pw")), registry()).unwrap();
+        assert_eq!(mode(&picked), 0o750);
+    }
+
+    #[test]
+    fn turning_encryption_on_leaves_no_unencrypted_spare() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = Vault::create(dir.path(), cfg(None), registry()).unwrap();
+        v.set_auto_lock(60).unwrap();
+        v.change_password(None, Some("pw")).unwrap();
+
+        for (name, header) in &headers_on_disk(dir.path()) {
+            assert!(header.is_encrypted(), "{name} is still an unencrypted header");
+            assert!(unwraps_with(header, "pw"), "{name} does not open with the password");
+        }
     }
 }

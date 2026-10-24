@@ -47,7 +47,7 @@ pub fn list() -> Vec<Connection> {
 fn write(connections: &[Connection]) -> CommandResult<()> {
     let path = path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
+        everyday_core::fsutil::create_private_dir(parent)
             .map_err(|e| CommandError::new("io", format!("{}: {e}", parent.display())))?;
     }
     let text = serde_json::to_string_pretty(&File { connections: connections.to_vec() })

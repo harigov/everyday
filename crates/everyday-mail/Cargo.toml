@@ -29,6 +29,17 @@ mail-parser = { version = "=0.11.9", default-features = false, features = ["full
 lol_html = "=3.0.1"
 
 # HTML in, second pass: the allow-list that removes anything with behaviour.
+#
+# Held at 4.1.4 on purpose. From 4.1.5 ammonia panics when `<style>` is an
+# allowed tag while style attributes are filtered too, and this sanitiser
+# does exactly that (see `sanitize.rs`'s module docs). The advisories against
+# 4.1.4 -- RUSTSEC-2021-0157/0158 and RUSTSEC-2026-0373 -- are about CSS
+# `url()` escaping and matching in style attributes, and SVG animation
+# elements. No SVG is on the allow-list, and every `url()` in an attribute
+# or a block passes `guard_style_urls` -- case-insensitive, after ammonia --
+# which drops any address that was not proxied, inside a frame with no script
+# and its own content security policy. Moving past 4.1.4 means taking style
+# blocks through ammonia some other way first.
 ammonia = "=4.1.4"
 
 # HTML out: the plain-text body and the assistant's `model_text`. `css`

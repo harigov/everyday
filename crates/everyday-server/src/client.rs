@@ -78,6 +78,9 @@ pub struct Connection {
     /// The certificate's SHA-256, hex. Empty when TLS is somebody else's.
     pub fingerprint: String,
     /// The certificate itself, so a reconnection pins without asking again.
+    ///
+    /// Empty when nothing was pinned -- a link with no fingerprint -- and the
+    /// server is checked the ordinary way instead. See `client_for`.
     pub cert_pem: String,
     pub paired: jiff::Timestamp,
 }
@@ -135,9 +138,18 @@ impl RemoteClient {
     /// link, which the person carried from the other screen; only then is a
     /// client built that trusts that certificate and no other; only then is the
     /// one-time code spent. A mismatch stops before anything is sent.
+    ///
+    /// A link with no fingerprint is one for a server behind somebody else's
+    /// TLS -- see `Config::no_tls` -- and there is nothing the person carried
+    /// to compare a certificate with. So nothing is pinned, and the server has
+    /// to pass the check any HTTPS client makes: a certificate a public
+    /// authority vouches for, naming the host dialled. This used to pin
+    /// whatever answered, which vouched for nothing -- anybody between the two
+    /// machines could answer, be pinned, and be handed the code.
     pub async fn pair(invite: &Invite, device_name: &str) -> CommandResult<(Self, String)> {
-        let cert_pem = fetch_certificate(&invite.host).await?;
-        if !invite.fingerprint.is_empty() {
+        let pinned = !invite.fingerprint.is_empty();
+        let cert_pem = if pinned {
+            let cert_pem = fetch_certificate(&invite.host).await?;
             let der = crate::tls::pem_to_der(&cert_pem)?;
             let seen = crate::tls::fingerprint_of(&der);
             if !seen.eq_ignore_ascii_case(&invite.fingerprint) {
@@ -147,11 +159,31 @@ impl RemoteClient {
                      link. Either the link is old, or something is between you and it.",
                 ));
             }
-        }
+            cert_pem
+        } else {
+            String::new()
+        };
 
-        let http = pinned_client(&cert_pem)?;
+        let http = client_for(&cert_pem)?;
         let base = format!("https://{}", invite.host);
-        let hello = hello_with(&http, &base).await?;
+        // A failed certificate check reads as "could not reach" by the time
+        // `transport` has had it, which is no help to somebody who trimmed a
+        // link for a computer serving its own certificate.
+        let hello = hello_with(&http, &base).await.map_err(|e| {
+            if pinned {
+                e
+            } else {
+                CommandError::new(
+                    &e.code,
+                    format!(
+                        "{} This link has no certificate fingerprint in it, so that computer \
+                         has to show a certificate a public authority issued. If it serves its \
+                         own, copy a fresh link from it.",
+                        e.message
+                    ),
+                )
+            }
+        })?;
         check_protocol(hello.protocol)?;
 
         let paired: Paired = http
@@ -175,7 +207,9 @@ impl RemoteClient {
             id: paired.device_id,
             name: if hello.name.is_empty() { invite.name.clone() } else { hello.name },
             host: invite.host.clone(),
-            fingerprint: hello.fingerprint,
+            // What the server says of itself is only worth recording when it
+            // is what was pinned.
+            fingerprint: if pinned { hello.fingerprint } else { String::new() },
             cert_pem,
             paired: jiff::Timestamp::now(),
         };
@@ -185,7 +219,7 @@ impl RemoteClient {
 
     /// Reconnect to a server this client has paired with before.
     pub async fn resume(connection: Connection, token: String) -> CommandResult<Self> {
-        let http = pinned_client(&connection.cert_pem)?;
+        let http = client_for(&connection.cert_pem)?;
         let base = format!("https://{}", connection.host);
         let hello = hello_with(&http, &base).await?;
         check_protocol(hello.protocol)?;
@@ -687,9 +721,33 @@ pub fn pinned_client(cert_pem: &str) -> CommandResult<reqwest::Client> {
         .map_err(|e| CommandError::new("network", format!("could not start the client: {e}")))
 }
 
+/// The client for a connection: pinned to `cert_pem` when there is one, and
+/// checked the ordinary way when there is not.
+///
+/// An empty pin is what a link without a fingerprint leaves behind -- see
+/// [`RemoteClient::pair`] -- and means the server is behind somebody else's
+/// TLS, a reverse proxy holding a publicly issued certificate. What vouches
+/// for it then is that authority, through the operating system's own trust
+/// store (`reqwest`'s default verifier, `rustls-platform-verifier`), with the
+/// host name checked as a browser would. `https_only` so that nothing -- a
+/// redirect included -- can move a request onto plain HTTP, where nothing at
+/// all would vouch for the other end.
+fn client_for(cert_pem: &str) -> CommandResult<reqwest::Client> {
+    if !cert_pem.is_empty() {
+        return pinned_client(cert_pem);
+    }
+    reqwest::Client::builder()
+        .https_only(true)
+        .timeout(CALL_TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent(concat!("EveryDay/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| CommandError::new("network", format!("could not start the client: {e}")))
+}
+
 /// Ask a server what it is, before trusting it with anything.
 pub async fn hello(host: &str, cert_pem: &str) -> CommandResult<Hello> {
-    let http = pinned_client(cert_pem)?;
+    let http = client_for(cert_pem)?;
     hello_with(&http, &format!("https://{host}")).await
 }
 
@@ -845,6 +903,38 @@ mod tests {
         assert!(cache.bytes <= BLOB_CACHE_BYTES, "{} bytes held", cache.bytes);
         // ...and the newest is still there, which is what a seek just asked for.
         assert!(cache.get("v", 7000, chunk.len() as u64).is_some());
+    }
+
+    /// A link with no fingerprint is not a licence to trust whatever answers.
+    /// This server serves its own certificate, as every one not behind a
+    /// proxy does, so the ordinary check refuses it -- and refuses it before
+    /// the code is spent, which is what the old behaviour got wrong: it
+    /// pinned the certificate and paired.
+    #[tokio::test]
+    async fn a_link_with_no_fingerprint_does_not_trust_whatever_answers() {
+        crate::install_crypto_provider();
+        let config_dir = tempfile::tempdir().unwrap();
+        let config = crate::Config {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            enabled: true,
+            allow_remote_unlock: true,
+            no_tls: false,
+        };
+        let parts = crate::prepare(config_dir.path(), &config).unwrap();
+        let service = Arc::new(everyday_service::Service::new());
+        let running = crate::start(service, parts, &config, "Test".into()).await.unwrap();
+
+        let invite = Invite {
+            host: format!("localhost:{}", running.address.port()),
+            fingerprint: String::new(),
+            code: running.server.registry.new_pairing_code(),
+            name: "Test".into(),
+        };
+        assert!(
+            RemoteClient::pair(&invite, "Laptop").await.is_err(),
+            "a certificate nobody vouched for was trusted with no fingerprint to check"
+        );
+        assert!(running.server.registry.pairing_open(), "the code was spent anyway");
     }
 
     #[test]

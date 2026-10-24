@@ -136,11 +136,44 @@ pub fn parse(raw: &[u8]) -> Result<ParsedMessage> {
 /// `ParsedMessage` is a value the sync engine holds long after `raw` has
 /// been flushed to the pack store and re-read later, at which point this is
 /// the only way to get at a part's bytes anyway.
+///
+/// For one part. A caller that wants many parts of the same message uses a
+/// [`PartReader`] instead -- see its own docs for what calling this in a
+/// loop cost.
 pub fn part_bytes(raw: &[u8], part_id: &str) -> Result<Vec<u8>> {
-    let message = MessageParser::default().parse(raw).ok_or(Error::Unparseable)?;
-    let index: u32 = part_id.parse().map_err(|_| Error::NoSuchPart(part_id.to_string()))?;
-    let part = message.part(index).ok_or_else(|| Error::NoSuchPart(part_id.to_string()))?;
-    Ok(part.contents().to_vec())
+    PartReader::new(raw)?.bytes(part_id).map(<[u8]>::to_vec)
+}
+
+/// One parse of `raw`, kept so that every part's bytes can be read out of
+/// it, borrowed rather than copied.
+///
+/// [`part_bytes`] parses the whole message to hand back one part, which was
+/// fine for the one part a person asks to download and ruinous for the sync
+/// engine storing every part of a new message: cost grew with parts times
+/// size, so a single 1 MB message from anybody, cut into fifty thousand tiny
+/// parts, held its whole body batch for minutes -- and, since nothing in a
+/// batch is written until all of it is done, again on every launch. Reading
+/// all of them from one parse makes that one parse's cost, whatever the
+/// count. Part ids are the same ones [`parse`] gives, because both come
+/// from the same parser walking the same bytes.
+pub struct PartReader<'x> {
+    message: RawMessage<'x>,
+}
+
+impl<'x> PartReader<'x> {
+    pub fn new(raw: &'x [u8]) -> Result<Self> {
+        let message = MessageParser::default().parse(raw).ok_or(Error::Unparseable)?;
+        Ok(Self { message })
+    }
+
+    /// The decoded bytes of the part named `part_id` -- exactly what
+    /// [`part_bytes`] returns for it.
+    pub fn bytes(&self, part_id: &str) -> Result<&[u8]> {
+        let index: u32 = part_id.parse().map_err(|_| Error::NoSuchPart(part_id.to_string()))?;
+        let part =
+            self.message.part(index).ok_or_else(|| Error::NoSuchPart(part_id.to_string()))?;
+        Ok(part.contents())
+    }
 }
 
 impl ParsedMessage {
@@ -459,6 +492,55 @@ BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n\
     fn part_bytes_of_an_unknown_id_is_an_error_not_a_panic() {
         assert!(matches!(part_bytes(SIMPLE, "999"), Err(Error::NoSuchPart(_))));
         assert!(matches!(part_bytes(SIMPLE, "not-a-number"), Err(Error::NoSuchPart(_))));
+    }
+
+    /// The sync engine reads every part through one [`PartReader`] instead
+    /// of calling [`part_bytes`] once per part; what it stores must not
+    /// change by a byte for doing so -- text, HTML, a base64 image and a
+    /// quoted-printable attachment alike.
+    #[test]
+    fn a_part_reader_gives_every_part_the_same_bytes_part_bytes_does() {
+        let raw = b"From: a@example.com\r\n\
+To: b@example.com\r\n\
+Subject: Mixed\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"outer\"\r\n\
+\r\n\
+--outer\r\n\
+Content-Type: multipart/related; boundary=\"inner\"\r\n\
+\r\n\
+--inner\r\n\
+Content-Type: text/html\r\n\
+\r\n\
+<p>see <img src=\"cid:logo@example.com\"></p>\r\n\
+--inner\r\n\
+Content-Type: image/png\r\n\
+Content-ID: <logo@example.com>\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+aGVsbG8=\r\n\
+--inner--\r\n\
+--outer\r\n\
+Content-Type: text/plain\r\n\
+Content-Disposition: attachment; filename=\"notes.txt\"\r\n\
+Content-Transfer-Encoding: quoted-printable\r\n\
+\r\n\
+caf=C3=A9 notes\r\n\
+--outer--\r\n";
+        let parsed = parse(raw).unwrap();
+        assert!(parsed.parts.len() >= 3, "{:?}", parsed.parts);
+        let reader = PartReader::new(raw).unwrap();
+        for part in &parsed.parts {
+            assert_eq!(
+                reader.bytes(&part.part_id).unwrap(),
+                part_bytes(raw, &part.part_id).unwrap().as_slice(),
+                "part {} ({})",
+                part.part_id,
+                part.content_type
+            );
+        }
+        assert!(matches!(reader.bytes("999"), Err(Error::NoSuchPart(_))));
+        assert!(matches!(PartReader::new(b""), Err(Error::Unparseable)));
     }
 
     proptest::proptest! {

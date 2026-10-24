@@ -3553,11 +3553,21 @@ export interface ProposalPolicy {
  * it read -- which is the shape a model talked into sending something out
  * would take. `'type'` is the browser about to type into a page -- always
  * asked, with the text, the field and the site -- and `'click'` is a click
- * in the browser after mail was read this turn. See `agent::tools::mail`'s
- * module docs in the Rust core, `ConfirmGate` in the service, and the
- * service's `browser` module, for the whole of the reasoning behind each.
+ * in the browser after mail was read this turn. `'routine'` is a routine
+ * about to be saved with instructions naming an address nobody gave -- its
+ * runs would open it unasked. See `agent::tools::mail`'s module docs in the
+ * Rust core, `ConfirmGate` in the service, and the service's `browser`
+ * module, for the whole of the reasoning behind each.
  */
-export const CONFIRM_KINDS = ['destructive', 'outward', 'search', 'fetch', 'type', 'click'] as const
+export const CONFIRM_KINDS = [
+  'destructive',
+  'outward',
+  'search',
+  'fetch',
+  'type',
+  'click',
+  'routine',
+] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 
 /**

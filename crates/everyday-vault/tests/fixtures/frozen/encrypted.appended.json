@@ -158,17 +158,17 @@
     }
   },
   {
-    "id": "2b150478ded32669c92770fc64e206a81ab2bf9611bd7f8de5ebaeb04a000a4b",
-    "kind": "blob",
-    "record": {
-      "bytesUtf8": "fixture attachment bytes for generation f4240"
-    }
-  },
-  {
     "id": "455482dce6f505ecee3f0cb66ec7c25cebaf9f0847ba328fe49e6aac4c022c8b",
     "kind": "blob",
     "record": {
       "bytesUtf8": "fixture attachment bytes for generation 1"
+    }
+  },
+  {
+    "id": "4b4652c1fdaaf6209a1dbee80ce21f0fd51248a888bee7ec4194971c74925b51",
+    "kind": "blob",
+    "record": {
+      "bytesUtf8": "fixture attachment bytes for generation f4240"
     }
   },
   {
@@ -369,7 +369,7 @@
     "record": {
       "attachments": [
         {
-          "blob": "2b150478ded32669c92770fc64e206a81ab2bf9611bd7f8de5ebaeb04a000a4b",
+          "blob": "4b4652c1fdaaf6209a1dbee80ce21f0fd51248a888bee7ec4194971c74925b51",
           "byteLen": 45,
           "caption": "a fixture attachment",
           "filename": "fixture.png",
@@ -392,7 +392,7 @@
           },
           {
             "attrs": {
-              "blob": "2b150478ded32669c92770fc64e206a81ab2bf9611bd7f8de5ebaeb04a000a4b",
+              "blob": "4b4652c1fdaaf6209a1dbee80ce21f0fd51248a888bee7ec4194971c74925b51",
               "caption": "a fixture attachment",
               "filename": "fixture.png",
               "kind": "image",

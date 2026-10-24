@@ -148,10 +148,20 @@ fn run_remember(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
     let fact = parse_fact(args)?;
 
-    let memory = match ctx.conversation {
+    let mut memory = match ctx.conversation {
         Some(id) => Memory::from_conversation(fact, id),
         None => Memory::new(fact),
     };
+    // A memory the person told is a standing instruction in every prompt
+    // after this one. A scheduled run has no person telling it anything --
+    // only its instructions and whatever it has read, a stranger's page or
+    // message among them -- so what it remembers is kept as a dream's
+    // noticing is: inferred, offered to the person to confirm, and read in
+    // the meantime as something that may be wrong rather than as an order.
+    if ctx.unattended {
+        memory.origin = crate::agent::MemoryOrigin::Inferred;
+        memory.last_supported = Some(ctx.today);
+    }
     let evicted = ctx.vault.save_memory(&memory)?;
 
     Ok(json!({

@@ -363,19 +363,40 @@ pub struct Reader {
     files: BTreeMap<String, Vec<u8>>,
 }
 
-/// The most an archive may inflate to.
+/// The most an archive `len` bytes long may inflate to, all its files
+/// together.
 ///
 /// A zip bomb is forty kilobytes that decompresses to a terabyte, and the
-/// only defence is a ceiling. Ten gigabytes is far past any real export --
-/// the vault it came from would not fit on the machine -- and far short of
-/// what a bomb is aiming for.
-const MAX_INFLATED: u64 = 10 * 1024 * 1024 * 1024;
+/// only defence is a ceiling. This one follows the archive's size rather than
+/// being one fixed number: deflate's best is about a thousand to one, so the
+/// fixed ten gigabytes it once was let a ten-megabyte file fill the machine.
+///
+/// A real export comes nowhere near it. Its stored entries -- photographs,
+/// recordings, anything deflate would not shrink (see [`Writer::add`]) --
+/// come out at the size they went in, the archive's own length at most since
+/// no two may share bytes; its deflated entries are text, which deflate takes
+/// down three to ten times. So: the archive's length, plus sixty-four times
+/// that for what deflate may add, plus 64 MiB so a small export of very
+/// repetitive text is not turned away. The growth is capped at 4 GiB but the
+/// archive itself is not, so an export of photographs past 4 GiB, which the
+/// command line will import, still opens.
+fn inflation_ceiling(len: usize) -> u64 {
+    const RATIO: u64 = 64;
+    const SLACK: u64 = 64 << 20;
+    const MAX_GROWTH: u64 = 4 << 30;
+    let len = len as u64;
+    len.saturating_add(len.saturating_mul(RATIO).saturating_add(SLACK).min(MAX_GROWTH))
+}
 
 impl Reader {
     /// Parse an archive, inflating everything in it.
     pub fn open(bytes: &[u8]) -> Result<Self> {
         let (dir_at, count) = locate_directory(bytes)?;
+        let ceiling = inflation_ceiling(bytes.len());
         let mut files = BTreeMap::new();
+        // Each file read so far, from its local header to the end of its
+        // data, keyed by where it starts. See the overlap check below.
+        let mut spans: BTreeMap<usize, usize> = BTreeMap::new();
         let mut cursor = dir_at as usize;
         let mut total: u64 = 0;
 
@@ -422,14 +443,34 @@ impl Reader {
                     "{name} is not a path this archive may contain"
                 )));
             }
-            total = total.saturating_add(uncompressed);
-            if total > MAX_INFLATED {
+            // The claim is checked before a byte is inflated, and the total
+            // is then counted in bytes actually produced. `inflate` never
+            // produces more than the claim -- a stored entry must be exactly
+            // it, a deflated one is cut off at it -- so between them the
+            // ceiling holds whatever sizes the directory states.
+            if uncompressed > ceiling.saturating_sub(total) {
                 return Err(Error::Invalid(
                     "this archive expands to more than Every Day will read at once".into(),
                 ));
             }
 
-            let body = read_entry(bytes, offset, method, compressed, uncompressed, &name)?;
+            let (span, raw) = entry_bytes(bytes, offset, compressed, &name)?;
+            // No two files may share bytes. The central directory is a list
+            // of pointers, and nothing in the format stops twenty thousand
+            // of them pointing at the same megabyte, which then inflates once
+            // per pointer: twenty gigabytes out of a two-megabyte file. No
+            // archiver writes that; only an archive built to do it does.
+            if let Some((_, &end)) = spans.range(..span.end).next_back()
+                && end > span.start
+            {
+                return Err(Error::Invalid(format!(
+                    "{name} shares its bytes with another file in this archive"
+                )));
+            }
+            spans.insert(span.start, span.end);
+
+            let body = inflate(raw, method, uncompressed, &name)?;
+            total += body.len() as u64;
             if crc32fast::hash(&body) != crc {
                 return Err(Error::Invalid(format!("{name} is damaged")));
             }
@@ -534,33 +575,52 @@ fn read_zip64_extra(
     }
 }
 
-fn read_entry(
-    bytes: &[u8],
+/// Where one entry sits: the span of the archive from its local header to the
+/// end of its data, and the data itself, still compressed.
+fn entry_bytes<'a>(
+    bytes: &'a [u8],
     offset: u64,
-    method: u16,
     compressed: u64,
-    uncompressed: u64,
     name: &str,
-) -> Result<Vec<u8>> {
-    let at = offset as usize;
-    let header = bytes.get(at..at + 30).ok_or_else(truncated)?;
+) -> Result<(std::ops::Range<usize>, &'a [u8])> {
+    // Checked arithmetic throughout: both numbers are the archive's to
+    // choose, and one near `u64::MAX` must read as damage, not wrap around.
+    let at = usize::try_from(offset).map_err(|_| truncated())?;
+    let header = bytes.get(at..at.checked_add(30).ok_or_else(truncated)?).ok_or_else(truncated)?;
     if u32(header, 0) != LOCAL_SIG {
         return Err(Error::Invalid(format!("{name} is not where the archive says it is")));
     }
     // The local header's own name and extra lengths, not the directory's:
     // archivers routinely write different extra fields in the two places.
     let start = at + 30 + u16(header, 26) as usize + u16(header, 28) as usize;
-    let raw = bytes.get(start..start + compressed as usize).ok_or_else(truncated)?;
+    let end = usize::try_from(compressed)
+        .ok()
+        .and_then(|len| start.checked_add(len))
+        .ok_or_else(truncated)?;
+    let raw = bytes.get(start..end).ok_or_else(truncated)?;
+    Ok((at..end, raw))
+}
 
+/// One entry's bytes, decompressed. Never more than `uncompressed` of them,
+/// which is what lets [`Reader::open`] hold the claim to its ceiling.
+fn inflate(raw: &[u8], method: u16, uncompressed: u64, name: &str) -> Result<Vec<u8>> {
     match method {
+        // A stored entry's two sizes are one number, so a directory that
+        // states two different ones is lying about one of them -- and the
+        // stored bytes used to be handed back whatever the claim said, which
+        // let a megabyte claim to be nothing and slip under the ceiling.
+        STORED if raw.len() as u64 != uncompressed => {
+            Err(Error::Invalid(format!("{name} is not the size the archive says it is")))
+        }
         STORED => Ok(raw.to_vec()),
         DEFLATED => {
             // Reserved modestly rather than at the size the header claims. The
             // claim is an attacker's to make: a two-hundred-byte file can say
-            // it expands to a hundred gigabytes, and this crate is built with
-            // `panic = "abort"`, so a refused allocation is not an error that
-            // can be reported -- it is the application gone. Growth is bounded
-            // by `take` below and by `MAX_INFLATED` above.
+            // it expands to a hundred gigabytes, and a refused allocation is
+            // not an error that can be reported -- Rust aborts the process on
+            // one, unwinding build or not, and on Linux the OOM killer usually
+            // gets there first. Growth is bounded by `take` below, and the
+            // claim by the ceiling in `Reader::open`.
             const RESERVE: u64 = 1 << 20;
             let mut out = Vec::with_capacity(uncompressed.min(RESERVE) as usize);
             flate2::read::DeflateDecoder::new(raw)
@@ -734,12 +794,111 @@ mod tests {
         w.add("big", &"compress me ".repeat(200).into_bytes()).unwrap();
         let mut bytes = w.finish().unwrap();
         // Rewrite the *central directory's* uncompressed size to something
-        // enormous. It is below MAX_INFLATED, so the guard above does not
-        // catch it, and the old code reserved it up front.
+        // enormous. It was below the fixed ceiling this module once had, so
+        // nothing caught it, and the old code reserved it up front.
         let dir = bytes.windows(4).rposition(|w| w == CENTRAL_SIG.to_le_bytes()).unwrap();
         bytes[dir + 24..dir + 28].copy_from_slice(&(8u32 << 28).to_le_bytes());
         // Whatever it answers, it must not have tried to allocate 2 GiB.
         let _ = Reader::open(&bytes);
+    }
+
+    /// `bytes` -- an archive of one file, as [`Writer`] makes it -- with that
+    /// file's directory record listed `copies` times under different names,
+    /// each copy passed through `edit` first. Every copy points at the same
+    /// local header, which is the shape of the bomb.
+    fn relist(bytes: &[u8], copies: usize, edit: impl Fn(&mut Vec<u8>)) -> Vec<u8> {
+        let eocd = bytes.len() - 22;
+        let dir_at = u32(bytes, eocd + 16) as usize;
+        let mut out = bytes[..dir_at].to_vec();
+        for i in 0..copies {
+            let name = format!("copy/{i}");
+            // The fixed part only: this writer puts no extra field on a small
+            // entry, so the record is 46 bytes and the name.
+            let mut record = bytes[dir_at..dir_at + 46].to_vec();
+            record[28..30].copy_from_slice(&(name.len() as u16).to_le_bytes());
+            edit(&mut record);
+            record.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&record);
+        }
+        let size = (out.len() - dir_at) as u32;
+        let mut end = bytes[eocd..].to_vec();
+        end[8..10].copy_from_slice(&(copies as u16).to_le_bytes());
+        end[10..12].copy_from_slice(&(copies as u16).to_le_bytes());
+        end[12..16].copy_from_slice(&size.to_le_bytes());
+        out.extend_from_slice(&end);
+        out
+    }
+
+    /// A body the writer stores rather than deflates, so its bytes in the
+    /// archive are the file itself.
+    fn photograph(len: usize) -> Vec<u8> {
+        let mut body = b"\x89PNG\r\n\x1a\n".to_vec();
+        body.resize(len, 7);
+        body
+    }
+
+    #[test]
+    fn one_stored_file_listed_thousands_of_times_is_refused() {
+        let mut w = Writer::new(Vec::new(), stamp());
+        w.add("media/photo.png", &photograph(64 * 1024)).unwrap();
+        let bytes = w.finish().unwrap();
+        assert!(Reader::open(&relist(&bytes, 1, |_| {})).is_ok(), "one listing is fine");
+
+        // The bomb as it was found: every record claims to inflate to
+        // nothing, so the claimed total never moved, while each one handed
+        // back the whole stored file. Twenty thousand of a megabyte was
+        // twenty gigabytes; this is the same shape, smaller.
+        let bomb = relist(&bytes, 2_000, |r| r[24..28].copy_from_slice(&0u32.to_le_bytes()));
+        let e = Reader::open(&bomb).unwrap_err();
+        assert_eq!(e.code(), "invalid");
+
+        // And with honest sizes, so the shared offset is refused on its own
+        // account rather than only through the size it lied about.
+        let e = Reader::open(&relist(&bytes, 2_000, |_| {})).unwrap_err();
+        assert!(e.to_string().contains("shares its bytes"), "{e}");
+    }
+
+    #[test]
+    fn a_stored_file_whose_two_sizes_disagree_is_refused() {
+        let mut w = Writer::new(Vec::new(), stamp());
+        w.add("media/photo.png", &photograph(4096)).unwrap();
+        let bytes = w.finish().unwrap();
+        for claim in [0u32, 1, 4095, 4097] {
+            let lying = relist(&bytes, 1, |r| r[24..28].copy_from_slice(&claim.to_le_bytes()));
+            let e = Reader::open(&lying).unwrap_err();
+            assert!(e.to_string().contains("not the size"), "{claim}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_ceiling_follows_the_archive_and_stops() {
+        // A two-megabyte file no longer gets to ask for ten gigabytes.
+        assert!(inflation_ceiling(2 << 20) < 256 << 20);
+        // A small export of repetitive text has room to spare...
+        assert!(inflation_ceiling(10 << 10) >= 64 << 20);
+        // ...growth stops at 4 GiB however big the archive...
+        assert_eq!(inflation_ceiling(1 << 30), (1 << 30) + (4 << 30));
+        // ...and an export of photographs past that, which the command line
+        // will import, still fits inside its own ceiling.
+        assert!(inflation_ceiling(6 << 30) > 6 << 30);
+    }
+
+    #[test]
+    fn a_claim_past_the_ceiling_is_refused_before_anything_is_inflated() {
+        let mut w = Writer::new(Vec::new(), stamp());
+        w.add("big", &"compress me ".repeat(200).into_bytes()).unwrap();
+        let bytes = w.finish().unwrap();
+        // Relisting renames the file, so the ceiling is the relisted
+        // archive's; the claim does not change its length.
+        let ceiling = inflation_ceiling(relist(&bytes, 1, |_| {}).len()) as u32;
+        let claiming = |claim: u32| {
+            Reader::open(&relist(&bytes, 1, |r| r[24..28].copy_from_slice(&claim.to_le_bytes())))
+        };
+        // At the ceiling, a deflated entry that over-claims is still read:
+        // only what it really inflates to is kept.
+        assert!(claiming(ceiling).is_ok());
+        let e = claiming(ceiling + 1).unwrap_err();
+        assert!(e.to_string().contains("expands to more"), "{e}");
     }
 
     #[test]

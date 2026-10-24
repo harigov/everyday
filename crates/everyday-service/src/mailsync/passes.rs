@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use everyday_core::id::{AccountId, MailMessageId, MailboxId};
+use everyday_core::id::{AccountId, BlobId, MailMessageId, MailboxId};
 use everyday_core::mail::categorize::{self, CategorizeInput};
 use everyday_core::mail::{Body, Category, MailboxRole, Message, PartRef};
 use everyday_core::packstore::{PackRef, PackStore};
@@ -1095,28 +1095,8 @@ fn process_body(
                 None => parsed.text.clone().unwrap_or_default(),
             };
 
-            let mut parts = Vec::with_capacity(parsed.parts.len());
-            let mut has_attachments = false;
-            for part in &parsed.parts {
-                if part.disposition == Disposition::Attachment {
-                    has_attachments = true;
-                }
-                let within_cap = attachment_cap_bytes.is_none_or(|cap| (part.size as u64) <= cap);
-                let blob = if within_cap {
-                    everyday_mail::mime::part_bytes(raw, &part.part_id)
-                        .ok()
-                        .and_then(|bytes| vault.put_blob(&bytes).ok())
-                } else {
-                    None
-                };
-                parts.push(PartRef {
-                    cid: part.content_id.clone(),
-                    filename: part.filename.clone(),
-                    mime_type: part.content_type.clone(),
-                    size: part.size as u64,
-                    blob,
-                });
-            }
+            let put = |bytes: &[u8]| vault.put_blob(bytes).ok();
+            let (parts, has_attachments) = part_refs(raw, &parsed.parts, attachment_cap_bytes, put);
             (html_sanitised, plain, parts, has_attachments)
         }
         Err(e) => {
@@ -1147,6 +1127,62 @@ fn process_body(
     };
 
     (message, uid, body)
+}
+
+/// How many of one message's parts [`part_refs`] stores as blobs at sync
+/// time, counted in order from the first.
+///
+/// A sender decides how many parts a message has, and every stored part is
+/// a hash, an encryption and a write of its own; without a ceiling, one
+/// message cut into tens of thousands of tiny parts costs that many blob
+/// writes before its batch can be saved. Real mail has a handful -- a few
+/// hundred is already a newsletter's worth of inline images. A part past
+/// this is not lost: it is listed like any other with no blob, which the
+/// thread view draws as an attachment chip with a "Download" button
+/// (`domains::mail::fetch_attachment` reads it out of the stored raw
+/// message on demand) and the frame as an image that has not loaded.
+const MAX_STORED_PARTS: usize = 500;
+
+/// [`process_body`]'s [`PartRef`] for every one of `parts` -- the leaf parts
+/// [`everyday_mail::mime::parse`] found in `raw`, in its order, which is
+/// the order `domains::mail::fetch_attachment` indexes them by -- and
+/// whether any is an attachment.
+///
+/// A part gets a blob, through `put`, when it is among the first
+/// [`MAX_STORED_PARTS`] and within `attachment_cap_bytes`; any other part is
+/// listed with none. Every part's bytes come from one
+/// [`everyday_mail::mime::PartReader`], not a parse per part -- see its own
+/// docs for what that cost. `put` is the vault's `put_blob` outside tests.
+fn part_refs(
+    raw: &[u8],
+    parts: &[everyday_mail::mime::Part],
+    attachment_cap_bytes: Option<u64>,
+    mut put: impl FnMut(&[u8]) -> Option<BlobId>,
+) -> (Vec<PartRef>, bool) {
+    // `parts` came from parsing these same bytes, so this cannot fail where
+    // that did not; if it somehow does, every part is simply left unstored.
+    let reader = everyday_mail::mime::PartReader::new(raw).ok();
+    let mut refs = Vec::with_capacity(parts.len());
+    let mut has_attachments = false;
+    for (index, part) in parts.iter().enumerate() {
+        if part.disposition == Disposition::Attachment {
+            has_attachments = true;
+        }
+        let stored = index < MAX_STORED_PARTS
+            && attachment_cap_bytes.is_none_or(|cap| (part.size as u64) <= cap);
+        let blob = match &reader {
+            Some(reader) if stored => reader.bytes(&part.part_id).ok().and_then(&mut put),
+            _ => None,
+        };
+        refs.push(PartRef {
+            cid: part.content_id.clone(),
+            filename: part.filename.clone(),
+            mime_type: part.content_type.clone(),
+            size: part.size as u64,
+            blob,
+        });
+    }
+    (refs, has_attachments)
 }
 
 /// A [`MailDoc`] for `message`, filed under `mailbox_id`. Shared by
@@ -1209,5 +1245,93 @@ mod pacer_tests {
     fn a_single_doc_well_within_both_thresholds_is_not_due() {
         let pacer = CommitPacer::new();
         assert!(!pacer.record(1));
+    }
+}
+
+#[cfg(test)]
+mod part_ref_tests {
+    use super::*;
+
+    /// `BlobId::of` stands in for the vault's own `put_blob`, which
+    /// content-addresses the same way, so a test can say which bytes each
+    /// part was stored with without opening a vault.
+    fn content_address(bytes: &[u8]) -> Option<BlobId> {
+        Some(BlobId::of(bytes))
+    }
+
+    /// A message of `count` tiny text parts, the shape a sender uses to make
+    /// one message cost as many part reads as it likes.
+    fn many_parts(count: usize) -> Vec<u8> {
+        let mut raw = String::from(
+            "From: a@example.com\r\nTo: b@example.com\r\nSubject: Many\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n",
+        );
+        for i in 0..count {
+            raw.push_str(&format!("--b\r\nContent-Type: text/plain\r\n\r\npart {i}\r\n"));
+        }
+        raw.push_str("--b--\r\n");
+        raw.into_bytes()
+    }
+
+    #[test]
+    fn an_ordinary_message_stores_each_part_with_the_bytes_part_bytes_gives_it() {
+        let raw = b"From: a@example.com\r\n\
+To: b@example.com\r\n\
+Subject: Attach\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+see the attached picture\r\n\
+--b\r\n\
+Content-Type: image/png\r\n\
+Content-Disposition: attachment; filename=\"pic.png\"\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+aGVsbG8=\r\n\
+--b--\r\n";
+        let parsed = everyday_mail::mime::parse(raw).unwrap();
+        let (refs, has_attachments) = part_refs(raw, &parsed.parts, None, content_address);
+        assert!(has_attachments);
+        assert_eq!(refs.len(), parsed.parts.len());
+        for (stored, part) in refs.iter().zip(&parsed.parts) {
+            let bytes = everyday_mail::mime::part_bytes(raw, &part.part_id).unwrap();
+            assert_eq!(stored.blob, Some(BlobId::of(&bytes)), "part {}", part.part_id);
+            assert_eq!(stored.mime_type, part.content_type);
+            assert_eq!(stored.size, part.size as u64);
+        }
+
+        // The per-part size cap still holds: the five-byte picture is
+        // stored, the longer text part is listed without a blob.
+        let (refs, _) = part_refs(raw, &parsed.parts, Some(5), content_address);
+        let picture = refs.iter().find(|r| r.mime_type == "image/png").unwrap();
+        let text = refs.iter().find(|r| r.mime_type == "text/plain").unwrap();
+        assert!(picture.blob.is_some());
+        assert_eq!(text.blob, None);
+    }
+
+    #[test]
+    fn only_the_first_parts_up_to_the_cap_are_stored_and_every_part_is_still_listed() {
+        let count = MAX_STORED_PARTS + 100;
+        let raw = many_parts(count);
+        let parsed = everyday_mail::mime::parse(&raw).unwrap();
+        assert_eq!(parsed.parts.len(), count);
+
+        let mut puts = 0;
+        let (refs, has_attachments) = part_refs(&raw, &parsed.parts, None, |bytes| {
+            puts += 1;
+            content_address(bytes)
+        });
+        assert!(!has_attachments);
+        assert_eq!(puts, MAX_STORED_PARTS, "nothing past the cap is even read");
+        assert_eq!(refs.len(), count, "a part past the cap is listed, just not stored");
+        assert!(refs[..MAX_STORED_PARTS].iter().all(|r| r.blob.is_some()));
+        assert!(refs[MAX_STORED_PARTS..].iter().all(|r| r.blob.is_none()));
+        // And what was stored is still the right part, in the right place.
+        let last = &parsed.parts[MAX_STORED_PARTS - 1];
+        let bytes = everyday_mail::mime::part_bytes(&raw, &last.part_id).unwrap();
+        assert_eq!(refs[MAX_STORED_PARTS - 1].blob, Some(BlobId::of(&bytes)));
     }
 }
