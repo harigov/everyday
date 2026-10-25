@@ -62,11 +62,15 @@ impl Vault {
         match self.calendar(calendar.id) {
             Ok(stored) => {
                 calendar.is_default = stored.is_default;
+                calendar.this_computer_off = stored.this_computer_off;
                 calendar.read_only = stored.read_only;
             }
             // A new calendar starts as neither: being made the default is a
             // separate choice, and read-only is the server's to say.
-            Err(Error::NotFound { .. }) => calendar.is_default = false,
+            Err(Error::NotFound { .. }) => {
+                calendar.is_default = false;
+                calendar.this_computer_off = false;
+            }
             Err(e) => return Err(e),
         }
         self.with_calendars(|c| c.put_calendar(&calendar))?;
@@ -82,12 +86,84 @@ impl Vault {
         Ok(self.calendars()?.into_iter().find(|c| c.is_default && c.takes_new_events()))
     }
 
+    /// Whether this computer is a calendar new events can go to -- the
+    /// person has not switched it off. See [`Calendar::this_computer_off`].
+    ///
+    /// On, always, for a vault that keeps no calendars: there is nowhere
+    /// else for anything to go.
+    pub fn this_computer_on(&self) -> bool {
+        !self
+            .calendars()
+            .is_ok_and(|calendars| calendars.iter().any(|c| c.is_default && c.this_computer_off))
+    }
+
+    /// Switch this computer on or off as a calendar new events can go to.
+    ///
+    /// Off only while they go to one of an account's calendars instead --
+    /// with nowhere else for them to go, switching it off would leave a click
+    /// on the grid and the assistant's `create_event` with nowhere at all.
+    /// The mark is kept on that default calendar (see
+    /// [`Calendar::this_computer_off`]); on clears it wherever it is.
+    pub fn set_this_computer(&self, on: bool) -> Result<()> {
+        self.writable()?;
+        let calendars = self.calendars()?;
+        // A default its account can write to now, as the calendar picker
+        // reads it: one that must be signed in to again would leave new
+        // events nowhere at all the moment this computer was off.
+        let default = calendars
+            .iter()
+            .find(|c| c.is_default && c.takes_new_events() && self.account_writes(c))
+            .map(|c| c.id);
+        if !on && default.is_none() {
+            return Err(Error::Invalid(
+                "this computer can only be switched off as a calendar while new events go to one \
+                 of an account's calendars that can take them: choose that first"
+                    .into(),
+            ));
+        }
+        for mut calendar in calendars {
+            let want = !on && Some(calendar.id) == default;
+            if calendar.this_computer_off != want {
+                calendar.this_computer_off = want;
+                calendar.touch();
+                self.with_calendars(|c| c.put_calendar(&calendar))?;
+                self.wrote(RecordKind::Calendar, calendar.id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `calendar`'s account is signed in with permission to change
+    /// its calendars -- the half of "can take new events" the calendar's own
+    /// record cannot say.
+    fn account_writes(&self, calendar: &Calendar) -> bool {
+        match &calendar.origin {
+            CalendarOrigin::Account { account_id, .. } => {
+                self.account(*account_id).is_ok_and(|a| a.can_write_calendars())
+            }
+            _ => false,
+        }
+    }
+
     /// Make `id` the calendar new events go to, or -- with `None` -- send
     /// them to this computer's own time blocks. Clears the mark from every
     /// other calendar in the same pass, so there is never more than one.
+    ///
+    /// Whether this computer is switched off goes with the mark to the new
+    /// default -- see [`Calendar::this_computer_off`] -- and `None` is
+    /// refused while it is: new events cannot be sent to a calendar that has
+    /// been switched off.
     pub fn set_default_calendar(&self, id: Option<CalendarId>) -> Result<()> {
         self.writable()?;
         let calendars = self.calendars()?;
+        let off = calendars.iter().any(|c| c.is_default && c.this_computer_off);
+        if off && id.is_none() {
+            return Err(Error::Invalid(
+                "this computer is switched off as a calendar, so new events cannot go to it; \
+                 switch it back on first"
+                    .into(),
+            ));
+        }
         if let Some(id) = id {
             let target = calendars
                 .iter()
@@ -102,8 +178,9 @@ impl Vault {
         }
         for mut calendar in calendars {
             let want = Some(calendar.id) == id;
-            if calendar.is_default != want {
+            if calendar.is_default != want || calendar.this_computer_off != (want && off) {
                 calendar.is_default = want;
+                calendar.this_computer_off = want && off;
                 calendar.touch();
                 self.with_calendars(|c| c.put_calendar(&calendar))?;
                 self.wrote(RecordKind::Calendar, calendar.id);

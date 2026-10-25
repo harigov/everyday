@@ -185,6 +185,7 @@ pub async fn answer_now(
         job: None,
         follow_up: Some(job.id),
         max_steps: None,
+        tier: None,
         // A person's own conversation, not a scheduled run: nobody to reach
         // beyond the chat this turn's reply is already sent to.
         reach: Reach::default(),

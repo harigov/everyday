@@ -283,6 +283,11 @@ impl Where {
         self.push(&format!("{column} ="), value)
     }
 
+    pub fn ne(self, column: &str, value: impl ToValue) -> Self {
+        let value = value.to_value();
+        self.push(&format!("{column} <>"), value)
+    }
+
     pub fn gte(self, column: &str, value: impl ToValue) -> Self {
         let value = value.to_value();
         self.push(&format!("{column} >="), value)

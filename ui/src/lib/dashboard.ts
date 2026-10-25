@@ -119,6 +119,12 @@ export const NEEDS = [
    * story with no source to say whose it is.
    */
   'news',
+  /**
+   * What is under way: projects in progress, what is being read, watched or
+   * played on each shelf (and the shelves, for their verbs), for "What's
+   * going on". Goals come with `purpose`.
+   */
+  'going',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -171,6 +177,15 @@ export interface WidgetSpec {
  */
 export const WIDGETS = {
   // ── Today ──────────────────────────────────────────────────────────
+  whatsGoingOn: {
+    label: "What's going on",
+    note: 'What you are in the middle of these days: projects, what you are reading and watching, the goals you are working on.',
+    group: 'Today',
+    icon: 'compass',
+    size: 'large',
+    sizes: ['medium', 'large'],
+    needs: ['going', 'purpose'],
+  },
   onNow: {
     label: 'On now',
     note: 'What is being tracked this minute, and a way to stop it.',
@@ -529,6 +544,7 @@ export interface Widget {
  */
 export function defaultLayout(): Widget[] {
   return [
+    widget('whatsGoingOn'),
     widget('dueToday'),
     widget('recordedToday'),
     widget('onNow'),
@@ -582,6 +598,30 @@ export function addWidget(
   const card = widget(type, subject, nextId(list, type))
   const at = before === null ? -1 : list.findIndex((w) => w.id === before)
   return at < 0 ? [...list, card] : [...list.slice(0, at), card, ...list.slice(at)]
+}
+
+/**
+ * Cards added to the catalogue after pages were already arranged, each put
+ * at the top of a page once -- so somebody whose page predates it is shown
+ * it rather than having to find it behind Add -- and never again, so one
+ * they remove stays removed. Newest last.
+ */
+export const INTRODUCED: WidgetType[] = ['whatsGoingOn']
+
+/**
+ * `list` with every card in `INTRODUCED` that `seen` does not name put at
+ * the top -- unless the page already has one -- and the types now seen.
+ */
+export function introduce(
+  list: Widget[],
+  seen: string[],
+): { widgets: Widget[]; seen: WidgetType[] } {
+  let widgets = list
+  for (const type of INTRODUCED) {
+    if (seen.includes(type) || widgets.some((w) => w.type === type)) continue
+    widgets = [widget(type, null, nextId(widgets, type)), ...widgets]
+  }
+  return { widgets, seen: [...INTRODUCED] }
 }
 
 export function removeWidget(list: Widget[], id: string): Widget[] {

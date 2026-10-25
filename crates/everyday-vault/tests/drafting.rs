@@ -229,6 +229,11 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "create_entry",
     "update_entry",
     "delete_entry",
+    // The assistant's own journal is not a proposal either: it is nobody's
+    // record but its own. A dream writes to it for real, by naming it in
+    // `Drafting::direct` -- see the scheduler -- and a drafting caller that
+    // has not is refused like any other write with no builder.
+    "write_own_journal",
     // The library, and how much of a tracker's target was hit, are not one
     // of the five kinds `docs/plans/dreaming.md` lets a dream propose.
     "create_item",

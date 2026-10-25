@@ -20,7 +20,16 @@
   // one line so the answer is what is left to read.
 
   import { onDestroy, untrack } from 'svelte'
-  import { activity, elapsed, isPlan, planOf, workSummary, type Turn } from '../lib/agent'
+  import {
+    activity,
+    choicesOf,
+    elapsed,
+    isChoices,
+    isPlan,
+    planOf,
+    workSummary,
+    type Turn,
+  } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
   import { api, mediaUrl } from '../lib/api'
   import { APPS } from '../lib/apps'
@@ -601,7 +610,8 @@
             </div>
           {:else}
             {@const plan = planOf(turn)}
-            {@const steps = turn.cards.filter((c) => !isPlan(c))}
+            {@const choices = choicesOf(turn)}
+            {@const steps = turn.cards.filter((c) => !isPlan(c) && !isChoices(c))}
             <!-- A research call that has become its job is drawn as the job,
                  below the reply, and is left out of what folds away: the card
                  is the one step in a long turn somebody comes back to. -->
@@ -685,6 +695,22 @@
                    link. -->
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
               <div class="reply md">{@html renderMarkdown(turn.text)}</div>
+            {/if}
+
+            {#if choices}
+              <!-- Options to pick from: pressing one sends it as their next
+                   message. Only on the newest turn, and not while one is
+                   running -- an answer to an older question is not one. -->
+              {@const open = turn.id === agent.turns.at(-1)?.id && !agent.busy}
+              <div class="choices" role="group" aria-label={choices.question || 'Options'}>
+                {#if choices.question}<p class="question">{choices.question}</p>{/if}
+                {#each choices.options as option, i (i)}
+                  <button class="choice" disabled={!open} onclick={() => void send(option.title)}>
+                    <b>{option.title}</b>
+                    {#if option.detail}<span>{option.detail}</span>{/if}
+                  </button>
+                {/each}
+              </div>
             {/if}
 
             {#each started as card (card.callId)}
@@ -1076,6 +1102,41 @@
   }
 
   /* ── The plan ─────────────────────────────────────────────────────── */
+
+  /* Options the assistant offered: one button each, pressed to answer. */
+  .choices {
+    display: grid;
+    gap: var(--sp-2);
+    margin: var(--sp-2) 0;
+  }
+  .choices .question {
+    margin: 0;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+  .choice {
+    display: grid;
+    gap: 2px;
+    padding: var(--sp-2) var(--sp-3);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    color: var(--fg);
+    text-align: left;
+  }
+  .choice span {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+  .choice:hover:not(:disabled) {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+  }
+  .choice:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
 
   .plan {
     display: flex;

@@ -496,6 +496,7 @@ impl Service {
             job: None,
             follow_up: None,
             max_steps: None,
+            tier: None,
         })
         .await?;
         // What the tools wrote, then the thread -- the same two things, in

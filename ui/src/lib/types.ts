@@ -83,6 +83,12 @@ export interface Journal {
    * move can happen at all.
    */
   trackers?: Tracker[]
+  /**
+   * The assistant's own journal: notes it leaves itself, filed under the day
+   * they are about. At most one; only the backend sets it, and a save keeps
+   * what is stored. Theirs to read, but not their writing.
+   */
+  assistant?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -624,6 +630,16 @@ export interface Routine {
    * the app.
    */
   delivery?: Delivery
+  /**
+   * Which of the three models a run is asked on (Settings → Models). Absent
+   * is the medium one, the assistant's own.
+   */
+  model?: ModelTier | null
+  /**
+   * The most steps a run may take, 1 to 100. Absent is the assistant's own
+   * ceiling, `AgentSettings.maxSteps`.
+   */
+  maxSteps?: number | null
   lastRunAt?: string | null
   createdAt: string
   updatedAt: string
@@ -852,6 +868,8 @@ export type SortOrder = 'dateDesc' | 'dateAsc' | 'updatedDesc' | 'createdDesc' |
 
 export interface EntryQuery {
   journalId?: JournalId | null
+  /** Leave one journal out -- the assistant's own, for a view of their writing. */
+  notJournal?: JournalId | null
   from?: string | null
   to?: string | null
   tags?: string[]
@@ -893,6 +911,8 @@ export interface StoreStats {
   entries: number
   blobs: number
   blobBytes: number
+  /** How many of `entries` are pages of the assistant's own journal. */
+  assistantEntries?: number
 }
 
 /**
@@ -1366,6 +1386,12 @@ export interface Calendar {
    * `set_default_calendar` -- `save_calendar` keeps whatever is stored.
    */
   isDefault: boolean
+  /**
+   * Set on the default calendar when this computer is switched off as a
+   * calendar: new events go there and never to this computer's own time.
+   * Moves with the default; only `setThisComputer` sets it.
+   */
+  thisComputerOff?: boolean
   /** The account's server will not let this account write to it. */
   readOnly: boolean
   createdAt: string
@@ -3580,6 +3606,12 @@ export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 export type AgentEvent =
   | { type: 'started'; messageId: MessageId }
   | { type: 'delta'; text: string }
+  /**
+   * The model's last step came back broken -- a tool call cut off, a dropped
+   * connection -- and is being asked for again. `text` is the reply as it
+   * stood before that step, and replaces what the deltas have drawn.
+   */
+  | { type: 'retrying'; text: string }
   /**
    * A fragment of the model's own reasoning, when the provider streams any
    * -- most local models do, most hosted ones do not. Drawn folded, and not

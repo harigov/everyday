@@ -502,6 +502,7 @@ async fn execute(
         job: Some(JobTurn { id, question: job.title() }),
         follow_up: None,
         max_steps: Some(executor.max_steps()),
+        tier: None,
         // A job asks nobody: it is refused what it would need somebody for.
         reach: crate::agent::Reach::default(),
     };

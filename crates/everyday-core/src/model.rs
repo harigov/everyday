@@ -51,6 +51,19 @@ pub struct Journal {
     /// payload that no SQL migration can read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trackers: Vec<Tracker>,
+    /// The assistant's own journal, rather than one of the person's: notes
+    /// it leaves itself, filed under the day they are about -- what a weekly
+    /// plan wants raised on Thursday, what a quarterly review thought of the
+    /// first of next month -- for the run on that day to read.
+    ///
+    /// There is at most one, made by
+    /// [`crate::vault::Vault::assistant_journal_or_new`] the first time the
+    /// assistant writes to it, and only the vault sets this: a save from the
+    /// interface keeps whatever is stored. It is the person's to read, and to
+    /// delete, but it is not their writing, so what reads a journal as theirs
+    /// -- a streak, an insight, a dream -- leaves it out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub assistant: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -67,6 +80,7 @@ impl Journal {
             sort_order: 0,
             shown_trackers: Vec::new(),
             trackers: Vec::new(),
+            assistant: false,
             created_at: now,
             updated_at: now,
         }

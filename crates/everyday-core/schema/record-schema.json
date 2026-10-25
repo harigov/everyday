@@ -448,7 +448,7 @@
         "type": "object"
       },
       "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
       "MailLink": {
@@ -814,6 +814,10 @@
           "null"
         ]
       },
+      "thisComputerOff": {
+        "description": "Set on the default calendar when the person has switched this\ncomputer off as a calendar: new events go here and never to this\ncomputer's own time blocks -- not from the grid, not from the command\nbar, not from the assistant, which is then not told this computer is a\ncalendar at all.\n\nOn the default rather than a setting of its own because that is the\none state in which it means anything: this computer can only be\nswitched off while new events have somewhere else to go, so the switch\nrides with the default -- [`crate::vault::Vault::set_default_calendar`]\nmoves it from one account calendar to the next -- and goes when the\ndefault does. Only [`crate::vault::Vault::set_this_computer`] sets it.\nBlocks already on this computer stay where they are: timer sessions and\ntime booked against a task are records of time spent, not events.",
+        "type": "boolean"
+      },
       "updatedAt": {
         "format": "date-time",
         "type": "string"
@@ -1074,7 +1078,7 @@
         "type": "object"
       },
       "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
       "DraftAttachment": {
@@ -1451,7 +1455,7 @@
         "type": "object"
       },
       "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
       "Location": {
@@ -1753,7 +1757,7 @@
   "Item": {
     "$defs": {
       "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
       "ExternalRating": {
@@ -2531,6 +2535,10 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "A named collection of entries. Day One calls these \"journals\".",
     "properties": {
+      "assistant": {
+        "description": "The assistant's own journal, rather than one of the person's: notes\nit leaves itself, filed under the day they are about -- what a weekly\nplan wants raised on Thursday, what a quarterly review thought of the\nfirst of next month -- for the run on that day to read.\n\nThere is at most one, made by\n[`crate::vault::Vault::assistant_journal_or_new`] the first time the\nassistant writes to it, and only the vault sets this: a save from the\ninterface keeps whatever is stored. It is the person's to read, and to\ndelete, but it is not their writing, so what reads a journal as theirs\n-- a streak, an insight, a dream -- leaves it out.",
+        "type": "boolean"
+      },
       "color": {
         "description": "`#rrggbb`. Drives the accent colour of the journal in the UI.",
         "type": "string"
@@ -3431,7 +3439,7 @@
   "NewsSource": {
     "$defs": {
       "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
       "HnList": {
@@ -3705,7 +3713,7 @@
         "type": "object"
       },
       "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
       "MediaKind": {
@@ -4577,7 +4585,7 @@
         "type": "object"
       },
       "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.",
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
         "type": "string"
       },
       "BlockKind": {
@@ -4866,6 +4874,26 @@
           {
             "const": "rejected",
             "description": "Inferred, and then the person struck it out.",
+            "type": "string"
+          }
+        ]
+      },
+      "ModelTier": {
+        "description": "Which of the three models.",
+        "oneOf": [
+          {
+            "const": "large",
+            "description": "Deep research.",
+            "type": "string"
+          },
+          {
+            "const": "medium",
+            "description": "The assistant.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "The quick asks.",
             "type": "string"
           }
         ]
@@ -5404,6 +5432,26 @@
               "string",
               "null"
             ]
+          },
+          "maxSteps": {
+            "description": "The most steps a run may take -- model turns, each of which may call\ntools. `None` is the assistant's own ceiling, from its settings\n([`crate::agent::AgentSettings::max_steps`]). A routine that reads a\nweek of mail needs more than one that writes a line, and nothing else\nabout it should have to change for that.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelTier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which of the three models a run is asked on -- see\n[`crate::llm::ModelTier`]. `None` is the medium one, the assistant's\nown, which is what every routine ran on before this could be chosen.\nLarge without a large model set up runs on the medium one, as research\ndoes; small without a small one is skipped, with the reason, rather\nthan quietly run on a model nobody chose for it."
           },
           "name": {
             "type": "string"
@@ -6479,6 +6527,26 @@
           }
         ]
       },
+      "ModelTier": {
+        "description": "Which of the three models.",
+        "oneOf": [
+          {
+            "const": "large",
+            "description": "Deep research.",
+            "type": "string"
+          },
+          {
+            "const": "medium",
+            "description": "The assistant.",
+            "type": "string"
+          },
+          {
+            "const": "small",
+            "description": "The quick asks.",
+            "type": "string"
+          }
+        ]
+      },
       "RoutineKind": {
         "description": "Whose routine this is.\n\nA dream is a routine the application owns: it is made when dreaming is\nswitched on, it cannot be deleted by hand, and its instructions field is\nthe person's paragraph *added to* an app-owned prompt rather than the\nprompt itself. See `docs/plans/dreaming.md`.",
         "oneOf": [
@@ -6670,6 +6738,26 @@
           "string",
           "null"
         ]
+      },
+      "maxSteps": {
+        "description": "The most steps a run may take -- model turns, each of which may call\ntools. `None` is the assistant's own ceiling, from its settings\n([`crate::agent::AgentSettings::max_steps`]). A routine that reads a\nweek of mail needs more than one that writes a line, and nothing else\nabout it should have to change for that.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "model": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ModelTier"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Which of the three models a run is asked on -- see\n[`crate::llm::ModelTier`]. `None` is the medium one, the assistant's\nown, which is what every routine ran on before this could be chosen.\nLarge without a large model set up runs on the medium one, as research\ndoes; small without a small one is skipped, with the reason, rather\nthan quietly run on a model nobody chose for it."
       },
       "name": {
         "type": "string"

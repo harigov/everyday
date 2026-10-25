@@ -75,13 +75,20 @@ fn the_day_digest_reads_tasks_and_entries_from_yesterday() {
     entry.body = everyday_core::richtext::RichDoc::from_plain_text("Nothing much happened.");
     vault.save_entry(&entry, None).unwrap();
 
+    // A note the assistant left itself for the same day is not their writing.
+    let mine = vault.assistant_journal_or_new("The assistant's journal").unwrap();
+    let mut note = everyday_core::model::Entry::new(mine.id, "UTC");
+    note.local_date = jiff::civil::date(2026, 9, 15);
+    note.body = everyday_core::richtext::RichDoc::from_plain_text("Raise the boiler quote.");
+    vault.save_entry(&note, None).unwrap();
+
     let now = zoned(2026, 9, 16, 9, 0);
     let d = dream::digest(&vault, DreamScope::Day, &now).unwrap();
     assert!(!d.is_empty());
     assert_eq!(d.tasks_created, vec!["Book the dentist".to_string()]);
     assert_eq!(d.tasks_completed, vec!["Reply to Priya".to_string()]);
     assert_eq!(d.tasks_overdue, vec!["Renew the passport".to_string()]);
-    assert_eq!(d.entries.len(), 1);
+    assert_eq!(d.entries.len(), 1, "their entry, and not the assistant's own note");
     assert!(d.entries[0].contains("A quiet Tuesday"));
     assert!(d.entries[0].contains("Nothing much happened"));
 

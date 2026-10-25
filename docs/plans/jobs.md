@@ -206,7 +206,9 @@ must not make the seven o'clock brief late.
   it already made one. Interrupted twice, it fails and says why.
 - **A budget per kind.** Research gets more steps than the rail's ceiling
   (a constant to start with, sixty) and a longer timeout than a routine's
-  fifteen minutes (thirty). `Turn` grows a step override for this.
+  fifteen minutes (thirty). `Turn` grows a step override for this. Both
+  were doubled in October 2026, to 120 steps and an hour: sixty ran out
+  partway through checking what a job had found.
 - **Progress from the ledger.** Each tool call the job makes updates
   `progress` and `steps` and raises a `Kind::Job` change, throttled, so an
   open card moves.

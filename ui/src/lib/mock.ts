@@ -1332,6 +1332,20 @@ const journals: Journal[] = [
     createdAt: iso(200),
     updatedAt: iso(20),
   },
+  // The assistant's own journal: what its routines left themselves, filed
+  // under the day each note is about -- see `Journal.assistant`.
+  {
+    id: 'j-assistant',
+    name: "Robin's journal",
+    color: '#7c3aed',
+    icon: '\u{2728}',
+    description: 'Notes the assistant leaves itself, filed under the day they are about.',
+    sortOrder: 3,
+    shownTrackers: [],
+    assistant: true,
+    createdAt: iso(30),
+    updatedAt: iso(1),
+  },
 ]
 
 const entries: Entry[] = [
@@ -1529,6 +1543,52 @@ const entries: Entry[] = [
     createdAt: iso(21),
     updatedAt: iso(21),
     tags: ['books'],
+    starred: false,
+    attachments: [],
+  },
+  {
+    id: 'e-assistant-today',
+    journalId: 'j-assistant',
+    title: '',
+    body: {
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: 'From the weekly plan' }],
+        },
+        ...para('Ask about the boiler quote before Friday; they said Thursday at the latest.'),
+      ],
+    },
+    localDate: day(0),
+    tz: 'Europe/London',
+    createdAt: iso(2),
+    updatedAt: iso(2),
+    tags: [],
+    starred: false,
+    attachments: [],
+  },
+  {
+    id: 'e-assistant-ahead',
+    journalId: 'j-assistant',
+    title: '',
+    body: {
+      type: 'doc',
+      content: [
+        {
+          type: 'heading',
+          attrs: { level: 2 },
+          content: [{ type: 'text', text: 'From the quarterly review' }],
+        },
+        ...para('First of the month: the budget review is due. Bring last quarter\u2019s numbers.'),
+      ],
+    },
+    localDate: day(-3),
+    tz: 'Europe/London',
+    createdAt: iso(2),
+    updatedAt: iso(2),
+    tags: [],
     starred: false,
     attachments: [],
   },
@@ -4167,6 +4227,9 @@ function status(): VaultStatus {
       ? {
           journals: journals.length,
           entries: entries.length,
+          assistantEntries: entries.filter((e) =>
+            journals.some((j) => j.assistant && j.id === e.journalId),
+          ).length,
           blobs: Object.keys(BLOBS).length + Object.keys(COVERS).length,
           blobBytes: 8_300_000,
         }
@@ -4489,8 +4552,10 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       const j = args.journal as Journal
       const i = journals.findIndex((x) => x.id === j.id)
-      if (i >= 0) journals[i] = j
-      else journals.push(j)
+      // Whose journal it is is the backend's to say: a save keeps it.
+      const kept = { ...j, assistant: i >= 0 ? journals[i]!.assistant : false }
+      if (i >= 0) journals[i] = kept
+      else journals.push(kept)
       return undefined as T
     }
 
@@ -4815,6 +4880,7 @@ export const mockInvoke = async <T>(
       const q = (args.query ?? {}) as EntryQuery
       let rows = entries.map(summarize)
       if (q.journalId) rows = rows.filter((r) => r.journalId === q.journalId)
+      if (q.notJournal) rows = rows.filter((r) => r.journalId !== q.notJournal)
       if (q.starred) rows = rows.filter((r) => r.starred)
       // Both bounds are inclusive, as the core's `EntryQuery` documents.
       // Dates are `YYYY-MM-DD`, so a string comparison is a date comparison.
@@ -5267,6 +5333,7 @@ export const mockInvoke = async <T>(
       const withCount = calendarInfo({
         ...c,
         isDefault: kept?.isDefault ?? false,
+        thisComputerOff: kept?.thisComputerOff ?? false,
         readOnly: kept?.readOnly ?? false,
       })
       if (i >= 0) calendars[i] = withCount
@@ -5287,7 +5354,31 @@ export const mockInvoke = async <T>(
           )
         }
       }
-      for (const c of calendars) c.isDefault = c.id === id
+      const off = calendars.some((c) => c.isDefault && c.thisComputerOff)
+      if (off && id === null) {
+        throw new VaultError(
+          'invalid',
+          'this computer is switched off as a calendar, so new events cannot go to it; switch it back on first',
+        )
+      }
+      for (const c of calendars) {
+        c.isDefault = c.id === id
+        c.thisComputerOff = off && c.id === id
+      }
+      return undefined as T
+    }
+
+    case 'set_this_computer': {
+      requireUnlocked()
+      const on = !!args.on
+      const target = calendars.find((c) => c.isDefault && mockCalendarAccess(c) === 'writable')
+      if (!on && !target) {
+        throw new VaultError(
+          'invalid',
+          "this computer can only be switched off as a calendar while new events go to one of an account's calendars: choose that first",
+        )
+      }
+      for (const c of calendars) c.thisComputerOff = !on && c.id === target?.id
       return undefined as T
     }
 

@@ -1272,8 +1272,10 @@ async fn converse(
     drop(turn);
     // Whatever the turn said in its last breath is in the channel still.
     while let Ok(event) = events.try_recv() {
-        if let AgentEvent::Delta { text } = event {
-            told.push_str(&text);
+        match event {
+            AgentEvent::Delta { text } => told.push_str(&text),
+            AgentEvent::Retrying { text } => told = text,
+            _ => {}
         }
     }
 
@@ -1302,6 +1304,8 @@ async fn on_event(
 ) {
     match event {
         AgentEvent::Delta { text } => told.push_str(&text),
+        // A step asked for again: what it had begun to say is said again.
+        AgentEvent::Retrying { text } => *told = text,
         AgentEvent::Started { .. } => {
             // The turn exists now, and can be cancelled. A `!stop` that came
             // before that could not cancel it; this is where it takes effect.

@@ -13,7 +13,7 @@
 
 use serde_json::{Value, json};
 
-use super::{Args, Built, Tool, ToolContext, day, done, empty_schema, schema, text};
+use super::{Args, Built, Tool, ToolContext, day, done, empty_schema, flag, schema, text};
 use crate::agent::{MAX_MEMORY_CHARS, Memory, MemoryOrigin};
 use crate::error::{Error, Result};
 use crate::id::MemoryId;
@@ -26,18 +26,29 @@ pub(super) static TOOLS: &[Tool] = &[
         Write,
         Agent,
         schema(
-            vec![(
-                "fact",
-                text("One sentence, in the third person: 'Plans the week on Sunday evening.'")
-            )],
+            vec![
+                (
+                    "fact",
+                    text("One sentence, in the third person: 'Plans the week on Sunday evening.'")
+                ),
+                (
+                    "learned",
+                    flag(
+                        "True when you worked this out from a choice they made -- an option \
+                         they picked over others -- rather than were told it in so many words. \
+                         It is kept as something you noticed, for them to confirm."
+                    )
+                ),
+            ],
             &["fact"]
         ),
         "Keep one fact about this person across conversations \u{2014} a preference, a \
          habit, what a word of theirs means. Use it for things that will still be \
          true next month, not for what is happening today. Do not record anything \
          they told you in confidence about themselves unless they asked you to \
-         remember it. Only remember what you were told; what you notice for \
-         yourself belongs to the overnight dream.",
+         remember it. Remember what you were told; and when they pick one of options \
+         you offered, what the pick plainly says about their taste, with learned. \
+         Anything else you notice for yourself belongs to the overnight dream.",
         run_remember,
         None,
         Some(build_remember)
@@ -158,7 +169,11 @@ fn run_remember(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // message among them -- so what it remembers is kept as a dream's
     // noticing is: inferred, offered to the person to confirm, and read in
     // the meantime as something that may be wrong rather than as an order.
-    if ctx.unattended {
+    //
+    // So is a preference worked out from a choice: they picked a thriller
+    // over three comedies, they did not say "I prefer thrillers" -- the
+    // inference is the assistant's, and is theirs to confirm or strike out.
+    if ctx.unattended || args.opt_bool("learned") == Some(true) {
         memory.origin = crate::agent::MemoryOrigin::Inferred;
         memory.last_supported = Some(ctx.today);
     }

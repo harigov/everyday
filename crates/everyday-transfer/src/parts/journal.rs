@@ -127,7 +127,8 @@ impl Portable for JournalPart {
         // Somewhere for an entry whose folder had no `_journal.md` -- which is
         // what a folder of Markdown from another program looks like.
         let fallback = || -> Result<JournalId> {
-            Ok(match store.list_journals()?.first() {
+            // One of theirs: never the assistant's own.
+            Ok(match store.list_journals()?.iter().find(|j| !j.assistant) {
                 Some(journal) => journal.id,
                 None => {
                     let journal = Journal::new("Journal");
@@ -167,6 +168,7 @@ fn render_journal(journal: &Journal) -> String {
         .set("color", &journal.color)
         .set("icon", &journal.icon)
         .set_opt("order", Some(journal.sort_order))
+        .flag("assistant", journal.assistant)
         .set("created", doc::stamp(journal.created_at))
         .set("updated", doc::stamp(journal.updated_at));
     format!("{}# {}\n\n{}\n", front.render(), journal.name, journal.description)
@@ -212,6 +214,10 @@ fn read_journal(
     if let Some(order) = fields.parse("order") {
         journal.sort_order = order;
     }
+    // The assistant's own journal comes back as its own -- one only, so a
+    // second exported from another vault lands as an ordinary journal.
+    journal.assistant = fields.flag("assistant")
+        && !store.list_journals()?.iter().any(|j| j.assistant && j.id != id);
     store.put_journal(journal)?;
     report.landed(&landing);
     Ok(id)

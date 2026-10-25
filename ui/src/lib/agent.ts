@@ -157,6 +157,13 @@ export function applyEvent(turn: Turn, event: AgentEvent): void {
       turn.phase = 'writing'
       break
 
+    case 'retrying':
+      // What the failed step had begun to say goes; it will be said again.
+      turn.text = event.text
+      turn.preparing = null
+      turn.phase = 'thinking'
+      break
+
     case 'thinking':
       turn.thinking += event.text
       // Prose already on screen outranks a second round of reasoning for
@@ -416,6 +423,11 @@ export function toolLabel(name: string, args: unknown, state: ToolCard['state'])
   const running = state === 'running'
   const done = state === 'done'
   switch (name) {
+    // Not a tool: one question about several deletes or sends in the same
+    // step, asked once instead of card by card. The subject says how many,
+    // and lists them.
+    case 'confirm_together':
+      return { text: done ? 'Agreed to' : 'All at once:', detail: null }
     case 'web_search':
       return {
         text: running
@@ -538,6 +550,8 @@ function preparingText(name: string): string {
       return 'Checking the weather'
     case 'update_plan':
       return 'Making a plan'
+    case 'offer_choices':
+      return 'Thinking of options'
   }
   const { text } = toolLabel(name, null, 'waiting')
   return `Getting ready to ${text[0]!.toLowerCase()}${text.slice(1)}`
@@ -547,6 +561,41 @@ function preparingText(name: string): string {
 export interface PlanStep {
   text: string
   status: 'pending' | 'active' | 'done'
+}
+
+/** One option the assistant offered, as the panel draws it. */
+export interface Choice {
+  title: string
+  detail: string
+}
+
+/** The options a turn put to the person, drawn as buttons under its reply. */
+export interface Choices {
+  question: string
+  options: Choice[]
+}
+
+/** Is this the call that offers options to pick from? */
+export function isChoices(card: ToolCard): boolean {
+  return card.name === 'offer_choices'
+}
+
+/**
+ * The options this turn offered, if it did -- read from the call's own
+ * arguments, as `planOf` reads a plan, and defensively, because they are
+ * whatever the model wrote. The last offer wins.
+ */
+export function choicesOf(turn: Turn): Choices | null {
+  const card = [...turn.cards].reverse().find(isChoices)
+  if (!card || card.state === 'failed') return null
+  const options = (card.arguments as { options?: unknown } | null | undefined)?.options
+  if (!Array.isArray(options)) return null
+  const out: Choice[] = []
+  for (const option of options) {
+    const title = arg(option, 'title')
+    if (title) out.push({ title, detail: arg(option, 'detail') ?? '' })
+  }
+  return out.length > 0 ? { question: arg(card.arguments, 'question') ?? '', options: out } : null
 }
 
 /** Is this the call that lays out or revises the turn's plan? */

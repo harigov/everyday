@@ -693,6 +693,18 @@
       ]
     },
     {
+      "command": "set_this_computer",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "calendar",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "add_news_source",
       "events": [
         {

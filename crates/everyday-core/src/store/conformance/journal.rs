@@ -281,6 +281,23 @@ fn list_entries_filters_and_sorts(store: &dyn JournalStore) {
     );
 
     assert_eq!(ids(&EntryQuery::in_journal(a.id)), [e2.id, e1.id], "journal filter");
+    assert_eq!(store.count_entries_in(a.id).unwrap(), 2, "counted without listing");
+    assert_eq!(store.count_entries_in(b.id).unwrap(), 1);
+
+    assert_eq!(
+        ids(&EntryQuery { not_journal: Some(b.id), ..Default::default() }),
+        [e2.id, e1.id],
+        "one journal left out"
+    );
+    assert_eq!(
+        ids(&EntryQuery {
+            not_journal: Some(b.id),
+            tags: vec!["highlight".into()],
+            ..Default::default()
+        }),
+        [e2.id],
+        "left out on the in-memory pass too"
+    );
 
     assert_eq!(
         ids(&EntryQuery {

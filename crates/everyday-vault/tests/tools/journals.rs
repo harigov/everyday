@@ -182,3 +182,87 @@ fn a_note_and_an_entry_are_found_by_the_same_search() {
     assert_eq!(narrowed["count"], 1);
     assert_eq!(narrowed["results"][0]["kind"], "entry");
 }
+
+#[test]
+fn the_assistant_keeps_its_own_journal_one_page_a_day_apart_from_theirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let theirs = everyday_core::Journal::new("Daily");
+    vault.save_journal(&theirs).unwrap();
+
+    // Nothing written yet: nothing to read, and no journal made for it.
+    let none = call(&vault, "read_own_journal", serde_json::json!({}));
+    assert_eq!(none["count"], 0);
+    assert!(vault.assistant_journal().unwrap().is_none(), "made only when first written to");
+
+    // A weekly plan leaves a note for a day ahead; a quarterly review adds one
+    // to the same day. One page for the day, the second added to it.
+    let first = call(
+        &vault,
+        "write_own_journal",
+        serde_json::json!({
+            "date": "2026-11-05",
+            "heading": "From the weekly plan",
+            "text": "Ask about the boiler quote before Friday.",
+        }),
+    );
+    assert_eq!(first["action"], "created");
+    let second = call(
+        &vault,
+        "write_own_journal",
+        serde_json::json!({
+            "date": "2026-11-05",
+            "heading": "From the quarterly review",
+            "text": "Budget review is due this month.",
+        }),
+    );
+    assert_eq!(second["action"], "added to");
+    assert_eq!(first["id"], second["id"], "one page a day");
+
+    let mine = vault.assistant_journal().unwrap().expect("made by the first note");
+    assert!(mine.assistant);
+    assert_ne!(mine.id, theirs.id);
+    assert!(!vault.journal(theirs.id).unwrap().assistant);
+
+    // The run on that day reads both notes, in the order they were left.
+    let page = call(&vault, "read_own_journal", serde_json::json!({ "from": "2026-11-05" }));
+    assert_eq!(page["count"], 1, "{page}");
+    let text = page["pages"][0]["text"].as_str().unwrap();
+    let weekly = text.find("boiler quote").expect("the weekly note");
+    let quarterly = text.find("Budget review").expect("the quarterly note");
+    assert!(weekly < quarterly, "{text}");
+    assert!(text.contains("From the weekly plan"), "{text}");
+
+    // A day with nothing on it reads as nothing; a window reads every page in it.
+    let empty = call(&vault, "read_own_journal", serde_json::json!({ "from": "2026-11-04" }));
+    assert_eq!(empty["count"], 0);
+    let week = call(
+        &vault,
+        "read_own_journal",
+        serde_json::json!({ "from": "2026-11-01", "to": "2026-11-07" }),
+    );
+    assert_eq!(week["count"], 1);
+
+    // Listed as its own, so it is not mistaken for theirs.
+    let listed = call(&vault, "list_journals", serde_json::json!({}));
+    let row =
+        listed.as_array().unwrap().iter().find(|j| j["id"] == mine.id.to_string()).unwrap().clone();
+    assert!(row["yours"].is_string(), "{row}");
+
+    // A save from the interface cannot make one of theirs the assistant's, or
+    // a second assistant journal, or take the mark off its own.
+    let mut forged = vault.journal(theirs.id).unwrap();
+    forged.assistant = true;
+    vault.save_journal(&forged).unwrap();
+    assert!(!vault.journal(theirs.id).unwrap().assistant);
+    let mut another = everyday_core::Journal::new("Another");
+    another.assistant = true;
+    vault.save_journal(&another).unwrap();
+    assert!(!vault.journal(another.id).unwrap().assistant);
+    let mut renamed = mine.clone();
+    renamed.name = "Robin's notes".into();
+    renamed.assistant = false;
+    vault.save_journal(&renamed).unwrap();
+    let kept = vault.journal(mine.id).unwrap();
+    assert!(kept.assistant && kept.name == "Robin's notes");
+}

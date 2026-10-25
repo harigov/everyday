@@ -30,6 +30,7 @@ import {
   activityWindows,
   addWidget,
   defaultLayout,
+  introduce,
   moveWidget,
   needsOf,
   parseLayout,
@@ -59,6 +60,9 @@ import type {
   BalanceReport,
   CalendarInfo,
   EntrySummary,
+  Item,
+  KindInfo,
+  Project,
   LibraryStats,
   MailActivity,
   MeetingActivity,
@@ -100,6 +104,17 @@ const layoutPref = pref<Widget[]>(
   (raw) => parseLayout(raw) ?? defaultLayout(),
   defaultLayout(),
   (widgets) => JSON.stringify($state.snapshot(widgets)),
+)
+
+/** Which of `INTRODUCED` this page has already been shown -- see `introduce`. */
+const introducedPref = pref<string[]>(
+  'everyday.overview.introduced',
+  (raw) => {
+    const parsed: unknown = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : []
+  },
+  [],
+  (types) => JSON.stringify(types),
 )
 
 class OverviewState {
@@ -160,6 +175,15 @@ class OverviewState {
   newsSources = $state<SourceSummary[]>([])
   newsStories = $state<Story[]>([])
 
+  /**
+   * What is under way, for "What's going on": projects in progress, what is
+   * being read, watched or played, and the shelves those are on, for their
+   * names and verbs. Goals are `purpose`'s.
+   */
+  goingProjects = $state<Project[]>([])
+  goingItems = $state<Item[]>([])
+  goingShelves = $state<KindInfo[]>([])
+
   /** The forecast where you live, for the Weather widget. `null` until a
    *  read lands, or while the card is showing one of the two states below
    *  instead. */
@@ -184,7 +208,13 @@ class OverviewState {
     // `start` on every mount -- which happens on every switch back to this
     // app -- so a hook registered there would be added again each time.
     app.onLock(() => this.reset())
-    this.widgets = layoutPref.get()
+    // A card added to the catalogue since this page was arranged arrives at
+    // its top, once -- see `introduce`.
+    const stored = layoutPref.get()
+    const { widgets, seen } = introduce(stored, introducedPref.get())
+    this.widgets = widgets
+    if (widgets !== stored) layoutPref.set(widgets)
+    introducedPref.set(seen)
   }
 
   get enabled(): boolean {
@@ -513,6 +543,9 @@ class OverviewState {
           weather,
           newsSources,
           newsStories,
+          goingProjects,
+          goingItems,
+          goingShelves,
         ],
         mail,
         meetings,
@@ -534,7 +567,14 @@ class OverviewState {
           ask(needs.has('library'), () => api.libraryStats(), null),
           ask(
             needs.has('entries'),
-            () => api.entries({ from: this.entriesFrom, to: today, limit: 400 }),
+            // Their writing: not the notes the assistant leaves itself.
+            () =>
+              api.entries({
+                from: this.entriesFrom,
+                to: today,
+                notJournal: app.assistantJournalId,
+                limit: 400,
+              }),
             [],
           ),
           ask(needs.has('notes'), () => api.notes({ limit: 6 }), []),
@@ -549,6 +589,17 @@ class OverviewState {
             () => api.stories({ unreadOnly: true, limit: 20 }).then((page) => page.stories),
             [],
           ),
+          ask(
+            needs.has('going') && app.supportsTasks,
+            () => api.projects().then((all) => all.filter((p) => p.status === 'active')),
+            [],
+          ),
+          ask(
+            needs.has('going') && app.supportsLibrary,
+            () => api.items({ statuses: ['active'], sort: 'updatedDesc', limit: 60 }),
+            [],
+          ),
+          ask(needs.has('going') && app.supportsLibrary, () => api.kinds(), []),
         ]),
         counted('mail', app.supportsMail, api.mailActivity),
         counted('meetings', app.supportsCalendar, api.meetingActivity),
@@ -568,6 +619,9 @@ class OverviewState {
       this.calendars = calendars
       this.newsSources = newsSources
       this.newsStories = newsStories
+      this.goingProjects = goingProjects
+      this.goingItems = goingItems
+      this.goingShelves = goingShelves
       this.bookedToday = blocks.reduce(
         (sum, b) => {
           if (b.localDate !== today) return sum

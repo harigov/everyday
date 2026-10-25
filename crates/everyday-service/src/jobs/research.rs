@@ -18,12 +18,15 @@ use std::time::Duration;
 
 /// The most tool calls a research job's turn may make. The rail's own ceiling
 /// is for a conversation somebody is waiting on; a research job reads dozens
-/// of pages and has nobody waiting.
-pub const MAX_STEPS: u32 = 60;
+/// of pages and has nobody waiting. Sixty was too few for a question worth a
+/// job: it would run out partway through checking what it had found.
+pub const MAX_STEPS: u32 = 120;
 
 /// The longest a research job's turn may take. Longer than a routine's
 /// fifteen minutes: the work is reading, and the model is slow to read.
-pub const TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Grown with [`MAX_STEPS`], which would otherwise only be reached by a job
+/// whose every step was quick.
+pub const TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// The tag its note carries, so that the Notes app can find what research has
 /// left.

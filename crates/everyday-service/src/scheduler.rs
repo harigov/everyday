@@ -874,9 +874,13 @@ async fn run_dream(
     prompt.push_str("\n\n--- digest ---\n\n");
     prompt.push_str(&digest.to_markdown());
 
+    // Two writes run for real: the one note a dream may leave, and its own
+    // journal, which is nobody's record but its own -- what it noticed about
+    // a day to come is for the run on that day to read, not a proposal for
+    // somebody to accept.
     let drafting = Drafting {
         source: Some(ProposalSource::Run { run_id }),
-        direct: vec!["create_note"],
+        direct: vec!["create_note", everyday_core::agent::tools::WRITE_OWN_JOURNAL],
         max_proposals: Some(max_per_run(scope)),
     };
 
@@ -1038,14 +1042,13 @@ async fn resume(
     // rather than converted through `?` -- the message a person sees is
     // `everyday_core::Error`'s own text, and running this through
     // `CommandError` first would prefix it with a code nobody asked to read.
+    //
+    // Checked on the model the routine runs on, so one set to the small
+    // model when there is none says so here rather than failing at the model.
+    let tier = routine.model.unwrap_or(everyday_core::llm::ModelTier::Medium);
     let unusable = blocking({
         let vault = vault.clone();
-        move || {
-            Ok(vault
-                .agent_credentials(everyday_core::llm::ModelTier::Medium)
-                .map(|_| ())
-                .map_err(|e| e.to_string()))
-        }
+        move || Ok(vault.agent_credentials(tier).map(|_| ()).map_err(|e| e.to_string()))
     })
     .await;
     if let Some(reason) = unusable.unwrap_or_else(|e| Err(e.to_string())).err() {
@@ -1104,7 +1107,10 @@ async fn resume(
         reach,
         job: None,
         follow_up: None,
-        max_steps: None,
+        // How far, and on which model: the routine's own say, where it has
+        // one, and the assistant's otherwise.
+        max_steps: routine.max_steps,
+        tier: Some(tier),
     };
 
     let mut wrote = Vec::new();

@@ -227,6 +227,9 @@ impl JournalStore for SqlStore {
         if let Some(j) = query.journal_id {
             w = w.eq("journal_id", j.to_string());
         }
+        if let Some(j) = query.not_journal {
+            w = w.ne("journal_id", j.to_string());
+        }
         if let Some(from) = query.from {
             w = w.gte("local_date", from.to_string());
         }
@@ -266,6 +269,14 @@ impl JournalStore for SqlStore {
         }
 
         Ok(if needs_memory_pass { query.apply(out) } else { out })
+    }
+
+    fn count_entries_in(&self, journal: JournalId) -> Result<u64> {
+        let n = self.read().scalar_i64(
+            "SELECT COUNT(*) FROM entries WHERE journal_id = ?1",
+            &vals![journal.to_string()],
+        )?;
+        Ok(n.max(0) as u64)
     }
 
     fn get_entry(&self, id: EntryId) -> Result<Entry> {
@@ -444,7 +455,13 @@ impl JournalStore for SqlStore {
             )
         };
         let (blobs, blob_bytes) = self.blob_stats()?;
-        Ok(StoreStats { journals: journals as u64, entries: entries as u64, blobs, blob_bytes })
+        Ok(StoreStats {
+            journals: journals as u64,
+            entries: entries as u64,
+            blobs,
+            blob_bytes,
+            assistant_entries: 0,
+        })
     }
 
     fn flush(&self) -> Result<()> {

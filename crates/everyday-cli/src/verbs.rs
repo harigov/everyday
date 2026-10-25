@@ -206,10 +206,12 @@ pub(crate) fn new_entry(
 ) -> Result<()> {
     let journal = match journal {
         Some(name) => find_journal(vault, &name)?,
+        // The first of theirs: the assistant's own journal is not where a
+        // person's entry goes unless they name it.
         None => vault
             .journals()?
             .into_iter()
-            .next()
+            .find(|j| !j.assistant)
             .ok_or_else(|| Error::Invalid("this vault has no journals yet".into()))?,
     };
 
@@ -243,8 +245,15 @@ pub(crate) fn list(
     starred: bool,
     json: bool,
 ) -> Result<()> {
+    let journal_id = journal.map(|n| find_journal(vault, &n)).transpose()?.map(|j| j.id);
     let query = EntryQuery {
-        journal_id: journal.map(|n| find_journal(vault, &n)).transpose()?.map(|j| j.id),
+        journal_id,
+        // Theirs, as "All entries" is in the app: the assistant's own journal
+        // is listed only when it is named.
+        not_journal: match journal_id {
+            Some(_) => None,
+            None => vault.assistant_journal()?.map(|j| j.id),
+        },
         starred: starred.then_some(true),
         sort: SortOrder::DateDesc,
         limit: Some(limit),

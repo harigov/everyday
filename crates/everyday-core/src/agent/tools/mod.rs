@@ -125,6 +125,8 @@ mod tasks;
 mod time;
 mod trackers;
 
+pub use journals::{READ_OWN_JOURNAL, WRITE_OWN_JOURNAL};
+
 /// What running a tool does to the vault.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1285,12 +1287,18 @@ pub fn available_for(
     caller: Option<&Caller>,
     assistant_provider: Option<&str>,
 ) -> Vec<&'static Tool> {
+    // Read once for the whole catalogue: whether this computer is still a
+    // calendar new time can be put on. Off, `create_time_block` is not
+    // offered, so a model asked for an appointment has only `create_event`,
+    // and the default calendar, to reach for.
+    let local = vault.this_computer_on();
     all()
         .iter()
         .filter(|t| t.domain.available(vault))
         .filter(|t| {
             t.domain != Domain::Mail || mail::offered_to(vault, t.name, caller, assistant_provider)
         })
+        .filter(|t| local || t.name != time::CREATE_TIME_BLOCK)
         .collect()
 }
 

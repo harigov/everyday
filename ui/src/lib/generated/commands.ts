@@ -640,6 +640,7 @@ export interface Commands {
   setMemoryOrigin: { args: { id: MemoryId; origin: MemoryOrigin }; result: Memory }
   setModelKey: { args: { tier: ModelSlot; key: string }; result: ModelSettingsView }
   setQuickAsk: { args: { name: string; on: boolean }; result: QuickAskRow[] }
+  setThisComputer: { args: { on: boolean }; result: void }
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
@@ -965,6 +966,7 @@ export const COMMAND_NAMES = {
   setMemoryOrigin: 'set_memory_origin',
   setModelKey: 'set_model_key',
   setQuickAsk: 'set_quick_ask',
+  setThisComputer: 'set_this_computer',
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
   setTranscriberKey: 'set_transcriber_key',
@@ -1293,6 +1295,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_memory_origin',
   'set_model_key',
   'set_quick_ask',
+  'set_this_computer',
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
@@ -1484,6 +1487,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_memory_origin',
   'set_model_key',
   'set_quick_ask',
+  'set_this_computer',
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
@@ -1629,6 +1633,7 @@ export const CHANGE_KINDS = {
   set_memory_origin: 'memory',
   set_model_key: 'settings',
   set_quick_ask: 'settings',
+  set_this_computer: 'calendar',
   set_thread_category: 'thread',
   set_thread_priority: 'thread',
   set_transcriber_key: 'settings',

@@ -398,6 +398,21 @@ pub struct Routine {
     /// Where the result goes besides the app, and whether a run may ask.
     #[serde(default)]
     pub delivery: Delivery,
+    /// Which of the three models a run is asked on -- see
+    /// [`crate::llm::ModelTier`]. `None` is the medium one, the assistant's
+    /// own, which is what every routine ran on before this could be chosen.
+    /// Large without a large model set up runs on the medium one, as research
+    /// does; small without a small one is skipped, with the reason, rather
+    /// than quietly run on a model nobody chose for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<crate::llm::ModelTier>,
+    /// The most steps a run may take -- model turns, each of which may call
+    /// tools. `None` is the assistant's own ceiling, from its settings
+    /// ([`crate::agent::AgentSettings::max_steps`]). A routine that reads a
+    /// week of mail needs more than one that writes a line, and nothing else
+    /// about it should have to change for that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_steps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run_at: Option<Timestamp>,
     pub created_at: Timestamp,
@@ -420,6 +435,8 @@ impl Routine {
             enabled: true,
             kind: RoutineKind::Custom,
             delivery: Delivery::default(),
+            model: None,
+            max_steps: None,
             last_run_at: None,
             created_at: now,
             updated_at: now,
@@ -499,6 +516,14 @@ impl Routine {
                 "a monthly schedule's day must be between 1 and 28, so that every month has it"
                     .into(),
             ));
+        }
+        if let Some(steps) = self.max_steps
+            && !(1..=crate::agent::MAX_STEPS_LIMIT).contains(&steps)
+        {
+            return Err(Error::Invalid(format!(
+                "a routine's steps must be between 1 and {}",
+                crate::agent::MAX_STEPS_LIMIT
+            )));
         }
         Ok(())
     }

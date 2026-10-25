@@ -147,6 +147,19 @@ impl Vault {
         // without touching the proposal at all -- the same door the
         // `SendMail` refusal above leaves it through.
         self.check_edit_shape(&proposal.payload, &edited)?;
+        // New time on this computer, proposed before it was switched off as a
+        // calendar, is not put there now. Left pending rather than closed:
+        // switching it back on is the person's to do, and then this stands.
+        if matches!(proposal.payload, Payload::Create { record: ProposedRecord::Block(_) })
+            && !self.this_computer_on()
+        {
+            return Err(Error::Invalid(
+                "this computer is switched off as a calendar, so new time is not put on it. \
+                 Decline this, or switch this computer back on under \"New events go to\" in \
+                 the Calendar app."
+                    .into(),
+            ));
+        }
         let edited_given = edited.is_some();
 
         match self.try_accept(&proposal.payload, edited, confirm, now) {

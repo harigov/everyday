@@ -638,10 +638,18 @@ fn events_section(vault: &Vault, from: Date, to: Date) -> Vec<String> {
 /// [`DreamScope::Day`]. Capped in total length, not just in count: one long
 /// entry can use the whole budget on its own, and that is the right way
 /// round for a routine that reads the day, not a sampler of days.
+///
+/// Their writing only: the assistant's own journal is left out, or the dream
+/// would read the notes routines left themselves as what the person wrote
+/// that day -- see [`crate::model::Journal::assistant`].
 fn day_entries(vault: &Vault, from: Date, to: Date) -> Vec<String> {
-    let Ok(summaries) =
-        vault.entries(&EntryQuery { from: Some(from), to: Some(to), ..Default::default() })
-    else {
+    let not_journal = vault.assistant_journal().ok().flatten().map(|j| j.id);
+    let Ok(summaries) = vault.entries(&EntryQuery {
+        from: Some(from),
+        to: Some(to),
+        not_journal,
+        ..Default::default()
+    }) else {
         return Vec::new();
     };
     let mut out = Vec::new();

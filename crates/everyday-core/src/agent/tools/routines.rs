@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::{
     Args, Built, Tool, ToolContext, delete_built, describe_by_id, done, empty_schema, flag,
-    limit_arg, list, load_by_id, number, run_delete, schema, text,
+    limit_arg, list, load_by_id, number, one_of, run_delete, schema, text,
 };
 use crate::error::{Error, Result};
 use crate::id::RoutineId;
@@ -58,6 +58,8 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("ask_in_chat", flag(ASK_IN_CHAT)),
                 ("email_me", flag(EMAIL_ME)),
                 ("email_account", text(EMAIL_ACCOUNT)),
+                ("model", one_of(MODEL, &MODELS)),
+                ("max_steps", number(MAX_STEPS)),
             ],
             &["name", "instructions", "at"]
         ),
@@ -86,6 +88,8 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("ask_in_chat", flag(ASK_IN_CHAT)),
                 ("email_me", flag(EMAIL_ME)),
                 ("email_account", text(EMAIL_ACCOUNT)),
+                ("model", one_of(MODEL, &MODELS)),
+                ("max_steps", number(MAX_STEPS)),
             ],
             &["routine_id"]
         ),
@@ -149,6 +153,16 @@ const EMAIL_ME: &str = "Also email the result to them, from one of their mail ac
 const EMAIL_ACCOUNT: &str = "Which of their mail accounts to email from, by address. Omit for \
      the first one.";
 
+const MODEL: &str = "Which of their models it runs on, as set up in Settings \u{2192} Models: \
+     large for work that needs the most thought, medium (the assistant's own, and the default) \
+     for most, small for something quick and simple. Only if they ask.";
+
+const MODELS: [&str; 3] = ["large", "medium", "small"];
+
+const MAX_STEPS: &str = "The most steps a run may take, 1 to 100 -- each step is one turn of \
+     yours, which may call tools. Omit for the assistant's own limit; 0 goes back to it. Only \
+     if they ask, or the work plainly needs many reads.";
+
 fn describe_delete_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
     describe_by_id::<RoutineId, Routine>(
         args,
@@ -174,6 +188,12 @@ fn routine_json(r: &Routine, now: &jiff::Zoned) -> Value {
     }
     if let Some(next) = r.next_due(now) {
         map.insert("next_run".into(), json!(next.to_string()));
+    }
+    if let Some(tier) = r.model {
+        map.insert("model".into(), json!(tier));
+    }
+    if let Some(steps) = r.max_steps {
+        map.insert("max_steps".into(), json!(steps));
     }
     if !r.delivery.is_empty() {
         map.insert(
@@ -242,8 +262,29 @@ fn routine_from_create_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Ro
         routine.grace_minutes = grace;
     }
     apply_delivery_args(ctx, args, &mut routine.delivery)?;
+    apply_how_args(args, &mut routine)?;
     routine.validate()?;
     Ok(routine)
+}
+
+/// `model` and `max_steps`, applied to a routine. Omitted, each is left
+/// alone; `max_steps` of nought puts the assistant's own limit back.
+fn apply_how_args(args: &Args<'_>, routine: &mut Routine) -> Result<()> {
+    if let Some(raw) = args.opt_str("model") {
+        let tier = match raw.trim().to_ascii_lowercase().as_str() {
+            "large" => crate::llm::ModelTier::Large,
+            "medium" => crate::llm::ModelTier::Medium,
+            "small" => crate::llm::ModelTier::Small,
+            _ => {
+                return Err(args.bad(format!("{raw:?} is not a model: use large, medium or small")));
+            }
+        };
+        routine.model = Some(tier);
+    }
+    if let Some(steps) = args.opt_u32("max_steps") {
+        routine.max_steps = (steps > 0).then_some(steps);
+    }
+    Ok(())
 }
 
 /// `send_to_chat`, `ask_in_chat`, `email_me` and `email_account`, applied to
@@ -407,15 +448,23 @@ fn apply_update_routine_args(
         routine.enabled = enabled;
     }
     apply_delivery_args(ctx, args, &mut routine.delivery)?;
+    apply_how_args(args, &mut routine)?;
     routine.touch();
     routine.validate()?;
     Ok(routine)
 }
 
-/// The arguments that change what a routine does or where its results go,
-/// rather than when it runs.
-const WHAT_AND_WHERE: [&str; 5] =
-    ["instructions", "send_to_chat", "ask_in_chat", "email_me", "email_account"];
+/// The arguments that change what a routine does, where its results go, or
+/// what it spends doing it, rather than when it runs.
+const WHAT_AND_WHERE: [&str; 7] = [
+    "instructions",
+    "send_to_chat",
+    "ask_in_chat",
+    "email_me",
+    "email_account",
+    "model",
+    "max_steps",
+];
 
 fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // `create_routine`'s refusal, for the half of an update that amounts to
@@ -423,12 +472,13 @@ fn run_update_routine(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     // as the person's own words, addresses and all, so a scheduled run that
     // has read a stranger's page or message must not be able to write them
     // -- that would hand the next run whatever the stranger asked for, with
-    // nobody having seen it. Moving it, pausing it or renaming it is still
-    // fine.
+    // nobody having seen it. Nor what it runs on and for how long, which is
+    // the person's money. Moving it, pausing it or renaming it is still fine.
     if ctx.unattended && WHAT_AND_WHERE.iter().any(|field| args.get(field).is_some()) {
         return Err(Error::Invalid(
-            "a scheduled run may not change a routine's instructions or where its results go. \
-             If it should change, say so in your reply and they can change it."
+            "a scheduled run may not change a routine's instructions, where its results go, or \
+             the model and steps it runs with. If it should change, say so in your reply and \
+             they can change it."
                 .into(),
         ));
     }

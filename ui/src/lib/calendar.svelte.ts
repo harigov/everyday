@@ -600,7 +600,15 @@ class CalendarState {
             api.tasks({ dueFrom: from, dueTo: to, limit: 500 }),
             api.tasks({ statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 300 }),
             api.projects(),
-            api.entries({ from, to, sort: 'dateAsc', limit: 500 }),
+            // "You wrote something on this day" -- they did, not the
+            // assistant, whose notes are dated ahead.
+            api.entries({
+              from,
+              to,
+              notJournal: app.assistantJournalId,
+              sort: 'dateAsc',
+              limit: 500,
+            }),
             // Recorded only: a derived tracker is never drawn on the grid, and
             // working its days out would be a scan of every block to discard.
             app.supportsTrackers
@@ -708,6 +716,34 @@ class CalendarState {
    */
   get defaultCalendar(): CalendarInfo | null {
     return this.calendars.find((c) => c.isDefault && c.access === 'writable') ?? null
+  }
+
+  /**
+   * Whether this computer is a calendar new events can go to. The person
+   * can switch it off while they go to an account calendar instead; the
+   * mark rides on that default -- see `Calendar.thisComputerOff`.
+   */
+  get thisComputerOn(): boolean {
+    return !this.calendars.some((c) => c.isDefault && c.thisComputerOff)
+  }
+
+  /**
+   * Where a new event goes when nobody says, or why it can go nowhere: an
+   * account calendar, `null` for this computer, or -- with this computer
+   * switched off and the default unable to take it -- `false`, having said
+   * so.
+   */
+  #newEventTarget(): CalendarInfo | null | false {
+    const target = this.defaultCalendar
+    if (target || this.thisComputerOn) return target
+    const stale = this.calendars.find((c) => c.isDefault)
+    notify.info('Nowhere to put it', {
+      body: stale
+        ? `New events go to ${stale.name}, which needs you to sign in to its account again.`
+        : 'Choose a calendar for new events first.',
+      reach: 'app',
+    })
+    return false
   }
 
   /** The colour a calendar choice is drawn in: its own, or the accent for this computer. */
@@ -1262,7 +1298,8 @@ class CalendarState {
     const minutes = span > 0 ? span : 60
     const rule = draft.recurrence ?? null
 
-    const target = this.defaultCalendar
+    const target = this.#newEventTarget()
+    if (target === false) return null
     if (!target) {
       const block = await this.book({
         subject: { type: 'adhoc' },
@@ -1364,7 +1401,8 @@ class CalendarState {
     allDay?: boolean
     title?: string
   }): Promise<void> {
-    const target = this.defaultCalendar
+    const target = this.#newEventTarget()
+    if (target === false) return
     if (!target) {
       await this.book({
         subject: { type: 'adhoc' },
@@ -1982,9 +2020,31 @@ class CalendarState {
    * deliberately cannot move it.
    */
   async setDefaultCalendar(id: CalendarId | null) {
-    for (const c of this.calendars) c.isDefault = c.id === id
+    // The switch for this computer goes with the default -- see
+    // `thisComputerOff` -- so it moves on screen with it.
+    const off = !this.thisComputerOn
+    for (const c of this.calendars) {
+      c.isDefault = c.id === id
+      c.thisComputerOff = off && c.id === id
+    }
     try {
       await api.setDefaultCalendar(id)
+      this.calendars = await api.calendars()
+    } catch (e) {
+      await handle(e, () => this.refresh())
+    }
+  }
+
+  /**
+   * Switch this computer on or off as a calendar new events can go to. Off
+   * only while they go to an account calendar; the backend refuses it
+   * otherwise, and the list read back says what it decided.
+   */
+  async setThisComputer(on: boolean) {
+    const target = this.defaultCalendar
+    for (const c of this.calendars) c.thisComputerOff = !on && c.id === target?.id
+    try {
+      await api.setThisComputer(on)
       this.calendars = await api.calendars()
     } catch (e) {
       await handle(e, () => this.refresh())

@@ -28,6 +28,7 @@
   import { notes as noteStore } from '../lib/notes.svelte'
   import { mail as mailStore } from '../lib/mail.svelte'
   import { feed } from '../lib/feed.svelte'
+  import { library } from '../lib/library.svelte'
   import { folderUnread, topStories } from '../lib/feed'
   import {
     MAIL_KINDS,
@@ -262,6 +263,66 @@
     if (!(await app.goTo('todo'))) return
     purpose.selected = id
     await todo.setScope({ kind: 'goals' })
+  }
+
+  // ── What's going on ──────────────────────────────────────────────────
+  //
+  // What they are in the middle of, one line per kind of thing: projects,
+  // each shelf under its own verb ("Reading", "Watching"), and the goals they
+  // are working on. Names only, each a way into its own app -- this is the
+  // page of a notebook that says what you are up to these days, not a report.
+
+  interface GoingRow {
+    label: string
+    things: { id: string; name: string; open: () => void }[]
+  }
+
+  const goingRows = $derived.by((): GoingRow[] => {
+    const rows: GoingRow[] = []
+    if (overview.goingProjects.length > 0) {
+      rows.push({
+        label: 'Projects',
+        things: overview.goingProjects.map((p) => ({
+          id: p.id,
+          name: p.name,
+          open: () => void openProject(p.id),
+        })),
+      })
+    }
+    // One row per verb rather than per shelf: Movies and TV Shows are both
+    // "Watching", and two rows of the same name would be one list read twice.
+    const byVerb = new Map<string, GoingRow>()
+    for (const shelf of overview.goingShelves) {
+      const items = overview.goingItems.filter((i) => i.kindId === shelf.id)
+      if (items.length === 0) continue
+      const label = shelf.verbs.active || shelf.name
+      const row = byVerb.get(label) ?? { label, things: [] }
+      if (!byVerb.has(label)) {
+        byVerb.set(label, row)
+        rows.push(row)
+      }
+      row.things.push(
+        ...items.map((i) => ({ id: i.id, name: i.title, open: () => void openItem(i.id) })),
+      )
+    }
+    const goals = purpose.goals.filter((g) => g.status === 'active')
+    if (goals.length > 0) {
+      rows.push({
+        label: 'Goals',
+        things: goals.map((g) => ({ id: g.id, name: g.title, open: () => void openGoal(g.id) })),
+      })
+    }
+    return rows
+  })
+
+  async function openProject(id: string) {
+    if (!(await app.goTo('todo'))) return
+    await todo.setScope({ kind: 'project', id })
+  }
+
+  async function openItem(id: string) {
+    if (!(await app.goTo('library'))) return
+    await library.open(id)
   }
 
   // ── Plan for tomorrow ────────────────────────────────────────────────
@@ -516,7 +577,27 @@
   }
 </script>
 
-{#if widget.type === 'onNow'}
+{#if widget.type === 'whatsGoingOn'}
+  {#if goingRows.length === 0}
+    <p class="dim">
+      Nothing under way yet. A project in progress, a book you are reading or a goal you are working
+      on shows up here.
+    </p>
+  {:else}
+    <dl class="going">
+      {#each goingRows as row, i (i)}
+        <dt>{row.label}</dt>
+        <dd>
+          {#each row.things as thing, j (j)}
+            <button class="thing" onclick={thing.open}>{thing.name}</button>
+          {/each}
+        </dd>
+      {/each}
+    </dl>
+  {/if}
+
+  <!-- ── On now ────────────────────────────────────────────────────── -->
+{:else if widget.type === 'onNow'}
   {#if calendar.timer}
     <StatTile
       label={calendar.timer.title || 'Tracking'}
@@ -1024,6 +1105,39 @@
 {/if}
 
 <style>
+  /* What's going on: a label per kind of thing, and its names beside it. */
+  .going {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: var(--sp-2) var(--sp-4);
+    align-items: baseline;
+    margin: 0;
+  }
+  .going dt {
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .going dd {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-2);
+    margin: 0;
+  }
+  .thing {
+    padding: 1px var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg);
+    font-size: var(--text-sm);
+  }
+  .thing:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+  }
+
   .words {
     margin: 0;
     color: var(--fg);

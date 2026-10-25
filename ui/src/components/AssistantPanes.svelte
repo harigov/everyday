@@ -17,6 +17,7 @@
   import { agent } from '../lib/agent.svelte'
   import { api } from '../lib/api'
   import { jobs } from '../lib/jobs.svelte'
+  import { models } from '../lib/models.svelte'
   import { app } from '../lib/state.svelte'
   import { DECLINE_REASONS, proposals, recordAs } from '../lib/proposals.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -35,6 +36,7 @@
   import { PROPOSAL_KINDS } from '../lib/types'
   import type {
     DeclineReason,
+    ModelTier,
     Outcome,
     Proposal,
     RoutineInfo,
@@ -130,6 +132,45 @@
     delivery.email = on ? (assistant.mailAccounts[0]?.id ?? null) : null
   }
 
+  // What the routine editor's model and steps are measured against: the
+  // models as Settings → Models has them, and the assistant's own ceiling.
+  void agent.loadSettings()
+  void models.load()
+
+  const TIERS: ModelTier[] = ['large', 'medium', 'small']
+  const TIER_LABELS: Record<ModelTier, string> = {
+    large: 'Large',
+    medium: 'Medium',
+    small: 'Small',
+  }
+
+  /** A tier as the model picker lists it: its name and the model it is set
+   *  to, or what happens when it is not set up. */
+  function tierLabel(tier: ModelTier): string {
+    const settings = models.settings
+    const config = tier === 'medium' ? settings?.medium : settings?.[tier]
+    const model = config?.model.trim()
+    if (model) return `${TIER_LABELS[tier]} — ${model}`
+    if (tier === 'large') return 'Large — not set up, runs on Medium'
+    if (tier === 'small') return 'Small — not set up'
+    return TIER_LABELS[tier]
+  }
+
+  const defaultSteps = $derived(agent.settings?.maxSteps ?? 24)
+
+  /** Medium is the default, and is stored as no choice at all. */
+  function setModel(tier: ModelTier) {
+    if (editing) editing.model = tier === 'medium' ? null : tier
+  }
+
+  /** Empty is the assistant's own ceiling. */
+  function setSteps(raw: string) {
+    if (!editing) return
+    const steps = Math.round(Number(raw))
+    editing.maxSteps =
+      raw.trim() === '' || !Number.isFinite(steps) ? null : Math.min(100, Math.max(1, steps))
+  }
+
   /** One line for where a run's result went, and where it could not. */
   function deliveredWords(run: RoutineRun): { ok: string; failed: string[] } {
     const went: string[] = []
@@ -159,15 +200,8 @@
   const memoryGroups = $derived(groupMemories(assistant.memories))
   const memoryProposals = $derived(proposals.forKind('memory'))
 
-  async function confirmNoticed(id: string) {
-    await api.setMemoryOrigin(id, 'confirmed')
-    assistant.memories = await api.memories()
-  }
-
-  async function rejectNoticed(id: string) {
-    await api.setMemoryOrigin(id, 'rejected')
-    assistant.memories = await api.memories()
-  }
+  const confirmNoticed = (id: string) => assistant.answerNoticed(id, 'confirmed')
+  const rejectNoticed = (id: string) => assistant.answerNoticed(id, 'rejected')
 
   async function restoreRejected(id: string) {
     await api.setMemoryOrigin(id, 'confirmed')
@@ -540,6 +574,38 @@
             </span>
           </label>
 
+          <div class="field-row">
+            <span class="eyebrow">How it runs</span>
+            <div class="when">
+              <select
+                class="field model"
+                aria-label="Model"
+                value={editing.model ?? 'medium'}
+                onchange={(e) => setModel(e.currentTarget.value as ModelTier)}
+              >
+                {#each TIERS as tier (tier)}
+                  <option value={tier}>{tierLabel(tier)}</option>
+                {/each}
+              </select>
+              <input
+                class="field mins"
+                type="number"
+                min="1"
+                max="100"
+                aria-label="Most steps"
+                placeholder={String(defaultSteps)}
+                value={editing.maxSteps ?? ''}
+                oninput={(e) => setSteps(e.currentTarget.value)}
+              />
+              <span class="hint">steps at most</span>
+            </div>
+            <span class="hint">
+              Which model it is asked on, from Settings → Models, and how many steps — each one a
+              turn that may read or change something — it may take before it stops. Left empty, it
+              gets the assistant's own {defaultSteps}.
+            </span>
+          </div>
+
           {#if !editingIsDream}
             <div class="field-row">
               <span class="eyebrow">When it is done</span>
@@ -668,6 +734,9 @@
               {/if}
               <span class="spacer"></span>
               <span class="dim">{whenLabel(routine)}</span>
+              {#if routine.model && routine.model !== 'medium'}
+                <span class="dim">· {TIER_LABELS[routine.model]}</span>
+              {/if}
               {#if routine.delivery?.chat || routine.delivery?.email}
                 <span class="dim">
                   · {[
@@ -1087,6 +1156,13 @@
 
   .time {
     width: 8rem;
+  }
+
+  /* The model picker: as wide as a model's name, not the whole row, so the
+     step limit sits beside it. */
+  .model {
+    width: auto;
+    max-width: 24rem;
   }
 
   /* The lead-minutes box on a `beforeEvent` trigger. Named for what it is

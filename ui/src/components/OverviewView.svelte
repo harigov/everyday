@@ -32,6 +32,7 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import LogReading from './LogReading.svelte'
+  import NeedsAttention from './NeedsAttention.svelte'
   import OverviewWidget from './OverviewWidget.svelte'
   import WidgetCard from './WidgetCard.svelte'
 
@@ -264,6 +265,9 @@
     }}
     ondrop={() => onDrop(null)}
   >
+    <!-- Above the arranged page and not part of it: drawn only while the
+         assistant is waiting on an answer. -->
+    <NeedsAttention />
     {#if overview.widgets.length === 0}
       <EmptyState lead="This page is empty, which is a thing you are allowed to do.">
         {#snippet icon()}<Icon name="compass" size={28} />{/snippet}

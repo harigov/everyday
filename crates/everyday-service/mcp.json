@@ -148,7 +148,7 @@
             "type": "array"
           },
           "calendar_id": {
-            "description": "Which calendar, from list_calendars: an id, or this_computer. Leave it out to use the default calendar -- which is what the person means unless they name another.",
+            "description": "Which calendar, from list_calendars: an id, or this_computer if it lists one. Leave it out to use the default calendar -- which is what the person means unless they name another.",
             "type": "string"
           },
           "date": {
@@ -480,6 +480,19 @@
           },
           "instructions": {
             "description": "What to do when it runs, addressed to yourself, in their words where you have them. This is the whole prompt you will be given: nothing else about the conversation you are having now survives, so say what to look at and what to produce.",
+            "type": "string"
+          },
+          "max_steps": {
+            "description": "The most steps a run may take, 1 to 100 -- each step is one turn of yours, which may call tools. Omit for the assistant's own limit; 0 goes back to it. Only if they ask, or the work plainly needs many reads.",
+            "type": "integer"
+          },
+          "model": {
+            "description": "Which of their models it runs on, as set up in Settings → Models: large for work that needs the most thought, medium (the assistant's own, and the default) for most, small for something quick and simple. Only if they ask.",
+            "enum": [
+              "large",
+              "medium",
+              "small"
+            ],
             "type": "string"
           },
           "name": {
@@ -2323,6 +2336,29 @@
       "title": "Read conversation"
     },
     {
+      "domain": "journals",
+      "effect": "read",
+      "name": "read_own_journal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "First day, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to the same day as from. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Read own journal"
+    },
+    {
       "domain": "agent",
       "effect": "read",
       "name": "read_skill",
@@ -2395,6 +2431,10 @@
           "fact": {
             "description": "One sentence, in the third person: 'Plans the week on Sunday evening.'",
             "type": "string"
+          },
+          "learned": {
+            "description": "True when you worked this out from a choice they made -- an option they picked over others -- rather than were told it in so many words. It is kept as something you noticed, for them to confirm.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3514,6 +3554,19 @@
             "description": "Replaces the instructions. Omit to leave them alone.",
             "type": "string"
           },
+          "max_steps": {
+            "description": "The most steps a run may take, 1 to 100 -- each step is one turn of yours, which may call tools. Omit for the assistant's own limit; 0 goes back to it. Only if they ask, or the work plainly needs many reads.",
+            "type": "integer"
+          },
+          "model": {
+            "description": "Which of their models it runs on, as set up in Settings → Models: large for work that needs the most thought, medium (the assistant's own, and the default) for most, small for something quick and simple. Only if they ask.",
+            "enum": [
+              "large",
+              "medium",
+              "small"
+            ],
+            "type": "string"
+          },
           "name": {
             "description": "Replaces the name. Omit to leave it alone.",
             "type": "string"
@@ -3724,6 +3777,35 @@
       "scope": "tasks",
       "sensitivity": "ordinary",
       "title": "Update time block"
+    },
+    {
+      "domain": "journals",
+      "effect": "write",
+      "name": "write_own_journal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "description": "The day the note is about -- the day it should be read on. Any day, past or future. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "heading": {
+            "description": "A short heading for this note on the day's page, such as \"From the weekly plan\". Optional.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The note, in Markdown, written to yourself: what to raise or check that day, what a plan decided about it, and why.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "scope": "journals",
+      "sensitivity": "ordinary",
+      "title": "Write own journal"
     }
   ]
 }

@@ -166,7 +166,8 @@ impl Portable for TrackersPart {
         // A journal for readings that name one. Readings do not require it --
         // the field is optional -- so this stays `None` rather than inventing
         // a journal nobody asked for.
-        let journal: Option<JournalId> = store.list_journals()?.first().map(|j| j.id);
+        let journal: Option<JournalId> =
+            store.list_journals()?.iter().find(|j| !j.assistant).map(|j| j.id);
 
         for (name, text) in src.documents(".csv") {
             if name == INDEX {

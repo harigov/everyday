@@ -37,10 +37,66 @@ impl Vault {
             tracker.normalize();
         }
         journal.trackers.retain(|t| !t.name.is_empty());
+        // Whose journal it is is the vault's to say, not a caller's: a journal
+        // already stored keeps what it was, and a new one is never the
+        // assistant's -- only `assistant_journal_or_new` makes that one (and a
+        // restored backup, which writes to the store directly). A journal a
+        // client could mark as the assistant's would be pages served to the
+        // next scheduled run as its own notes. See `Journal::assistant`.
+        journal.assistant = match self.journal(journal.id) {
+            Ok(stored) => stored.assistant,
+            Err(crate::error::Error::NotFound { .. }) => false,
+            Err(e) => return Err(e),
+        };
         let id = journal.id;
         self.write(|u| u.store.put_journal(&journal))?;
         self.wrote(RecordKind::Journal, id);
         Ok(())
+    }
+
+    /// The assistant's own journal, if it has one yet. See
+    /// [`Journal::assistant`].
+    ///
+    /// Should two ever exist -- two devices on one shared database each
+    /// writing their first note in the same moment -- the older is the one,
+    /// every time, so every reader agrees on which.
+    pub fn assistant_journal(&self) -> Result<Option<Journal>> {
+        Ok(self.journals()?.into_iter().filter(|j| j.assistant).min_by_key(|j| j.created_at))
+    }
+
+    /// The assistant's own journal, made -- called `name` -- if it has none:
+    /// the first note it writes itself is what brings it into being, so a
+    /// vault whose assistant never keeps one has no empty journal it did not
+    /// ask for.
+    pub fn assistant_journal_or_new(&self, name: &str) -> Result<Journal> {
+        if let Some(journal) = self.assistant_journal()? {
+            return Ok(journal);
+        }
+        self.writable()?;
+        let mut journal = Journal::new(name).with_icon("\u{2728}");
+        journal.description = "Notes the assistant leaves itself, filed under the day they \
+                               are about."
+            .into();
+        journal.assistant = true;
+        // Looked for again, and made, under the one write lock: two runs
+        // writing their first note at once -- a dream and a routine -- must
+        // not each make one.
+        let made = self.write(|u| {
+            let journals = u.store.list_journals()?;
+            if let Some(existing) =
+                journals.iter().filter(|j| j.assistant).min_by_key(|j| j.created_at)
+            {
+                return Ok(existing.clone());
+            }
+            // Last in the sidebar: it is theirs to read, not where they write.
+            journal.sort_order = journals.iter().map(|j| j.sort_order).max().unwrap_or(0) + 1;
+            u.store.put_journal(&journal)?;
+            Ok(journal.clone())
+        })?;
+        if made.id == journal.id {
+            self.wrote(RecordKind::Journal, made.id);
+        }
+        Ok(made)
     }
 
     /// Delete a journal, every entry inside it, and every reading its

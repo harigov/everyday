@@ -150,6 +150,7 @@ impl JournalStore for MemStore {
             entries,
             blobs: blobs.len() as u64,
             blob_bytes: blobs.values().map(|(v, _)| v.len() as u64).sum(),
+            assistant_entries: 0,
         })
     }
 }

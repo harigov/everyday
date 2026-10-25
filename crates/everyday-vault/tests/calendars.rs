@@ -155,6 +155,58 @@ fn there_is_only_ever_one_default_calendar_and_none_means_this_computer() {
 }
 
 #[test]
+fn this_computer_is_switched_off_only_while_an_account_calendar_takes_new_events() {
+    use everyday_core::account::Provider;
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = create(dir.path(), VaultConfig { password: None, ..Default::default() }).unwrap();
+    let work = an_account_calendar(&vault, Provider::Fastmail, "Work");
+    let home = an_account_calendar(&vault, Provider::Fastmail, "Home");
+    assert!(vault.this_computer_on(), "on until somebody says otherwise");
+
+    // With nowhere else for new events to go, it cannot be switched off.
+    assert!(vault.set_this_computer(false).is_err());
+    assert!(vault.this_computer_on());
+
+    vault.set_default_calendar(Some(work.id)).unwrap();
+    vault.set_this_computer(false).unwrap();
+    assert!(!vault.this_computer_on());
+    assert!(vault.calendar(work.id).unwrap().this_computer_off, "kept on the default");
+
+    // New events cannot be sent to a calendar that is switched off...
+    assert!(vault.set_default_calendar(None).is_err());
+    assert_eq!(vault.default_calendar().unwrap().map(|c| c.id), Some(work.id));
+
+    // ...and moving the default takes the switch with it.
+    vault.set_default_calendar(Some(home.id)).unwrap();
+    assert!(!vault.this_computer_on());
+    assert!(!vault.calendar(work.id).unwrap().this_computer_off);
+    assert!(vault.calendar(home.id).unwrap().this_computer_off);
+
+    // A stale copy saved back cannot switch it on or off.
+    let mut stale = vault.calendar(work.id).unwrap();
+    stale.this_computer_off = true;
+    vault.save_calendar(&stale).unwrap();
+    assert!(!vault.calendar(work.id).unwrap().this_computer_off);
+    let mut stale = vault.calendar(home.id).unwrap();
+    stale.this_computer_off = false;
+    vault.save_calendar(&stale).unwrap();
+    assert!(!vault.this_computer_on());
+
+    vault.set_this_computer(true).unwrap();
+    assert!(vault.this_computer_on());
+    assert!(vault.calendars().unwrap().iter().all(|c| !c.this_computer_off));
+    vault.set_default_calendar(None).unwrap();
+
+    // The default going away -- its account removed, or unsubscribed --
+    // takes the switch with it, and this computer is where events go again.
+    vault.set_default_calendar(Some(home.id)).unwrap();
+    vault.set_this_computer(false).unwrap();
+    vault.delete_calendar(home.id).unwrap();
+    assert!(vault.this_computer_on());
+}
+
+#[test]
 fn an_account_signed_in_to_read_calendars_cannot_write_them() {
     use everyday_core::account::{Account, AuthMethod, Provider};
 

@@ -139,6 +139,21 @@ class AppState {
   remotes = $state<Connection[]>([])
 
   journals = $state<Journal[]>([])
+
+  /**
+   * The assistant's own journal, if it keeps one: notes it leaves itself,
+   * filed under the day they are about. What reads the person's own writing
+   * -- "All entries", the week's word count, the calendar's "you wrote" dots
+   * -- leaves it out by this id. See `Journal.assistant`.
+   */
+  get assistantJournalId(): JournalId | null {
+    return this.journals.find((j) => j.assistant)?.id ?? null
+  }
+
+  /** Their own journals, without the assistant's. */
+  get ownJournals(): Journal[] {
+    return this.journals.filter((j) => !j.assistant)
+  }
   entries = $state<EntrySummary[]>([])
   /** `null` means "all journals". */
   selectedJournal = $state<JournalId | null>(null)
@@ -920,6 +935,8 @@ class AppState {
   private async refreshRows() {
     this.entries = await api.entries({
       journalId: this.selectedJournal,
+      // "All entries" is theirs: the assistant's notes are in its journal.
+      notJournal: this.selectedJournal ? null : this.assistantJournalId,
       starred: this.showStarredOnly ? true : null,
       sort: 'dateDesc',
       limit: 500,
@@ -994,7 +1011,9 @@ class AppState {
    * the app is for.
    */
   async newEntry() {
-    const journalId = this.selectedJournal ?? this.journals[0]?.id
+    // One of theirs when none is chosen -- never the assistant's own, which
+    // takes an entry only when somebody picks it to leave it a note.
+    const journalId = this.selectedJournal ?? this.ownJournals[0]?.id
     if (!journalId) return
     await this.flush()
 
@@ -1331,6 +1350,7 @@ class AppState {
     try {
       const rows = await api.entries({
         journalId: this.selectedJournal,
+        notJournal: this.selectedJournal ? null : this.assistantJournalId,
         from,
         to,
         sort: 'dateAsc',

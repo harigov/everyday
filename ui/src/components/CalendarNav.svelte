@@ -105,7 +105,28 @@
     menu.showAt(
       box.left,
       box.bottom + 4,
-      calendarChoiceItems(target?.id ?? null, (id) => calendar.setDefaultCalendar(id)),
+      tidyMenu([
+        ...calendarChoiceItems(target?.id ?? null, (id) => calendar.setDefaultCalendar(id)),
+        SEP,
+        // This computer is a calendar too -- one only this app shows, and the
+        // one an assistant asked for "a meeting at three" can mistake for
+        // the person's real calendar. Off, nothing new goes there: not from
+        // the grid, the command bar or the assistant. Said as what it does,
+        // like the rows in `calendarMenu`.
+        calendar.thisComputerOn
+          ? {
+              label: 'Switch this computer off',
+              icon: 'monitor',
+              hint: target ? `only ${target.name}` : 'choose a calendar first',
+              disabled: !target,
+              run: () => calendar.setThisComputer(false),
+            }
+          : {
+              label: 'Use this computer again',
+              icon: 'monitor',
+              run: () => calendar.setThisComputer(true),
+            },
+      ]),
     )
   }
 
@@ -167,11 +188,14 @@
         run: () => calendar.syncOne(cal.id),
       },
       // Said as what it does, not ticked -- see the first row's note.
-      cal.access === 'writable' && {
-        label: cal.isDefault ? 'Stop using for new events' : 'Use for new events',
-        icon: 'star',
-        run: () => calendar.setDefaultCalendar(cal.isDefault ? null : cal.id),
-      },
+      // Not stopping, while this computer is switched off: new events would
+      // have nowhere to go.
+      cal.access === 'writable' &&
+        !(cal.isDefault && !calendar.thisComputerOn) && {
+          label: cal.isDefault ? 'Stop using for new events' : 'Use for new events',
+          icon: 'star',
+          run: () => calendar.setDefaultCalendar(cal.isDefault ? null : cal.id),
+        },
       cal.access === 'needsSignIn' && {
         label: 'Sign in again to add events…',
         icon: 'lock',
@@ -335,17 +359,29 @@
       <button class="newpick" title="Choose where new events are saved" onclick={pickDefault}>
         <span
           class="newdot"
-          style="--dot: {calendar.colorOfCalendar(target?.id ?? null)}"
+          style="--dot: {calendar.colorOfCalendar(
+            target?.id ?? (calendar.thisComputerOn ? null : (stale?.id ?? null)),
+          )}"
           aria-hidden="true"
         ></span>
-        <span class="newname">{target?.name ?? 'This computer'}</span>
+        <!-- With this computer switched off, a default that needs signing in
+             again is still where new events are meant to go, and the note
+             below says why nothing can be added; with it on, they go here. -->
+        <span class="newname"
+          >{target?.name ?? (calendar.thisComputerOn ? null : stale?.name) ?? 'This computer'}</span
+        >
         <span class="newchev" aria-hidden="true"><Icon name="chevron" size={11} /></span>
       </button>
     </div>
+    {#if !calendar.thisComputerOn}
+      <p class="blank quiet">This computer is switched off: nothing new is put on it.</p>
+    {/if}
     {#if stale}
       <p class="blank quiet">
         {stale.name} needs you to sign in to {accountLabel(stale) ?? 'its account'} again before events
-        can be added to it; until then they stay on this computer.
+        can be added to it{calendar.thisComputerOn
+          ? '; until then they stay on this computer.'
+          : '. Until then nothing new can be added.'}
         <button class="textlink" onclick={() => panels.openSettings('accounts')}>
           Open Accounts
         </button>

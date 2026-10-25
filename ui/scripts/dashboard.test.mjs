@@ -34,6 +34,7 @@ const {
   byTimeOrLast,
   defaultLayout,
   fillRows,
+  introduce,
   moveWidget,
   needsOf,
   nextId,
@@ -270,10 +271,11 @@ check(
 // Twelve since the weather card, whose one need is a forecast rather than
 // another read of the vault; fourteen since the mail and meeting cards, which
 // share two reads between eight of them; fifteen since the Feed's, whose two
-// reads are one need.
+// reads are one need; sixteen since "What's going on", whose three reads --
+// projects, what is under way, the shelves' verbs -- are one need too.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 15,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 16,
 )
 // The Feed's card asks for the Feed and for nothing else, so a page with it on
 // does not also pay for a tracker window, and a page without it pays nothing
@@ -512,6 +514,28 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
   check('matching is not case-sensitive', aqiTier('us', 'good'), 1)
   check('a null category has no tier', aqiTier('us', null), null)
   check('a word neither scale uses has no tier', aqiTier('us', 'Fair'), null)
+}
+
+// A card added to the catalogue after a page was arranged arrives on it once,
+// at the top -- and one removed afterwards stays removed.
+{
+  const arranged = [widget('dueToday'), widget('onNow')]
+  const first = introduce(arranged, [])
+  check('a new card arrives at the top of an older page', ids(first.widgets), [
+    'whatsGoingOn:1',
+    'dueToday:1',
+    'onNow:1',
+  ])
+  const removed = first.widgets.filter((w) => w.type !== 'whatsGoingOn')
+  const again = introduce(removed, first.seen)
+  check('and does not come back once removed', ids(again.widgets), ['dueToday:1', 'onNow:1'])
+  ok('a page that has nothing new is left as it was', again.widgets === removed)
+  const fresh = introduce(defaultLayout(), [])
+  check(
+    'a fresh page already has it, once',
+    fresh.widgets.filter((w) => w.type === 'whatsGoingOn').length,
+    1,
+  )
 }
 
 await close()

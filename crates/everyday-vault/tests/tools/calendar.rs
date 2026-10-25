@@ -7,13 +7,14 @@ use std::cell::RefCell;
 use everyday_core::account::{Account, AuthMethod, Provider};
 use everyday_core::agent::tools::{self, CalendarWriter, Effect, ToolContext};
 use everyday_core::calendar::{
-    AccountCalendarSource, Attendee, Calendar, EditableEvent, Event, EventDraft, EventScope,
-    EventStatus,
+    AccountCalendarSource, Attendee, Calendar, CalendarOrigin, EditableEvent, Event, EventDraft,
+    EventScope, EventStatus,
 };
 use everyday_core::error::Result;
 use everyday_core::id::{CalendarId, EventId};
 use everyday_core::recurrence::Frequency;
 use everyday_core::store::tasks::BlockQuery;
+use everyday_core::task::BlockSubject;
 use serde_json::json;
 
 use super::support::{call, call_err, ctx, vault};
@@ -224,6 +225,111 @@ fn the_default_calendar_takes_new_events_and_the_server_is_handed_the_whole_draf
     )
     .unwrap();
     assert_eq!(local["kind"], "time block");
+}
+
+#[test]
+fn with_this_computer_switched_off_the_assistant_is_never_offered_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let work = a_google_calendar(&vault, "Work");
+    vault.set_default_calendar(Some(work.id)).unwrap();
+    vault.set_this_computer(false).unwrap();
+
+    // Not listed, so it cannot be chosen; the default is the one left.
+    let listed = call(&vault, "list_calendars", json!({}));
+    assert_eq!(listed["default"], work.id.to_string());
+    let ids: Vec<&str> =
+        listed["calendars"].as_array().unwrap().iter().filter_map(|c| c["id"].as_str()).collect();
+    assert_eq!(ids, [work.id.to_string()], "this computer is not among them");
+
+    // Not offered either: a time block is a calendar entry on this computer.
+    let offered: Vec<&str> =
+        tools::available_for(&vault, None, None).iter().map(|t| t.name).collect();
+    assert!(offered.contains(&"create_event"));
+    assert!(!offered.contains(&"create_time_block"), "nothing new goes on this computer");
+    assert!(offered.contains(&"list_time_blocks"), "time already spent can still be read");
+
+    // A model that names either anyway is told where to go instead.
+    let err = call_err(
+        &vault,
+        "create_event",
+        json!({ "title": "Read", "date": "2026-09-15", "start_time": "20:00",
+                "calendar_id": "this_computer" }),
+    );
+    assert!(err.contains("switched off"), "got {err}");
+    let err = call_err(
+        &vault,
+        "create_time_block",
+        json!({ "date": "2026-09-15", "start_time": "09:00", "end_time": "10:00",
+                "label": "Dentist" }),
+    );
+    assert!(err.contains("create_event"), "got {err}");
+    assert!(vault.blocks(&BlockQuery::default()).unwrap().is_empty());
+
+    // Left to choose, it goes on the default.
+    let server = FakeServer::default();
+    let ctx = ToolContext { calendar_writer: Some(&server), ..ctx(&vault) };
+    let made = tools::dispatch(
+        &ctx,
+        "create_event",
+        &json!({ "title": "Dentist", "date": "2026-09-15", "start_time": "09:00" }),
+    )
+    .unwrap();
+    assert_eq!(made["calendar"], "Work");
+    assert!(matches!(server.sent.borrow().first(), Some(Sent::Create(id, _)) if *id == work.id));
+
+    // Its account loses the right to write calendars: with this computer
+    // off there is nowhere else, so the call says why rather than writing
+    // somewhere nobody chose.
+    let CalendarOrigin::Account { account_id, .. } = work.origin else { unreachable!() };
+    let mut account = vault.account(account_id).unwrap();
+    if let AuthMethod::OAuth { scopes, .. } = &mut account.auth {
+        scopes.clear();
+    }
+    vault.save_account(&account).unwrap();
+    let err = call_err(
+        &vault,
+        "create_event",
+        json!({ "title": "Dentist", "date": "2026-09-16", "start_time": "09:00" }),
+    );
+    assert!(err.contains("signed in again"), "got {err}");
+    assert!(vault.blocks(&BlockQuery::default()).unwrap().is_empty());
+
+    // Time a dream proposed for this computer before it was switched off is
+    // not put there by accepting it now; the proposal waits.
+    let block = everyday_core::task::TimeBlock::new(
+        BlockSubject::Adhoc,
+        "2026-09-16T09:00:00Z".parse().unwrap(),
+        60,
+        "UTC",
+    );
+    let proposal = everyday_core::proposal::Proposal::new(
+        everyday_core::proposal::Payload::Create {
+            record: everyday_core::proposal::ProposedRecord::Block(block),
+        },
+        "Plan time",
+        jiff::Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+    let refused = vault.accept_proposal(proposal.id, None, false, jiff::Timestamp::now());
+    assert!(refused.unwrap_err().to_string().contains("switched off"));
+    assert!(vault.proposal(proposal.id).unwrap().is_pending(), "left for later");
+    assert!(vault.blocks(&BlockQuery::default()).unwrap().is_empty());
+
+    // Switched back on, it is a calendar again -- and stands in for a default
+    // that cannot take the event, as the calendar picker does.
+    vault.set_this_computer(true).unwrap();
+    assert!(
+        vault.set_this_computer(false).is_err(),
+        "not off again while the default's account cannot write to it"
+    );
+    let made = call(
+        &vault,
+        "create_event",
+        json!({ "title": "Dentist", "date": "2026-09-16", "start_time": "09:00" }),
+    );
+    assert_eq!(made["kind"], "time block");
 }
 
 #[test]

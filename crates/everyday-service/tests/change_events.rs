@@ -620,6 +620,10 @@ async fn every_offline_write_announces_what_was_written_down() {
     // A file calendar cannot take new events, so the default it can be set
     // to here is this computer's own blocks -- the same write either way.
     run(&svc, &h, "set_default_calendar", json!({ "id": null })).await;
+    // Switching this computer *off* needs an account calendar to send new
+    // events to instead, which this vault has none of; switching it on is
+    // the same write, and is always allowed.
+    run(&svc, &h, "set_this_computer", json!({ "on": true })).await;
 
     // ---- the feed -------------------------------------------------------------
     //

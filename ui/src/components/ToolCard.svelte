@@ -87,6 +87,8 @@
     },
   } as const satisfies Record<string, { ask: string; yes: string; icon: IconName }>
   const asking = $derived(ASKS[card.confirmKind ?? 'destructive'])
+  /** One answer for several calls says so on its button. */
+  const yes = $derived(card.name === 'confirm_together' ? `${asking.yes} all` : asking.yes)
 
   /**
    * A question's subject is one line naming what the call acts on -- drawn
@@ -167,7 +169,7 @@
       {/if}
       <button class="yes" class:outward onclick={() => onanswer('confirm')}>
         <Icon name={asking.icon} size={13} />
-        {asking.yes}
+        {yes}
       </button>
     </div>
   {/if}

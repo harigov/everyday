@@ -388,6 +388,12 @@ pub enum SortOrder {
 pub struct EntryQuery {
     /// Restrict to one journal. `None` means "all journals".
     pub journal_id: Option<JournalId>,
+    /// Leave one journal out. What a reader of the person's own writing --
+    /// "All entries", a dream's look at yesterday, a week's word count --
+    /// passes to leave out the assistant's journal, which is not theirs. See
+    /// [`crate::model::Journal::assistant`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub not_journal: Option<JournalId>,
     /// Inclusive lower bound on `local_date`.
     pub from: Option<Date>,
     /// Inclusive upper bound on `local_date`.
@@ -414,6 +420,9 @@ impl EntryQuery {
         if let Some(j) = self.journal_id
             && e.journal_id != j
         {
+            return false;
+        }
+        if self.not_journal == Some(e.journal_id) {
             return false;
         }
         if let Some(from) = self.from
@@ -486,6 +495,12 @@ pub struct StoreStats {
     pub blobs: u64,
     /// Sum of on-disk (i.e. sealed) attachment sizes.
     pub blob_bytes: u64,
+    /// How many of `entries` are pages of the assistant's own journal, so a
+    /// count of the person's own writing -- "All entries" -- can leave them
+    /// out. Counted by the vault, not the store, which cannot see whose a
+    /// journal is: that is sealed. See [`crate::model::Journal::assistant`].
+    #[serde(default)]
+    pub assistant_entries: u64,
 }
 
 /// How old an unreferenced blob must be before
@@ -772,6 +787,13 @@ pub trait JournalStore: Send + Sync {
     // ---- entries --------------------------------------------------------
 
     fn list_entries(&self, query: &EntryQuery) -> Result<Vec<EntrySummary>>;
+
+    /// How many entries one journal holds. The default lists them; a backend
+    /// that can count without opening each one overrides it, because this is
+    /// asked on every status read -- see `StoreStats::assistant_entries`.
+    fn count_entries_in(&self, journal: JournalId) -> Result<u64> {
+        Ok(self.list_entries(&EntryQuery::in_journal(journal))?.len() as u64)
+    }
 
     fn get_entry(&self, id: EntryId) -> Result<Entry>;
 

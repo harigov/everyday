@@ -27,6 +27,7 @@ export type PrefKey =
   | 'everyday.feed.folders.closed'
   | 'everyday.journal.calendar'
   | 'everyday.overview.layout'
+  | 'everyday.overview.introduced'
   | 'everyday.tray'
   | 'everyday.tray.meeting'
   | 'everyday.badge'

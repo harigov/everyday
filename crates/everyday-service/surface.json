@@ -5355,6 +5355,26 @@
     {
       "args": [
         {
+          "name": "on",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "calendar",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_this_computer",
+      "orScope": null,
+      "returns": "void",
+      "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"

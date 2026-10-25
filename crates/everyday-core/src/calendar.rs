@@ -343,6 +343,22 @@ pub struct Calendar {
     /// way -- and none means this computer's own time blocks.
     #[serde(default)]
     pub is_default: bool,
+    /// Set on the default calendar when the person has switched this
+    /// computer off as a calendar: new events go here and never to this
+    /// computer's own time blocks -- not from the grid, not from the command
+    /// bar, not from the assistant, which is then not told this computer is a
+    /// calendar at all.
+    ///
+    /// On the default rather than a setting of its own because that is the
+    /// one state in which it means anything: this computer can only be
+    /// switched off while new events have somewhere else to go, so the switch
+    /// rides with the default -- [`crate::vault::Vault::set_default_calendar`]
+    /// moves it from one account calendar to the next -- and goes when the
+    /// default does. Only [`crate::vault::Vault::set_this_computer`] sets it.
+    /// Blocks already on this computer stay where they are: timer sessions and
+    /// time booked against a task are records of time spent, not events.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub this_computer_off: bool,
     /// The account's server said this calendar cannot be written to --
     /// somebody else's calendar shared with you to read, a holidays
     /// calendar. Only ever set on an account calendar; a feed or a file is
@@ -389,6 +405,7 @@ impl Calendar {
             role_id: None,
             account_sync: AccountSyncCursor::default(),
             is_default: false,
+            this_computer_off: false,
             read_only: false,
             created_at: now,
             updated_at: now,
@@ -411,6 +428,7 @@ impl Calendar {
             role_id: None,
             account_sync: AccountSyncCursor::default(),
             is_default: false,
+            this_computer_off: false,
             read_only: false,
             created_at: now,
             updated_at: now,
@@ -451,6 +469,7 @@ impl Calendar {
             role_id: None,
             account_sync: AccountSyncCursor::default(),
             is_default: false,
+            this_computer_off: false,
             read_only: false,
             created_at: now,
             updated_at: now,

@@ -342,7 +342,28 @@ fn weekday_abbrev(date: jiff::civil::Date) -> &'static str {
     }
 }
 
+/// The name `tools::available_for` leaves out while this computer is
+/// switched off as a calendar.
+pub(super) const CREATE_TIME_BLOCK: &str = "create_time_block";
+
+/// Refuse to put new time on this computer once the person has switched it
+/// off as a calendar -- see [`crate::calendar::Calendar::this_computer_off`].
+/// The tool is not offered then, so this is for a model that names it
+/// anyway, from an earlier turn's catalogue. A proposal written before is
+/// refused where it is accepted -- see `Vault::accept_proposal`.
+fn local_time_allowed(ctx: &ToolContext<'_>) -> Result<()> {
+    if ctx.vault.this_computer_on() {
+        return Ok(());
+    }
+    Err(crate::error::Error::Invalid(
+        "this computer is switched off as a calendar, so time is not booked on it. Use \
+         create_event, which puts it on their default calendar."
+            .into(),
+    ))
+}
+
 fn run_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    local_time_allowed(ctx)?;
     let (block, name) = block_from_args(ctx, args)?;
     let date = block.local_date;
     ctx.vault.save_block(&block)?;
@@ -350,6 +371,7 @@ fn run_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 }
 
 fn build_create_block(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    local_time_allowed(ctx)?;
     let (block, name) = block_from_args(ctx, args)?;
     let about = task_about(&block);
     let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);

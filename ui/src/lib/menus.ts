@@ -238,7 +238,8 @@ export function accountLabel(cal: CalendarInfo): string | undefined {
  *
  * Written once for the three places that ask -- "New events go to" in the
  * sidebar, a new event's Calendar field, and a block's in the rail -- so
- * they cannot disagree about what is on offer. A calendar whose account has
+ * they cannot disagree about what is on offer. This computer is left out
+ * once it has been switched off as a calendar. A calendar whose account has
  * to be signed in to again is listed and greyed rather than left out:
  * missing, it reads as a bug; greyed, with the reason beside it, it says
  * what to do. One that can only ever be read -- a feed, or a shared
@@ -253,13 +254,14 @@ export function calendarChoiceItems(
     (c) => c.origin.type === 'account' && c.access !== 'readOnly',
   )
   return tidyMenu([
-    opts.local !== false && {
-      label: 'This computer',
-      icon: 'monitor',
-      hint: 'your own time',
-      checked: current === null,
-      run: () => choose(null),
-    },
+    opts.local !== false &&
+      calendar.thisComputerOn && {
+        label: 'This computer',
+        icon: 'monitor',
+        hint: 'your own time',
+        checked: current === null,
+        run: () => choose(null),
+      },
     SEP,
     ...offered.map((c): MenuItem =>
       c.access === 'writable'

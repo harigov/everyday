@@ -23,6 +23,7 @@ import type {
   Account,
   ChatLinkView,
   Memory,
+  MemoryId,
   RoutineId,
   RoutineInfo,
   RoutineRun,
@@ -377,6 +378,35 @@ class AssistantState {
   async forget(id: string) {
     try {
       await api.deleteMemory(id)
+      this.memories = await api.memories()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /**
+   * The memories alone -- for a surface that draws only those, such as the
+   * Overview's "Needs attention", which must not pay for the run log and the
+   * job list to show what the assistant has noticed.
+   */
+  async refreshMemories() {
+    if (!this.enabled) return
+    try {
+      this.memories = await api.memories()
+    } catch (e) {
+      if (isLocked(e)) return
+      await handle(e)
+    }
+  }
+
+  /**
+   * Answer something it noticed: `confirmed` makes it a standing instruction,
+   * `rejected` strikes it out and keeps it, so a later dream cannot learn it
+   * again. The memory list and the Overview's "Needs attention" both ask.
+   */
+  async answerNoticed(id: MemoryId, origin: 'confirmed' | 'rejected') {
+    try {
+      await api.setMemoryOrigin(id, origin)
       this.memories = await api.memories()
     } catch (e) {
       await handle(e)

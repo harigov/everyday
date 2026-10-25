@@ -31,6 +31,7 @@ const {
 const {
   activity,
   applyEvent,
+  choicesOf,
   elapsed,
   emptyTurn,
   gerund,
@@ -57,6 +58,51 @@ const {
   assert.equal(turn.id, 'msg-1', 'the placeholder id is replaced by the stored one')
   assert.equal(turn.text, 'Added it.')
   assert.equal(turn.error, null)
+}
+
+// Options the assistant offered are read off its call, defensively, and the
+// last offer in a turn is the one drawn.
+{
+  const turn = emptyTurn('assistant', 'x')
+  applyEvent(turn, {
+    type: 'toolStarted',
+    callId: 'c1',
+    name: 'offer_choices',
+    arguments: {
+      question: 'Which film for Sundays?',
+      options: [
+        { title: 'Paddington 2', detail: 'Gentle, and you liked the first' },
+        { title: '' },
+        { title: 'Arrival' },
+        'not an option',
+      ],
+    },
+  })
+  const choices = choicesOf(turn)
+  assert.equal(choices.question, 'Which film for Sundays?')
+  assert.deepEqual(
+    choices.options.map((o) => o.title),
+    ['Paddington 2', 'Arrival'],
+    'an option with no title, or no shape, is not drawn',
+  )
+  assert.equal(choices.options[1].detail, '')
+  assert.equal(choicesOf(emptyTurn('assistant', 'y')), null, 'a turn that offered nothing')
+}
+
+// A step that came back broken is asked for again: what it had begun to say
+// goes, so the reply is not drawn with that prose twice.
+{
+  const turn = emptyTurn('assistant', 'x')
+  applyEvent(turn, { type: 'delta', text: 'Done the inbox. ' })
+  applyEvent(turn, { type: 'toolStarted', callId: 'c1', name: 'list_tasks', arguments: {} })
+  applyEvent(turn, { type: 'delta', text: 'Now the plan:' })
+  applyEvent(turn, { type: 'toolPreparing', callId: 'c2', name: 'update_plan' })
+  applyEvent(turn, { type: 'retrying', text: 'Done the inbox. ' })
+  assert.equal(turn.text, 'Done the inbox. ', 'back to the reply as the failed step found it')
+  assert.equal(turn.preparing, null, 'the call that came back broken is not still being written')
+  assert.equal(turn.cards.length, 1, 'the step that finished keeps its card')
+  applyEvent(turn, { type: 'delta', text: 'Now the plan:' })
+  assert.equal(turn.text, 'Done the inbox. Now the plan:')
 }
 
 // A tool that runs opens a card and closes it, and the summary is what the

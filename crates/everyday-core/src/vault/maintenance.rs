@@ -58,7 +58,11 @@ impl Vault {
     }
 
     pub fn stats(&self) -> Result<StoreStats> {
-        self.read(|u| u.store.stats())
+        self.read(|u| {
+            let mut stats = u.store.stats()?;
+            stats.assistant_entries = super::assistant_entries(u.store.as_ref());
+            Ok(stats)
+        })
     }
 
     /// Reclaim attachments no entry references any more.

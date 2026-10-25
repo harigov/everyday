@@ -74,9 +74,9 @@ pub(super) static TOOLS: &[Tool] = &[
                     (
                         "calendar_id",
                         text(
-                            "Which calendar, from list_calendars: an id, or this_computer. \
-                             Leave it out to use the default calendar -- which is what the \
-                             person means unless they name another."
+                            "Which calendar, from list_calendars: an id, or this_computer if \
+                             it lists one. Leave it out to use the default calendar -- which \
+                             is what the person means unless they name another."
                         )
                     ),
                     ("description", text("Notes or an agenda, shown with the event.")),
@@ -259,15 +259,37 @@ impl Target {
 }
 
 /// Read `calendar_id`, or fall back to the default calendar. Refuses, with
-/// what to do instead, a calendar that cannot take events.
+/// what to do instead, a calendar that cannot take events -- and this
+/// computer, when the person has switched it off as a calendar.
 fn target(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Target> {
+    let local = ctx.vault.this_computer_on();
     let Some(raw) = args.opt_str("calendar_id") else {
-        return Ok(match ctx.vault.default_calendar()? {
-            Some(calendar) => Target::Account(Box::new(calendar)),
-            None => Target::ThisComputer,
-        });
+        // The default, as the calendar picker has it: one whose account can
+        // no longer write to it sends new events to this computer meanwhile,
+        // or -- with this computer switched off -- is said to be the problem
+        // rather than tried and refused by its server.
+        let default = ctx.vault.calendars()?.into_iter().find(|c| c.is_default);
+        return match default {
+            Some(calendar) if access(ctx, &calendar) == CalendarAccess::Writable => {
+                Ok(Target::Account(Box::new(calendar)))
+            }
+            _ if local => Ok(Target::ThisComputer),
+            Some(calendar) => Err(refused(&calendar, access(ctx, &calendar))),
+            None => Err(Error::Invalid(
+                "there is no calendar new events can go to. Say so; one is chosen under \
+                 \"New events go to\" in the Calendar app."
+                    .into(),
+            )),
+        };
     };
     if is_this_computer(raw) {
+        if !local {
+            return Err(Error::Invalid(
+                "this computer is switched off as a calendar: the person keeps their events on \
+                 their default calendar. Leave calendar_id out to use it."
+                    .into(),
+            ));
+        }
         return Ok(Target::ThisComputer);
     }
     let id: CalendarId = args.id("calendar_id", "calendar")?;
@@ -278,16 +300,22 @@ fn target(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Target> {
     })?;
     match access(ctx, &calendar) {
         CalendarAccess::Writable => Ok(Target::Account(Box::new(calendar))),
-        CalendarAccess::NeedsSignIn => Err(Error::Invalid(format!(
+        refusal => Err(refused(&calendar, refusal)),
+    }
+}
+
+/// Why `calendar` cannot take a new event, and what to do instead.
+fn refused(calendar: &Calendar, access: CalendarAccess) -> Error {
+    match access {
+        CalendarAccess::NeedsSignIn => Error::Invalid(format!(
             "{} cannot take new events until its account is signed in again with permission \
              to change calendars (Settings \u{2192} Accounts). Say so, or use another calendar.",
             calendar.name
-        ))),
-        CalendarAccess::ReadOnly => Err(Error::Invalid(format!(
-            "{} is read-only. Pick a calendar list_calendars says can take events, or \
-             this_computer.",
+        )),
+        _ => Error::Invalid(format!(
+            "{} is read-only. Pick a calendar list_calendars says can take events.",
             calendar.name
-        ))),
+        )),
     }
 }
 
@@ -325,14 +353,20 @@ fn run_list_calendars(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> 
     let calendars = ctx.vault.calendars()?;
     let default =
         calendars.iter().find(|c| c.is_default && access(ctx, c) == CalendarAccess::Writable);
-    let mut rows = vec![json!({
-        "id": THIS_COMPUTER,
-        "name": "This computer",
-        "kind": "local",
-        "can_add_events": true,
-        "default": default.is_none(),
-        "note": "The person's own planned time. Cannot invite guests.",
-    })];
+    // This computer is a calendar only while the person has not switched it
+    // off; off, it is not mentioned at all, so it cannot be chosen.
+    let local = ctx.vault.this_computer_on();
+    let mut rows = Vec::new();
+    if local {
+        rows.push(json!({
+            "id": THIS_COMPUTER,
+            "name": "This computer",
+            "kind": "local",
+            "can_add_events": true,
+            "default": default.is_none(),
+            "note": "The person's own planned time. Cannot invite guests.",
+        }));
+    }
     for calendar in &calendars {
         let access = access(ctx, calendar);
         let (kind, account) = match &calendar.origin {
@@ -367,10 +401,14 @@ fn run_list_calendars(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> 
         }
         rows.push(row);
     }
-    Ok(json!({
-        "default": default.map_or(THIS_COMPUTER.to_string(), |c| c.id.to_string()),
-        "calendars": rows,
-    }))
+    let default = match default {
+        Some(calendar) => json!(calendar.id.to_string()),
+        None if local => json!(THIS_COMPUTER),
+        // Switched off, and the default cannot take events right now: there
+        // is no default to name, and its row says why.
+        None => Value::Null,
+    };
+    Ok(json!({ "default": default, "calendars": rows }))
 }
 
 // ---- reading what a call asks for ----------------------------------------

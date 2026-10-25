@@ -1070,6 +1070,7 @@ export const api = {
    * here -- and the list has to be read again afterwards to see it moved.
    */
   setDefaultCalendar: (id: CalendarId | null) => call('setDefaultCalendar', { id }),
+  setThisComputer: (on: boolean) => call('setThisComputer', { on }),
   /**
    * Put a new event on an account's calendar. A network call, and one that
    * sends invitations when the draft has guests. Answers the event as the

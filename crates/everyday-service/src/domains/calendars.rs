@@ -144,6 +144,13 @@ pub struct DefaultCalendar {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ThisComputer {
+    /// Whether this computer is a calendar new events can go to.
+    pub on: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateEvent {
     pub calendar_id: CalendarId,
     pub draft: EventDraft,
@@ -220,6 +227,13 @@ async fn set_default_calendar(
     args: DefaultCalendar,
 ) -> CommandResult<()> {
     svc.on_vault(move |vault| vault.set_default_calendar(args.id)).await
+}
+
+/// Switch this computer on or off as a calendar new events can go to. Off
+/// only while they go to an account's calendar -- see
+/// `Vault::set_this_computer`.
+async fn set_this_computer(svc: Arc<Service>, _ctx: Ctx, args: ThisComputer) -> CommandResult<()> {
+    svc.on_vault(move |vault| vault.set_this_computer(args.on)).await
 }
 
 /// Put a new event on one of an account's calendars, and sync it back.
@@ -863,6 +877,13 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: DefaultCalendar, returns: "void",
         signature: &[("id", "CalendarId | null", false)],
         run: set_default_calendar,
+    },
+    command! {
+        name: "set_this_computer", scope: Calendars, effect: Write,
+        change: Calendar / Updated,
+        args: ThisComputer, returns: "void",
+        signature: &[("on", "boolean", true)],
+        run: set_this_computer,
     },
     command! {
         name: "create_event", scope: Calendars, effect: Write,

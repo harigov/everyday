@@ -1104,6 +1104,7 @@ impl Service {
             job: None,
             follow_up: None,
             max_steps: None,
+            tier: None,
         })
         .await?;
         self.announce_turn(&turned, args.conversation_id, ctx.caller.origin().map(str::to_string));

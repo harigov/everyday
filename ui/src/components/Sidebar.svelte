@@ -112,7 +112,10 @@
     ])
   }
 
-  const total = $derived(app.status?.stats?.entries ?? 0)
+  // Theirs: "All entries" leaves out the assistant's own journal.
+  const total = $derived(
+    (app.status?.stats?.entries ?? 0) - (app.status?.stats?.assistantEntries ?? 0),
+  )
 </script>
 
 <!-- While folded, the pointer and the keyboard are what keep a peek open:
@@ -220,7 +223,7 @@
         </button>
       </div>
 
-      {#each app.journals as j (j.id)}
+      {#snippet journalRow(j: Journal)}
         <div class="slot">
           <button
             class="side-row"
@@ -245,6 +248,10 @@
             <Icon name="settings" size={13} />
           </button>
         </div>
+      {/snippet}
+
+      {#each app.ownJournals as j (j.id)}
+        {@render journalRow(j)}
       {/each}
 
       {#if creating}
@@ -263,6 +270,15 @@
           }}
         />
       {/if}
+
+      <!-- The assistant's own journal: notes it leaves itself for the day
+           they are about. Theirs to read, apart from where they write. -->
+      {#each app.journals.filter((j) => j.assistant) as j (j.id)}
+        <div class="side-head">
+          <span class="eyebrow">Kept by the assistant</span>
+        </div>
+        {@render journalRow(j)}
+      {/each}
     </nav>
   {/if}
   <PaneResizer

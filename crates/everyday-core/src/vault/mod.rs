@@ -430,10 +430,25 @@ impl Vault {
             forget_key_seconds: header.forget_key_seconds,
             path: self.root.clone(),
             writable: self.write_lock.is_some(),
-            stats: guard.as_ref().and_then(|u| u.store.stats().ok()),
+            stats: guard.as_ref().and_then(|u| {
+                let mut stats = u.store.stats().ok()?;
+                stats.assistant_entries = assistant_entries(u.store.as_ref());
+                Some(stats)
+            }),
             capabilities: guard.as_ref().map(|u| u.store.capabilities()),
         }
     }
+}
+
+/// How many pages the assistant's own journal has -- see
+/// [`StoreStats::assistant_entries`](crate::store::StoreStats::assistant_entries).
+fn assistant_entries(store: &dyn crate::store::JournalStore) -> u64 {
+    let Ok(journals) = store.list_journals() else { return 0 };
+    let Some(journal) = journals.into_iter().filter(|j| j.assistant).min_by_key(|j| j.created_at)
+    else {
+        return 0;
+    };
+    store.count_entries_in(journal.id).unwrap_or(0)
 }
 
 impl Drop for Vault {
