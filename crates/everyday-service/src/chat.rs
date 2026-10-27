@@ -78,6 +78,21 @@ pub trait ChatRunner: Send + Sync + 'static {
     ) -> TaskFuture;
 }
 
+/// Backslash-escape what Markdown would otherwise act on, so that a task
+/// called `*urgent* call_back` is shown as written rather than as emphasis.
+/// For a person's own words going into a message that is otherwise markup:
+/// the relay's, and a reminder's.
+pub fn escape_markdown(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|' | '~') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// The routine run a message to the owner comes from -- or the background job,
 /// whose finished answer is sent to the chat it was asked in the same way.
 ///

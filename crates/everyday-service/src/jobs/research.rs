@@ -65,6 +65,10 @@ impl Executor for Research {
         TIMEOUT
     }
 
+    fn context(&self) -> &'static str {
+        CONTEXT
+    }
+
     fn prepare(&self, vault: &Vault, job: &mut Job) -> everyday_core::Result<Prepared> {
         // Owned, because the outputs below are changed while it is still read.
         let question = ask(job).0.to_string();
@@ -128,16 +132,17 @@ impl Executor for Research {
             return Ok(Vec::new());
         }
 
-        // It never wrote anything up. The closing reply is then the only place
-        // what it found is written down, and the conversation that asked is
-        // answered from the note, so it goes there rather than being lost.
-        // Better than a job that is "done" over a placeholder.
+        // It never wrote anything up. What it said as it worked -- every step's
+        // prose, not only the last word -- is then the only place what it
+        // found is written down, and the conversation that asked is answered
+        // from the note, so it goes there rather than being lost. Better than
+        // a job that is "done" over a placeholder.
         let reply = reply.trim();
         if reply.is_empty() {
             return Err(Error::Invalid("it finished without writing anything up".into()));
         }
         note.body = RichDoc::from_markdown(&format!(
-            "*It did not write its findings into this note; this is the reply it ended with.*\n\n\
+            "*It did not write its findings into this note; this is what it said as it worked.*\n\n\
              {reply}"
         ));
         note.updated_at = jiff::Timestamp::now();
@@ -156,6 +161,7 @@ impl Executor for Research {
 fn ask(job: &Job) -> (&str, &str) {
     match &job.kind {
         JobKind::Research { question, brief } => (question.as_str(), brief.as_str()),
+        JobKind::Task { title, .. } => (title.as_str(), ""),
     }
 }
 

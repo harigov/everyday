@@ -47,6 +47,7 @@
 
 pub mod answer;
 pub mod research;
+pub mod task;
 
 use crate::agent::{AgentEvent, JobTurn, Sink, Turn, Turned};
 use crate::events::{Change, Kind, Level, Notification, Op};
@@ -138,6 +139,10 @@ pub(crate) trait Executor: Send + Sync {
     /// The longest one turn may take before it is abandoned.
     fn timeout(&self) -> Duration;
 
+    /// What the turn is told in place of what is on screen. See
+    /// [`crate::agent::JobTurn::context`].
+    fn context(&self) -> &'static str;
+
     /// Make whatever the job writes into, if it is not there already, and
     /// say what the first message of its transcript is. Called on every
     /// attempt, so a job started again finds what the last one left rather
@@ -145,11 +150,20 @@ pub(crate) trait Executor: Send + Sync {
     /// the outputs); the caller saves it.
     fn prepare(&self, vault: &Vault, job: &mut Job) -> everyday_core::Result<Prepared>;
 
-    /// The turn is over and the model's last words are `reply`. Check that
-    /// the job left something worth the name, and mend it if it can be
-    /// mended. An error fails the job, with the error as the reason.
+    /// The turn is over and `reply` is everything the model said in it --
+    /// the steps on the way as well as its last word, which is the job's
+    /// summary. Check that the job left something worth the name, and mend
+    /// it if it can be mended. An error fails the job, with the error as the
+    /// reason.
     fn conclude(&self, vault: &Vault, job: &Job, reply: &str)
     -> everyday_core::Result<Vec<Change>>;
+
+    /// The job is over -- done, failed or cancelled -- and written down as
+    /// such. Whatever else should move with it, moved; what was written, for
+    /// open windows. Nothing, for a kind with nothing to move.
+    fn ended(&self, _vault: &Vault, _job: &Job) -> Vec<Change> {
+        Vec::new()
+    }
 }
 
 /// What [`Executor::prepare`] hands back.
@@ -164,6 +178,7 @@ pub(crate) struct Prepared {
 fn executor_for(kind: &JobKind) -> &'static dyn Executor {
     match kind {
         JobKind::Research { .. } => &research::Research,
+        JobKind::Task { .. } => &task::TaskJob,
     }
 }
 
@@ -224,6 +239,9 @@ async fn pass_with(service: &Arc<Service>, stop: Option<watch::Receiver<bool>>) 
     .await;
     let Ok(stock) = stock else { return false };
 
+    for change in stock.changes {
+        service.events().changed(change);
+    }
     for job in &stock.swept {
         tracing::info!(
             job = %job.id,
@@ -259,6 +277,9 @@ struct Stock {
     /// Finished jobs whose conversation has not been come back to: an
     /// answer for a job that is done, the news for one that failed.
     owed: Vec<Job>,
+    /// What the sweep's failures moved -- a task of the assistant's going
+    /// back to do -- for open windows.
+    changes: Vec<Change>,
 }
 
 /// The sweep, and the two lists a pass works from. One trip to the blocking
@@ -279,6 +300,10 @@ fn take_stock(vault: &Vault, mine: Option<JobId>, now: Timestamp) -> Stock {
                 }
                 if requeued {
                     stock.queued.push(job.clone());
+                } else {
+                    // Failed for good: over, like any other ending, so what
+                    // moves with its end moves now.
+                    stock.changes.extend(executor_for(&job.kind).ended(vault, &job));
                 }
                 stock.swept.push(job);
             }
@@ -303,6 +328,11 @@ fn take_stock(vault: &Vault, mine: Option<JobId>, now: Timestamp) -> Stock {
 /// anything: the follow-up for one that is done, the news for one that
 /// failed. A cancelled job owes nothing -- whoever cancelled it knows.
 fn owes_the_conversation(job: &Job) -> bool {
+    // One of the assistant's own tasks owes the person its result -- or why
+    // there is none -- wherever they chose. See `task::deliver`.
+    if task::is_task(job) {
+        return matches!(job.status, JobStatus::Done | JobStatus::Failed) && !job.answered;
+    }
     match job.status {
         JobStatus::Done => job.owes_answer(),
         JobStatus::Failed => job.asked_in.is_some() && !job.answered,
@@ -325,10 +355,13 @@ fn spawn_come_back(service: &Arc<Service>, vault: &Arc<Vault>, job: &Job) {
     }
     let id = job.id;
     let failed = job.status == JobStatus::Failed;
+    let own_task = task::is_task(job);
     let service = service.clone();
     let vault = vault.clone();
     tokio::spawn(async move {
-        let result = if failed {
+        let result = if own_task {
+            task::deliver(&service, &vault, id).await
+        } else if failed {
             answer::report_failure(&service, &vault, id).await
         } else {
             answer::answer(&service, &vault, id).await
@@ -499,7 +532,7 @@ async fn execute(
         unattended: None,
         drafting: None,
         via: None,
-        job: Some(JobTurn { id, question: job.title() }),
+        job: Some(JobTurn { id, question: job.title(), context: executor.context() }),
         follow_up: None,
         max_steps: Some(executor.max_steps()),
         tier: None,
@@ -740,7 +773,7 @@ fn conclude(
 
     match ended {
         Ended::Turned(turned) => {
-            let Turned { text, steps, wrote, stopped, .. } = turned;
+            let Turned { text, prose, steps, wrote, stopped } = turned;
             changes.extend(wrote.into_iter().map(written_change));
             job.steps = steps;
             if cancelled {
@@ -753,7 +786,10 @@ fn conclude(
                 // Stopped from its transcript, which is a way of cancelling it.
                 let _ = job.cancel("it was stopped");
             } else {
-                match executor.conclude(vault, &job, &text) {
+                // All it said, not only its last word: an executor salvaging
+                // what the model wrote but put nowhere -- research, into its
+                // note -- needs the findings it wrote on the way.
+                match executor.conclude(vault, &job, &prose) {
                     Ok(more) => {
                         changes.extend(more);
                         job.finish(text);
@@ -784,6 +820,9 @@ fn conclude(
         job.seen = false;
     }
     vault.save_job(&job).ok()?;
+    if job.status.is_finished() {
+        changes.extend(executor.ended(vault, &job));
+    }
     Some(Settled { job, changes })
 }
 
@@ -817,7 +856,14 @@ fn job_change(id: JobId) -> Change {
 /// keeps what it found out of a notification because a lock screen may show
 /// it, this carries what was *asked* -- worth knowing when two are in flight,
 /// and not something that was found out.
+///
+/// One of the assistant's own tasks says nothing here: it says what it came
+/// to where the person chose instead, as what the job owes -- see
+/// [`task::deliver`].
 fn announce(service: &Arc<Service>, job: &Job) {
+    if task::is_task(job) {
+        return;
+    }
     let key = format!("job:{}", job.id);
     match job.status {
         // No body: the question is what the person asked about, and this is a

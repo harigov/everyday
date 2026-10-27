@@ -254,18 +254,20 @@ pub struct AgentSettings {
     /// directly because they are recoverable by hand; deletes and bulk
     /// updates are not.
     pub confirm_destructive: bool,
-    /// Whether a search or a page open that could carry something out of the
-    /// vault stops and asks first.
+    /// Whether a page open that could carry something out of the vault stops
+    /// and asks first.
     ///
     /// Defaults on, and a record written before the switch existed reads as
-    /// on — that is what those turns did. A search after mail has been read
-    /// this turn, and a page whose address the model composed (or any page,
-    /// once mail has been read), shows the query or the address before
-    /// anything is sent. Off, those go ahead while somebody is in the
-    /// conversation. Sending mail and deleting are not this switch, and
-    /// neither is a turn with nobody watching: a routine or a background job
-    /// still stops, because the switch means "don't ask me while I am here",
-    /// and nobody is there to have meant it.
+    /// on — that is what those turns did. On, a page whose address the model
+    /// put together itself shows the address first when it has anything in
+    /// it that could be data, or once anything a stranger wrote -- mail, a
+    /// page, a search's results -- has come into the turn. A search never
+    /// asks, and neither does an address the person gave or a search or page
+    /// handed back. Off, those go ahead while somebody is in the conversation.
+    /// Sending mail and deleting are not this switch, and neither is a turn
+    /// with nobody watching: a routine or a background job still stops,
+    /// because the switch means "don't ask me while I am here", and nobody is
+    /// there to have meant it.
     #[serde(default = "confirm_web_default")]
     pub confirm_web: bool,
     /// How many model turns one request may take before the loop gives up.
@@ -325,6 +327,10 @@ pub struct AgentSettings {
     /// "later" answer uses, offered here for a run nobody is watching.
     #[serde(default)]
     pub park_unattended: bool,
+    /// Where reminders go: theirs, and what the assistant's own tasks come
+    /// back with. See [`crate::task::ReminderSettings`].
+    #[serde(default)]
+    pub reminders: crate::task::ReminderSettings,
 }
 
 impl Default for AgentSettings {
@@ -349,6 +355,7 @@ impl Default for AgentSettings {
             dreaming: false,
             proposals: crate::proposal::ProposalPolicy::default(),
             park_unattended: false,
+            reminders: crate::task::ReminderSettings::default(),
         }
     }
 }

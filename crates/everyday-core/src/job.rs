@@ -16,7 +16,7 @@
 //! rule in it is a unit test.
 
 use crate::error::{Error, Result};
-use crate::id::{ConversationId, JobId, NoteId};
+use crate::id::{ConversationId, JobId, NoteId, TaskId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -54,6 +54,16 @@ pub enum JobKind {
         #[serde(default)]
         brief: String,
     },
+    /// Do one of the assistant's own tasks -- see
+    /// [`Assignee::Assistant`](crate::task::Assignee::Assistant). Queued by
+    /// the scheduler when the task's reminder comes round, never by a model:
+    /// what to do is read from the task when the job starts.
+    Task {
+        task_id: TaskId,
+        /// The task's title when the job was queued, for a card and a list
+        /// row that should not have to read the task to say what it is.
+        title: String,
+    },
 }
 
 impl JobKind {
@@ -61,6 +71,7 @@ impl JobKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             JobKind::Research { .. } => "research",
+            JobKind::Task { .. } => "task",
         }
     }
 
@@ -68,14 +79,24 @@ impl JobKind {
     pub fn label(&self) -> &'static str {
         match self {
             JobKind::Research { .. } => "Research",
+            JobKind::Task { .. } => "Task",
         }
     }
 
     /// One line saying what this job is about, for a card, a list row and
-    /// a notification: a research job's question.
+    /// a notification: a research job's question, a task's title.
     pub fn title(&self) -> String {
         match self {
             JobKind::Research { question, .. } => question.trim().to_string(),
+            JobKind::Task { title, .. } => title.trim().to_string(),
+        }
+    }
+
+    /// The task this job is doing, if it is one of the assistant's tasks.
+    pub fn task_id(&self) -> Option<TaskId> {
+        match self {
+            JobKind::Task { task_id, .. } => Some(*task_id),
+            JobKind::Research { .. } => None,
         }
     }
 }
@@ -272,6 +293,11 @@ impl Job {
                         "the brief is {} bytes; the limit is {MAX_BRIEF_BYTES}",
                         brief.len()
                     )));
+                }
+            }
+            JobKind::Task { title, .. } => {
+                if title.trim().is_empty() {
+                    return Err(Error::Invalid("a task job needs the task's title".into()));
                 }
             }
         }

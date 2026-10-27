@@ -632,7 +632,7 @@ mod tests {
     }
 
     fn turned(text: &str, stopped: bool) -> Turned {
-        Turned { text: text.into(), steps: 0, wrote: Vec::new(), stopped }
+        Turned { text: text.into(), prose: text.into(), steps: 0, wrote: Vec::new(), stopped }
     }
 
     // ---- the follow-up's prompt ----

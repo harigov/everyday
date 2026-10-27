@@ -46,6 +46,7 @@ pub fn ctx(vault: &Vault) -> ToolContext<'_> {
         tz: "UTC",
         conversation: None,
         unattended: false,
+        follow_up: false,
         caller: None,
         mail_search: None,
         assistant_provider: None,

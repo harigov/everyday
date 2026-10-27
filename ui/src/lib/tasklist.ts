@@ -7,8 +7,8 @@
 // finds by dragging things around for a minute. `scripts/tasklist.test.mjs`
 // checks it instead.
 
-import { friendlyDate } from './format'
-import { addDays } from './time'
+import { friendlyDate, formatInstantTime } from './format'
+import { addDays, isoDate } from './time'
 import {
   isOpen,
   type Priority,
@@ -19,6 +19,35 @@ import {
 } from './types'
 
 export type GroupBy = 'none' | 'status' | 'due' | 'priority' | 'purpose'
+
+/**
+ * When the task's reminder is next due, or null when none is waiting --
+ * `Task::next_reminder` in the core, which this has to agree with: open
+ * tasks only, the assistant's due from the moment it was made when it has no
+ * time, and waiting until `remindedAt` catches up with `remindAt`.
+ */
+export function nextReminder(task: Task): string | null {
+  if (!isOpen(task.status)) return null
+  const at = task.remindAt ?? (task.assignee === 'assistant' ? task.createdAt : null)
+  if (!at) return null
+  const sent = task.remindedAt ? Date.parse(task.remindedAt) : null
+  return sent === null || sent < Date.parse(at) ? at : null
+}
+
+/**
+ * Whether the reminder set now has gone out -- `Task::reminder_sent` in the
+ * core. Not merely that none is waiting: a task closed before its time has
+ * none waiting and was never reminded of.
+ */
+export function reminderSent(task: Task): boolean {
+  if (!task.remindAt || !task.remindedAt) return false
+  return Date.parse(task.remindedAt) >= Date.parse(task.remindAt)
+}
+
+/** "Today 5:00 PM", "Tomorrow 9:30 AM": when a reminder is for. */
+export function reminderLabel(at: string): string {
+  return `${friendlyDate(isoDate(new Date(at)))} ${formatInstantTime(at)}`
+}
 
 export interface Bucket {
   key: string

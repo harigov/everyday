@@ -553,6 +553,14 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "assignee": {
+            "description": "Who does it: owner (them; the default) or assistant (you, as a background job when its reminder comes round).",
+            "enum": [
+              "owner",
+              "assistant"
+            ],
+            "type": "string"
+          },
           "due_date": {
             "description": "Deadline. Format: YYYY-MM-DD.",
             "type": "string"
@@ -590,6 +598,14 @@
           },
           "project_id": {
             "description": "Which project it belongs to. Omit for the inbox.",
+            "type": "string"
+          },
+          "remind_date": {
+            "description": "The day of the reminder. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "remind_time": {
+            "description": "When to remind them, HH:MM in 24-hour time, on remind_date. For the assistant's own task, when to start on it.",
             "type": "string"
           },
           "role_id": {
@@ -1959,6 +1975,14 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "assignee": {
+            "description": "Only their tasks (owner) or only yours (assistant). Defaults to both.",
+            "enum": [
+              "owner",
+              "assistant"
+            ],
+            "type": "string"
+          },
           "due_from": {
             "description": "Earliest deadline, inclusive. Format: YYYY-MM-DD.",
             "type": "string"
@@ -3629,6 +3653,14 @@
       "parameters": {
         "additionalProperties": false,
         "properties": {
+          "assignee": {
+            "description": "Who does it: owner (them; the default) or assistant (you, as a background job when its reminder comes round).",
+            "enum": [
+              "owner",
+              "assistant"
+            ],
+            "type": "string"
+          },
           "clear_due_date": {
             "description": "Remove the deadline.",
             "type": "boolean"
@@ -3643,6 +3675,10 @@
           },
           "clear_purpose": {
             "description": "Unfile it from whatever goal or role it carries.",
+            "type": "boolean"
+          },
+          "clear_reminder": {
+            "description": "Remove the reminder.",
             "type": "boolean"
           },
           "due_date": {
@@ -3678,6 +3714,14 @@
           },
           "project_id": {
             "description": "Move it to this project.",
+            "type": "string"
+          },
+          "remind_date": {
+            "description": "The day of the reminder. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "remind_time": {
+            "description": "Set the reminder to this time, HH:MM in 24-hour time, on remind_date. A time later than the last reminder sends it again.",
             "type": "string"
           },
           "role_id": {

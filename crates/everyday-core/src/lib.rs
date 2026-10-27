@@ -203,8 +203,8 @@ pub use store::{
     SettingSpec, SortOrder, StoreContext, StoreFactory, StoreStats,
 };
 pub use task::{
-    BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount, Task, TaskStats,
-    TaskStatus, TimeBlock,
+    Assignee, BlockKind, BlockSubject, Priority, Project, ProjectStatus, ProjectTaskCount,
+    ReminderSettings, ReminderTo, Task, TaskStats, TaskStatus, TimeBlock,
 };
 pub use timestamped::Timestamped;
 pub use tracker::{

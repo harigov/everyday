@@ -353,6 +353,120 @@ pub struct Task {
     /// back out. The "what did I finish this week" column.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<Timestamp>,
+    /// Who is to do it: the person, as every task was before there was a
+    /// choice, or the assistant, which does it itself when the task's
+    /// reminder comes round.
+    #[serde(default, skip_serializing_if = "Assignee::is_owner")]
+    pub assignee: Assignee,
+    /// When to be reminded of it. A moment rather than a day, because
+    /// "remind me at five" means five o'clock, and apart from the deadline
+    /// because a reminder is usually some time before it. For the
+    /// assistant's own task this is when it starts on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remind_at: Option<Timestamp>,
+    /// When the reminder last went out, or the assistant last started on it.
+    ///
+    /// A reminder is waiting while this is unset or earlier than
+    /// `remind_at`, so moving `remind_at` later -- "again in an hour" -- sets
+    /// it going again without anybody having to clear this. See
+    /// [`Task::next_reminder`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reminded_at: Option<Timestamp>,
+}
+
+/// Who a task is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Assignee {
+    /// The person whose vault it is.
+    #[default]
+    Owner,
+    /// The assistant. When the task's reminder comes round it does the task
+    /// as a background job, and what it did goes to the person -- see
+    /// [`ReminderSettings::assistants`].
+    Assistant,
+}
+
+impl Assignee {
+    pub const ALL: [Assignee; 2] = [Assignee::Owner, Assignee::Assistant];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Assignee::Owner => "owner",
+            Assignee::Assistant => "assistant",
+        }
+    }
+
+    pub fn is_owner(&self) -> bool {
+        *self == Assignee::Owner
+    }
+}
+
+/// Where a reminder is sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum ReminderTo {
+    /// A notification on this computer.
+    Desktop,
+    /// The person's chat, through the first chat link that is connected --
+    /// or the desktop when none is, so a reminder is never lost to a chat
+    /// that is down.
+    Chat,
+    /// Both of those.
+    Both,
+}
+
+impl ReminderTo {
+    pub fn desktop(self) -> bool {
+        matches!(self, ReminderTo::Desktop | ReminderTo::Both)
+    }
+
+    pub fn chat(self) -> bool {
+        matches!(self, ReminderTo::Chat | ReminderTo::Both)
+    }
+}
+
+/// Where reminders go, by whose task they are about. Kept with the
+/// assistant's settings, which is where the chat they may go to is set up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderSettings {
+    /// Reminders of the person's own tasks. The desktop unless they say
+    /// otherwise: they are at it when they set one.
+    #[serde(default = "ReminderSettings::default_yours")]
+    pub yours: ReminderTo,
+    /// What the assistant's own tasks come back with -- what it did, or that
+    /// it could not. Their chat unless they say otherwise: it is work done
+    /// while they were elsewhere.
+    #[serde(default = "ReminderSettings::default_assistants")]
+    pub assistants: ReminderTo,
+}
+
+impl ReminderSettings {
+    fn default_yours() -> ReminderTo {
+        ReminderTo::Desktop
+    }
+
+    fn default_assistants() -> ReminderTo {
+        ReminderTo::Chat
+    }
+
+    /// Where a reminder about a task for `assignee` goes.
+    pub fn for_assignee(&self, assignee: Assignee) -> ReminderTo {
+        match assignee {
+            Assignee::Owner => self.yours,
+            Assignee::Assistant => self.assistants,
+        }
+    }
+}
+
+impl Default for ReminderSettings {
+    fn default() -> Self {
+        Self { yours: Self::default_yours(), assistants: Self::default_assistants() }
+    }
 }
 
 impl Task {
@@ -376,7 +490,39 @@ impl Task {
             created_at: now,
             updated_at: now,
             completed_at: None,
+            assignee: Assignee::Owner,
+            remind_at: None,
+            reminded_at: None,
         }
+    }
+
+    /// When this task's reminder is next due, if one is waiting.
+    ///
+    /// Open tasks only: nobody wants reminding of something already done. A
+    /// task of the assistant's with no time set is due from the moment it
+    /// was made, so handing one over without a time means "now". Due until
+    /// [`Task::reminded_at`] has caught up with it -- see that field.
+    pub fn next_reminder(&self) -> Option<Timestamp> {
+        if !self.status.is_open() {
+            return None;
+        }
+        let at = match (self.remind_at, self.assignee) {
+            (Some(at), _) => at,
+            (None, Assignee::Assistant) => self.created_at,
+            (None, Assignee::Owner) => return None,
+        };
+        self.reminded_at.is_none_or(|sent| sent < at).then_some(at)
+    }
+
+    /// Whether the reminder set now has gone out -- not merely that none is
+    /// waiting, which a task closed before its time would also be.
+    pub fn reminder_sent(&self) -> bool {
+        self.remind_at.zip(self.reminded_at).is_some_and(|(at, sent)| sent >= at)
+    }
+
+    /// Whether this task's reminder is due as of `now`.
+    pub fn reminder_due(&self, now: Timestamp) -> bool {
+        self.next_reminder().is_some_and(|at| at <= now)
     }
 
     pub fn in_project(mut self, project: impl Into<Option<ProjectId>>) -> Self {

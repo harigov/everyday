@@ -57,7 +57,7 @@ use crate::connector::{ChatId, Choice, Connector, Incoming, MessageRef, Picture,
 use everyday_core::chat::{ChatLink, Via};
 use everyday_core::{ChatLinkId, Conversation, ConversationId, ConversationQuery, Vault};
 use everyday_service::agent::{AgentEvent, ConfirmAnswer, Pending, Sink, Turned};
-use everyday_service::chat::{ChatOutlet, FromRun};
+use everyday_service::chat::{ChatOutlet, FromRun, escape_markdown};
 use everyday_service::error::CommandResult;
 use everyday_service::service::Service;
 use futures::FutureExt;
@@ -1558,8 +1558,8 @@ pub(crate) fn confirmation_question(kind: &str, subject: &str, can_park: bool) -
         "fetch" => {
             // As code, so the address is shown rather than turned into a link
             // that one tap would follow.
-            let head = "**Open this address?** Neither you nor a search gave it to me, and opening \
-                        it tells that site it was asked for.";
+            let head = "**Open this address?** I put it together myself rather than finding it, \
+                        and whatever is in it reaches that site.";
             if subject.is_empty() {
                 head.to_string()
             } else {
@@ -1649,19 +1649,6 @@ fn with_quote(head: &str, subject: &str) -> String {
 /// `text` on one line, whitespace runs folded to a space.
 fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-/// Backslash-escape what Markdown would otherwise act on, so that a task
-/// called `*urgent* call_back` is shown as written rather than as emphasis.
-fn escape_markdown(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        if matches!(c, '\\' | '`' | '*' | '_' | '[' | ']' | '<' | '>' | '#' | '|' | '~') {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
 }
 
 /// What an answer means to the turn that asked.
@@ -2045,7 +2032,7 @@ mod tests {
     // ---- the reply a turn ends with ----
 
     fn turned(text: &str, stopped: bool) -> CommandResult<Turned> {
-        Ok(Turned { text: text.into(), steps: 0, wrote: Vec::new(), stopped })
+        Ok(Turned { text: text.into(), prose: text.into(), steps: 0, wrote: Vec::new(), stopped })
     }
 
     #[test]

@@ -3566,6 +3566,7 @@ let agentSettings: AgentSettings = {
   dreaming: false,
   proposals: {},
   parkUnattended: false,
+  reminders: { yours: 'desktop', assistants: 'chat' },
   companion: {},
 }
 

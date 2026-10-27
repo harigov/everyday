@@ -35,7 +35,7 @@
   import { panels } from '../lib/panels.svelte'
   import { PROPOSAL_KINDS } from '../lib/types'
   import type { Painter } from '../lib/companion-scene'
-  import type { AgentSettings, ProposalKind } from '../lib/types'
+  import type { AgentSettings, ProposalKind, ReminderSettings, ReminderTo } from '../lib/types'
   import Companion from './Companion.svelte'
   import Icon from './Icon.svelte'
   import MailActionsList from './MailActionsList.svelte'
@@ -43,6 +43,14 @@
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
   // be what the next message is sent to.
   let draft = $state<AgentSettings | null>(null)
+
+  /** What the service assumes while a vault has never said: see `ReminderSettings`. */
+  const DEFAULT_REMINDERS: ReminderSettings = { yours: 'desktop', assistants: 'chat' }
+  const REMINDER_TO: { value: ReminderTo; label: string }[] = [
+    { value: 'desktop', label: 'This computer' },
+    { value: 'chat', label: 'Your chat' },
+    { value: 'both', label: 'Both' },
+  ]
   let notice = $state<string | null>(null)
   let saving = $state(false)
   /**
@@ -447,11 +455,13 @@
             onchange={(e) => draft && (draft.confirmWeb = e.currentTarget.checked)}
           />
           <span>
-            <b>Ask before a search or a page open</b>
+            <b>Ask before opening an address it made up</b>
             <small>
-              On, a search stops after mail has been read, and a page stops when you did not give it
-              the address — you see the query or the address first. Off, those always go ahead.
-              Deleting and sending mail still ask. A routine or a background job, with nobody
+              Searches never ask, and nor do pages you or a search pointed it to. On, a page whose
+              address the assistant put together itself stops when the address has something in it
+              that could be data, or once it has read mail, a page or search results, any of which
+              could have suggested the address — you see the address first. Off, those always go
+              ahead. Deleting and sending mail still ask. A routine or a background job, with nobody
               watching, still stops.
             </small>
           </span>
@@ -527,6 +537,45 @@
         </label>
       </section>
     {/if}
+
+    <section>
+      <span class="eyebrow">Reminders</span>
+      <div class="pairs">
+        <label for="remind-yours">Your tasks' reminders</label>
+        <select
+          id="remind-yours"
+          class="field"
+          value={draft.reminders?.yours ?? 'desktop'}
+          onchange={(e) =>
+            draft &&
+            (draft.reminders = {
+              ...(draft.reminders ?? DEFAULT_REMINDERS),
+              yours: e.currentTarget.value as ReminderTo,
+            })}
+        >
+          {#each REMINDER_TO as to (to)}<option value={to.value}>{to.label}</option>{/each}
+        </select>
+        <label for="remind-assistants">What the assistant's tasks come back with</label>
+        <select
+          id="remind-assistants"
+          class="field"
+          value={draft.reminders?.assistants ?? 'chat'}
+          onchange={(e) =>
+            draft &&
+            (draft.reminders = {
+              ...(draft.reminders ?? DEFAULT_REMINDERS),
+              assistants: e.currentTarget.value as ReminderTo,
+            })}
+        >
+          {#each REMINDER_TO as to (to)}<option value={to.value}>{to.label}</option>{/each}
+        </select>
+      </div>
+      <p class="hint">
+        Your chat is the one under Chat in these settings. When it is not connected, a reminder
+        comes to this computer instead, so none is lost. A task you hand to the assistant is done by
+        it when its time comes, with its own tools; what it did is sent to you here.
+      </p>
+    </section>
 
     <section>
       <span class="eyebrow">Your time zone</span>
@@ -664,6 +713,13 @@
     line-height: var(--leading-normal);
     color: var(--fg-subtle);
     overflow-wrap: anywhere;
+  }
+  .pairs {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 14rem);
+    align-items: center;
+    gap: var(--sp-2) var(--sp-3);
+    font-size: var(--text-sm);
   }
 
   .presets {

@@ -29,7 +29,8 @@
 
 use crate::error::Result;
 use crate::id::{BlockId, ProjectId, TaskId};
-use crate::task::{BlockKind, Priority, Project, Task, TaskStats, TaskStatus, TimeBlock};
+use crate::task::{Assignee, BlockKind, Priority, Project, Task, TaskStats, TaskStatus, TimeBlock};
+use jiff::Timestamp;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
 
@@ -105,6 +106,12 @@ pub struct TaskQuery {
     pub has_due: Option<bool>,
     /// Case-insensitive substring of the title, notes or tags.
     pub text: String,
+    /// Only tasks for this person -- the owner, or the assistant. `None` is
+    /// both.
+    pub assignee: Option<Assignee>,
+    /// Only tasks whose reminder is waiting and due at or before this: what
+    /// the scheduler's minute looks for. See [`Task::next_reminder`].
+    pub reminders_due_by: Option<Timestamp>,
     pub sort: TaskSort,
     pub offset: u32,
     /// `None` means no limit.
@@ -174,6 +181,14 @@ impl TaskQuery {
         }
         if !self.text.trim().is_empty()
             && !t.searchable_text().to_lowercase().contains(&self.text.trim().to_lowercase())
+        {
+            return false;
+        }
+        if self.assignee.is_some_and(|who| t.assignee != who) {
+            return false;
+        }
+        if let Some(by) = self.reminders_due_by
+            && !t.reminder_due(by)
         {
             return false;
         }

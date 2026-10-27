@@ -112,6 +112,7 @@ fn the_question_is_tidied_and_a_brief_may_be_left_out() {
         .into_iter()
         .map(|j| match j.kind {
             JobKind::Research { question, brief } => (question, brief),
+            JobKind::Task { .. } => unreachable!("only research was started"),
         })
         .collect();
     got.sort();

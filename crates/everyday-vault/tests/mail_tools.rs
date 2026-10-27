@@ -149,6 +149,7 @@ fn ctx<'a>(vault: &'a Vault, caller: Option<Caller>, provider: Option<&str>) -> 
         tz: "UTC",
         conversation: None,
         unattended: false,
+        follow_up: false,
         caller,
         mail_search: None,
         assistant_provider: provider.map(str::to_string),

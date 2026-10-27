@@ -145,6 +145,11 @@ pub async fn tick(service: &Arc<Service>) {
         tracing::warn!(error = %e, "could not release due snoozes");
     }
 
+    // Tasks whose reminder has come round: theirs are sent, the assistant's
+    // are started. See `reminders`. Before the routines, which may take the
+    // rest of the minute.
+    crate::reminders::sweep(service).await;
+
     // Proposals: the expiry sweep, beside the snooze release just above and
     // independent of whether this vault has routines at all, on the same
     // reasoning -- a vault without proposals answers `false` immediately

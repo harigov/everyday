@@ -287,6 +287,9 @@ fn job_json(job: &Job, detail: bool) -> Value {
                 map.insert("brief".into(), json!(brief));
             }
             JobKind::Research { .. } => {}
+            JobKind::Task { task_id, .. } => {
+                map.insert("task_id".into(), json!(task_id.to_string()));
+            }
         }
         // What the job's own model wrote at the end, from pages strangers
         // wrote: kept apart from the facts above, the way a story's words are.
