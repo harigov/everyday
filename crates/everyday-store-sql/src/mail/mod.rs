@@ -30,7 +30,7 @@ use everyday_core::store::mail::{
 };
 use jiff::Timestamp;
 
-use crate::conn::{Sql, SqlExt, ToValue, Value};
+use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
 use crate::record::Record;
 use crate::{SqlStore, from_us, to_us, vals};
 
@@ -644,6 +644,23 @@ impl MailStore for SqlStore {
             &vals![account.to_string(), to_us(from), to_us(to)],
         )?;
         self.collect(rows, message_aad)
+    }
+
+    fn messages_in_threads(&self, threads: &[ThreadId]) -> Result<Vec<Message>> {
+        // In chunks, so no number of threads reaches a backend's limit on
+        // bound parameters -- see `removing_forty_thousand_uids_...` in the
+        // conformance suite for the limit this keeps under.
+        let mut messages = Vec::new();
+        for chunk in threads.chunks(500) {
+            let (where_sql, args) =
+                Where::new().in_list("thread_id", chunk.iter().map(|t| t.to_string())).finish();
+            let rows = self
+                .read()
+                .records(&format!("SELECT id, data FROM mail_messages WHERE {where_sql}"), &args)?;
+            messages.extend(self.collect::<Message, _>(rows, message_aad)?);
+        }
+        messages.sort_by(|a, b| a.date.cmp(&b.date).then(a.id.cmp(&b.id)));
+        Ok(messages)
     }
 
     // ---- garbage collection --------------------------------------------------

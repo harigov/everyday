@@ -16,6 +16,7 @@ import type {
   AccountId,
   CategoryCount,
   Draft,
+  InboxSender,
   Mailbox,
   MailboxId,
   MailboxRole,
@@ -952,6 +953,22 @@ export function newestSyncedAt(
     if (at && (!newest || new Date(at).getTime() > new Date(newest).getTime())) newest = at
   }
   return newest
+}
+
+// ── Quick cleanup ───────────────────────────────────────────────────────
+
+/** Is every word of `query` somewhere in this sender's address or name,
+ *  ignoring case -- `InboxSender::matches`' rule in
+ *  `everyday_core::mail::cleanup`, applied to rows already on screen while
+ *  `inbox_senders` is asked the same thing. A blank `query` matches all. */
+export function senderMatches(sender: Pick<InboxSender, 'email' | 'name'>, query: string): boolean {
+  const email = sender.email.toLowerCase()
+  const name = sender.name.toLowerCase()
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => email.includes(word) || name.includes(word))
 }
 
 // ── (i) Invitations ─────────────────────────────────────────────────

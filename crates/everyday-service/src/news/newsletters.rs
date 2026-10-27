@@ -38,12 +38,13 @@
 //! run or a conversation in the thread's history that never existed.
 
 use crate::domains::insights;
+use crate::domains::mailcleanup::{inbox_of, inbox_threads};
 use crate::error::CommandResult;
 use crate::events::{self, Change, Kind};
 use crate::service::{Service, blocking};
 use everyday_core::Vault;
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, StoryId, ThreadId};
-use everyday_core::mail::{Category, Mailbox, MailboxRole, Message, OpKind, Origin, cleanup};
+use everyday_core::mail::{Category, MailboxRole, Message, OpKind, Origin, cleanup};
 use everyday_core::news::{FetchState, NewsSource, SUMMARY_CHARS, SourceKind, Story, StoryBody};
 use everyday_core::store::mail::ThreadFilter;
 use jiff::{SignedDuration, Timestamp};
@@ -55,14 +56,6 @@ use std::sync::Arc;
 /// list with the last few issues of a monthly, without dragging in a year of
 /// somebody's archive on the strength of one tick.
 const FIRST_TURN_DAYS: i64 = 30;
-
-/// How many of an Inbox's newsletter threads are read per page while
-/// collecting which ones are still in it.
-const THREAD_PAGE: u32 = 500;
-
-/// The most threads read from any one Inbox, however far back the window
-/// reaches -- a backstop, as it is for Quick Cleanup.
-const MAX_THREADS: usize = 20_000;
 
 /// Someone who sends newsletters to one of this vault's inboxes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -206,19 +199,21 @@ pub fn senders(
     let since = now - SignedDuration::from_hours(i64::from(days) * 24);
     let me = insights::me(vault)?;
 
+    // Asking for the category in the walk is what keeps it to the
+    // newsletters, and not the whole Inbox.
+    let newsletters = ThreadFilter { category: Some(Category::Newsletter), ..Default::default() };
     let mut in_inbox = HashSet::new();
-    let mut messages = Vec::new();
     for account in vault.accounts()?.into_iter().filter(|a| a.services.mail) {
         // An account that has not synced an Inbox yet has nothing in one.
         let Some(inbox) = inbox_of(&vault.mailboxes(account.id)?) else { continue };
-        newsletter_threads(vault, inbox, since, &mut in_inbox)?;
-        messages.extend(
-            vault
-                .mail_between(account.id, since, now)?
-                .into_iter()
-                .filter(|m| m.category == Some(Category::Newsletter)),
-        );
+        inbox_threads(vault, inbox, since, newsletters, None, &mut in_inbox)?;
     }
+    let threads: Vec<ThreadId> = in_inbox.iter().copied().collect();
+    let messages: Vec<Message> = vault
+        .mail_in_threads(&threads)?
+        .into_iter()
+        .filter(|m| m.category == Some(Category::Newsletter))
+        .collect();
     let found = cleanup::inbox_senders(&messages, &in_inbox, &me, since, usize::MAX);
 
     let followed: HashSet<String> = vault
@@ -366,58 +361,6 @@ fn summary_of(snippet: &str) -> String {
     snippet.trim().chars().take(SUMMARY_CHARS).collect()
 }
 
-// ---- finding the Inbox ------------------------------------------------------
-
-/// The mailbox that is an account's Inbox: the one synced with
-/// [`MailboxRole::Inbox`], or on a server that never said which of its
-/// folders was which, the one named `INBOX`. Backslashes are ignored so a
-/// Gmail account synced before `\Inbox` was resolved to its role is found
-/// too. This is Quick Cleanup's rule (`domains::mailcleanup::inbox_of`)
-/// word for word, so the two apps agree about what an Inbox is.
-fn inbox_of(mailboxes: &[Mailbox]) -> Option<MailboxId> {
-    let named_inbox =
-        |m: &&Mailbox| m.remote_name.trim_start_matches('\\').eq_ignore_ascii_case("INBOX");
-    mailboxes
-        .iter()
-        .find(|m| m.role == MailboxRole::Inbox)
-        .or_else(|| mailboxes.iter().find(named_inbox))
-        .map(|m| m.id)
-}
-
-/// Add to `into` every awake thread in `inbox` whose category is Newsletter
-/// and which has activity there since `since`.
-///
-/// Pages newest first and stops at the first page whose last thread is older
-/// than the window, for the reason `domains::mailcleanup::inbox_threads`
-/// gives: a thread's own `last_date` is never older than its newest message
-/// in this mailbox, so once one row is out of the window every later row is
-/// too. Asking for the category here, in the query, is what keeps the walk to
-/// the newsletters and not the whole Inbox.
-fn newsletter_threads(
-    vault: &Vault,
-    inbox: MailboxId,
-    since: Timestamp,
-    into: &mut HashSet<ThreadId>,
-) -> everyday_core::Result<()> {
-    let filter = ThreadFilter {
-        snoozed: Some(false),
-        category: Some(Category::Newsletter),
-        ..Default::default()
-    };
-    let mut cursor: Option<String> = None;
-    let mut read = 0usize;
-    loop {
-        let page = vault.list_threads(inbox, &filter, cursor.as_deref(), THREAD_PAGE)?;
-        read += page.threads.len();
-        let past_the_window = page.threads.last().is_some_and(|t| t.last_date < since);
-        into.extend(page.threads.iter().map(|t| t.id));
-        match page.next_cursor {
-            Some(next) if !past_the_window && read < MAX_THREADS => cursor = Some(next),
-            _ => return Ok(()),
-        }
-    }
-}
-
 // ---- telling mail ---------------------------------------------------------
 
 /// Apply `kind` to `threads` the way a person's click does -- one vault write
@@ -496,10 +439,6 @@ mod tests {
         }
     }
 
-    fn mailbox(name: &str, role: MailboxRole) -> Mailbox {
-        Mailbox::new(AccountId::new(), name, role)
-    }
-
     #[test]
     fn a_sender_matches_without_case_or_surrounding_space() {
         let m = message(Address::new("The Weekly", " News@Example.com "), "Issue 1");
@@ -526,22 +465,5 @@ mod tests {
         assert_eq!(summary_of("  short  "), "short");
         let long = "é".repeat(SUMMARY_CHARS + 50);
         assert_eq!(summary_of(&long).chars().count(), SUMMARY_CHARS);
-    }
-
-    #[test]
-    fn the_inbox_is_found_by_role_then_by_the_name_inbox() {
-        let by_role = mailbox("Whatever", MailboxRole::Inbox);
-        let archive = mailbox("Archive", MailboxRole::Archive);
-        assert_eq!(inbox_of(&[archive.clone(), by_role.clone()]), Some(by_role.id));
-
-        // A server that said nothing about roles, and Gmail's escaped name.
-        let plain = mailbox("inbox", MailboxRole::Other);
-        let gmail = mailbox("\\\\Inbox", MailboxRole::Other);
-        assert_eq!(inbox_of(&[archive.clone(), plain.clone()]), Some(plain.id));
-        assert_eq!(inbox_of(&[archive.clone(), gmail.clone()]), Some(gmail.id));
-
-        // Role wins over a folder that merely shares the name.
-        assert_eq!(inbox_of(&[plain, by_role.clone()]), Some(by_role.id));
-        assert_eq!(inbox_of(&[archive]), None);
     }
 }

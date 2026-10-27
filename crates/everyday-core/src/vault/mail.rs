@@ -426,6 +426,12 @@ impl Vault {
         self.with_mail(|m| m.category_counts(mailbox))
     }
 
+    /// Every message in any of `threads`, oldest first -- see
+    /// [`MailStore::messages_in_threads`].
+    pub fn mail_in_threads(&self, threads: &[ThreadId]) -> Result<Vec<Message>> {
+        self.with_mail(|m| m.messages_in_threads(threads))
+    }
+
     /// `account`'s messages dated in `[from, to)`, spam left out -- see
     /// [`MailStore::messages_between`].
     pub fn mail_between(

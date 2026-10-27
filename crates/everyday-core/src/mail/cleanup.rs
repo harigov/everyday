@@ -53,6 +53,26 @@ pub struct InboxSender {
     pub latest: Timestamp,
 }
 
+impl InboxSender {
+    /// Whether every word of `query` is somewhere in this sender's address
+    /// or name, ignoring case -- what Quick Cleanup's filter box narrows the
+    /// list by, so "github" finds `notifications@github.com` and "the
+    /// weekly" finds The Weekly. Only who they are, never what they wrote:
+    /// the box is for finding a sender to clear out, and a word that also
+    /// turns up in somebody's message would list them beside the sender
+    /// actually meant. A blank `query` matches everybody.
+    ///
+    /// The interface's `senderMatches` applies the same rule to the rows it
+    /// already holds while a fresh answer is on its way.
+    pub fn matches(&self, query: &str) -> bool {
+        let name = self.name.to_lowercase();
+        query
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .all(|word| self.email.contains(&word) || name.contains(&word))
+    }
+}
+
 /// Who sent the most of what is still in the Inbox, since `since`.
 ///
 /// Counts every message in `messages` that is dated at or after `since`, is
@@ -331,5 +351,26 @@ mod tests {
             |email: &str| out.iter().find(|s| s.email == email).map(|s| s.name.clone()).unwrap();
         assert_eq!(name_of("ana@example.com"), "Ana Lima", "newest message that had a name");
         assert_eq!(name_of("bot@example.com"), "bot@example.com", "never empty");
+    }
+
+    #[test]
+    fn a_query_matches_every_word_against_the_address_or_the_name() {
+        let account = AccountId::new();
+        let mut inbox = HashSet::new();
+        let messages = [inbox_mail(
+            &mut inbox,
+            account,
+            person("GitHub Notifications", "Notifications@GitHub.com"),
+            at(1),
+        )];
+        let github = &inbox_senders(&messages, &inbox, &me(), since(), 10)[0];
+
+        for query in ["github", "GITHUB", "notif hub", " github.com ", "", "   "] {
+            assert!(github.matches(query), "{query:?}");
+        }
+        // "noti" is in both, "instagram" in neither: every word must be found.
+        for query in ["instagram", "noti instagram", "github-notifications"] {
+            assert!(!github.matches(query), "{query:?}");
+        }
     }
 }

@@ -58,6 +58,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     an_attachment_flags_the_thread(store);
     removing_the_only_starred_message_clears_starred(store);
     messages_between_keeps_to_its_window_and_leaves_out_spam(store);
+    messages_in_threads_gathers_the_named_threads_from_every_folder(store);
+    a_thread_list_can_keep_to_threads_with_nothing_newer_than_a_date(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -1659,4 +1661,95 @@ fn inbox_threads(m: &dyn MailStore, mailbox: MailboxId) -> Vec<ThreadId> {
         .into_iter()
         .map(|t| t.id)
         .collect()
+}
+
+fn messages_in_threads_gathers_the_named_threads_from_every_folder(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
+    for mailbox in [&inbox, &sent] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let t0 = Timestamp::from_second(1_790_000_000).unwrap();
+    let at = |hours: i64| t0 + SignedDuration::from_hours(hours);
+
+    let (asked, also_asked, not_asked) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
+    let question = message(account, asked, "question", "a@example.com", at(0));
+    let reply = message(account, asked, "Re: question", "me@example.com", at(2));
+    let other = message(account, also_asked, "other", "b@example.com", at(1));
+    let unasked = message(account, not_asked, "unasked", "c@example.com", at(3));
+    // Six hundred threads more, past one chunk of ids.
+    let many: Vec<Message> = (0..600)
+        .map(|i| message(account, ThreadId::new(), "many", "d@example.com", at(10 + i)))
+        .collect();
+    let mut ingest = vec![
+        IngestMessage { message: reply.clone(), mailbox: sent.id, uid: 1 },
+        IngestMessage { message: question.clone(), mailbox: inbox.id, uid: 1 },
+        IngestMessage { message: other.clone(), mailbox: inbox.id, uid: 2 },
+        IngestMessage { message: unasked, mailbox: inbox.id, uid: 3 },
+    ];
+    for (uid, message) in (4..).zip(&many) {
+        ingest.push(IngestMessage { message: message.clone(), mailbox: inbox.id, uid });
+    }
+    m.ingest(account, ingest).unwrap();
+
+    let ids = |threads: &[ThreadId]| -> Vec<MailMessageId> {
+        m.messages_in_threads(threads).unwrap().into_iter().map(|msg| msg.id).collect()
+    };
+    assert_eq!(
+        ids(&[also_asked, asked, ThreadId::new()]),
+        vec![question.id, other.id, reply.id],
+        "oldest first, the reply filed in Sent included, an unknown thread adding nothing"
+    );
+    assert!(ids(&[]).is_empty());
+    let every: Vec<ThreadId> = many.iter().map(|msg| msg.thread_id).collect();
+    assert_eq!(
+        ids(&every),
+        many.iter().map(|msg| msg.id).collect::<Vec<_>>(),
+        "more threads than one chunk"
+    );
+
+    cleanup_account(store, account);
+}
+
+fn a_thread_list_can_keep_to_threads_with_nothing_newer_than_a_date(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
+    for mailbox in [&inbox, &sent] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let t0 = Timestamp::from_second(1_790_000_000).unwrap();
+    let at = |hours: i64| t0 + SignedDuration::from_hours(hours);
+
+    // Old in the Inbox, but answered later from Sent: not old as a whole.
+    let (answered, quiet) = (ThreadId::new(), ThreadId::new());
+    let asked = message(account, answered, "asked", "a@example.com", at(0));
+    let answer = message(account, answered, "Re: asked", "me@example.com", at(10));
+    let left = message(account, quiet, "left", "b@example.com", at(5));
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: asked, mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: answer, mailbox: sent.id, uid: 1 },
+            IngestMessage { message: left, mailbox: inbox.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+
+    let listed = |before: i64| -> Vec<ThreadId> {
+        let filter = ThreadFilter { last_before: Some(at(before)), ..Default::default() };
+        m.list_threads(inbox.id, &filter, None, 50).unwrap().threads.iter().map(|t| t.id).collect()
+    };
+    assert_eq!(listed(8), vec![quiet], "the answered thread's newest message is in Sent, later");
+    assert_eq!(listed(5), Vec::<ThreadId>::new(), "before, not at");
+    assert_eq!(
+        listed(11),
+        vec![quiet, answered],
+        "in the Inbox's own order, by each thread's newest message there"
+    );
+
+    cleanup_account(store, account);
 }

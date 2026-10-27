@@ -356,7 +356,15 @@ export interface Commands {
     result: WrittenText
   }
   inboxSenders: {
-    args: { days?: number | null; accounts?: AccountId[] | null; limit?: number | null }
+    args: {
+      days?: number | null
+      accounts?: AccountId[] | null
+      limit?: number | null
+      category?: MailCategory | null
+      sortedAs?: string | null
+      query?: string | null
+      olderThanDays?: number | null
+    }
     result: InboxSender[]
   }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }

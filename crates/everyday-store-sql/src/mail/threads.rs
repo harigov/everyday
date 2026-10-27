@@ -9,9 +9,9 @@ use everyday_core::id::{AccountId, MailboxId, ThreadId};
 use everyday_core::mail::{Category, Thread};
 use everyday_core::store::mail::{ThreadFilter, ThreadPage, thread_aad};
 
-use crate::SqlStore;
 use crate::conn::{Sql, Value, Where};
 use crate::keyset::{Dir, KeyCursor};
+use crate::{SqlStore, to_us};
 
 /// See [`everyday_core::store::mail::MailStore::list_threads`]: the
 /// one-mailbox case of [`list_threads_across`], and written as exactly that
@@ -62,6 +62,9 @@ pub(super) fn list_threads_across(
         Some(true) => w = w.not_null("t.snoozed_until_us"),
         Some(false) => w = w.is_null("t.snoozed_until_us"),
         None => {}
+    }
+    if let Some(before) = filter.last_before {
+        w = w.lt("t.last_date_us", to_us(before));
     }
     let (where_sql, mut args) = w.finish();
     let mut sql = format!(

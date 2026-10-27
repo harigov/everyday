@@ -22,6 +22,7 @@ import type {
   Draft,
   DraftId,
   InboxSender,
+  InboxSendersArgs,
   MailActionByOrigin,
   MailAddress,
   MailAgentOriginKind,
@@ -51,6 +52,7 @@ import type {
   ScheduledSend,
 } from './types'
 import { VaultError } from './types'
+import { senderMatches } from './mail'
 
 const GOOGLE: AccountId = 'acct-google'
 const FASTMAIL: AccountId = 'acct-fastmail'
@@ -824,23 +826,30 @@ export function mockListThreadsAcross(
 
 /**
  * `inbox_senders`, over the seed: every message from someone else in the
- * last `days`, in a thread still in an Inbox and not snoozed, grouped by
- * the sender's lower-cased address -- most messages first, then most
- * unread. The seed's automated senders (The Economist, GitHub) and its
- * regular correspondents each have several such messages, so every period
- * has somebody worth cleaning out.
+ * last `days`, in a thread still in an Inbox, not snoozed and of the kind
+ * asked for, grouped by the sender's lower-cased address -- most messages
+ * first, then most unread -- and narrowed to the senders `query` matches
+ * before `limit` cuts it. The seed's automated senders (The Economist,
+ * GitHub) and its regular correspondents each have several such messages,
+ * so every period has somebody worth cleaning out.
  */
-export function mockInboxSenders(
-  days: number | null,
-  accounts: AccountId[] | null | undefined,
-  limit: number | null | undefined,
-): InboxSender[] {
-  const take = Math.min(50, Math.max(1, limit ?? 20))
+export function mockInboxSenders({
+  days,
+  accounts,
+  limit,
+  category,
+  sortedAs,
+  query,
+  olderThanDays,
+}: InboxSendersArgs): InboxSender[] {
+  const take = Math.min(20_000, Math.max(1, limit ?? 20))
   // `null` is all time, as it is to the real command.
   const since =
     days === null
       ? -Infinity
       : Date.now() - Math.min(365, Math.max(1, Math.round(days))) * 86_400_000
+  // A conversation is old only if nothing in it is newer than this.
+  const before = olderThanDays == null ? Infinity : Date.now() - olderThanDays * 86_400_000
   const inboxes = new Set(
     mailboxes
       .filter((m) => m.role === 'inbox' && (!accounts || accounts.includes(m.accountId)))
@@ -859,6 +868,9 @@ export function mockInboxSenders(
   for (const t of seed.threads) {
     if (t.snoozedUntil != null) continue
     if (!(seed.threadMailboxes.get(t.id) ?? []).some((id) => inboxes.has(id))) continue
+    if (category && t.category !== category) continue
+    if (sortedAs && t.sortedAs?.category !== sortedAs) continue
+    if (new Date(t.lastDate).getTime() >= before) continue
     for (const m of messagesOf(t.id)) {
       if (new Date(m.date).getTime() < since) continue
       const email = m.from.email.toLowerCase()
@@ -894,6 +906,7 @@ export function mockInboxSenders(
     .sort(
       (a, b) => b.messages - a.messages || b.unread - a.unread || a.email.localeCompare(b.email),
     )
+    .filter((s) => senderMatches(s, query ?? ''))
     .slice(0, take)
 }
 

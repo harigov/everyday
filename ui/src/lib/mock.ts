@@ -7181,11 +7181,15 @@ export const mockInvoke = async <T>(
 
     case 'inbox_senders':
       requireUnlocked()
-      return mockInboxSenders(
-        typeof args.days === 'number' ? args.days : null,
-        Array.isArray(args.accounts) ? strArray(args.accounts) : null,
-        typeof args.limit === 'number' ? args.limit : null,
-      ) as T
+      return mockInboxSenders({
+        days: typeof args.days === 'number' ? args.days : null,
+        accounts: Array.isArray(args.accounts) ? strArray(args.accounts) : null,
+        limit: typeof args.limit === 'number' ? args.limit : null,
+        category: typeof args.category === 'string' ? (args.category as MailCategory) : null,
+        sortedAs: typeof args.sortedAs === 'string' ? args.sortedAs : null,
+        query: typeof args.query === 'string' ? args.query : null,
+        olderThanDays: typeof args.olderThanDays === 'number' ? args.olderThanDays : null,
+      }) as T
 
     case 'get_thread':
       requireUnlocked()

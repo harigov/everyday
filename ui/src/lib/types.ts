@@ -1989,11 +1989,14 @@ export interface MailSortingView {
   older: OlderSortView[]
 }
 
-/** All three fields ANDed; `null`/absent means "do not filter on this." */
+/** Every field ANDed; `null`/absent means "do not filter on this." */
 export interface ThreadFilter {
   unread?: boolean | null
   category?: MailCategory | null
   snoozed?: boolean | null
+  /** Only threads whose newest message, wherever it is filed, is before
+   *  this ISO instant. */
+  lastBefore?: string | null
 }
 
 /** `category_counts`: how many of one mailbox's threads carry `category`
@@ -2109,11 +2112,37 @@ export interface MailSyncProgress {
 }
 
 /**
+ * What `inbox_senders` counts. Every filter is optional and they all apply
+ * together; `category` and `sortedAs` pick conversations, so a sender who
+ * sends several kinds of mail is counted -- and cleared out -- only for the
+ * kind asked for. `query` picks senders, by every word being in their name
+ * or address (`senderMatches`), before `limit` cuts the list.
+ */
+export interface InboxSendersArgs {
+  /** Days back, 1..365; `null` for everything still in the Inbox. */
+  days: number | null
+  /** `null` or absent for every mail account. */
+  accounts?: AccountId[] | null
+  /** 20 when absent; at most 20,000 -- as many as one Inbox can hold. */
+  limit?: number | null
+  /** Only conversations in this inbox tab. */
+  category?: MailCategory | null
+  /** Only conversations a decision model sorted into this one of your own
+   *  categories, by its `SortCategory.id`. */
+  sortedAs?: string | null
+  query?: string | null
+  /** Only conversations with nothing newer than this many days, 1..3650 --
+   *  every message in them, however recent its first. With `days` too, the
+   *  window runs from `days` ago to this, so `days` must be the larger. */
+  olderThanDays?: number | null
+}
+
+/**
  * One sender `inbox_senders` ranks for Quick cleanup: who sent the most
- * messages in the last few days that are still sitting in the Inbox (not
- * snoozed), your own addresses left out. `threads` is exactly the Inbox
- * conversations those messages are in, newest first -- what archiving or
- * trashing "everything from them" acts on.
+ * messages in the window that are still sitting in the Inbox (not snoozed),
+ * your own addresses left out. `threads` is exactly the Inbox conversations
+ * those messages are in -- of the kind asked for, when one was -- newest
+ * first: what archiving or trashing "everything from them" acts on.
  */
 export interface InboxSender {
   email: string

@@ -1963,6 +1963,26 @@
           "name": "limit",
           "required": false,
           "type": "number | null"
+        },
+        {
+          "name": "category",
+          "required": false,
+          "type": "MailCategory | null"
+        },
+        {
+          "name": "sortedAs",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "query",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "olderThanDays",
+          "required": false,
+          "type": "number | null"
         }
       ],
       "changes": null,

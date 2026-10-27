@@ -80,6 +80,11 @@ pub struct ThreadFilter {
     /// `Some(true)` for only snoozed threads (`snoozed_until` in the
     /// future); `Some(false)` for only threads that are not.
     pub snoozed: Option<bool>,
+    /// Only threads whose newest message, in whichever mailbox it is filed,
+    /// is dated before this -- [`Thread::last_date`], not the per-mailbox
+    /// date the list is ordered by. What Quick Cleanup's "older than" asks:
+    /// a conversation with anything newer is not old mail.
+    pub last_before: Option<Timestamp>,
 }
 
 /// How many of one mailbox's threads carry one category -- a row of
@@ -618,6 +623,15 @@ pub trait MailStore: Send + Sync {
         from: Timestamp,
         to: Timestamp,
     ) -> Result<Vec<Message>>;
+
+    /// Every message in any of `threads`, whatever mailbox it is filed in,
+    /// oldest first (`date`, then `id`). An id naming no thread adds
+    /// nothing; any number of ids may be asked for at once.
+    ///
+    /// For a count that already knows which threads it can count -- Quick
+    /// Cleanup's, over the threads still in an Inbox -- so that it decrypts
+    /// those and not every message in a window of the whole account.
+    fn messages_in_threads(&self, threads: &[ThreadId]) -> Result<Vec<Message>>;
 
     // ---- garbage collection --------------------------------------------------
 

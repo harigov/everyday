@@ -298,6 +298,11 @@ impl Where {
         self.push(&format!("{column} <="), value)
     }
 
+    pub fn lt(self, column: &str, value: impl ToValue) -> Self {
+        let value = value.to_value();
+        self.push(&format!("{column} <"), value)
+    }
+
     pub fn is_null(mut self, column: &str) -> Self {
         self.sql.push_str(&format!(" AND {column} IS NULL"));
         self

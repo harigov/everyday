@@ -111,6 +111,7 @@ import type {
   TaskStatus,
   TemplateId,
   ThreadFilter,
+  InboxSendersArgs,
   ThreadId,
   TimeBlock,
   Tracker,
@@ -1657,10 +1658,9 @@ export const api = {
   // ── Mail: Quick cleanup ─────────────────────────────────────────────
 
   /** Who sent the most of what is still in the Inbox over the last `days`
-   *  (1..365), most first; `accounts` absent or `null` is every mail
-   *  account, `limit` defaults to 20 and stops at 50. */
-  inboxSenders: (days: number | null, accounts?: AccountId[] | null, limit?: number | null) =>
-    call('inboxSenders', { days, accounts, limit }),
+   *  (1..365, `null` for all of it), most first -- narrowed by account, by
+   *  kind of mail and by name, see `InboxSendersArgs`. */
+  inboxSenders: (args: InboxSendersArgs) => call('inboxSenders', args),
 
   // ── The Feed ─────────────────────────────────────────────────────────
   //

@@ -43,6 +43,7 @@ const {
   messageDateLabel,
   sumCategoryCounts,
   gmailSystemLabel,
+  senderMatches,
   mailboxDisplayName,
   promoteGmailInbox,
   dateSection,
@@ -925,6 +926,19 @@ assert.deepEqual(sumCategoryCounts([]), [], 'no inboxes, no badges')
     / at 0?9:05/,
     'an older day still carries its time',
   )
+}
+
+// ── senderMatches: Quick cleanup's filter box ─────────────────────────
+
+{
+  const github = { email: 'notifications@github.com', name: 'GitHub Notifications' }
+  for (const query of ['github', 'GITHUB', 'notif hub', ' github.com ', '', '   ']) {
+    assert.equal(senderMatches(github, query), true, JSON.stringify(query))
+  }
+  // Every word has to be found, in the address or the name.
+  for (const query of ['instagram', 'noti instagram', 'github-notifications']) {
+    assert.equal(senderMatches(github, query), false, JSON.stringify(query))
+  }
 }
 
 await close()

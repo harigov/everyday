@@ -25,6 +25,7 @@ import type {
   Draft,
   DraftId,
   InboxSender,
+  InboxSendersArgs,
   MailAddress,
   MailAttachment,
   MailboxId,
@@ -179,12 +180,9 @@ export const suggestAddresses = (prefix: string, limit?: number): Promise<MailAd
 // ── Quick cleanup ──────────────────────────────────────────────────────
 
 /** The senders with the most messages still in the Inbox over the last
- *  `days`, most first -- `accounts` `null` for every mail account. */
-export const inboxSenders = (
-  days: number | null,
-  accounts?: AccountId[] | null,
-  limit?: number | null,
-): Promise<InboxSender[]> => api.inboxSenders(days, accounts, limit)
+ *  `days`, most first, narrowed as `args` says. */
+export const inboxSenders = (args: InboxSendersArgs): Promise<InboxSender[]> =>
+  api.inboxSenders(args)
 
 // ── (i) Invitations ─────────────────────────────────────────────────
 //
