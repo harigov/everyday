@@ -41,10 +41,10 @@
   import { notify } from '../lib/notify.svelte'
   import { menu } from '../lib/menu.svelte'
   import type { MenuItem } from '../lib/menu'
-  import { DECLINE_REASONS, proposals } from '../lib/proposals.svelte'
+  import { declineItems, proposals } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import { timeOfDay, toLocalInputValue } from '../lib/format'
-  import type { Draft, ImproveMode, MailAddress } from '../lib/types'
+  import type { DeclineReason, Draft, ImproveMode, MailAddress } from '../lib/types'
   import Icon from './Icon.svelte'
 
   /** Polish, Shorter, Longer, Friendlier, More formal, Fix -- the Improve
@@ -91,7 +91,8 @@
       .find((p) => p.payload.type === 'sendMail' && p.payload.draftId === draft.id) ?? null,
   )
   const proposalBusy = $derived(proposal ? proposals.isBusy(proposal.id) : false)
-  let choosingReason = $state(false)
+  const reasons = Symbol('decline reasons')
+  const choosingReason = $derived(menu.owner === reasons)
 
   $effect(() => {
     if (proposal) void proposals.markSeen([proposal])
@@ -615,11 +616,15 @@
 
   /** Decline, but leave the draft and the sheet exactly as they were --
    *  declining a proposal to send is not a request to throw the draft away. */
-  async function declineProposal(reason: (typeof DECLINE_REASONS)[number]['reason'] | null) {
+  async function declineProposal(reason: DeclineReason | null) {
     const p = proposal
     if (!p) return
-    choosingReason = false
     await proposals.decline(p, reason)
+  }
+
+  function toggleReasons(e: MouseEvent) {
+    if (choosingReason) menu.close()
+    else menu.show(e, declineItems(declineProposal), reasons)
   }
 
   async function discard() {
@@ -931,23 +936,16 @@
            give way to accept and decline, the same pair every ghost in the
            app offers, because a proposal answered from in here is still
            answered through `proposals.accept`/`decline` and not `mail.send`. -->
-      <div class="decline-wrap">
-        <button
-          class="btn"
-          disabled={proposalBusy}
-          onclick={() => (choosingReason = !choosingReason)}
-        >
-          Decline
-        </button>
-        {#if choosingReason}
-          <div class="reasons" role="menu">
-            <button role="menuitem" onclick={() => declineProposal(null)}>Just decline</button>
-            {#each DECLINE_REASONS as r (r.label)}
-              <button role="menuitem" onclick={() => declineProposal(r.reason)}>{r.label}</button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+      <button
+        class="btn"
+        disabled={proposalBusy}
+        data-menu-trigger
+        aria-haspopup="menu"
+        aria-expanded={choosingReason}
+        onclick={toggleReasons}
+      >
+        Decline
+      </button>
       <button class="btn btn-primary" disabled={proposalBusy} onclick={() => void acceptProposal()}>
         Send <span class="hint">(Mod+Enter)</span>
       </button>
@@ -1384,9 +1382,6 @@
     color: var(--journal-accent, var(--accent));
   }
 
-  .decline-wrap {
-    position: relative;
-  }
   .later-wrap {
     position: relative;
   }
@@ -1429,34 +1424,5 @@
   }
   .later-pop input[type='datetime-local'] {
     margin-bottom: var(--sp-1);
-  }
-  .reasons {
-    position: absolute;
-    right: 0;
-    bottom: 100%;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    min-width: 160px;
-    margin-bottom: 4px;
-    padding: var(--sp-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-    box-shadow: var(--shadow);
-  }
-  .reasons button {
-    padding: var(--sp-1) var(--sp-2);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-sm);
-    text-align: left;
-    cursor: pointer;
-  }
-  .reasons button:hover {
-    background: var(--bg-hover);
   }
 </style>

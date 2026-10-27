@@ -17,6 +17,7 @@
 // registered with `onAccepted` for that kind, and the store reloads itself.
 
 import { api } from './api'
+import type { MenuItem } from './menu'
 import { app, handle, isLocked } from './state.svelte'
 import type {
   DeclineReason,
@@ -51,6 +52,21 @@ export const DECLINE_REASONS: { reason: DeclineReason; label: string }[] = [
   { reason: { type: 'wrongTime' }, label: 'Wrong time' },
   { reason: { type: 'neverThis' }, label: 'Never suggest this' },
 ]
+
+/**
+ * The decline menu: a plain decline, then each reason.
+ *
+ * Raised through the window's one menu (`menu.svelte.ts`) rather than drawn
+ * inside whatever holds the Decline button. A dropdown drawn in place took
+ * on every container it sat in: a row's opacity, a time-grid block's
+ * clipping, a later row drawn over it, a block's drag starting under it.
+ */
+export function declineItems(answer: (reason: DeclineReason | null) => unknown): MenuItem[] {
+  return [
+    { label: 'Just decline', run: () => answer(null) },
+    ...DECLINE_REASONS.map((r) => ({ label: r.label, run: () => answer(r.reason) })),
+  ]
+}
 
 /** The record a proposal would save, if it saves one. */
 export function recordOf(p: Proposal): ProposedRecord | null {

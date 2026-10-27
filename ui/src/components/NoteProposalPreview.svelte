@@ -8,18 +8,20 @@
   // accepting", and accepting hands the record straight to the ordinary
   // editor the way any other note does.
 
-  import { DECLINE_REASONS, proposals, recordAs } from '../lib/proposals.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { declineItems, proposals, recordAs } from '../lib/proposals.svelte'
   import { notes, previewText } from '../lib/notes.svelte'
   import { plural } from '../lib/format'
   import Icon from './Icon.svelte'
-  import type { Proposal } from '../lib/types'
+  import type { DeclineReason, Proposal } from '../lib/types'
 
   let { proposal }: { proposal: Proposal } = $props()
 
   const note = $derived(recordAs(proposal, 'note'))
   const text = $derived(note ? previewText(note.body) : '')
   const busy = $derived(proposals.isBusy(proposal.id))
-  let choosing = $state(false)
+  const reasons = Symbol('decline reasons')
+  const choosing = $derived(menu.owner === reasons)
 
   async function accept() {
     if (!note) return
@@ -29,10 +31,14 @@
     if (closed) notes.closeProposal()
   }
 
-  async function decline(reason: (typeof DECLINE_REASONS)[number]['reason'] | null) {
-    choosing = false
+  async function decline(reason: DeclineReason | null) {
     await proposals.decline(proposal, reason)
     notes.closeProposal()
+  }
+
+  function toggleReasons(e: MouseEvent) {
+    if (choosing) menu.close()
+    else menu.show(e, declineItems(decline), reasons)
   }
 </script>
 
@@ -61,19 +67,16 @@
 
     <footer class="status">
       <span class="spacer"></span>
-      <div class="decline-wrap">
-        <button class="btn" disabled={busy} onclick={() => (choosing = !choosing)}>
-          Decline
-        </button>
-        {#if choosing}
-          <div class="reasons" role="menu">
-            <button role="menuitem" onclick={() => decline(null)}>Just decline</button>
-            {#each DECLINE_REASONS as r (r.label)}
-              <button role="menuitem" onclick={() => decline(r.reason)}>{r.label}</button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+      <button
+        class="btn"
+        disabled={busy}
+        data-menu-trigger
+        aria-haspopup="menu"
+        aria-expanded={choosing}
+        onclick={toggleReasons}
+      >
+        Decline
+      </button>
       <button class="btn btn-primary" disabled={busy} onclick={accept}>Accept</button>
     </footer>
   </div>
@@ -166,37 +169,5 @@
   }
   .status .spacer {
     flex: 1;
-  }
-  .decline-wrap {
-    position: relative;
-  }
-  .reasons {
-    position: absolute;
-    right: 0;
-    bottom: 100%;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    min-width: 160px;
-    margin-bottom: 4px;
-    padding: var(--sp-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-    box-shadow: var(--shadow);
-  }
-  .reasons button {
-    padding: var(--sp-1) var(--sp-2);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-sm);
-    text-align: left;
-    cursor: pointer;
-  }
-  .reasons button:hover {
-    background: var(--bg-hover);
   }
 </style>

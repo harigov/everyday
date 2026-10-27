@@ -9,7 +9,8 @@
   // docs/plans/dreaming.md.
 
   import type { Snippet } from 'svelte'
-  import { DECLINE_REASONS, proposals } from '../lib/proposals.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { declineItems, proposals } from '../lib/proposals.svelte'
   import type { DeclineReason, Proposal } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -40,7 +41,8 @@
     children?: Snippet
   } = $props()
 
-  let choosing = $state(false)
+  const reasons = Symbol('decline reasons')
+  const choosing = $derived(menu.owner === reasons)
   const busy = $derived(proposals.isBusy(proposal.id))
 
   async function accept(e: Event) {
@@ -49,15 +51,14 @@
     if (closed) onaccepted?.(closed)
   }
 
-  async function decline(e: Event, reason: DeclineReason | null) {
-    e.stopPropagation()
-    choosing = false
-    await proposals.decline(proposal, reason)
+  function decline(reason: DeclineReason | null) {
+    return proposals.decline(proposal, reason)
   }
 
-  function toggleReasons(e: Event) {
+  function toggleReasons(e: MouseEvent) {
     e.stopPropagation()
-    choosing = !choosing
+    if (choosing) menu.close()
+    else menu.show(e, declineItems(decline), reasons)
   }
 </script>
 
@@ -87,7 +88,9 @@
     {/if}
   </div>
 
-  <div class="answers" class:open={choosing}>
+  <!-- `choosing`, not `open`: `.open` is the title button's class, and its
+       faded, clipped look would land here too. -->
+  <div class="answers" class:choosing>
     <button
       class="yes"
       disabled={busy}
@@ -101,22 +104,16 @@
     <button
       class="no"
       disabled={busy}
+      data-menu-trigger
       onclick={toggleReasons}
       aria-label="Decline proposal"
+      aria-haspopup="menu"
       aria-expanded={choosing}
       title="Decline"
     >
       <Icon name="close" size={13} />
       {#if !compact}Decline{/if}
     </button>
-    {#if choosing}
-      <div class="reasons" role="menu">
-        <button role="menuitem" onclick={(e) => decline(e, null)}>Just decline</button>
-        {#each DECLINE_REASONS as r (r.label)}
-          <button role="menuitem" onclick={(e) => decline(e, r.reason)}>{r.label}</button>
-        {/each}
-      </div>
-    {/if}
   </div>
 </div>
 
@@ -264,7 +261,7 @@
   }
   .ghost.compact:hover .answers,
   .ghost.compact:focus-within .answers,
-  .compact .answers.open {
+  .compact .answers.choosing {
     opacity: 1;
     pointer-events: auto;
   }
@@ -280,34 +277,5 @@
   .answers > button:disabled {
     opacity: 0.5;
     cursor: default;
-  }
-  .reasons {
-    position: absolute;
-    right: 0;
-    top: 100%;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    min-width: 160px;
-    margin-top: 2px;
-    padding: var(--sp-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-    box-shadow: var(--shadow);
-  }
-  .reasons button {
-    padding: var(--sp-1) var(--sp-2);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-sm);
-    text-align: left;
-    cursor: pointer;
-  }
-  .reasons button:hover {
-    background: var(--bg-hover);
   }
 </style>

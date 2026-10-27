@@ -6,13 +6,14 @@
   // lives only in this component; accepting hands it to `proposals.accept`,
   // which is the one write that happens, and only once.
 
-  import { DECLINE_REASONS, edited, proposals, recordAs } from '../lib/proposals.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { declineItems, edited, proposals, recordAs } from '../lib/proposals.svelte'
   import { todo } from '../lib/todo.svelte'
   import { formatMinutes } from '../lib/format'
   import Icon from './Icon.svelte'
   import PurposeField from './PurposeField.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
-  import type { Priority, Purpose, Task, TaskStatus } from '../lib/types'
+  import type { DeclineReason, Priority, Purpose, Task, TaskStatus } from '../lib/types'
   import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
 
   let { proposal }: { proposal: import('../lib/types').Proposal } = $props()
@@ -35,7 +36,8 @@
   })
 
   const busy = $derived(proposals.isBusy(proposal.id))
-  let choosing = $state(false)
+  const reasons = Symbol('decline reasons')
+  const choosing = $derived(menu.owner === reasons)
 
   function patch(changes: Partial<Task>) {
     if (!draft) return
@@ -53,10 +55,14 @@
     if (closed) todo.closeProposal()
   }
 
-  async function decline(reason: (typeof DECLINE_REASONS)[number]['reason'] | null) {
-    choosing = false
+  async function decline(reason: DeclineReason | null) {
     await proposals.decline(proposal, reason)
     todo.closeProposal()
+  }
+
+  function toggleReasons(e: MouseEvent) {
+    if (choosing) menu.close()
+    else menu.show(e, declineItems(decline), reasons)
   }
 
   /** `<input type="number">` gives '' for a cleared field, which means "none". */
@@ -181,19 +187,16 @@
     </div>
 
     <footer class="answers">
-      <div class="decline-wrap">
-        <button class="btn" disabled={busy} onclick={() => (choosing = !choosing)}>
-          Decline
-        </button>
-        {#if choosing}
-          <div class="reasons" role="menu">
-            <button role="menuitem" onclick={() => decline(null)}>Just decline</button>
-            {#each DECLINE_REASONS as r (r.label)}
-              <button role="menuitem" onclick={() => decline(r.reason)}>{r.label}</button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+      <button
+        class="btn"
+        disabled={busy}
+        data-menu-trigger
+        aria-haspopup="menu"
+        aria-expanded={choosing}
+        onclick={toggleReasons}
+      >
+        Decline
+      </button>
       <button class="btn btn-primary" disabled={busy} onclick={accept}>
         {changed ? 'Save & accept' : 'Accept'}
       </button>
@@ -350,37 +353,5 @@
     padding: var(--sp-3) var(--sp-4);
     border-top: 1px solid var(--border);
     flex: none;
-  }
-  .decline-wrap {
-    position: relative;
-  }
-  .reasons {
-    position: absolute;
-    left: 0;
-    bottom: 100%;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    min-width: 160px;
-    margin-bottom: 4px;
-    padding: var(--sp-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-    box-shadow: var(--shadow);
-  }
-  .reasons button {
-    padding: var(--sp-1) var(--sp-2);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-sm);
-    text-align: left;
-    cursor: pointer;
-  }
-  .reasons button:hover {
-    background: var(--bg-hover);
   }
 </style>

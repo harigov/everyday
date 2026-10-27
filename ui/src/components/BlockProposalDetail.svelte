@@ -7,11 +7,12 @@
   // what dragging the ghost on the grid is for.
 
   import { calendar } from '../lib/calendar.svelte'
-  import { DECLINE_REASONS, edited, proposals, recordAs } from '../lib/proposals.svelte'
+  import { menu } from '../lib/menu.svelte'
+  import { declineItems, edited, proposals, recordAs } from '../lib/proposals.svelte'
   import { dayHeading, formatMinutes, toLocalTimeValue } from '../lib/format'
   import { instantAt, minutesBetween } from '../lib/time'
   import Icon from './Icon.svelte'
-  import type { Proposal, TimeBlock } from '../lib/types'
+  import type { DeclineReason, Proposal, TimeBlock } from '../lib/types'
 
   let { proposal }: { proposal: Proposal } = $props()
 
@@ -32,7 +33,8 @@
   })
 
   const busy = $derived(proposals.isBusy(proposal.id))
-  let choosing = $state(false)
+  const reasons = Symbol('decline reasons')
+  const choosing = $derived(menu.owner === reasons)
 
   function patch(changes: Partial<TimeBlock>) {
     if (!draft) return
@@ -61,10 +63,14 @@
     if (closed) calendar.closeProposal()
   }
 
-  async function decline(reason: (typeof DECLINE_REASONS)[number]['reason'] | null) {
-    choosing = false
+  async function decline(reason: DeclineReason | null) {
     await proposals.decline(proposal, reason)
     calendar.closeProposal()
+  }
+
+  function toggleReasons(e: MouseEvent) {
+    if (choosing) menu.close()
+    else menu.show(e, declineItems(decline), reasons)
   }
 </script>
 
@@ -137,19 +143,16 @@
     ></textarea>
 
     <footer class="answers">
-      <div class="decline-wrap">
-        <button class="btn" disabled={busy} onclick={() => (choosing = !choosing)}>
-          Decline
-        </button>
-        {#if choosing}
-          <div class="reasons" role="menu">
-            <button role="menuitem" onclick={() => decline(null)}>Just decline</button>
-            {#each DECLINE_REASONS as r (r.label)}
-              <button role="menuitem" onclick={() => decline(r.reason)}>{r.label}</button>
-            {/each}
-          </div>
-        {/if}
-      </div>
+      <button
+        class="btn"
+        disabled={busy}
+        data-menu-trigger
+        aria-haspopup="menu"
+        aria-expanded={choosing}
+        onclick={toggleReasons}
+      >
+        Decline
+      </button>
       <button class="btn btn-primary" disabled={busy} onclick={accept}>
         {changed ? 'Save & accept' : 'Accept'}
       </button>
@@ -307,37 +310,5 @@
     justify-content: flex-end;
     gap: var(--sp-2);
     margin-top: auto;
-  }
-  .decline-wrap {
-    position: relative;
-  }
-  .reasons {
-    position: absolute;
-    left: 0;
-    bottom: 100%;
-    z-index: 20;
-    display: flex;
-    flex-direction: column;
-    min-width: 160px;
-    margin-bottom: 4px;
-    padding: var(--sp-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
-    box-shadow: var(--shadow);
-  }
-  .reasons button {
-    padding: var(--sp-1) var(--sp-2);
-    border: none;
-    border-radius: var(--radius-sm);
-    background: none;
-    color: var(--fg);
-    font: inherit;
-    font-size: var(--text-sm);
-    text-align: left;
-    cursor: pointer;
-  }
-  .reasons button:hover {
-    background: var(--bg-hover);
   }
 </style>

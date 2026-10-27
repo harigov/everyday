@@ -23,6 +23,13 @@ class MenuState {
   items = $state<MenuItem[]>([])
   /** Where it was raised, in client coordinates. `null` when closed. */
   at = $state<Point | null>(null)
+  /**
+   * Who raised it, when a trigger has to know the open menu is its own: one
+   * Decline button among a dozen on screen answers `aria-expanded` for its
+   * own reasons, not for whatever menu the window has open. `null` when
+   * closed, or when nobody claimed it.
+   */
+  owner = $state<symbol | null>(null)
 
   /** Who to give focus back to, so Escape does not strand the keyboard. */
   #opener: HTMLElement | null = null
@@ -35,7 +42,7 @@ class MenuState {
    * the same decision, and a caller that had to remember them separately
    * would eventually forget one.
    */
-  show(event: MouseEvent, items: MenuItem[]) {
+  show(event: MouseEvent, items: MenuItem[], owner: symbol | null = null) {
     if (items.length === 0) return
     // Text is not ours. A field or an editor keeps the webview's own menu,
     // whatever it happens to sit inside -- the notes box in the calendar's
@@ -49,6 +56,7 @@ class MenuState {
     event.stopPropagation()
     this.items = items
     this.at = pointOf(event)
+    this.owner = owner
     this.#opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
   }
 
@@ -62,6 +70,7 @@ class MenuState {
     if (items.length === 0) return
     this.items = items
     this.at = { x, y }
+    this.owner = null
     this.#opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
   }
 
@@ -70,6 +79,7 @@ class MenuState {
     if (!this.at) return
     this.at = null
     this.items = []
+    this.owner = null
     const opener = this.#opener
     this.#opener = null
     if (restoreFocus && opener?.isConnected) opener.focus()
