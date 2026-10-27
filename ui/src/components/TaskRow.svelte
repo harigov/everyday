@@ -28,7 +28,7 @@
   import { friendlyDate, formatClock, formatMinutes } from '../lib/format'
   import { menu } from '../lib/menu.svelte'
   import { taskMenu } from '../lib/menus'
-  import { lateLabel, zoneAt } from '../lib/tasklist'
+  import { lateLabel, nextReminder, reminderLabel, zoneAt } from '../lib/tasklist'
   import { tick } from 'svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -54,6 +54,9 @@
   const progress = $derived(todo.progressOf(task.id))
   const overdue = $derived(todo.overdue(task))
   const late = $derived(todo.daysLate(task))
+  /** When its reminder is next due, while one is waiting. */
+  const reminder = $derived(nextReminder(task))
+  const assistants = $derived(task.assignee === 'assistant')
   const project = $derived(todo.projectOf(task.projectId))
   /** The project badge is noise inside a project and orientation outside it. */
   const showProject = $derived(project !== null && todo.scope.kind !== 'project')
@@ -224,11 +227,16 @@
           <span class="titletext">{task.title}</span>
         </span>
 
-        {#if task.dueDate || task.estimateMinutes || task.tags.length || showProject || task.status === 'blocked' || task.status === 'doing'}
+        {#if task.dueDate || task.estimateMinutes || task.tags.length || showProject || task.status === 'blocked' || task.status === 'doing' || reminder || assistants}
           <span class="meta">
             {#if showProject && project}
               <span class="chip project" style="--dot: {project.color}">
                 <span class="dot"></span>{project.name}
+              </span>
+            {/if}
+            {#if assistants}
+              <span class="chip assistant" title="The assistant does this one itself">
+                <Icon name="sparkle" size={11} weight={1.7} />Assistant
               </span>
             {/if}
             {#if task.status === 'doing'}<span class="chip state doing">Doing</span>{/if}
@@ -240,6 +248,15 @@
               </span>
             {/if}
             {#if late > 0}<span class="chip state late">{lateLabel(late)}</span>{/if}
+            {#if reminder && task.remindAt}
+              <span
+                class="chip"
+                title={assistants ? 'When the assistant starts on it' : 'Reminder'}
+              >
+                <Icon name="bell" size={11} weight={1.7} />
+                {reminderLabel(task.remindAt)}
+              </span>
+            {/if}
             {#if task.estimateMinutes}
               <span class="chip"
                 ><Icon name="clock" size={11} weight={1.7} />
@@ -567,6 +584,10 @@
   .chip.project {
     background: none;
     padding-left: 0;
+  }
+  .chip.assistant {
+    color: var(--accent);
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
   }
   .dot {
     width: 6px;

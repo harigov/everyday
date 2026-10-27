@@ -38,13 +38,15 @@
     onremove?: () => void
   } = $props()
 
-  const KIND_LABELS: Record<JobKind['type'], string> = { research: 'Research' }
+  const KIND_LABELS: Record<JobKind['type'], string> = { research: 'Research', task: 'Task' }
 
   /** What the job is about, in the words it was given. */
   function aboutOf(kind: JobKind): string {
     switch (kind.type) {
       case 'research':
         return kind.question
+      case 'task':
+        return kind.title
     }
   }
 

@@ -17,6 +17,7 @@ pub fn run_task_suite(store: &dyn TaskStore) {
     missing_task_records_are_not_found(store);
     list_tasks_filters_and_sorts(store);
     list_tasks_paginates(store);
+    list_tasks_finds_whose_and_what_is_due_a_reminder(store);
     batch_writes_land_together(store);
     subtasks_are_reachable_from_their_parent(store);
     deleting_a_task_takes_its_subtrees_with_it(store);
@@ -123,6 +124,9 @@ fn task_round_trips_every_field(store: &dyn TaskStore) {
     t.estimate_minutes = Some(120);
     t.tags = vec!["moving".into(), "\u{1f4da}".into()];
     t.sort_order = 7;
+    t.assignee = crate::task::Assignee::Assistant;
+    t.remind_at = Some("2026-05-09T09:00:00Z".parse().unwrap());
+    t.reminded_at = Some("2026-05-08T09:00:05Z".parse().unwrap());
     store.put_task(&t).unwrap();
 
     assert_eq!(store.get_task(t.id).unwrap(), t, "task must round-trip every field unchanged");
@@ -236,6 +240,57 @@ fn list_tasks_filters_and_sorts(store: &dyn TaskStore) {
     // Undated tasks sort last under DueAsc rather than first.
     let by_due = titles(&TaskQuery { sort: TaskSort::DueAsc, ..Default::default() });
     assert_eq!(&by_due[..2], ["bravo", "alpha"]);
+
+    task_cleanup(store);
+}
+
+fn list_tasks_finds_whose_and_what_is_due_a_reminder(store: &dyn TaskStore) {
+    use crate::task::Assignee;
+    let at = |s: &str| -> jiff::Timestamp { s.parse().unwrap() };
+    let now = at("2026-05-09T17:00:00Z");
+
+    let mut due = Task::new("Call the dentist");
+    due.remind_at = Some(at("2026-05-09T16:59:00Z"));
+    let mut later = Task::new("Water the plants");
+    later.remind_at = Some(at("2026-05-09T18:00:00Z"));
+    let mut sent = Task::new("Pay the window cleaner");
+    sent.remind_at = Some(at("2026-05-09T09:00:00Z"));
+    sent.reminded_at = Some(at("2026-05-09T09:00:30Z"));
+    let mut again = Task::new("Ring the garage");
+    again.remind_at = Some(at("2026-05-09T16:00:00Z"));
+    again.reminded_at = Some(at("2026-05-09T15:00:10Z"));
+    let mut finished = Task::new("Post the form");
+    finished.remind_at = Some(at("2026-05-09T10:00:00Z"));
+    finished.set_status(TaskStatus::Done);
+    let mut theirs = Task::new("Find a shuttle from the airport");
+    theirs.assignee = Assignee::Assistant;
+    theirs.created_at = at("2026-05-09T12:00:00Z");
+    let plain = Task::new("Read the lease");
+    for t in [&due, &later, &sent, &again, &finished, &theirs, &plain] {
+        store.put_task(t).unwrap();
+    }
+
+    let titles = |q: &TaskQuery| -> Vec<String> {
+        let mut out: Vec<String> =
+            store.list_tasks(q).unwrap().into_iter().map(|t| t.title).collect();
+        out.sort();
+        out
+    };
+    assert_eq!(
+        titles(&TaskQuery { reminders_due_by: Some(now), ..Default::default() }),
+        ["Call the dentist", "Find a shuttle from the airport", "Ring the garage"],
+        "due, moved later than it last went out, or handed to the assistant with no time; \
+         not later, not already sent, not finished",
+    );
+    assert_eq!(
+        titles(&TaskQuery { assignee: Some(Assignee::Assistant), ..Default::default() }),
+        ["Find a shuttle from the airport"],
+    );
+    assert_eq!(
+        titles(&TaskQuery { assignee: Some(Assignee::Owner), ..Default::default() }).len(),
+        6,
+        "every task from before there was a choice is the owner's",
+    );
 
     task_cleanup(store);
 }

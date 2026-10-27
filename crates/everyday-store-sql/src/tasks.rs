@@ -147,9 +147,12 @@ impl TaskStore for SqlStore {
         // The same split the entry list makes: push down what the indexes
         // can answer, and finish in memory when a filter or an ordering
         // depends on something that only exists once decrypted -- here the
-        // tags, the free-text match and the title ordering.
+        // tags, the free-text match, who it is for, its reminder and the
+        // title ordering.
         let needs_memory_pass = !query.tags.is_empty()
             || !query.text.trim().is_empty()
+            || query.assignee.is_some()
+            || query.reminders_due_by.is_some()
             || query.sort == TaskSort::TitleAsc;
 
         let mut w = Where::new();

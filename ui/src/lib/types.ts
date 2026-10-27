@@ -722,8 +722,13 @@ export interface RunQuery {
 // done the assistant comes back to that thread with an answer. Mirrors
 // `everyday_core::job`. See `docs/plans/jobs.md`.
 
-/** What a job is, with its arguments. Research is the only kind so far. */
-export type JobKind = { type: 'research'; question: string; brief: string }
+/**
+ * What a job is, with its arguments. A task is one of the assistant's own
+ * (see `Task.assignee`), started when its reminder comes round.
+ */
+export type JobKind =
+  | { type: 'research'; question: string; brief: string }
+  | { type: 'task'; taskId: TaskId; title: string }
 
 export const JOB_STATUSES = ['queued', 'running', 'done', 'failed', 'cancelled'] as const
 export type JobStatus = (typeof JOB_STATUSES)[number]
@@ -1212,6 +1217,32 @@ export interface Task {
   createdAt: string
   updatedAt: string
   completedAt?: string | null
+  /**
+   * Who does it. Absent is the person; `assistant` is a task the assistant
+   * does itself, as a background job, when its reminder comes round -- or at
+   * once, with no reminder set.
+   */
+  assignee?: Assignee
+  /** When to be reminded, as an instant. For the assistant's task, when it starts. */
+  remindAt?: string | null
+  /**
+   * When the reminder last went out. It is waiting while this is unset or
+   * earlier than `remindAt`, so moving `remindAt` later sends it again.
+   */
+  remindedAt?: string | null
+}
+
+export type Assignee = 'owner' | 'assistant'
+
+/** Where a reminder is sent. Chat falls back to the desktop when no chat is connected. */
+export type ReminderTo = 'desktop' | 'chat' | 'both'
+
+/** Where reminders go, by whose task they are about. */
+export interface ReminderSettings {
+  /** Reminders of the person's own tasks. */
+  yours: ReminderTo
+  /** What the assistant's own tasks come back with. */
+  assistants: ReminderTo
 }
 
 /** What a block of time was spent on. */
@@ -3090,6 +3121,8 @@ export interface AgentSettings {
    * promise from one that refuses them.
    */
   parkUnattended?: boolean
+  /** Where reminders go. Absent is the default: yours on the desktop, the assistant's in the chat. */
+  reminders?: ReminderSettings
 }
 
 // ── What is on screen, for the assistant ─────────────────────────────────

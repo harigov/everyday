@@ -153,6 +153,10 @@
         "proposals": {},
         "quickAsks": {},
         "remember": true,
+        "reminders": {
+          "assistants": "chat",
+          "yours": "desktop"
+        },
         "web": false
       }
     }

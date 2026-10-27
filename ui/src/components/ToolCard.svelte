@@ -66,7 +66,7 @@
       icon: 'search',
     },
     fetch: {
-      ask: 'Neither you nor a search gave it this address. Opening it tells that site it was asked for.',
+      ask: 'It put this address together itself rather than finding it, and whatever is in it reaches that site.',
       yes: 'Open',
       icon: 'globe',
     },

@@ -2109,6 +2109,29 @@
               "question"
             ],
             "type": "object"
+          },
+          {
+            "description": "Do one of the assistant's own tasks -- see\n[`Assignee::Assistant`](crate::task::Assignee::Assistant). Queued by\nthe scheduler when the task's reminder comes round, never by a model:\nwhat to do is read from the task when the job starts.",
+            "properties": {
+              "taskId": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "title": {
+                "description": "The task's title when the job was queued, for a card and a list\nrow that should not have to read the task to say what it is.",
+                "type": "string"
+              },
+              "type": {
+                "const": "task",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "taskId",
+              "title"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -4524,6 +4547,21 @@
         ],
         "type": "string"
       },
+      "Assignee": {
+        "description": "Who a task is for.",
+        "oneOf": [
+          {
+            "const": "owner",
+            "description": "The person whose vault it is.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "The assistant. When the task's reminder comes round it does the task\nas a background job, and what it did goes to the person -- see\n[`ReminderSettings::assistants`].",
+            "type": "string"
+          }
+        ]
+      },
       "Attachment": {
         "description": "Metadata for a piece of media embedded in an entry.\n\nThe bytes themselves live in the backend's blob store, addressed by\n`blob`. Several entries may reference the same blob.",
         "properties": {
@@ -5554,6 +5592,10 @@
       "Task": {
         "description": "One thing to do.\n\nA task with no `project_id` is in the inbox — captured but not filed —\nwhich is what makes capture cheap enough to actually do.",
         "properties": {
+          "assignee": {
+            "$ref": "#/$defs/Assignee",
+            "description": "Who is to do it: the person, as every task was before there was a\nchoice, or the assistant, which does it itself when the task's\nreminder comes round."
+          },
           "completedAt": {
             "description": "Set when the task reached [`TaskStatus::Done`], cleared if it comes\nback out. The \"what did I finish this week\" column.",
             "format": "date-time",
@@ -5627,6 +5669,22 @@
               }
             ],
             "description": "What this task is *for*. `None` means \"whatever the project is for\",\nwhich is the usual case and the reason the field is cheap to leave\nalone."
+          },
+          "remindAt": {
+            "description": "When to be reminded of it. A moment rather than a day, because\n\"remind me at five\" means five o'clock, and apart from the deadline\nbecause a reminder is usually some time before it. For the\nassistant's own task this is when it starts on it.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "remindedAt": {
+            "description": "When the reminder last went out, or the assistant last started on it.\n\nA reminder is waiting while this is unset or earlier than\n`remind_at`, so moving `remind_at` later -- \"again in an hour\" -- sets\nit going again without anybody having to clear this. See\n[`Task::next_reminder`].",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "sortOrder": {
             "default": 0,
@@ -7136,6 +7194,21 @@
   },
   "Task": {
     "$defs": {
+      "Assignee": {
+        "description": "Who a task is for.",
+        "oneOf": [
+          {
+            "const": "owner",
+            "description": "The person whose vault it is.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "The assistant. When the task's reminder comes round it does the task\nas a background job, and what it did goes to the person -- see\n[`ReminderSettings::assistants`].",
+            "type": "string"
+          }
+        ]
+      },
       "Priority": {
         "description": "How much this matters.\n\n`None` is a real value and the default: most tasks do not deserve a\npriority, and a scheme where everything must be triaged on capture is a\nscheme people stop capturing into.",
         "enum": [
@@ -7226,6 +7299,10 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "One thing to do.\n\nA task with no `project_id` is in the inbox — captured but not filed —\nwhich is what makes capture cheap enough to actually do.",
     "properties": {
+      "assignee": {
+        "$ref": "#/$defs/Assignee",
+        "description": "Who is to do it: the person, as every task was before there was a\nchoice, or the assistant, which does it itself when the task's\nreminder comes round."
+      },
       "completedAt": {
         "description": "Set when the task reached [`TaskStatus::Done`], cleared if it comes\nback out. The \"what did I finish this week\" column.",
         "format": "date-time",
@@ -7299,6 +7376,22 @@
           }
         ],
         "description": "What this task is *for*. `None` means \"whatever the project is for\",\nwhich is the usual case and the reason the field is cheap to leave\nalone."
+      },
+      "remindAt": {
+        "description": "When to be reminded of it. A moment rather than a day, because\n\"remind me at five\" means five o'clock, and apart from the deadline\nbecause a reminder is usually some time before it. For the\nassistant's own task this is when it starts on it.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "remindedAt": {
+        "description": "When the reminder last went out, or the assistant last started on it.\n\nA reminder is waiting while this is unset or earlier than\n`remind_at`, so moving `remind_at` later -- \"again in an hour\" -- sets\nit going again without anybody having to clear this. See\n[`Task::next_reminder`].",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
       },
       "sortOrder": {
         "default": 0,

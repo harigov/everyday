@@ -184,6 +184,11 @@ function message(
   }
 }
 
+/** A job's question and brief. The mock only researches; a task's title stands in. */
+function asked(job: Job): { question: string; brief: string } {
+  return job.kind.type === 'research' ? job.kind : { question: job.kind.title, brief: '' }
+}
+
 /** A question cut to fit a title or a progress line, at a word if it can. */
 function gist(question: string, chars = 70): string {
   const text = question.replace(/\s+/g, ' ').trim()
@@ -817,7 +822,7 @@ const SCRIPT: Step[] = [
 function begin(id: JobId): void {
   const job = jobs.find((j) => j.id === id)
   if (!job || job.status !== 'queued') return
-  const { question, brief } = job.kind
+  const { question, brief } = asked(job)
   const lend = lent()
 
   job.status = 'running'
@@ -868,7 +873,7 @@ function readSoFar(upTo: number): { found: string[]; sources: [string, string][]
 function step(id: JobId, index: number): void {
   const job = jobs.find((j) => j.id === id)
   if (!job || job.status !== 'running') return
-  const { question } = job.kind
+  const { question } = asked(job)
 
   if (index >= SCRIPT.length) return finish(job)
   if (index === 4 && /impossible/i.test(question)) {
@@ -921,7 +926,7 @@ function fail(job: Job, reason: string): void {
 /** It finished: write the note up, tell the asking conversation, and answer in it. */
 function finish(job: Job): void {
   const lend = lent()
-  const { question } = job.kind
+  const { question } = asked(job)
   const { found, sources } = readSoFar(SCRIPT.length)
   const note = noteFor(job)
   if (note) {
@@ -972,7 +977,7 @@ async function announce(job: Job): Promise<void> {
   const lend = lent()
   while (lend.busy(conversation)) await wait(BUSY_MS)
   if (!jobs.includes(job)) return
-  const line = `Research finished: ${gist(job.kind.question, 90)}`
+  const line = `Research finished: ${gist(asked(job).question, 90)}`
   lend.addMessage(message(conversation, 'system', line))
   emit('conversation', 'updated', conversation)
   emit('job', 'updated', job.id)
@@ -987,7 +992,7 @@ async function respond(job: Job): Promise<void> {
   while (lend.busy(conversation)) await wait(BUSY_MS)
   // Deleted while it was being written: nothing to say now.
   if (!jobs.includes(job)) return
-  const title = noteFor(job)?.title ?? gist(job.kind.question, 90)
+  const title = noteFor(job)?.title ?? gist(asked(job).question, 90)
   lend.addMessage(
     message(
       conversation,

@@ -583,6 +583,13 @@ pub struct ToolContext<'a> {
     /// forty of them that nobody asked for. `send_draft` reads it too, for
     /// the very same reason.
     pub unattended: bool,
+    /// Whether this call is part of the turn that comes back with a finished
+    /// job's answer: begun by the application, not the person, and handed
+    /// what the job read on strangers' pages. Not `unattended` -- the person
+    /// may be there to be asked -- but nobody asked for what it does either.
+    /// `create_task` and `update_task` read it, to refuse giving the
+    /// assistant work for later.
+    pub follow_up: bool,
     /// Who this call is being made on behalf of, if not the vault's owner
     /// acting directly. See [`Caller`].
     pub caller: Option<Caller>,
@@ -709,6 +716,7 @@ impl<'a> ToolContext<'a> {
             tz,
             conversation: None,
             unattended: false,
+            follow_up: false,
             caller: None,
             mail_search: None,
             assistant_provider: None,
@@ -730,6 +738,13 @@ impl<'a> ToolContext<'a> {
     /// See [`ToolContext::unattended`].
     pub fn with_unattended(mut self, unattended: bool) -> Self {
         self.unattended = unattended;
+        self
+    }
+
+    /// Whether this call is part of a finished job's follow-up. See
+    /// [`ToolContext::follow_up`].
+    pub fn with_follow_up(mut self, follow_up: bool) -> Self {
+        self.follow_up = follow_up;
         self
     }
 
@@ -1895,6 +1910,7 @@ mod tests {
             tz: "UTC",
             conversation: None,
             unattended: false,
+            follow_up: false,
             caller: None,
             mail_search: None,
             assistant_provider: None,

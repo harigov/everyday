@@ -61,6 +61,7 @@ fn the_assistant_is_offered_only_the_tools_the_backend_can_serve() {
         tz: "UTC",
         conversation: None,
         unattended: false,
+        follow_up: false,
         caller: None,
         mail_search: None,
         assistant_provider: None,

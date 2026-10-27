@@ -24,6 +24,8 @@ const {
   ORDER_STEP,
   proposalBelongsInScope,
   sectionKeyOf,
+  nextReminder,
+  reminderSent,
 } = lib
 
 const { check, finish } = makeCheck()
@@ -379,6 +381,42 @@ check('across a clock change', daysLate(task('x', { dueDate: '2026-03-28' }), '2
 check('across a year', daysLate(task('x', { dueDate: '2025-12-30' }), '2026-01-02'), 3)
 check('one day is singular', lateLabel(1), 'Delayed by 1 day')
 check('more are plural', lateLabel(2), 'Delayed by 2 days')
+
+// ── reminders: the same rule as `Task::next_reminder` in the core ─────
+const AT = '2026-09-14T17:00:00Z'
+check('no reminder, none waiting', nextReminder(task('x')), null)
+check('one set is waiting', nextReminder(task('x', { remindAt: AT })), AT)
+check(
+  'one sent is not',
+  nextReminder(task('x', { remindAt: AT, remindedAt: '2026-09-14T17:00:20Z' })),
+  null,
+)
+check(
+  'moved later than it went out, it waits again',
+  nextReminder(task('x', { remindAt: '2026-09-14T18:00:00Z', remindedAt: '2026-09-14T17:00:20Z' })),
+  '2026-09-14T18:00:00Z',
+)
+check(
+  'a finished task waits for nothing',
+  nextReminder(task('x', { remindAt: AT, status: 'done' })),
+  null,
+)
+check(
+  "the assistant's with no time is due from when it was made",
+  nextReminder(task('x', { assignee: 'assistant', createdAt: '2026-09-14T09:00:00Z' })),
+  '2026-09-14T09:00:00Z',
+)
+
+check(
+  'sent once it went out',
+  reminderSent(task('x', { remindAt: AT, remindedAt: '2026-09-14T17:00:20Z' })),
+  true,
+)
+check(
+  'not sent because the task was closed first',
+  reminderSent(task('x', { remindAt: AT, status: 'done' })),
+  false,
+)
 
 await close()
 finish('tasklist')

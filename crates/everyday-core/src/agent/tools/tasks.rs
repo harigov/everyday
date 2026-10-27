@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::id::{ProjectId, TaskId};
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::store::tasks::{ParentScope, ProjectScope, TaskQuery};
-use crate::task::{Priority, Project, ProjectStatus, Task, TaskStatus};
+use crate::task::{Assignee, Priority, Project, ProjectStatus, Task, TaskStatus};
 use crate::timestamped::Timestamped;
 
 // `pub(super)` rather than private: `agent::tools`'s own argument-parsing
@@ -21,6 +21,15 @@ use crate::timestamped::Timestamped;
 pub(super) const STATUSES: &[&str] = &["backlog", "todo", "doing", "blocked", "done", "cancelled"];
 const PRIORITIES: &[&str] = &["none", "low", "medium", "high", "urgent"];
 const PROJECT_STATUSES: &[&str] = &["active", "paused", "done", "archived"];
+const ASSIGNEES: &[&str] = &["owner", "assistant"];
+const ASSIGNEE_HELP: &str = "Who does it: owner (them; the default) or assistant (you, as a \
+     background job when its reminder comes round).";
+
+/// What a turn nobody asked for is told when it tries to hand the assistant
+/// work for later. See [`refuse_handing_over`].
+const NOT_FOR_LATER: &str = "this turn may not give the assistant work for later, or change \
+     what one of its tasks will do: only they can, in a conversation. Do it now with the tools \
+     you have, or set a reminder on a task of theirs and say in your reply what is left.";
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
@@ -106,6 +115,13 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("due_from", day("Earliest deadline, inclusive.")),
                 ("due_to", day("Latest deadline, inclusive. Use today's date for 'due now'.")),
                 ("text", text("Case-insensitive substring of the title, notes or tags.")),
+                (
+                    "assignee",
+                    one_of(
+                        "Only their tasks (owner) or only yours (assistant). Defaults to both.",
+                        ASSIGNEES
+                    )
+                ),
                 limit_arg(),
             ],
             &[]
@@ -147,11 +163,26 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("tags", list("Tags to attach.")),
                 ("goal_id", text("File it under this goal, from list_goals.")),
                 ("role_id", text("Or under this role directly, from list_roles.")),
+                (
+                    "remind_time",
+                    text(
+                        "When to remind them, HH:MM in 24-hour time, on remind_date. For \
+                         the assistant's own task, when to start on it."
+                    )
+                ),
+                ("remind_date", day("The day of the reminder. Defaults to today.")),
+                ("assignee", one_of(ASSIGNEE_HELP, ASSIGNEES)),
             ],
             &["title"]
         ),
         "Create a task. This is the tool for 'add a task', 'remind me to', \
-         'I need to'. Create several by calling it several times.",
+         'I need to'. Create several by calling it several times. For 'remind me at \
+         five', give remind_time: they are sent a reminder then. For something you are to \
+         do yourself later \u{2014} 'look into shuttles tonight', 'check back on Friday' \
+         \u{2014} set assignee assistant, put what to do in the title and notes, and give \
+         remind_time for when to start; leave it out to start as soon as this turn ends. \
+         It then runs on its own as a background job, with your tools, and what you reply \
+         then is sent to them.",
         run_create_task,
         None,
         Some(build_create_task)
@@ -186,12 +217,23 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("goal_id", text("File it under this goal, from list_goals.")),
                 ("role_id", text("Or under this role directly, from list_roles.")),
                 ("clear_purpose", flag("Unfile it from whatever goal or role it carries.")),
+                (
+                    "remind_time",
+                    text(
+                        "Set the reminder to this time, HH:MM in 24-hour time, on \
+                         remind_date. A time later than the last reminder sends it again."
+                    )
+                ),
+                ("remind_date", day("The day of the reminder. Defaults to today.")),
+                ("clear_reminder", flag("Remove the reminder.")),
+                ("assignee", one_of(ASSIGNEE_HELP, ASSIGNEES)),
             ],
             &["task_id"]
         ),
         "Change a task. Omitted fields are left alone. This is how a task is \
-         completed \u{2014} status done \u{2014} rescheduled, reprioritised or moved. \
-         Never delete a task to mark it finished.",
+         completed \u{2014} status done \u{2014} rescheduled, reprioritised or moved, \
+         and how a reminder is snoozed: give remind_time for when to send it again. Never \
+         delete a task to mark it finished.",
         run_update_task,
         None,
         Some(build_update_task)
@@ -224,7 +266,7 @@ fn describe_delete_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String
     describe_by_id::<TaskId, Task>(args, "task_id", "task", |id| ctx.vault.task(id), |t| t.title)
 }
 
-fn task_json(t: &Task) -> Value {
+fn task_json(ctx: &ToolContext<'_>, t: &Task) -> Value {
     let mut v = json!({
         "id": t.id.to_string(),
         "title": t.title,
@@ -243,8 +285,19 @@ fn task_json(t: &Task) -> Value {
     if let Some(d) = t.due_date {
         m.insert("due_date".into(), json!(d.to_string()));
     }
+    if let Some(time) = t.due_time {
+        m.insert("due_time".into(), json!(time.strftime("%H:%M").to_string()));
+    }
     if let Some(d) = t.start_date {
         m.insert("start_date".into(), json!(d.to_string()));
+    }
+    if !t.assignee.is_owner() {
+        m.insert("assignee".into(), json!(t.assignee.as_str()));
+    }
+    if let Some(at) = t.remind_at {
+        m.insert("remind_at".into(), json!(local(ctx, at)));
+        // Whether it is still to come, so "did you remind me?" has an answer.
+        m.insert("reminder_sent".into(), json!(t.reminder_sent()));
     }
     if let Some(e) = t.estimate_minutes {
         m.insert("estimate_minutes".into(), json!(e));
@@ -395,6 +448,7 @@ fn run_list_tasks(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if let Some(p) = args.opt_enum::<Priority>("priority_at_least", PRIORITIES)? {
         query.priority_at_least = Some(p);
     }
+    query.assignee = args.opt_enum("assignee", ASSIGNEES)?;
 
     // `open_only` and an explicit list of statuses are two ways to say the
     // same kind of thing, and a model will sometimes send both. The explicit
@@ -420,18 +474,17 @@ fn run_list_tasks(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let rows = ctx.vault.tasks(&query)?;
     Ok(json!({
         "count": rows.len(),
-        "tasks": rows.iter().map(task_json).collect::<Vec<_>>(),
+        "tasks": rows.iter().map(|t| task_json(ctx, t)).collect::<Vec<_>>(),
     }))
 }
 
 fn run_get_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let task: Task = load_by_id(args, "task_id", "task", |id| ctx.vault.task(id))?;
     let children = ctx.vault.tasks(&TaskQuery::children_of(task.id))?;
-    let mut out = task_json(&task);
+    let mut out = task_json(ctx, &task);
     if !children.is_empty() {
-        out.as_object_mut()
-            .unwrap()
-            .insert("subtasks".into(), json!(children.iter().map(task_json).collect::<Vec<_>>()));
+        let subtasks: Vec<Value> = children.iter().map(|t| task_json(ctx, t)).collect();
+        out.as_object_mut().unwrap().insert("subtasks".into(), json!(subtasks));
     }
     Ok(out)
 }
@@ -462,17 +515,28 @@ fn task_from_create_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Task>
     t.estimate_minutes = args.opt_u32("estimate_minutes");
     t.tags = args.strings("tags");
     t.purpose = resolve_purpose(ctx, args)?;
+    if let Some(who) = args.opt_enum("assignee", ASSIGNEES)? {
+        t.assignee = who;
+    }
+    t.remind_at = reminder_from_args(ctx, args)?;
     Ok(t)
 }
 
 fn run_create_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let t = task_from_create_args(ctx, args)?;
+    refuse_handing_over(ctx, None, &t)?;
     ctx.vault.save_task(&t)?;
-    done("created", "task", &t.title, t.id.to_string())
+    let mut out = done("created", "task", &t.title, t.id.to_string())?;
+    say_when(ctx, &t, &mut out);
+    Ok(out)
 }
 
 fn build_create_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
     let t = task_from_create_args(ctx, args)?;
+    // A dream drafts, and a routine with nobody to confirm parks, through
+    // here rather than through `run_create_task`: neither may give the
+    // assistant work for later either.
+    refuse_handing_over(ctx, None, &t)?;
     let caption = format!("Create task: {}", t.title);
     Ok(Built { payload: Payload::Create { record: ProposedRecord::Task(t) }, caption, about: None })
 }
@@ -539,21 +603,126 @@ fn apply_update_task_args(ctx: &ToolContext<'_>, args: &Args<'_>, mut t: Task) -
     } else if let Some(p) = resolve_purpose(ctx, args)? {
         t.purpose = Some(p);
     }
+    if let Some(who) = args.opt_enum::<Assignee>("assignee", ASSIGNEES)? {
+        // Handed over: whatever went out for it as theirs is not the
+        // assistant having done it, so the assistant's start is due afresh.
+        if who == Assignee::Assistant && t.assignee != Assignee::Assistant {
+            t.reminded_at = None;
+        }
+        t.assignee = who;
+    }
+    if args.bool_or("clear_reminder", false) {
+        t.remind_at = None;
+    } else if let Some(at) = reminder_from_args(ctx, args)? {
+        t.remind_at = Some(at);
+    }
     t.touch();
     Ok(t)
 }
 
 fn run_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let t: Task = load_by_id(args, "task_id", "task", |id| ctx.vault.task(id))?;
-    let t = apply_update_task_args(ctx, args, t)?;
+    let before: Task = load_by_id(args, "task_id", "task", |id| ctx.vault.task(id))?;
+    let t = apply_update_task_args(ctx, args, before.clone())?;
+    refuse_handing_over(ctx, Some(&before), &t)?;
     ctx.vault.save_task(&t)?;
-    done("updated", "task", &t.title, t.id.to_string())
+    let mut out = done("updated", "task", &t.title, t.id.to_string())?;
+    if t.next_reminder() != before.next_reminder() {
+        say_when(ctx, &t, &mut out);
+    }
+    Ok(out)
+}
+
+/// The reminder `remind_time` and `remind_date` ask for, as a moment: that
+/// wall-clock time where they are, on that day or today. `None` when no
+/// time was given; a date alone is refused rather than given a made-up hour.
+///
+/// A moment already gone is refused too. Nothing would be sent for it -- or,
+/// worse, it would be sent the minute it was saved -- and "remind me at nine"
+/// said at ten almost always means tomorrow, which is the model's to work out.
+fn reminder_from_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Option<jiff::Timestamp>> {
+    let date = args.opt_date("remind_date")?;
+    let Some(time) = args.opt_time("remind_time")? else {
+        if date.is_some() {
+            return Err(args.bad("`remind_date` needs a `remind_time`: say when on that day"));
+        }
+        return Ok(None);
+    };
+    let date = date.unwrap_or(ctx.today);
+    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    let at = zone
+        .to_ambiguous_zoned(date.to_datetime(time))
+        .later()
+        .map_err(|e| args.bad(format!("{date} {time} does not exist in {}: {e}", ctx.tz)))?
+        .timestamp();
+    let now = ctx.now().timestamp();
+    if at < now - jiff::SignedDuration::from_mins(1) {
+        return Err(args.bad(format!(
+            "{} has already passed (it is {} now). Give a later time, or a remind_date.",
+            local(ctx, at),
+            local(ctx, now)
+        )));
+    }
+    Ok(Some(at))
+}
+
+/// Refuse a turn nobody asked for that would give the assistant work for
+/// later: making a task of its own, handing one of theirs over, or changing
+/// what one of its own will do -- its title, its notes, when it starts -- or
+/// opening it again once it is closed.
+///
+/// The recursion `create_routine` refuses, in another shape. A task of the
+/// assistant's is a model run at a moment of its choosing, with every tool,
+/// on instructions in the task -- and a run with nobody watching, or the
+/// turn that comes back with a job's answer from strangers' pages, may be
+/// writing them from a stranger's words. A dream's proposal is no better:
+/// accepting it would start that run. Asked for in a conversation, it is
+/// exactly right. Closing one -- done, or blocked -- is how its own job
+/// finishes it, and stays allowed; setting a reminder of *theirs* is a
+/// message to them and is left alone.
+fn refuse_handing_over(ctx: &ToolContext<'_>, before: Option<&Task>, after: &Task) -> Result<()> {
+    if !(ctx.unattended || ctx.follow_up) || after.assignee != Assignee::Assistant {
+        return Ok(());
+    }
+    let changed = match before {
+        None => true,
+        Some(before) => {
+            before.assignee != Assignee::Assistant
+                || before.remind_at != after.remind_at
+                || before.title != after.title
+                || before.notes != after.notes
+                || (!before.status.is_open() && after.status.is_open())
+        }
+    };
+    if changed { Err(Error::Invalid(NOT_FOR_LATER.into())) } else { Ok(()) }
+}
+
+/// Add when the reminder goes, or when the assistant starts, to a write's
+/// result -- in their time, so the model can say it back to them.
+fn say_when(ctx: &ToolContext<'_>, t: &Task, out: &mut Value) {
+    let Some(at) = t.next_reminder() else { return };
+    let key = match t.assignee {
+        Assignee::Owner => "reminds_them_at",
+        Assignee::Assistant => "you_start_at",
+    };
+    let when = if at <= ctx.now().timestamp() {
+        "as soon as this turn ends".into()
+    } else {
+        local(ctx, at)
+    };
+    out.as_object_mut().unwrap().insert(key.into(), json!(when));
+}
+
+/// `at` as a wall-clock moment where they are: "2026-10-27 17:00".
+fn local(ctx: &ToolContext<'_>, at: jiff::Timestamp) -> String {
+    let zone = jiff::tz::TimeZone::get(ctx.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    at.to_zoned(zone).strftime("%Y-%m-%d %H:%M").to_string()
 }
 
 fn build_update_task(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
     let original: Task = load_by_id(args, "task_id", "task", |id| ctx.vault.task(id))?;
     let expected_updated_at = original.updated_at;
-    let t = apply_update_task_args(ctx, args, original)?;
+    let t = apply_update_task_args(ctx, args, original.clone())?;
+    refuse_handing_over(ctx, Some(&original), &t)?;
     let caption = format!("Change task: {}", t.title);
     let about = About { kind: AboutKind::Task, id: t.id.to_string() };
     Ok(Built {

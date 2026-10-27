@@ -45,7 +45,8 @@ use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use everyday_core::store::JournalStore;
 use everyday_core::store::tasks::{BlockQuery, TaskQuery, TaskStore};
 use everyday_core::task::{
-    BlockKind, BlockSubject, Priority, Project, ProjectStatus, Task, TaskStatus, TimeBlock,
+    Assignee, BlockKind, BlockSubject, Priority, Project, ProjectStatus, Task, TaskStatus,
+    TimeBlock,
 };
 use everyday_core::{BlockId, ProjectId, Result, TaskId};
 use jiff::civil::{Date, Time};
@@ -219,6 +220,15 @@ fn render_task(
     if let Some(done) = task.completed_at {
         let _ = write!(hidden, "; completed:{}", doc::stamp(done));
     }
+    if !task.assignee.is_owner() {
+        let _ = write!(hidden, "; for:{}", task.assignee.as_str());
+    }
+    if let Some(at) = task.remind_at {
+        let _ = write!(hidden, "; remind:{}", doc::stamp(at));
+    }
+    if let Some(sent) = task.reminded_at {
+        let _ = write!(hidden, "; reminded:{}", doc::stamp(sent));
+    }
     let _ = writeln!(out, " <!-- {hidden} -->");
 
     if !task.notes.trim().is_empty() {
@@ -277,6 +287,9 @@ struct Parsed {
     purpose: Option<everyday_core::purpose::Purpose>,
     created: Option<jiff::Timestamp>,
     completed: Option<jiff::Timestamp>,
+    assignee: Assignee,
+    remind: Option<jiff::Timestamp>,
+    reminded: Option<jiff::Timestamp>,
 }
 
 fn read_project(
@@ -361,6 +374,9 @@ fn read_project(
         task.start_date = parsed.start;
         task.tags = parsed.tags;
         task.purpose = parsed.purpose;
+        task.assignee = parsed.assignee;
+        task.remind_at = parsed.remind;
+        task.reminded_at = parsed.reminded;
         task.sort_order = order;
         task.created_at = parsed.created.unwrap_or(task.created_at);
         task.updated_at = jiff::Timestamp::now();
@@ -466,6 +482,9 @@ fn parse_task_line(depth: usize, done: bool, rest: &str) -> Parsed {
         purpose: None,
         created: None,
         completed: None,
+        assignee: Assignee::Owner,
+        remind: None,
+        reminded: None,
     };
 
     // The hidden fields first, so the visible half is parsed without them.
@@ -481,6 +500,11 @@ fn parse_task_line(depth: usize, done: bool, rest: &str) -> Parsed {
             "purpose" => parsed.purpose = doc::parse_purpose(value),
             "created" => parsed.created = value.parse().ok(),
             "completed" => parsed.completed = value.parse().ok(),
+            "for" if value == Assignee::Assistant.as_str() => {
+                parsed.assignee = Assignee::Assistant;
+            }
+            "remind" => parsed.remind = value.parse().ok(),
+            "reminded" => parsed.reminded = value.parse().ok(),
             _ => {}
         }
     }
@@ -706,6 +730,9 @@ mod tests {
         task.due_time = Time::new(16, 30, 0, 0).ok();
         task.start_date = Some(jiff::civil::date(2026, 9, 1));
         task.status = TaskStatus::Blocked;
+        task.assignee = Assignee::Assistant;
+        task.remind_at = Some("2026-09-11T16:00:00Z".parse().unwrap());
+        task.reminded_at = Some("2026-09-11T16:00:12Z".parse().unwrap());
 
         let mut out = String::new();
         render_task(&mut out, &task, &BTreeMap::new(), 0);
@@ -726,6 +753,9 @@ mod tests {
         assert_eq!(back[0].start, task.start_date);
         assert_eq!(back[0].status, Some(TaskStatus::Blocked));
         assert_eq!(back[0].id, Some(task.id));
+        assert_eq!(back[0].assignee, Assignee::Assistant);
+        assert_eq!(back[0].remind, task.remind_at);
+        assert_eq!(back[0].reminded, task.reminded_at);
     }
 
     #[test]

@@ -649,6 +649,15 @@ What changes outside the tool file, and why each is here rather than later:
   search provider. So once a mail tool has returned content in a turn,
   `web_search` in that turn asks first, with the query shown. A turn that
   never touched mail is unchanged.
+  - *Withdrawn Oct 27 2026.* A query goes to the search service (DuckDuckGo,
+    the catalogues, the map), which whoever wrote the mail cannot read. So
+    the check protected nothing from an attacker. In practice it turned
+    "find out X for me" into a string of yeses.
+  - What can carry data to a stranger is an address. `must_confirm_fetch`
+    now asks only for an address the model put together itself, when it has
+    something data-like in it (`webpage::carries_data`) or once anything a
+    stranger wrote (mail, a page, a search's results) is in the turn.
+  - An address a search or a page handed back opens whatever has been read.
 - **Change events.** `Domain::Mail` maps to `Kind::Thread` in
   `agent.rs:613`, so a thread the assistant archived leaves the open list
   immediately, and the transcript links to it.

@@ -11,7 +11,8 @@
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import { PRIORITIES, TASK_STATUSES } from '../lib/types'
-  import type { Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
+  import type { Assignee, Priority, Purpose, QuickTaskDraft, TaskStatus } from '../lib/types'
+  import { nextReminder, reminderSent } from '../lib/tasklist'
   import { STATUS_LABELS, PRIORITY_LABELS } from '../lib/labels'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
@@ -20,6 +21,11 @@
   const task = $derived(todo.detail)
   const project = $derived(todo.projectOf(task?.projectId))
   const time = $derived(todo.detailMinutes)
+  const assistants = $derived(task?.assignee === 'assistant')
+  /** Set, and already gone out: the field says so rather than looking pending. */
+  const sent = $derived(!!task && reminderSent(task))
+  /** The assistant has started on it before, and nothing is waiting to start it again. */
+  const ran = $derived(!!task?.remindedAt && !nextReminder(task))
 
   let confirming = $state(false)
   let booking = $state(false)
@@ -182,6 +188,58 @@
               })}
           />
         </div>
+
+        <label class="lab" for="d-assignee">Who</label>
+        <select
+          id="d-assignee"
+          class="pick"
+          value={task.assignee ?? 'owner'}
+          onchange={(e) => {
+            const assignee = e.currentTarget.value as Assignee
+            // Handed over: whatever went out for it as yours is not the
+            // assistant having done it, so its start is due afresh.
+            todo.patch(
+              task.id,
+              assignee === 'assistant' ? { assignee, remindedAt: null } : { assignee },
+            )
+          }}
+        >
+          <option value="owner">Me</option>
+          <option value="assistant">The assistant</option>
+        </select>
+
+        <label class="lab" for="d-remind">{assistants ? 'Do at' : 'Remind'}</label>
+        <div class="pair">
+          <input
+            id="d-remind"
+            class="pick"
+            type="datetime-local"
+            value={task.remindAt ? toLocalInputValue(new Date(task.remindAt)) : ''}
+            onchange={(e) =>
+              todo.patch(task.id, {
+                // Read as local time, which is what the field shows.
+                remindAt: e.currentTarget.value
+                  ? new Date(e.currentTarget.value).toISOString()
+                  : null,
+              })}
+          />
+          {#if sent}<span class="unit">Sent</span>{/if}
+        </div>
+        {#if assistants}
+          <span></span>
+          <p class="hint">
+            {#if task.status === 'doing'}
+              The assistant is on it. What it did is sent to you when it finishes.
+            {:else if ran}
+              Done once. Set a later time to have it go again.
+            {:else if task.remindAt}
+              The assistant does it then, with its own tools, and sends you what it did.
+            {:else}
+              The assistant starts within a minute, with its own tools, and sends you what it did.
+              Set a time to have it wait.
+            {/if}
+          </p>
+        {/if}
 
         <label class="lab" for="d-start">Start</label>
         <input
@@ -497,6 +555,12 @@
     display: flex;
     gap: var(--sp-1);
     min-width: 0;
+  }
+  .hint {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--fg-faint);
+    line-height: 1.4;
   }
   .pair .time {
     flex: 0 0 82px;

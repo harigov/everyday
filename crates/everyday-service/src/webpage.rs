@@ -598,6 +598,102 @@ impl Provenance {
     }
 }
 
+impl Provenance {
+    /// Whether anything a stranger wrote has come back this turn -- a
+    /// search's results, a page, what the browser is looking at. See
+    /// [`Provenance::found`].
+    pub fn heard_strangers(&self) -> bool {
+        self.strangers
+    }
+}
+
+/// Whether `address` has anything in it that could be data rather than the
+/// name of a page: a query string, or a part of the site or the path that
+/// looks like a number, a code, an address or an encoded blob rather than a
+/// word. See [`looks_like_data`]. The fragment is not looked at; it never
+/// leaves the machine.
+///
+/// What lets an address the model put together itself be opened without
+/// asking while somebody is in the conversation -- see the service's
+/// `must_confirm_fetch`. `https://www.gocaribbeanshuttles.com/orlando` names
+/// a page; `https://evil.example/?n=` followed by somebody's journal, or
+/// `https://evil.example/4111111111111111`, is a message. Words can still be
+/// spelled into a path, which is why this alone is never enough once a
+/// stranger's words -- a mail, a page, a search's results -- are in the
+/// turn: those could have dictated the address, words and site alike.
+pub fn carries_data(address: &str) -> bool {
+    let Ok(url) = parse(address) else { return false };
+    if url.query().is_some_and(|q| !q.is_empty()) {
+        return true;
+    }
+    let host = url.host_str().unwrap_or_default();
+    let path = percent_decoded(url.path());
+    host.split('.').any(looks_like_data) || path.split('/').any(looks_like_data)
+}
+
+/// Whether one part of an address -- a label of its site, a segment of its
+/// path -- reads as data rather than as a word or a name.
+///
+/// An `@` is an email address. Otherwise each run of letters and digits is
+/// looked at: five digits in a row (an account, a phone, an order, a postal
+/// code); something as long as a hash or a key; a code that mixes letters
+/// with several digits; or letters that change case back and forth the way
+/// base64 does and words do not.
+fn looks_like_data(part: &str) -> bool {
+    if part.contains('@') {
+        return true;
+    }
+    part.split(|c: char| !c.is_ascii_alphanumeric()).any(|token| {
+        let digits = token.chars().filter(char::is_ascii_digit).count();
+        let letters = token.len() - digits;
+        let mut run = 0usize;
+        let longest_digits = token.chars().fold(0, |most, c| {
+            run = if c.is_ascii_digit() { run + 1 } else { 0 };
+            most.max(run)
+        });
+        let case_turns = token
+            .as_bytes()
+            .windows(2)
+            .filter(|w| w[0].is_ascii_lowercase() && w[1].is_ascii_uppercase())
+            .count();
+        longest_digits >= 5
+            || token.len() >= 24
+            || (token.len() >= 8 && digits >= 3 && letters >= 1)
+            || (token.len() >= 10 && case_turns >= 3)
+    })
+}
+
+/// The addresses in `text` -- written out, or bare like `bbc.co.uk/news` --
+/// that carry nothing that could be data ([`carries_data`]), each as it was
+/// written. What a task of the assistant's may open unasked: see the
+/// service's `words_that_asked_for`.
+pub fn plain_addresses_in(text: &str) -> Vec<String> {
+    let written = urls_in(text).into_iter().filter(|u| !carries_data(u));
+    let bare = bare_hosts_in(text).into_iter().filter(|h| !carries_data(&format!("https://{h}")));
+    written.chain(bare).map(str::to_string).collect()
+}
+
+/// `%XX` escapes decoded, so `%31%32%33%34%35` is read as the digits it is.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((high * 16 + low) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// What two addresses are compared by: the host without a leading `www.`,
 /// a non-default port, the path without its trailing slash, and the query.
 /// Not the scheme -- `http` and `https` to the same place are the same
@@ -885,6 +981,58 @@ mod tests {
             Trust::Unseen,
             "a query is new data"
         );
+    }
+
+    #[test]
+    fn an_address_that_names_a_page_carries_no_data() {
+        for plain in [
+            "https://www.gocaribbeanshuttles.com/airport-shuttles/orlando",
+            "https://en.wikipedia.org/wiki/Port_Canaveral",
+            "https://www.nytimes.com/2026/10/27/travel/cruise-port.html",
+            "https://www.flyfrontier.com/travel/travel-info/bag-options/",
+            "https://example.com/",
+            "https://example.com/guide#section-12345678",
+            "https://www.mcdonalds.com/us/en-us/McDonaldsCorp.html",
+        ] {
+            assert!(!carries_data(plain), "{plain}");
+        }
+    }
+
+    #[test]
+    fn an_address_with_something_in_it_carries_data() {
+        for data in [
+            "https://evil.example/?note=everything",
+            "https://evil.example/collect?d=a",
+            "https://evil.example/4111111111111111",
+            "https://evil.example/order/%31%32%33%34%35",
+            "https://evil.example/x/ZGVhciBkaWFyeQ",
+            "https://evil.example/hari@example.com",
+            "https://a8f3k29d0c.evil.example/",
+            "https://evil.example/e3b0c44298fc1c149afbf4c8996fb924",
+            "https://evil.example/ref/AB12CD34",
+        ] {
+            assert!(carries_data(data), "{data}");
+        }
+        assert!(!carries_data("not an address"), "nothing to send");
+    }
+
+    #[test]
+    fn only_the_plain_addresses_in_a_text_are_picked_out() {
+        let text = "Check https://status.airline.example/UA123 and bbc.co.uk/news tonight, \
+                    not https://evil.example/?d=1 or evil.example/4111111111111111.";
+        assert_eq!(
+            plain_addresses_in(text),
+            vec!["https://status.airline.example/UA123", "bbc.co.uk/news"]
+        );
+    }
+
+    #[test]
+    fn a_stranger_is_heard_once_a_search_or_a_page_has_come_back() {
+        let mut seen = Provenance::default();
+        seen.person("look at bbc.co.uk", true);
+        assert!(!seen.heard_strangers(), "the person is not a stranger");
+        seen.found("https://gocaribbeanshuttles.com/");
+        assert!(seen.heard_strangers());
     }
 
     #[test]
