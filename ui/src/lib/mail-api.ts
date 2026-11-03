@@ -63,6 +63,13 @@ export const listThreadsAcross = (
   cursor?: string | null,
   limit?: number | null,
 ): Promise<ThreadPage> => api.threadsAcross(mailboxes, filter, cursor, limit)
+/** Which of `threads` these mailboxes would list under `filter`, asked by id
+ *  -- for a row the list is holding on to and a page may not reach. */
+export const threadsListed = (
+  mailboxes: MailboxId[],
+  filter: ThreadFilter,
+  threads: ThreadId[],
+): Promise<ThreadId[]> => api.threadsListed(mailboxes, filter, threads)
 export const getThread = (id: ThreadId): Promise<ThreadDetail> => api.thread(id)
 /** How many of `mailbox`'s threads carry each category -- what the inbox's
  *  tabs show beside their names. */
@@ -126,6 +133,8 @@ export const newDraft = (opts: {
 
 export const saveDraft = (draft: Draft): Promise<void> => api.saveDraft(draft)
 export const discardDraft = (id: DraftId): Promise<void> => api.discardDraft(id)
+/** Undoes `discardDraft`: the same record, back to being written. */
+export const restoreDraft = (id: DraftId): Promise<void> => api.restoreDraft(id)
 /** `delaySeconds` is the undo window (5-30s, clamped by the backend);
  *  `sendAt` queues for a specific, possibly distant, moment instead --
  *  "send later" -- and wins over `delaySeconds` when both are given, per

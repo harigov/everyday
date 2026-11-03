@@ -1558,6 +1558,8 @@ export const api = {
     cursor?: string | null,
     limit?: number | null,
   ) => call('listThreadsAcross', { mailboxes, filter, cursor, limit }),
+  threadsListed: (mailboxes: MailboxId[], filter: ThreadFilter, threads: ThreadId[]) =>
+    call('threadsListed', { mailboxes, filter, threads }),
   thread: (id: ThreadId) => call('getThread', { id }),
   /** `mailbox`'s threads counted by category -- the inbox tabs' badges. */
   categoryCounts: (mailbox: MailboxId) => call('categoryCounts', { mailbox }),
@@ -1611,6 +1613,7 @@ export const api = {
   }) => call('newDraft', opts),
   saveDraft: (draft: Draft) => call('saveDraft', { draft }),
   discardDraft: (id: DraftId) => call('discardDraft', { id }),
+  restoreDraft: (id: DraftId) => call('restoreDraft', { id }),
   /** `delaySeconds` is the undo window (5-30s, clamped by the backend);
    *  `sendAt` queues for a specific, possibly distant, moment instead --
    *  "send later". Passing neither uses the backend's own default window. */

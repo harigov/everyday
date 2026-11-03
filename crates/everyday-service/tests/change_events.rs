@@ -600,6 +600,8 @@ async fn every_offline_write_announces_what_was_written_down() {
     let draft2_id = draft2["id"].clone();
     run(&svc, &h, "save_draft", json!({ "draft": draft2 })).await;
     run(&svc, &h, "discard_draft", json!({ "id": draft2_id })).await;
+    run(&svc, &h, "restore_draft", json!({ "id": draft2_id })).await;
+    run(&svc, &h, "discard_draft", json!({ "id": draft2_id })).await;
 
     // ---- calendars ---------------------------------------------------------
     let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:e1\r\nDTSTART:20260914T140000Z\r\nDTEND:20260914T150000Z\r\nSUMMARY:Test Event\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";

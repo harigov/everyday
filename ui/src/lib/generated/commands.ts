@@ -550,6 +550,7 @@ export interface Commands {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
     result: void
   }
+  restoreDraft: { args: { id: DraftId }; result: void }
   retryRecording: { args: { id: RecordingId }; result: Recording }
   revokeRemoteImageAllowance: {
     args: { sender?: string | null; domain?: string | null }
@@ -682,6 +683,10 @@ export interface Commands {
   taskStats: { args: Record<string, never>; result: TaskStats }
   taskTags: { args: Record<string, never>; result: TagCount[] }
   testTranscriber: { args: Record<string, never>; result: void }
+  threadsListed: {
+    args: { mailboxes: MailboxId[]; filter?: ThreadFilter; threads: ThreadId[] }
+    result: ThreadId[]
+  }
   timeByPurpose: { args: { from: string; to: string }; result: BalanceReport }
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
@@ -916,6 +921,7 @@ export const COMMAND_NAMES = {
   refreshNews: 'refresh_news',
   removeChatLink: 'remove_chat_link',
   respondToInvite: 'respond_to_invite',
+  restoreDraft: 'restore_draft',
   retryRecording: 'retry_recording',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   rewriteMeetingNote: 'rewrite_meeting_note',
@@ -1002,6 +1008,7 @@ export const COMMAND_NAMES = {
   taskStats: 'task_stats',
   taskTags: 'task_tags',
   testTranscriber: 'test_transcriber',
+  threadsListed: 'threads_listed',
   timeByPurpose: 'time_by_purpose',
   touch: 'touch',
   trackerDays: 'tracker_days',
@@ -1246,6 +1253,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'refresh_news',
   'remove_chat_link',
   'respond_to_invite',
+  'restore_draft',
   'retry_recording',
   'revoke_remote_image_allowance',
   'rewrite_meeting_note',
@@ -1331,6 +1339,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'task_stats',
   'task_tags',
   'test_transcriber',
+  'threads_listed',
   'time_by_purpose',
   'touch',
   'tracker_days',
@@ -1443,6 +1452,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'refresh_news',
   'remove_chat_link',
   'respond_to_invite',
+  'restore_draft',
   'retry_recording',
   'revoke_remote_image_allowance',
   'rewrite_selection',
@@ -1592,6 +1602,7 @@ export const CHANGE_KINDS = {
   new_draft: 'draft',
   refresh_news: 'story',
   remove_chat_link: 'settings',
+  restore_draft: 'draft',
   retry_recording: 'recording',
   revoke_remote_image_allowance: 'settings',
   run_routine: 'routineRun',

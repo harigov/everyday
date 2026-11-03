@@ -941,5 +941,97 @@ assert.deepEqual(sumCategoryCounts([]), [], 'no inboxes, no badges')
   }
 }
 
+// ── Showing only some of a list ─────────────────────────────────────
+
+{
+  const {
+    withOnly,
+    matchesOnly,
+    keepLingering,
+    onlyEmptyLead,
+    onlyPhrase,
+    parseOnlyPref,
+    serializeOnlyPref,
+    formatAddresses,
+  } = mailLib
+
+  assert.equal(onlyPhrase(new Set(['unread'])), 'unread mail')
+  assert.equal(onlyPhrase(new Set(['attachments'])), 'mail with attachments')
+  assert.equal(
+    onlyPhrase(new Set(['attachments', 'starred', 'unread'])),
+    'unread starred mail with attachments',
+  )
+
+  assert.equal(
+    formatAddresses([
+      { name: 'Your Boss', email: 'someone@elsewhere.example' },
+      { name: '  ', email: 'bare@example.com' },
+    ]),
+    'Your Boss <someone@elsewhere.example>, bare@example.com',
+    'a name can say anything, so the address is always shown',
+  )
+
+  assert.deepEqual(withOnly({ snoozed: false }, new Set()), { snoozed: false })
+  assert.deepEqual(withOnly({ snoozed: false }, new Set(['unread', 'starred', 'attachments'])), {
+    snoozed: false,
+    unread: true,
+    starred: true,
+    hasAttachments: true,
+  })
+
+  const unreadStarred = { unreadCount: 2, starred: true, hasAttachments: false }
+  assert.equal(matchesOnly(unreadStarred, new Set()), true)
+  assert.equal(matchesOnly(unreadStarred, new Set(['unread', 'starred'])), true)
+  assert.equal(matchesOnly(unreadStarred, new Set(['attachments'])), false)
+  assert.equal(matchesOnly({ ...unreadStarred, unreadCount: 0 }, new Set(['unread'])), false)
+
+  const row = (id, lastDate) => ({ id, lastDate })
+  const page = [row('new', '2026-11-03'), row('old', '2026-11-01')]
+  const shown = [row('new', '2026-11-03'), row('read', '2026-11-02'), row('gone', '2026-11-02')]
+  assert.deepEqual(
+    keepLingering(page, shown, new Set(['read'])).map((t) => t.id),
+    ['new', 'read', 'old'],
+    'goes back where its date says',
+  )
+  assert.deepEqual(
+    keepLingering(page, shown, new Set(['read', 'off-screen'])).map((t) => t.id),
+    ['new', 'read', 'old'],
+    'a row no longer on screen has been dealt with, and stays gone',
+  )
+  assert.deepEqual(
+    keepLingering(page, shown, new Set(['new'])).map((t) => t.id),
+    ['new', 'old'],
+    'a row the page still has is not listed twice',
+  )
+  assert.deepEqual(
+    keepLingering([], shown, new Set(['read'])).map((t) => t.id),
+    ['read'],
+    'an emptied list keeps it too',
+  )
+  assert.deepEqual(
+    keepLingering(page, [row('oldest', '2026-10-01')], new Set(['oldest'])).map((t) => t.id),
+    ['new', 'old', 'oldest'],
+    'older than everything on the page: at the end',
+  )
+
+  assert.equal(onlyEmptyLead(new Set(['unread'])), 'No unread mail here.')
+  assert.equal(onlyEmptyLead(new Set(['starred'])), 'Nothing starred here.')
+  assert.equal(onlyEmptyLead(new Set(['attachments'])), 'No attachments here.')
+  assert.equal(onlyEmptyLead(new Set(['unread', 'starred'])), 'Nothing matches these filters.')
+
+  const byMailbox = new Map([
+    ['inbox', new Set(['unread', 'starred'])],
+    ['unified:inbox', new Set(['attachments'])],
+  ])
+  assert.deepEqual(parseOnlyPref(serializeOnlyPref(byMailbox)), byMailbox, 'round trips')
+  assert.deepEqual(parseOnlyPref(null), new Map(), 'nothing stored yet')
+  assert.deepEqual(parseOnlyPref('[1,2]'), new Map(), 'not the shape it writes')
+  assert.deepEqual(
+    parseOnlyPref('{"a":["unread","retired"],"b":[],"c":"unread","d":["retired"]}'),
+    new Map([['a', new Set(['unread'])]]),
+    'a toggle since removed is dropped, and a mailbox left with none forgotten',
+  )
+}
+
 await close()
 console.log('mail: all checks passed')

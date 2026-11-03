@@ -29,6 +29,8 @@ import type {
   RecentAction,
   RemoteImageSettings,
   Thread,
+  ThreadFilter,
+  ThreadId,
 } from './types'
 
 // ── Previews ───────────────────────────────────────────────────────────
@@ -67,6 +69,15 @@ export function formatSenders(participants: MailAddress[], max = 2): string {
   if (names.length === 0) return ''
   if (names.length <= max) return names.join(', ')
   return `${names.slice(0, max).join(', ')} +${names.length - max}`
+}
+
+/** Everybody on a list with the address each one really goes to -- for where
+ *  a name alone could say anything: `formatSenders` is what a row shows, and a
+ *  Reply-To can call itself whatever it likes. */
+export function formatAddresses(addresses: readonly MailAddress[]): string {
+  return addresses
+    .map((a) => (a.name.trim() ? `${a.name.trim()} <${a.email}>` : a.email))
+    .join(', ')
 }
 
 // ── Date formatting for the list ───────────────────────────────────────
@@ -606,6 +617,96 @@ export function categoryTabCount(
     threads: rows.reduce((sum, c) => sum + c.threads, 0),
     unread: rows.reduce((sum, c) => sum + c.unread, 0),
   }
+}
+
+// ── Showing only some of a list ─────────────────────────────────────────
+
+/** The toggles over a list, each narrowing it to what one mark on a row
+ *  says. Any mailbox has them, and turned on together they are an AND. */
+export type MailOnly = 'unread' | 'starred' | 'attachments'
+
+export const MAIL_ONLY: readonly { key: MailOnly; label: string }[] = [
+  { key: 'unread', label: 'Unread' },
+  { key: 'starred', label: 'Starred' },
+  { key: 'attachments', label: 'Attachments' },
+]
+
+/** `filter`, narrowed by whichever toggles are on. */
+export function withOnly(filter: ThreadFilter, only: ReadonlySet<MailOnly>): ThreadFilter {
+  const narrowed = { ...filter }
+  if (only.has('unread')) narrowed.unread = true
+  if (only.has('starred')) narrowed.starred = true
+  if (only.has('attachments')) narrowed.hasAttachments = true
+  return narrowed
+}
+
+/** Would `thread` be listed with these toggles on? */
+export function matchesOnly(
+  thread: Pick<Thread, 'unreadCount' | 'starred' | 'hasAttachments'>,
+  only: ReadonlySet<MailOnly>,
+): boolean {
+  return (
+    (!only.has('unread') || thread.unreadCount > 0) &&
+    (!only.has('starred') || thread.starred) &&
+    (!only.has('attachments') || thread.hasAttachments)
+  )
+}
+
+/**
+ * A fresh page of a narrowed list, with the rows that have stopped matching
+ * through what was done to them here put back where their date says --
+ * see `MailState.#lingering`. Only ever a row still on screen, so one
+ * archived while the page was on its way does not come back.
+ */
+export function keepLingering(
+  page: readonly Thread[],
+  shown: readonly Thread[],
+  lingering: ReadonlySet<ThreadId>,
+): Thread[] {
+  const rows = page.slice()
+  const listed = new Set(page.map((t) => t.id))
+  for (const row of shown) {
+    if (!lingering.has(row.id) || listed.has(row.id)) continue
+    const at = rows.findIndex((t) => t.lastDate < row.lastDate)
+    rows.splice(at < 0 ? rows.length : at, 0, row)
+  }
+  return rows
+}
+
+/** The toggles in words, for the assistant: "unread starred mail". */
+export function onlyPhrase(only: ReadonlySet<MailOnly>): string {
+  const kinds = MAIL_ONLY.filter((o) => o.key !== 'attachments' && only.has(o.key))
+  const mail = [...kinds.map((o) => o.label.toLowerCase()), 'mail'].join(' ')
+  return only.has('attachments') ? `${mail} with attachments` : mail
+}
+
+/** What a narrowed list says when nothing is left in it. */
+export function onlyEmptyLead(only: ReadonlySet<MailOnly>): string {
+  if (only.size !== 1) return 'Nothing matches these filters.'
+  if (only.has('unread')) return 'No unread mail here.'
+  if (only.has('starred')) return 'Nothing starred here.'
+  return 'No attachments here.'
+}
+
+/** Which toggles each mailbox was left on, as `everyday.mail.list.only`
+ *  holds them. Anything unreadable, or no longer a toggle, is dropped. */
+export function parseOnlyPref(raw: string | null): Map<MailboxId, ReadonlySet<MailOnly>> {
+  const parsed: unknown = raw ? JSON.parse(raw) : null
+  const out = new Map<MailboxId, ReadonlySet<MailOnly>>()
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return out
+  const known = new Set<unknown>(MAIL_ONLY.map((o) => o.key))
+  for (const [mailbox, keys] of Object.entries(parsed)) {
+    if (!Array.isArray(keys)) continue
+    const only = keys.filter((k): k is MailOnly => known.has(k))
+    if (only.length > 0) out.set(mailbox, new Set(only))
+  }
+  return out
+}
+
+export function serializeOnlyPref(
+  byMailbox: ReadonlyMap<MailboxId, ReadonlySet<MailOnly>>,
+): string {
+  return JSON.stringify(Object.fromEntries([...byMailbox].map(([box, only]) => [box, [...only]])))
 }
 
 /** Does this mailbox draw the split-inbox category tabs -- only the inbox

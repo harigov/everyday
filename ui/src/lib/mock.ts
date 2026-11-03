@@ -177,6 +177,7 @@ import {
   mockArchive,
   mockCategoryCounts,
   mockDiscardDraft,
+  mockRestoreDraft,
   mockFetchAttachment,
   mockGetThread,
   mockInboxSenders,
@@ -185,6 +186,7 @@ import {
   mockListMailboxes,
   mockListThreads,
   mockListThreadsAcross,
+  mockThreadsListed,
   mockMailActionsByOrigin,
   mockMailActivity,
   mockMarkRead,
@@ -7180,6 +7182,14 @@ export const mockInvoke = async <T>(
         args.limit as number | null | undefined,
       ) as T
 
+    case 'threads_listed':
+      requireUnlocked()
+      return mockThreadsListed(
+        strArray(args.mailboxes),
+        args.filter as ThreadFilter | undefined,
+        strArray(args.threads),
+      ) as T
+
     case 'inbox_senders':
       requireUnlocked()
       return mockInboxSenders({
@@ -7363,6 +7373,10 @@ export const mockInvoke = async <T>(
     case 'discard_draft':
       requireUnlocked()
       mockDiscardDraft(str(args.id))
+      return undefined as T
+    case 'restore_draft':
+      requireUnlocked()
+      mockRestoreDraft(str(args.id))
       return undefined as T
     case 'send_draft': {
       requireUnlocked()

@@ -120,6 +120,46 @@ fn a_hundred_thousand_messages_against_the_speed_budget() {
     let open_elapsed = open_started.elapsed();
     assert_eq!(messages.len(), 1);
 
+    // The list's Starred filter at its worst: a hundred stars scattered over
+    // the whole mailbox, so a page of them walks a good share of its rows,
+    // and none at all, which walks every one to say so. The attachment filter
+    // has the same shape, and reads the same rows. Then both again across two
+    // mailboxes, as the unified Inbox asks: `IN` sorts everything it matches
+    // rather than walking an index in order, so this is where a filter that
+    // cost a probe per row would pay for all of them whatever it found.
+    let every_thread = store.list_threads(mailbox.id, &ThreadFilter::default(), None, 100_000);
+    for thread in every_thread.unwrap().threads.iter().step_by(ROWS / 100) {
+        let (_, messages) = store.thread(thread.id).unwrap();
+        let mut flags = messages[0].flags;
+        flags.flagged = true;
+        store.set_message_flags(messages[0].id, flags).unwrap();
+    }
+    let elsewhere = Mailbox::new(account, "Elsewhere", MailboxRole::Other);
+    store.put_mailbox(&elsewhere).unwrap();
+    let both = [mailbox.id, elsewhere.id];
+    let starred = ThreadFilter { starred: Some(true), ..Default::default() };
+    let attached = ThreadFilter { has_attachments: Some(true), ..Default::default() };
+
+    let starred_started = Instant::now();
+    let starred_page = store.list_threads(mailbox.id, &starred, None, PAGE_SIZE).unwrap();
+    let starred_elapsed = starred_started.elapsed();
+    assert_eq!(starred_page.threads.len() as u32, PAGE_SIZE);
+
+    let none_started = Instant::now();
+    let none_page = store.list_threads(mailbox.id, &attached, None, PAGE_SIZE).unwrap();
+    let none_elapsed = none_started.elapsed();
+    assert!(none_page.threads.is_empty());
+
+    let across_started = Instant::now();
+    let across_page = store.list_threads_across(&both, &starred, None, PAGE_SIZE).unwrap();
+    let across_elapsed = across_started.elapsed();
+    assert_eq!(across_page.threads.len() as u32, PAGE_SIZE);
+
+    let across_none_started = Instant::now();
+    let across_none = store.list_threads_across(&both, &attached, None, PAGE_SIZE).unwrap();
+    let across_none_elapsed = across_none_started.elapsed();
+    assert!(across_none.threads.is_empty());
+
     println!(
         "ingest: {ROWS} messages in batches of {BATCH} in {ingest_elapsed:?} \
          ({:.0} messages/s)",
@@ -129,6 +169,9 @@ fn a_hundred_thousand_messages_against_the_speed_budget() {
     println!("50th page by cursor: {fiftieth_page_elapsed:?}");
     println!("unread count, {ROWS} messages: {unread_elapsed:?}");
     println!("opening one thread: {open_elapsed:?}");
+    println!("first page of Starred, 1 in 1,000 starred: {starred_elapsed:?}");
+    println!("Attachments with none in {ROWS} threads: {none_elapsed:?}");
+    println!("the same across two mailboxes: {across_elapsed:?}, {across_none_elapsed:?}");
 
     // The speed budget: opening an already-synced thread, 100 ms; a mail
     // shortcut (which a page fetch stands in for here), 60 ms. An unread
@@ -142,4 +185,13 @@ fn a_hundred_thousand_messages_against_the_speed_budget() {
     assert!(first_page_elapsed.as_millis() < 60, "the first inbox page missed the 60 ms budget");
     assert!(fiftieth_page_elapsed.as_millis() < 60, "a later page missed the 60 ms budget");
     assert!(unread_elapsed.as_millis() < 150, "the unread count missed the 150 ms search budget");
+    // Toggling a filter is a mail shortcut (`g r`) and a click on a page fetch,
+    // and a toggle stays on across restarts, so it is held to the same 60 ms.
+    assert!(starred_elapsed.as_millis() < 60, "a Starred page missed the 60 ms budget");
+    assert!(none_elapsed.as_millis() < 60, "a filter matching nothing missed the 60 ms budget");
+    assert!(across_elapsed.as_millis() < 60, "Starred across mailboxes missed the 60 ms budget");
+    assert!(
+        across_none_elapsed.as_millis() < 60,
+        "matching nothing across mailboxes missed it too"
+    );
 }

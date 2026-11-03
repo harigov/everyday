@@ -803,6 +803,11 @@ async fn discard_draft_op<S: MailSession, T: Sender, L: Lookups>(
     let OpTarget::Draft(id) = op.target else {
         return Err(MailError::Protocol("a DiscardDraft op must target a draft".into()));
     };
+    // Brought back before this came due (`Vault::restore_draft`): the copy on
+    // the server is that draft's again.
+    if !matches!(ctx.lookups.draft(id)?.state, DraftState::Discarded) {
+        return Ok(());
+    }
     let Some(copy) = ctx.lookups.draft_server_copy(id)? else { return Ok(()) };
     delete_located(ctx, &copy).await
 }
@@ -824,6 +829,14 @@ async fn append_draft<S: MailSession, T: Sender, L: Lookups>(
         return Err(MailError::Protocol("an AppendDraft op must target a draft".into()));
     };
     let draft = ctx.lookups.draft(id)?;
+    // An autosave's append still waiting when the draft was thrown away.
+    // `Vault::discard_draft` asks for a server copy to be deleted only when it
+    // knows of one, and this one does not exist yet: uploading it now would
+    // leave the words on the server with nothing left to remove them. Only
+    // ever skipped, never a failure, since nothing is owed to anybody.
+    if matches!(draft.state, DraftState::Discarded) {
+        return Ok(Executed::Appended { uid: None });
+    }
     let Some(drafts_mailbox) = ctx.lookups.special_use(MailboxRole::Drafts)? else {
         return Err(MailError::Unsupported("a Drafts mailbox"));
     };
@@ -1876,7 +1889,8 @@ Original body.\r\n"
     #[tokio::test]
     async fn discarding_a_draft_deletes_its_server_copy() {
         let account = AccountId::new();
-        let draft = simple_draft(account);
+        let mut draft = simple_draft(account);
+        draft.state = everyday_core::mail::DraftState::Discarded;
         let id = draft.id;
         let mut lookups = FakeLookups::new(false).with_draft(draft);
         lookups.server_copies.insert(id, Located { mailbox: "Drafts".into(), uid: 9 });
@@ -1890,6 +1904,47 @@ Original body.\r\n"
         assert_eq!(outcome, Executed::Ok);
         assert!(session.calls.iter().any(|c| c.contains("select Drafts")));
         assert!(session.calls.iter().any(|c| c.contains("delete 9")));
+    }
+
+    /// `Vault::restore_draft` ran before the op came due: the copy stays,
+    /// since the draft it belongs to is back.
+    #[tokio::test]
+    async fn a_discard_left_over_from_a_restored_draft_deletes_nothing() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let mut lookups = FakeLookups::new(false).with_draft(draft);
+        lookups.server_copies.insert(id, Located { mailbox: "Drafts".into(), uid: 9 });
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::DiscardDraft, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        assert!(session.calls.is_empty(), "{:?}", session.calls);
+    }
+
+    /// An append queued by an autosave, reaching the front of the queue after
+    /// the draft was thrown away: nothing goes up, or nothing would ever come
+    /// down again.
+    #[tokio::test]
+    async fn appending_a_discarded_draft_uploads_nothing() {
+        let account = AccountId::new();
+        let mut draft = simple_draft(account);
+        draft.state = everyday_core::mail::DraftState::Discarded;
+        let id = draft.id;
+        let lookups = FakeLookups::new(false)
+            .with_draft(draft)
+            .with_special_use(MailboxRole::Drafts, "Drafts");
+        let mut session = FakeSession::default();
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcome = execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Executed::Appended { uid: None }));
+        assert!(session.calls.is_empty(), "{:?}", session.calls);
+        assert!(session.appended.is_empty());
     }
 
     #[tokio::test]

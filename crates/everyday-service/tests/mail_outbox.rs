@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use everyday_core::account::{Account, Provider};
-use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
+use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
     Address, AttendeeResponse, CategorySource, Draft, DraftCalendarPart, DraftState, Invite,
     InviteMethod, Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget,
@@ -136,6 +136,9 @@ struct FakeSession {
     /// a crash-recovered one) already put on the server, in whichever
     /// mailbox the test names.
     found_message_ids: std::collections::HashMap<String, Uid>,
+    /// Runs in the middle of an `APPEND` -- what a test uses to have something
+    /// else happen while one is on its way to the server.
+    during_append: Option<Box<dyn FnMut() + Send>>,
 }
 
 impl FakeSession {
@@ -203,6 +206,9 @@ impl MailSession for FakeSession {
         flags: Flags,
     ) -> SessionResult<Option<Uid>> {
         self.calls.push(format!("append to {mailbox} ({flags:?})"));
+        if let Some(during) = &mut self.during_append {
+            during();
+        }
         Ok(Some(1))
     }
     async fn search_message_id(
@@ -422,6 +428,96 @@ async fn saving_a_draft_twice_quickly_enqueues_one_append() {
         1,
         "the second save within thirty seconds must not enqueue a second append"
     );
+}
+
+// ---- throwing a draft away with its autosave still on the way --------------
+
+/// A draft with words in it and somebody to send it to, saved once: exactly
+/// one `AppendDraft` waiting in the outbox, and a Drafts mailbox for it to go.
+async fn draft_with_an_append_waiting(svc: &Arc<Service>, account: AccountId) -> Value {
+    seed_mailbox(svc, account, "Drafts", MailboxRole::Drafts);
+    let mut draft = call(svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "someone@example.com" }]);
+    draft["bodyHtml"] = json!("<p>Words I thought better of</p>");
+    call(svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    draft
+}
+
+#[tokio::test]
+async fn a_draft_discarded_before_its_append_comes_due_never_reaches_the_server() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let draft = draft_with_an_append_waiting(&svc, account).await;
+
+    call(&svc, "discard_draft", json!({ "id": draft["id"] })).await;
+
+    let mut session = FakeSession::default();
+    drain_outbox(&svc, account, &mut session, &FakeSender::default()).await.unwrap();
+    assert!(!session.calls.iter().any(|c| c.contains("append")), "{:?}", session.calls);
+}
+
+#[tokio::test]
+async fn a_draft_discarded_while_its_append_is_on_the_way_is_deleted_again() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let draft = draft_with_an_append_waiting(&svc, account).await;
+    let id: DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+
+    // The moment `Vault::discard_draft` sees no server copy to delete, because
+    // the upload making one has not finished.
+    let vault = svc.get().unwrap();
+    let mut session = FakeSession {
+        during_append: Some(Box::new(move || {
+            vault.discard_draft(id).unwrap();
+        })),
+        ..FakeSession::default()
+    };
+    let sender = FakeSender::default();
+    drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert!(session.calls.iter().any(|c| c.contains("append to Drafts")), "{:?}", session.calls);
+
+    // What the upload left behind is followed by its removal, or the words
+    // would stay in the server's Drafts folder with nothing left to delete them.
+    drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert!(session.calls.iter().any(|c| c.starts_with("delete")), "{:?}", session.calls);
+}
+
+#[tokio::test]
+async fn a_restored_draft_is_the_same_record_and_can_be_sent() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let draft = draft_with_an_append_waiting(&svc, account).await;
+    let id: DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+    let vault = svc.get().unwrap();
+    vault
+        .with_draft(id, |d| {
+            d.recipients_changed_by = Some(Origin::Mcp { client: "claude".into() });
+            true
+        })
+        .unwrap();
+
+    call(&svc, "discard_draft", json!({ "id": id })).await;
+    assert!(matches!(vault.draft(id).unwrap().state, DraftState::Discarded));
+    call(&svc, "restore_draft", json!({ "id": id })).await;
+
+    let back = vault.draft(id).unwrap();
+    assert!(matches!(back.state, DraftState::Editing));
+    assert!(
+        back.recipients_changed_by.is_some(),
+        "being binned and brought back is nobody having looked at the recipients"
+    );
+
+    // Saved again as it was: still nobody having changed them.
+    call(&svc, "save_draft", json!({ "draft": serde_json::to_value(&back).unwrap() })).await;
+    assert!(vault.draft(id).unwrap().recipients_changed_by.is_some());
+
+    // Restoring what is not discarded is no change at all.
+    let before = vault.draft(id).unwrap().updated_at;
+    call(&svc, "restore_draft", json!({ "id": id })).await;
+    assert_eq!(vault.draft(id).unwrap().updated_at, before);
+
+    call(&svc, "send_draft", json!({ "id": id, "delaySeconds": 5 })).await;
+    assert!(matches!(vault.draft(id).unwrap().state, DraftState::Queued { .. }));
 }
 
 // ---- recovering an op stranded `InFlight` by a crash -----------------------

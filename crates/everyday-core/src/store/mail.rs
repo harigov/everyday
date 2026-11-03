@@ -85,6 +85,12 @@ pub struct ThreadFilter {
     /// date the list is ordered by. What Quick Cleanup's "older than" asks:
     /// a conversation with anything newer is not old mail.
     pub last_before: Option<Timestamp>,
+    /// `Some(true)` for only threads with a starred message, in whichever
+    /// mailbox it is filed -- what [`Thread::starred`] says; `Some(false)`
+    /// for only threads with none.
+    pub starred: Option<bool>,
+    /// The same for an attachment -- what [`Thread::has_attachments`] says.
+    pub has_attachments: Option<bool>,
 }
 
 /// How many of one mailbox's threads carry one category -- a row of
@@ -239,6 +245,18 @@ pub trait MailStore: Send + Sync {
         cursor: Option<&str>,
         limit: u32,
     ) -> Result<ThreadPage>;
+
+    /// Which of `threads` [`MailStore::list_threads_across`] would find in
+    /// `mailboxes` under `filter`, on whichever page -- for a caller holding a
+    /// row it needs to ask about by id rather than page through a mailbox to
+    /// look for it. In no particular order, each thread once. Either list
+    /// empty is an empty answer.
+    fn threads_listed(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        threads: &[ThreadId],
+    ) -> Result<Vec<ThreadId>>;
 
     /// Every thread of `account`'s carrying `category`, across every
     /// mailbox, newest first. What a split-inbox tab reads, once phase 7
