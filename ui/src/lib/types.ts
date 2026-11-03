@@ -2028,6 +2028,10 @@ export interface ThreadFilter {
   /** Only threads whose newest message, wherever it is filed, is before
    *  this ISO instant. */
   lastBefore?: string | null
+  /** Only threads with a starred message, or with none. */
+  starred?: boolean | null
+  /** Only threads with an attachment, or with none. */
+  hasAttachments?: boolean | null
 }
 
 /** `category_counts`: how many of one mailbox's threads carry `category`

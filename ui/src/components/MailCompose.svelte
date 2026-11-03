@@ -4,6 +4,9 @@
   // through an undo window, or send later. Never a dialog: it opens in the
   // reading pane, where a message is read, either filling it (a new message,
   // or a draft reopened) or under the thread it answers -- see `placement`.
+  // Under a thread it reads as the next message rather than a form: a line
+  // saying who it is to, the words, and a row of quiet actions, with the
+  // address fields and the subject folded behind that first line.
   //
   // The body is TipTap, the same library `RichText.svelte` wraps for the
   // journal and for notes -- but not that component: a `Draft` stores
@@ -23,10 +26,18 @@
   import { api } from '../lib/api'
   import { accounts } from '../lib/accounts.svelte'
   import { Autosave } from '../lib/autosave'
+  import { dismissable } from '../lib/dismiss'
   import { handle } from '../lib/errors'
   import { focusOnMount } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
-  import { estimateQuoteHeight, formatSenders, isBlankDraft, parseTypedAddress } from '../lib/mail'
+  import { keysLabel } from '../lib/keys'
+  import {
+    estimateQuoteHeight,
+    formatAddresses,
+    formatSenders,
+    isBlankDraft,
+    parseTypedAddress,
+  } from '../lib/mail'
   import {
     escapeHtml,
     htmlToPlainText,
@@ -45,6 +56,7 @@
   import { app } from '../lib/state.svelte'
   import { timeOfDay, toLocalInputValue } from '../lib/format'
   import type { DeclineReason, Draft, ImproveMode, MailAddress } from '../lib/types'
+  import Avatar from './Avatar.svelte'
   import Icon from './Icon.svelte'
 
   /** Polish, Shorter, Longer, Friendlier, More formal, Fix -- the Improve
@@ -57,6 +69,8 @@
     { mode: 'formal', label: 'More formal' },
     { mode: 'fix', label: 'Fix spelling & grammar' },
   ]
+
+  const FIELD_LABELS = { to: 'To', cc: 'Cc', bcc: 'Bcc' }
 
   let {
     draft,
@@ -147,6 +161,44 @@
     return { destroy: () => ro.disconnect() }
   }
 
+  /** Are To, Cc, Bcc and Subject showing? A reply already knows all four, so
+   *  they start folded behind its first line -- open when there is nobody to
+   *  send to yet, and whenever there is something in them to check first: a
+   *  draft anything but the person wrote, recipients anything but the person
+   *  changed, and a Bcc, which the line it folds behind has no way to flag. */
+  let showFields = $state(
+    untrack(
+      () =>
+        placement === 'pane' ||
+        working.to.length === 0 ||
+        working.bcc.length > 0 ||
+        working.origin.type !== 'person' ||
+        !!working.recipientsChangedBy,
+    ),
+  )
+  /** Unfolded by hand, which is asking to change something in there. */
+  let focusFields = $state(false)
+
+  function toggleFields() {
+    focusFields = !showFields
+    showFields = !showFields
+  }
+
+  /** Everybody this goes to, Bcc included: folded away, nobody should be a
+   *  surprise. */
+  const recipients = $derived(formatSenders([...working.to, ...working.cc, ...working.bcc], 3))
+  const recipientsTitle = $derived(
+    (['to', 'cc', 'bcc'] as const)
+      .filter((field) => working[field].length > 0)
+      .map((field) => `${FIELD_LABELS[field]}: ${formatAddresses(working[field])}`)
+      .join('\n'),
+  )
+
+  /** A chord as this machine spells it, for the words on screen. */
+  function keyName(keys: string): string {
+    return keysLabel(keys, navigator.userAgent.includes('Mac'))
+  }
+
   let toText = $state('')
   let ccText = $state('')
   let bccText = $state('')
@@ -172,13 +224,6 @@
    *  *sheet*, chips and buttons included, not only in the prose itself. */
   let sheetEl = $state<HTMLDivElement>()
 
-  /** `working.to`'s first name or address, for the thread header's "Reply
-   *  to {name}" -- there is always at least one by the time a reply draft
-   *  reaches here (`new_draft` fills it from the parent's `from`/`reply_to`
-   *  before this ever mounts), but a forward's `to` starts empty, which is
-   *  exactly the case this reads as "Forward" instead. */
-  const replyToName = $derived(working.to[0]?.name || working.to[0]?.email || '')
-
   /** Checked before `onKeydown` acts on anything: the sheet is not modal,
    *  it sits in normal flow beside the list and the rest of the app, and
    *  Mod+Enter pressed while focus is somewhere else must not reach across
@@ -190,6 +235,13 @@
   // ── writing help ─────────────────────────────────────────────────
 
   const account = $derived(accounts.account(working.accountId))
+
+  /** Who this goes out as, for the avatar beside it. */
+  const sender = $derived(
+    account?.identities.find((i) => i.address === working.identity)?.name ||
+      account?.displayName ||
+      working.identity,
+  )
   const writingEnabled = $derived(account?.mailAi?.writing === true)
   /** Why the sparkle and Improve buttons are disabled, when they are --
    *  read as `title`, so a mouse finds out why without opening Settings. */
@@ -366,7 +418,15 @@
       extensions: [
         // StarterKit carries a link of its own; this one is configured below.
         StarterKit.configure({ heading: false, link: false }),
-        Placeholder.configure({ placeholder: 'Write something…' }),
+        Placeholder.configure({
+          // `untrack`: read while the editor is being built, inside this very
+          // effect, it would otherwise rebuild the editor when Settings
+          // loaded -- and throw away what had been typed.
+          placeholder: () =>
+            untrack(() => writingEnabled)
+              ? `Write something, or press ${keyName('mod+g')} for AI`
+              : 'Write something…',
+        }),
         Link.configure({
           openOnClick: true,
           autolink: true,
@@ -647,6 +707,53 @@
     onclose()
   }
 
+  /** Guards the bin against a second click while the first is on its way. */
+  let throwingAway = $state(false)
+
+  /**
+   * The bin: gone, where the close button keeps it. Words went with it, so it
+   * offers them back. The order is what matters: nothing further is written
+   * (it would only queue another upload of words being thrown away), whatever
+   * is already on its way lands first so it cannot follow the discard, and
+   * anything typed meanwhile is dropped after, as `discard` does above.
+   */
+  async function throwAway() {
+    const worthKeeping = edited || ownText().trim().length > 0
+    const kept = $state.snapshot(working)
+    const thread = underThread ? mail.selectedThread : null
+    throwingAway = true
+    saver.forget(kept.id)
+    try {
+      await saver.flush()
+      await mailApi.discardDraft(kept.id)
+    } catch (e) {
+      // Still here, and still to be saved.
+      saver.touch(kept.id)
+      throwingAway = false
+      await handle(e)
+      return
+    }
+    saver.forget(kept.id)
+    onclose()
+    if (!worthKeeping) return
+    notify.info('Draft discarded', {
+      key: 'mail-draft-discarded',
+      action: { label: 'Undo', run: () => void bringBack(kept, thread) },
+    })
+  }
+
+  /** The same draft back, with what was typed since it last autosaved. */
+  async function bringBack(kept: Draft, thread: string | null) {
+    try {
+      await mailApi.restoreDraft(kept.id)
+      await mailApi.saveDraft(kept)
+      if (thread && mail.selectedThread === thread) mail.openInlineDraft(kept)
+      else mail.openDraft(kept)
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
   function onKeydown(e: KeyboardEvent) {
     // The sheet is not modal: it sits in the reading pane beside whatever
     // else is on screen, so a key meant for the rest of the window --
@@ -723,12 +830,25 @@
   role="region"
   aria-label="Compose"
 >
-  <div class="head" class:thread-head={underThread}>
+  {#if underThread && account}
+    <span class="own-avatar">
+      <Avatar name={sender} email={working.identity} size={40} />
+    </span>
+  {/if}
+  <div class="head">
     {#if underThread}
-      <h2>{working.inReplyTo ? `Reply to ${replyToName}` : 'Forward'}</h2>
-      {#if working.to.length > 0}
-        <span class="thread-to">To: {formatSenders(working.to, 3)}</span>
-      {/if}
+      <button
+        class="draft-to"
+        aria-expanded={showFields}
+        title={recipientsTitle || 'Show the address fields'}
+        onclick={toggleFields}
+      >
+        <span class="draft-word">{working.inReplyTo ? 'Draft' : 'Forward'}</span>
+        {#if recipients}<span class="draft-names">to {recipients}</span>{/if}
+        <span class="draft-fold" class:open={showFields}>
+          <Icon name="chevron" size={11} weight={2} />
+        </span>
+      </button>
     {:else}
       <h2>{working.subject || 'New message'}</h2>
     {/if}
@@ -741,13 +861,14 @@
         ><Icon name="sparkle" size={12} /> Drafted by the assistant — review before sending</span
       >
     {/if}
-    <button class="close" aria-label="Close" onclick={discard}
+    <button class="close" aria-label="Close" title="Close and keep the draft" onclick={discard}
       ><Icon name="close" size={15} /></button
     >
   </div>
 
-  {#snippet addressRow(field: 'to' | 'cc' | 'bcc', label: string)}
-    <div class="field address">
+  {#snippet addressRow(field: 'to' | 'cc' | 'bcc')}
+    {@const label = FIELD_LABELS[field]}
+    <div class="line address">
       <span class="label">{label}</span>
       <div class="chips">
         {#each working[field] as a (a.email)}
@@ -759,7 +880,8 @@
           >
         {/each}
         <input
-          use:focusOnMount={field === 'to' && !underThread && working.to.length === 0}
+          use:focusOnMount={field === 'to' &&
+            (focusFields || (!underThread && working.to.length === 0))}
           value={typedIn(field)}
           aria-label={label}
           aria-autocomplete="list"
@@ -804,23 +926,28 @@
     </div>
   {/snippet}
 
-  {@render addressRow('to', 'To')}
-  {#if showCcBcc}
-    {@render addressRow('cc', 'Cc')}
-    {@render addressRow('bcc', 'Bcc')}
-  {/if}
+  {#if showFields}
+    <div class="fields">
+      {@render addressRow('to')}
+      {#if showCcBcc}
+        {@render addressRow('cc')}
+        {@render addressRow('bcc')}
+      {/if}
 
-  <div class="field">
-    <input
-      class="subject"
-      value={working.subject}
-      oninput={(e) => {
-        working.subject = e.currentTarget.value
-        touch()
-      }}
-      placeholder="Subject"
-    />
-  </div>
+      <div class="line">
+        <span class="label">Subject</span>
+        <input
+          class="subject"
+          aria-label="Subject"
+          value={working.subject}
+          oninput={(e) => {
+            working.subject = e.currentTarget.value
+            touch()
+          }}
+        />
+      </div>
+    </div>
+  {/if}
 
   {#if aiPromptOpen}
     <div class="ai-prompt">
@@ -906,38 +1033,24 @@
     </div>
   {/if}
 
+  <!-- The two ways out on the left, where the eye finishes the last line
+       written; the tools on the right, out of the way until they are wanted. -->
   <div class="foot">
-    <label class="attach" title="Attach files" aria-label="Attach files">
-      <Icon name="paperclip" size={15} />
-      <input type="file" multiple hidden onchange={(e) => void onFiles(e.currentTarget.files)} />
-    </label>
-    <button
-      class="attach"
-      class:active={aiPromptOpen}
-      aria-label="Write with AI"
-      title={writingEnabled ? 'Write with AI (Mod+G)' : writingDisabledReason}
-      disabled={!writingEnabled}
-      onclick={() => (aiPromptOpen = !aiPromptOpen)}
-    >
-      <Icon name="sparkle" size={14} />
-    </button>
-    <button
-      class="btn"
-      title={writingEnabled ? 'Improve what you wrote' : writingDisabledReason}
-      disabled={!writingEnabled || improving}
-      onclick={openImproveMenu}
-    >
-      <Icon name="pencil" size={13} />
-      {improving ? 'Improving…' : 'Improve'}
-    </button>
-    <span class="spacer"></span>
     {#if proposal}
       <!-- A dream's send, not the person's own: the two ordinary send paths
            give way to accept and decline, the same pair every ghost in the
            app offers, because a proposal answered from in here is still
            answered through `proposals.accept`/`decline` and not `mail.send`. -->
       <button
-        class="btn"
+        class="send"
+        title={`Send (${keyName('mod+Enter')})`}
+        disabled={proposalBusy}
+        onclick={() => void acceptProposal()}
+      >
+        Send
+      </button>
+      <button
+        class="quiet"
         disabled={proposalBusy}
         data-menu-trigger
         aria-haspopup="menu"
@@ -946,13 +1059,14 @@
       >
         Decline
       </button>
-      <button class="btn btn-primary" disabled={proposalBusy} onclick={() => void acceptProposal()}>
-        Send <span class="hint">(Mod+Enter)</span>
-      </button>
     {:else}
+      <button class="send" title={`Send (${keyName('mod+Enter')})`} onclick={() => void send()}>
+        Send
+      </button>
       <div class="later-wrap">
         <button
-          class="btn"
+          class="quiet"
+          aria-expanded={sendingLater}
           onclick={() => {
             sendingLater = !sendingLater
             pickingDateTime = false
@@ -961,14 +1075,18 @@
           Send later
         </button>
         {#if sendingLater}
-          <div class="later-pop" role="menu">
+          <div
+            class="later-pop"
+            role="menu"
+            use:dismissable={{ onaway: () => (sendingLater = false), within: '.later-wrap' }}
+          >
             {#if pickingDateTime}
               <input
                 type="datetime-local"
                 bind:value={sendAt}
                 min={toLocalInputValue(new Date())}
               />
-              <button class="btn" onclick={() => void sendLater()}>Schedule</button>
+              <button class="quiet" onclick={() => void sendLater()}>Schedule</button>
             {:else}
               {#each sendLaterChoices() as choice (choice.key)}
                 <button role="menuitem" onclick={() => void send(choice.at.toISOString())}>
@@ -983,8 +1101,46 @@
           </div>
         {/if}
       </div>
-      <button class="btn btn-primary" onclick={() => void send()}>
-        Send <span class="hint">(Mod+Enter)</span>
+    {/if}
+    <span class="spacer"></span>
+    <button
+      class="tool"
+      class:active={aiPromptOpen}
+      aria-label="Write with AI"
+      title={writingEnabled ? `Write with AI (${keyName('mod+g')})` : writingDisabledReason}
+      disabled={!writingEnabled}
+      onclick={() => (aiPromptOpen = !aiPromptOpen)}
+    >
+      <Icon name="sparkle" size={16} />
+    </button>
+    <button
+      class="tool"
+      aria-label="Improve what you wrote"
+      aria-haspopup="menu"
+      aria-busy={improving}
+      title={writingEnabled
+        ? improving
+          ? 'Improving…'
+          : 'Improve what you wrote'
+        : writingDisabledReason}
+      disabled={!writingEnabled || improving}
+      onclick={openImproveMenu}
+    >
+      <Icon name="pencil" size={15} />
+    </button>
+    <label class="tool" title="Attach files" aria-label="Attach files">
+      <Icon name="paperclip" size={16} />
+      <input type="file" multiple hidden onchange={(e) => void onFiles(e.currentTarget.files)} />
+    </label>
+    {#if !proposal}
+      <button
+        class="tool"
+        aria-label="Discard the draft"
+        title="Discard the draft"
+        disabled={throwingAway}
+        onclick={() => void throwAway()}
+      >
+        <Icon name="trash" size={16} />
       </button>
     {/if}
   </div>
@@ -1010,17 +1166,37 @@
     padding: 0 var(--sp-4);
     border-bottom: 1px solid var(--border);
   }
-  /* Under the thread it answers, in its flow: a card the width of the
-     messages above it. */
+  /* Past the floating assistant button, which sits on this corner. */
+  .pane-compose > .foot {
+    padding-right: var(--fab-clear);
+  }
+  /* The next message in the thread it answers: no box, a hairline above, and
+     its text on the same line as the messages' names and bodies, the writer's
+     avatar in the gutter they keep theirs in. */
   .thread-compose {
+    --gutter: calc(40px + var(--sp-3) + var(--sp-1));
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: var(--sp-2);
+    gap: var(--sp-1);
     width: 100%;
-    padding: var(--sp-3) var(--sp-4);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-raised);
+    padding: var(--sp-4) 0 0 var(--gutter);
+    border-top: 1px solid var(--border);
+  }
+  .own-avatar {
+    position: absolute;
+    top: var(--sp-3);
+    left: var(--sp-1);
+  }
+  /* A narrow pane needs the width more than the alignment, as the messages
+     above do. */
+  @container (max-width: 520px) {
+    .thread-compose {
+      padding-left: 0;
+    }
+    .own-avatar {
+      display: none;
+    }
   }
   .head {
     display: flex;
@@ -1036,19 +1212,43 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* The compact header: the title names what this is rather than growing to
-     fill the row, so there is still room for the recipients line beside it. */
-  .head.thread-head h2 {
-    flex: none;
+  /* Who it is to, which is also what unfolds the fields -- a message's own
+     name line, with one word of colour in it. */
+  .draft-to {
+    flex: 0 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.35em;
+    padding: 2px 0;
+    font-size: var(--text-md);
+    font-weight: 620;
+    color: var(--fg);
+    text-align: left;
   }
-  .thread-to {
-    flex: 1;
+  .draft-word {
+    flex: none;
+    color: var(--journal-accent, var(--accent));
+  }
+  .draft-names {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--text-xs);
+  }
+  .draft-fold {
+    flex: none;
+    align-self: center;
+    display: grid;
     color: var(--fg-faint);
+    rotate: 90deg;
+    transition: rotate var(--fast) var(--ease);
+  }
+  .draft-fold.open {
+    rotate: -90deg;
+  }
+  .draft-to:hover .draft-fold {
+    color: var(--fg);
   }
   .assistant-mark {
     display: inline-flex;
@@ -1065,8 +1265,10 @@
     background: color-mix(in oklab, var(--accent) 8%, transparent);
   }
   .close {
+    flex: none;
     display: grid;
     place-items: center;
+    margin-left: auto;
     width: 22px;
     height: 22px;
     border-radius: var(--radius-sm);
@@ -1077,20 +1279,27 @@
     color: var(--fg);
   }
 
-  .field {
+  /* Not `.field`: `app.css` draws that as a whole bordered input box, which
+     is what put a box around each of these. */
+  .fields {
+    display: flex;
+    flex-direction: column;
+  }
+  .line {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    border-bottom: 1px solid var(--border);
+    min-height: 36px;
     padding: var(--sp-1) 0;
+    border-bottom: 1px solid var(--border);
   }
   /* What the suggestions hang from. */
-  .field.address {
+  .line.address {
     position: relative;
   }
   .label {
     flex: none;
-    width: 36px;
+    width: 52px;
     font-size: var(--text-sm);
     color: var(--fg-faint);
   }
@@ -1129,6 +1338,9 @@
   .subject:focus {
     outline: none;
   }
+  .chips input::placeholder {
+    color: var(--fg-faint);
+  }
   .subject {
     width: 100%;
   }
@@ -1147,11 +1359,11 @@
   .suggestions {
     position: absolute;
     top: calc(100% + 2px);
-    left: 44px;
+    left: 60px;
     z-index: 30;
     display: flex;
     flex-direction: column;
-    width: min(420px, calc(100% - 44px));
+    width: min(420px, calc(100% - 60px));
     max-height: 280px;
     overflow-y: auto;
     padding: 4px;
@@ -1218,7 +1430,7 @@
   .prose {
     display: flex;
     flex-direction: column;
-    min-height: 120px;
+    min-height: 72px;
     padding: var(--sp-2) 0;
   }
   /* A message quoting nothing: the editor fills the body, so a click
@@ -1258,21 +1470,22 @@
     color: var(--fg-faint);
   }
 
-  /* Gmail's "•••": the whole quote, folded into one small pill. */
+  /* The whole quote, folded into three dots, and nothing around them until
+     the pointer is on them. */
   .quote-toggle {
     align-self: flex-start;
-    padding: 0 8px;
-    height: 16px;
-    line-height: 14px;
-    border-radius: 999px;
-    background: var(--bg-hover);
-    color: var(--fg-muted);
+    margin-left: -6px;
+    padding: 0 6px;
+    height: 18px;
+    line-height: 16px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
     font-size: 11px;
     letter-spacing: 1px;
   }
   .quote-toggle:hover,
   .quote-toggle.open {
-    background: var(--bg-active);
+    background: var(--bg-hover);
     color: var(--fg);
   }
   .quote {
@@ -1294,36 +1507,64 @@
   .foot {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
+    gap: var(--sp-3);
     padding-top: var(--sp-2);
-    border-top: 1px solid var(--border);
   }
-  .attach {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
+  /* The words: Send the one bright thing in the row, the rest stepping back. */
+  .send,
+  .quiet {
+    padding: 4px 0;
+    font-size: var(--text-base);
+    white-space: nowrap;
+    transition: color var(--fast) var(--ease);
   }
-  .attach:hover {
-    background: var(--bg-hover);
+  .send {
+    font-weight: 650;
     color: var(--fg);
   }
-  .attach.active {
-    background: color-mix(in oklab, var(--accent) 14%, transparent);
+  .send:hover:not(:disabled) {
     color: var(--journal-accent, var(--accent));
   }
-  .attach:disabled {
+  .quiet {
+    font-weight: 500;
+    color: var(--fg-faint);
+  }
+  .quiet:hover:not(:disabled) {
+    color: var(--fg);
+  }
+  .send:disabled,
+  .quiet:disabled {
     opacity: 0.5;
   }
-  /* Send and Send later to the far end of the row, away from the tools. */
+  /* The tools, to the far end of the row. */
   .foot .spacer {
     flex: 1;
   }
-  .foot .hint {
-    opacity: 0.7;
-    font-size: var(--text-xs);
+  .tool {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    margin-left: calc(-1 * var(--sp-2));
+    border-radius: var(--radius-sm);
+    color: var(--fg-faint);
+    cursor: pointer;
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .tool:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .tool.active {
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    color: var(--journal-accent, var(--accent));
+  }
+  .tool:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
   .foot input[type='datetime-local'] {
     border: 1px solid var(--border);
@@ -1387,18 +1628,18 @@
   }
   .later-pop {
     position: absolute;
-    right: 0;
+    left: 0;
     bottom: 100%;
     z-index: 20;
     display: flex;
     flex-direction: column;
-    min-width: 200px;
+    min-width: 240px;
     margin-bottom: 4px;
     padding: var(--sp-1);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     background: var(--bg-raised);
-    box-shadow: var(--shadow);
+    box-shadow: var(--shadow-lg);
   }
   .later-pop button[role='menuitem'] {
     display: flex;
@@ -1417,6 +1658,9 @@
   }
   .later-pop button[role='menuitem']:hover {
     background: var(--bg-hover);
+  }
+  .later-pop button[role='menuitem'] span {
+    white-space: nowrap;
   }
   .later-pop .when {
     color: var(--fg-faint);

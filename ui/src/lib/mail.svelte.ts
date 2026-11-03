@@ -27,17 +27,22 @@ import {
   applyRowPatch,
   isSnoozedMailbox,
   isUnifiedMailbox,
+  keepLingering,
   listTarget,
   mailboxDisplayName,
   mailboxHasTabs,
+  matchesOnly,
   mergeSearchPage,
   needsSyntheticSnoozedMailbox,
   neighbourThread,
+  onlyPhrase,
+  parseOnlyPref,
   promoteGmailInbox,
   refreshLimit,
   removeRow,
   restoreRow,
   revertRow,
+  serializeOnlyPref,
   snoozeChoices,
   stepCategoryTab,
   sumCategoryCounts,
@@ -47,7 +52,10 @@ import {
   unifiedMailboxId,
   unifiedMailboxes as buildUnifiedMailboxes,
   visibleThreadList,
+  withOnly,
+  type MailOnly,
 } from './mail'
+import { pref } from './prefs'
 import { seen, type Showing } from './onscreen'
 import { app, handle, quietly } from './state.svelte'
 import { applySingleChange } from './store/live-patch'
@@ -85,6 +93,15 @@ const LIVE_REFRESH_DEBOUNCE_MS = 600
 /** How many threads a page loads at once. */
 const PAGE = 50
 
+const NOTHING_ONLY: ReadonlySet<MailOnly> = new Set()
+
+const onlyPref = pref(
+  'everyday.mail.list.only',
+  parseOnlyPref,
+  new Map<MailboxId, ReadonlySet<MailOnly>>(),
+  serializeOnlyPref,
+)
+
 /** `markMailboxRead`'s page, and the most it does in one go. */
 const MARK_PAGE = 200
 const MARK_CAP = 2000
@@ -110,6 +127,24 @@ class MailState {
   selectedAccount = $state<AccountScope>(null)
   selectedMailbox = $state<MailboxId | null>(null)
   category = $state<MailCategory | null>(null)
+  /** Which of the list's "show only" toggles each mailbox was left on --
+   *  per mailbox, so Unread in the Inbox does not empty Sent, and kept across
+   *  restarts, like the sidebar's own fold. See `only`. */
+  #onlyByMailbox = $state.raw(onlyPref.get())
+  /**
+   * Rows that no longer match the toggles because of what was just done to
+   * them here -- read, or unstarred -- and stay listed until the list is
+   * asked for afresh by a person choosing another mailbox, tab or toggle.
+   * Opening a thread marks it read, so without this Unread would pull a
+   * message out from under whoever is reading it at the next sync, a minute
+   * later at most, and `k` could not get back to the one before.
+   */
+  #lingering = new Set<ThreadId>()
+  /** The rows of `threads` that the last refresh put back from `#lingering`
+   *  rather than got from the backend -- which the next one must not count
+   *  when it works out how far down to ask, or it would ask for one row more
+   *  each time for every row held on to. */
+  #putBack = new Set<ThreadId>()
   selectedThread = $state<ThreadId | null>(null)
   /**
    * Threads picked together -- Ctrl/Cmd+click toggles one, Shift+click takes
@@ -238,6 +273,8 @@ class MailState {
     this.selectedAccount = null
     this.selectedMailbox = null
     this.category = null
+    this.#lingering.clear()
+    this.#putBack.clear()
     this.selectedThread = null
     this.checked = new Set()
     this.#anchor = null
@@ -503,6 +540,8 @@ class MailState {
     // category chosen there must not go on filtering a mailbox with no tab
     // strip to clear it from. The unified Inbox is an inbox, and keeps it.
     if (!mailboxHasTabs(this.#findMailbox(id))) this.category = null
+    this.#lingering.clear()
+    this.#putBack.clear()
     void this.refreshCategoryCounts()
     await this.refresh()
   }
@@ -516,8 +555,66 @@ class MailState {
 
   setCategory(category: MailCategory | null) {
     this.category = category
+    this.#lingering.clear()
+    this.#putBack.clear()
     this.clearChecked()
     void this.refresh()
+  }
+
+  /** The toggles on for the mailbox on screen. */
+  get only(): ReadonlySet<MailOnly> {
+    return (this.selectedMailbox && this.#onlyByMailbox.get(this.selectedMailbox)) || NOTHING_ONLY
+  }
+
+  /** Turn toggles on or off for the mailbox on screen. The thread being read
+   *  stays listed either way: a filter is no reason to lose your place. */
+  setOnly(only: ReadonlySet<MailOnly>) {
+    const box = this.selectedMailbox
+    if (!box) return
+    const byMailbox = new Map(this.#onlyByMailbox)
+    if (only.size > 0) byMailbox.set(box, only)
+    else byMailbox.delete(box)
+    this.#onlyByMailbox = byMailbox
+    onlyPref.set(byMailbox)
+    this.#holdOnlyTheOpenThread()
+    this.clearChecked()
+    void this.refresh()
+  }
+
+  toggleOnly(key: MailOnly) {
+    const only = new Set(this.only)
+    if (!only.delete(key)) only.add(key)
+    this.setOnly(only)
+  }
+
+  /** The list is being asked for afresh, so nothing lingers any longer but the
+   *  thread somebody is in the middle of reading. */
+  #holdOnlyTheOpenThread() {
+    this.#lingering = new Set(this.selectedThread ? [this.selectedThread] : [])
+    this.#putBack.clear()
+  }
+
+  /**
+   * Which of the rows a page left out have really gone from this mailbox --
+   * archived on a phone, say, or by the assistant -- rather than merely been
+   * hidden by a toggle or lying past the end of the page. Only what is being
+   * held on to is worth asking about: everything lingering, and with a toggle
+   * on, the open thread, since the page's silence about it now means nothing.
+   * Asked without the toggles, which are what is being seen past.
+   */
+  async #goneFrom(
+    target: { mailboxIds: MailboxId[]; snoozed: boolean },
+    page: readonly Thread[],
+  ): Promise<ReadonlySet<ThreadId>> {
+    const listed = new Set(page.map((t) => t.id))
+    const held = new Set(this.#lingering)
+    if (this.only.size > 0 && this.selectedThread) held.add(this.selectedThread)
+    const asking = [...held].filter((id) => !listed.has(id))
+    if (asking.length === 0) return new Set()
+    const still = new Set(
+      await mailApi.threadsListed(target.mailboxIds, { snoozed: target.snoozed }, asking),
+    )
+    return new Set(asking.filter((id) => !still.has(id)))
   }
 
   /** `Tab`/`Shift+Tab`: the next or previous category tab -- see
@@ -543,7 +640,8 @@ class MailState {
    * page, the open thread's absence from the result is trustworthy: it means
    * the backend no longer has it here -- deleted, or moved out of this
    * mailbox -- not merely "not on this page", which is what the previous,
-   * page-one-only check was mistaking it for.
+   * page-one-only check was mistaking it for. Except with a toggle on, or for
+   * a row held on to: there it says nothing, so `#goneFrom` asks by id.
    */
   async refresh() {
     // `listTarget` is where the mailbox ids actually meant for the backend
@@ -557,33 +655,44 @@ class MailState {
     await guardedRefresh(
       this.#refreshGeneration,
       async (isCurrent) => {
-        // Finding 1: a category filter only means anything for the inbox's
-        // own tabs -- sent elsewhere, it silently narrowed a mailbox with no
-        // tab strip to have set it from.
-        const category = mailboxHasTabs(this.mailbox) ? this.category : null
-        // Bug 3: `snoozed` was never sent at all, so a snoozed thread --
-        // still a member of whatever mailbox it was snoozed from -- came
-        // straight back on the very next refresh. `false` everywhere except
-        // the Snoozed view, which wants nothing else.
-        const filter: ThreadFilter = { snoozed: target.snoozed }
-        if (category) filter.category = category
         const page = await this.#listPage(
           target.mailboxIds,
-          filter,
+          this.#listFilter(target),
           null,
-          refreshLimit(this.threads.length, PAGE),
+          refreshLimit(this.threads.filter((t) => !this.#putBack.has(t.id)).length, PAGE),
         )
         if (!isCurrent()) return
         // Deduped even within one page: a thread filed in two of a unified
         // row's mailboxes must never be two rows with one key.
-        this.threads = mergeSearchPage([], page.threads)
+        const rows = mergeSearchPage([], page.threads)
+        const gone = await this.#goneFrom(target, rows)
+        if (!isCurrent()) return
+        for (const id of gone) this.#lingering.delete(id)
+        const served = new Set(rows.map((t) => t.id))
+        // The open thread may never have had a row here to keep, if it was
+        // opened from elsewhere: the copy in the reading pane does as well.
+        const reading = this.openThread?.thread
+        const shown =
+          reading && !this.threads.some((t) => t.id === reading.id)
+            ? [...this.threads, reading]
+            : this.threads
+        this.threads = keepLingering(rows, shown, this.#lingering)
+        this.#putBack = new Set(this.threads.map((t) => t.id).filter((id) => !served.has(id)))
         this.nextCursor = page.nextCursor ?? null
         if (this.checked.size > 0) {
           const listed = new Set(this.threads.map((t) => t.id))
           const kept = [...this.checked].filter((id) => listed.has(id))
           if (kept.length !== this.checked.size) this.checked = new Set(kept)
         }
-        if (this.selectedThread && !this.threads.some((t) => t.id === this.selectedThread)) {
+        const open = this.selectedThread
+        const unlisted =
+          this.only.size === 0 &&
+          !this.#lingering.has(open ?? '') &&
+          !this.threads.some((t) => t.id === open)
+        if (open && (gone.has(open) || unlisted)) {
+          // A reply being written under it has nowhere left to be drawn: set
+          // aside, and said so, rather than left in `composing` out of sight.
+          if (this.composeInline) this.#park()
           this.selectedThread = null
           this.openThread = null
         }
@@ -600,11 +709,7 @@ class MailState {
     const cursor = this.nextCursor
     try {
       const generation = this.#generation
-      // Bug 3, the same as `refresh` above -- must agree with it, or
-      // scrolling to a second page would bring snoozed threads back.
-      const filter: ThreadFilter = { snoozed: target.snoozed }
-      if (this.category) filter.category = this.category
-      const page = await this.#listPage(target.mailboxIds, filter, cursor, PAGE)
+      const page = await this.#listPage(target.mailboxIds, this.#listFilter(target), cursor, PAGE)
       // A mailbox or category change while this page was on its way bumps
       // the generation; its rows belong to a list no longer showing.
       if (generation !== this.#generation || cursor !== this.nextCursor) return
@@ -618,6 +723,21 @@ class MailState {
     } finally {
       this.loadingMore = false
     }
+  }
+
+  /** What `refresh` and `loadMore` both ask for, so a second page can never
+   *  disagree with the first about what belongs in the list. */
+  #listFilter(target: { snoozed: boolean }): ThreadFilter {
+    // Bug 3: `snoozed` was never sent at all, so a snoozed thread -- still a
+    // member of whatever mailbox it was snoozed from -- came straight back
+    // on the very next refresh. `false` everywhere except the Snoozed view,
+    // which wants nothing else.
+    const filter = withOnly({ snoozed: target.snoozed }, this.only)
+    // Finding 1: a category filter only means anything for the inbox's own
+    // tabs -- sent elsewhere, it silently narrowed a mailbox with no tab
+    // strip to have set it from.
+    if (this.category && mailboxHasTabs(this.mailbox)) filter.category = this.category
+    return filter
   }
 
   /** One page of `mailboxIds` -- `list_threads` for the one mailbox nearly
@@ -901,6 +1021,21 @@ class MailState {
       this.searchResults = searchRows
       if (searchBefore) searchBefores.push(searchBefore)
     }
+    // A row this stops matching stays listed; one it matches again does not
+    // need to be, should it be read elsewhere later. Both undone if this fails.
+    const lingered: ThreadId[] = []
+    const released: ThreadId[] = []
+    if (this.only.size > 0) {
+      for (const before of befores) {
+        const stopsMatching = !matchesOnly({ ...before, ...patch }, this.only)
+        if (stopsMatching && !this.#lingering.has(before.id)) {
+          this.#lingering.add(before.id)
+          lingered.push(before.id)
+        } else if (!stopsMatching && this.#lingering.delete(before.id)) {
+          released.push(before.id)
+        }
+      }
+    }
     const openId = this.openThread?.thread.id
     const openBefore = openId && ids.includes(openId) ? this.openThread!.thread : null
     if (openBefore) {
@@ -910,6 +1045,8 @@ class MailState {
       await call([...ids])
       this.#scheduleUnreadRefresh()
     } catch (e) {
+      for (const id of lingered) this.#lingering.delete(id)
+      for (const id of released) this.#lingering.add(id)
       for (const before of befores) this.threads = revertRow(this.threads, before.id, before)
       for (const before of searchBefores) {
         this.searchResults = revertRow(this.searchResults, before.id, before)
@@ -1013,6 +1150,12 @@ class MailState {
       await handle(e)
     }
     this.#scheduleUnreadRefresh()
+    // Said of the whole mailbox on screen, so there is nothing left to linger
+    // over. Any other mailbox's being read changes nothing about this list.
+    if (id === this.selectedMailbox && this.only.has('unread')) {
+      this.#holdOnlyTheOpenThread()
+      void this.refresh()
+    }
     return done
   }
   markUnread(id: ThreadId) {
@@ -1620,8 +1763,10 @@ class MailState {
         // Not in the list: a new thread, or one that has just moved into this
         // mailbox. Where it belongs depends on the mailbox, the category and
         // the sort, which only the backend knows, so the page is asked for
-        // again rather than the row guessed into place.
-        await this.refresh()
+        // again rather than the row guessed into place. Not with a toggle on,
+        // when most threads are not listed and most changes are to one of
+        // those: `#applyChanges` has asked for a debounced refresh already.
+        if (this.only.size === 0) await this.refresh()
       }
       if (this.selectedThread === id) this.openThread = detail
     } catch {
@@ -1678,8 +1823,13 @@ class MailState {
           : tab
             ? `the ${tab.label} tab`
             : null
+    // So "archive everything here" means what is on screen, not the mailbox.
+    const narrowed =
+      this.only.size > 0 && !this.searchQuery.trim()
+        ? `showing only ${onlyPhrase(this.only)}`
+        : null
     return {
-      view,
+      view: [view, narrowed].filter(Boolean).join(', ') || null,
       within: box?.pseudo
         ? []
         : box

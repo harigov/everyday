@@ -548,11 +548,22 @@ async fn on_success(
                 // used to be able to win with a draft whose `server_copy`
                 // was still the *previous* value -- see `Vault::with_draft`'s
                 // own docs.
-                vault.with_draft(id, |draft| {
+                let draft = vault.with_draft(id, |draft| {
                     draft.server_copy =
                         Some(everyday_core::mail::DraftServerCopy { mailbox: drafts_mailbox, uid });
                     true
                 })?;
+                // Thrown away while the upload was on its way: too late for
+                // `append_draft` to refuse, and `Vault::discard_draft` found no
+                // copy to delete yet. There is one now.
+                if matches!(draft.state, DraftState::Discarded) {
+                    vault.enqueue_op(&Op::new(
+                        draft.account_id,
+                        OpKind::DiscardDraft,
+                        OpTarget::Draft(id),
+                        draft.origin,
+                    ))?;
+                }
                 Ok(())
             })
             .await

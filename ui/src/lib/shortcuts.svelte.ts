@@ -818,6 +818,19 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     when: () => anywhere() && inApp('mail')(),
     run: () => void selectMailboxByRole('sent'),
   },
+  {
+    keys: 'g r',
+    label: 'Show only unread',
+    group: 'Mail',
+    // Only where the toggle is on screen to show for it.
+    when: () =>
+      anywhere() &&
+      inApp('mail')() &&
+      !!mail.selectedMailbox &&
+      !mail.viewingScheduledFor &&
+      !mail.searchQuery.trim(),
+    run: () => mail.toggleOnly('unread'),
+  },
   // (p) TODO: the split inbox's own two, checked against every other
   // binding above before being added. `Tab` and `Shift+Tab` are free in
   // this table -- nothing else in Mail, or anywhere else, claims them -- and

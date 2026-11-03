@@ -774,6 +774,9 @@ export function mockListThreads(
   if (filter?.category != null) rows = rows.filter((t) => t.category === filter.category)
   if (filter?.snoozed != null)
     rows = rows.filter((t) => (t.snoozedUntil != null) === filter.snoozed)
+  if (filter?.starred != null) rows = rows.filter((t) => t.starred === filter.starred)
+  if (filter?.hasAttachments != null)
+    rows = rows.filter((t) => t.hasAttachments === filter.hasAttachments)
   rows = rows.slice().sort((a, b) => b.lastDate.localeCompare(a.lastDate))
 
   const start = cursor ? Number(cursor) : 0
@@ -781,6 +784,19 @@ export function mockListThreads(
   const page = rows.slice(start, start + take)
   const nextCursor = start + take < rows.length ? String(start + take) : null
   return { threads: page, nextCursor }
+}
+
+/** `threads_listed`: which of `threads` `mockListThreadsAcross` would find,
+ *  on whichever page. */
+export function mockThreadsListed(
+  mailboxIds: MailboxId[],
+  filter: ThreadFilter | undefined,
+  threads: ThreadId[],
+): ThreadId[] {
+  const wanted = new Set(threads)
+  return mockListThreadsAcross(mailboxIds, filter, null, seed.threads.length)
+    .threads.map((t) => t.id)
+    .filter((id) => wanted.has(id))
 }
 
 /** `category_counts`: `mailbox`'s threads by category, snoozed ones left
@@ -1299,7 +1315,9 @@ export function mockNewDraft(opts: {
   const now = new Date().toISOString()
   const source = opts.inReplyTo ?? opts.forwardOf
   const original = source ? seed.messages.get(source) : undefined
-  const to = original ? [original.from] : []
+  // Only a reply knows who it is to, as `new_draft` has it: a forward starts
+  // with nobody.
+  const to = original && opts.inReplyTo ? [original.from] : []
   const cc = original && opts.replyAll ? original.to.filter((a) => a.email !== ME.email) : []
   const subjectPrefix = opts.forwardOf ? 'Fwd: ' : opts.inReplyTo ? 'Re: ' : ''
   const draft: Draft = {
@@ -1337,6 +1355,11 @@ export function mockSaveDraft(draft: Draft): void {
 export function mockDiscardDraft(id: DraftId): void {
   const d = drafts.find((x) => x.id === id)
   if (d) d.state = { type: 'discarded' }
+}
+
+export function mockRestoreDraft(id: DraftId): void {
+  const d = drafts.find((x) => x.id === id)
+  if (d?.state.type === 'discarded') d.state = { type: 'editing' }
 }
 
 /**

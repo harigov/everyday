@@ -56,6 +56,9 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     a_snippet_appears_once_the_body_lands(store);
     star_then_unstar_updates_the_thread(store);
     an_attachment_flags_the_thread(store);
+    a_thread_list_can_keep_to_starred_threads_or_those_with_an_attachment(store);
+    the_starred_and_attachment_filters_follow_every_change_to_a_thread(store);
+    threads_can_be_asked_about_by_id(store);
     removing_the_only_starred_message_clears_starred(store);
     messages_between_keeps_to_its_window_and_leaves_out_spam(store);
     messages_in_threads_gathers_the_named_threads_from_every_folder(store);
@@ -1618,6 +1621,219 @@ fn an_attachment_flags_the_thread(store: &dyn JournalStore) {
     m.ingest(account, vec![IngestMessage { message: msg, mailbox: mailbox.id, uid: 1 }]).unwrap();
 
     assert!(m.thread(thread_id).unwrap().0.has_attachments);
+
+    cleanup_account(store, account);
+}
+
+/// The list's Starred and Attachments filters answer what a row's own marks
+/// say: true when *any* message in the thread is, the newest or not, wherever
+/// it is filed -- [`Thread::starred`] and [`Thread::has_attachments`], never
+/// a second opinion of their own. They also combine with the rest of the
+/// filter, and page like any other list.
+fn a_thread_list_can_keep_to_starred_threads_or_those_with_an_attachment(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let archive = Mailbox::new(account, "Archive", MailboxRole::Archive);
+    for mailbox in [&inbox, &archive] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let t0 = Timestamp::from_second(1_790_000_000).unwrap();
+    let at = |hours: i64| t0 + SignedDuration::from_hours(hours);
+
+    let (plain, starred, attached, both) =
+        (ThreadId::new(), ThreadId::new(), ThreadId::new(), ThreadId::new());
+    let plain_msg = message(account, plain, "plain", "a@example.com", at(0));
+
+    // The star is on the older message, and the newer one is filed elsewhere.
+    let star_old = message(account, starred, "starred", "b@example.com", at(1));
+    let star_new = message(account, starred, "Re: starred", "b@example.com", at(2));
+
+    let mut attached_msg = message(account, attached, "attached", "c@example.com", at(3));
+    attached_msg.has_attachments = true;
+
+    let mut both_msg = message(account, both, "both", "d@example.com", at(4));
+    both_msg.has_attachments = true;
+
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: plain_msg, mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: star_old.clone(), mailbox: archive.id, uid: 1 },
+            IngestMessage { message: star_new, mailbox: inbox.id, uid: 2 },
+            IngestMessage { message: attached_msg, mailbox: inbox.id, uid: 3 },
+            IngestMessage { message: both_msg.clone(), mailbox: inbox.id, uid: 4 },
+        ],
+    )
+    .unwrap();
+    for msg in [&star_old, &both_msg] {
+        let mut flags = msg.flags;
+        flags.flagged = true;
+        m.set_message_flags(msg.id, flags).unwrap();
+    }
+
+    let listed = |filter: &ThreadFilter| -> Vec<ThreadId> {
+        m.list_threads(inbox.id, filter, None, 50).unwrap().threads.iter().map(|t| t.id).collect()
+    };
+    let starred_only = ThreadFilter { starred: Some(true), ..Default::default() };
+    let attached_only = ThreadFilter { has_attachments: Some(true), ..Default::default() };
+
+    assert_eq!(listed(&ThreadFilter::default()), vec![both, attached, starred, plain]);
+    assert_eq!(listed(&starred_only), vec![both, starred], "the older message's star counts");
+    assert_eq!(listed(&attached_only), vec![both, attached]);
+    assert_eq!(
+        listed(&ThreadFilter { starred: Some(true), has_attachments: Some(true), ..attached_only }),
+        vec![both],
+        "the two together are an AND, as every field of a filter is"
+    );
+    assert_eq!(
+        listed(&ThreadFilter { starred: Some(false), ..Default::default() }),
+        vec![attached, plain]
+    );
+    assert_eq!(
+        listed(&ThreadFilter { has_attachments: Some(false), ..Default::default() }),
+        vec![starred, plain]
+    );
+
+    // Each row says the same as the filter that found it.
+    for t in m.list_threads(inbox.id, &starred_only, None, 50).unwrap().threads {
+        assert!(t.starred, "a starred row carries its star");
+    }
+
+    // Across mailboxes, and across pages.
+    let across = m.list_threads_across(&[inbox.id, archive.id], &starred_only, None, 1).unwrap();
+    assert_eq!(across.threads.iter().map(|t| t.id).collect::<Vec<_>>(), vec![both]);
+    let rest = m
+        .list_threads_across(
+            &[inbox.id, archive.id],
+            &starred_only,
+            across.next_cursor.as_deref(),
+            50,
+        )
+        .unwrap();
+    assert_eq!(
+        rest.threads.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![starred],
+        "the thread filed in both mailboxes is listed once on this page"
+    );
+
+    // Unstarring takes it straight out: nothing is cached anywhere.
+    let mut flags = both_msg.flags;
+    flags.flagged = false;
+    m.set_message_flags(both_msg.id, flags).unwrap();
+    assert_eq!(listed(&starred_only), vec![starred]);
+
+    cleanup_account(store, account);
+}
+
+/// What those two filters read is a copy, kept on the rows a list pages over,
+/// so everything that can change what a thread's own marks say has to reach
+/// it: a message arriving in another mailbox, one leaving, and a new mailbox
+/// joining a thread that already carries a mark.
+fn the_starred_and_attachment_filters_follow_every_change_to_a_thread(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let label = Mailbox::new(account, "Label", MailboxRole::Other);
+    for mailbox in [&inbox, &label] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let t0 = Timestamp::from_second(1_790_000_000).unwrap();
+    let at = |hours: i64| t0 + SignedDuration::from_hours(hours);
+    let starred = ThreadFilter { starred: Some(true), ..Default::default() };
+    let attached = ThreadFilter { has_attachments: Some(true), ..Default::default() };
+    let listed = |mailbox: MailboxId, filter: &ThreadFilter| -> Vec<ThreadId> {
+        m.list_threads(mailbox, filter, None, 50).unwrap().threads.iter().map(|t| t.id).collect()
+    };
+
+    let thread = ThreadId::new();
+    let first = message(account, thread, "first", "a@example.com", at(0));
+    m.ingest(account, vec![IngestMessage { message: first.clone(), mailbox: inbox.id, uid: 1 }])
+        .unwrap();
+    assert!(listed(inbox.id, &starred).is_empty());
+    assert!(listed(inbox.id, &attached).is_empty());
+
+    // An attachment arriving on a later message, filed elsewhere, marks the
+    // thread's row in the mailbox that message is not in.
+    let mut second = message(account, thread, "second", "a@example.com", at(1));
+    second.has_attachments = true;
+    m.ingest(account, vec![IngestMessage { message: second.clone(), mailbox: label.id, uid: 1 }])
+        .unwrap();
+    assert_eq!(listed(inbox.id, &attached), vec![thread]);
+    assert_eq!(listed(label.id, &attached), vec![thread], "and its new row there");
+
+    // A star set in one mailbox reads in both.
+    let mut flags = first.flags;
+    flags.flagged = true;
+    m.set_message_flags(first.id, flags).unwrap();
+    assert_eq!(listed(inbox.id, &starred), vec![thread]);
+    assert_eq!(listed(label.id, &starred), vec![thread]);
+
+    // The message with the attachment goes: the mark goes with it.
+    m.remove_uids(label.id, &[1]).unwrap();
+    assert!(listed(inbox.id, &attached).is_empty(), "nothing in the thread has one now");
+    assert_eq!(listed(inbox.id, &starred), vec![thread], "the star is on another message");
+
+    // Hidden by an optimistic archive and restored: rebuilt with its marks.
+    m.hide_thread_from_mailbox(thread, inbox.id).unwrap();
+    assert!(listed(inbox.id, &starred).is_empty());
+    m.restore_thread_mailboxes(thread).unwrap();
+    assert_eq!(listed(inbox.id, &starred), vec![thread]);
+
+    cleanup_account(store, account);
+}
+
+/// A row held on to by id, asked about without paging through the mailbox to
+/// look for it: what the list does when a filter has hidden a thread and it
+/// needs to know whether the thread is still there at all.
+fn threads_can_be_asked_about_by_id(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let archive = Mailbox::new(account, "Archive", MailboxRole::Archive);
+    for mailbox in [&inbox, &archive] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let t0 = Timestamp::from_second(1_790_000_000).unwrap();
+    let (kept, moved, snoozed) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
+    let keeping = message(account, kept, "kept", "a@example.com", t0);
+    let moving = message(account, moved, "moved", "b@example.com", t0);
+    let snoozing = message(account, snoozed, "snoozed", "c@example.com", t0);
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: keeping, mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: moving, mailbox: archive.id, uid: 1 },
+            IngestMessage { message: snoozing, mailbox: inbox.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+    m.set_thread_snoozed_until(snoozed, Some(t0 + SignedDuration::from_hours(24))).unwrap();
+
+    let sorted = |mut ids: Vec<ThreadId>| {
+        ids.sort_by_key(|t| t.to_string());
+        ids
+    };
+    let everything = [kept, moved, snoozed, ThreadId::new()];
+    let awake = ThreadFilter { snoozed: Some(false), ..Default::default() };
+
+    assert_eq!(
+        sorted(m.threads_listed(&[inbox.id], &ThreadFilter::default(), &everything).unwrap()),
+        sorted(vec![kept, snoozed]),
+        "filed in another mailbox, or unknown altogether, is not listed here"
+    );
+    assert_eq!(
+        m.threads_listed(&[inbox.id], &awake, &everything).unwrap(),
+        vec![kept],
+        "the filter applies"
+    );
+    assert_eq!(
+        sorted(m.threads_listed(&[inbox.id, archive.id], &awake, &everything).unwrap()),
+        sorted(vec![kept, moved]),
+        "across mailboxes"
+    );
+    assert!(m.threads_listed(&[], &awake, &everything).unwrap().is_empty());
+    assert!(m.threads_listed(&[inbox.id], &awake, &[]).unwrap().is_empty());
 
     cleanup_account(store, account);
 }

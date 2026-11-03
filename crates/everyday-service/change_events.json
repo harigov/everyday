@@ -657,6 +657,30 @@
       ]
     },
     {
+      "command": "restore_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "discard_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "import_calendar",
       "events": [
         {

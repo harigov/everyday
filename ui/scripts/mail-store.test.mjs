@@ -31,11 +31,18 @@ stubBrowser({
 })
 
 const {
-  modules: [mailModule, stateModule, liveApplyModule],
+  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }],
   close,
-} = await load(['/src/lib/mail.svelte.ts', '/src/lib/state.svelte.ts', '/src/lib/live-apply.ts'], {
-  svelte: true,
-})
+} = await load(
+  [
+    '/src/lib/mail.svelte.ts',
+    '/src/lib/state.svelte.ts',
+    '/src/lib/live-apply.ts',
+    '/src/lib/mail-api.ts',
+    '/src/lib/api.ts',
+  ],
+  { svelte: true },
+)
 const { mail } = mailModule
 const { app } = stateModule
 const { applierFor } = liveApplyModule
@@ -311,6 +318,219 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
   assert.ok(mail.categoryCounts.length > 0, 'the inbox has its threads counted by category')
   const counted = mail.categoryCounts.reduce((n, c) => n + c.threads, 0)
   assert.ok(counted >= mail.threads.length, 'every listed thread is counted somewhere')
+}
+
+// ── The "show only" toggles ─────────────────────────────────────────
+
+{
+  // Every inbox at once: of the mock's two, one is all read, the other all
+  // unread.
+  const inbox = mail.unifiedMailboxes.find((m) => m.id === 'unified:inbox')
+  const sent = mail.unifiedMailboxes.find((m) => m.id === 'unified:sent')
+  await mail.selectMailbox(inbox.id)
+  mail.setCategory(null)
+  await mail.refresh()
+  const everything = mail.threads.length
+  assert.ok(everything > 0)
+
+  mail.toggleOnly('unread')
+  await mail.refresh()
+  assert.deepEqual([...mail.only], ['unread'])
+  assert.ok(mail.threads.length > 1, 'the seed has unread mail in this inbox')
+  assert.ok(mail.threads.length < everything, 'the seed has read mail in this inbox too')
+  assert.ok(
+    mail.threads.every((t) => t.unreadCount > 0),
+    'only unread rows are asked for',
+  )
+  const unreadRows = mail.threads.length
+
+  // Reading one in the list leaves it there, read, through the next sync.
+  const [first, second] = mail.threads
+  await mail.openThreadById(first.id)
+  await mail.refresh()
+  const after = mail.threads.find((t) => t.id === first.id)
+  assert.equal(after?.unreadCount, 0, 'still listed, and read')
+  assert.equal(mail.threads.length, unreadRows, 'nothing else moved')
+  assert.equal(mail.openThread?.thread.id, first.id, 'and the reading pane is left alone')
+
+  // A second one lingers beside it, and `k` can still get back.
+  await mail.openThreadById(second.id)
+  await mail.refresh()
+  assert.equal(mail.threads.length, unreadRows, 'both still listed')
+
+  // What was done to it says it is finished with: not put back.
+  await mail.archive(first.id)
+  await mail.refresh()
+  assert.ok(!mail.threads.some((t) => t.id === first.id), 'an archived row stays gone')
+
+  // The toggle is the inbox's own. Sent would have nothing to show for it.
+  await mail.selectMailbox(sent.id)
+  assert.equal(mail.only.size, 0, 'another mailbox has its own')
+  assert.ok(mail.threads.length > 0)
+  await mail.selectMailbox(inbox.id)
+  assert.deepEqual([...mail.only], ['unread'], 'and coming back finds it still on')
+  assert.ok(
+    mail.threads.every((t) => t.unreadCount > 0),
+    'coming back asks afresh, so what was read has gone',
+  )
+  assert.ok(!mail.threads.some((t) => t.id === second.id), 'including the one that lingered')
+
+  // A filter is no reason to lose your place: turning one on keeps the open
+  // thread listed, read or not, and a thread opened from elsewhere is not
+  // closed just because the list would not have shown it.
+  mail.setOnly(new Set())
+  await mail.refresh()
+  const read = mail.threads.find((t) => t.unreadCount === 0)
+  await mail.openThreadById(read.id)
+  mail.toggleOnly('unread')
+  await mail.refresh()
+  assert.ok(
+    mail.threads.some((t) => t.id === read.id),
+    'the thread being read stays listed',
+  )
+  mail.setOnly(new Set(['starred']))
+  await mail.refresh()
+  assert.equal(mail.openThread?.thread.id, read.id, 'and stays open')
+  assert.ok(
+    mail.threads.filter((t) => t.id !== read.id).every((t) => t.starred),
+    'starred rows only, beside it',
+  )
+
+  // Unstarring lingers the same way reading does, and starring again lets go.
+  const starred = mail.threads.find((t) => t.starred && t.id !== read.id)
+  assert.ok(starred, 'the seed has a starred thread in this inbox')
+  await mail.toggleStar(starred.id)
+  await mail.refresh()
+  assert.equal(mail.threads.find((t) => t.id === starred.id)?.starred, false, 'kept, unstarred')
+  await mail.toggleStar(starred.id)
+
+  // A later page is asked for the same thing as the first.
+  mail.setOnly(new Set(['unread']))
+  await mail.refresh()
+  const asked = []
+  const across = api.threadsAcross
+  api.threadsAcross = (mailboxes, filter, cursor, limit) => {
+    asked.push({ filter, limit })
+    return across(mailboxes, filter, cursor, limit)
+  }
+  mail.nextCursor = '0'
+  await mail.loadMore()
+  assert.equal(asked.at(-1).filter.unread, true, 'loadMore keeps to the toggle')
+
+  // However many rows are held on to, a refresh asks for no more than it did:
+  // counting them would ask further down the mailbox every time.
+  mail.setOnly(new Set())
+  await mail.refresh()
+  mail.toggleOnly('unread')
+  await mail.refresh()
+  await mail.openThreadById(mail.threads[0].id)
+  await mail.refresh()
+  await mail.openThreadById(mail.threads[1].id)
+  await mail.refresh()
+  const settledAt = asked.at(-1).limit
+  await mail.refresh()
+  await mail.refresh()
+  assert.equal(asked.at(-1).limit, settledAt, 'the rows held on to do not count')
+  api.threadsAcross = across
+
+  // Off again, the open thread is kept and listed, even where the page asked
+  // for does not reach it -- a filter is no reason to lose your place. The
+  // Newsletters tab stands in for a thread lying past the end of the page.
+  mail.setOnly(new Set())
+  await mail.refresh()
+  const notANewsletter = mail.threads.find((t) => t.category !== 'newsletter')
+  await mail.openThreadById(notANewsletter.id)
+  mail.setCategory('newsletter')
+  await mail.refresh()
+  assert.equal(mail.selectedThread, null, 'a tab change with no toggle closes it, as it always has')
+  mail.setCategory(null)
+  await mail.refresh()
+  mail.toggleOnly('unread')
+  await mail.refresh()
+  await mail.openThreadById(mail.threads[0].id)
+  mail.setCategory(mail.threads[0].category === 'newsletter' ? 'notification' : 'newsletter')
+  await mail.refresh()
+  const kept = mail.selectedThread
+  assert.ok(kept, 'with a toggle on, hidden from the tab but still in the mailbox: stays open')
+  mail.setOnly(new Set())
+  await mail.refresh()
+  assert.equal(mail.openThread?.thread.id, kept, 'and turning the toggle off does not close it')
+  assert.ok(
+    mail.threads.some((t) => t.id === kept),
+    'it stays listed',
+  )
+  mail.setCategory(null)
+  await mail.refresh()
+
+  // Gone from the mailbox altogether, though, is gone: archived on a phone,
+  // which reaches this window as nothing more than a refresh.
+  mail.toggleOnly('unread')
+  await mail.refresh()
+  const goneElsewhere = mail.threads[0].id
+  await mail.openThreadById(goneElsewhere)
+  await mail.refresh()
+  assert.ok(
+    mail.threads.some((t) => t.id === goneElsewhere),
+    'lingering, read',
+  )
+  await mailApi.archiveMany([goneElsewhere])
+  await mail.refresh()
+  assert.ok(!mail.threads.some((t) => t.id === goneElsewhere), 'a row that left is dropped')
+  assert.equal(mail.selectedThread, null, 'and the pane does not go on showing it')
+  assert.equal(mail.openThread, null)
+
+  // The same with a reply half written under it: set aside, not stranded.
+  const replyingTo = mail.threads[0].id
+  await mail.openThreadById(replyingTo)
+  await mail.reply(mail.openThread.messages.at(-1).id, false)
+  assert.equal(mail.composeInline, true)
+  await mailApi.archiveMany([replyingTo])
+  await mail.refresh()
+  assert.equal(mail.openThread, null)
+  assert.equal(mail.composing, null, 'no draft left in `composing` with nowhere to draw it')
+  assert.ok(mail.parkedDraft, 'and it is said to be saved')
+  mail.parkedDraft = null
+
+  // Undone, or reversed: what lingered lets go, so that being read elsewhere
+  // afterwards takes it out as it should.
+  await mail.refresh()
+  const failing = mail.threads.find((t) => t.unreadCount > 0).id
+  const markRead = api.markRead
+  api.markRead = () => Promise.reject(new Error('no'))
+  await mail.markRead(failing)
+  api.markRead = markRead
+  assert.ok(
+    mail.threads.find((t) => t.id === failing).unreadCount > 0,
+    'a failed mark goes back to unread',
+  )
+  await mailApi.markReadMany([failing])
+  await mail.refresh()
+  assert.ok(!mail.threads.some((t) => t.id === failing), 'read elsewhere: it does not linger')
+
+  const reversed = mail.threads.find((t) => t.unreadCount > 0).id
+  await mail.markRead(reversed)
+  await mail.markUnread(reversed)
+  await mailApi.markReadMany([reversed])
+  await mail.refresh()
+  assert.ok(!mail.threads.some((t) => t.id === reversed), 'nor after being marked unread again')
+
+  // Marking another mailbox read says nothing about this list.
+  const lingerer = mail.threads[0].id
+  await mail.markRead(lingerer)
+  await mail.markMailboxRead(mail.mailboxes.find((m) => m.role === 'archive').id)
+  await mail.refresh()
+  assert.ok(
+    mail.threads.some((t) => t.id === lingerer),
+    'another mailbox: it stays',
+  )
+  await mail.markMailboxRead(inbox.id)
+  await mail.refresh()
+  assert.equal(mail.threads.length, 0, 'this one, with nothing open: nothing left to show')
+
+  mail.setOnly(new Set())
+  await mail.refresh()
+  assert.equal(mail.only.size, 0)
+  assert.ok(mail.threads.length > 0)
 }
 
 // ── Quick cleanup: archiving many threads at once ───────────────────

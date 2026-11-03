@@ -54,7 +54,7 @@ const INGEST_BATCH_ROWS: usize = 500;
 /// limit while keeping the round-trip count for even the largest mailbox in
 /// the low hundreds, not the tens of thousands a one-row-at-a-time loop
 /// would need.
-const IN_CHUNK: usize = 500;
+pub(super) const IN_CHUNK: usize = 500;
 
 /// See [`everyday_core::store::mail::MailStore::ingest`].
 pub(super) fn ingest(
@@ -1056,6 +1056,18 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
          )",
         &vals![thread_id.to_string(), thread_id.to_string()],
     )?;
+    // Said of the whole thread rather than per mailbox: what its row draws
+    // (`Thread::starred`, `Thread::has_attachments`), so what the list's
+    // filters must answer, whichever mailbox the message is filed in.
+    let (starred, has_attachments) = match tx.query_opt(
+        "SELECT COALESCE(MAX(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END), 0), \
+         COALESCE(MAX(CASE WHEN has_attachments THEN 1 ELSE 0 END), 0) \
+         FROM mail_messages WHERE thread_id = ?1",
+        &vals![thread_id.to_string()],
+    )? {
+        Some(row) => (row.i64(0)? != 0, row.i64(1)? != 0),
+        None => (false, false),
+    };
     // The `NOT IN` sub-select is what keeps this from rebuilding a row
     // `hide_thread_from_mailbox` just deleted on purpose:
     // `message_mailboxes` still names the mailbox (the op has not reached a
@@ -1079,10 +1091,19 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
         let unread = row.i64(1)?;
         let last_date_us = row.i64(2)?;
         tx.execute(
-            "INSERT INTO thread_mailboxes (thread_id, mailbox_id, last_date_us, unread)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (thread_id, mailbox_id) DO UPDATE SET last_date_us = ?3, unread = ?4",
-            &vals![thread_id.to_string(), mailbox_id.clone(), last_date_us, unread],
+            "INSERT INTO thread_mailboxes
+               (thread_id, mailbox_id, last_date_us, unread, starred, has_attachments)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (thread_id, mailbox_id) DO UPDATE SET
+               last_date_us = ?3, unread = ?4, starred = ?5, has_attachments = ?6",
+            &vals![
+                thread_id.to_string(),
+                mailbox_id.clone(),
+                last_date_us,
+                unread,
+                starred,
+                has_attachments
+            ],
         )?;
         live.push(mailbox_id);
     }

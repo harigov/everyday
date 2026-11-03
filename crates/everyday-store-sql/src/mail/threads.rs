@@ -9,6 +9,7 @@ use everyday_core::id::{AccountId, MailboxId, ThreadId};
 use everyday_core::mail::{Category, Thread};
 use everyday_core::store::mail::{ThreadFilter, ThreadPage, thread_aad};
 
+use super::write::IN_CHUNK;
 use crate::conn::{Sql, Value, Where};
 use crate::keyset::{Dir, KeyCursor};
 use crate::{SqlStore, to_us};
@@ -42,11 +43,31 @@ pub(super) fn list_threads_across(
     cursor: Option<&str>,
     limit: u32,
 ) -> Result<ThreadPage> {
-    // `Where::in_list` treats an empty list as no condition at all -- every
-    // mailbox in the vault -- which is the opposite of what an empty
-    // selection means here.
+    let Some(w) = listed_in(mailboxes, filter) else {
+        return Ok(ThreadPage::default());
+    };
+    let (where_sql, mut args) = w.finish();
+    let mut sql = format!(
+        "SELECT tm.thread_id, tm.last_date_us, t.data FROM thread_mailboxes tm
+         JOIN threads t ON t.id = tm.thread_id WHERE {where_sql}"
+    );
+    page_and_run(
+        store,
+        &mut sql,
+        &mut args,
+        &[("tm.last_date_us", Dir::Desc), ("tm.thread_id", Dir::Asc)],
+        cursor,
+        limit,
+    )
+}
+
+/// What makes a thread one of `mailboxes`' listed under `filter`, over
+/// `thread_mailboxes tm JOIN threads t`. `None` for no mailboxes at all:
+/// `Where::in_list` treats an empty list as no condition, every mailbox in the
+/// vault, which is the opposite of what an empty selection means here.
+fn listed_in(mailboxes: &[MailboxId], filter: &ThreadFilter) -> Option<Where> {
     let mut w = match mailboxes {
-        [] => return Ok(ThreadPage::default()),
+        [] => return None,
         [one] => Where::new().eq("tm.mailbox_id", one.to_string()),
         many => Where::new().in_list("tm.mailbox_id", many.iter().map(|m| m.to_string())),
     };
@@ -66,19 +87,43 @@ pub(super) fn list_threads_across(
     if let Some(before) = filter.last_before {
         w = w.lt("t.last_date_us", to_us(before));
     }
-    let (where_sql, mut args) = w.finish();
-    let mut sql = format!(
-        "SELECT tm.thread_id, tm.last_date_us, t.data FROM thread_mailboxes tm
-         JOIN threads t ON t.id = tm.thread_id WHERE {where_sql}"
-    );
-    page_and_run(
-        store,
-        &mut sql,
-        &mut args,
-        &[("tm.last_date_us", Dir::Desc), ("tm.thread_id", Dir::Asc)],
-        cursor,
-        limit,
-    )
+    if let Some(starred) = filter.starred {
+        w = w.eq("tm.starred", starred);
+    }
+    if let Some(attached) = filter.has_attachments {
+        w = w.eq("tm.has_attachments", attached);
+    }
+    Some(w)
+}
+
+/// See [`everyday_core::store::mail::MailStore::threads_listed`].
+pub(super) fn threads_listed(
+    store: &SqlStore,
+    mailboxes: &[MailboxId],
+    filter: &ThreadFilter,
+    threads: &[ThreadId],
+) -> Result<Vec<ThreadId>> {
+    let mut listed = HashSet::new();
+    for chunk in threads.chunks(IN_CHUNK) {
+        let Some(w) = listed_in(mailboxes, filter) else { break };
+        let (where_sql, args) =
+            w.in_list("tm.thread_id", chunk.iter().map(|t| t.to_string())).finish();
+        let rows = store.read().query(
+            &format!(
+                "SELECT DISTINCT tm.thread_id FROM thread_mailboxes tm
+                 JOIN threads t ON t.id = tm.thread_id WHERE {where_sql}"
+            ),
+            &args,
+        )?;
+        for row in &rows {
+            listed.insert(
+                row.text(0)?
+                    .parse::<ThreadId>()
+                    .map_err(|e| everyday_core::error::Error::Invalid(e.to_string()))?,
+            );
+        }
+    }
+    Ok(listed.into_iter().collect())
 }
 
 /// See [`everyday_core::store::mail::MailStore::threads_in_category`].

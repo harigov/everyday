@@ -4087,6 +4087,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "DraftId"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "restore_draft",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "RecordingId"
         }
       ],
@@ -5912,6 +5932,33 @@
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "mailboxes",
+          "required": true,
+          "type": "MailboxId[]"
+        },
+        {
+          "name": "filter",
+          "required": false,
+          "type": "ThreadFilter"
+        },
+        {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "threads_listed",
+      "orScope": null,
+      "returns": "ThreadId[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

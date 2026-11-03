@@ -33,6 +33,7 @@ export type PrefKey =
   | 'everyday.badge'
   | 'everyday.sidebar.folded'
   | 'everyday.mail.accounts.open'
+  | 'everyday.mail.list.only'
   | 'everyday:assistant-open'
   | 'everyday:assistant-width'
 

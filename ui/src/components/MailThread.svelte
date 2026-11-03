@@ -372,8 +372,13 @@
             </div>
           {/if}
 
+          <!-- Not while a reply is being written right underneath: the toolbar
+               above still has all three, and a row of pills between the
+               message and the answer to it would only be in the way. Hidden
+               rather than taken out: `MailQuickReplies` holds the suggestions
+               the model already wrote, and would ask it all over again. -->
           {#if isLast}
-            <div class="actions">
+            <div class="actions" hidden={mail.composeInline}>
               <button class="btn btn-outline" onclick={() => mail.reply(message.id, false)}>
                 <Icon name="reply" size={15} /> Reply
               </button>
@@ -680,5 +685,8 @@
     align-items: center;
     gap: var(--sp-2);
     padding-top: var(--sp-4);
+  }
+  .actions[hidden] {
+    display: none;
   }
 </style>

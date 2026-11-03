@@ -119,9 +119,26 @@ await mail.start()
 let now = onScreenNow()
 check('mail: the unified Inbox is a view', now.showing.view, 'All inboxes, from every account')
 check('mail: and no mailbox reference', now.showing.within, [])
+mail.setOnly(new Set(['unread', 'starred']))
+now = onScreenNow()
+check(
+  'mail: the toggles say the list is narrowed',
+  now.showing.view,
+  'All inboxes, from every account, showing only unread starred mail',
+)
+mail.setOnly(new Set())
+await mail.refresh()
 // One account's own Inbox for the rest, which is a mailbox.
 await mail.selectMailbox(mail.mailboxes.find((m) => m.role === 'inbox').id)
 const first = mail.threads[0]
+mail.setOnly(new Set(['attachments']))
+check(
+  'mail: with no other view, the toggles are it',
+  onScreenNow().showing.view,
+  'showing only mail with attachments',
+)
+mail.setOnly(new Set())
+await mail.refresh()
 ok('the mock inbox has a thread to open', first !== undefined)
 await mail.openThreadById(first.id)
 mail.setSearchQuery('roof')

@@ -169,6 +169,16 @@ impl Vault {
         self.with_mail(|m| m.list_threads_across(mailboxes, filter, cursor, limit))
     }
 
+    /// See [`crate::store::mail::MailStore::threads_listed`].
+    pub fn threads_listed(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        threads: &[ThreadId],
+    ) -> Result<Vec<ThreadId>> {
+        self.with_mail(|m| m.threads_listed(mailboxes, filter, threads))
+    }
+
     pub fn threads_in_category(
         &self,
         account: AccountId,
@@ -989,6 +999,26 @@ impl Vault {
         })?;
         self.wrote(RecordKind::Draft, draft_id);
         Ok(result)
+    }
+
+    /// Undo [`Vault::discard_draft`]: the same record back to
+    /// [`DraftState::Editing`], so whatever it remembers -- who last changed
+    /// its recipients among them -- comes back with it. A draft not discarded
+    /// is left as it is.
+    ///
+    /// A `DiscardDraft` op the discard queued is left to find this out for
+    /// itself when it comes due: `everyday_mail::outbox` deletes a server copy
+    /// only for a draft still `Discarded`. One that already ran leaves
+    /// [`Draft::server_copy`] naming a uid the server has no more, which the
+    /// next `AppendDraft` asks it to flag and it ignores.
+    pub fn restore_draft(&self, draft_id: DraftId) -> Result<Draft> {
+        self.with_draft(draft_id, |draft| {
+            if !matches!(draft.state, DraftState::Discarded) {
+                return false;
+            }
+            draft.state = DraftState::Editing;
+            true
+        })
     }
 }
 

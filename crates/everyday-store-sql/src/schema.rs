@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -107,6 +107,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v16(d),
         v17(d),
         v18(d),
+        v19(d),
     ]
 }
 
@@ -1479,6 +1480,51 @@ fn v18(d: Dialect) -> Vec<String> {
              data        {blob} NOT NULL
          )"
     )]
+}
+
+/// Version 19: whether a thread is starred or has an attachment, on the rows
+/// a mailbox's list pages over -- what the list's Starred and Attachments
+/// filters read, the way Unread reads `unread` beside them.
+///
+/// Nothing new in the clear: `mail_messages` already holds both, as `flags` and
+/// `has_attachments`, and asking it per row is what this replaces. That table
+/// is large and the answer is scattered through it, so a filter matching little
+/// walked most of a mailbox's rows there, which on a cold disk is a read per
+/// thread. These rows are small and read in order.
+///
+/// Both are of the whole thread, so every mailbox's row says the same thing.
+///
+/// A rebuild rather than `ADD COLUMN` for the reason [`v7`]'s are: `readings`
+/// there is the same shape of step, with the same note on why replaying it is
+/// safe. The two sub-selects are not correlated, so each reads `mail_messages`
+/// through once rather than once per row.
+fn v19(d: Dialect) -> Vec<String> {
+    let (int, boolean, f) = (d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS thread_mailboxes_v19 (
+                 thread_id        TEXT NOT NULL,
+                 mailbox_id       TEXT NOT NULL,
+                 last_date_us     {int} NOT NULL,
+                 unread           {int} NOT NULL DEFAULT 0,
+                 starred          {boolean} NOT NULL DEFAULT {f},
+                 has_attachments  {boolean} NOT NULL DEFAULT {f},
+                 PRIMARY KEY (thread_id, mailbox_id)
+             )"
+        ),
+        "INSERT INTO thread_mailboxes_v19
+             (thread_id, mailbox_id, last_date_us, unread, starred, has_attachments)
+         SELECT thread_id, mailbox_id, last_date_us, unread,
+                thread_id IN (SELECT thread_id FROM mail_messages WHERE flags & 4 != 0),
+                thread_id IN (SELECT thread_id FROM mail_messages WHERE has_attachments)
+         FROM thread_mailboxes"
+            .into(),
+        "DROP TABLE IF EXISTS thread_mailboxes".into(),
+        "ALTER TABLE thread_mailboxes_v19 RENAME TO thread_mailboxes".into(),
+        "CREATE INDEX IF NOT EXISTS thread_mailboxes_by_mailbox \
+         ON thread_mailboxes (mailbox_id, last_date_us DESC, thread_id)"
+            .into(),
+    ]
 }
 
 #[cfg(test)]

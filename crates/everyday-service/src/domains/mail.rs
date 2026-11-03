@@ -82,6 +82,16 @@ pub struct ListThreadsAcross {
     pub limit: u32,
 }
 
+/// `threads_listed`'s arguments -- see [`Vault::threads_listed`](everyday_core::Vault::threads_listed).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadsListed {
+    pub mailboxes: Vec<MailboxId>,
+    #[serde(default)]
+    pub filter: ThreadFilter,
+    pub threads: Vec<ThreadId>,
+}
+
 /// The most mailboxes one `list_threads_across` call may name. The unified
 /// Inbox asks for one per account, so this is far past anything the
 /// interface sends; it is here so that a caller cannot hand the store an
@@ -562,6 +572,17 @@ async fn save_draft(svc: Arc<Service>, _ctx: Ctx, args: SaveDraft) -> CommandRes
 #[serde(rename_all = "camelCase")]
 pub struct DraftRef {
     pub id: DraftId,
+}
+
+/// Bring back a draft just discarded -- see
+/// [`everyday_core::Vault::restore_draft`].
+async fn restore_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandResult<()> {
+    let vault = svc.require()?;
+    blocking(move || {
+        vault.restore_draft(args.id)?;
+        Ok(())
+    })
+    .await
 }
 
 /// Discard a draft, and wake the account task when doing so left an
@@ -1345,6 +1366,21 @@ async fn list_threads(
 /// one thing a caller paging this has to do itself -- drop a thread a
 /// previous page already returned, which only a thread filed in two of the
 /// listed mailboxes can produce.
+async fn threads_listed(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ThreadsListed,
+) -> CommandResult<Vec<ThreadId>> {
+    if args.mailboxes.len() > MAX_MAILBOXES_ACROSS {
+        return Err(CommandError::new(
+            codes::INVALID,
+            format!("list at most {MAX_MAILBOXES_ACROSS} mailboxes at once"),
+        ));
+    }
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.threads_listed(&args.mailboxes, &args.filter, &args.threads)?)).await
+}
+
 async fn list_threads_across(
     svc: Arc<Service>,
     _ctx: Ctx,
@@ -1523,6 +1559,16 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: list_threads_across,
     },
     command! {
+        name: "threads_listed", scope: Mail, effect: Read,
+        args: ThreadsListed, returns: "ThreadId[]",
+        signature: &[
+            ("mailboxes", "MailboxId[]", true),
+            ("filter", "ThreadFilter", false),
+            ("threads", "ThreadId[]", true),
+        ],
+        run: threads_listed,
+    },
+    command! {
         name: "get_thread", scope: Mail, effect: Read,
         args: ThreadRef, returns: "ThreadDetail",
         signature: &[("id", "ThreadId", true)],
@@ -1651,6 +1697,14 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: DraftRef, returns: "void",
         signature: &[("id", "DraftId", true)],
         run: discard_draft,
+    },
+    command! {
+        name: "restore_draft", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &DraftRef| Some(a.id.to_string()),
+        args: DraftRef, returns: "void",
+        signature: &[("id", "DraftId", true)],
+        run: restore_draft,
     },
     command! {
         name: "send_draft", scope: Mail, effect: Write,

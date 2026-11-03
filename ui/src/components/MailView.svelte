@@ -8,12 +8,14 @@
   import { accountColor } from '../lib/avatar'
   import {
     CATEGORY_TABS,
+    MAIL_ONLY,
     categoryTabCount,
     formatSenders,
     isSnoozedMailbox,
     isUnifiedMailbox,
     mailboxDisplayName,
     newestSyncedAt,
+    onlyEmptyLead,
     recentActionLine,
     snippetText,
     snoozedUntilLabel,
@@ -23,6 +25,7 @@
     weekdayAndTime,
     withDateSections,
     type ListRow,
+    type MailOnly,
   } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
   import { sorting } from '../lib/sorting.svelte'
@@ -102,6 +105,23 @@
     other: 'more',
     newsletter: 'newspaper',
     notification: 'bell',
+  }
+
+  const ONLY_ICONS: Record<MailOnly, IconName> = {
+    unread: 'mail',
+    starred: 'star',
+    attachments: 'paperclip',
+  }
+
+  /**
+   * The number on a tab: its conversations, or with Unread on, the unread
+   * ones. `null` with another toggle on, since `category_counts` does not
+   * know how many of a tab's threads are starred, and a total beside a
+   * narrowed list reads as how many it holds.
+   */
+  function tabNumber(count: { threads: number; unread: number }): number | null {
+    if (mail.only.size === 0) return count.threads
+    return mail.only.size === 1 && mail.only.has('unread') ? count.unread : null
   }
 
   /** The account a list row belongs to, as compactly as it can be named. */
@@ -407,6 +427,7 @@
         <div class="filters" role="tablist" aria-label="Mail categories">
           {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
             {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
+            {@const number = tabNumber(count)}
             {@const on = mail.category === tab.key}
             <button
               class="filter"
@@ -421,14 +442,30 @@
             >
               <Icon name={TAB_ICONS[tab.key ?? 'all']} size={15} />
               {#if on}<span>{tab.label}</span>{/if}
-              {#if count.threads > 0}
-                <span class="n" class:has-unread={count.unread > 0}
-                  >{compactCount(count.threads)}</span
-                >
+              {#if number}
+                <span class="n" class:has-unread={count.unread > 0}>{compactCount(number)}</span>
               {/if}
             </button>
           {/each}
         </div>
+      </div>
+    {/if}
+
+    {#if mail.selectedMailbox && !mail.searchQuery.trim()}
+      <div class="only" role="group" aria-label="Show only">
+        {#each MAIL_ONLY as { key, label } (key)}
+          {@const on = mail.only.has(key)}
+          <button
+            class="only-toggle"
+            class:on
+            aria-pressed={on}
+            title={key === 'unread' ? `Show only ${label.toLowerCase()} (G then R)` : undefined}
+            onclick={() => mail.toggleOnly(key)}
+          >
+            <Icon name={ONLY_ICONS[key]} size={13} filled={on && key === 'starred'} />
+            {label}
+          </button>
+        {/each}
       </div>
     {/if}
 
@@ -467,6 +504,14 @@
       {/if}
     {:else if mail.loading && mail.threads.length === 0}
       <p class="hint">Loading…</p>
+    {:else if mail.threads.length === 0 && mail.only.size > 0}
+      <EmptyState lead={onlyEmptyLead(mail.only)}>
+        {#snippet action()}
+          <button class="btn btn-outline" onclick={() => mail.setOnly(new Set())}>
+            Show all mail
+          </button>
+        {/snippet}
+      </EmptyState>
     {:else if mail.threads.length === 0}
       <EmptyState lead="Nothing here.">
         {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
@@ -954,6 +999,40 @@
     color: inherit;
   }
 
+  /* ── The "show only" toggles ─────────────────────────────────────── */
+
+  /* Quieter than the tabs above them, which say what kind of mail this is:
+     these say how much of it to show. */
+  .only {
+    flex: none;
+    display: flex;
+    gap: var(--sp-1);
+    padding: 0 var(--sp-4) var(--sp-2);
+  }
+  .only-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    padding: 0 var(--sp-2);
+    border-radius: 999px;
+    font-size: var(--text-xs);
+    font-weight: 550;
+    color: var(--fg-subtle);
+    white-space: nowrap;
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .only-toggle:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .only-toggle.on {
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
+    color: color-mix(in oklab, var(--accent) 72%, var(--fg));
+  }
+
   /* ── Rows ───────────────────────────────────────────────────────── */
 
   .thread-rows {
@@ -1352,8 +1431,11 @@
 
   /* Inset the way `MailThread`'s own messages are, so the reply lines up
      under the message it answers rather than running edge to edge. */
+  /* Room at the end for the floating assistant button, which would otherwise
+     sit on the reply's own tools once it is scrolled all the way down. */
   .inline-reply {
-    padding: 0 var(--sp-6) var(--sp-6);
+    padding: 0 var(--sp-6) var(--fab-clear);
+    container-type: inline-size;
   }
 
   .bulk {

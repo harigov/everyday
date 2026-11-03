@@ -191,6 +191,15 @@ impl MailStore for SqlStore {
         threads::list_threads_across(self, mailboxes, filter, cursor, limit)
     }
 
+    fn threads_listed(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        threads: &[ThreadId],
+    ) -> Result<Vec<ThreadId>> {
+        threads::threads_listed(self, mailboxes, filter, threads)
+    }
+
     fn threads_in_category(
         &self,
         account: AccountId,

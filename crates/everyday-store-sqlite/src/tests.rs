@@ -1143,6 +1143,97 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
     run_pack_store_suite(&TablePacks::new(&store), "acc-conformance");
 }
 
+/// The list's Starred and Attachments filters on a vault written before they
+/// had columns of their own to read: what is already starred or attached is
+/// found without any of it being touched again, and replaying the step (a
+/// process that died before recording the version does) changes nothing.
+#[test]
+fn a_version_18_database_fills_in_the_starred_and_attachment_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let message = |subject: &str, attachment: bool| Message {
+        id: MailMessageId::new(),
+        account_id: account,
+        thread_id: ThreadId::new(),
+        message_id_header: format!("<{subject}@example.com>"),
+        date: jiff::Timestamp::now(),
+        from: Address::new("Somebody", "somebody@example.com"),
+        to: vec![Address::bare("me@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: subject.into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: attachment,
+        size: 128,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    let (plain, starred, attached) =
+        (message("plain", false), message("starred", false), message("attached", true));
+    let threads = (plain.thread_id, starred.thread_id, attached.thread_id);
+    {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        store.put_mailbox(&mailbox).unwrap();
+        let ingest: Vec<IngestMessage> = [plain, starred.clone(), attached]
+            .into_iter()
+            .enumerate()
+            .map(|(i, message)| IngestMessage { message, mailbox: mailbox.id, uid: i as u32 + 1 })
+            .collect();
+        store.ingest(account, ingest).unwrap();
+        let mut flags = starred.flags;
+        flags.flagged = true;
+        store.set_message_flags(starred.id, flags).unwrap();
+    }
+
+    let rewind = || {
+        let conn = raw(dir.path());
+        conn.execute_batch(
+            "CREATE TABLE thread_mailboxes_old (
+                 thread_id TEXT NOT NULL, mailbox_id TEXT NOT NULL,
+                 last_date_us INTEGER NOT NULL, unread INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (thread_id, mailbox_id));
+             INSERT INTO thread_mailboxes_old
+                 SELECT thread_id, mailbox_id, last_date_us, unread FROM thread_mailboxes;
+             DROP TABLE thread_mailboxes;
+             ALTER TABLE thread_mailboxes_old RENAME TO thread_mailboxes;",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 18i64).unwrap();
+    };
+    let check = || {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        let listed = |filter: ThreadFilter| -> Vec<ThreadId> {
+            let page = store.list_threads(mailbox.id, &filter, None, 50).unwrap();
+            page.threads.iter().map(|t| t.id).collect()
+        };
+        assert_eq!(
+            listed(ThreadFilter { starred: Some(true), ..Default::default() }),
+            vec![threads.1]
+        );
+        assert_eq!(
+            listed(ThreadFilter { has_attachments: Some(true), ..Default::default() }),
+            vec![threads.2]
+        );
+        assert_eq!(listed(ThreadFilter::default()).len(), 3, "nothing was lost in the rebuild");
+    };
+
+    rewind();
+    check();
+
+    // Replayed over itself, as a crash before the version is recorded leaves it.
+    let conn = raw(dir.path());
+    conn.pragma_update(None, "user_version", 18i64).unwrap();
+    drop(conn);
+    check();
+}
+
 #[test]
 fn deleting_an_account_leaves_no_row_in_any_account_keyed_mail_table() {
     let dir = tempfile::tempdir().unwrap();
