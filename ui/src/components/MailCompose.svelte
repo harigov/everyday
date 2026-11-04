@@ -625,6 +625,9 @@
    *  seconds" outbox window; the middle of that range. */
   const UNDO_WINDOW_S = 8
 
+  /** The error `written` is showing, if it is. */
+  let unsavedNotice = 0
+
   /**
    * Is what is on screen what is stored? `flush` resolves whether or not the
    * write landed and keeps trying on its own, which is right for autosave and
@@ -633,8 +636,12 @@
    */
   async function written(): Promise<boolean> {
     await saver.flush()
-    if (!saver.retrying) return true
-    notify.error('This message could not be saved, so it has not been sent', {
+    if (!saver.retrying) {
+      // An error stays until dismissed, and this one is no longer true.
+      notify.dismiss(unsavedNotice)
+      return true
+    }
+    unsavedNotice = notify.error('This message could not be saved, so it has not been sent', {
       key: 'mail-draft-not-saved',
       body: 'It is still here, and saving it is being tried again.',
     })

@@ -281,6 +281,20 @@ assert.equal(
   await reload()
   assert.ok(unread() > 0, 'they said unread, so it stays unread')
 
+  // Anything else done to it says nothing about whether it has been seen.
+  await mail.markRead(other)
+  look(true, false)
+  deliver()
+  pass()
+  await reload()
+  await mail.toggleStar(other)
+  look(true, true)
+  mail.seeOpenThread()
+  await reload()
+  assert.equal(unread(), 0, 'starring it did not stop it counting as unseen')
+  await mail.markUnread(other)
+  await mail.markRead(other)
+
   // Two at once, one dated earlier than the end of the thread: both are mail
   // that arrived, and being older is no reason to stay shut.
   const late = mockMail.mockDeliverToThread(

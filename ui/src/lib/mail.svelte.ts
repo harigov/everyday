@@ -773,6 +773,7 @@ class MailState {
     if (this.composing && !this.composeInline) this.#park()
     this.selectedThread = id
     this.#unseenIn = null
+    this.#openVersion++
     this.summary = null
     // Opening one thread is leaving the many behind -- see `checked`.
     this.clearChecked()
@@ -1047,7 +1048,7 @@ class MailState {
       this.#openVersion++
       this.openThread = { ...this.openThread!, thread: { ...openBefore, ...patch } }
       // Told it is unread, or told it is read: either way it is decided.
-      this.#unseenIn = null
+      if ('unreadCount' in patch) this.#unseenIn = null
     }
     try {
       await call([...ids])
