@@ -291,6 +291,12 @@ function splitDocument(html: string): { head: string; inner: string; tail: strin
   }
 }
 
+/** A picture nobody has allowed yet answers with a 1x1 pixel, and `height: auto`
+ *  draws that as a square as wide as the picture says it is: a logo becomes a
+ *  blank 200px block, and a banner a blank page. `!important` since templates
+ *  say `display:block` on nearly every picture they have. */
+const WAITING_PICTURES = `img[src*="/mail/img/"]{display:none!important}`
+
 /** The sender's own `prefers-color-scheme: dark` rules, switched off. They
  *  answer to the system's setting rather than to the page they are drawn on,
  *  and would set light text on white. */
@@ -334,8 +340,7 @@ export interface RenderOptions {
  *
  * A picture with no background of its own is usually a logo drawn for white, so
  * it gets one on a dark page, where it would otherwise all but vanish. One nobody
- * has allowed yet takes no room at all until it is: it would be a white box with
- * nothing in it.
+ * has allowed yet takes no room at all until it is, on either page.
  *
  * Never throws. This runs while a thread is being drawn, on a stranger's markup,
  * and a mistake here should cost one message its theming rather than the whole
@@ -367,7 +372,8 @@ function readForTheme(html: string, options: RenderOptions): RenderedBody {
   if (read.designed) {
     const style =
       `:root{color-scheme:light}html{background:${PAPER.background}}` +
-      `body{color:${PAPER.text};background:${PAPER.background}}`
+      `body{color:${PAPER.text};background:${PAPER.background}}` +
+      (imagesHidden ? WAITING_PICTURES : '')
     return {
       html: `${parts.head}<style>${style}</style>${bodyTag(parts, withoutDarkRules(read.html))}`,
       hasHistory: read.hasHistory,
@@ -386,7 +392,7 @@ function readForTheme(html: string, options: RenderOptions): RenderedBody {
     `details>summary{display:none}` +
     `blockquote{margin:0.5em 0;padding-left:12px;border-left:2px solid ${rule}}` +
     `hr{border:0;border-top:1px solid ${rule}}` +
-    (imagesHidden ? `img[src*="/mail/img/"]{display:none}` : '') +
+    (imagesHidden ? WAITING_PICTURES : '') +
     (dark ? 'img{background:#ffffff}' : '')
   // A quote left in the middle of an answer is part of reading the answer.
   const opened = read.html.replace(/<details(?=[\s>])/gi, '<details open')

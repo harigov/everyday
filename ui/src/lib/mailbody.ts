@@ -17,7 +17,7 @@
 
 // ── Tokens ────────────────────────────────────────────────────────────
 
-interface Token {
+export interface Token {
   kind: 'open' | 'close' | 'void' | 'text' | 'raw' | 'comment'
   /** Offsets into the HTML this came from. */
   at: number
@@ -43,7 +43,7 @@ const BLOCK = new Set(
 
 const STYLE_END = /<\/style/gi
 
-function tokenize(html: string): Token[] {
+export function tokenize(html: string): Token[] {
   const tokens: Token[] = []
   const open: number[] = []
   const top = () => open[open.length - 1] ?? -1
@@ -98,7 +98,7 @@ function tokenize(html: string): Token[] {
   return tokens
 }
 
-function attribute(source: string, name: string): string | null {
+export function attribute(source: string, name: string): string | null {
   const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(source)
   return m ? decodeEntities(m[1] ?? m[2] ?? m[3] ?? '') : null
 }
@@ -124,7 +124,7 @@ const NAMED_ENTITIES = new Map([
   ['nbsp', ' '],
 ])
 
-function decodeEntities(s: string): string {
+export function decodeEntities(s: string): string {
   if (!s.includes('&')) return s
   return s.replace(
     /&(?:#(\d+)|#x([\da-f]+)|([a-z]+));/gi,
@@ -186,7 +186,7 @@ const HISTORY_FOLLOWS = new Set([
   'x_outlookmessageheader',
 ])
 
-function classesOf(source: string): string[] {
+export function classesOf(source: string): string[] {
   return (attribute(source, 'class') ?? '').toLowerCase().split(/\s+/)
 }
 
@@ -630,7 +630,7 @@ interface Page {
 // ── A style attribute ─────────────────────────────────────────────────
 
 /** Split on `;`, but not the one in `url(data:image/png;base64,…)`. */
-function declarations(style: string): [string, string][] {
+export function declarations(style: string): [string, string][] {
   const out: [string, string][] = []
   let depth = 0
   let quote = ''
@@ -969,139 +969,13 @@ export function readBody(inner: string, options: ReadOptions): ReadBody {
   return { html: adapt(shown, tokenize(shown), page), hasHistory, designed }
 }
 
-/** The body's line height: `BASE_STYLE`'s 15px at 1.6. */
-const LINE_PX = 24
-/** The margin a browser gives a paragraph at that size. */
-const PARAGRAPH_GAP_PX = 15
-/** A picture sits on the line's baseline, with the room for a descender under it. */
-const BASELINE_PX = 8
-/** A picture that does not say how tall it is. */
-const UNSTATED_PICTURE_PX = 100
-
-/** The height a picture states, in its style or its attribute, at the width it
- *  will be drawn: `max-width:100%` scales one wider than the column down. */
-function pictureHeight(source: string, column: number): number {
-  const style = declarations(attribute(source, 'style') ?? '')
-  const stated = (property: string) =>
-    widthInPixels(style.find(([p]) => p === property)?.[1]) ||
-    widthInPixels(attribute(source, property))
-  const height = stated('height')
-  if (!height) return UNSTATED_PICTURE_PX
-  return Math.round(height * Math.min(1, column / (stated('width') || column))) + BASELINE_PX
-}
-
-/**
- * How tall a written message comes out at `widthPx` -- one drawn on the card,
- * with no padding of its own (`mailview.ts`'s `renderBody`). A guess, since the
- * sandbox that keeps a message in its frame also stops anything asking the frame
- * how tall it turned out, and it decides how much blank there is under a
- * one-line reply, so it walks the lines the message really has: a blank line
- * counts, and a paragraph's gap counts only where a sender did not take it away,
- * as Word's `p.MsoNormal` always does.
- *
- * It errs tall, by a line or so on a long message, since a little blank costs
- * less than a scrollbar inside the thread's own.
- */
-export function estimateWrittenHeight(doc: string, widthPx: number, imagesHidden = false): number {
-  const inner = doc.replace(/^[\s\S]*<body[^>]*>/i, '').replace(/<\/body>[\s\S]*$/i, '')
-  const tokens = tokenize(inner)
-  const charsPerLine = Math.max(20, Math.floor(widthPx / 8.2))
-  const notDrawn = new Map<number, boolean>()
-  let lines = 0
-  let extra = 0
-  let chars = 0
-  const endLine = () => {
-    if (chars > 0) lines += Math.ceil(chars / charsPerLine)
-    chars = 0
-  }
-  for (const [i, t] of tokens.entries()) {
-    const source = t.kind === 'open' || t.kind === 'void' ? inner.slice(t.at, t.end) : ''
-    if (notDrawn.get(t.parent)) {
-      if (t.kind === 'open') notDrawn.set(i, true)
-      continue
-    }
-    const hides = declarations(attribute(source, 'style') ?? '').some(
-      ([p, v]) => p === 'display' && /^none\b/i.test(v),
-    )
-    if (t.kind === 'open' && (hides || t.tag === 'summary')) {
-      notDrawn.set(i, true)
-      continue
-    }
-    if (t.kind === 'text') {
-      const text = decodeEntities(inner.slice(t.at, t.end))
-      if (tokenIsPreformatted(tokens, t)) {
-        const rows = text.split('\n')
-        rows.slice(0, -1).forEach((row) => {
-          lines += Math.max(1, Math.ceil(lengthOnScreen(row) / charsPerLine))
-        })
-        chars += lengthOnScreen(rows[rows.length - 1] ?? '')
-      } else {
-        // A `&nbsp;` is how a blank line is written, where whitespace between
-        // two tags is nothing at all.
-        const blank = /\u00a0|&nbsp;|&#160;/i.test(inner.slice(t.at, t.end))
-        const words = text.replace(/\s+/g, ' ').trim()
-        chars += blank ? Math.max(1, lengthOnScreen(words)) : lengthOnScreen(words)
-      }
-    } else if (t.kind === 'void' && t.tag === 'br') {
-      // A break with nothing on its line is a blank line.
-      if (chars === 0) lines++
-      endLine()
-    } else if (t.kind === 'void' && t.tag === 'img') {
-      const waiting = imagesHidden && source.includes('/mail/img/')
-      if (!hides && !waiting) extra += pictureHeight(source, widthPx)
-    } else if (t.kind === 'void' && t.tag === 'hr') {
-      endLine()
-      extra += PARAGRAPH_GAP_PX
-    } else if ((t.kind === 'open' || t.kind === 'close') && BLOCK.has(t.tag)) {
-      endLine()
-      if (t.kind === 'open') {
-        if (t.tag === 'tr') extra += 4
-        else if (/^h[1-6]$/.test(t.tag)) extra += LINE_PX + PARAGRAPH_GAP_PX
-        else if (t.tag === 'ul' || t.tag === 'ol' || t.tag === 'blockquote' || t.tag === 'pre') {
-          extra += PARAGRAPH_GAP_PX
-        } else if (t.tag === 'p' && !classesOf(source).includes('msonormal')) {
-          const margin = declarations(attribute(source, 'style') ?? '').find(
-            ([p]) => p === 'margin' || p === 'margin-bottom',
-          )?.[1]
-          if (!margin || !/^0(?:[a-z]+)?\b/i.test(margin)) extra += PARAGRAPH_GAP_PX
-        }
-      }
-    }
-  }
-  endLine()
-  // Fractions of a pixel, and a sender's own spacing nothing here reads.
-  const slack = 6
-  return Math.min(60000, Math.max(LINE_PX, lines * LINE_PX) + extra + slack)
-}
-
 /** Han, kana and hangul are drawn about twice as wide as the Latin letter the
  *  line length is worked out from. */
 const WIDE =
   /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/g
 
-function lengthOnScreen(text: string): number {
+export function lengthOnScreen(text: string): number {
   return text.length + (text.match(WIDE)?.length ?? 0)
-}
-
-/**
- * The same for a designed message, on a page with padding of its own. It has
- * bigger type and roomier rows than this can read from the markup, and that adds
- * up over its length, so the allowance grows with it: running out of frame near
- * the end of a long newsletter costs a scrollbar inside the thread's own, where
- * a short one should not end in a page of white.
- */
-export function estimateDesignedHeight(doc: string, widthPx: number): number {
-  const rows = (doc.match(/<tr[\s>]/gi) ?? []).length
-  const lines = estimateWrittenHeight(doc, Math.max(200, widthPx - 32))
-  const allowance = Math.max(0, lines - 600) * 0.25
-  return Math.min(60000, Math.round(lines + allowance) + 32 + rows * 16 + 16)
-}
-
-function tokenIsPreformatted(tokens: Token[], token: Token): boolean {
-  for (let p = token.parent; p >= 0; p = tokens[p]?.parent ?? -1) {
-    if (tokens[p]?.tag === 'pre') return true
-  }
-  return false
 }
 
 /** Whether markup would be drawn on a page of its own -- {@link isDesigned},

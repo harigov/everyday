@@ -44,7 +44,7 @@
   // of seed markup riding along in a production bundle that a bundler
   // tree-shakes once this stops being called with `MOCK` true.
   import { mockMessageBodyHtml } from '../lib/mock-mail'
-  import { estimateDesignedHeight, estimateWrittenHeight } from '../lib/mailbody'
+  import { measureBody } from '../lib/mailheight'
   import { formatInstantTime, humanBytes, longDate, plural } from '../lib/format'
   import { isoDate } from '../lib/time'
   import { accounts } from '../lib/accounts.svelte'
@@ -254,28 +254,30 @@
     return `${day} · ${formatInstantTime(invite.start)}–${formatInstantTime(invite.end)}`
   }
 
-  /** The height for a message, from its body string, never from what the
-   *  iframe renders -- see the top of this file. */
-  function guessHeight(view: RenderedBody, width: number): number {
-    return view.paper
-      ? estimateDesignedHeight(view.html, width)
-      : estimateWrittenHeight(view.html, width, view.imagesHidden)
-  }
-
-  /** Sizes the one iframe inside `node`, and again when the pane changes
-   *  width, which rewraps everything in it. */
+  /** Sizes the one iframe inside `node`, from its body string and never from
+   *  what the iframe renders -- see the top of this file -- and again when the
+   *  pane changes width, which rewraps everything in it. Setting the height
+   *  resizes `node` too, which is not a reason to work it out again. */
   function autoSize(node: HTMLElement, first: RenderedBody) {
     const iframe = node.querySelector('iframe')
     let view = first
+    let heightAt = measureBody(view)
+    let sizedAt = -1
     function apply() {
-      if (iframe) iframe.style.height = `${guessHeight(view, node.clientWidth)}px`
+      const width = node.clientWidth
+      if (!iframe || width === sizedAt) return
+      sizedAt = width
+      iframe.style.height = `${heightAt(width)}px`
     }
     apply()
     const ro = new ResizeObserver(apply)
     ro.observe(node)
     return {
       update(next: RenderedBody) {
+        if (next.html === view.html) return
         view = next
+        heightAt = measureBody(view)
+        sizedAt = -1
         apply()
       },
       destroy: () => ro.disconnect(),
@@ -834,7 +836,7 @@
     font-weight: 600;
   }
 
-  /* A message's height is a guess, made to err tall (`guessHeight`), and where
+  /* A message's height is a guess, made to err tall (`mailheight.ts`), and where
      it still falls short the frame scrolls what is left rather than clipping
      it. No box around it with a height of its own: a long message is read by
      scrolling the thread.
