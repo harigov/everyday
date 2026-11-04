@@ -201,6 +201,34 @@ async fn inbox_senders_without_a_window_counts_everything_still_in_the_inbox() {
     }
 }
 
+/// A thread is in the Inbox because one of its messages is. What else it holds
+/// is not "still there": not counted, and no reason for a sender to have a row
+/// whose button would move the message that is.
+#[tokio::test]
+async fn inbox_senders_counts_only_the_messages_in_the_inbox_not_the_rest_of_their_threads() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc, "me@example.com");
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let archive = seed_mailbox(&svc, account, "Archive", MailboxRole::Archive);
+    let spam = seed_mailbox(&svc, account, "Spam", MailboxRole::Spam);
+    let trash = seed_mailbox(&svc, account, "Trash", MailboxRole::Trash);
+
+    let thread = ThreadId::new();
+    seed_into(&svc, thread, account, archive, 1, "archived@example.com", 30, None);
+    seed_into(&svc, thread, account, archive, 2, "reply@example.com", 20, None);
+    seed_into(&svc, thread, account, spam, 1, "spam@example.com", 15, None);
+    seed_into(&svc, thread, account, trash, 1, "binned@example.com", 10, None);
+    seed_into(&svc, thread, account, inbox, 1, "reply@example.com", 2, None);
+
+    for ask in [json!({}), json!({ "days": 365 }), json!({ "olderThanDays": 1 })] {
+        let senders = call(&svc, "inbox_senders", ask.clone()).await;
+        assert_eq!(emails(&senders), ["reply@example.com"], "{ask}");
+        assert_eq!(senders[0]["messages"], 1, "the Inbox's one, not the archived one: {ask}");
+        assert_eq!(senders[0]["unread"], 1, "{ask}");
+        assert_eq!(senders[0]["threads"], json!([thread]), "{ask}");
+    }
+}
+
 #[tokio::test]
 async fn inbox_senders_narrows_to_one_kind_of_thread_and_finds_a_sender_by_name() {
     let (svc, _dir) = service();

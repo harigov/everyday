@@ -450,6 +450,22 @@ async fn senders_lists_the_newsletters_in_the_inbox_and_flags_the_followed() {
     assert_eq!(wider[0].messages, 4);
 }
 
+/// Counted as Quick Cleanup counts: what is in the Inbox, not whatever else the
+/// threads it is in hold. The rest could be archived, or in Trash.
+#[tokio::test]
+async fn senders_counts_what_is_in_the_inbox_not_the_rest_of_its_threads() {
+    let w = world();
+    let filed =
+        w.seed_in(w.archive, Mail { from: DIGEST, name: "The Digest", ..Mail::news(30, "Filed") });
+    let also_filed = w.seed_in(w.archive, Mail::news(20, "Also filed"));
+    w.seed(Mail { thread: Some(filed.thread), ..Mail::news(10, "Reply") });
+    w.seed(Mail { thread: Some(also_filed.thread), ..Mail::news(5, "Reply") });
+
+    let found = newsletters::senders(&w.svc, &w.vault, 30).unwrap();
+    assert_eq!(found.len(), 1, "the sender with nothing left in the Inbox has no row");
+    assert_eq!((found[0].email.as_str(), found[0].messages), (NEWS, 2));
+}
+
 #[tokio::test]
 async fn senders_is_empty_when_nothing_is_in_the_inbox() {
     let w = world();

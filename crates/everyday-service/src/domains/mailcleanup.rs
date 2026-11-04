@@ -37,15 +37,23 @@
 //!
 //! # Why only what is still in the Inbox
 //!
-//! A row is an offer to move exactly the threads it counts, so it must count
-//! exactly what would move: mail somebody already archived is not cluttering
-//! anything, and a row built from it would offer to clean up nothing. It is
-//! also what makes the list honest after it has been used -- a sender whose
+//! Mail somebody already archived is not cluttering anything, and a row built
+//! from it would offer to clean up nothing. Counting only what is in the Inbox
+//! is also what makes the list honest after it has been used -- a sender whose
 //! threads were just archived has nothing left in the Inbox, and simply
 //! drops off the next read, rather than lingering with a count that no
 //! longer describes anything a button could act on. Snoozed threads are left
 //! out on the same terms: the person has already said what happens to them,
 //! and the Inbox is not showing them.
+//!
+//! The same goes for each message. A thread is listed in the Inbox because
+//! one of its messages is there, and the rest of it may be archived, in Trash
+//! or in Spam, so only the messages filed in the Inbox are counted. Somebody
+//! whose only message in a conversation was archived long ago has no row for
+//! it: their button would otherwise move the reply that brought it back.
+//!
+//! The buttons still move a conversation whole, so they can move more than a
+//! row counted -- see `everyday_core::mail::cleanup`'s module docs.
 //!
 //! # Gating
 //!
@@ -53,7 +61,6 @@
 //! decrypts the same messages to count the same senders for the Overview,
 //! and `list_threads`, whose rows these thread ids are.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::command;
@@ -63,7 +70,7 @@ use crate::service::{Service, blocking};
 use everyday_core::Vault;
 use everyday_core::id::{AccountId, MailboxId, ThreadId};
 use everyday_core::mail::cleanup::{self, InboxSender};
-use everyday_core::mail::{Category, Mailbox, MailboxRole};
+use everyday_core::mail::{Category, Mailbox, MailboxRole, Message};
 use everyday_core::store::mail::ThreadFilter;
 use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
@@ -72,8 +79,8 @@ use serde::Deserialize;
 /// that, a caller asks for no window at all -- `days` left out -- which
 /// counts every message the Inbox still holds, however old.
 ///
-/// The count decrypts the messages of the threads still in the Inbox, not
-/// every message in the account. All time is still bounded, by what an
+/// The count decrypts the messages still in the Inbox, not every message in
+/// the account. All time is still bounded, by what an
 /// Inbox holds rather than by a date: message records only, not bodies --
 /// about 100 MB for fifty thousand messages -- and [`MAX_INBOX_THREADS`] on
 /// the walk. Somebody clearing out an Inbox that has been filling for five
@@ -217,19 +224,15 @@ async fn inbox_senders(
             }
         };
 
-        let mut in_inbox = HashSet::new();
+        let mut messages = Vec::new();
         for account in accounts {
             // An account that has not synced an Inbox yet has nothing in
             // one to clean up.
             let Some(inbox) = inbox_of(&vault.mailboxes(account)?) else { continue };
-            inbox_threads(&vault, inbox, since, filter, args.sorted_as.as_deref(), &mut in_inbox)?;
+            let sorted_as = args.sorted_as.as_deref();
+            messages.extend(inbox_messages(&vault, inbox, since, filter, sorted_as)?);
         }
-        // Only what can be counted is decrypted: the messages of the threads
-        // just found, wherever each is filed, rather than every message in
-        // the window across every folder of every account.
-        let threads: Vec<ThreadId> = in_inbox.iter().copied().collect();
-        let messages = vault.mail_in_threads(&threads)?;
-        let mut senders = cleanup::inbox_senders(&messages, &in_inbox, &me, since, usize::MAX);
+        let mut senders = cleanup::inbox_senders(&messages, &me, since, usize::MAX);
         senders.retain(|s| s.matches(&query));
         senders.truncate(limit);
         Ok(senders)
@@ -260,11 +263,24 @@ pub(crate) fn inbox_of(mailboxes: &[Mailbox]) -> Option<MailboxId> {
         .map(|m| m.id)
 }
 
-/// Add to `into` every thread still in `inbox` -- not snoozed, and passing
-/// `filter` and `sorted_as` -- with activity there since `since`: what a
-/// sender's mail has to sit in to be counted, see the module docs. Also the
-/// Feed's walk over the newsletters in an Inbox, with `filter` asking for
-/// that category.
+/// What is in `inbox` to be counted: the messages filed there in the threads
+/// [`inbox_threads`] finds, see the module docs. Only these are decrypted,
+/// rather than every message in the window across every folder of the account.
+/// Also the Feed's way into the newsletters in an Inbox, with `filter` asking
+/// for that category.
+pub(crate) fn inbox_messages(
+    vault: &Vault,
+    inbox: MailboxId,
+    since: Timestamp,
+    filter: ThreadFilter,
+    sorted_as: Option<&str>,
+) -> everyday_core::Result<Vec<Message>> {
+    let threads = inbox_threads(vault, inbox, since, filter, sorted_as)?;
+    vault.mail_filed_in(inbox, &threads)
+}
+
+/// Every thread still in `inbox` -- not snoozed, and passing `filter` and
+/// `sorted_as` -- with activity there since `since`.
 ///
 /// The tab and the age are asked of the store, from clear columns, so a
 /// thread that cannot count is never read; `filter.snoozed` is always
@@ -278,18 +294,17 @@ pub(crate) fn inbox_of(mailboxes: &[Mailbox]) -> Option<MailboxId> {
 /// anywhere -- is never older than that. So once one row's `last_date` is
 /// before the window, its newest Inbox message is too, and every row after
 /// it in the order is older still: no later thread has an Inbox message in
-/// the window. (Such a thread could still hold a newer message filed
-/// somewhere else -- in practice, a reply you sent, which is never counted
-/// as a sender anyway.) [`MAX_INBOX_THREADS`] stops the walk regardless.
-pub(crate) fn inbox_threads(
+/// the window, and an Inbox message is all that is counted.
+/// [`MAX_INBOX_THREADS`] stops the walk regardless.
+fn inbox_threads(
     vault: &Vault,
     inbox: MailboxId,
     since: Timestamp,
     filter: ThreadFilter,
     sorted_as: Option<&str>,
-    into: &mut HashSet<ThreadId>,
-) -> everyday_core::Result<()> {
+) -> everyday_core::Result<Vec<ThreadId>> {
     let awake = ThreadFilter { snoozed: Some(false), ..filter };
+    let mut found = Vec::new();
     let mut cursor: Option<String> = None;
     let mut read = 0usize;
     loop {
@@ -298,7 +313,7 @@ pub(crate) fn inbox_threads(
         // Judged on the whole page, before the sorted category thins it:
         // the order is by date whatever a thread was sorted into.
         let past_the_window = page.threads.last().is_some_and(|t| t.last_date < since);
-        into.extend(
+        found.extend(
             page.threads
                 .iter()
                 .filter(|t| {
@@ -310,7 +325,7 @@ pub(crate) fn inbox_threads(
         );
         match page.next_cursor {
             Some(next) if !past_the_window && read < MAX_INBOX_THREADS => cursor = Some(next),
-            _ => return Ok(()),
+            _ => return Ok(found),
         }
     }
 }

@@ -315,6 +315,11 @@ async fn a_bulk_delete_goes_to_trash_as_one_move_and_the_next_sync_finds_it_ther
     sync(&mut session).await;
     assert_eq!(listed(MailboxRole::Trash).len(), THREADS as usize, "Trash shows what was deleted");
     assert!(listed(MailboxRole::Inbox).is_empty(), "and the Inbox does not");
+    assert!(
+        vault.mail_uid_set(mailbox(MailboxRole::Inbox)).unwrap().is_empty(),
+        "nor is anything still filed there, to come back with the next reply"
+    );
+    assert!(listed(MailboxRole::Trash).iter().all(|t| t.message_count == 1), "and none is doubled");
 }
 
 #[tokio::test]

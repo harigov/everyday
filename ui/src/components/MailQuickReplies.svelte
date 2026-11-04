@@ -26,13 +26,7 @@
 
   /** `account.address` plus every identity -- a message from any of this
    *  account's own addresses is not one worth offering to answer. */
-  const ownAddresses = $derived(
-    new Set(
-      account
-        ? [account.address, ...account.identities.map((i) => i.address)].map((a) => a.toLowerCase())
-        : [],
-    ),
-  )
+  const ownAddresses = $derived(accounts.ownAddresses(message.accountId))
 
   const eligible = $derived(
     Boolean(

@@ -38,7 +38,7 @@
 //! run or a conversation in the thread's history that never existed.
 
 use crate::domains::insights;
-use crate::domains::mailcleanup::{inbox_of, inbox_threads};
+use crate::domains::mailcleanup::{inbox_messages, inbox_of};
 use crate::error::CommandResult;
 use crate::events::{self, Change, Kind};
 use crate::service::{Service, blocking};
@@ -182,8 +182,8 @@ pub async fn mark_read(
 /// The senders whose mail sat in the Newsletters category over the last
 /// `days` days, most prolific first.
 ///
-/// Counted as Quick Cleanup counts an Inbox -- only threads still in it and
-/// awake, nothing from you, no drafts -- by the same
+/// Counted as Quick Cleanup counts an Inbox -- only what is still in it, in
+/// threads that are awake, nothing from you, no drafts -- by the same
 /// [`cleanup::inbox_senders`], so the rules about whose mail counts are not
 /// written twice. What this adds is the category, and the `followed` mark.
 pub fn senders(
@@ -202,19 +202,14 @@ pub fn senders(
     // Asking for the category in the walk is what keeps it to the
     // newsletters, and not the whole Inbox.
     let newsletters = ThreadFilter { category: Some(Category::Newsletter), ..Default::default() };
-    let mut in_inbox = HashSet::new();
+    let mut messages: Vec<Message> = Vec::new();
     for account in vault.accounts()?.into_iter().filter(|a| a.services.mail) {
         // An account that has not synced an Inbox yet has nothing in one.
         let Some(inbox) = inbox_of(&vault.mailboxes(account.id)?) else { continue };
-        inbox_threads(vault, inbox, since, newsletters, None, &mut in_inbox)?;
+        messages.extend(inbox_messages(vault, inbox, since, newsletters, None)?);
     }
-    let threads: Vec<ThreadId> = in_inbox.iter().copied().collect();
-    let messages: Vec<Message> = vault
-        .mail_in_threads(&threads)?
-        .into_iter()
-        .filter(|m| m.category == Some(Category::Newsletter))
-        .collect();
-    let found = cleanup::inbox_senders(&messages, &in_inbox, &me, since, usize::MAX);
+    messages.retain(|m| m.category == Some(Category::Newsletter));
+    let found = cleanup::inbox_senders(&messages, &me, since, usize::MAX);
 
     let followed: HashSet<String> = vault
         .news_sources()?

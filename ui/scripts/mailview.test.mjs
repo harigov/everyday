@@ -1042,6 +1042,18 @@ for (const [stored, want, why] of [
   ['Thanks **so** much', 'Thanks so much', 'bold markers go wherever they are'],
   ['From: here, the road is long', 'From: here, the road is long', 'the word on its own stays'],
   ['I was on holiday when you wrote: lovely', 'I was on holiday when you wrote: lovely', 'prose'],
+  ['Hi Hari, [Forge][1] is at [Pier 27][2]!', 'Hi Hari, Forge is at Pier 27!', 'link markers go'],
+  ['See [1] and [the notes]', 'See [1] and [the notes]', 'brackets of their own stay'],
+  [
+    'Hi Hari, [Forge][1] is on! [1]: https://forge.example/x [2]: https://pier.example/y',
+    'Hi Hari, Forge is on!',
+    'the addresses the markers point to go too',
+  ],
+  ['Hi [Forge][1] [1]: https://forge.exa…', 'Hi Forge', 'a footnote cut off'],
+  ['Hi Forge [2…', 'Hi Forge…', 'a footnote cut off at its number'],
+  ['A link to [Forge][1…', 'A link to Forge…', "a link's number cut off"],
+  ['A link to [Forge dinner reserv…', 'A link to Forge dinner reserv…', "a link's words cut off"],
+  ['[[Company logo]][1] Read [here][2]', 'Company logo Read here', 'a linked picture'],
 ]) {
   assert.equal(snippetText(stored), want, why)
 }

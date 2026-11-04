@@ -430,6 +430,14 @@ pub trait MailStore: Send + Sync {
     /// has it) is compared against to find what the server no longer has.
     fn uid_set(&self, mailbox: MailboxId) -> Result<Vec<u32>>;
 
+    /// The uids in `mailbox` of every message not also filed in `other`.
+    ///
+    /// Asked of the message rather than by comparing the two mailboxes' uids:
+    /// a message is filed once per mailbox, so two copies a server holds under
+    /// one `Message-ID` can leave the same message under different uids in
+    /// each.
+    fn uids_filed_without(&self, mailbox: MailboxId, other: MailboxId) -> Result<Vec<u32>>;
+
     /// Every message in `mailbox` whose body has not been fetched yet, with
     /// its uid *in that mailbox*, newest first, capped at `limit` -- what
     /// the bodies pass reads instead of walking every uid `mailbox` has and
@@ -642,14 +650,16 @@ pub trait MailStore: Send + Sync {
         to: Timestamp,
     ) -> Result<Vec<Message>>;
 
-    /// Every message in any of `threads`, whatever mailbox it is filed in,
-    /// oldest first (`date`, then `id`). An id naming no thread adds
-    /// nothing; any number of ids may be asked for at once.
+    /// The messages of `threads` that are filed in `mailbox`, oldest first
+    /// (`date`, then `id`). An id naming no thread adds nothing; any number of
+    /// ids may be asked for at once.
     ///
-    /// For a count that already knows which threads it can count -- Quick
-    /// Cleanup's, over the threads still in an Inbox -- so that it decrypts
-    /// those and not every message in a window of the whole account.
-    fn messages_in_threads(&self, threads: &[ThreadId]) -> Result<Vec<Message>>;
+    /// What Quick Cleanup and the Feed's newsletter finder count. A thread is
+    /// listed in an Inbox because one of its messages is there, and the rest
+    /// of it may be archived, in Trash or in Spam. Reading these rather than
+    /// every message in a window of the whole account is also what keeps the
+    /// count to what it can use.
+    fn messages_filed_in(&self, mailbox: MailboxId, threads: &[ThreadId]) -> Result<Vec<Message>>;
 
     // ---- garbage collection --------------------------------------------------
 

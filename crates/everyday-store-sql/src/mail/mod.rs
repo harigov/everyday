@@ -474,6 +474,18 @@ impl MailStore for SqlStore {
         rows.into_iter().map(|r| Ok(r.i64(0)? as u32)).collect()
     }
 
+    fn uids_filed_without(&self, mailbox: MailboxId, other: MailboxId) -> Result<Vec<u32>> {
+        let rows = self.read().query(
+            "SELECT mm.uid FROM message_mailboxes mm
+             WHERE mm.mailbox_id = ?1 AND NOT EXISTS (
+               SELECT 1 FROM message_mailboxes o
+               WHERE o.message_id = mm.message_id AND o.mailbox_id = ?2
+             )",
+            &vals![mailbox.to_string(), other.to_string()],
+        )?;
+        rows.into_iter().map(|r| Ok(r.i64(0)? as u32)).collect()
+    }
+
     fn pending_bodies(&self, mailbox: MailboxId, limit: u32) -> Result<Vec<(Message, u32)>> {
         // `m.pack_len = 0` is the clear-column sentinel this trait's own
         // docs name -- see `MailStore::pending_bodies` -- so this is a
@@ -655,17 +667,23 @@ impl MailStore for SqlStore {
         self.collect(rows, message_aad)
     }
 
-    fn messages_in_threads(&self, threads: &[ThreadId]) -> Result<Vec<Message>> {
+    fn messages_filed_in(&self, mailbox: MailboxId, threads: &[ThreadId]) -> Result<Vec<Message>> {
         // In chunks, so no number of threads reaches a backend's limit on
         // bound parameters -- see `removing_forty_thousand_uids_...` in the
         // conformance suite for the limit this keeps under.
         let mut messages = Vec::new();
         for chunk in threads.chunks(500) {
-            let (where_sql, args) =
-                Where::new().in_list("thread_id", chunk.iter().map(|t| t.to_string())).finish();
-            let rows = self
-                .read()
-                .records(&format!("SELECT id, data FROM mail_messages WHERE {where_sql}"), &args)?;
+            let (where_sql, args) = Where::new()
+                .eq("mm.mailbox_id", mailbox.to_string())
+                .in_list("m.thread_id", chunk.iter().map(|t| t.to_string()))
+                .finish();
+            let rows = self.read().records(
+                &format!(
+                    "SELECT m.id, m.data FROM mail_messages m
+                     JOIN message_mailboxes mm ON mm.message_id = m.id WHERE {where_sql}"
+                ),
+                &args,
+            )?;
             messages.extend(self.collect::<Message, _>(rows, message_aad)?);
         }
         messages.sort_by(|a, b| a.date.cmp(&b.date).then(a.id.cmp(&b.id)));

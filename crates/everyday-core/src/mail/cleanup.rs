@@ -10,12 +10,16 @@
 //! # Why only what is still in the Inbox
 //!
 //! The list exists to be acted on: pick a sender, archive or trash what they
-//! sent. The action works on exactly the threads a row names, so the row
-//! must count exactly what the action would move -- a sender whose mail was
-//! already archived is not cluttering anything, and listing them would
-//! offer to clean up nothing. Counting only threads still in the Inbox is
-//! also what makes a cleaned-up sender drop off the list on the next read,
+//! sent. A sender whose mail was already archived is not cluttering anything,
+//! and listing them would offer to clean up nothing, so a row counts their
+//! messages still in the Inbox and names the conversations those are in. That
+//! is also what makes a cleaned-up sender drop off the list on the next read,
 //! rather than lingering with a count that no longer means anything.
+//!
+//! The buttons move those conversations whole, so they can move more than the
+//! row counted: what other people said in them, and any part of them already
+//! archived. So the row's count says how much of the Inbox is theirs, and the
+//! buttons and what they report afterwards count conversations.
 
 use std::collections::{HashMap, HashSet};
 
@@ -39,7 +43,7 @@ pub struct InboxSender {
     /// address itself when none did -- never empty, so a row always has
     /// something to say.
     pub name: String,
-    /// Messages from them, in the window, in threads still in the Inbox.
+    /// Messages from them, in the window, still in the Inbox.
     pub messages: u32,
     /// How many of `messages` are unread.
     pub unread: u32,
@@ -73,11 +77,11 @@ impl InboxSender {
     }
 }
 
-/// Who sent the most of what is still in the Inbox, since `since`.
+/// Who sent the most of `messages`, what is still in the Inbox, since `since`.
 ///
 /// Counts every message in `messages` that is dated at or after `since`, is
-/// not a draft, is not from one of `me`'s own addresses, and sits in a
-/// thread named in `in_inbox`; groups them by sender address, compared
+/// not a draft and is not from one of `me`'s own addresses; groups them by
+/// sender address, compared
 /// without case or surrounding space (a message with no sender address at
 /// all is skipped -- there is nobody to list it under). The busiest sender
 /// comes first, then the one with more unread, then by address so the order
@@ -87,7 +91,6 @@ impl InboxSender {
 /// [`InboxSender`] for what each field is drawn from.
 pub fn inbox_senders(
     messages: &[Message],
-    in_inbox: &HashSet<ThreadId>,
     me: &Me,
     since: Timestamp,
     limit: usize,
@@ -98,12 +101,7 @@ pub fn inbox_senders(
     // two messages in the same second always walk in the same order.
     let mut counted: Vec<&Message> = messages
         .iter()
-        .filter(|m| {
-            m.date >= since
-                && !m.flags.draft
-                && in_inbox.contains(&m.thread_id)
-                && !me.has_address(&m.from.email)
-        })
+        .filter(|m| m.date >= since && !m.flags.draft && !me.has_address(&m.from.email))
         .collect();
     counted.sort_by(|a, b| b.date.cmp(&a.date).then(a.id.cmp(&b.id)));
 
@@ -207,53 +205,37 @@ mod tests {
         Address { name: name.into(), email: email.into() }
     }
 
-    /// One message in a thread of its own, in the inbox `inbox` is
-    /// collecting -- the shape most of these tests want.
-    fn inbox_mail(
-        inbox: &mut HashSet<ThreadId>,
-        account: AccountId,
-        from: Address,
-        date: Timestamp,
-    ) -> Message {
-        let thread = ThreadId::new();
-        inbox.insert(thread);
-        mail(account, thread, from, date)
+    /// One message in a thread of its own -- the shape most of these tests
+    /// want.
+    fn inbox_mail(account: AccountId, from: Address, date: Timestamp) -> Message {
+        mail(account, ThreadId::new(), from, date)
     }
 
     #[test]
     fn the_busiest_sender_comes_first_then_the_most_unread_then_by_address() {
         let account = AccountId::new();
-        let mut inbox = HashSet::new();
         let mut messages = Vec::new();
         for minute in 0..3 {
-            messages.push(inbox_mail(
-                &mut inbox,
-                account,
-                person("News", "news@example.com"),
-                at(minute),
-            ));
+            messages.push(inbox_mail(account, person("News", "news@example.com"), at(minute)));
         }
         // Two each from bob and carol: carol has one unread more, so she
         // ranks ahead of bob despite the address order.
         for minute in 0..2 {
-            let mut bob =
-                inbox_mail(&mut inbox, account, person("Bob", "bob@example.com"), at(minute));
+            let mut bob = inbox_mail(account, person("Bob", "bob@example.com"), at(minute));
             bob.flags.seen = true;
             messages.push(bob);
-            let mut carol =
-                inbox_mail(&mut inbox, account, person("Carol", "carol@example.com"), at(minute));
+            let mut carol = inbox_mail(account, person("Carol", "carol@example.com"), at(minute));
             carol.flags.seen = minute == 0;
             messages.push(carol);
         }
         // Two from dave, both read: level with bob, and after him by address.
         for minute in 0..2 {
-            let mut dave =
-                inbox_mail(&mut inbox, account, person("Dave", "dave@example.com"), at(minute));
+            let mut dave = inbox_mail(account, person("Dave", "dave@example.com"), at(minute));
             dave.flags.seen = true;
             messages.push(dave);
         }
 
-        let out = inbox_senders(&messages, &inbox, &me(), since(), 10);
+        let out = inbox_senders(&messages, &me(), since(), 10);
         let order: Vec<&str> = out.iter().map(|s| s.email.as_str()).collect();
         assert_eq!(
             order,
@@ -263,7 +245,7 @@ mod tests {
         assert_eq!((out[1].messages, out[1].unread), (2, 1));
         assert_eq!((out[2].messages, out[2].unread), (2, 0));
 
-        let top_two = inbox_senders(&messages, &inbox, &me(), since(), 2);
+        let top_two = inbox_senders(&messages, &me(), since(), 2);
         assert_eq!(top_two.len(), 2, "truncated to the limit");
         assert_eq!(top_two[1].email, "carol@example.com");
     }
@@ -271,29 +253,25 @@ mod tests {
     #[test]
     fn your_own_mail_and_your_drafts_are_never_a_sender() {
         let account = AccountId::new();
-        let mut inbox = HashSet::new();
-        let mine = inbox_mail(&mut inbox, account, person("Me", " ALIAS@example.com"), at(1));
-        let mut draft = inbox_mail(&mut inbox, account, person("Ana", "ana@example.com"), at(2));
+        let mine = inbox_mail(account, person("Me", " ALIAS@example.com"), at(1));
+        let mut draft = inbox_mail(account, person("Ana", "ana@example.com"), at(2));
         draft.flags.draft = true;
-        let real = inbox_mail(&mut inbox, account, person("Ana", "ana@example.com"), at(3));
+        let real = inbox_mail(account, person("Ana", "ana@example.com"), at(3));
 
-        let out = inbox_senders(&[mine, draft, real], &inbox, &me(), since(), 10);
+        let out = inbox_senders(&[mine, draft, real], &me(), since(), 10);
         assert_eq!(out.len(), 1, "{out:?}");
         assert_eq!(out[0].email, "ana@example.com");
         assert_eq!(out[0].messages, 1, "the draft is not counted");
     }
 
     #[test]
-    fn only_the_window_and_only_the_inbox_are_counted() {
+    fn only_the_window_is_counted() {
         let account = AccountId::new();
-        let mut inbox = HashSet::new();
-        let before = inbox_mail(&mut inbox, account, person("Ana", "ana@example.com"), at(-1));
-        let on_the_line = inbox_mail(&mut inbox, account, person("Ana", "ana@example.com"), at(0));
-        // Archived: its thread is not one the inbox holds.
-        let archived = mail(account, ThreadId::new(), person("Ana", "ana@example.com"), at(5));
+        let before = inbox_mail(account, person("Ana", "ana@example.com"), at(-1));
+        let on_the_line = inbox_mail(account, person("Ana", "ana@example.com"), at(0));
 
-        let messages = [before, on_the_line.clone(), archived];
-        let out = inbox_senders(&messages, &inbox, &me(), since(), 10);
+        let messages = [before, on_the_line.clone()];
+        let out = inbox_senders(&messages, &me(), since(), 10);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].messages, 1, "the window starts at `since`, inclusive");
         assert_eq!(out[0].threads, vec![on_the_line.thread_id]);
@@ -302,14 +280,13 @@ mod tests {
     #[test]
     fn an_address_is_one_sender_whatever_its_case_and_spacing() {
         let (work, home) = (AccountId::new(), AccountId::new());
-        let mut inbox = HashSet::new();
         let messages = [
-            inbox_mail(&mut inbox, work, person("News", "News@Example.com"), at(1)),
-            inbox_mail(&mut inbox, home, person("News", " news@example.com "), at(2)),
-            inbox_mail(&mut inbox, work, person("Nobody", "  "), at(3)),
+            inbox_mail(work, person("News", "News@Example.com"), at(1)),
+            inbox_mail(home, person("News", " news@example.com "), at(2)),
+            inbox_mail(work, person("Nobody", "  "), at(3)),
         ];
 
-        let out = inbox_senders(&messages, &inbox, &me(), since(), 10);
+        let out = inbox_senders(&messages, &me(), since(), 10);
         assert_eq!(out.len(), 1, "no address is nobody to list: {out:?}");
         assert_eq!(out[0].email, "news@example.com");
         assert_eq!(out[0].messages, 2);
@@ -320,7 +297,6 @@ mod tests {
     fn a_thread_is_named_once_however_many_of_their_messages_are_in_it() {
         let account = AccountId::new();
         let (older, newer) = (ThreadId::new(), ThreadId::new());
-        let inbox: HashSet<ThreadId> = [older, newer].into_iter().collect();
         let ana = person("Ana", "ana@example.com");
         let messages = [
             mail(account, older, ana.clone(), at(1)),
@@ -329,7 +305,7 @@ mod tests {
             mail(account, older, ana, at(4)),
         ];
 
-        let out = inbox_senders(&messages, &inbox, &me(), since(), 10);
+        let out = inbox_senders(&messages, &me(), since(), 10);
         assert_eq!(out[0].messages, 4);
         assert_eq!(out[0].threads, vec![older, newer], "each once, by their newest message");
         assert_eq!(out[0].latest, at(4));
@@ -338,15 +314,14 @@ mod tests {
     #[test]
     fn the_name_is_the_newest_one_given_and_the_address_when_none_was() {
         let account = AccountId::new();
-        let mut inbox = HashSet::new();
         let messages = [
-            inbox_mail(&mut inbox, account, person("Old Name", "ana@example.com"), at(1)),
-            inbox_mail(&mut inbox, account, person("Ana Lima", "ana@example.com"), at(2)),
-            inbox_mail(&mut inbox, account, person("", "ana@example.com"), at(3)),
-            inbox_mail(&mut inbox, account, person("", "bot@example.com"), at(4)),
+            inbox_mail(account, person("Old Name", "ana@example.com"), at(1)),
+            inbox_mail(account, person("Ana Lima", "ana@example.com"), at(2)),
+            inbox_mail(account, person("", "ana@example.com"), at(3)),
+            inbox_mail(account, person("", "bot@example.com"), at(4)),
         ];
 
-        let out = inbox_senders(&messages, &inbox, &me(), since(), 10);
+        let out = inbox_senders(&messages, &me(), since(), 10);
         let name_of =
             |email: &str| out.iter().find(|s| s.email == email).map(|s| s.name.clone()).unwrap();
         assert_eq!(name_of("ana@example.com"), "Ana Lima", "newest message that had a name");
@@ -356,14 +331,12 @@ mod tests {
     #[test]
     fn a_query_matches_every_word_against_the_address_or_the_name() {
         let account = AccountId::new();
-        let mut inbox = HashSet::new();
         let messages = [inbox_mail(
-            &mut inbox,
             account,
             person("GitHub Notifications", "Notifications@GitHub.com"),
             at(1),
         )];
-        let github = &inbox_senders(&messages, &inbox, &me(), since(), 10)[0];
+        let github = &inbox_senders(&messages, &me(), since(), 10)[0];
 
         for query in ["github", "GITHUB", "notif hub", " github.com ", "", "   "] {
             assert!(github.matches(query), "{query:?}");

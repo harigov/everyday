@@ -11,6 +11,8 @@ const { module: mailLib, close } = await load('/src/lib/mail.ts')
 const {
   formatSenders,
   threadListDate,
+  threadPeople,
+  threadRowDate,
   weekdayAndTime,
   snoozedUntilLabel,
   scheduledSendLabel,
@@ -88,6 +90,29 @@ assert.equal(
   'a participant with no name falls back to the address',
 )
 
+// Who a row says it is with: never the reader, unless nobody else is there.
+const me = new Set(['hari@example.com'])
+const hari = person('Hari Govardhanam', 'Hari@example.com')
+const maggie = person('Maggie Bedig', 'maggie@example.com')
+const nick = person('Nickolay Postarnakevich', 'nick@example.com')
+const erin = person('Erin Olsen', 'erin@example.com')
+assert.equal(threadPeople([], me), '')
+assert.equal(threadPeople([hari], me), 'Me', 'only the reader, whatever the case of the address')
+assert.equal(threadPeople([maggie, hari], me), 'Maggie Bedig', 'one other person, in full')
+assert.equal(threadPeople([person('', 'a@b.com'), hari], me), 'a@b.com', 'no name: the address')
+assert.equal(threadPeople([maggie, hari, nick], me), 'Maggie, Nickolay', 'two: first names')
+assert.equal(threadPeople([maggie, nick, hari, erin], me), 'Maggie, Nickolay +1')
+assert.equal(
+  threadPeople([person('Cook, Dustin', 'd@example.com')], me),
+  'Dustin',
+  'alone, not read as two people',
+)
+assert.equal(
+  threadPeople([person('John Smith', 'a@example.com'), person('John Doe', 'b@example.com')], me),
+  'John Smith, John Doe',
+  'one first name between two people keeps the rest',
+)
+
 // ── Date formatting for the list ──────────────────────────────────────
 
 const today = new Date()
@@ -101,6 +126,17 @@ assert.match(
 const yesterday = new Date()
 yesterday.setDate(yesterday.getDate() - 1)
 assert.equal(threadListDate(yesterday.toISOString()), 'Yesterday')
+
+// A row under a heading that has already named the day.
+const rowNow = new Date(2026, 10, 3, 15, 0)
+const rowDate = (...at) => threadRowDate(new Date(...at).toISOString(), rowNow)
+assert.match(rowDate(2026, 10, 3, 9, 30), /\d:30/, 'today: the time')
+assert.match(rowDate(2026, 10, 2, 9, 30), /\d:30/, 'yesterday: the time, not the word again')
+assert.equal(rowDate(2026, 9, 31, 9, 30), 'Sat', 'this past week: the day, short')
+assert.equal(rowDate(2026, 9, 3, 9, 30), 'Oct 3', 'longer ago: the date, short')
+assert.equal(rowDate(2025, 9, 3, 9, 30), 'Oct 3, 2025', 'another year says which')
+assert.equal(rowDate(2026, 10, 24, 9, 30), 'Nov 24', 'the future is not passed off as today')
+assert.equal(rowDate(2026, 10, 4, 9, 30), 'Nov 4', 'not even tomorrow')
 
 // `weekdayAndTime` and the two labels built from it -- always a weekday and
 // a time together, unlike `threadListDate`'s either/or, because neither a
