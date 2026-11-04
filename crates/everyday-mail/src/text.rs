@@ -132,12 +132,61 @@ pub fn html_to_markdown(html: &str) -> String {
 /// a line of `─` as well; neither is anything to preview.
 pub fn snippet(text: &str) -> String {
     let visible = remove_ranges(text, &quoted_ranges(text)).replace("**", "");
+    let visible = without_link_markers(&visible);
     let collapsed = visible
         .split(|c: char| c.is_whitespace() || ('\u{2500}'..='\u{257F}').contains(&c))
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
     truncate_chars(&collapsed, SNIPPET_TARGET_CHARS)
+}
+
+/// `text` with the words of each link and not the rest of how the renderer
+/// writes one: `[Forge][1]` in the text, and a `[1]: https://...` line at the
+/// foot of it, which would otherwise use up a short snippet's length on
+/// addresses. A linked picture, `[[Company logo]][1]`, is its description.
+/// Brackets of any other kind are somebody's own and stay.
+fn without_link_markers(text: &str) -> String {
+    let kept: Vec<&str> = text.lines().filter(|line| !is_link_footnote(line)).collect();
+    let text = kept.join("\n");
+    let mut out = String::with_capacity(text.len());
+    // Where in `out` each `[` not yet closed sits.
+    let mut open = Vec::new();
+    let mut rest = text.as_str();
+    while let Some(c) = rest.chars().next() {
+        rest = &rest[c.len_utf8()..];
+        match c {
+            '[' => {
+                open.push(out.len());
+                out.push(c);
+            }
+            ']' => match (open.pop(), link_number_len(rest)) {
+                (Some(start), Some(len)) => {
+                    rest = &rest[len..];
+                    let words = out.split_off(start + 1);
+                    out.truncate(start);
+                    let inner = words.strip_prefix('[').and_then(|w| w.strip_suffix(']'));
+                    out.push_str(inner.unwrap_or(&words));
+                }
+                _ => out.push(c),
+            },
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// How long the `[12]` at the start of `text` is, if that is how it starts.
+fn link_number_len(text: &str) -> Option<usize> {
+    let digits = text.strip_prefix('[')?;
+    let count = digits.bytes().take_while(u8::is_ascii_digit).count();
+    (count > 0 && digits[count..].starts_with(']')).then_some(count + 2)
+}
+
+/// Whether `line` is the renderer's `[1]: https://...`.
+fn is_link_footnote(line: &str) -> bool {
+    let line = line.trim_start();
+    link_number_len(line).is_some_and(|len| line[len..].starts_with(": "))
 }
 
 /// The plain text a tool returns: [`snippet`]'s text, unsnipped, with a
@@ -849,6 +898,27 @@ mod tests {
         let snippet = snippet(text);
         assert!(snippet.contains("Hi there, how are you?"));
         assert!(!snippet.contains("old quoted"));
+    }
+
+    /// The whole way from HTML, since the shape is the renderer's own.
+    #[test]
+    fn a_snippet_keeps_a_links_words_and_not_how_the_renderer_writes_it() {
+        let html = r#"<p>Hi Hari, <a href="https://forge.example/x">Forge</a> is at
+            <a href="https://pier.example/y">Pier 27</a>!</p>"#;
+        assert_eq!(snippet(&html_to_text(html)), "Hi Hari, Forge is at Pier 27!");
+
+        let logo = r#"<a href="https://a.example/"><img alt="Company logo" src="cid:x"></a>
+            <p>Read online <a href="https://a.example/here">here</a></p>"#;
+        assert_eq!(snippet(&html_to_text(logo)), "Company logo Read online here");
+    }
+
+    #[test]
+    fn a_snippet_leaves_other_brackets_alone() {
+        assert_eq!(
+            snippet("See [1] and [the notes]\n[2] is not a footnote"),
+            "See [1] and [the notes] [2] is not a footnote"
+        );
+        assert_eq!(snippet("An unmatched ] and [ here"), "An unmatched ] and [ here");
     }
 
     #[test]

@@ -23,6 +23,8 @@ import type {
   MailProviderInfo,
 } from './types'
 
+const NO_ADDRESSES: ReadonlySet<string> = new Set()
+
 class AccountsState {
   list = $state<AccountView[]>([])
   presets = $state<MailProviderInfo[]>([])
@@ -84,6 +86,22 @@ class AccountsState {
 
   account(id: AccountId): AccountView | undefined {
     return this.list.find((a) => a.id === id)
+  }
+
+  /** Each account's own address and every identity's, lower-cased. Held rather
+   *  than built when asked, since a list of mail asks once per row. */
+  #own = $derived(
+    new Map(
+      this.list.map((a) => [
+        a.id,
+        new Set([a.address, ...a.identities.map((i) => i.address)].map((x) => x.toLowerCase())),
+      ]),
+    ),
+  )
+
+  /** Everything `id` answers to: what "Me" means in a line of names. */
+  ownAddresses(id: AccountId): ReadonlySet<string> {
+    return this.#own.get(id) ?? NO_ADDRESSES
   }
 
   preset(provider: MailProvider): MailProviderInfo | undefined {

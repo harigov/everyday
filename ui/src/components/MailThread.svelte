@@ -148,15 +148,7 @@
   }
   const dark = $derived(isDarkMode())
 
-  /** Everything this account answers to, for "Me" in a line of names. */
-  function ownAddresses(message: MailMessageDetail): Set<string> {
-    const account = accounts.account(message.accountId)
-    const own = (account?.identities ?? []).map((i) => i.address.toLowerCase())
-    if (account) own.push(account.address.toLowerCase())
-    return new Set(own)
-  }
-
-  function senderName(message: MailMessageDetail, own: Set<string>): string {
+  function senderName(message: MailMessageDetail, own: ReadonlySet<string>): string {
     if (own.has(message.from.email.toLowerCase())) return 'Me'
     // An automated sender goes by the whole of what it is called.
     const automated = message.category === 'newsletter' || message.category === 'notification'
@@ -290,7 +282,7 @@
     {@const isOpen = expanded.has(message.id)}
     {@const isLast = i === messages.length - 1}
     {@const loaded = bodies.get(message.id)}
-    {@const own = ownAddresses(message)}
+    {@const own = accounts.ownAddresses(message.accountId)}
     {@const view =
       loaded && loaded !== 'loading' && loaded !== 'error'
         ? renderBody(loaded.html, {

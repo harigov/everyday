@@ -175,7 +175,8 @@ impl Default for CommitPacer {
 /// `Message-ID` would delete the only row [`ingest::resolve_header`] could
 /// have rematched against, minting a fresh id -- and a fresh body
 /// download -- for a message this account already has in full. See
-/// [`sync_headers`]'s own docs.
+/// [`sync_headers`]'s own docs. [`reap_labels_off_all_mail`] follows it, on
+/// Gmail, for the rows sharing All Mail's uids.
 pub async fn sync_once<S: MailSession>(
     ctx: &SyncContext<'_>,
     session: &mut S,
@@ -184,12 +185,21 @@ pub async fn sync_once<S: MailSession>(
 ) -> SessionResult<Vec<SyncedMailbox>> {
     let mut mailboxes = discovery::discover(ctx.vault, ctx.account_id, session).await?;
     let mut vanished_by_mailbox = Vec::with_capacity(mailboxes.len());
+    let mut all_mail_read_whole = None;
     for mailbox in &mut mailboxes {
-        let vanished = sync_headers(ctx, session, mailbox, labels, threads).await?;
-        vanished_by_mailbox.push(vanished);
+        let pass = sync_headers(ctx, session, mailbox, labels, threads).await?;
+        if pass.stored_all && mailbox.row.role == MailboxRole::All {
+            all_mail_read_whole = Some(mailbox.row.id);
+        }
+        vanished_by_mailbox.push(pass.vanished);
     }
     for (mailbox, vanished) in mailboxes.iter().zip(&vanished_by_mailbox) {
         reap_vanished(ctx, mailbox, vanished);
+    }
+    if let Some(all_mail) = all_mail_read_whole
+        && session.capabilities().gmail
+    {
+        reap_labels_off_all_mail(ctx, all_mail, &mailboxes);
     }
     for mailbox in &mailboxes {
         bodies_pass(ctx, session, mailbox).await?;
@@ -201,16 +211,29 @@ pub async fn sync_once<S: MailSession>(
     Ok(mailboxes)
 }
 
+/// What one [`sync_headers`] pass over a mailbox comes back with.
+pub struct HeadersPass {
+    /// The uids `changes_since` reported vanished, *not yet removed* -- see
+    /// [`reap_vanished`].
+    pub vanished: UidSet,
+    /// Whether every new header the server offered is now stored. `false` if
+    /// one could not be parsed or a batch could not be written, each of which
+    /// the pass logs and carries on past: the vault is then short of what the
+    /// mailbox holds, and missing from it means nothing until the next pass.
+    pub stored_all: bool,
+}
+
 /// `SELECT` `mailbox`, diff it against what the vault already has, and
 /// ingest headers for everything new -- in batches of
 /// [`HEADER_BATCH_SIZE`], newest first, committing each batch as it lands.
 /// See the module docs for why "committing" needs no cursor field beyond
 /// what [`everyday_core::Vault::ingest`] itself already made durable.
 ///
-/// Returns the uids `changes_since` reported vanished from `mailbox`,
-/// *not yet removed* -- see [`reap_vanished`], which [`sync_once`] calls
-/// once every mailbox in the round has ingested its own new headers, for
-/// why deleting them here, inline, would be too early.
+/// Returns, among what [`HeadersPass`] holds, the uids `changes_since`
+/// reported vanished from `mailbox`, *not yet removed* -- see
+/// [`reap_vanished`], which [`sync_once`] calls once every mailbox in the
+/// round has ingested its own new headers, for why deleting them here, inline,
+/// would be too early.
 ///
 /// # The one mailbox this cannot tell apart from a stuck reset
 ///
@@ -239,7 +262,7 @@ pub async fn sync_headers<S: MailSession>(
     mailbox: &mut SyncedMailbox,
     labels: &mut LabelMailboxes,
     threads: &mut ThreadIndex,
-) -> SessionResult<UidSet> {
+) -> SessionResult<HeadersPass> {
     // Captured before a `UIDVALIDITY` reset zeroes `uidnext` below. A
     // mailbox that has finished a pass has a real `uidnext`; one that has
     // never been synced does not. See `arrivals::ingest_is_news`.
@@ -380,6 +403,7 @@ pub async fn sync_headers<S: MailSession>(
     let highest_new_uid = new_uids.iter().copied().max();
     let total = new_uids.len() as u64;
     let mut done = 0u64;
+    let mut stored_all = true;
     ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
 
     // The rules-based half of the split inbox -- see
@@ -411,6 +435,7 @@ pub async fn sync_headers<S: MailSession>(
                         uid = header.uid,
                         "could not parse a message header; skipping it"
                     );
+                    stored_all = false;
                     continue;
                 }
             };
@@ -520,7 +545,10 @@ pub async fn sync_headers<S: MailSession>(
                     ctx.statuses.note_priority_mail(ctx.account_id, arrival);
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "could not ingest a batch of headers"),
+            Err(e) => {
+                stored_all = false;
+                tracing::warn!(error = %e, "could not ingest a batch of headers");
+            }
         }
         // Saved as the pass goes, not only once `sync_once` finishes -- see
         // `ContactIndex::persist_if_due` for what stopping half way used to
@@ -608,7 +636,7 @@ pub async fn sync_headers<S: MailSession>(
         ctx.statuses.mark_changed(ctx.account_id);
     }
 
-    Ok(changes.vanished)
+    Ok(HeadersPass { vanished: changes.vanished, stored_all })
 }
 
 /// Actually remove every uid [`sync_headers`] reported vanished from
@@ -623,6 +651,56 @@ fn reap_vanished(ctx: &SyncContext<'_>, mailbox: &SyncedMailbox, vanished: &UidS
     let uids: Vec<Uid> = vanished.iter().collect();
     if let Ok(removed) = ctx.vault.remove_mail_uids(mailbox.row.id, &uids) {
         reap_dead_messages(ctx, &removed);
+    }
+}
+
+/// Take out of every Gmail label's list whatever All Mail no longer holds.
+///
+/// A message is filed under a label as [`sync_headers`] reads All Mail's
+/// headers, so nothing can be under a label without being in All Mail. A
+/// message that leaves it -- for Trash or Spam, or deleted -- comes back as one
+/// vanished uid from All Mail alone, and [`reap_vanished`] takes it out of that
+/// one row. Left at that, it stayed in the Inbox and under every label it had,
+/// and was counted there: a label's list went on showing it, and a reply
+/// bringing a deleted conversation back to the Inbox brought all of the deleted
+/// messages with it. The copy in Trash is a row of its own.
+///
+/// By asking the store rather than from this pass's vanished uids, so that what
+/// earlier passes left behind goes too. The caller only comes here when All
+/// Mail's headers pass stored everything it was offered (see
+/// [`HeadersPass::stored_all`]): a message missing from All Mail because its
+/// batch failed has not left. A label is what `repair_escaped_labels` says it
+/// is, in a row that is not a folder synced this pass and has never had a
+/// `uidnext`, which only selecting a folder writes.
+fn reap_labels_off_all_mail(
+    ctx: &SyncContext<'_>,
+    all_mail: MailboxId,
+    mailboxes: &[SyncedMailbox],
+) {
+    let Ok(rows) = ctx.vault.mailboxes(ctx.account_id) else { return };
+    let is_label = |row: &&everyday_core::mail::Mailbox| {
+        matches!(row.role, MailboxRole::Other | MailboxRole::Inbox)
+            && row.uidnext == 0
+            && !mailboxes.iter().any(|m| m.row.id == row.id)
+    };
+    let mut changed = false;
+    for label in rows.iter().filter(is_label) {
+        let Ok(gone) = ctx.vault.mail_uids_filed_without(label.id, all_mail) else { continue };
+        if gone.is_empty() {
+            continue;
+        }
+        if let Ok(removed) = ctx.vault.remove_mail_uids(label.id, &gone) {
+            reap_dead_messages(ctx, &removed);
+            changed = true;
+        }
+    }
+    // As `sync_headers` says it of its own changes: the unread counts and an
+    // open list are both out of date now.
+    if changed {
+        if let Some(cache) = &ctx.unread_cache {
+            cache.invalidate(ctx.account_id);
+        }
+        ctx.statuses.mark_changed(ctx.account_id);
     }
 }
 

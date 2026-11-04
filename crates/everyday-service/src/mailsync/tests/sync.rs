@@ -1118,6 +1118,251 @@ async fn gmail_labels_put_one_message_in_both_the_inbox_and_a_user_label() {
     );
 }
 
+/// Regression: a message leaving All Mail -- here for Trash, in another client
+/// -- is one vanished uid from All Mail, and used to stay filed in the Inbox
+/// and under every label it had. A second copy arrives through Trash as a row
+/// of its own, so the message was also counted twice in its thread.
+#[tokio::test]
+async fn a_message_leaving_all_mail_leaves_the_inbox_and_its_labels_too() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let raw = raw_message(
+        "trashed@example.com",
+        None,
+        "a@example.com",
+        "Trash me",
+        "01 Jan 2024 10:00:00 +0000",
+        "x",
+    );
+    let meta = |labels: Vec<String>| Some(GmailMeta { thrid: 7, msgid: 7, labels });
+    let uid = server.lock().unwrap().append(
+        "All Mail",
+        raw.clone(),
+        flags_seen(),
+        meta(vec!["\\Inbox".into(), "Travel".into()]),
+    );
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let rows = env.vault.mailboxes(env.account_id).unwrap();
+    let row = |name: &str| rows.iter().find(|m| m.remote_name == name).unwrap().id;
+    let (inbox, travel, trash) = (row("\\Inbox"), row("Travel"), row("Trash"));
+    let listed = |mailbox| {
+        env.vault.list_threads(mailbox, &ThreadFilter::default(), None, 10).unwrap().threads
+    };
+    assert_eq!(listed(inbox).len(), 1);
+    assert_eq!(listed(travel).len(), 1);
+
+    {
+        let mut s = server.lock().unwrap();
+        s.remove("All Mail", uid);
+        s.append("Trash", raw.clone(), flags_seen(), meta(vec!["\\Trash".into()]));
+    }
+    env.sync(&mut session).await;
+
+    assert!(env.vault.mail_uid_set(inbox).unwrap().is_empty(), "not filed in the Inbox");
+    assert!(env.vault.mail_uid_set(travel).unwrap().is_empty(), "nor under the label");
+    assert!(listed(inbox).is_empty());
+    assert!(listed(travel).is_empty());
+    let in_trash = listed(trash);
+    assert_eq!(in_trash.len(), 1, "it is in Trash");
+    assert_eq!(in_trash[0].message_count, 1, "once, not as the old row and the new");
+}
+
+/// What earlier syncs left behind goes too, with no change on the server to
+/// prompt it, while mail All Mail still holds keeps its labels.
+#[tokio::test]
+async fn a_label_left_holding_what_all_mail_lost_is_cleared_by_the_next_sync() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    server.lock().unwrap().append(
+        "All Mail",
+        raw_message(
+            "kept@example.com",
+            None,
+            "a@example.com",
+            "Kept",
+            "01 Jan 2024 10:00:00 +0000",
+            "x",
+        ),
+        flags_seen(),
+        Some(GmailMeta { thrid: 1, msgid: 1, labels: vec!["\\Inbox".into()] }),
+    );
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let rows = env.vault.mailboxes(env.account_id).unwrap();
+    let inbox = rows.iter().find(|m| m.role == MailboxRole::Inbox).unwrap().id;
+    let kept = env.vault.mail_uid_set(inbox).unwrap();
+    assert_eq!(kept.len(), 1);
+
+    // As an earlier sync left it: filed in the Inbox under a uid All Mail no
+    // longer has.
+    let mut stale = env
+        .vault
+        .message_by_message_id_header(env.account_id, "kept@example.com")
+        .unwrap()
+        .unwrap();
+    stale.id = everyday_core::id::MailMessageId::new();
+    stale.message_id_header = "stale@example.com".into();
+    env.vault
+        .ingest_mail(
+            env.account_id,
+            vec![everyday_core::store::mail::IngestMessage {
+                message: stale.clone(),
+                mailbox: inbox,
+                uid: kept[0] + 1000,
+            }],
+        )
+        .unwrap();
+    assert_eq!(env.vault.mail_uid_set(inbox).unwrap().len(), 2);
+
+    env.sync(&mut session).await;
+
+    assert_eq!(env.vault.mail_uid_set(inbox).unwrap(), kept);
+    assert!(env.vault.mail_message(stale.id).is_err(), "filed nowhere, so it is gone");
+}
+
+/// Mail All Mail is short of because this pass could not store all of it has
+/// not left, so nothing is taken from the labels until a pass stores everything.
+#[tokio::test]
+async fn a_pass_that_could_not_store_everything_takes_nothing_from_the_labels() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    server.lock().unwrap().append(
+        "All Mail",
+        raw_message(
+            "kept@example.com",
+            None,
+            "a@example.com",
+            "Kept",
+            "01 Jan 2024 10:00:00 +0000",
+            "x",
+        ),
+        flags_seen(),
+        Some(GmailMeta { thrid: 1, msgid: 1, labels: vec!["\\Inbox".into()] }),
+    );
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let rows = env.vault.mailboxes(env.account_id).unwrap();
+    let inbox = rows.iter().find(|m| m.role == MailboxRole::Inbox).unwrap().id;
+    let mut stale = env
+        .vault
+        .message_by_message_id_header(env.account_id, "kept@example.com")
+        .unwrap()
+        .unwrap();
+    stale.id = everyday_core::id::MailMessageId::new();
+    stale.message_id_header = "stale@example.com".into();
+    env.vault
+        .ingest_mail(
+            env.account_id,
+            vec![everyday_core::store::mail::IngestMessage {
+                message: stale,
+                mailbox: inbox,
+                uid: 1000,
+            }],
+        )
+        .unwrap();
+
+    // Nothing a parser can read, offered as new on every pass until it goes.
+    let unreadable = server.lock().unwrap().append("All Mail", Vec::new(), flags_seen(), None);
+    env.sync(&mut session).await;
+    assert_eq!(env.vault.mail_uid_set(inbox).unwrap().len(), 2, "held back");
+
+    server.lock().unwrap().remove("All Mail", unreadable);
+    env.sync(&mut session).await;
+    assert_eq!(env.vault.mail_uid_set(inbox).unwrap().len(), 1, "cleared once it reads whole");
+}
+
+/// One message, two uids: a server can hold two copies under one `Message-ID`,
+/// and a message is filed once per mailbox, so All Mail and a label can name it
+/// differently. It has not left All Mail. Comparing uids made it leave the
+/// Inbox and come back on alternate passes.
+#[tokio::test]
+async fn a_message_all_mail_holds_under_another_uid_keeps_its_labels() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    server.lock().unwrap().append(
+        "All Mail",
+        raw_message(
+            "two@example.com",
+            None,
+            "a@example.com",
+            "Two copies",
+            "01 Jan 2024 10:00:00 +0000",
+            "x",
+        ),
+        flags_seen(),
+        Some(GmailMeta { thrid: 1, msgid: 1, labels: vec!["\\Inbox".into()] }),
+    );
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let rows = env.vault.mailboxes(env.account_id).unwrap();
+    let inbox = rows.iter().find(|m| m.role == MailboxRole::Inbox).unwrap().id;
+    let message =
+        env.vault.message_by_message_id_header(env.account_id, "two@example.com").unwrap().unwrap();
+    env.vault
+        .ingest_mail(
+            env.account_id,
+            vec![everyday_core::store::mail::IngestMessage {
+                message: message.clone(),
+                mailbox: inbox,
+                uid: 1000,
+            }],
+        )
+        .unwrap();
+    assert_eq!(env.vault.mail_uid_set(inbox).unwrap(), [1000]);
+
+    env.sync(&mut session).await;
+    assert_eq!(env.vault.mail_uid_set(inbox).unwrap(), [1000], "still filed in the Inbox");
+    assert!(env.vault.mail_message(message.id).is_ok());
+}
+
+/// A server with no labels has no rows filled from another folder's headers,
+/// so even a row that looks like a label, not listed this pass and never
+/// selected, says nothing about what an All folder holds.
+#[tokio::test]
+async fn a_plain_server_keeps_what_an_all_folder_does_not_hold() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    server.lock().unwrap().mailbox("Everything", Some(everyday_mail::session::Role::All));
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    let old = everyday_core::mail::Mailbox::new(env.account_id, "Old", MailboxRole::Other);
+    env.vault.save_mailbox(&old).unwrap();
+    server.lock().unwrap().append(
+        "INBOX",
+        raw_message(
+            "plain@example.com",
+            None,
+            "a@example.com",
+            "Plain",
+            "01 Jan 2024 10:00:00 +0000",
+            "x",
+        ),
+        flags_seen(),
+        None,
+    );
+    env.sync(&mut session).await;
+    let message = env
+        .vault
+        .message_by_message_id_header(env.account_id, "plain@example.com")
+        .unwrap()
+        .unwrap();
+    env.vault
+        .ingest_mail(
+            env.account_id,
+            vec![everyday_core::store::mail::IngestMessage { message, mailbox: old.id, uid: 7 }],
+        )
+        .unwrap();
+
+    env.sync(&mut session).await;
+    assert_eq!(env.vault.mail_uid_set(old.id).unwrap(), [7]);
+}
+
 /// System labels other than `\Inbox` already have a folder of their own
 /// (`\Sent`/`\Draft` -- Sent/Drafts; Spam/Trash for `\Spam`/`\Trash`) or are
 /// better represented another way entirely (`\Starred` is the `\Flagged`

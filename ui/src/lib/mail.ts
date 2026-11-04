@@ -52,6 +52,12 @@ import type {
  * `**From: **`: its snippet ran straight on into the message it answered. That
  * header and everything after it is cut here, along with the renderer's bold
  * markers wherever else they turned up.
+ *
+ * The renderer writes a link as `[Forge][1]` too, with `[1]: https://...` at the
+ * foot of the text, and a short message's snippet reaches that foot. Snippets
+ * no longer keep either (`everyday_mail::text::snippet`), but one already stored
+ * does, and may be cut off part way through one, so here the words are kept and
+ * the rest goes.
  */
 export function snippetText(snippet: string): string {
   const text = snippet
@@ -59,6 +65,11 @@ export function snippetText(snippet: string): string {
     .replace(/\s+/g, ' ')
     .replace(REPLY_HEADER, '')
     .replaceAll('**', '')
+    .replace(LINK_FOOTNOTE, '')
+    .replace(REFERENCE_LINK, '$1')
+    .replace(CUT_LINK_NUMBER, '$1…')
+    .replace(CUT_FOOTNOTE, '…')
+    .replace(CUT_LINK_WORDS, '$1')
     .trim()
   return /[\p{L}\p{N}]/u.test(text) ? text : ''
 }
@@ -69,11 +80,24 @@ export function snippetText(snippet: string): string {
 const REPLY_HEADER =
   /\s*(?:\*\*From:\s*\*\*|From:\s.{0,160}?\s(?:\*\*)?(?:Sent|Date):|\bOn\s[^.!?]{0,80}\d.{0,120}?\swrote:(?:\s|$)|-{3,}\s*Original Message).*$/
 
+/** `[1]: https://...`, where the text renderer lists a link's address. */
+const LINK_FOOTNOTE = /\s*\[\d+\]:\s*\S*/g
+/** `[Forge][1]`, its way of writing a link, or `[[Company logo]][1]` for a linked
+ *  picture. */
+const REFERENCE_LINK = /\[+([^[\]]+)\]+\[\d+\]/g
+/** What a snippet's length can leave at its very end: a link's number cut off,
+ *  `[Forge][1…`; the start of a footnote, `[2…`; a link's words cut off,
+ *  `[Forge dinner res…`. */
+const CUT_LINK_NUMBER = /\[+([^[\]]+)\]+\[\d*…$/
+const CUT_FOOTNOTE = /\s*\[\d*…$/
+const CUT_LINK_WORDS = /\[+([^[\]]+…)$/
+
 // ── Sender-list formatting ─────────────────────────────────────────────
 
 /**
- * How a thread row names who is in it: "Priya Raman" for one, "Priya, Tom"
- * for a couple, "Priya, Tom +3" once it would otherwise crowd the row.
+ * Who is on a list, in one line: "Priya Raman" for one, "Priya Raman, Tom
+ * Fenwick" for a couple, "Priya Raman, Tom Fenwick +3" past that. A thread row
+ * says it its own way, see `threadPeople`.
  *
  * Falls back to the address when a participant has no display name, which a
  * message straight off the wire very often does not yet.
@@ -130,8 +154,37 @@ export function peopleLine(
   return `${names.slice(0, -1).join(', ')} & ${names[names.length - 1]}`
 }
 
+/**
+ * Who a thread row says it is with: "Erin Olsen" for one person, "Maggie,
+ * Nickolay" for two, "Maggie, Nickolay +1" past that. The reader is left out,
+ * being in nearly every thread and so saying nothing about any of them, unless
+ * there is nobody else: then it is "Me".
+ *
+ * The comma separates people here, so "Cook, Dustin" alone is "Dustin", and two
+ * people with one first name keep the rest of their names.
+ */
+export function threadPeople(
+  participants: readonly MailAddress[],
+  own: ReadonlySet<string>,
+  max = 2,
+): string {
+  const others = participants.filter((p) => !own.has(p.email.toLowerCase()))
+  if (others.length === 0) return participants.length > 0 ? 'Me' : ''
+  const whole = (p: MailAddress) => p.name.trim() || p.email
+  const [only] = others
+  if (only && others.length === 1) return only.name.includes(',') ? firstName(only) : whole(only)
+  const firsts = others.map(firstName)
+  const names = others.map((p, i) =>
+    firsts.indexOf(firsts[i] ?? '') === firsts.lastIndexOf(firsts[i] ?? '')
+      ? (firsts[i] ?? '')
+      : whole(p),
+  )
+  if (names.length <= max) return names.join(', ')
+  return `${names.slice(0, max).join(', ')} +${names.length - max}`
+}
+
 /** Everybody on a list with the address each one really goes to -- for where
- *  a name alone could say anything: `formatSenders` is what a row shows, and a
+ *  a name alone could say anything: `formatSenders` is what a line shows, and a
  *  Reply-To can call itself whatever it likes. */
 export function formatAddresses(addresses: readonly MailAddress[]): string {
   return addresses
@@ -142,10 +195,11 @@ export function formatAddresses(addresses: readonly MailAddress[]): string {
 // ── Date formatting for the list ───────────────────────────────────────
 
 /**
- * The thread list's date column: a time of day for something that arrived
- * today, and `friendlyDate`'s existing rules -- "Yesterday", a weekday, a
- * full date -- for anything older. The one formatting decision this file
- * makes for itself; everything else is `format.ts`'s.
+ * A date with no heading over it to say the day: a time of day for something
+ * that arrived today, and `friendlyDate`'s existing rules -- "Yesterday", a
+ * weekday, a full date -- for anything older. What a message in an open thread
+ * says, and a Snoozed row with no snooze to report; a row in a list under
+ * headings says `threadRowDate`.
  */
 export function threadListDate(instant: string): string {
   const d = new Date(instant)
@@ -158,6 +212,22 @@ export function threadListDate(instant: string): string {
   // `localDate` -- a message's `date` is a full instant, so it is narrowed
   // to the local day here before being handed over.
   return sameDay ? timeOfDay(d) : friendlyDate(isoDate(d))
+}
+
+/**
+ * A row's date, where the `dateSection` heading over it has already named the
+ * day. "Yesterday" under a heading saying Yesterday only repeats it, so today's
+ * and yesterday's rows both give the time, and older ones the short form:
+ * "Mon", "Oct 3", "Oct 3, 2025". A date in the future, which `dateSection` puts
+ * under Today all the same, gives its date too, or it would pass for today.
+ */
+export function threadRowDate(instant: string, now = new Date()): string {
+  const d = new Date(instant)
+  const ago = daysBetween(startOfDay(isoDate(d)), now)
+  if (ago === 0 || ago === 1) return timeOfDay(d)
+  if (ago > 1 && ago < 7) return dateFormat({ weekday: 'short' }).format(d)
+  const year = d.getFullYear() === now.getFullYear() ? undefined : 'numeric'
+  return dateFormat({ month: 'short', day: 'numeric', year }).format(d)
 }
 
 /**

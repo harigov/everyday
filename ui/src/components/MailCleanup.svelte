@@ -395,7 +395,8 @@
           newer is left alone.
         {:else}
           Who filled your inbox most{period.within ? ` in ${period.within}` : ''}, counting only
-          what is still there.
+          what is still there. Archived mail is not counted, but the buttons move whole
+          conversations.
         {/if}
       </p>
     </div>

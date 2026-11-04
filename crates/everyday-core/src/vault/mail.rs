@@ -408,6 +408,16 @@ impl Vault {
         self.with_mail(|m| m.uid_set(mailbox))
     }
 
+    /// The uids in `mailbox` of every message not also filed in `other` --
+    /// see [`MailStore::uids_filed_without`].
+    pub fn mail_uids_filed_without(
+        &self,
+        mailbox: MailboxId,
+        other: MailboxId,
+    ) -> Result<Vec<u32>> {
+        self.with_mail(|m| m.uids_filed_without(mailbox, other))
+    }
+
     /// Every message in `mailbox` still waiting for its body, with its uid
     /// in that mailbox, newest first, capped at `limit` -- see
     /// [`crate::store::mail::MailStore::pending_bodies`].
@@ -436,10 +446,10 @@ impl Vault {
         self.with_mail(|m| m.category_counts(mailbox))
     }
 
-    /// Every message in any of `threads`, oldest first -- see
-    /// [`MailStore::messages_in_threads`].
-    pub fn mail_in_threads(&self, threads: &[ThreadId]) -> Result<Vec<Message>> {
-        self.with_mail(|m| m.messages_in_threads(threads))
+    /// The messages of `threads` filed in `mailbox`, oldest first -- see
+    /// [`MailStore::messages_filed_in`].
+    pub fn mail_filed_in(&self, mailbox: MailboxId, threads: &[ThreadId]) -> Result<Vec<Message>> {
+        self.with_mail(|m| m.messages_filed_in(mailbox, threads))
     }
 
     /// `account`'s messages dated in `[from, to)`, spam left out -- see

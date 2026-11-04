@@ -61,7 +61,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     threads_can_be_asked_about_by_id(store);
     removing_the_only_starred_message_clears_starred(store);
     messages_between_keeps_to_its_window_and_leaves_out_spam(store);
-    messages_in_threads_gathers_the_named_threads_from_every_folder(store);
+    messages_filed_in_leaves_out_what_a_thread_holds_elsewhere(store);
+    uids_filed_without_asks_of_the_message_not_of_the_uid(store);
     a_thread_list_can_keep_to_threads_with_nothing_newer_than_a_date(store);
 
     eprintln!("--- mail suite passed ---");
@@ -1880,30 +1881,31 @@ fn inbox_threads(m: &dyn MailStore, mailbox: MailboxId) -> Vec<ThreadId> {
         .collect()
 }
 
-fn messages_in_threads_gathers_the_named_threads_from_every_folder(store: &dyn JournalStore) {
+fn messages_filed_in_leaves_out_what_a_thread_holds_elsewhere(store: &dyn JournalStore) {
     let m = mail_store(store);
     let account = AccountId::new();
     let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
-    let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
-    for mailbox in [&inbox, &sent] {
+    let archive = Mailbox::new(account, "Archive", MailboxRole::Archive);
+    for mailbox in [&inbox, &archive] {
         m.put_mailbox(mailbox).unwrap();
     }
     let t0 = Timestamp::from_second(1_790_000_000).unwrap();
     let at = |hours: i64| t0 + SignedDuration::from_hours(hours);
 
-    let (asked, also_asked, not_asked) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
-    let question = message(account, asked, "question", "a@example.com", at(0));
-    let reply = message(account, asked, "Re: question", "me@example.com", at(2));
-    let other = message(account, also_asked, "other", "b@example.com", at(1));
-    let unasked = message(account, not_asked, "unasked", "c@example.com", at(3));
+    let (asked, not_asked) = (ThreadId::new(), ThreadId::new());
+    let archived = message(account, asked, "question", "a@example.com", at(0));
+    let reply = message(account, asked, "Re: question", "b@example.com", at(1));
+    let both = message(account, asked, "Re: question", "c@example.com", at(2));
+    let unasked = message(account, not_asked, "unasked", "d@example.com", at(3));
     // Six hundred threads more, past one chunk of ids.
     let many: Vec<Message> = (0..600)
-        .map(|i| message(account, ThreadId::new(), "many", "d@example.com", at(10 + i)))
+        .map(|i| message(account, ThreadId::new(), "many", "e@example.com", at(10 + i)))
         .collect();
     let mut ingest = vec![
-        IngestMessage { message: reply.clone(), mailbox: sent.id, uid: 1 },
-        IngestMessage { message: question.clone(), mailbox: inbox.id, uid: 1 },
-        IngestMessage { message: other.clone(), mailbox: inbox.id, uid: 2 },
+        IngestMessage { message: archived.clone(), mailbox: archive.id, uid: 1 },
+        IngestMessage { message: reply.clone(), mailbox: inbox.id, uid: 1 },
+        IngestMessage { message: both.clone(), mailbox: inbox.id, uid: 2 },
+        IngestMessage { message: both.clone(), mailbox: archive.id, uid: 2 },
         IngestMessage { message: unasked, mailbox: inbox.id, uid: 3 },
     ];
     for (uid, message) in (4..).zip(&many) {
@@ -1911,21 +1913,63 @@ fn messages_in_threads_gathers_the_named_threads_from_every_folder(store: &dyn J
     }
     m.ingest(account, ingest).unwrap();
 
-    let ids = |threads: &[ThreadId]| -> Vec<MailMessageId> {
-        m.messages_in_threads(threads).unwrap().into_iter().map(|msg| msg.id).collect()
+    let ids = |mailbox: MailboxId, threads: &[ThreadId]| -> Vec<MailMessageId> {
+        m.messages_filed_in(mailbox, threads).unwrap().into_iter().map(|msg| msg.id).collect()
     };
     assert_eq!(
-        ids(&[also_asked, asked, ThreadId::new()]),
-        vec![question.id, other.id, reply.id],
-        "oldest first, the reply filed in Sent included, an unknown thread adding nothing"
+        ids(inbox.id, &[asked, ThreadId::new()]),
+        vec![reply.id, both.id],
+        "oldest first, once each, what is filed elsewhere left out"
     );
-    assert!(ids(&[]).is_empty());
+    assert_eq!(ids(archive.id, &[asked]), vec![archived.id, both.id]);
+    assert!(ids(inbox.id, &[]).is_empty());
     let every: Vec<ThreadId> = many.iter().map(|msg| msg.thread_id).collect();
     assert_eq!(
-        ids(&every),
+        ids(inbox.id, &every),
         many.iter().map(|msg| msg.id).collect::<Vec<_>>(),
         "more threads than one chunk"
     );
+
+    cleanup_account(store, account);
+}
+
+fn uids_filed_without_asks_of_the_message_not_of_the_uid(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let all = Mailbox::new(account, "All Mail", MailboxRole::All);
+    let label = Mailbox::new(account, "Travel", MailboxRole::Other);
+    for mailbox in [&all, &label] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let at = Timestamp::from_second(1_790_000_000).unwrap();
+    let mail = |subject| message(account, ThreadId::new(), subject, "a@example.com", at);
+    let (same, different, gone, elsewhere) =
+        (mail("same"), mail("different"), mail("gone"), mail("elsewhere"));
+    let filing = |message: &Message, mailbox: &Mailbox, uid| IngestMessage {
+        message: message.clone(),
+        mailbox: mailbox.id,
+        uid,
+    };
+    m.ingest(
+        account,
+        vec![
+            filing(&same, &all, 1),
+            filing(&same, &label, 1),
+            // One message, under a uid of its own in each.
+            filing(&different, &all, 2),
+            filing(&different, &label, 3),
+            filing(&gone, &label, 4),
+            // All Mail's uid 5 is another message's altogether.
+            filing(&elsewhere, &all, 5),
+            filing(&gone, &label, 5),
+        ],
+    )
+    .unwrap();
+
+    let mut uids = m.uids_filed_without(label.id, all.id).unwrap();
+    uids.sort_unstable();
+    assert_eq!(uids, [5], "only the message All Mail does not hold, under the uid it last had");
+    assert!(m.uids_filed_without(all.id, all.id).unwrap().is_empty());
 
     cleanup_account(store, account);
 }

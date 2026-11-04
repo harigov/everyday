@@ -10,7 +10,6 @@
     CATEGORY_TABS,
     MAIL_ONLY,
     categoryTabCount,
-    formatSenders,
     isSnoozedMailbox,
     isUnifiedMailbox,
     mailboxDisplayName,
@@ -21,6 +20,8 @@
     snoozedUntilLabel,
     syncInProgress,
     threadListDate,
+    threadPeople,
+    threadRowDate,
     unifiedMailboxId,
     weekdayAndTime,
     withDateSections,
@@ -41,7 +42,6 @@
     Thread,
     ThreadId,
   } from '../lib/types'
-  import Avatar from './Avatar.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import MailCleanup from './MailCleanup.svelte'
@@ -242,14 +242,16 @@
    * it, which the VIP rule has nothing to point at.
    */
   function vipSenderFor(t: Thread): MailAddress | null {
-    const account = accounts.account(t.accountId)
-    const mine = new Set(
-      [account?.address, ...(account?.identities.map((i) => i.address) ?? [])]
-        .filter((a): a is string => !!a)
-        .map((a) => a.toLowerCase()),
-    )
+    const mine = accounts.ownAddresses(t.accountId)
     const other = [...t.participants].reverse().find((p) => !mine.has(p.email.toLowerCase()))
     return other ?? t.participants.at(-1) ?? null
+  }
+
+  /** A row's date column. Snoozed rows have no heading to name the day, and say
+   *  when they come back. */
+  function rowDate(t: Thread): string {
+    if (!inSnoozedView) return threadRowDate(t.lastDate)
+    return t.snoozedUntil ? snoozedUntilLabel(t.snoozedUntil) : threadListDate(t.lastDate)
   }
 
   function rowMenu(t: Thread): MenuItem[] {
@@ -549,12 +551,12 @@
 </section>
 
 <!-- One thread in a list -- the mailbox's own and a search's draw the same
-     row. The avatar is whoever the thread is with (the newest voice that is
-     not this account's own), a tick in its place once the row is picked;
-     the unread dot sits in the gutter left of it, where the eye starts. -->
+     row. Whether it is unread is said once, down the left edge, and by how
+     bright its words are, and everything else on the row keeps quiet: most of
+     an inbox can be unread at once, so anything louder repeats on every line.
+     The tick takes the dot's place once the row is picked. -->
 {#snippet threadRow(t: Thread)}
   {@const picked = mail.checked.has(t.id)}
-  {@const other = vipSenderFor(t)}
   {@const preview = snippetText(t.snippet)}
   {@const sorted = sorting.categoryOf(t)}
   <button
@@ -566,46 +568,43 @@
     onclick={(e) => clickRow(e, t.id)}
     oncontextmenu={(e) => menu.show(e, menuFor(t))}
   >
-    <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
     {#if picked}
-      <span class="tick" aria-hidden="true"><Icon name="tick" size={16} weight={2} /></span>
+      <span class="tick" aria-hidden="true"><Icon name="tick" size={13} weight={2.5} /></span>
     {:else}
-      <Avatar name={other?.name ?? ''} email={other?.email ?? ''} size={38} />
+      <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
     {/if}
-    <div class="body">
-      <div class="line1">
-        {#if unifiedView}
-          <span
-            class="acct"
-            style:background={accountColor(t.accountId, accountIds)}
-            title={accountLabel(t.accountId)}
-          ></span>
-        {/if}
-        <span class="from">{formatSenders(t.participants)}</span>
-        {#if t.hasAttachments}
-          <span class="mark" title="Has an attachment"><Icon name="paperclip" size={13} /></span>
-        {/if}
-        <span class="date">
-          {inSnoozedView && t.snoozedUntil
-            ? snoozedUntilLabel(t.snoozedUntil)
-            : threadListDate(t.lastDate)}
-        </span>
-      </div>
-      <div class="line2">
+    <span class="who">
+      <span class="from">{threadPeople(t.participants, accounts.ownAddresses(t.accountId))}</span>
+      {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
+    </span>
+    <span class="gist">
+      <span class="words">
         <span class="subject">{t.subject || '(no subject)'}</span>
-        {#if t.category === 'priority'}
-          <span class="mark priority" title="Priority"><Icon name="flag" size={13} /></span>
-        {/if}
-        {#if sorted}
-          <span class="sorted" title="Sorted as {sorted.name}">{sorted.name}</span>
-        {/if}
-        {#if t.starred}
-          <span class="mark starred" title="Starred"><Icon name="star" size={13} filled /></span>
-        {/if}
-        {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
-      </div>
-      <p class="snippet">{preview}</p>
-    </div>
+        {#if preview}<span class="snippet">{preview}</span>{/if}
+      </span>
+      {#if sorted}
+        <span class="sorted" title="Sorted as {sorted.name}">{sorted.name}</span>
+      {/if}
+    </span>
+    <span class="side">
+      {#if t.category === 'priority'}
+        <span class="mark priority" title="Priority"><Icon name="flag" size={12} /></span>
+      {/if}
+      {#if t.starred}
+        <span class="mark starred" title="Starred"><Icon name="star" size={12} filled /></span>
+      {/if}
+      {#if t.hasAttachments}
+        <span class="mark" title="Has an attachment"><Icon name="paperclip" size={12} /></span>
+      {/if}
+      <span class="date">{rowDate(t)}</span>
+      {#if unifiedView}
+        <span
+          class="acct"
+          style:background={accountColor(t.accountId, accountIds)}
+          title={accountLabel(t.accountId)}
+        ></span>
+      {/if}
+    </span>
   </button>
 {/snippet}
 
@@ -1035,116 +1034,137 @@
 
   /* ── Rows ───────────────────────────────────────────────────────── */
 
+  /* What each row's width query below measures. */
   .thread-rows {
     flex: 1;
     min-height: 0;
     padding-bottom: var(--sp-2);
+    container-type: inline-size;
   }
 
   /* A grouping heading over a run of rows -- never a button, never
      focusable: `j`/`k` and a row's own context menu read `mail.threads`
      directly, which never contains one of these, so there is nothing here
-     for either to skip over by accident. */
+     for either to skip over by accident. Lined up with the row's text. */
   .date-section {
-    padding: var(--sp-4) var(--sp-5) 6px;
+    padding: var(--sp-4) var(--sp-5) var(--sp-1) calc(var(--sp-2) + var(--sp-5));
     font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--fg-faint);
+    font-weight: 500;
+    color: var(--fg-subtle);
   }
 
   /* Each row is the shared `.list-row` card (app.css's "Lists"); what is
-     here is the thread row's own layout inside it. */
+     here is the thread row's own layout inside it. Two lines in the column's
+     usual width, who and when over what it is about; one line once the column
+     is dragged wide enough to hold all three side by side. */
   .row {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--sp-3);
-    padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+    display: grid;
+    grid-template:
+      'who side' auto
+      'gist gist' auto
+      / minmax(0, 1fr) auto;
+    gap: 1px var(--sp-3);
+    align-items: baseline;
+    padding: var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-5);
   }
-  /* The hairline between rows, starting under the text rather than the
-     avatar -- the column of faces stays one unbroken edge. */
-  .row::after {
-    content: '';
-    position: absolute;
-    left: calc(var(--sp-5) + 38px + var(--sp-3));
-    right: var(--sp-3);
-    bottom: 0;
-    height: 1px;
-    background: var(--border);
+  @container (min-width: 560px) {
+    .row {
+      grid-template: 'who gist side' auto / 168px minmax(0, 1fr) auto;
+      column-gap: var(--sp-4);
+    }
   }
-  .row.sel::after,
-  .row:hover::after {
-    opacity: 0;
-  }
-  /* Picked, one of several: the same tint as the open row, a shade deeper,
-     with the tick standing in for the avatar. */
+  /* Picked, one of several: the same tint as the open row, a shade deeper. */
   .row.checked {
     background: color-mix(in oklab, var(--accent) 18%, transparent);
   }
-  .row.checked::after {
-    opacity: 0;
+  .dot,
+  .tick {
+    position: absolute;
+    color: var(--accent);
   }
   .dot {
-    position: absolute;
     left: 7px;
-    top: calc(var(--sp-3) + 16px);
-    width: 8px;
-    height: 8px;
+    top: calc(var(--sp-2) + 7px);
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
-    background: transparent;
   }
   .dot.on {
     background: var(--accent);
   }
   .tick {
-    flex: none;
+    left: 4px;
+    top: calc(var(--sp-2) + 4px);
     display: grid;
-    place-items: center;
-    width: 38px;
-    height: 38px;
-    border-radius: 50%;
-    background: var(--accent);
-    color: var(--fg-on-accent);
   }
-  .body {
-    flex: 1;
-    min-width: 0;
+  .who {
+    grid-area: who;
     display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .line1,
-  .line2 {
-    display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 6px;
     min-width: 0;
   }
-  .acct {
-    flex: none;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-  }
   .from {
-    flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--text-base);
-    font-weight: 560;
+    color: var(--fg-muted);
+  }
+  /* How many messages: a bare number beside the names, which it counts. */
+  .count {
+    flex: none;
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+  .gist {
+    grid-area: gist;
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  /* The subject with the start of the message running on after it, on the one
+     line, so a short subject shows more and a long one simply hides the rest. */
+  .words {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+  }
+  .subject {
+    color: var(--fg-muted);
+  }
+  .snippet {
+    margin-left: var(--sp-2);
+    color: var(--fg-subtle);
+  }
+  /* Unread is the words at full brightness and a little heavier; read mail
+     stays a step back, so the two can be told apart from across the list. */
+  .row.unread .from {
+    font-weight: 600;
     color: var(--fg);
   }
-  .row.unread .from {
-    font-weight: 700;
+  .row.unread .subject {
+    font-weight: 500;
+    color: var(--fg);
+  }
+  .side {
+    grid-area: side;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    align-self: center;
   }
   .mark {
     flex: none;
     display: grid;
     place-items: center;
-    color: var(--fg-faint);
+    color: var(--fg-subtle);
   }
   .mark.priority,
   .mark.starred {
@@ -1157,52 +1177,25 @@
     font-variant-numeric: tabular-nums;
   }
   .row.unread .date {
-    color: var(--accent);
-    font-weight: 650;
-  }
-  .subject {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: var(--text-sm);
-    font-weight: 500;
     color: var(--fg-muted);
   }
-  .row.unread .subject {
-    font-weight: 650;
-    color: var(--fg);
-  }
-  /* How many messages, as a quiet pill rather than a bare number that
-     could be read as a count of something else. */
-  .line2 .count {
+  /* Which account, in the unified Inbox: a short bar at the far edge. A dot
+     beside the name read as a second way of saying unread. */
+  .acct {
     flex: none;
-    min-width: 20px;
-    padding: 1px 6px;
-    border-radius: 999px;
-    background: var(--bg-sunken);
-    font-size: 11px;
-    font-weight: 600;
-    text-align: center;
-    color: var(--fg-subtle);
-    font-variant-numeric: tabular-nums;
+    width: 3px;
+    height: 12px;
+    border-radius: 2px;
   }
-  .row.sel .line2 .count {
-    background: var(--bg-raised);
-  }
-  /* The category a decision model sorted the thread into: a quiet word, not
-     a coloured pill -- the tab it is filed under already says what kind of
-     mail it is; this says which of the person's own names for it. */
-  .line2 .sorted {
+  /* The category a decision model sorted the thread into: a quiet word -- the
+     tab it is filed under already says what kind of mail it is; this says which
+     of the person's own names for it. */
+  .sorted {
     flex: none;
     max-width: 40%;
     overflow: hidden;
-    padding: 1px 6px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
     font-size: 11px;
-    font-weight: 550;
+    font-weight: 500;
     color: var(--fg-subtle);
     white-space: nowrap;
     text-overflow: ellipsis;
@@ -1215,23 +1208,6 @@
     font-size: var(--text-xs);
     font-weight: 600;
     color: var(--fg-muted);
-  }
-  /* Two lines of the message, not one squeezed in beside the subject: enough
-     to tell a question from an announcement without opening either. Always
-     two lines tall, even for a one-line or empty preview, so every row in
-     the list is the same height. */
-  .snippet {
-    margin: 2px 0 0;
-    height: calc(2 * 1.4em);
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    font-size: var(--text-sm);
-    line-height: 1.4;
-    color: var(--fg-subtle);
-    overflow-wrap: anywhere;
   }
 
   /* The open thread's Priority mark in the reading pane's header. */
