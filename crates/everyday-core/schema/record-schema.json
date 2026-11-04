@@ -137,6 +137,17 @@
           }
         ]
       },
+      "Category": {
+        "description": "A closed set of split-inbox categories, small and fixed rather than\nfree text, because [`Message::category`] and [`Thread::category`] are\nboth clear columns — see `crate::store::mail`. A user-named category\n(phase 7 of the plan: \"the ones the user names\") cannot be one of these\nwithout leaking its name into the clear the way a goal's name is kept out\nof `purposes` by being a pointer rather than a string; that side table is\nphase 7's to add, alongside the model rules that assign one. What exists\nnow is the fixed set phase 7's own preview names, so `Option<Category>`\nhas somewhere to live before the rules that fill it do.\n\n[`Category::Priority`] is the odd one out: first among\n[`Category::ALL`] and the split inbox's first tab, ahead of `Important`,\nbut nothing [`crate::mail::categorize::categorize`] ever answers on its\nown -- see that function's own precedence list. A message only ever\nreaches it through a sealed [`CategoryRules`] correction (a sender\nmarked a standing \"VIP\", through the existing `set_thread_category`\ncommand), through [`crate::vault::Vault::set_thread_priority`] (one\nthread marked by hand, no sender rule), or through the model-assisted\npass that promotes an `Important` thread whose newest message needs the\nperson soon. The first two write [`CategorySource::Person`] alongside\nit; the third writes [`CategorySource::Model`] — see that type's own\ndocs for what each source is allowed to overwrite later.",
+        "enum": [
+          "priority",
+          "important",
+          "other",
+          "newsletter",
+          "notification"
+        ],
+        "type": "string"
+      },
       "Endpoint": {
         "description": "One server to connect to: IMAP or SMTP, never both.",
         "properties": {
@@ -222,6 +233,90 @@
           "summaries"
         ],
         "type": "object"
+      },
+      "MailNotify": {
+        "description": "Which of an account's new mail is worth interrupting its owner for --\nSettings → Accounts.\n\nOnly ever mail that is new, unread and in the Inbox, and never the\naccount's own: `everyday_service::arrivals` decides that part, and asks\nthis about what is left.",
+        "oneOf": [
+          {
+            "description": "Nothing from this account.",
+            "properties": {
+              "type": {
+                "const": "off",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "What the Priority and Important tabs hold.",
+            "properties": {
+              "type": {
+                "const": "important",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Every new message.",
+            "properties": {
+              "type": {
+                "const": "all",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The tabs named, and the categories of somebody's own named by\n[`crate::mail::SortCategory::id`] -- which only a decision model can\nfile anything under.",
+            "properties": {
+              "sorted": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "tabs": {
+                "default": [],
+                "items": {
+                  "$ref": "#/$defs/Category"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "categories",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "New messages in a thread the account has written in.",
+            "properties": {
+              "type": {
+                "const": "replies",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "Provider": {
         "description": "A mailbox provider well-known enough to have a preset, or not.\n\nA closed set with one escape hatch. `Custom` is not \"unknown\" — it is the\nhonest answer for a university's IMAP server, a self-hosted Stalwart\ninstance, or anything else this list does not name, and the interface\nasks for every field a preset would otherwise have filled in.",
@@ -331,6 +426,10 @@
           "writing": false
         },
         "description": "The service-side, model-assisted mail features switched on for this\naccount — categorisation, auto-drafts, summaries. `#[serde(default)]`\nand every field `false` on an account minted before phase 7, per\n[`MailAi`]'s own docs: nothing here runs quietly on an upgrade."
+      },
+      "mailNotify": {
+        "$ref": "#/$defs/MailNotify",
+        "description": "Which of this account's new mail raises a notification.\n\n`skip_serializing_if` for the same reason as `sync_minutes`."
       },
       "mcpAccess": {
         "$ref": "#/$defs/AgentMailAccess",

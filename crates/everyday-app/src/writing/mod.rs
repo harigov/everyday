@@ -470,14 +470,14 @@ pub async fn writing_open_main(app: AppHandle) -> CommandResult<()> {
 }
 
 fn notify_copied(app: &AppHandle, why: &str) {
-    use tauri_plugin_notification::NotificationExt;
     let paste = if cfg!(target_os = "macos") { "\u{2318}V" } else { "Ctrl+V" };
-    let _ = app
-        .notification()
-        .builder()
-        .title("Rewritten text copied")
-        .body(format!("It could not be pasted ({why}). Paste it with {paste}."))
-        .show();
+    crate::notice::show(
+        app,
+        "writing-copied",
+        "Rewritten text copied",
+        &format!("It could not be pasted ({why}). Paste it with {paste}."),
+        &[],
+    );
 }
 
 /// What the settings pane draws for writing help.

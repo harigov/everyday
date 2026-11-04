@@ -60,7 +60,7 @@ use serde_json::{Map, Value};
 use crate::decision::{self, ChoiceOption, Content};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Op};
-use crate::mailai::{display_address, excerpt, own_addresses};
+use crate::mailai::{Filed, display_address, excerpt, own_addresses};
 use crate::service::{Service, blocking};
 
 /// Threads read per page while looking for ones to sort -- a local read.
@@ -312,15 +312,13 @@ async fn sort_account(
     let results: Vec<(ThreadId, CommandResult<Asked>)> =
         futures::stream::iter(pending).buffer_unordered(IN_FLIGHT).collect().await;
 
-    let mut filed = 0u32;
+    let mut filed = Vec::new();
     let mut asked = 0u32;
     let mut first_error: Option<CommandError> = None;
     for (id, result) in results {
         match result {
             Ok(answer) => {
-                if answer.filed {
-                    filed += 1;
-                }
+                filed.extend(answer.filed);
                 asked += 1;
                 let mark = SortMark { message_count: answer.message_count, at: service.now() };
                 let vault = vault.clone();
@@ -353,6 +351,9 @@ async fn sort_account(
         });
     }
 
+    crate::mailai::announce_filed(service, vault, account, &filed).await;
+    let filed = filed.len() as u32;
+
     match first_error {
         Some(e) if asked == 0 => Err(e),
         Some(e) => {
@@ -368,8 +369,8 @@ struct Asked {
     /// The thread's message count as read for the question -- what it is
     /// marked asked at.
     message_count: u32,
-    /// Whether a category was written.
-    filed: bool,
+    /// What was written, if a category was.
+    filed: Option<Filed>,
 }
 
 /// Ask about one thread's newest message, and file it.
@@ -389,7 +390,7 @@ async fn ask(
         let vault = vault.clone();
         blocking(move || Ok(vault.thread(id)?)).await?
     };
-    let nothing = Asked { message_count: thread.message_count, filed: false };
+    let nothing = Asked { message_count: thread.message_count, filed: None };
     let Some(last) = messages.last() else { return Ok(nothing) };
     if own.contains(&last.from.email.to_lowercase())
         || last.category_source == CategorySource::Person
@@ -439,10 +440,11 @@ async fn ask(
     // thread is still marked asked, since asking again would get the same.
     let Some(category) = sorting.by_name(&choice.name) else { return Ok(nothing) };
     let (mid, treat_as, sorted_as) = (last.id, category.treat_as, category.id.clone());
-    let filed = {
-        let vault = vault.clone();
+    let wrote = {
+        let (vault, sorted_as) = (vault.clone(), sorted_as.clone());
         blocking(move || Ok(vault.sort_mail_message(mid, treat_as, &sorted_as)?)).await?
     };
+    let filed = wrote.then_some(Filed { message: mid, sorted_as: Some(sorted_as) });
     Ok(Asked { message_count: thread.message_count, filed })
 }
 

@@ -133,18 +133,24 @@ export function mockOnChange(handler: (change: ChangeEvent) => void): void {
   handlers.add(handler)
 }
 
+/** Raise a change from elsewhere in the mock: something else that moves on its
+ *  own, the way a sync pass does. */
+export function mockRaiseChange(change: ChangeEvent): void {
+  for (const handler of handlers) {
+    try {
+      handler(change)
+    } catch {
+      // One listener's fault is not another's.
+    }
+  }
+}
+
 /**
  * `origin` is anything but `local`, which the router takes for its own
  * window's write and ignores -- a job is nobody's write but its own.
  */
 function emit(kind: ChangeEvent['kind'], op: ChangeEvent['op'], id: string): void {
-  for (const handler of handlers) {
-    try {
-      handler({ kind, op, id, origin: 'mock-jobs' })
-    } catch {
-      // One listener's fault is not another's.
-    }
-  }
+  mockRaiseChange({ kind, op, id, origin: 'mock-jobs' })
 }
 
 // ── Records ─────────────────────────────────────────────────────────────

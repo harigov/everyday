@@ -4,6 +4,7 @@
   // the reading pane beside it -- the journal's `EntryList` + `Editor` shape,
   // folded into one component the way the library and the todo app do.
 
+  import { onMount } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
   import { accountColor } from '../lib/avatar'
   import {
@@ -54,6 +55,12 @@
   import VirtualList from './VirtualList.svelte'
 
   void mail.start()
+  // What arrived in the open thread while nobody could see it is read once
+  // somebody can: see `mail.seeOpenThread`.
+  onMount(() => {
+    mail.setOnScreen(true)
+    return () => mail.setOnScreen(false)
+  })
   // The names of the categories a decision model sorted threads into, for
   // the label a sorted row carries.
   void sorting.load()
@@ -378,6 +385,9 @@
     if (ids) void mail.labelMany(ids, labelName)
   }
 </script>
+
+<svelte:window onfocus={() => mail.seeOpenThread()} />
+<svelte:document onvisibilitychange={() => mail.seeOpenThread()} />
 
 <section class="list">
   <div class="top">

@@ -9,11 +9,12 @@
 //! reports in, which is the honest answer -- the previous session's numbers
 //! describe a sync that is no longer running.
 
-use everyday_core::id::AccountId;
+use everyday_core::id::{AccountId, MailMessageId};
 use jiff::Timestamp;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// Which part of the sync an account's task is doing right now.
@@ -94,22 +95,37 @@ struct Shared {
     /// Accounts whose sync has written something a thread list would show
     /// since the account task last asked -- see [`StatusRegistry::mark_changed`].
     changed: Mutex<HashSet<AccountId>>,
-    /// High-priority messages a pass has stored and not yet announced.
-    /// Taken once, when the pass finishes, the same way [`Self::changed`] is.
+    /// Messages a pass has stored and not yet announced. Taken once, when
+    /// the pass finishes, the same way [`Self::changed`] is.
     arrivals: Mutex<HashMap<AccountId, Arrivals>>,
+    /// Every message this session has announced, or noted to announce -- see
+    /// [`StatusRegistry::first_announcement`].
+    announced: Mutex<HashSet<String>>,
+    /// Messages a pass stored that were news in every way but being wanted,
+    /// and when -- see [`StatusRegistry::note_arrival`].
+    just_arrived: Mutex<HashMap<String, Instant>>,
+    /// Arrivals waiting for a pass to finish before anybody can say whether
+    /// they are wanted -- see [`StatusRegistry::note_reply_candidate`].
+    reply_candidates: Mutex<HashMap<AccountId, Vec<(MailMessageId, crate::arrivals::NewMail)>>>,
 }
 
-/// One account's [`Shared::arrivals`]: every message id noted, so a message
-/// filed under two mailboxes counts once, and the first few in full.
+/// One account's [`Shared::arrivals`]: how many were noted, and the first few
+/// in full.
 #[derive(Default)]
 struct Arrivals {
-    ids: HashSet<String>,
-    kept: Vec<crate::arrivals::PriorityMail>,
+    total: usize,
+    kept: Vec<crate::arrivals::NewMail>,
 }
 
 /// How many noted messages a pass keeps whole. A notification names three;
-/// the rest only count, through [`Arrivals::ids`].
+/// the rest only count, through [`Arrivals::total`].
 const ARRIVALS_KEPT: usize = 32;
+
+/// How long after arriving a message filed by a model can still be news. Long
+/// enough for a model pass to get round to it through a busy spell or a retry;
+/// short enough that switching a model on at noon does not announce the
+/// morning's mail, which has been sitting in the list all that time.
+const ARRIVAL_STAYS_NEWS: Duration = Duration::from_secs(60 * 60);
 
 impl StatusRegistry {
     pub fn new() -> Self {
@@ -202,19 +218,79 @@ impl StatusRegistry {
         self.0.changed.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id)
     }
 
-    /// Remember a high-priority message this pass stored, so the account
-    /// task can raise one notification when the pass is over. A message
-    /// seen under two mailboxes in the same pass is recorded once.
-    pub fn note_priority_mail(
+    /// Is this the first this session has said about `message_id`? A message
+    /// can be wanted twice over: filed under two mailboxes in one pass, and
+    /// filed by the rules as it is stored and again by a model a minute later.
+    /// Forgotten on restart, which only matters to a message a model files
+    /// after one, and [`crate::arrivals::filed_is_news`] keeps that recent.
+    pub fn first_announcement(&self, message_id: &str) -> bool {
+        self.0.announced.lock().unwrap_or_else(|e| e.into_inner()).insert(message_id.to_string())
+    }
+
+    /// Remember that a pass just stored `message_id` as new, unread mail in an
+    /// inbox: what a model filing it a moment later may announce, whether or
+    /// not anybody wanted it as the rules filed it. A message nothing noted
+    /// is one a model is sorting from the backlog, and that is not delivery.
+    pub fn note_arrival(&self, message_id: &str, now: Instant) {
+        let mut arrived = self.0.just_arrived.lock().unwrap_or_else(|e| e.into_inner());
+        arrived.retain(|_, at| now.saturating_duration_since(*at) < ARRIVAL_STAYS_NEWS);
+        arrived.insert(message_id.to_string(), now);
+    }
+
+    /// Did a pass store `message_id` lately -- see
+    /// [`StatusRegistry::note_arrival`]?
+    pub fn arrived_lately(&self, message_id: &str, now: Instant) -> bool {
+        self.0
+            .just_arrived
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(message_id)
+            .is_some_and(|at| now.saturating_duration_since(*at) < ARRIVAL_STAYS_NEWS)
+    }
+
+    /// Hold an arrival until every mailbox in the pass has been stored, when
+    /// [`everyday_core::account::MailNotify::Replies`] can ask of it: the
+    /// account's own answer may be in a mailbox this pass has not reached, and
+    /// a message is only new once. Held here, not by the pass, so one cut short
+    /// by a dropped connection asks at the end of the next.
+    pub fn note_reply_candidate(
         &self,
         account_id: AccountId,
-        arrival: crate::arrivals::PriorityMail,
+        message: MailMessageId,
+        arrival: crate::arrivals::NewMail,
     ) {
-        let mut map = self.0.arrivals.lock().unwrap_or_else(|e| e.into_inner());
-        let noted = map.entry(account_id).or_default();
-        if !noted.ids.insert(arrival.message_id.clone()) {
+        self.0
+            .reply_candidates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(account_id)
+            .or_default()
+            .push((message, arrival));
+    }
+
+    /// What [`StatusRegistry::note_reply_candidate`] was holding -- and then
+    /// nothing.
+    pub fn take_reply_candidates(
+        &self,
+        account_id: AccountId,
+    ) -> Vec<(MailMessageId, crate::arrivals::NewMail)> {
+        self.0
+            .reply_candidates
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&account_id)
+            .unwrap_or_default()
+    }
+
+    /// Remember a message this pass stored that somebody wants to hear about,
+    /// so the account task can raise one notification when the pass is over.
+    pub fn note_new_mail(&self, account_id: AccountId, arrival: crate::arrivals::NewMail) {
+        if !self.first_announcement(&arrival.message_id) {
             return;
         }
+        let mut map = self.0.arrivals.lock().unwrap_or_else(|e| e.into_inner());
+        let noted = map.entry(account_id).or_default();
+        noted.total += 1;
         // A pass does not need more than a handful of names. Past this,
         // further messages are counted rather than held.
         if noted.kept.len() < ARRIVALS_KEPT {
@@ -222,12 +298,9 @@ impl StatusRegistry {
         }
     }
 
-    /// The priority messages noted since the last take, the first few of
-    /// them whole, and how many there were in all -- and then none.
-    pub fn take_priority_mail(
-        &self,
-        account_id: AccountId,
-    ) -> (Vec<crate::arrivals::PriorityMail>, usize) {
+    /// The messages noted since the last take, the first few of them whole,
+    /// and how many there were in all -- and then none.
+    pub fn take_new_mail(&self, account_id: AccountId) -> (Vec<crate::arrivals::NewMail>, usize) {
         let noted = self
             .0
             .arrivals
@@ -235,7 +308,7 @@ impl StatusRegistry {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&account_id)
             .unwrap_or_default();
-        (noted.kept, noted.ids.len())
+        (noted.kept, noted.total)
     }
 
     /// Forget an account entirely -- called when it is deleted.
@@ -244,6 +317,7 @@ impl StatusRegistry {
         self.0.nudges.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
         self.0.changed.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
         self.0.arrivals.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
+        self.0.reply_candidates.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
     }
 
     /// Every account this session has ever reported on.
@@ -283,41 +357,80 @@ mod tests {
     }
 
     #[test]
-    fn priority_mail_is_taken_once_deduped_and_dropped_with_the_account() {
+    fn new_mail_is_taken_once_deduped_and_dropped_with_the_account() {
         let registry = StatusRegistry::new();
         let a = AccountId::new();
-        let arrival = |id: &str| crate::arrivals::PriorityMail {
+        let arrival = |id: &str| crate::arrivals::NewMail {
             message_id: id.into(),
             from: "Ada".into(),
             subject: "Hi".into(),
         };
-        registry.note_priority_mail(a, arrival("1"));
-        registry.note_priority_mail(a, arrival("1"));
-        registry.note_priority_mail(a, arrival("2"));
-        let (kept, total) = registry.take_priority_mail(a);
+        registry.note_new_mail(a, arrival("1"));
+        registry.note_new_mail(a, arrival("1"));
+        registry.note_new_mail(a, arrival("2"));
+        let (kept, total) = registry.take_new_mail(a);
         assert_eq!((kept.len(), total), (2, 2), "noted twice, stored once");
-        assert_eq!(registry.take_priority_mail(a).1, 0, "taking clears it");
+        assert_eq!(registry.take_new_mail(a).1, 0, "taking clears it");
 
-        registry.note_priority_mail(a, arrival("3"));
+        registry.note_new_mail(a, arrival("1"));
+        assert_eq!(registry.take_new_mail(a).1, 0, "and it is never news twice");
+        assert!(!registry.first_announcement("2"), "whoever is asking");
+        assert!(registry.first_announcement("a message nobody has mentioned"));
+
+        registry.note_new_mail(a, arrival("3"));
         registry.forget(a);
-        assert_eq!(registry.take_priority_mail(a).1, 0);
+        assert_eq!(registry.take_new_mail(a).1, 0);
     }
 
     #[test]
-    fn priority_mail_past_the_kept_few_is_still_counted() {
+    fn an_arrival_stays_news_for_a_while_and_then_does_not() {
+        let registry = StatusRegistry::new();
+        let now = Instant::now();
+        assert!(!registry.arrived_lately("backlog", now), "nothing said it arrived");
+
+        registry.note_arrival("fresh", now);
+        assert!(registry.arrived_lately("fresh", now + Duration::from_secs(60)));
+
+        let later = now + ARRIVAL_STAYS_NEWS;
+        assert!(!registry.arrived_lately("fresh", later), "an hour on, it is the backlog");
+
+        registry.note_arrival("next", later);
+        assert!(!registry.0.just_arrived.lock().unwrap().contains_key("fresh"), "and forgotten");
+    }
+
+    #[test]
+    fn a_reply_candidate_is_held_once_and_dropped_with_the_account() {
+        let registry = StatusRegistry::new();
+        let a = AccountId::new();
+        let arrival = crate::arrivals::NewMail {
+            message_id: "1".into(),
+            from: "Ada".into(),
+            subject: "Hi".into(),
+        };
+        registry.note_reply_candidate(a, MailMessageId::new(), arrival.clone());
+        assert_eq!(registry.take_reply_candidates(a).len(), 1);
+        assert!(registry.take_reply_candidates(a).is_empty(), "taking clears it");
+
+        registry.note_reply_candidate(a, MailMessageId::new(), arrival);
+        registry.forget(a);
+        assert!(registry.take_reply_candidates(a).is_empty());
+    }
+
+    #[test]
+    fn new_mail_past_the_kept_few_is_still_counted() {
         let registry = StatusRegistry::new();
         let a = AccountId::new();
         for i in 0..50 {
-            registry.note_priority_mail(
+            registry.note_new_mail(
                 a,
-                crate::arrivals::PriorityMail {
+                crate::arrivals::NewMail {
                     message_id: i.to_string(),
                     from: "Ada".into(),
                     subject: "Hi".into(),
                 },
             );
         }
-        let (kept, total) = registry.take_priority_mail(a);
+        let (kept, total) = registry.take_new_mail(a);
         assert_eq!((kept.len(), total), (ARRIVALS_KEPT, 50));
     }
 

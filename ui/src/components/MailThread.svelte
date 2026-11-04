@@ -13,6 +13,7 @@
   // something -- `allow-popups` plus letting it escape the sandbox is what
   // lets that link become an ordinary new tab rather than dead text.
 
+  import { untrack } from 'svelte'
   import { isMock } from '../lib/api'
   import {
     firstName,
@@ -189,11 +190,18 @@
   }
 
   // Load every message that is open and not loaded yet -- runs again when
-  // `expanded` changes (a fresh thread, or a row toggled open).
+  // `expanded` changes (a fresh thread, or a row toggled open), and when the
+  // thread is read afresh. That is also another try at a body that could not
+  // be had: a sync pass stores a message before it fetches its body, so one
+  // reload can catch it in between, and the reload after it finds it there.
+  // `bodies` untracked, or a failure would be its own reason to try again.
   $effect(() => {
     for (const id of expanded) {
       const message = messages.find((m) => m.id === id)
-      if (message && !bodies.has(id)) void loadOne(message)
+      const loaded = untrack(() => bodies.get(id))
+      if (message && (loaded === undefined || loaded === 'error')) {
+        untrack(() => void loadOne(message))
+      }
     }
   })
 

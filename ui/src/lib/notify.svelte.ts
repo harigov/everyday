@@ -23,9 +23,10 @@
 // worlds it can find itself in, and each gets the best channel it has:
 //
 //   * the packaged app on macOS, Linux and Windows -- and iOS and Android
-//     when those shells exist -- posts through `tauri-plugin-notification`,
-//     which is the platform's own notification centre. Nothing here is
-//     conditioned on the operating system: the plugin is the portability
+//     when those shells exist -- posts through the shell's
+//     `post_notification`, to the platform's own notification centre, and
+//     asks `tauri-plugin-notification` whether it may. Nothing here is
+//     conditioned on the operating system: the shell is the portability
 //     layer, and adding a mobile target adds no code in this file.
 //   * the interface running in a plain browser on its mock backend
 //     (`make ui`) posts through the web Notification API, so the routing
@@ -35,7 +36,7 @@
 //     whole service, and every notification still arrives. Degrading is the
 //     normal case, not the error case.
 
-import { isMock, onShellNotification } from './api'
+import { api, isMock, onShellNotification } from './api'
 import { channelFor, push, toToast, type NotifySpec, type Toast } from './notify-policy'
 
 export type { NotifyLevel, NotifyReach, NotifySpec, Toast } from './notify-policy'
@@ -53,7 +54,7 @@ export type { NotifyLevel, NotifyReach, NotifySpec, Toast } from './notify-polic
 interface OsChannel {
   /** Permission, requested once and remembered. False if it cannot be had. */
   ready(): Promise<boolean>
-  send(toast: Toast): void
+  send(toast: Toast): void | Promise<void>
 }
 
 const NO_OS: OsChannel = {
@@ -71,16 +72,11 @@ async function tauriChannel(): Promise<OsChannel> {
       if (!granted) granted = (await plugin.requestPermission()) === 'granted'
       return granted
     },
-    send(toast) {
-      // `sendNotification` is typed as returning nothing -- the plugin fires
-      // its own `invoke` and drops the promise -- so there is no result to
-      // wait for and no rejection to catch here. Permission is therefore the
-      // only thing that can be *checked* before delivery, which is why
-      // `ready` is the gate and why a false from it has to produce a toast
-      // instead. Anything that fails after this point fails silently inside
-      // the plugin, on every platform equally.
-      plugin.sendNotification({ title: toast.title, body: toast.body ?? undefined })
-    },
+    // Not the plugin's `sendNotification`, which on Linux reports success
+    // and delivers nothing: see `crates/everyday-app/src/notice.rs`. The
+    // shell answers once the desktop has, so a rejection is what lets the
+    // caller put up a toast on a session with no notification service.
+    send: (toast) => api.postNotification(toast.title, toast.body, toast.key),
   }
 }
 
@@ -144,7 +140,7 @@ class Notifications {
     // `osUsable` means "worth trying", not "granted". Delivery reports back
     // whether it actually happened, and a message that did not get out falls
     // back to a toast below. Nothing is lost to an unanswered prompt.
-    const channel = channelFor(spec, { focused: focused(), osReady: osUsable })
+    const channel = channelFor(spec, { focused: windowInFront(), osReady: osUsable })
 
     if (channel === 'toast') return this.#show(spec)
 
@@ -284,7 +280,7 @@ class Notifications {
 }
 
 /** Is the window in front of the user? */
-function focused(): boolean {
+export function windowInFront(): boolean {
   return document.visibilityState === 'visible' && document.hasFocus()
 }
 
@@ -305,19 +301,27 @@ let osUsable = true
 
 /** Deliver to the notification centre. False if it did not get out. */
 async function deliverToOs(spec: NotifySpec): Promise<boolean> {
+  let channel: OsChannel
   try {
-    const channel = await osChannel
+    channel = await osChannel
     if (!(await channel.ready())) {
       osUsable = false
       return false
     }
-    channel.send(toToast(spec, 0))
-    return true
   } catch {
     // A notification that cannot be delivered is not worth raising an error
     // about a notification. The caller puts up a toast on a false, so
     // failing quietly here loses nothing.
     osUsable = false
+    return false
+  }
+  try {
+    await channel.send(toToast(spec, 0))
+    return true
+  } catch {
+    // The desktop would not take this one. That is no answer about the next:
+    // a notification daemon can be restarting, so this one becomes a toast
+    // and the next one is tried.
     return false
   }
 }

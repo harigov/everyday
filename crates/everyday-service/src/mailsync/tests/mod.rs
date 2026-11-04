@@ -5,5 +5,6 @@
 mod categorisation;
 mod compaction;
 mod fixtures;
+mod notifications;
 mod sync;
 mod wiring;

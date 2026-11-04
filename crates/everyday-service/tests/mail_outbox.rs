@@ -443,6 +443,55 @@ async fn draft_with_an_append_waiting(svc: &Arc<Service>, account: AccountId) ->
     draft
 }
 
+/// What the bin in an empty reply comes to. `new_draft` stores nothing, so this
+/// used to answer "Draft <id> not found" until an autosave had made a row.
+#[tokio::test]
+async fn a_draft_nobody_saved_is_discarded_without_complaint_and_can_come_back() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let draft = call(&svc, "new_draft", json!({ "account": account })).await;
+
+    call(&svc, "discard_draft", json!({ "id": draft["id"] })).await;
+    assert!(
+        call(&svc, "list_drafts", json!({ "account": account }))
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    // Undo: there was nothing to bring back, and the save makes it.
+    call(&svc, "restore_draft", json!({ "id": draft["id"] })).await;
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let saved = call(&svc, "list_drafts", json!({ "account": account })).await;
+    assert_eq!(saved.as_array().unwrap().len(), 1);
+    assert_eq!(saved[0]["id"], draft["id"]);
+    assert_eq!(saved[0]["state"]["type"], "editing");
+}
+
+/// A draft with no row has nothing to discard. A draft whose queued send has
+/// gone missing is damage, and saying it was discarded would leave it queued.
+#[tokio::test]
+async fn a_queued_draft_with_its_op_missing_is_not_reported_as_discarded() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let draft = call(&svc, "new_draft", json!({ "account": account })).await;
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let id: DraftId = serde_json::from_value(draft["id"].clone()).unwrap();
+    let vault = svc.get().unwrap();
+    vault
+        .with_draft(id, |draft| {
+            draft.state = DraftState::Queued { op: everyday_core::id::OpId::new() };
+            true
+        })
+        .unwrap();
+
+    let refused = fails(&svc, "discard_draft", json!({ "id": id })).await;
+
+    assert_eq!(refused.code, "not_found");
+    assert!(matches!(vault.draft(id).unwrap().state, DraftState::Queued { .. }), "left as it was");
+}
+
 #[tokio::test]
 async fn a_draft_discarded_before_its_append_comes_due_never_reaches_the_server() {
     let (svc, _dir) = service();

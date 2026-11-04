@@ -20,11 +20,17 @@
   import {
     DEFAULT_MAIL_AI,
     MAIL_AI_SWITCHES,
+    MAIL_NOTIFY_CHOICES,
     PROVIDER_LABELS,
     SYNC_INTERVALS,
+    mailNotifyForChoice,
+    mailNotifyOf,
     providersLabel,
     statusLabel,
+    withChosen,
   } from '../lib/accounts'
+  import { CATEGORY_TABS } from '../lib/mail'
+  import { sorting } from '../lib/sorting.svelte'
   import { errorMessage } from '../lib/errors'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { openExternal } from '../lib/open-external'
@@ -35,7 +41,10 @@
     AgentMailAccess,
     Identity,
     MailAi,
+    MailCategory,
+    MailNotify,
     RemoteCalendarInfo,
+    SortCategory,
   } from '../lib/types'
   import AgentAccessGrid from './AgentAccessGrid.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -262,6 +271,61 @@
     } finally {
       syncSaving = false
     }
+  }
+
+  // ── Which new mail raises a notification ─────────────────────────────
+  //
+  // Applied the moment it is picked, like the interval above.
+
+  let notifySaving = $state(false)
+  const notifyRule = $derived<MailNotify>(original ? mailNotifyOf(original) : { type: 'important' })
+  const notifyHint = $derived(
+    MAIL_NOTIFY_CHOICES.find((c) => c.type === notifyRule.type)?.hint ?? '',
+  )
+  /** A category of somebody's own is only ever filed under by a decision
+   *  model, so with none on there is nothing to tick -- unless one was ticked
+   *  while there was, which stays in view rather than staying in force unseen. */
+  const ownCategories = $derived.by((): SortCategory[] => {
+    const categories = sorting.sorting?.categories ?? []
+    if (sorting.view?.decisionModel) return categories
+    const rule = notifyRule
+    return rule.type === 'categories' ? categories.filter((c) => rule.sorted.includes(c.id)) : []
+  })
+
+  $effect(() => {
+    if (notifyRule.type === 'categories') void sorting.load()
+  })
+
+  /** The ticks somebody just left, for if they come back this visit. */
+  let lastNotifyPick = $state<Extract<MailNotify, { type: 'categories' }> | null>(null)
+  /** Bumped to draw the controls afresh from what is stored: a select or a box
+   *  a failed save left showing the choice would say something untrue, and
+   *  nothing changed for Svelte to redraw them over. */
+  let notifyRedraw = $state(0)
+
+  async function setMailNotify(mailNotify: MailNotify) {
+    if (!original) return
+    notifySaving = true
+    try {
+      if (notifyRule.type === 'categories') lastNotifyPick = notifyRule
+      await api.saveAccount($state.snapshot({ ...original, mailNotify }))
+      await accounts.refresh()
+    } catch (e) {
+      notice = errorMessage(e)
+      notifyRedraw++
+    } finally {
+      notifySaving = false
+    }
+  }
+
+  function toggleNotifyTab(tab: MailCategory, chosen: boolean) {
+    if (notifyRule.type !== 'categories') return
+    void setMailNotify({ ...notifyRule, tabs: withChosen(notifyRule.tabs, tab, chosen) })
+  }
+
+  function toggleNotifySorted(id: string, chosen: boolean) {
+    if (notifyRule.type !== 'categories') return
+    void setMailNotify({ ...notifyRule, sorted: withChosen(notifyRule.sorted, id, chosen) })
   }
 
   // ── Signing in again ─────────────────────────────────────────────────
@@ -547,6 +611,58 @@
           New mail in the Inbox normally arrives straight away. This is how often every folder is
           checked again as well.
         </p>
+      </section>
+
+      <section>
+        <label class="eyebrow" for="detail-notify">Notify me about</label>
+        {#key notifyRedraw}
+          <select
+            id="detail-notify"
+            class="interval"
+            value={notifyRule.type}
+            disabled={notifySaving}
+            onchange={(e) =>
+              void setMailNotify(
+                mailNotifyForChoice(
+                  e.currentTarget.value as MailNotify['type'],
+                  notifyRule,
+                  lastNotifyPick,
+                ),
+              )}
+          >
+            {#each MAIL_NOTIFY_CHOICES as choice (choice.type)}
+              <option value={choice.type}>{choice.label}</option>
+            {/each}
+          </select>
+          <p class="hint">{notifyHint}</p>
+          {#if notifyRule.type === 'categories'}
+            {@const rule = notifyRule}
+            <div class="notify-picks" role="group" aria-label="Categories to notify about">
+              {#each CATEGORY_TABS as tab (tab.key)}
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    checked={rule.tabs.includes(tab.key)}
+                    disabled={notifySaving}
+                    onchange={(e) => toggleNotifyTab(tab.key, e.currentTarget.checked)}
+                  />
+                  {tab.label}
+                </label>
+              {/each}
+              {#each ownCategories as category (category.id)}
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    checked={rule.sorted.includes(category.id)}
+                    disabled={notifySaving}
+                    onchange={(e) => toggleNotifySorted(category.id, e.currentTarget.checked)}
+                  />
+                  {category.name}
+                </label>
+              {/each}
+            </div>
+          {/if}
+        {/key}
       </section>
     {/if}
 
@@ -862,6 +978,11 @@
   .interval:focus {
     outline: none;
     border-color: var(--accent);
+  }
+  .notify-picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-1) var(--sp-3);
   }
   .cap {
     width: 88px;

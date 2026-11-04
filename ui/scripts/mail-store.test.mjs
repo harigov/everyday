@@ -31,7 +31,7 @@ stubBrowser({
 })
 
 const {
-  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }],
+  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }, mockMail],
   close,
 } = await load(
   [
@@ -40,6 +40,7 @@ const {
     '/src/lib/live-apply.ts',
     '/src/lib/mail-api.ts',
     '/src/lib/api.ts',
+    '/src/lib/mock-mail.ts',
   ],
   { svelte: true },
 )
@@ -166,6 +167,229 @@ assert.equal(
   const now = mail.threads.find((t) => t.id === id)
   assert.ok(now, 'the row is still in the list after being patched')
   assert.equal(typeof now.unreadCount, typeof before, 'the row was replaced with a fresh fetch')
+}
+
+// ── The open thread follows a sync pass ──────────────────────────────
+//
+// A pass names no thread, and the reply somebody just sent only ever reaches
+// the thread they are reading this way. The pane used to go on showing the
+// thread as it was until they left it and came back.
+
+{
+  const inbox = mail.mailboxes.find((m) => m.role === 'inbox')
+  await mail.selectMailbox(inbox.id)
+  const id = mail.threads.find((t) => t.messageCount > 1).id
+  await mail.openThreadById(id)
+  const before = mail.openThread.messages.length
+  const opened = new Set(mail.expanded)
+  const older = mail.openThread.messages[0].id
+  mail.toggleExpanded(older)
+
+  const sent = mockMail.mockDeliverToThread(
+    id,
+    { name: 'Me', email: 'me@example.com' },
+    '<p>The reply I just sent</p>',
+    true,
+  )
+  assert.equal(mail.openThread.messages.length, before, 'nothing moves until the pass says so')
+  const accepted = applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  assert.equal(accepted, true, 'a change naming no thread is taken')
+  await new Promise((r) => setTimeout(r, 900))
+
+  assert.equal(mail.openThread.messages.length, before + 1, 'and now it is in the pane')
+  assert.equal(mail.openThread.messages.at(-1).id, sent.id)
+  assert.equal(
+    mail.threads.find((t) => t.id === id).messageCount,
+    before + 1,
+    'and the list row says so too',
+  )
+  assert.ok(mail.expanded.has(sent.id), 'open, as the newest message is')
+  assert.ok(mail.expanded.has(older), 'what somebody opened stays open')
+  for (const message of opened) assert.ok(mail.expanded.has(message), 'and so does the rest')
+
+  // Nothing new: nothing opens, and what was closed stays closed.
+  mail.toggleExpanded(sent.id)
+  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  await new Promise((r) => setTimeout(r, 900))
+  assert.ok(!mail.expanded.has(sent.id), 'a pass with nothing new reopens nothing')
+
+  // Moved on while it was on its way: the other thread keeps the pane.
+  const other = mail.threads.find((t) => t.id !== id).id
+  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  await mail.openThreadById(other)
+  await new Promise((r) => setTimeout(r, 900))
+  assert.equal(mail.openThread.thread.id, other)
+
+  // What somebody else wrote is read once somebody can see it, and not before.
+  const reload = () => new Promise((r) => setTimeout(r, 900))
+  const deliver = () =>
+    mockMail.mockDeliverToThread(
+      other,
+      { name: 'Ada', email: 'ada@example.com' },
+      '<p>Hi</p>',
+      false,
+    )
+  const pass = () => applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  const unread = () => mail.openThread.thread.unreadCount
+  const look = (visible, focused) => {
+    document.visibilityState = visible ? 'visible' : 'hidden'
+    document.hasFocus = () => focused
+  }
+
+  // Behind another application: still unread, though it opens ready.
+  look(true, false)
+  mail.setOnScreen(true)
+  const behind = deliver()
+  pass()
+  await reload()
+  assert.ok(unread() > 0, 'a window in the background has read nothing')
+  assert.ok(mail.expanded.has(behind.id), 'though it is open for when they come back')
+  // ...and they come back, by the banner, as the window does.
+  look(true, true)
+  mail.seeOpenThread()
+  await reload()
+  assert.equal(unread(), 0, 'coming back to it is reading it')
+
+  // In the app, in Journal or in Settings: the window has focus and Mail is
+  // not what it is showing.
+  mail.setOnScreen(false)
+  const elsewhere = deliver()
+  pass()
+  await reload()
+  assert.ok(mail.expanded.has(elsewhere.id))
+  assert.ok(unread() > 0, 'Mail off screen has read nothing, with the window in front')
+  mail.seeOpenThread()
+  assert.ok(unread() > 0, 'and coming back to the window is not coming back to Mail')
+  mail.setOnScreen(true)
+  await reload()
+  assert.equal(unread(), 0, 'coming back to Mail is')
+
+  // In front of them: read as it lands.
+  deliver()
+  pass()
+  await reload()
+  assert.equal(unread(), 0, 'looking at it is reading it')
+
+  // Marked unread by hand: a sync later is no reason to undo that.
+  look(true, false)
+  deliver()
+  pass()
+  await reload()
+  await mail.markUnread(other)
+  look(true, true)
+  mail.seeOpenThread()
+  await reload()
+  assert.ok(unread() > 0, 'they said unread, so it stays unread')
+
+  // Anything else done to it says nothing about whether it has been seen.
+  await mail.markRead(other)
+  look(true, false)
+  deliver()
+  pass()
+  await reload()
+  await mail.toggleStar(other)
+  look(true, true)
+  mail.seeOpenThread()
+  await reload()
+  assert.equal(unread(), 0, 'starring it did not stop it counting as unseen')
+  await mail.markUnread(other)
+  await mail.markRead(other)
+
+  // Two at once, one dated earlier than the end of the thread: both are mail
+  // that arrived, and being older is no reason to stay shut.
+  const late = mockMail.mockDeliverToThread(
+    other,
+    { name: 'Ada', email: 'ada@example.com' },
+    '<p>Sent a while ago, delayed</p>',
+    true,
+  )
+  mockMail.mockBackdate(late.id, '2000-01-01T00:00:00.000Z')
+  const onTime = deliver()
+  pass()
+  await reload()
+  assert.equal(mail.openThread.messages[0].id, late.id, 'filed by its date')
+  assert.ok(mail.expanded.has(late.id), 'the delayed one opens')
+  assert.ok(mail.expanded.has(onTime.id), 'and so does the other')
+
+  // A draft's copy on the server is what the composer below is writing. It is
+  // not news, and it does not join a thread already open.
+  const count = mail.openThread.messages.length
+  const draftCopy = mockMail.mockDeliverToThread(
+    other,
+    { name: 'Me', email: 'me@example.com' },
+    '<p>Half a thought</p>',
+    true,
+  )
+  mockMail.mockMarkDraft(draftCopy.id)
+  pass()
+  await reload()
+  assert.equal(mail.openThread.messages.length, count, 'a server copy of a draft stays out of it')
+  assert.ok(!mail.expanded.has(draftCopy.id))
+
+  // An older answer arriving last is not drawn over a newer one.
+  const real = api.thread
+  let release = () => {}
+  const holdNextRead = () => {
+    api.thread = (id) => {
+      // A copy, as a real answer is: what the backend said when it said it.
+      const answer = real(id).then((detail) => structuredClone(detail))
+      api.thread = real
+      return new Promise((resolve) => {
+        release = () => answer.then(resolve)
+      })
+    }
+  }
+  holdNextRead()
+  pass()
+  await reload()
+  const newer = deliver()
+  pass()
+  await reload()
+  assert.ok(
+    mail.openThread.messages.some((m) => m.id === newer.id),
+    'the newer answer is drawn',
+  )
+  release()
+  await new Promise((r) => setTimeout(r, 50))
+  assert.ok(
+    mail.openThread.messages.some((m) => m.id === newer.id),
+    'and the older one, landing after it, does not take the message back',
+  )
+  await reload()
+
+  // A change made here while a read is out is not undone by it, and what the
+  // read saw still comes: it is asked for again.
+  holdNextRead()
+  pass()
+  await reload()
+  const during = deliver()
+  const wasStarred = mail.openThread.thread.starred
+  await mail.toggleStar(other)
+  release()
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(mail.openThread.thread.starred, !wasStarred, 'the change made meanwhile stands')
+  await reload()
+  assert.ok(
+    mail.openThread.messages.some((m) => m.id === during.id),
+    'and the message arrives',
+  )
+  look(false, false)
+  mail.setOnScreen(false)
+}
+
+// ── Drafts nobody typed in ───────────────────────────────────────────
+//
+// `new_draft` keeps nothing, so a blank one has no row until it is saved. The
+// bin on one used to answer "Draft <id> not found" -- and the autosave its
+// failure path started is why a second click worked.
+
+{
+  const account = mail.mailboxes[0].accountId
+  const draft = await mailApi.newDraft({ account })
+  await mailApi.discardDraft(draft.id)
+  await mailApi.restoreDraft(draft.id)
+  await mailApi.saveDraft(draft)
+  await mailApi.discardDraft(draft.id)
 }
 
 // ── Priority ─────────────────────────────────────────────────────────

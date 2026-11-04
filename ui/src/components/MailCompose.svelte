@@ -55,7 +55,7 @@
   import { declineItems, proposals } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import { timeOfDay, toLocalInputValue } from '../lib/format'
-  import type { DeclineReason, Draft, ImproveMode, MailAddress } from '../lib/types'
+  import type { DeclineReason, Draft, DraftId, ImproveMode, MailAddress } from '../lib/types'
   import Avatar from './Avatar.svelte'
   import Icon from './Icon.svelte'
 
@@ -625,6 +625,29 @@
    *  seconds" outbox window; the middle of that range. */
   const UNDO_WINDOW_S = 8
 
+  /** The error `written` is showing, if it is. */
+  let unsavedNotice = 0
+
+  /**
+   * Is what is on screen what is stored? `flush` resolves whether or not the
+   * write landed and keeps trying on its own, which is right for autosave and
+   * wrong for what is about to go out: whatever was last stored would be sent,
+   * or nothing at all if nothing ever was. Stays here, and says so, if not.
+   */
+  async function written(): Promise<boolean> {
+    await saver.flush()
+    if (!saver.retrying) {
+      // An error stays until dismissed, and this one is no longer true.
+      notify.dismiss(unsavedNotice)
+      return true
+    }
+    unsavedNotice = notify.error('This message could not be saved, so it has not been sent', {
+      key: 'mail-draft-not-saved',
+      body: 'It is still here, and saving it is being tried again.',
+    })
+    return false
+  }
+
   /**
    * `sendAt`, given, is "send later": an ISO instant `mail.send` forwards
    * verbatim to `sendDraft`, which the backend then uses exactly as given
@@ -642,7 +665,10 @@
     commitTyped('cc', ccText)
     commitTyped('bcc', bccText)
     syncBody()
-    await saver.flush()
+    // Written whatever `saver` thinks: a reply nobody has typed in has never
+    // been saved, and there is no draft to send until it has.
+    saver.touch(working.id)
+    if (!(await written())) return
     onclose()
     // Not awaited: `mail.send` handles its own failure (a toast, via
     // `handle`) now that this sheet is already gone, so there is nothing
@@ -669,7 +695,7 @@
     commitTyped('cc', ccText)
     commitTyped('bcc', bccText)
     syncBody()
-    await saver.flush()
+    if (!(await written())) return
     const closed = await proposals.accept(p)
     if (closed) onclose()
   }
@@ -687,20 +713,34 @@
     else menu.show(e, declineItems(declineProposal), reasons)
   }
 
+  /**
+   * The stored draft gone. The order is what matters: nothing further is
+   * written, whatever is already on its way lands first so it cannot follow
+   * the discard and bring the draft back -- locally, and, once that write
+   * reaches the outbox, on the server too -- and anything typed meanwhile is
+   * dropped after. `forget()` is `Autosave`'s own answer to "the record it
+   * would write is already gone", the same call `notes.svelte.ts`'s `remove()`
+   * makes for the same reason. False, and said so, if it did not happen, with
+   * the draft still here and still to be saved.
+   */
+  async function discardStored(id: DraftId): Promise<boolean> {
+    saver.forget(id)
+    try {
+      await saver.flush()
+      await mailApi.discardDraft(id)
+    } catch (e) {
+      saver.touch(id)
+      await handle(e)
+      return false
+    }
+    saver.forget(id)
+    return true
+  }
+
   async function discard() {
     syncBody()
     if (isBlankDraft(working)) {
-      await mailApi.discardDraft(working.id)
-      // The draft above no longer exists to write to. Without this,
-      // `onDestroy`'s safety-net `flush()` still finds `working.id` dirty
-      // from whatever `touch()` ran before this blank check, and writes
-      // `saveDraft` for a draft that was just discarded -- resurrecting it
-      // locally, and, once that write reaches the outbox, on the server too.
-      // `forget()` is `Autosave`'s own answer to "the record it would write
-      // is already gone" -- the same call `notes.svelte.ts`'s `remove()`
-      // makes for the same reason -- so there is nothing left for that
-      // safety net to do.
-      saver.forget(working.id)
+      if (!(await discardStored(working.id))) return
     } else {
       await saver.flush()
     }
@@ -710,30 +750,17 @@
   /** Guards the bin against a second click while the first is on its way. */
   let throwingAway = $state(false)
 
-  /**
-   * The bin: gone, where the close button keeps it. Words went with it, so it
-   * offers them back. The order is what matters: nothing further is written
-   * (it would only queue another upload of words being thrown away), whatever
-   * is already on its way lands first so it cannot follow the discard, and
-   * anything typed meanwhile is dropped after, as `discard` does above.
-   */
+  /** The bin: gone, where the close button keeps it. Words went with it, so
+   *  it offers them back. */
   async function throwAway() {
     const worthKeeping = edited || ownText().trim().length > 0
     const kept = $state.snapshot(working)
     const thread = underThread ? mail.selectedThread : null
     throwingAway = true
-    saver.forget(kept.id)
-    try {
-      await saver.flush()
-      await mailApi.discardDraft(kept.id)
-    } catch (e) {
-      // Still here, and still to be saved.
-      saver.touch(kept.id)
+    if (!(await discardStored(kept.id))) {
       throwingAway = false
-      await handle(e)
       return
     }
-    saver.forget(kept.id)
     onclose()
     if (!worthKeeping) return
     notify.info('Draft discarded', {

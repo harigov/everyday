@@ -200,9 +200,7 @@ where
         }
     };
 
-    let identities: Vec<String> = std::iter::once(account.address.clone())
-        .chain(account.identities.iter().map(|i| i.address.clone()))
-        .collect();
+    let identities: Vec<String> = crate::mailai::own_addresses(&account).into_iter().collect();
     let ctx = passes::SyncContext {
         vault: &vault,
         account_id,
@@ -276,14 +274,14 @@ where
         if statuses.take_changed(account_id) {
             svc.events().changed(Change::new(Kind::Thread, Op::Updated));
         }
-        // Priority mail noted during the pass, one notification for the
-        // whole of it. Taken even when nothing was noted, so a pass that
+        // Mail worth announcing noted during the pass, one notification for
+        // the whole of it. Taken even when nothing was noted, so a pass that
         // found none does not leave an earlier pass's note behind -- there
         // is nothing to leave, and taking an empty list is the way to be
         // sure. See `arrivals`.
-        let (priority_mail, total) = statuses.take_priority_mail(account_id);
+        let (new_mail, total) = statuses.take_new_mail(account_id);
         if let Some(notice) =
-            crate::arrivals::priority_mail_notice(&account_id.to_string(), &priority_mail, total)
+            crate::arrivals::new_mail_notice(&account_id.to_string(), &new_mail, total)
         {
             svc.events().notify(notice);
         }

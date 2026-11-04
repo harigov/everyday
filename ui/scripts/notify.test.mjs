@@ -19,6 +19,7 @@
 // exactly as the application compiles it.
 
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { load } from './harness.mjs'
 
 const { module: notifyPolicy, close } = await load('/src/lib/notify-policy.ts')
@@ -157,6 +158,13 @@ assert.ok(
   'the arriving toast survives even when every toast it joins is sticky',
 )
 assert.equal(stack[0].id, 2, 'and the oldest sticky one is what makes room for it')
+
+// The plugin's own `sendNotification` reports success and delivers nothing on
+// Linux -- see `crates/everyday-app/src/notice.rs` -- and fails in no way a
+// test here could see, so the one thing to check is that it is not called.
+const service = readFileSync(new URL('../src/lib/notify.svelte.ts', import.meta.url), 'utf8')
+assert.ok(!/\.sendNotification\(/.test(service), 'post through the shell, not the plugin')
+assert.ok(service.includes('api.postNotification('), 'through the shell')
 
 await close()
 console.log('notify: all checks passed')

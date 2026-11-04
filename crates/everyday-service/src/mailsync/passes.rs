@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use everyday_core::id::{AccountId, BlobId, MailMessageId, MailboxId};
 use everyday_core::mail::categorize::{self, CategorizeInput};
-use everyday_core::mail::{Body, Category, MailboxRole, Message, PartRef};
+use everyday_core::mail::{Body, MailboxRole, Message, PartRef};
 use everyday_core::packstore::{PackRef, PackStore};
 use everyday_core::store::mail::IngestMessage;
 use everyday_core::{MailDoc, MailSearch, Vault};
@@ -193,6 +193,7 @@ pub async fn sync_once<S: MailSession>(
         }
         vanished_by_mailbox.push(pass.vanished);
     }
+    settle_reply_candidates(ctx);
     for (mailbox, vanished) in mailboxes.iter().zip(&vanished_by_mailbox) {
         reap_vanished(ctx, mailbox, vanished);
     }
@@ -209,6 +210,29 @@ pub async fn sync_once<S: MailSession>(
         contacts.persist_if_dirty(ctx.vault);
     }
     Ok(mailboxes)
+}
+
+/// Ask of each message held by
+/// [`StatusRegistry::note_reply_candidate`](crate::mailsync::status::StatusRegistry::note_reply_candidate)
+/// whether its thread has the account's own word in it, now that every mailbox
+/// in the pass is stored. Off Gmail the Inbox comes first and Sent after it, so
+/// asking any sooner would miss an answer from a phone followed by a reply to
+/// it, and a message is only new the once.
+fn settle_reply_candidates(ctx: &SyncContext<'_>) {
+    let candidates = ctx.statuses.take_reply_candidates(ctx.account_id);
+    if candidates.is_empty() {
+        return;
+    }
+    let own = ctx
+        .vault
+        .account(ctx.account_id)
+        .map(|account| crate::mailai::own_addresses(&account))
+        .unwrap_or_default();
+    for (message, arrival) in candidates {
+        if crate::arrivals::thread_has_own_message(ctx.vault, message, &own) {
+            ctx.statuses.note_new_mail(ctx.account_id, arrival);
+        }
+    }
 }
 
 /// What one [`sync_headers`] pass over a mailbox comes back with.
@@ -418,6 +442,12 @@ pub async fn sync_headers<S: MailSession>(
         // Newest first within the batch too, matching the plan's ordering.
         headers.sort_by(|a, b| b.uid.cmp(&a.uid).then(b.internal_date.cmp(&a.internal_date)));
 
+        // Read per batch rather than once when the task started, so a change
+        // in Settings -- the rule, or an address added -- applies from the
+        // next mail in, and only when there is mail to ask it about.
+        let account = ctx.vault.account(ctx.account_id).ok();
+        let notify = account.as_ref().map(|a| a.mail_notify.clone()).unwrap_or_default();
+        let own = account.as_ref().map(crate::mailai::own_addresses).unwrap_or_default();
         let mut ingest_batch = Vec::with_capacity(headers.len());
         let mut arrivals = Vec::new();
         for header in &headers {
@@ -452,23 +482,27 @@ pub async fn sync_headers<S: MailSession>(
             // in `arrivals`.
             if crate::arrivals::ingest_is_news(&crate::arrivals::IngestFacts {
                 is_new: resolved.is_new,
-                priority: resolved.message.category == Some(Category::Priority),
                 unread: resolved.message.flags.unread(),
                 in_inbox: crate::arrivals::in_inbox(mailbox.row.role, &resolved.message.labels),
                 deleted: resolved.message.flags.deleted,
                 draft: resolved.message.flags.draft,
+                own: own.contains(&resolved.message.from.email.to_lowercase()),
                 mailbox_known,
                 sent_at: resolved.message.date,
                 now: jiff::Timestamp::now(),
             }) {
-                arrivals.push(crate::arrivals::PriorityMail {
-                    message_id: resolved.message.id.to_string(),
-                    from: crate::arrivals::sender_label(
-                        &resolved.message.from.name,
-                        &resolved.message.from.email,
-                    ),
-                    subject: resolved.message.subject.clone(),
-                });
+                arrivals.push((
+                    resolved.message.id,
+                    notify.wants_filed(resolved.message.category, None),
+                    crate::arrivals::NewMail {
+                        message_id: resolved.message.id.to_string(),
+                        from: crate::arrivals::sender_label(
+                            &resolved.message.from.name,
+                            &resolved.message.from.email,
+                        ),
+                        subject: resolved.message.subject.clone(),
+                    },
+                ));
             }
             ingest_batch.push(IngestMessage {
                 message: resolved.message.clone(),
@@ -541,8 +575,13 @@ pub async fn sync_headers<S: MailSession>(
             // then -- noting it now as well would announce it twice, the
             // first time for mail that is not in the vault.
             Ok(_) => {
-                for arrival in arrivals {
-                    ctx.statuses.note_priority_mail(ctx.account_id, arrival);
+                for (message, wanted, arrival) in arrivals {
+                    ctx.statuses.note_arrival(&arrival.message_id, Instant::now());
+                    if wanted {
+                        ctx.statuses.note_new_mail(ctx.account_id, arrival);
+                    } else if notify.wants_replies() {
+                        ctx.statuses.note_reply_candidate(ctx.account_id, message, arrival);
+                    }
                 }
             }
             Err(e) => {

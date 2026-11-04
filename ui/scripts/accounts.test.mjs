@@ -17,6 +17,10 @@ const {
   endpointOf,
   providersLabel,
   isPasswordAuth,
+  mailNotifyOf,
+  mailNotifyForChoice,
+  withChosen,
+  MAIL_NOTIFY_CHOICES,
 } = accounts
 
 // ── signInArgs ────────────────────────────────────────────────────────
@@ -173,6 +177,46 @@ assert.ok(
     scopes: [],
   }),
 )
+
+// ── Which new mail raises a notification ─────────────────────────────
+
+assert.deepEqual(mailNotifyOf({}), { type: 'important' }, 'an account that never chose')
+assert.deepEqual(mailNotifyOf({ mailNotify: { type: 'off' } }), { type: 'off' })
+assert.deepEqual(
+  MAIL_NOTIFY_CHOICES.map((c) => c.type).sort(),
+  ['all', 'categories', 'important', 'off', 'replies'],
+  'every rule is on offer',
+)
+
+const important = { type: 'important' }
+assert.deepEqual(mailNotifyForChoice('all', important), { type: 'all' })
+assert.deepEqual(
+  mailNotifyForChoice('categories', important),
+  { type: 'categories', tabs: ['priority', 'important'], sorted: [] },
+  'choosing categories starts from what important means',
+)
+assert.deepEqual(
+  mailNotifyForChoice('categories', { type: 'all' }).tabs,
+  ['priority', 'important', 'other', 'newsletter', 'notification'],
+  'and from everything, for somebody asking for everything',
+)
+for (const quiet of ['off', 'replies']) {
+  assert.deepEqual(
+    mailNotifyForChoice('categories', { type: quiet }).tabs,
+    [],
+    `and from nothing, coming from ${quiet}`,
+  )
+}
+const picked = { type: 'categories', tabs: ['other'], sorted: ['bills'] }
+assert.equal(
+  mailNotifyForChoice('categories', { type: 'all' }, picked),
+  picked,
+  'a pick from a moment ago comes back',
+)
+
+assert.deepEqual(withChosen(['a'], 'b', true), ['a', 'b'])
+assert.deepEqual(withChosen(['a', 'b'], 'a', false), ['b'])
+assert.deepEqual(withChosen(['a'], 'a', true), ['a'], 'ticked once')
 
 await close()
 console.log('accounts: all checks passed')

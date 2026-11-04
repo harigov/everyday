@@ -252,6 +252,9 @@ pub fn run() {
             commands::mcp_stop,
             commands::mcp_set_destructive,
             commands::mcp_issue_token,
+            // A notification the interface has decided should leave the
+            // window. See `notice.rs` for why the plugin does not post it.
+            notice::post_notification,
             // The OS-wide key to the palette.
             commands::hotkey_status,
             commands::set_hotkey,

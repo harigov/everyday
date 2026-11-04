@@ -1756,11 +1756,26 @@ export interface Account {
    *  rest is re-checked. Absent or `null` is the default, one minute; the
    *  backend clamps anything else to 1..1440. */
   syncMinutes?: number | null
+  /** Which of this account's new mail raises a notification. Absent is the
+   *  default, `{ type: 'important' }`. */
+  mailNotify?: MailNotify
   status: AccountStatus
   lastSyncedAt?: string | null
   createdAt: string
   updatedAt: string
 }
+
+/**
+ * Which of an account's new mail is worth interrupting somebody for -- mirrors
+ * `MailNotify` in `everyday-core`. `sorted` names categories of somebody's own
+ * by `SortCategory.id`, which only a decision model files anything under.
+ */
+export type MailNotify =
+  | { type: 'off' }
+  | { type: 'important' }
+  | { type: 'all' }
+  | { type: 'categories'; tabs: MailCategory[]; sorted: string[] }
+  | { type: 'replies' }
 
 /**
  * An account, plus what the interface is allowed to know about its secret --

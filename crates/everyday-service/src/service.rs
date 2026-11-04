@@ -978,6 +978,16 @@ impl Service {
         self.routines.detach(routine, run);
     }
 
+    /// Carry the model's passes over mail out beside the scheduler's tick,
+    /// unless the last ones are still going. See
+    /// `RoutineRuntime::detach_mail_passes`.
+    pub(crate) fn detach_mail_passes(
+        &self,
+        run: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        self.routines.detach_mail_passes(run);
+    }
+
     /// Whether a run of `routine` is going on beside the tick.
     pub(crate) fn routine_in_flight(&self, routine: everyday_core::RoutineId) -> bool {
         self.routines.in_flight(routine)
