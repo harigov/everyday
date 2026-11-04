@@ -1148,6 +1148,84 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
 /// found without any of it being touched again, and replaying the step (a
 /// process that died before recording the version does) changes nothing.
 #[test]
+fn a_version_19_database_moves_threads_you_replied_to_up_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
+    let start = jiff::Timestamp::now();
+    let message = |thread: ThreadId, hours: i64| Message {
+        id: MailMessageId::new(),
+        account_id: account,
+        thread_id: thread,
+        message_id_header: format!("<{}@example.com>", MailMessageId::new()),
+        date: start + jiff::SignedDuration::from_hours(hours),
+        from: Address::new("Somebody", "somebody@example.com"),
+        to: vec![Address::bare("me@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "Plans".into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    let (answered, other, sent_only) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
+    let (arrived, newer) = (message(answered, 0), message(other, 1));
+    let before = (arrived.date, newer.date);
+    {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        store.put_mailbox(&inbox).unwrap();
+        store.put_mailbox(&sent).unwrap();
+        store
+            .ingest(
+                account,
+                vec![
+                    IngestMessage { message: arrived, mailbox: inbox.id, uid: 1 },
+                    IngestMessage { message: newer, mailbox: inbox.id, uid: 2 },
+                    IngestMessage { message: message(answered, 2), mailbox: sent.id, uid: 1 },
+                    IngestMessage { message: message(sent_only, 3), mailbox: sent.id, uid: 2 },
+                ],
+            )
+            .unwrap();
+    }
+
+    // What an earlier build left: every row placed only by what is filed there.
+    let rewind = || {
+        let conn = raw(dir.path());
+        for (thread, date) in [(answered, before.0), (other, before.1)] {
+            conn.execute(
+                "UPDATE thread_mailboxes SET last_date_us = ?1
+                 WHERE thread_id = ?2 AND mailbox_id = ?3",
+                rusqlite::params![date.as_microsecond(), thread.to_string(), inbox.id.to_string()],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 19i64).unwrap();
+    };
+    let listed = |mailbox: &Mailbox| -> Vec<ThreadId> {
+        let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+        let page = store.list_threads(mailbox.id, &ThreadFilter::default(), None, 50).unwrap();
+        page.threads.iter().map(|t| t.id).collect()
+    };
+
+    rewind();
+    assert_eq!(listed(&inbox), vec![answered, other]);
+    assert_eq!(listed(&sent), vec![sent_only, answered], "Sent is already in this order");
+
+    // Replayed over itself, as a crash before the version is recorded leaves it.
+    raw(dir.path()).pragma_update(None, "user_version", 19i64).unwrap();
+    assert_eq!(listed(&inbox), vec![answered, other]);
+}
+
+#[test]
 fn a_version_18_database_fills_in_the_starred_and_attachment_columns() {
     let dir = tempfile::tempdir().unwrap();
     let account = AccountId::new();

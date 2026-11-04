@@ -19,10 +19,12 @@
 //! own list, [`MailStore::list_threads`], pages over `thread_mailboxes`
 //! instead, which keeps a *second*, per-mailbox count of the same thread:
 //! how many of its messages are actually filed in *this* mailbox, and when
-//! the most recent of those arrived. The two are allowed to disagree -- a
-//! thread with a reply that landed only in Sent, or a label applied to one
-//! message but not the rest, must not make every mailbox it touches jump to
-//! the top of its own list. [`MailStore::ingest`],
+//! the most recent of those arrived, or of what the person sent in the thread
+//! if that is later. A reply lands only in Sent, and moves the thread up every
+//! list it is filed in, as an answer to it would. The two are otherwise allowed
+//! to disagree -- a draft being saved, mail that landed only in Archive, or a
+//! label applied to one message but not the rest, must not make every mailbox
+//! it touches jump to the top of its own list. [`MailStore::ingest`],
 //! [`MailStore::update_flags`], [`MailStore::update_labels`] and
 //! [`MailStore::remove_uids`] all recompute both views, in the same write,
 //! every time either one could have changed.
@@ -207,8 +209,8 @@ pub trait MailStore: Send + Sync {
 
     // ---- the inbox query ----------------------------------------------------
 
-    /// One mailbox's threads, newest activity in *this mailbox* first,
-    /// keyset-paged over `thread_mailboxes (mailbox_id, last_date_us DESC,
+    /// One mailbox's threads, newest first by what is filed in *this mailbox*
+    /// or was sent in the thread, keyset-paged over `thread_mailboxes (mailbox_id, last_date_us DESC,
     /// thread_id)` -- the index the plan names as the one the inbox reads.
     /// Returns [`Thread`] summaries only, never a message body.
     fn list_threads(
@@ -221,8 +223,8 @@ pub trait MailStore: Send + Sync {
 
     /// Threads from any of `mailboxes`, merged into one list: newest
     /// activity first, on the same keyset [`MailStore::list_threads`] pages
-    /// one mailbox by -- each thread placed by its newest message in
-    /// whichever listed mailbox holds it -- with the same `filter` applied
+    /// one mailbox by -- each thread placed as [`MailStore::list_threads`]
+    /// places it in whichever listed mailbox holds it -- with the same `filter` applied
     /// to every one. Typically one mailbox of the same role from each
     /// account, which is what the unified Inbox is; [`MailStore::list_threads`]
     /// is exactly this method with one mailbox in the slice, and must

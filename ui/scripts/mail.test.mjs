@@ -844,6 +844,50 @@ assert.deepEqual(
   'one heading ahead of each run, never one per row under it',
 )
 
+// A list runs in order of the newest message filed in the mailbox or sent in
+// the thread, while a row's `lastDate` is the newest anywhere -- in Sent, an
+// answer to what you sent -- so a row can be newer than the rows either side of
+// it. It stays under the heading it falls in. Going by when the key last changed
+// instead gave a second `header:yesterday`, and two rows with one key are an
+// error from the keyed `{#each}` that left the list on screen frozen, or blank.
+const answeredLater = withDateSections(
+  [
+    thread('a', '2026-09-13T08:00:00'),
+    thread('answered today', '2026-09-14T09:00:00'),
+    thread('b', '2026-09-13T07:00:00'),
+    thread('c', '2026-09-10T08:00:00'),
+    thread('also answered today', '2026-09-14T10:00:00'),
+    thread('d', '2026-09-09T08:00:00'),
+    thread('answered yesterday', '2026-09-13T10:00:00'),
+  ],
+  (t) => t.lastDate,
+  mondayNow,
+)
+assert.deepEqual(
+  answeredLater.map((r) => (r.type === 'header' ? `#${r.key}` : r.thread.id)),
+  [
+    '#yesterday',
+    'a',
+    'answered today',
+    'b',
+    '#lastWeek',
+    'c',
+    'also answered today',
+    'd',
+    'answered yesterday',
+  ],
+  'headings only ever move back in time, so none is drawn twice',
+)
+assert.deepEqual(
+  withDateSections(
+    [thread('answered today', '2026-09-14T09:00:00'), thread('a', '2026-09-13T08:00:00')],
+    (t) => t.lastDate,
+    mondayNow,
+  ).map((r) => (r.type === 'header' ? `#${r.key}` : r.thread.id)),
+  ['#today', 'answered today', '#yesterday', 'a'],
+  'the first row opens the first heading, whatever follows it',
+)
+
 // ── Compose: a blank draft is discarded, not autosaved ──────────────────
 //
 // `MailCompose.svelte`'s `discard()` used to delete the draft on this branch

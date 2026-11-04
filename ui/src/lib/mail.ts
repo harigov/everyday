@@ -344,6 +344,15 @@ export type ListRow =
  * ordinarily. Threads are assumed already in the order the caller wants
  * them drawn (newest first, from the backend's own sort) -- this never
  * reorders them, only inserts headings between runs.
+ *
+ * That order is not quite `dateOf`'s. A mailbox sorts by the newest message
+ * filed in it or sent in the thread, and `lastDate` is the newest anywhere, so
+ * in Sent, a thread somebody has since answered sits among older rows with a
+ * newer date. So only an older row opens a heading, and that one stays under
+ * the heading it falls in: headings only move back in time, so no section is
+ * headed twice, which matters beyond how it reads -- `MailView`'s rows are keyed
+ * by section, and a repeated key is an error from `{#each}` that stops the list
+ * drawing.
  */
 export function withDateSections(
   threads: readonly Thread[],
@@ -352,11 +361,15 @@ export function withDateSections(
 ): ListRow[] {
   const out: ListRow[] = []
   let currentKey: string | null = null
+  let openedAt = Infinity
   for (const thread of threads) {
-    const section = dateSection(dateOf(thread), now)
-    if (section.key !== currentKey) {
+    const instant = dateOf(thread)
+    const section = dateSection(instant, now)
+    const at = new Date(instant).getTime()
+    if (section.key !== currentKey && at < openedAt) {
       out.push({ type: 'header', key: section.key, label: section.label })
       currentKey = section.key
+      openedAt = at
     }
     out.push({ type: 'thread', thread })
   }

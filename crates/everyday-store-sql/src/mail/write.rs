@@ -1068,6 +1068,22 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
         Some(row) => (row.i64(0)? != 0, row.i64(1)? != 0),
         None => (false, false),
     };
+    // A thread's place in a list is the newest message filed there or the
+    // newest the person sent in it, whichever is later. A reply lands only in
+    // Sent, but it is as much the conversation moving as an answer to it would
+    // be. Nothing else filed elsewhere counts: a draft being autosaved, or mail
+    // that landed only in Archive, must not move a thread up the Inbox.
+    let sent_us = match tx.query_opt(
+        "SELECT COALESCE(MAX(m.date_us), 0) \
+         FROM mail_messages m \
+         JOIN message_mailboxes mm ON mm.message_id = m.id \
+         JOIN mailboxes mb ON mb.id = mm.mailbox_id \
+         WHERE m.thread_id = ?1 AND mb.role = 'sent'",
+        &vals![thread_id.to_string()],
+    )? {
+        Some(row) => row.i64(0)?,
+        None => 0,
+    };
     // The `NOT IN` sub-select is what keeps this from rebuilding a row
     // `hide_thread_from_mailbox` just deleted on purpose:
     // `message_mailboxes` still names the mailbox (the op has not reached a
@@ -1089,7 +1105,7 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
     for row in &rows {
         let mailbox_id = row.text(0)?;
         let unread = row.i64(1)?;
-        let last_date_us = row.i64(2)?;
+        let last_date_us = row.i64(2)?.max(sent_us);
         tx.execute(
             "INSERT INTO thread_mailboxes
                (thread_id, mailbox_id, last_date_us, unread, starred, has_attachments)

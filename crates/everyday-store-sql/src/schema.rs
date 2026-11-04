@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -108,6 +108,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v17(d),
         v18(d),
         v19(d),
+        v20(),
     ]
 }
 
@@ -1525,6 +1526,25 @@ fn v19(d: Dialect) -> Vec<String> {
          ON thread_mailboxes (mailbox_id, last_date_us DESC, thread_id)"
             .into(),
     ]
+}
+
+/// Version 20: a reply moves a thread up the lists it is filed in.
+///
+/// `thread_mailboxes.last_date_us` was the newest message filed in the mailbox,
+/// and is now that or the newest the person sent in the thread, whichever is
+/// later: see `recompute_thread_mailboxes`, which only reaches a thread the next
+/// time something is written to it. This brings the rest up to date.
+///
+/// Safe to replay: a row this has already moved is no longer older than what
+/// was sent.
+fn v20() -> Vec<String> {
+    let sent = "SELECT MAX(m.date_us) FROM mail_messages m \
+         JOIN message_mailboxes mm ON mm.message_id = m.id \
+         JOIN mailboxes mb ON mb.id = mm.mailbox_id \
+         WHERE m.thread_id = thread_mailboxes.thread_id AND mb.role = 'sent'";
+    vec![format!(
+        "UPDATE thread_mailboxes SET last_date_us = ({sent}) WHERE last_date_us < ({sent})"
+    )]
 }
 
 #[cfg(test)]
