@@ -493,6 +493,57 @@ fn skip_bom_and_whitespace(bytes: &[u8]) -> &[u8] {
     bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes).trim_ascii_start()
 }
 
+/// Whether a person would call this part an attachment: what gets a chip under a
+/// message, and what its `has_attachments` flag says at sync, so the paperclip
+/// and the chips cannot disagree.
+///
+/// [`Body::parts`] holds every leaf of the message, which is rather more than its
+/// attachments. Left out:
+///
+/// * A cryptographic signature, which is nothing a person can read.
+/// * A picture the body already shows -- a signature's logo, an image pasted
+///   into the text. Sent with a name more often than not (Outlook's
+///   `image001.png`), so it is told by the `cid:` reference to it.
+/// * The message's own text. Its `text/plain` and `text/html` alternatives are
+///   parts with no name, and so is a calendar invitation, which is drawn as its
+///   own card. Any other nameless text is a file: a `text/csv` is not the body.
+/// * A picture with a `Content-ID` and no name. Nobody attaches a file with no
+///   name, so this is one meant for the body whose reference did not survive,
+///   such as a tracking pixel the sanitiser removed.
+///
+/// What the sender marked as an attachment stays, and so does a named part with a
+/// `Content-ID` that nothing refers to: Apple Mail gives an ordinary attachment
+/// one, and leaving it out would hide the file.
+pub(crate) fn is_attachment(
+    part: &PartRef,
+    html_sanitised: &str,
+    message_id: MailMessageId,
+) -> bool {
+    let mime = part.mime_type.trim().to_ascii_lowercase();
+    if matches!(
+        mime.as_str(),
+        "application/pgp-signature"
+            | "application/pkcs7-signature"
+            | "application/x-pkcs7-signature"
+    ) {
+        return false;
+    }
+    if let Some(cid) = part.cid.as_deref()
+        && everyday_mail::sanitize::references_part(html_sanitised, &message_id.to_string(), cid)
+    {
+        return false;
+    }
+    if part.attached {
+        return true;
+    }
+    if part.filename.is_none()
+        && matches!(mime.as_str(), "text/plain" | "text/html" | "text/calendar")
+    {
+        return false;
+    }
+    part.cid.is_none() || part.filename.is_some() || !mime.starts_with("image/")
+}
+
 fn find_part<'a>(body: &'a Body, identifier: &str) -> Option<&'a PartRef> {
     body.parts
         .iter()
@@ -990,6 +1041,7 @@ mod tests {
             mime_type: "text/html".into(),
             size: 10,
             blob: Some(blob),
+            attached: false,
         });
         vault.save_body(&body).unwrap();
 
@@ -1011,6 +1063,7 @@ mod tests {
             mime_type: "image/svg+xml".into(),
             size: 10,
             blob: Some(blob),
+            attached: false,
         });
         vault.save_body(&body).unwrap();
 
@@ -1041,6 +1094,7 @@ mod tests {
             mime_type: "image/svg+xml".into(),
             size: bytes.len() as u64,
             blob: Some(blob),
+            attached: false,
         });
         vault.save_body(&body).unwrap();
 
@@ -1065,6 +1119,7 @@ mod tests {
             mime_type: "image/svg+xml".into(),
             size: 10,
             blob: Some(blob),
+            attached: false,
         });
         vault.save_body(&body).unwrap();
 
@@ -1088,6 +1143,7 @@ mod tests {
             mime_type: "image/png".into(),
             size: png.len() as u64,
             blob: Some(blob),
+            attached: false,
         });
         vault.save_body(&body).unwrap();
 
@@ -1108,6 +1164,7 @@ mod tests {
             mime_type: "text/plain".into(),
             size: 9,
             blob: Some(blob),
+            attached: false,
         });
         vault.save_body(&body).unwrap();
 

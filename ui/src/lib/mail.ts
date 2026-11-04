@@ -91,18 +91,29 @@ export function formatSenders(participants: MailAddress[], max = 2): string {
  * name. A long thread is read by who is talking, and the same few first names
  * say that with less to read past.
  *
- * Only a person has a first name: "The Economist" and "Dr. Lee" stay whole.
+ * Only a person has a first name: "The Economist", "Bank of America" and
+ * "Dr. Lee" stay whole. After a comma is a given name only if it is not a suffix:
+ * "Stripe, Inc." is Stripe and "Jane Doe, MD" is Jane.
  */
 export function firstName(person: MailAddress): string {
   const name = person.name.trim().replace(/^["']|["']$/g, '')
   if (!name) return person.email.split('@')[0] || person.email
   const comma = name.indexOf(',')
-  const given = comma > 0 ? name.slice(comma + 1).trim() : name
-  const first = given.split(/\s+/)[0] || name
-  return NOT_A_GIVEN_NAME.test(first) ? name : first
+  const after = comma > 0 ? name.slice(comma + 1).trim() : ''
+  const whole = !after
+    ? name
+    : NAME_SUFFIX.test(after.split(/\s+/)[0] ?? '')
+      ? name.slice(0, comma)
+      : after
+  const first = whole.split(/\s+/)[0] || whole
+  return NOT_A_GIVEN_NAME.test(first) || NOT_A_PERSON.test(whole) ? whole : first
 }
 
+const NAME_SUFFIX =
+  /^(?:inc|llc|ltd|limited|corp|co|gmbh|plc|llp|lp|pty|sa|ag|bv|nv|md|phd|dds|do|rn|cpa|mba|esq|jr|sr|ii|iii|iv)\.?$/i
 const NOT_A_GIVEN_NAME = /^(?:the|a|an|my|your|our|team|mr|mrs|ms|mx|dr|prof|sir)\.?$/i
+const NOT_A_PERSON =
+  /(?:^|\s)(?:of|and|for|the|at|&|bank|team|support|calendar|notifications?|news|newsletter|billing|services?|updates|alerts|security|group|labs|university|college|foundation|company|customer|sales|help|info|noreply|no-reply|mail|mailer|digest|community)(?:\s|$)/i
 
 /** "John & Me", "Dustin, Priya & Me", "Dustin, Priya, Tom, Ana +3": everybody a
  *  message went to, the reader last, because that is where a reader looks. */

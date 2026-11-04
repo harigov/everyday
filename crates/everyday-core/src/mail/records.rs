@@ -484,6 +484,10 @@ pub struct PartRef {
     pub size: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<BlobId>,
+    /// The sender marked this `Content-Disposition: attachment`. `false` for a
+    /// part stored before this was kept, which says nothing either way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub attached: bool,
 }
 
 /// One remote image `everyday_mail::sanitize::sanitize` proxied rather than

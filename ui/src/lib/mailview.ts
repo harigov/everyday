@@ -189,7 +189,16 @@ function mockDocument(inner: string): string {
  * of its own, whatever the theme: see `mailbody.ts`'s `isDesigned`.
  */
 export function quoteDocument(quotedHtml: string, dark: boolean): string {
-  const styled = looksDesigned(quotedHtml)
+  /** Pressing Reply must not depend on this being able to read the message. */
+  function safely<T>(read: () => T, otherwise: T): T {
+    try {
+      return read()
+    } catch {
+      return otherwise
+    }
+  }
+
+  const styled = safely(() => looksDesigned(quotedHtml), true)
   const paper = !dark || styled
   const fg = paper ? '#1c1a17' : '#eceaf0'
   const muted = paper ? '#5f5a52' : '#a9a5b2'
@@ -199,7 +208,10 @@ export function quoteDocument(quotedHtml: string, dark: boolean): string {
     : 'background:transparent;padding:0 2px;'
   const inner = styled
     ? quotedHtml
-    : adaptToPage(quotedHtml, { background: dark ? '#201f24' : '#fffefc', text: fg })
+    : safely(
+        () => adaptToPage(quotedHtml, { background: dark ? '#201f24' : '#fffefc', text: fg }),
+        quotedHtml,
+      )
   return applyPlatformOrigin(
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src everyday: http://everyday.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
@@ -298,6 +310,8 @@ export interface RenderedBody {
   /** Whether a picture nobody has allowed yet is somewhere in what is shown,
    *  so that "Images hidden" is not offered for one folded out of sight. */
   hidesImages: boolean
+  /** The body's own `imagesHidden`, which the frame's height depends on. */
+  imagesHidden: boolean
 }
 
 export interface RenderOptions {
@@ -319,14 +333,27 @@ export interface RenderOptions {
  * it.
  *
  * A picture with no background of its own is usually a logo drawn for white, so
- * it gets one on a dark page, where it would otherwise all but vanish. Not
- * while pictures are hidden: each would be a white box with nothing in it, so
- * those take no room at all until they are allowed.
+ * it gets one on a dark page, where it would otherwise all but vanish. One nobody
+ * has allowed yet takes no room at all until it is: it would be a white box with
+ * nothing in it.
+ *
+ * Never throws. This runs while a thread is being drawn, on a stranger's markup,
+ * and a mistake here should cost one message its theming rather than the whole
+ * pane: such a message is shown as it was stored, in the same frame.
  */
 export function renderBody(html: string, options: RenderOptions): RenderedBody {
+  try {
+    return readForTheme(html, options)
+  } catch {
+    const { imagesHidden } = options
+    return { html, hasHistory: false, paper: false, hidesImages: imagesHidden, imagesHidden }
+  }
+}
+
+function readForTheme(html: string, options: RenderOptions): RenderedBody {
   const parts = splitDocument(html)
-  if (!parts) return { html, hasHistory: false, paper: false, hidesImages: false }
   const { dark, imagesHidden } = options
+  if (!parts) return { html, hasHistory: false, paper: false, hidesImages: false, imagesHidden }
   const page = {
     background: dark ? MAIL_CARD.dark : MAIL_CARD.light,
     text: dark ? APP_TEXT.dark : APP_TEXT.light,
@@ -346,6 +373,7 @@ export function renderBody(html: string, options: RenderOptions): RenderedBody {
       hasHistory: read.hasHistory,
       paper: true,
       hidesImages,
+      imagesHidden,
     }
   }
   const rule = dark ? '#4a4851' : '#d6d2ca'
@@ -358,7 +386,8 @@ export function renderBody(html: string, options: RenderOptions): RenderedBody {
     `details>summary{display:none}` +
     `blockquote{margin:0.5em 0;padding-left:12px;border-left:2px solid ${rule}}` +
     `hr{border:0;border-top:1px solid ${rule}}` +
-    (imagesHidden ? `img[src*="/mail/img/"]{display:none}` : dark ? 'img{background:#ffffff}' : '')
+    (imagesHidden ? `img[src*="/mail/img/"]{display:none}` : '') +
+    (dark ? 'img{background:#ffffff}' : '')
   // A quote left in the middle of an answer is part of reading the answer.
   const opened = read.html.replace(/<details(?=[\s>])/gi, '<details open')
   return {
@@ -366,6 +395,7 @@ export function renderBody(html: string, options: RenderOptions): RenderedBody {
     hasHistory: read.hasHistory,
     paper: false,
     hidesImages,
+    imagesHidden,
   }
 }
 
@@ -391,6 +421,14 @@ function bodyTag(parts: { tail: string }, inner: string): string {
  * mail on a dark page.
  */
 export function applyBodyTheme(html: string, dark: boolean): string {
+  try {
+    return themedDocument(html, dark)
+  } catch {
+    return html
+  }
+}
+
+function themedDocument(html: string, dark: boolean): string {
   const parts = splitDocument(html)
   if (!parts) return html
   if (looksDesigned(parts.inner)) {

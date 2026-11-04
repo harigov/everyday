@@ -19,6 +19,13 @@ const DARK_PAGE = { background: MAIL_CARD.dark, text: '#eceaf0' }
 const read = (html, options = {}) => readBody(html, { page: DARK_PAGE, ...options })
 const shows = (html, options) => read(html, options).html
 
+const doc = (inner) =>
+  '<!DOCTYPE html><html><head><style>body{color:#1c1a17;background:#f7f6f3}' +
+  '@media (prefers-color-scheme: dark){body{color:#eceaf0;background:#17161a}}</style>' +
+  `</head><body>${inner}</body></html>`
+const added = (html) => html.match(/<style>([^<]*)<\/style><\/head>/)?.[1] ?? ''
+const options = { dark: true, showHistory: false, subject: '', imagesHidden: false }
+
 // ── What real mail looks like, once `sanitize::sanitize` has been through it ──
 
 const OUTLOOK_DESKTOP =
@@ -123,6 +130,64 @@ assert.equal(
     !shows(elsewhere).includes('fruehere'),
     "Outlook's header starts the history, wherever its words are, even in a header this cannot read",
   )
+
+  // An ordinary word in somebody's answer is not a gateway's footer.
+  for (const answer of [
+    'Yes. The virus scan passed, and the rest of my answer is here.',
+    'Those are confidential until Friday.',
+    'Privileged and confidential: my notes follow.',
+    'Yes, I agree. This email is confidential and intended for you.',
+  ]) {
+    const below = `<p>See below.</p><blockquote type="cite">Ok?</blockquote><p>${answer}</p>`
+    assert.equal(read(below).hasHistory, false, `an answer under the quote: ${answer}`)
+    assert.ok(shows(below).includes(answer))
+  }
+  assert.equal(
+    read(`${GMAIL}<div>-- <br>You received this message because you subscribed.</div>`).hasHistory,
+    true,
+    "a list's footer",
+  )
+
+  // A sentence can start with "On" and end in "wrote:".
+  const sentence =
+    '<p>Hi Sam,</p><p>On the subject of the launch, this is what I wrote:</p><p>We ship.</p>'
+  assert.equal(read(sentence).hasHistory, false, 'prose is not a reply header')
+  const digest = '<p>Top stories</p><p>On Monday, Seth wrote:</p><p>A thing about marketing.</p>'
+  assert.equal(read(digest).hasHistory, false, 'nor is a digest')
+  assert.ok(shows(digest).includes('A thing about marketing'))
+  assert.equal(
+    read('<p>Yes</p><p>On Thu, Tom wrote:</p><blockquote>Old.</blockquote>').hasHistory,
+    true,
+    'no date, but the quote it introduces is right there',
+  )
+  assert.equal(
+    read('<p>Yes</p><p>On Oct 29, 2026, Tom wrote:</p><p>Old, in a client with no blockquote.</p>')
+      .hasHistory,
+    true,
+    'a date says it is a header without one',
+  )
+
+  // What somebody wrote is not only letters and digits.
+  assert.ok(
+    shows(`<div>Thanks!</div><div>🙏</div>${GMAIL}`).includes('🙏'),
+    'an emoji above a fold',
+  )
+  assert.ok(
+    shows('<p>Yes?</p><p>?</p><blockquote type="cite">Old.</blockquote>').includes('<p>?</p>'),
+    'a lone question mark',
+  )
+  const thumbs = '<p>See below.</p><blockquote type="cite">Ok to ship?</blockquote><p>👍</p>'
+  assert.equal(read(thumbs).hasHistory, false, 'an emoji answer under the quote')
+  assert.ok(
+    !shows('<div>Hi</div><div>----</div><blockquote type="cite">Old.</blockquote>').includes(
+      '----',
+    ),
+    'a rule is still a rule',
+  )
+
+  // Nothing in it, nothing to fold.
+  assert.equal(read('<div>Hi there</div><div id="appendonsend"></div>').hasHistory, false)
+  assert.equal(read('<div>Hi there</div><div class="gmail_quote"></div>').hasHistory, false)
 
   const quoteOnly = '<blockquote type="cite">Earlier words.</blockquote>'
   assert.equal(read(quoteOnly).hasHistory, false, 'nothing of their own: nothing is folded')
@@ -260,6 +325,86 @@ assert.equal(read(GMAIL + NEWSLETTER).designed, false, 'a reply over a newslette
   assert.ok(looksDesigned(image), 'a semicolon inside a url is not the end of the declaration')
 }
 
+// ── Colours a stranger can name ───────────────────────────────────────
+
+for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']) {
+  for (const markup of [
+    `<td bgcolor="${hostile}">hi</td>`,
+    `<font color="${hostile}">hi</font>`,
+    `<p style="color:${hostile};background:${hostile}">hi</p>`,
+    `<style>p{color:${hostile}}</style><p>&${hostile};</p>`,
+  ]) {
+    assert.doesNotThrow(() => renderBody(doc(markup), options), markup)
+    assert.doesNotThrow(() => applyBodyTheme(doc(markup), true), markup)
+    assert.doesNotThrow(() => quoteDocument(markup, true), markup)
+  }
+}
+
+{
+  const inkOf = (html) => /color:(#[\da-f]{6})/.exec(shows(html))?.[1]
+  assert.equal(inkOf('<font color="#ff0000">IMPORTANT</font>') !== undefined, true, 'a red font')
+  assert.ok(
+    /<font style="color:#[\da-f]{6}">IMPORTANT/.test(
+      shows('<font color="#ff0000">IMPORTANT</font>'),
+    ),
+    'keeps a colour rather than losing it, when it is moved',
+  )
+  assert.ok(inkOf('<font color="#1F497D">Josh</font>'), 'and navy')
+
+  assert.ok(inkOf('<p style="color:midnightblue">Dark</p>'), 'every name CSS has')
+  assert.ok(
+    !/hsl/.test(shows('<p style="color:hsl(0,0%,5%)">Dark</p>')),
+    'hsl() is read, and near black becomes the page text',
+  )
+  assert.ok(
+    /color:#1c1a17/.test(shows('<div style="background:lightyellow">note</div>')),
+    'ink on it',
+  )
+  assert.ok(!/midnightblue/.test(shows('<style>.a{color:midnightblue}</style><p class="a">x</p>')))
+  for (const unknown of [
+    '<p style="color:lab(20% 10 10)">x</p>',
+    '<p style="background-color:var(--panel)">x</p>',
+    '<div style="background:oklch(0.9 0.1 90)">x</div>',
+    '<style>p{color:color-mix(in srgb, red, blue)}</style><p>x</p>',
+    '<font color="notacolour">x</font>',
+  ]) {
+    assert.equal(
+      looksDesigned(unknown),
+      true,
+      `a colour nothing can read goes on white: ${unknown}`,
+    )
+  }
+  for (const nothing of ['inherit', 'currentcolor', 'transparent', 'rgba(0,0,0,0)', '#0000']) {
+    assert.equal(looksDesigned(`<p style="color:${nothing}">x</p>`), false, nothing)
+  }
+}
+
+{
+  // Lower-casing `İ` makes it longer, which must not move what is read after it.
+  const text = `${'İ'.repeat(30)}<style>a{color:#fff}</style><div>hello</div><style>a{color:#000}</style><div>after</div>`
+  const out = shows(text)
+  assert.ok(out.includes('<div>hello</div>'), 'nothing is swallowed')
+  assert.ok(!out.includes('color:#000'), 'and the second sheet is still read')
+}
+
+// ── renderBody never throws ───────────────────────────────────────────
+
+{
+  const body = doc('<p>Still here.</p>')
+  const unreadable = {
+    dark: true,
+    showHistory: false,
+    imagesHidden: true,
+    get subject() {
+      throw new Error('anything at all')
+    },
+  }
+  const out = renderBody(body, unreadable)
+  assert.equal(out.html, body, 'a message that cannot be read is shown as it was stored')
+  assert.equal(out.paper, false)
+  assert.equal(out.hidesImages, true, 'and its pictures can still be asked for')
+}
+
 // ── estimateWrittenHeight ─────────────────────────────────────────────
 
 {
@@ -288,6 +433,34 @@ assert.equal(read(GMAIL + NEWSLETTER).designed, false, 'a reply over a newslette
   near('<div>a</div><img>', 520, 124, 'or a guess when it does not')
   near('<pre>one\ntwo\n\nfour</pre>', 520, 111, 'preformatted lines are its own')
   near('<style>p{color:red;margin:0}</style><div>a</div>', 520, 24, 'a sheet draws nothing')
+  near(
+    '<div>a</div><div style="display:none">a hidden preheader</div>',
+    520,
+    24,
+    'nor does hidden text',
+  )
+  near(
+    '<div>a</div><div style="display:none"><img height="400"></div>',
+    520,
+    24,
+    'or what is in it',
+  )
+  near(
+    '<details open><summary>Quoted</summary><pre>x</pre></details>',
+    520,
+    39,
+    'or a hidden summary',
+  )
+  const waiting = '<div>a</div><img src="everyday://mail/img/m/t">'.repeat(1)
+  assert.ok(
+    estimateWrittenHeight(page(waiting), 520, true) < 40,
+    'a picture nobody has allowed yet takes no room',
+  )
+  assert.ok(estimateWrittenHeight(page(waiting), 520) > 100, 'once allowed, it does')
+  assert.ok(
+    estimateWrittenHeight(page(`<div>${'漢'.repeat(300)}</div>`), 600) >= 192,
+    'characters drawn twice as wide take twice the lines',
+  )
   assert.ok(
     estimateWrittenHeight(page(`<div>${'word '.repeat(200000)}</div>`), 520) <= 60000,
     'it does have a limit',
@@ -304,13 +477,6 @@ assert.equal(read(GMAIL + NEWSLETTER).designed, false, 'a reply over a newslette
 }
 
 // ── renderBody ────────────────────────────────────────────────────────
-
-const doc = (inner) =>
-  '<!DOCTYPE html><html><head><style>body{color:#1c1a17;background:#f7f6f3}' +
-  '@media (prefers-color-scheme: dark){body{color:#eceaf0;background:#17161a}}</style>' +
-  `</head><body>${inner}</body></html>`
-const added = (html) => html.match(/<style>([^<]*)<\/style><\/head>/)?.[1] ?? ''
-const options = { dark: true, showHistory: false, subject: '', imagesHidden: false }
 
 {
   const plain = renderBody(doc(GMAIL), options)
@@ -355,7 +521,10 @@ const options = { dark: true, showHistory: false, subject: '', imagesHidden: fal
   const visible = renderBody(doc(`<p>Hi</p>${picture}`), hidden)
   assert.equal(visible.hidesImages, true, 'a hidden picture in view is offered')
   assert.ok(added(visible.html).includes('display:none'), 'and takes no room until it is allowed')
-  assert.ok(!added(visible.html).includes('img{background'), 'nor a white box')
+  assert.ok(
+    added(visible.html).includes('img{background:#ffffff}'),
+    "the message's own pictures still get their white backing, which a dark logo needs",
+  )
 
   const inHistory = doc(`<p>Hi</p><blockquote type="cite">${picture}</blockquote>`)
   assert.equal(renderBody(inHistory, hidden).hidesImages, false, 'folded out of sight: not offered')
@@ -418,6 +587,11 @@ assert.ok(!quoteDocument('<p style="color:#000">x</p>', true).includes('color:#0
   assert.equal(firstName(person('', 'priya@example.com')), 'priya', 'no name given')
   assert.equal(firstName(person('The Economist')), 'The Economist', 'not a person')
   assert.equal(firstName(person('Dr. Lee')), 'Dr. Lee', 'a title is not a name')
+  assert.equal(firstName(person('Stripe, Inc.')), 'Stripe', 'a company, not Inc.')
+  assert.equal(firstName(person('Jane Doe, MD')), 'Jane', 'a letter after a name')
+  assert.equal(firstName(person('John Smith, Jr.')), 'John')
+  assert.equal(firstName(person('Bank of America')), 'Bank of America')
+  assert.equal(firstName(person('Google Calendar')), 'Google Calendar')
 
   const me = person('Hari G', 'me@example.com')
   const own = new Set(['me@example.com'])

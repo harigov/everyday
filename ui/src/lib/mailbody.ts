@@ -41,6 +41,8 @@ const BLOCK = new Set(
   ).split(' '),
 )
 
+const STYLE_END = /<\/style/gi
+
 function tokenize(html: string): Token[] {
   const tokens: Token[] = []
   const open: number[] = []
@@ -74,8 +76,8 @@ function tokenize(html: string): Token[] {
       tokens.push({ kind: 'void', at: m.index, end, tag, parent: top(), pair: -1 })
     } else if (tag === 'style') {
       // Not markup: a `>` selector in here is not the end of anything.
-      const close = html.toLowerCase().indexOf('</style', end)
-      const stop = close < 0 ? html.length : close
+      STYLE_END.lastIndex = end
+      const stop = STYLE_END.exec(html)?.index ?? html.length
       tokens.push({ kind: 'raw', at: end, end: stop, tag, parent: top(), pair: -1 })
       const after = html.indexOf('>', stop)
       pos = after < 0 ? html.length : after + 1
@@ -111,21 +113,23 @@ function withAttribute(source: string, name: string, value: string | null): stri
     : source
 }
 
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: '&',
-  lt: '<',
-  gt: '>',
-  quot: '"',
-  apos: "'",
-  nbsp: ' ',
-}
+// Maps, here and for colours, since these are looked up with a stranger's word:
+// a plain object answers to `constructor` and `__proto__` as well.
+const NAMED_ENTITIES = new Map([
+  ['amp', '&'],
+  ['lt', '<'],
+  ['gt', '>'],
+  ['quot', '"'],
+  ['apos', "'"],
+  ['nbsp', ' '],
+])
 
 function decodeEntities(s: string): string {
   if (!s.includes('&')) return s
   return s.replace(
     /&(?:#(\d+)|#x([\da-f]+)|([a-z]+));/gi,
     (whole: string, dec: string, hex: string, name: string) => {
-      if (name) return NAMED_ENTITIES[name.toLowerCase()] ?? whole
+      if (name) return NAMED_ENTITIES.get(name.toLowerCase()) ?? whole
       const code = dec ? parseInt(dec, 10) : parseInt(hex, 16)
       if (code === 0xa0) return ' '
       return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : whole
@@ -133,9 +137,11 @@ function decodeEntities(s: string): string {
   )
 }
 
-const SUBSTANCE = /[\p{L}\p{N}]/u
+/** Anything a sender wrote: a word, an emoji, a lone "?". Not whitespace, a rule
+ *  typed out of dashes or box characters, or an invisible formatting character. */
+const SUBSTANCE = /(?!\u200d|\ufe0f)[^\s\-_=*~\u2500-\u257f\u200b\u200c\ufeff]/u
 
-/** A word, or a picture -- not blank lines, rules or a lone `&nbsp;`. */
+/** Something written, or a picture -- not blank lines, rules or a lone `&nbsp;`. */
 function hasSubstance(html: string, tokens: Token[], from: number, to: number): boolean {
   for (let i = from; i < to; i++) {
     const t = tokens[i]
@@ -213,6 +219,10 @@ function isWroteLine(line: string): boolean {
   )
 }
 
+/** What says a reply header is a header, where a sentence can start with "On" and
+ *  end in "wrote:" as well: a year, a time, a date or an address. */
+const DATED = /\b\d{4}\b|\b\d{1,2}:\d{2}\b|\b\d{1,2}[/.]\d{1,2}\b|@/
+
 const ORIGINAL_MESSAGE = /^-{2,}\s*original message\s*-{2,}$/i
 const FORWARDED = /^(-{2,}\s*forwarded message\s*-{2,}|begin forwarded message:?)$/i
 const HEADER_FROM = /^(from|von|de|da)\s?:/i
@@ -276,12 +286,21 @@ function climb(html: string, tokens: Token[], from: number): number {
 
 /**
  * What a list server or a mail gateway stamps on the very end of a message,
- * under everything it was handed. It sits below the history, and without
- * this every word of that history would count as being above the sender's
- * last remark and stay in view.
+ * under everything it was handed. It sits below the history, and without this
+ * every word of that history would count as being above the sender's last remark
+ * and stay in view.
+ *
+ * Whole phrases, and only as the very first thing after the quote (see
+ * {@link isStampedFooter}), because "the virus scan passed" or "those are
+ * confidential until Friday" under a quote is somebody's answer.
  */
 const STAMPED_FOOTER =
-  /confidential|disclaimer|intended recipient|privileged|unsubscribe|you received this|view this (?:message|discussion)|virus/i
+  /\bthis (?:e-?mail|message|communication|transmission)\b[^.]{0,160}\b(?:confidential|privileged|intended)\b|\bconfidentiality notice\b|\bdisclaimer\s*:|\bintended recipient\b|\byou received this (?:message|e-?mail)\b|\bto unsubscribe\b|\bunsubscribe from\b|\bview this discussion\b|\bscanned (?:for|by)\b[^.]{0,60}\bvirus/i
+
+function isStampedFooter(text: string): boolean {
+  const found = STAMPED_FOOTER.exec(text)
+  return found !== null && !SUBSTANCE.test(text.slice(0, found.index))
+}
 
 /**
  * The token where the history in this message begins, or `null` when nothing
@@ -308,6 +327,12 @@ function historyStart(html: string, tokens: Token[], subject: string): number | 
     const pair = tokens[quote]?.pair ?? -1
     return pair < 0 ? tokens.length : pair + 1
   }
+  /** Nothing else is written between line `n` and the quote after `at`. */
+  const quoteIsNext = (at: number, n: number): boolean => {
+    const quote = tokens.findIndex((t, i) => i > at && t.kind === 'open' && t.tag === 'blockquote')
+    return quote >= 0 && (lines[n + 1]?.token ?? tokens.length) >= quote
+  }
+  const lines = linesOf(html, tokens)
   tokens.forEach((t, i) => {
     if (t.kind !== 'open') return
     const source = html.slice(t.at, t.end)
@@ -317,14 +342,19 @@ function historyStart(html: string, tokens: Token[], subject: string): number | 
       candidates.set(i, t.pair < 0 ? tokens.length : t.pair + 1)
     }
   })
-  const lines = linesOf(html, tokens)
   lines.forEach((line, n) => {
     if (FORWARDED.test(line.text)) {
       // A forward with its subject edited: whatever follows was sent.
       candidates.set(line.token, -1)
     } else if (isWroteLine(line.text)) {
       const at = climb(html, tokens, line.token)
-      candidates.set(at, throughNextQuote(at))
+      const opener = tokens[at]
+      if (opener?.tag === 'blockquote') {
+        // The header is inside the quote it belongs to, as Apple Mail writes it.
+        candidates.set(at, opener.pair < 0 ? tokens.length : opener.pair + 1)
+      } else if (DATED.test(line.text) || quoteIsNext(at, n)) {
+        candidates.set(at, throughNextQuote(at))
+      }
     } else if (ORIGINAL_MESSAGE.test(line.text) || isHeaderBlock(lines, n)) {
       candidates.set(climb(html, tokens, line.token), tokens.length)
     }
@@ -337,11 +367,14 @@ function historyStart(html: string, tokens: Token[], subject: string): number | 
       html.slice(tokens[at]?.at ?? 0, (tokens[at]?.at ?? 0) + 400).replace(/<[^>]*>/g, ' '),
     )
     if (/forwarded message/i.test(firstWords)) return null
+    // An empty marker, which Outlook leaves on mail it did not quote anything in:
+    // nothing to fold, and a control that opens nothing.
+    if (!hasSubstance(html, tokens, at, end)) continue
     if (!hasSubstance(html, tokens, 0, at)) return null
     if (!hasSubstance(html, tokens, end, tokens.length)) return at
     const after = tokens.slice(end).filter((t) => t.kind === 'text')
-    const trailing = after.map((t) => html.slice(t.at, t.end)).join(' ')
-    if (STAMPED_FOOTER.test(trailing)) return at
+    const trailing = after.map((t) => decodeEntities(html.slice(t.at, t.end))).join(' ')
+    if (isStampedFooter(trailing)) return at
   }
   return null
 }
@@ -357,7 +390,7 @@ function trimBack(html: string, tokens: Token[], from: number): number {
       at--
     } else if (t.kind === 'open') {
       at--
-    } else if (t.kind === 'text' && !decodeEntities(html.slice(t.at, t.end)).trim()) {
+    } else if (t.kind === 'text' && !SUBSTANCE.test(decodeEntities(html.slice(t.at, t.end)))) {
       at--
     } else if (t.kind === 'close') {
       const opened = t.pair
@@ -384,73 +417,110 @@ function cutAt(html: string, tokens: Token[], upTo: number): string {
 
 type Rgb = readonly [number, number, number]
 
-const NAMED_COLOURS: Record<string, Rgb> = {
-  black: [0, 0, 0],
-  white: [255, 255, 255],
-  red: [255, 0, 0],
-  green: [0, 128, 0],
-  lime: [0, 255, 0],
-  blue: [0, 0, 255],
-  navy: [0, 0, 128],
-  teal: [0, 128, 128],
-  aqua: [0, 255, 255],
-  cyan: [0, 255, 255],
-  purple: [128, 0, 128],
-  fuchsia: [255, 0, 255],
-  magenta: [255, 0, 255],
-  maroon: [128, 0, 0],
-  olive: [128, 128, 0],
-  yellow: [255, 255, 0],
-  orange: [255, 165, 0],
-  gray: [128, 128, 128],
-  grey: [128, 128, 128],
-  silver: [192, 192, 192],
-  darkblue: [0, 0, 139],
-  darkgray: [169, 169, 169],
-  darkgrey: [169, 169, 169],
-  lightgray: [211, 211, 211],
-  lightgrey: [211, 211, 211],
-  // Outlook's own: the system's text and page colours, as a Windows desktop
-  // answered when the message was written, and always black on white there.
-  windowtext: [0, 0, 0],
-  window: [255, 255, 255],
-}
+/** Every colour name CSS has, then Outlook's own two: the system's text and page
+ *  colours, as a Windows desktop answered when the message was written, and always
+ *  black on white there. */
+const NAMED_COLOURS = new Map<string, Rgb>(
+  (
+    'aliceblue:f0f8ff antiquewhite:faebd7 aqua:00ffff aquamarine:7fffd4 azure:f0ffff beige:f5f5dc ' +
+    'bisque:ffe4c4 black:000000 blanchedalmond:ffebcd blue:0000ff blueviolet:8a2be2 brown:a52a2a ' +
+    'burlywood:deb887 cadetblue:5f9ea0 chartreuse:7fff00 chocolate:d2691e coral:ff7f50 ' +
+    'cornflowerblue:6495ed cornsilk:fff8dc crimson:dc143c cyan:00ffff darkblue:00008b ' +
+    'darkcyan:008b8b darkgoldenrod:b8860b darkgray:a9a9a9 darkgreen:006400 darkgrey:a9a9a9 ' +
+    'darkkhaki:bdb76b darkmagenta:8b008b darkolivegreen:556b2f darkorange:ff8c00 ' +
+    'darkorchid:9932cc darkred:8b0000 darksalmon:e9967a darkseagreen:8fbc8f darkslateblue:483d8b ' +
+    'darkslategray:2f4f4f darkslategrey:2f4f4f darkturquoise:00ced1 darkviolet:9400d3 ' +
+    'deeppink:ff1493 deepskyblue:00bfff dimgray:696969 dimgrey:696969 dodgerblue:1e90ff ' +
+    'firebrick:b22222 floralwhite:fffaf0 forestgreen:228b22 fuchsia:ff00ff gainsboro:dcdcdc ' +
+    'ghostwhite:f8f8ff gold:ffd700 goldenrod:daa520 gray:808080 green:008000 greenyellow:adff2f ' +
+    'grey:808080 honeydew:f0fff0 hotpink:ff69b4 indianred:cd5c5c indigo:4b0082 ivory:fffff0 ' +
+    'khaki:f0e68c lavender:e6e6fa lavenderblush:fff0f5 lawngreen:7cfc00 lemonchiffon:fffacd ' +
+    'lightblue:add8e6 lightcoral:f08080 lightcyan:e0ffff lightgoldenrodyellow:fafad2 ' +
+    'lightgray:d3d3d3 lightgreen:90ee90 lightgrey:d3d3d3 lightpink:ffb6c1 lightsalmon:ffa07a ' +
+    'lightseagreen:20b2aa lightskyblue:87cefa lightslategray:778899 lightslategrey:778899 ' +
+    'lightsteelblue:b0c4de lightyellow:ffffe0 lime:00ff00 limegreen:32cd32 linen:faf0e6 ' +
+    'magenta:ff00ff maroon:800000 mediumaquamarine:66cdaa mediumblue:0000cd mediumorchid:ba55d3 ' +
+    'mediumpurple:9370db mediumseagreen:3cb371 mediumslateblue:7b68ee mediumspringgreen:00fa9a ' +
+    'mediumturquoise:48d1cc mediumvioletred:c71585 midnightblue:191970 mintcream:f5fffa ' +
+    'mistyrose:ffe4e1 moccasin:ffe4b5 navajowhite:ffdead navy:000080 oldlace:fdf5e6 olive:808000 ' +
+    'olivedrab:6b8e23 orange:ffa500 orangered:ff4500 orchid:da70d6 palegoldenrod:eee8aa ' +
+    'palegreen:98fb98 paleturquoise:afeeee palevioletred:db7093 papayawhip:ffefd5 peachpuff:ffdab9 ' +
+    'peru:cd853f pink:ffc0cb plum:dda0dd powderblue:b0e0e6 purple:800080 rebeccapurple:663399 ' +
+    'red:ff0000 rosybrown:bc8f8f royalblue:4169e1 saddlebrown:8b4513 salmon:fa8072 ' +
+    'sandybrown:f4a460 seagreen:2e8b57 seashell:fff5ee sienna:a0522d silver:c0c0c0 skyblue:87ceeb ' +
+    'slateblue:6a5acd slategray:708090 slategrey:708090 snow:fffafa springgreen:00ff7f ' +
+    'steelblue:4682b4 tan:d2b48c teal:008080 thistle:d8bfd8 tomato:ff6347 turquoise:40e0d0 ' +
+    'violet:ee82ee wheat:f5deb3 white:ffffff whitesmoke:f5f5f5 yellow:ffff00 yellowgreen:9acd32 ' +
+    'windowtext:000000 window:ffffff'
+  )
+    .split(' ')
+    .map((pair): [string, Rgb] => {
+      const [name = '', value = ''] = pair.split(':')
+      return [
+        name,
+        [
+          parseInt(value.slice(0, 2), 16),
+          parseInt(value.slice(2, 4), 16),
+          parseInt(value.slice(4, 6), 16),
+        ],
+      ]
+    }),
+)
 
-/** A colour worth reasoning about; `null` for `inherit`, `transparent`, an
- *  almost clear `rgba`, or anything this does not recognise. */
-function parseColour(value: string): Rgb | null {
+const NOT_A_COLOUR = /^(?:inherit|initial|unset|revert|transparent|currentcolor|none|auto)$/
+
+/** A colour worth reasoning about; `'clear'` for `inherit`, `transparent` or an
+ *  almost clear `rgba`, which paint nothing; `'unknown'` for what this cannot read. */
+function readColour(value: string): Rgb | 'clear' | 'unknown' {
   const v = value
     .replace(/!important/i, '')
     .trim()
     .toLowerCase()
-  const named = NAMED_COLOURS[v]
+  const named = NAMED_COLOURS.get(v)
   if (named) return named
+  if (NOT_A_COLOUR.test(v)) return 'clear'
   let m = /^#([\da-f]{3,8})$/.exec(v)
   if (m) {
     const hex = m[1] ?? ''
     if (hex.length === 3 || hex.length === 4) {
       const [r, g, b] = [...hex].map((c) => parseInt(c + c, 16))
-      if (hex.length === 4 && parseInt(hex.charAt(3) + hex.charAt(3), 16) < 26) return null
+      if (hex.length === 4 && parseInt(hex.charAt(3) + hex.charAt(3), 16) < 26) return 'clear'
       return [r ?? 0, g ?? 0, b ?? 0]
     }
     if (hex.length === 6 || hex.length === 8) {
-      if (hex.length === 8 && parseInt(hex.slice(6), 16) < 26) return null
+      if (hex.length === 8 && parseInt(hex.slice(6), 16) < 26) return 'clear'
       return [
         parseInt(hex.slice(0, 2), 16),
         parseInt(hex.slice(2, 4), 16),
         parseInt(hex.slice(4, 6), 16),
       ]
     }
-    return null
+    return 'unknown'
   }
+  const almostClear = (alpha: string | undefined) =>
+    alpha !== undefined && (alpha.endsWith('%') ? parseFloat(alpha) / 100 : parseFloat(alpha)) < 0.1
   m = /^rgba?\(\s*([\d.]+%?)[\s,]+([\d.]+%?)[\s,]+([\d.]+%?)(?:[\s,/]+([\d.]+%?))?\s*\)$/.exec(v)
   if (m) {
     const part = (p: string | undefined) =>
       p?.endsWith('%') ? (parseFloat(p) * 255) / 100 : parseFloat(p ?? '0')
-    if (m[4] && (m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4])) < 0.1) return null
+    if (almostClear(m[4])) return 'clear'
     return [part(m[1]), part(m[2]), part(m[3])]
   }
-  return null
+  m =
+    /^hsla?\(\s*(-?[\d.]+)(?:deg)?[\s,]+([\d.]+)%[\s,]+([\d.]+)%(?:[\s,/]+([\d.]+%?))?\s*\)$/.exec(
+      v,
+    )
+  if (m) {
+    if (almostClear(m[4])) return 'clear'
+    const hue = ((parseFloat(m[1] ?? '0') % 360) + 360) % 360
+    return fromHsl(hue / 360, parseFloat(m[2] ?? '0') / 100, parseFloat(m[3] ?? '0') / 100)
+  }
+  return 'unknown'
+}
+
+function parseColour(value: string): Rgb | null {
+  const colour = readColour(value)
+  return typeof colour === 'string' ? null : colour
 }
 
 /** The colour a `background` or `background-color` value paints, when it
@@ -612,6 +682,9 @@ function widthInPixels(value: string | null | undefined): number {
  *  and Gmail put in a message never has one), or a page with a tint. */
 function sheetIsDesigned(css: string): boolean {
   if (/@media[^{]*(?:-width|prefers-color-scheme)/i.test(css)) return true
+  for (const [, value] of css.matchAll(/(?:^|[;{\s])color\s*:\s*([^;}]+)/gi)) {
+    if (value && readColour(value) === 'unknown') return true
+  }
   for (const [, value] of css.matchAll(/(?:^|[;{\s])background(?:-color)?\s*:\s*([^;}]+)/gi)) {
     if (!value || /^\s*(?:none|transparent|inherit|initial|unset)\b/i.test(value)) continue
     const colour = backgroundColour(value)
@@ -620,6 +693,18 @@ function sheetIsDesigned(css: string): boolean {
     if (!colour || luminance(colour) < 0.97) return true
   }
   return false
+}
+
+/** A colour this cannot judge the contrast of, in a declaration that sets one:
+ *  `lab()`, `var()` or a misspelling. It could be anything, on a page it was not
+ *  chosen for, and white is the page it was chosen for. */
+function isUnreadable(property: string, value: string): boolean {
+  if (property === 'color' || property === 'background-color') {
+    return readColour(value) === 'unknown'
+  }
+  return (
+    property === 'background' && /\b(?:hwb|lab|lch|oklab|oklch|color|color-mix|var)\(/i.test(value)
+  )
 }
 
 /**
@@ -674,7 +759,10 @@ function isDesigned(html: string, tokens: Token[], end: number): boolean {
       if (attribute(source, 'background')) return true
       for (const [property, value] of style) {
         if (property.startsWith('background') && /url\(/i.test(value)) return true
+        if (isUnreadable(property, value)) return true
       }
+      if (isUnreadable('color', attribute(source, 'color') ?? 'inherit')) return true
+      if (isUnreadable('color', attribute(source, 'bgcolor') ?? 'inherit')) return true
       const fill =
         style.find(([p]) => p === 'background-color' || p === 'background')?.[1] ??
         attribute(source, 'bgcolor')
@@ -803,6 +891,7 @@ function adapt(html: string, tokens: Token[], page: Page): string {
       const parsed = colourAttr === null ? null : parseColour(colourAttr)
       if (parsed) {
         ink = parsed
+        changed = true
         tag = withAttribute(tag, 'color', null)
       }
       if (!MONOSPACE.test(attribute(source, 'face') ?? 'mono')) {
@@ -913,10 +1002,11 @@ function pictureHeight(source: string, column: number): number {
  * It errs tall, by a line or so on a long message, since a little blank costs
  * less than a scrollbar inside the thread's own.
  */
-export function estimateWrittenHeight(doc: string, widthPx: number): number {
+export function estimateWrittenHeight(doc: string, widthPx: number, imagesHidden = false): number {
   const inner = doc.replace(/^[\s\S]*<body[^>]*>/i, '').replace(/<\/body>[\s\S]*$/i, '')
   const tokens = tokenize(inner)
   const charsPerLine = Math.max(20, Math.floor(widthPx / 8.2))
+  const notDrawn = new Map<number, boolean>()
   let lines = 0
   let extra = 0
   let chars = 0
@@ -924,34 +1014,47 @@ export function estimateWrittenHeight(doc: string, widthPx: number): number {
     if (chars > 0) lines += Math.ceil(chars / charsPerLine)
     chars = 0
   }
-  for (const t of tokens) {
+  for (const [i, t] of tokens.entries()) {
+    const source = t.kind === 'open' || t.kind === 'void' ? inner.slice(t.at, t.end) : ''
+    if (notDrawn.get(t.parent)) {
+      if (t.kind === 'open') notDrawn.set(i, true)
+      continue
+    }
+    const hides = declarations(attribute(source, 'style') ?? '').some(
+      ([p, v]) => p === 'display' && /^none\b/i.test(v),
+    )
+    if (t.kind === 'open' && (hides || t.tag === 'summary')) {
+      notDrawn.set(i, true)
+      continue
+    }
     if (t.kind === 'text') {
       const text = decodeEntities(inner.slice(t.at, t.end))
       if (tokenIsPreformatted(tokens, t)) {
         const rows = text.split('\n')
         rows.slice(0, -1).forEach((row) => {
-          lines += Math.max(1, Math.ceil(row.length / charsPerLine))
+          lines += Math.max(1, Math.ceil(lengthOnScreen(row) / charsPerLine))
         })
-        chars += rows[rows.length - 1]?.length ?? 0
+        chars += lengthOnScreen(rows[rows.length - 1] ?? '')
       } else {
         // A `&nbsp;` is how a blank line is written, where whitespace between
         // two tags is nothing at all.
         const blank = /\u00a0|&nbsp;|&#160;/i.test(inner.slice(t.at, t.end))
-        chars += blank ? Math.max(1, text.trim().length) : text.replace(/\s+/g, ' ').trim().length
+        const words = text.replace(/\s+/g, ' ').trim()
+        chars += blank ? Math.max(1, lengthOnScreen(words)) : lengthOnScreen(words)
       }
     } else if (t.kind === 'void' && t.tag === 'br') {
       // A break with nothing on its line is a blank line.
       if (chars === 0) lines++
       endLine()
     } else if (t.kind === 'void' && t.tag === 'img') {
-      extra += pictureHeight(inner.slice(t.at, t.end), widthPx)
+      const waiting = imagesHidden && source.includes('/mail/img/')
+      if (!hides && !waiting) extra += pictureHeight(source, widthPx)
     } else if (t.kind === 'void' && t.tag === 'hr') {
       endLine()
       extra += PARAGRAPH_GAP_PX
     } else if ((t.kind === 'open' || t.kind === 'close') && BLOCK.has(t.tag)) {
       endLine()
       if (t.kind === 'open') {
-        const source = inner.slice(t.at, t.end)
         if (t.tag === 'tr') extra += 4
         else if (/^h[1-6]$/.test(t.tag)) extra += LINE_PX + PARAGRAPH_GAP_PX
         else if (t.tag === 'ul' || t.tag === 'ol' || t.tag === 'blockquote' || t.tag === 'pre') {
@@ -969,6 +1072,15 @@ export function estimateWrittenHeight(doc: string, widthPx: number): number {
   // Fractions of a pixel, and a sender's own spacing nothing here reads.
   const slack = 6
   return Math.min(60000, Math.max(LINE_PX, lines * LINE_PX) + extra + slack)
+}
+
+/** Han, kana and hangul are drawn about twice as wide as the Latin letter the
+ *  line length is worked out from. */
+const WIDE =
+  /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60\uffe0-\uffe6]/g
+
+function lengthOnScreen(text: string): number {
+  return text.length + (text.match(WIDE)?.length ?? 0)
 }
 
 /**

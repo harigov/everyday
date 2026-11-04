@@ -1096,7 +1096,10 @@ fn process_body(
             };
 
             let put = |bytes: &[u8]| vault.put_blob(bytes).ok();
-            let (parts, has_attachments) = part_refs(raw, &parsed.parts, attachment_cap_bytes, put);
+            let parts = part_refs(raw, &parsed.parts, attachment_cap_bytes, put);
+            let has_attachments = parts
+                .iter()
+                .any(|part| crate::mailview::is_attachment(part, &html_sanitised, message.id));
             (html_sanitised, plain, parts, has_attachments)
         }
         Err(e) => {
@@ -1145,8 +1148,7 @@ const MAX_STORED_PARTS: usize = 500;
 
 /// [`process_body`]'s [`PartRef`] for every one of `parts` -- the leaf parts
 /// [`everyday_mail::mime::parse`] found in `raw`, in its order, which is
-/// the order `domains::mail::fetch_attachment` indexes them by -- and
-/// whether any is an attachment.
+/// the order `domains::mail::fetch_attachment` indexes them by.
 ///
 /// A part gets a blob, through `put`, when it is among the first
 /// [`MAX_STORED_PARTS`] and within `attachment_cap_bytes`; any other part is
@@ -1158,16 +1160,12 @@ fn part_refs(
     parts: &[everyday_mail::mime::Part],
     attachment_cap_bytes: Option<u64>,
     mut put: impl FnMut(&[u8]) -> Option<BlobId>,
-) -> (Vec<PartRef>, bool) {
+) -> Vec<PartRef> {
     // `parts` came from parsing these same bytes, so this cannot fail where
     // that did not; if it somehow does, every part is simply left unstored.
     let reader = everyday_mail::mime::PartReader::new(raw).ok();
     let mut refs = Vec::with_capacity(parts.len());
-    let mut has_attachments = false;
     for (index, part) in parts.iter().enumerate() {
-        if part.disposition == Disposition::Attachment {
-            has_attachments = true;
-        }
         let stored = index < MAX_STORED_PARTS
             && attachment_cap_bytes.is_none_or(|cap| (part.size as u64) <= cap);
         let blob = match &reader {
@@ -1180,9 +1178,10 @@ fn part_refs(
             mime_type: part.content_type.clone(),
             size: part.size as u64,
             blob,
+            attached: part.disposition == Disposition::Attachment,
         });
     }
-    (refs, has_attachments)
+    refs
 }
 
 /// A [`MailDoc`] for `message`, filed under `mailbox_id`. Shared by
@@ -1293,9 +1292,9 @@ Content-Transfer-Encoding: base64\r\n\
 aGVsbG8=\r\n\
 --b--\r\n";
         let parsed = everyday_mail::mime::parse(raw).unwrap();
-        let (refs, has_attachments) = part_refs(raw, &parsed.parts, None, content_address);
-        assert!(has_attachments);
+        let refs = part_refs(raw, &parsed.parts, None, content_address);
         assert_eq!(refs.len(), parsed.parts.len());
+        assert!(refs.iter().any(|r| r.attached), "its picture was sent as an attachment");
         for (stored, part) in refs.iter().zip(&parsed.parts) {
             let bytes = everyday_mail::mime::part_bytes(raw, &part.part_id).unwrap();
             assert_eq!(stored.blob, Some(BlobId::of(&bytes)), "part {}", part.part_id);
@@ -1305,11 +1304,43 @@ aGVsbG8=\r\n\
 
         // The per-part size cap still holds: the five-byte picture is
         // stored, the longer text part is listed without a blob.
-        let (refs, _) = part_refs(raw, &parsed.parts, Some(5), content_address);
+        let refs = part_refs(raw, &parsed.parts, Some(5), content_address);
         let picture = refs.iter().find(|r| r.mime_type == "image/png").unwrap();
         let text = refs.iter().find(|r| r.mime_type == "text/plain").unwrap();
         assert!(picture.blob.is_some());
         assert_eq!(text.blob, None);
+    }
+
+    /// The flag a thread row and the list's Attachments filter read says what the
+    /// chips under the message say.
+    #[test]
+    fn a_message_is_flagged_for_what_gets_a_chip() {
+        fn flagged(disposition: &str) -> bool {
+            let raw = format!(
+                "From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\nMIME-Version: 1.0\r\n\
+                 Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\n\
+                 Content-Type: text/plain\r\n\r\nhello\r\n--b\r\n{disposition}\r\n\r\n\
+                 aGVsbG8=\r\n--b--\r\n"
+            );
+            let parsed = everyday_mail::mime::parse(raw.as_bytes()).unwrap();
+            part_refs(raw.as_bytes(), &parsed.parts, None, content_address).iter().any(|part| {
+                crate::mailview::is_attachment(part, "", everyday_core::id::MailMessageId::new())
+            })
+        }
+        assert!(flagged(
+            "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"a.pdf\""
+        ));
+        assert!(
+            flagged("Content-Type: text/csv\r\nContent-Disposition: attachment"),
+            "nameless, and still a file"
+        );
+        assert!(
+            !flagged(
+                "Content-Type: application/pkcs7-signature\r\n\
+                 Content-Disposition: attachment; filename=\"smime.p7s\""
+            ),
+            "marked as an attachment, and nothing to show for it"
+        );
     }
 
     #[test]
@@ -1320,11 +1351,10 @@ aGVsbG8=\r\n\
         assert_eq!(parsed.parts.len(), count);
 
         let mut puts = 0;
-        let (refs, has_attachments) = part_refs(&raw, &parsed.parts, None, |bytes| {
+        let refs = part_refs(&raw, &parsed.parts, None, |bytes| {
             puts += 1;
             content_address(bytes)
         });
-        assert!(!has_attachments);
         assert_eq!(puts, MAX_STORED_PARTS, "nothing past the cap is even read");
         assert_eq!(refs.len(), count, "a part past the cap is listed, just not stored");
         assert!(refs[..MAX_STORED_PARTS].iter().all(|r| r.blob.is_some()));

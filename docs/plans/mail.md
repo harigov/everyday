@@ -384,8 +384,11 @@ What is read differs from what is stored, and the difference is made at display
   and errs tall; where it still falls short, the frame scrolls.
 - **Parts are not all attachments.** `Body::parts` holds every leaf, including the
   message's own alternatives and the pictures its body draws; `is_attachment` in
-  `domains/mail.rs` decides what gets a chip, and a chip saves through the shell,
-  because WebKitGTK cannot follow or download an `everyday:` link.
+  `mailview.rs` decides what gets a chip and what `has_attachments` says, and a
+  chip saves through the shell, because WebKitGTK cannot follow or download an
+  `everyday:` link. A message stored before this keeps the flag it has, so the
+  list's paperclip can be wrong about one until it is synced again; an open
+  thread reads the real list.
 
 ## The data model
 

@@ -35,6 +35,7 @@
     mockPartUrl,
     partUrl,
     renderBody,
+    type RenderedBody,
   } from '../lib/mailview'
   // A static import, deliberately, though it is only ever read behind
   // `isMock` below -- see `mail-api.ts`'s old note on the same trade-off,
@@ -156,7 +157,10 @@
   }
 
   function senderName(message: MailMessageDetail, own: Set<string>): string {
-    return own.has(message.from.email.toLowerCase()) ? 'Me' : firstName(message.from)
+    if (own.has(message.from.email.toLowerCase())) return 'Me'
+    // An automated sender goes by the whole of what it is called.
+    const automated = message.category === 'newsletter' || message.category === 'notification'
+    return (automated && message.from.name.trim()) || firstName(message.from)
   }
 
   /** Mock mode has nothing to fetch, so it simulates
@@ -252,15 +256,15 @@
 
   /** The height for a message, from its body string, never from what the
    *  iframe renders -- see the top of this file. */
-  function guessHeight(view: { html: string; paper: boolean }, width: number): number {
+  function guessHeight(view: RenderedBody, width: number): number {
     return view.paper
       ? estimateDesignedHeight(view.html, width)
-      : estimateWrittenHeight(view.html, width)
+      : estimateWrittenHeight(view.html, width, view.imagesHidden)
   }
 
   /** Sizes the one iframe inside `node`, and again when the pane changes
    *  width, which rewraps everything in it. */
-  function autoSize(node: HTMLElement, first: { html: string; paper: boolean }) {
+  function autoSize(node: HTMLElement, first: RenderedBody) {
     const iframe = node.querySelector('iframe')
     let view = first
     function apply() {
@@ -270,7 +274,7 @@
     const ro = new ResizeObserver(apply)
     ro.observe(node)
     return {
-      update(next: { html: string; paper: boolean }) {
+      update(next: RenderedBody) {
         view = next
         apply()
       },
@@ -302,17 +306,20 @@
           class="toggle"
           onclick={() => toggle(message.id)}
           aria-expanded={isOpen}
-          title={isOpen ? undefined : formatAddresses([message.from])}
+          title={formatAddresses([message.from])}
         >
           <span class="from">{senderName(message, own)}</span>
           {#if isOpen}
+            <!-- Where it really came from stays in view: a display name says
+                 whatever its sender likes, and a forged one could say "Me". -->
+            <span class="addr">{message.from.email}</span>
             <span class="to">
               to {peopleLine([...message.to, ...message.cc], own) || 'undisclosed recipients'}
             </span>
           {:else}
             <span class="snippet">{snippetText(message.snippet)}</span>
           {/if}
-          {#if message.hasAttachments}
+          {#if message.attachments.length > 0}
             <span class="clip" title="Has an attachment"><Icon name="paperclip" size={13} /></span>
           {/if}
           <span class="date" title={messageDateLabel(message.date)}>
@@ -597,8 +604,17 @@
     font-weight: 650;
     color: var(--fg);
   }
+  .addr {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
   .to {
-    flex: 1;
+    flex: 1 1 0;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;

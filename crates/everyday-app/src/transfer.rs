@@ -121,10 +121,32 @@ pub async fn save_mail_part(
         return Ok(false);
     };
     let bytes = crate::protocol::mail_part_bytes(session, &message_id, &identifier).await?;
-    let temp = path.with_extension("part");
-    std::fs::write(&temp, &bytes).map_err(|e| io(&temp, e))?;
-    std::fs::rename(&temp, &path).map_err(|e| io(&path, e))?;
+    write_beside(&path, &bytes).map_err(|e| io(&path, e))?;
     Ok(true)
+}
+
+/// Write `bytes` to `path` by way of a neighbouring file, so a full disk cannot
+/// leave half an attachment where somebody expects a whole one.
+///
+/// The neighbour's name owes nothing to the file's. A file name here comes from a
+/// stranger, and one built from it could be somebody's own `report.part`, or the
+/// one another save in that folder is writing right now, and `create_new` refuses
+/// to touch anything already there.
+fn write_beside(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_file_name(format!(".everyday-{}-{n}.part", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// A sender's idea of a file name, as something to offer in a save dialog. Only
@@ -247,6 +269,32 @@ fn io(path: &std::path::Path, e: std::io::Error) -> CommandError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saving_touches_nothing_but_the_file_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        // Which the old way of naming the neighbour would have written over and
+        // then renamed away, saving `report.pdf` beside it.
+        std::fs::write(dir.path().join("report.part"), b"somebody's own").unwrap();
+        let path = dir.path().join("report.pdf");
+
+        write_beside(&path, b"the attachment").unwrap();
+        write_beside(&path, b"saved again").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"saved again");
+        assert_eq!(std::fs::read(dir.path().join("report.part")).unwrap(), b"somebody's own");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "nothing left behind");
+    }
+
+    #[test]
+    fn a_save_that_fails_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        // A folder where the file should go: the write works and the rename cannot.
+        let path = dir.path().join("taken");
+        std::fs::create_dir(&path).unwrap();
+        assert!(write_beside(&path, b"x").is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "only the folder");
+    }
 
     #[test]
     fn a_file_name_cannot_reach_into_another_folder() {
