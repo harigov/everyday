@@ -1525,6 +1525,14 @@ export const api = {
   saveExport: (handle: string, name: string) => invoke<boolean>('save_export', { handle, name }),
 
   /**
+   * Ask the shell where to put one part of a message, and write it there. The
+   * bytes never come through here. Answers false when the dialog was dismissed,
+   * which is not an error.
+   */
+  saveMailPart: (messageId: string, identifier: string, name: string) =>
+    invoke<boolean>('save_mail_part', { messageId, identifier, name }),
+
+  /**
    * Ask the shell for a file to import, and hand it to the vault.
    *
    * Nothing has been read into the vault when this returns: what comes back

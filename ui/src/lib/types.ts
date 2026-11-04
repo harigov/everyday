@@ -2070,8 +2070,8 @@ export interface MailAttachment {
   mimeType: string
   size: number
   contentId?: string | null
-  /** Referenced by `cid:` from the sanitised HTML -- shown inline, not as a
-   *  chip. */
+  /** Has a `Content-ID`, as a part meant for the body does. A part the body
+   *  really draws is not listed at all -- see `domains::mail::is_attachment`. */
   inline: boolean
   /** `false` when this part is over the account's attachment cap and has not
    *  been fetched yet -- what `fetchAttachment` turns `true`. */

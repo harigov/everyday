@@ -33,8 +33,9 @@ use crate::service::{Service, blocking};
 use everyday_core::Vault;
 use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    AttendeeResponse, Category, Draft, DraftCalendarPart, DraftState, InviteMethod, Mailbox,
-    Message, Op, OpKind, OpState, OpTarget, Origin, Thread, UNDO_SEND_MAX_SECONDS, undo_send_delay,
+    AttendeeResponse, Body, Category, Draft, DraftCalendarPart, DraftState, InviteMethod, Mailbox,
+    Message, Op, OpKind, OpState, OpTarget, Origin, PartRef, Thread, UNDO_SEND_MAX_SECONDS,
+    undo_send_delay,
 };
 use everyday_core::store::mail::{CategoryCount, ThreadFilter, ThreadPage};
 use everyday_mail::{compose, invite, mime};
@@ -124,12 +125,9 @@ pub struct MailAttachment {
     /// image's `<img src>` addresses by instead of its index.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_id: Option<String>,
-    /// A part referenced by `cid:` from the sanitised HTML -- shown inside
-    /// the body, not as a chip. Approximated from `content_id.is_some()`,
-    /// since [`everyday_core::mail::PartRef`] keeps no `Content-Disposition`
-    /// of its own to read this from directly; see that record's own docs on
-    /// why a `cid` is `None` for "an ordinary attachment" in the first
-    /// place, which is exactly the inverse of this field.
+    /// Whether this part has a `Content-ID`, which is what a part meant for
+    /// the body carries. Not a reason to leave it off the list: a part the
+    /// body really does draw is not listed at all -- see [`is_attachment`].
     pub inline: bool,
     /// `false` when this part is over the account's attachment cap and has
     /// not been fetched yet -- what `fetch_attachment` exists to turn `true`.
@@ -196,10 +194,11 @@ pub struct ThreadDetail {
     pub recent_actions: Vec<RecentAction>,
 }
 
-/// [`Body::parts`] for `message`, turned into what the interface draws a
-/// chip from -- `mailview::part`'s own addressing rules, named rather than
-/// re-derived: a part with a `Content-ID` is fetched by it, everything else
-/// by its position in the list.
+/// The parts of `body` a person would call attachments, for the chips under a
+/// message -- `mailview::part`'s own addressing rules, named rather than
+/// re-derived: a part with a `Content-ID` is fetched by it, everything else by
+/// its position in [`Body::parts`], which is why `index` is that position and
+/// not a count of what is listed here.
 ///
 /// A message whose body has not synced yet (`vault.body` finds no row --
 /// still mid first-sync, or a fetch that failed) answers with no attachments
@@ -208,19 +207,62 @@ pub struct ThreadDetail {
 /// chips to show yet.
 fn attachments_for(vault: &everyday_core::Vault, message: &Message) -> Vec<MailAttachment> {
     let Ok(body) = vault.body(message.id) else { return Vec::new() };
+    attachments_of(&body)
+}
+
+fn attachments_of(body: &Body) -> Vec<MailAttachment> {
     body.parts
-        .into_iter()
+        .iter()
         .enumerate()
+        .filter(|(_, part)| is_attachment(part, body))
         .map(|(index, part)| MailAttachment {
             index,
-            filename: part.filename,
-            mime_type: part.mime_type,
+            filename: part.filename.clone(),
+            mime_type: part.mime_type.clone(),
             size: part.size,
             inline: part.cid.is_some(),
-            content_id: part.cid,
+            content_id: part.cid.clone(),
             available: part.blob.is_some(),
         })
         .collect()
+}
+
+/// [`Body::parts`] holds every leaf of the message, which is rather more than
+/// its attachments, and a stored part keeps no `Content-Disposition` to say
+/// which are which. Left out:
+///
+/// * The message's own text. The `text/plain` and `text/html` alternatives of
+///   an ordinary message are parts with no name, and so are a calendar
+///   invitation's, which is drawn as its own card.
+/// * A picture the body already shows -- a signature's logo, an image pasted
+///   into the text. Sent with a name more often than not (Outlook's
+///   `image001.png`), so it is told by the `cid:` reference to it.
+/// * A picture with a `Content-ID` and no name. Nobody attaches a file with no
+///   name, so this is one meant for the body whose reference did not survive,
+///   such as a tracking pixel the sanitiser removed.
+/// * A cryptographic signature, which is nothing a person can read.
+///
+/// A named part with a `Content-ID` that nothing refers to stays: Apple Mail
+/// gives an ordinary attachment one, and leaving it out would hide the file.
+fn is_attachment(part: &PartRef, body: &Body) -> bool {
+    let mime = part.mime_type.trim().to_ascii_lowercase();
+    if part.filename.is_none() && mime.starts_with("text/") {
+        return false;
+    }
+    if matches!(
+        mime.as_str(),
+        "application/pgp-signature"
+            | "application/pkcs7-signature"
+            | "application/x-pkcs7-signature"
+    ) {
+        return false;
+    }
+    let Some(cid) = part.cid.as_deref() else { return true };
+    let message = body.message_id.to_string();
+    if everyday_mail::sanitize::references_part(&body.html_sanitised, &message, cid) {
+        return false;
+    }
+    !(part.filename.is_none() && mime.starts_with("image/"))
 }
 
 // ---- batch thread actions ------------------------------------------------
@@ -1806,6 +1848,105 @@ pub static COMMANDS: &[crate::command::Command] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn part(filename: Option<&str>, mime: &str, cid: Option<&str>) -> PartRef {
+        PartRef {
+            cid: cid.map(str::to_string),
+            filename: filename.map(str::to_string),
+            mime_type: mime.to_string(),
+            size: 4_100,
+            blob: None,
+        }
+    }
+
+    fn listed(html: &str, parts: Vec<PartRef>) -> Vec<(usize, Option<String>)> {
+        let message_id = everyday_core::id::MailMessageId::new();
+        let body = Body {
+            message_id,
+            html_sanitised: html.replace("MSG", &message_id.to_string()),
+            text: String::new(),
+            quoted_ranges: Vec::new(),
+            signature_range: None,
+            parts,
+            remote_images: Vec::new(),
+        };
+        attachments_of(&body).into_iter().map(|a| (a.index, a.filename)).collect()
+    }
+
+    /// Two chips reading "attachment", 4.1 KB and 17.5 KB, on an ordinary reply
+    /// with a signature, was how this was found: its own two alternatives.
+    #[test]
+    fn a_messages_own_text_is_not_an_attachment() {
+        let parts = vec![part(None, "text/plain", None), part(None, "text/html", None)];
+        assert_eq!(listed("<p>Hi</p>", parts), vec![]);
+    }
+
+    #[test]
+    fn a_picture_the_body_draws_is_not_an_attachment() {
+        let html = r#"<img src="everyday://mail/part/MSG/image001.png@a.b%3Cc">"#;
+        // The same id as it is written into an address, and one that merely
+        // starts alike.
+        let cid = "image001.png@a.b<c";
+        assert_eq!(listed(html, vec![part(Some("image001.png"), "image/png", Some(cid))]), vec![]);
+        assert_eq!(
+            listed(html, vec![part(Some("image.png"), "image/png", Some("image001.png@a.b"))]),
+            vec![(0, Some("image.png".to_string()))],
+        );
+    }
+
+    #[test]
+    fn the_id_turning_up_in_the_words_is_not_a_reference() {
+        let cid = Some("image001.png@x");
+        for html in [
+            "<p>see /part/somewhere image001.png@x and /image001.png@x</p>",
+            // Another message's picture, quoted from it.
+            r#"<img src="everyday://mail/part/other-message/image001.png@x">"#,
+        ] {
+            assert_eq!(
+                listed(html, vec![part(Some("logo.png"), "image/png", cid)]),
+                vec![(0, Some("logo.png".to_string()))],
+                "{html}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_nameless_picture_meant_for_the_body_is_not_an_attachment() {
+        assert_eq!(listed("<p>Hi</p>", vec![part(None, "image/gif", Some("pixel@x"))]), vec![]);
+    }
+
+    #[test]
+    fn a_signature_is_not_an_attachment() {
+        let parts = vec![
+            part(Some("signature.asc"), "application/pgp-signature", None),
+            part(Some("smime.p7s"), "application/pkcs7-signature", None),
+        ];
+        assert_eq!(listed("<p>Hi</p>", parts), vec![]);
+    }
+
+    /// Their positions, not a count of what is listed: `mailview::part` and
+    /// `fetch_attachment` both look a part up by where it is in `Body::parts`.
+    #[test]
+    fn real_attachments_keep_their_place_in_the_parts() {
+        let parts = vec![
+            part(None, "text/plain", None),
+            part(None, "text/html", None),
+            part(Some("invoice.pdf"), "application/pdf", None),
+            // Apple Mail gives an ordinary attachment a Content-ID.
+            part(Some("photo.jpg"), "image/jpeg", Some("photo@x")),
+            part(None, "application/octet-stream", None),
+            part(Some("notes.txt"), "text/plain", None),
+        ];
+        assert_eq!(
+            listed("<p>Hi</p>", parts),
+            vec![
+                (2, Some("invoice.pdf".to_string())),
+                (3, Some("photo.jpg".to_string())),
+                (4, None),
+                (5, Some("notes.txt".to_string())),
+            ],
+        );
+    }
 
     #[test]
     fn check_label_refuses_line_breaks_and_other_control_characters() {

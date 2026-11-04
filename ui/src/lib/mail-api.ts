@@ -18,7 +18,7 @@
 // a typed home in `api.ts` and the two functions below become one-line
 // forwards to it, same as everything above them already is.
 
-import { api, callCommand } from './api'
+import { api, callCommand, isMock } from './api'
 import type {
   AccountId,
   CategoryCount,
@@ -81,6 +81,35 @@ export const categoryCounts = (mailbox: MailboxId): Promise<CategoryCount[]> =>
  *  updated, so a chip can flip to available without reloading the thread. */
 export const fetchAttachment = (messageId: MailMessageId, index: number): Promise<MailAttachment> =>
   api.fetchAttachment(messageId, index)
+
+function shellPresent(): boolean {
+  return !isMock && '__TAURI_INTERNALS__' in window
+}
+
+/**
+ * Save one attachment where the person says, answering false when they changed
+ * their mind.
+ *
+ * In the desktop app that is the shell's save dialog, the file written by the
+ * shell: a webview's own download of an `everyday:` address has nowhere to go,
+ * so a plain link to one fails every way it can be followed. A browser, which
+ * has no shell and does have downloads, gets the bytes as a file of its own.
+ */
+export async function saveAttachment(
+  url: string,
+  messageId: MailMessageId,
+  identifier: string,
+  name: string,
+): Promise<boolean> {
+  if (shellPresent()) {
+    return api.saveMailPart(messageId, identifier, name)
+  }
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  link.click()
+  return true
+}
 
 // ── Actions: one outbox op per thread, per "What an action does" ──────
 //

@@ -625,6 +625,9 @@ fn ammonia_clean(html: &str, scheme: &str) -> String {
         ])
         .add_tag_attributes("img", &["srcset", "sizes"])
         .add_tag_attributes("source", &["srcset", "sizes", "media", "type"])
+        // How Apple Mail and Thunderbird mark what they quoted, which the
+        // reader folds away (`ui/src/lib/mailbody.ts`). Inert, like `cite`.
+        .add_tag_attributes("blockquote", &["type"])
         .add_url_schemes(&schemes)
         .set_tag_attribute_value("a", "target", "_blank")
         .filter_style_properties(ALLOWED_STYLE_PROPERTIES.iter().copied().collect());
@@ -977,6 +980,19 @@ fn strip_css_comments(css: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Whether a sanitised body draws the part of `message_id` with this
+/// `Content-ID` -- whether [`Shared::classify`] wrote a `cid:` reference to it
+/// as an address in `html`. The whole address is what is looked for, because the
+/// id alone is a stranger's string and could turn up in the message's words.
+pub fn references_part(html: &str, message_id: &str, content_id: &str) -> bool {
+    let address = format!("/part/{}/{}", path_segment(message_id), path_segment(content_id));
+    html.match_indices(&address).any(|(at, _)| {
+        // Not an id that merely starts the same way.
+        !html[at + address.len()..]
+            .starts_with(|c: char| c.is_ascii_alphanumeric() || "@._-+%".contains(c))
+    })
 }
 
 /// Percent-encodes everything but the characters a message or content id is
@@ -1743,5 +1759,24 @@ mod tests {
             assert!(out.remote_images.is_empty(), "{r:?}");
             assert!(out.html.contains(r#"href="/about""#), "{}", out.html);
         }
+    }
+
+    #[test]
+    fn a_part_is_found_by_its_whole_address() {
+        let rewrite = Rewrite::new("msg-1");
+        let html = sanitize(r#"<img src="cid:image001.png@01DB">"#, &rewrite).html;
+        assert!(references_part(&html, "msg-1", "image001.png@01DB"), "{html}");
+        assert!(!references_part(&html, "msg-2", "image001.png@01DB"), "another message's");
+        assert!(!references_part(&html, "msg-1", "image001.png@01"), "an id starting the same");
+        assert!(!references_part(&html, "msg-1", "image002.png@01DB"));
+
+        let words = "<p>the file image001.png@01DB is at /part/msg-1 somewhere</p>";
+        assert!(!references_part(words, "msg-1", "image001.png@01DB"), "words are not an address");
+    }
+
+    #[test]
+    fn apples_quote_marker_survives() {
+        let html = sanitize(r#"<blockquote type="cite">Old</blockquote>"#, &Rewrite::new("m")).html;
+        assert!(html.contains(r#"type="cite""#), "{html}");
     }
 }

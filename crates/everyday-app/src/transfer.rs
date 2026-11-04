@@ -98,6 +98,45 @@ pub async fn save_export(
     Ok(true)
 }
 
+/// Save one part of a message where the person says.
+///
+/// A plain link to an `everyday:` address cannot do this. Following one in the
+/// webview, as a click or from its context menu, is a download of a custom
+/// scheme, which it has no way to carry out; the file never lands. This goes
+/// round the webview altogether, the way [`save_export`] does and for the same
+/// reason: the path belongs to this machine, so the shell chooses it and writes
+/// to it, whichever machine the vault is on.
+///
+/// Answers `false` when the dialog was dismissed.
+#[tauri::command]
+pub async fn save_mail_part(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    message_id: String,
+    identifier: String,
+    name: String,
+) -> CommandResult<bool> {
+    let session = state.session();
+    let Some(path) = ask_where_part(&app, &safe_file_name(&name)).await else {
+        return Ok(false);
+    };
+    let bytes = crate::protocol::mail_part_bytes(session, &message_id, &identifier).await?;
+    let temp = path.with_extension("part");
+    std::fs::write(&temp, &bytes).map_err(|e| io(&temp, e))?;
+    std::fs::rename(&temp, &path).map_err(|e| io(&path, e))?;
+    Ok(true)
+}
+
+/// A sender's idea of a file name, as something to offer in a save dialog. Only
+/// ever a suggestion, since the person sees it and answers the dialog, but it
+/// should not arrive reaching into another folder.
+fn safe_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let clean: String = base.chars().filter(|c| !c.is_control()).collect();
+    let trimmed = clean.trim().trim_start_matches('.');
+    if trimmed.is_empty() { "attachment".to_string() } else { trimmed.to_string() }
+}
+
 /// Pick an archive and hand it to the service, chunk by chunk.
 ///
 /// Answers `None` when the dialog was dismissed. What comes back is the handle
@@ -177,6 +216,14 @@ async fn ask_where(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
     rx.await.ok().flatten().and_then(|p| p.into_path().ok())
 }
 
+async fn ask_where_part(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("Save attachment").set_file_name(name).save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
 async fn ask_which(app: &tauri::AppHandle) -> Option<PathBuf> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -195,4 +242,26 @@ fn json_handle(handle: &str) -> serde_json::Value {
 
 fn io(path: &std::path::Path, e: std::io::Error) -> CommandError {
     CommandError::new("io", format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_file_name_cannot_reach_into_another_folder() {
+        for (given, want) in [
+            ("invoice.pdf", "invoice.pdf"),
+            ("../../.config/autostart/x.desktop", "x.desktop"),
+            ("..\\..\\evil.exe", "evil.exe"),
+            ("/etc/passwd", "passwd"),
+            (".bashrc", "bashrc"),
+            ("a\u{0}b\n.txt", "ab.txt"),
+            ("", "attachment"),
+            ("..", "attachment"),
+            ("folder/", "attachment"),
+        ] {
+            assert_eq!(safe_file_name(given), want, "{given:?}");
+        }
+    }
 }

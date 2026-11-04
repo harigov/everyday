@@ -131,7 +131,7 @@ pub fn html_to_markdown(html: &str) -> String {
 /// has them in its text, and a plain-text message can rule itself off with
 /// a line of `─` as well; neither is anything to preview.
 pub fn snippet(text: &str) -> String {
-    let visible = remove_ranges(text, &quoted_ranges(text));
+    let visible = remove_ranges(text, &quoted_ranges(text)).replace("**", "");
     let collapsed = visible
         .split(|c: char| c.is_whitespace() || ('\u{2500}'..='\u{257F}').contains(&c))
         .filter(|word| !word.is_empty())
@@ -266,8 +266,16 @@ const MOBILE_SIGNOFFS: &[&str] = &[
     "get outlook for",
 ];
 
+/// A line as the reply-header checks read it: trimmed, lower case, and without
+/// the `**` [`render_text`] writes around bold text. Outlook sets its header's
+/// labels in bold, so what comes out of a real reply is `**From: **Tom`, and a
+/// check for `from:` at the start of a line never saw one.
+fn header_line(line: &str) -> String {
+    line.replace("**", "").trim().to_ascii_lowercase()
+}
+
 fn is_wrote_header(line: &str) -> bool {
-    let lower = line.trim().to_ascii_lowercase();
+    let lower = header_line(line);
     if !lower.ends_with(':') || lower.len() < 8 {
         return false;
     }
@@ -287,7 +295,7 @@ fn find_outlook_block(lines: &[(usize, &str)]) -> Option<usize> {
     const LOOKAHEAD: usize = 6;
 
     for (index, (start, line)) in lines.iter().enumerate() {
-        let lower = line.trim().to_ascii_lowercase();
+        let lower = header_line(line);
 
         if lower.contains("original message") && lower.chars().filter(|c| *c == '-').count() >= 4 {
             return Some(*start);
@@ -295,9 +303,7 @@ fn find_outlook_block(lines: &[(usize, &str)]) -> Option<usize> {
 
         if lower.starts_with("from:") {
             let window = &lines[index..(index + LOOKAHEAD).min(lines.len())];
-            let has = |prefix: &str| {
-                window.iter().any(|(_, l)| l.trim().to_ascii_lowercase().starts_with(prefix))
-            };
+            let has = |prefix: &str| window.iter().any(|(_, l)| header_line(l).starts_with(prefix));
             if (has("sent:") || has("date:")) && has("to:") && has("subject:") {
                 return Some(*start);
             }
@@ -772,6 +778,27 @@ mod tests {
         assert_eq!(ranges.len(), 1);
         assert!(text[ranges[0].clone()].starts_with("On Tue"));
         assert!(text[..ranges[0].start].contains("Sounds good"));
+    }
+
+    #[test]
+    fn outlooks_bold_labels_are_still_a_header() {
+        let html = "<p>Lets go with Tuesday.</p>\
+             <div><p><b>From: </b>Josh &lt;josh@example.com&gt;<br>\
+             <b>Sent: </b>Friday, October 30, 2026 4:14 PM<br>\
+             <b>To: </b>Dustin &lt;dustin@example.com&gt;<br>\
+             <b>Subject: </b>Re: Connecting</p></div>\
+             <p>Do any of these windows work?</p>";
+        let text = html_to_text(html);
+        assert!(text.contains("**From: **"), "the shape this test exists for: {text:?}");
+
+        let ranges = quoted_ranges(&text);
+        assert_eq!(ranges.len(), 1, "{text:?}");
+        assert!(text[ranges[0].clone()].starts_with("**From:"), "{text:?}");
+        assert!(text[ranges[0].clone()].contains("windows work"), "{text:?}");
+
+        let snippet = snippet(&text);
+        assert!(snippet.starts_with("Lets go with Tuesday"), "{snippet:?}");
+        assert!(!snippet.contains("From:") && !snippet.contains("**"), "{snippet:?}");
     }
 
     #[test]

@@ -425,6 +425,34 @@ async fn serve_mail_local(
     }
 }
 
+/// One part of a message as bytes, for the save dialog
+/// (`transfer::save_mail_part`). The same checks and the same two paths as
+/// [`serve_mail_local`] and [`serve_mail_remote`], answering in a form with
+/// nothing about a response in it.
+pub(crate) async fn mail_part_bytes(
+    session: SessionHandle,
+    message: &str,
+    identifier: &str,
+) -> everyday_service::error::CommandResult<Vec<u8>> {
+    use everyday_service::error::{CommandError, codes};
+    let id = MailMessageId::parse(message)
+        .map_err(|_| CommandError::new(codes::INVALID, "that is not a message id"))?;
+    match session {
+        SessionHandle::Local(service) => {
+            let vault = service.require_unlocked()?;
+            let identifier = identifier.to_string();
+            let part = everyday_service::blocking(move || {
+                everyday_service::mailview::part(&vault, id, &identifier)
+            })
+            .await?;
+            Ok(part.bytes)
+        }
+        SessionHandle::Remote(remote) => {
+            Ok(remote.client.mail_part(&id.to_string(), identifier).await?.bytes)
+        }
+    }
+}
+
 async fn serve_mail_remote(
     remote: &std::sync::Arc<crate::remote::Remote>,
     route: MailRoute,

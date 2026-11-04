@@ -1434,7 +1434,7 @@
   /* Room at the end for the floating assistant button, which would otherwise
      sit on the reply's own tools once it is scrolled all the way down. */
   .inline-reply {
-    padding: 0 var(--sp-6) var(--fab-clear);
+    padding: 0 var(--sp-5) var(--fab-clear);
     container-type: inline-size;
   }
 

@@ -208,14 +208,14 @@ pub fn body_document(
 /// collapsed behind a script-free `<details>` -- see the plan's own words
 /// under "Rendering a message" for both requirements.
 ///
-/// This is the *only* rendering path quote-collapsing applies to.
 /// `quoted_ranges` are byte offsets into [`Body::text`]
-/// (`crate::mail::records`'s own docs on the field), not into
-/// `html_sanitised` -- there is no sound way to splice a `<details>` into
-/// arbitrary sanitised HTML at a text-byte offset without risking landing
-/// inside a tag, so an HTML message's own quoting (a `blockquote`, an
-/// indent, an "On ... wrote:" line ammonia already kept) is shown as the
-/// sender wrote it instead.
+/// (`crate::mail::records`'s own docs on the field), not into `html_sanitised`
+/// -- there is no sound way to splice a `<details>` into arbitrary sanitised
+/// HTML at a text-byte offset without risking landing inside a tag, so this is
+/// only for a plain-text message. An HTML message's quoting (a `blockquote`, an
+/// "On ... wrote:" line) is found where it is read instead, from the markup
+/// itself: `ui/src/lib/mailbody.ts`, which also folds the tail of what is built
+/// here.
 fn plain_text_body(body: &Body) -> String {
     let mut out = String::new();
     for segment in split_by_ranges(&body.text, &body.quoted_ranges) {
