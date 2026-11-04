@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use everyday_core::error::{Error, Result};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
-    Address, Category, CategoryMatch, CategoryRules, CategorySource, Invite, Message, MessageFlags,
-    SortedAs, Thread,
+    Address, Category, CategoryMatch, CategoryRules, CategorySource, Invite, MailboxRole, Message,
+    MessageFlags, SortedAs, Thread,
     categorize::{self, CategorizeInput},
 };
 use everyday_core::packstore::PackRef;
@@ -720,11 +720,29 @@ fn remove_uids_tx(
 /// row it was the reason for, while the `messages` rows -- and each
 /// message's membership in *other* mailboxes -- are left exactly as they
 /// were.
+///
+/// Sent's filings also say where a thread sits in its other lists, so forgetting
+/// them moves those rows back, until the mailbox's next sync files the replies
+/// again: left alone, a reply gone from the server would hold its thread up.
 pub(super) fn reset_mailbox(store: &SqlStore, mailbox: MailboxId) -> Result<()> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
+    let replied_to = tx.query(
+        "SELECT DISTINCT m.thread_id FROM message_mailboxes mm \
+         JOIN mail_messages m ON m.id = mm.message_id \
+         JOIN mailboxes mb ON mb.id = mm.mailbox_id \
+         WHERE mm.mailbox_id = ?1 AND mb.role = ?2",
+        &vals![mailbox.to_string(), MailboxRole::Sent.as_str()],
+    )?;
     tx.execute("DELETE FROM message_mailboxes WHERE mailbox_id = ?1", &vals![mailbox.to_string()])?;
     tx.execute("DELETE FROM thread_mailboxes WHERE mailbox_id = ?1", &vals![mailbox.to_string()])?;
+    for row in &replied_to {
+        let thread: ThreadId = row
+            .text(0)?
+            .parse()
+            .map_err(|e: <ThreadId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
+        recompute_thread_mailboxes(tx.as_mut(), thread)?;
+    }
     tx.execute(
         "UPDATE mailboxes SET uidvalidity = 0, uidnext = 0, highest_modseq = 0 WHERE id = ?1",
         &vals![mailbox.to_string()],
@@ -1040,6 +1058,17 @@ fn merge_participants(participants: &mut Vec<Address>, hints: &[&Message]) {
     }
 }
 
+/// Whether what the person sent in a thread moves it up this mailbox's list. A
+/// reply lands only in Sent, but it is as much the conversation moving as an
+/// answer to it would be. Not in the lists of what has been thrown away or is
+/// not finished: a reply says nothing new about a message in Trash or Spam, or a
+/// draft that has not changed.
+///
+/// `schema::v20` holds the same list, as a migration must, in its own words.
+fn moved_by_a_reply(role: Option<MailboxRole>) -> bool {
+    !matches!(role, Some(MailboxRole::Trash | MailboxRole::Spam | MailboxRole::Drafts))
+}
+
 /// Recompute every `thread_mailboxes` row for `thread_id`, one per mailbox
 /// any of its messages is currently filed in, and delete any row for a
 /// mailbox that no longer holds one -- the per-mailbox half of
@@ -1058,15 +1087,20 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
     )?;
     // Said of the whole thread rather than per mailbox: what its row draws
     // (`Thread::starred`, `Thread::has_attachments`), so what the list's
-    // filters must answer, whichever mailbox the message is filed in.
-    let (starred, has_attachments) = match tx.query_opt(
+    // filters must answer, whichever mailbox the message is filed in. The last
+    // is what the person sent in it, which `moved_by_a_reply` lists sort by too.
+    let (starred, has_attachments, sent_us) = match tx.query_opt(
         "SELECT COALESCE(MAX(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END), 0), \
-         COALESCE(MAX(CASE WHEN has_attachments THEN 1 ELSE 0 END), 0) \
+         COALESCE(MAX(CASE WHEN has_attachments THEN 1 ELSE 0 END), 0), \
+         (SELECT COALESCE(MAX(m.date_us), 0) FROM mail_messages m \
+            JOIN message_mailboxes mm ON mm.message_id = m.id \
+            JOIN mailboxes mb ON mb.id = mm.mailbox_id \
+            WHERE m.thread_id = ?2 AND mb.role = ?3) \
          FROM mail_messages WHERE thread_id = ?1",
-        &vals![thread_id.to_string()],
+        &vals![thread_id.to_string(), thread_id.to_string(), MailboxRole::Sent.as_str()],
     )? {
-        Some(row) => (row.i64(0)? != 0, row.i64(1)? != 0),
-        None => (false, false),
+        Some(row) => (row.i64(0)? != 0, row.i64(1)? != 0, row.i64(2)?),
+        None => (false, false, 0),
     };
     // The `NOT IN` sub-select is what keeps this from rebuilding a row
     // `hide_thread_from_mailbox` just deleted on purpose:
@@ -1076,20 +1110,24 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
     // hidden. See that function's own docs for the whole design.
     let rows = tx.query(
         "SELECT mm.mailbox_id, COALESCE(SUM(CASE WHEN m.flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
-         COALESCE(MAX(m.date_us), 0) \
+         COALESCE(MAX(m.date_us), 0), mb.role \
          FROM message_mailboxes mm JOIN mail_messages m ON m.id = mm.message_id \
+         LEFT JOIN mailboxes mb ON mb.id = mm.mailbox_id \
          WHERE m.thread_id = ?1 \
            AND mm.mailbox_id NOT IN ( \
              SELECT mailbox_id FROM hidden_thread_mailboxes WHERE thread_id = ?2 \
            ) \
-         GROUP BY mm.mailbox_id",
+         GROUP BY mm.mailbox_id, mb.role",
         &vals![thread_id.to_string(), thread_id.to_string()],
     )?;
     let mut live = Vec::with_capacity(rows.len());
     for row in &rows {
         let mailbox_id = row.text(0)?;
         let unread = row.i64(1)?;
-        let last_date_us = row.i64(2)?;
+        let newest_here = row.i64(2)?;
+        let role = row.opt_text(3)?.and_then(|r| MailboxRole::parse(&r));
+        let last_date_us =
+            if moved_by_a_reply(role) { newest_here.max(sent_us) } else { newest_here };
         tx.execute(
             "INSERT INTO thread_mailboxes
                (thread_id, mailbox_id, last_date_us, unread, starred, has_attachments)

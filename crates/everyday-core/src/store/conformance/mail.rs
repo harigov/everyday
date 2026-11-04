@@ -49,6 +49,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
     archiving_survives_a_later_flag_change(store);
     a_reply_to_an_archived_thread_brings_it_back(store);
+    a_reply_of_your_own_moves_a_thread_up_the_list(store);
+    a_reply_does_not_move_a_thread_up_trash_spam_or_drafts(store);
     a_landed_archive_leaves_no_marker_behind(store);
     a_reverted_archive_restores_uid_membership(store);
     remove_uids_returns_pack_refs_only_for_genuinely_dead_messages(store);
@@ -1531,6 +1533,127 @@ fn a_reply_to_an_archived_thread_brings_it_back(store: &dyn JournalStore) {
     assert_eq!(inbox_threads(m, inbox.id), vec![thread_id], "the reply brings it back");
 }
 
+/// A thread's place in a list is the newest of what is filed there and what the
+/// person sent in it: a reply lands only in Sent and still moves it up. Anything
+/// else filed elsewhere does not, or autosaving a draft would reorder the Inbox.
+fn a_reply_of_your_own_moves_a_thread_up_the_list(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let label = Mailbox::new(account, "Work", MailboxRole::Other);
+    let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
+    let drafts = Mailbox::new(account, "Drafts", MailboxRole::Drafts);
+    let archive = Mailbox::new(account, "Archive", MailboxRole::Archive);
+    for mailbox in [&inbox, &label, &sent, &drafts, &archive] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let start = Timestamp::from_second(1_790_000_000).unwrap();
+    let hours = |n: i64| start + SignedDuration::from_hours(n);
+    let (answered, other) = (ThreadId::new(), ThreadId::new());
+    let them = "dana@example.com";
+
+    let arrived = message(account, answered, "Older", them, hours(0));
+    let newer = message(account, other, "Newer", them, hours(1));
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: arrived.clone(), mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: newer.clone(), mailbox: inbox.id, uid: 2 },
+            IngestMessage { message: arrived, mailbox: label.id, uid: 1 },
+            IngestMessage { message: newer, mailbox: label.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+    assert_eq!(inbox_threads(m, inbox.id), vec![other, answered], "as they arrived");
+
+    let reply = message(account, answered, "Re: Older", "me@example.com", hours(2));
+    m.ingest(account, vec![IngestMessage { message: reply.clone(), mailbox: sent.id, uid: 1 }])
+        .unwrap();
+    assert_eq!(inbox_threads(m, inbox.id), vec![answered, other], "the reply moves it up");
+    assert_eq!(inbox_threads(m, label.id), vec![answered, other], "in every list it is filed in");
+
+    let draft = message(account, other, "Re: Newer", "me@example.com", hours(3));
+    let archived = message(account, other, "Re: Newer", them, hours(4));
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: draft, mailbox: drafts.id, uid: 1 },
+            IngestMessage { message: archived, mailbox: archive.id, uid: 1 },
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        inbox_threads(m, inbox.id),
+        vec![answered, other],
+        "a draft or mail filed only in Archive leaves it where it is"
+    );
+
+    // A row says the date it is listed by; the thread's own is still its newest.
+    let listed_at = |thread: ThreadId| {
+        let page = m.list_threads(inbox.id, &ThreadFilter::default(), None, 50).unwrap();
+        page.threads.iter().find(|t| t.id == thread).unwrap().last_date
+    };
+    assert_eq!(listed_at(answered), hours(2));
+    assert_eq!(listed_at(other), hours(1));
+    assert_eq!(m.thread(other).unwrap().0.last_date, hours(4));
+
+    let answer = message(account, other, "Re: Newer", them, hours(5));
+    m.ingest(account, vec![IngestMessage { message: answer, mailbox: inbox.id, uid: 3 }]).unwrap();
+    assert_eq!(inbox_threads(m, inbox.id), vec![other, answered], "a later arrival overtakes it");
+
+    m.remove_uids(inbox.id, &[3]).unwrap();
+    assert_eq!(
+        inbox_threads(m, inbox.id),
+        vec![answered, other],
+        "the arrival gone, the reply leads"
+    );
+
+    // Sent forgotten by a `UIDVALIDITY` change, and synced again under new uids.
+    m.reset_mailbox(sent.id).unwrap();
+    assert_eq!(inbox_threads(m, inbox.id), vec![other, answered], "no reply on file for now");
+    m.ingest(account, vec![IngestMessage { message: reply, mailbox: sent.id, uid: 7 }]).unwrap();
+    assert_eq!(inbox_threads(m, inbox.id), vec![answered, other], "filed again, back up");
+
+    m.remove_uids(sent.id, &[7]).unwrap();
+    assert_eq!(
+        inbox_threads(m, inbox.id),
+        vec![other, answered],
+        "the reply gone, as they arrived"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// What is in Trash or Spam, or a draft, keeps to its own dates: a reply says
+/// nothing new about any of them.
+fn a_reply_does_not_move_a_thread_up_trash_spam_or_drafts(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    for role in [MailboxRole::Trash, MailboxRole::Spam, MailboxRole::Drafts] {
+        let account = AccountId::new();
+        let listed = Mailbox::new(account, role.as_str(), role);
+        let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
+        m.put_mailbox(&listed).unwrap();
+        m.put_mailbox(&sent).unwrap();
+        let start = Timestamp::from_second(1_790_000_000).unwrap();
+        let hours = |n: i64| start + SignedDuration::from_hours(n);
+        let (answered, other) = (ThreadId::new(), ThreadId::new());
+        let older = message(account, answered, "Older", "a@example.com", hours(0));
+        let newer = message(account, other, "Newer", "a@example.com", hours(1));
+        let reply = message(account, answered, "Re: Older", "me@example.com", hours(2));
+        m.ingest(
+            account,
+            vec![
+                IngestMessage { message: older, mailbox: listed.id, uid: 1 },
+                IngestMessage { message: newer, mailbox: listed.id, uid: 2 },
+                IngestMessage { message: reply, mailbox: sent.id, uid: 1 },
+            ],
+        )
+        .unwrap();
+        assert_eq!(inbox_threads(m, listed.id), vec![other, answered], "{}", role.as_str());
+        cleanup_account(store, account);
+    }
+}
+
 /// Once sync removes the thread's membership in the mailbox it was hidden
 /// from -- the server move landed -- a later message arriving there is shown,
 /// because no marker is left to hide it.
@@ -2008,8 +2131,8 @@ fn a_thread_list_can_keep_to_threads_with_nothing_newer_than_a_date(store: &dyn 
     assert_eq!(listed(5), Vec::<ThreadId>::new(), "before, not at");
     assert_eq!(
         listed(11),
-        vec![quiet, answered],
-        "in the Inbox's own order, by each thread's newest message there"
+        vec![answered, quiet],
+        "in the Inbox's own order, the answered thread placed by its answer"
     );
 
     cleanup_account(store, account);

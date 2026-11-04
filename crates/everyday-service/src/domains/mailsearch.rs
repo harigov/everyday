@@ -220,7 +220,10 @@ async fn search_mail(
                 continue; // a later hit in an already-seen thread
             }
             let Ok(thread_id) = hit.thread_key.parse::<ThreadId>() else { continue };
-            if let Ok((thread, _)) = vault.thread(thread_id) {
+            if let Ok((mut thread, _)) = vault.thread(thread_id) {
+                // The results run by the date of what matched, so that is what
+                // the row says, as a mailbox's list says the date it runs by.
+                thread.last_date = hit.date;
                 threads.push(thread);
             }
         }

@@ -12,7 +12,7 @@ use everyday_core::store::mail::{ThreadFilter, ThreadPage, thread_aad};
 use super::write::IN_CHUNK;
 use crate::conn::{Sql, Value, Where};
 use crate::keyset::{Dir, KeyCursor};
-use crate::{SqlStore, to_us};
+use crate::{SqlStore, from_us, to_us};
 
 /// See [`everyday_core::store::mail::MailStore::list_threads`]: the
 /// one-mailbox case of [`list_threads_across`], and written as exactly that
@@ -189,7 +189,11 @@ fn page_and_run(
             continue;
         }
         let data = row.bytes(2)?;
-        let thread: Thread = store.unseal(&thread_aad(thread_id), &data)?;
+        let mut thread: Thread = store.unseal(&thread_aad(thread_id), &data)?;
+        // The date that placed the row here, so what it says cannot disagree
+        // with the rows around it. A draft or mail filed elsewhere can make the
+        // thread's own newer, without having moved it.
+        thread.last_date = from_us(last_date_us);
         threads.push(thread);
     }
 

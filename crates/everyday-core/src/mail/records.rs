@@ -620,7 +620,8 @@ fn safe_slice(s: &str, start: usize, end: usize) -> &str {
 /// see `crate::store::mail` for how `thread_mailboxes` keeps a *per-mailbox*
 /// view of the same thread for the inbox's own ordering, which can
 /// legitimately differ (a message that landed only in Archive should not
-/// move a thread up the Inbox).
+/// move a thread up the Inbox). A thread read from a list has that per-mailbox
+/// date as its `last_date`: the date it is listed by.
 ///
 /// `snippet`, `starred` and `has_attachments` are aggregates on the same
 /// terms: `snippet` is the newest message's own `Message::snippet`, and
