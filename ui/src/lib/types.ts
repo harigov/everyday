@@ -1967,6 +1967,8 @@ export interface Thread {
   accountId: AccountId
   subject: string
   participants: MailAddress[]
+  /** The newest message in the thread, or for a row in a list or a search, the
+   *  date that list runs by. */
   lastDate: string
   messageCount: number
   unreadCount: number

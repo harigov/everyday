@@ -844,12 +844,10 @@ assert.deepEqual(
   'one heading ahead of each run, never one per row under it',
 )
 
-// A list runs in order of the newest message filed in the mailbox or sent in
-// the thread, while a row's `lastDate` is the newest anywhere -- in Sent, an
-// answer to what you sent -- so a row can be newer than the rows either side of
-// it. It stays under the heading it falls in. Going by when the key last changed
-// instead gave a second `header:yesterday`, and two rows with one key are an
-// error from the keyed `{#each}` that left the list on screen frozen, or blank.
+// A row out of order, which a list's own rows should never be, stays under the
+// heading it falls in. Going by when the key last changed instead gave a second
+// `header:yesterday`, and two rows with one key are an error from the keyed
+// `{#each}` that left the list on screen frozen, or blank.
 const answeredLater = withDateSections(
   [
     thread('a', '2026-09-13T08:00:00'),

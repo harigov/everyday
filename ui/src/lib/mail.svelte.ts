@@ -719,8 +719,16 @@ class MailState {
       if (generation !== this.#generation || cursor !== this.nextCursor) return
       // `mergeSearchPage` rather than a bare append: across several
       // mailboxes, a thread filed in two of them comes back once for each,
-      // on whichever pages its two rows land.
-      this.threads = mergeSearchPage(this.threads, page.threads)
+      // on whichever pages its two rows land. A row held on to goes back where
+      // its date says, or an old one left at the end of the last page would
+      // sit above this one, with every heading under it wrong.
+      const rows = mergeSearchPage(
+        this.threads.filter((t) => !this.#putBack.has(t.id)),
+        page.threads,
+      )
+      const served = new Set(rows.map((t) => t.id))
+      this.threads = keepLingering(rows, this.threads, this.#putBack)
+      this.#putBack = new Set([...this.#putBack].filter((id) => !served.has(id)))
       this.nextCursor = page.nextCursor ?? null
     } catch (e) {
       await quietly(e)

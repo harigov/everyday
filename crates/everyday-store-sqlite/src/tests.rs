@@ -1143,9 +1143,9 @@ fn the_table_backed_pack_store_passes_the_shared_conformance_suite() {
     run_pack_store_suite(&TablePacks::new(&store), "acc-conformance");
 }
 
-/// The list's Starred and Attachments filters on a vault written before they
-/// had columns of their own to read: what is already starred or attached is
-/// found without any of it being touched again, and replaying the step (a
+/// A thread you replied to, on a vault written before a reply counted: it moves
+/// up the lists it is filed in, but for Trash, Spam and Drafts. A thread with
+/// something newer than the reply stays by that, and replaying the step (a
 /// process that died before recording the version does) changes nothing.
 #[test]
 fn a_version_19_database_moves_threads_you_replied_to_up_the_list() {
@@ -1153,13 +1153,15 @@ fn a_version_19_database_moves_threads_you_replied_to_up_the_list() {
     let account = AccountId::new();
     let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
     let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
-    let start = jiff::Timestamp::now();
-    let message = |thread: ThreadId, hours: i64| Message {
+    let trash = Mailbox::new(account, "Trash", MailboxRole::Trash);
+    let start = jiff::Timestamp::from_second(1_790_000_000).unwrap();
+    let hours = |n: i64| start + jiff::SignedDuration::from_hours(n);
+    let message = |thread: ThreadId, at: i64| Message {
         id: MailMessageId::new(),
         account_id: account,
         thread_id: thread,
         message_id_header: format!("<{}@example.com>", MailMessageId::new()),
-        date: start + jiff::SignedDuration::from_hours(hours),
+        date: hours(at),
         from: Address::new("Somebody", "somebody@example.com"),
         to: vec![Address::bare("me@example.com")],
         cc: Vec::new(),
@@ -1177,54 +1179,85 @@ fn a_version_19_database_moves_threads_you_replied_to_up_the_list() {
         gmail: None,
         invite: None,
     };
-    let (answered, other, sent_only) = (ThreadId::new(), ThreadId::new(), ThreadId::new());
-    let (arrived, newer) = (message(answered, 0), message(other, 1));
-    let before = (arrived.date, newer.date);
+    let (answered, quiet, answered_back, trashed, sent_only) =
+        (ThreadId::new(), ThreadId::new(), ThreadId::new(), ThreadId::new(), ThreadId::new());
     {
         let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
         store.put_mailbox(&inbox).unwrap();
         store.put_mailbox(&sent).unwrap();
-        store
-            .ingest(
-                account,
-                vec![
-                    IngestMessage { message: arrived, mailbox: inbox.id, uid: 1 },
-                    IngestMessage { message: newer, mailbox: inbox.id, uid: 2 },
-                    IngestMessage { message: message(answered, 2), mailbox: sent.id, uid: 1 },
-                    IngestMessage { message: message(sent_only, 3), mailbox: sent.id, uid: 2 },
-                ],
-            )
-            .unwrap();
+        store.put_mailbox(&trash).unwrap();
+        let filed = [
+            (answered, 0, &inbox, 1),
+            (answered, 2, &sent, 1),
+            (quiet, 1, &inbox, 2),
+            (answered_back, 3, &sent, 2),
+            (answered_back, 4, &inbox, 3),
+            (trashed, 0, &trash, 1),
+            (trashed, 5, &sent, 3),
+            (sent_only, 6, &sent, 4),
+        ];
+        let ingest: Vec<IngestMessage> = filed
+            .into_iter()
+            .map(|(thread, at, mailbox, uid)| IngestMessage {
+                message: message(thread, at),
+                mailbox: mailbox.id,
+                uid,
+            })
+            .collect();
+        store.ingest(account, ingest).unwrap();
     }
 
-    // What an earlier build left: every row placed only by what is filed there.
+    // What an earlier build left of the one row this rule has moved since.
     let rewind = || {
         let conn = raw(dir.path());
-        for (thread, date) in [(answered, before.0), (other, before.1)] {
-            conn.execute(
-                "UPDATE thread_mailboxes SET last_date_us = ?1
-                 WHERE thread_id = ?2 AND mailbox_id = ?3",
-                rusqlite::params![date.as_microsecond(), thread.to_string(), inbox.id.to_string()],
-            )
-            .unwrap();
-        }
+        conn.execute(
+            "UPDATE thread_mailboxes SET last_date_us = ?1
+             WHERE thread_id = ?2 AND mailbox_id = ?3",
+            rusqlite::params![
+                hours(0).as_microsecond(),
+                answered.to_string(),
+                inbox.id.to_string()
+            ],
+        )
+        .unwrap();
         conn.pragma_update(None, "user_version", 19i64).unwrap();
     };
-    let listed = |mailbox: &Mailbox| -> Vec<ThreadId> {
+    let listed = |mailbox: &Mailbox| -> Vec<(ThreadId, jiff::Timestamp)> {
         let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
         let page = store.list_threads(mailbox.id, &ThreadFilter::default(), None, 50).unwrap();
-        page.threads.iter().map(|t| t.id).collect()
+        page.threads.iter().map(|t| (t.id, t.last_date)).collect()
+    };
+    let check = || {
+        assert_eq!(
+            listed(&inbox),
+            vec![(answered_back, hours(4)), (answered, hours(2)), (quiet, hours(1))],
+            "moved by the reply, or kept by something newer"
+        );
+        assert_eq!(listed(&trash), vec![(trashed, hours(0))], "Trash keeps to its own dates");
+        assert_eq!(
+            listed(&sent),
+            vec![
+                (sent_only, hours(6)),
+                (trashed, hours(5)),
+                (answered_back, hours(3)),
+                (answered, hours(2))
+            ],
+            "Sent is already in this order"
+        );
     };
 
     rewind();
-    assert_eq!(listed(&inbox), vec![answered, other]);
-    assert_eq!(listed(&sent), vec![sent_only, answered], "Sent is already in this order");
+    check();
 
     // Replayed over itself, as a crash before the version is recorded leaves it.
     raw(dir.path()).pragma_update(None, "user_version", 19i64).unwrap();
-    assert_eq!(listed(&inbox), vec![answered, other]);
+    check();
 }
 
+/// The list's Starred and Attachments filters on a vault written before they
+/// had columns of their own to read: what is already starred or attached is
+/// found without any of it being touched again, and replaying the step (a
+/// process that died before recording the version does) changes nothing.
 #[test]
 fn a_version_18_database_fills_in_the_starred_and_attachment_columns() {
     let dir = tempfile::tempdir().unwrap();

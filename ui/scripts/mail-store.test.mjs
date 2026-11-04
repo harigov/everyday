@@ -641,6 +641,35 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
   await mail.loadMore()
   assert.equal(asked.at(-1).filter.unread, true, 'loadMore keeps to the toggle')
 
+  // A row held on to keeps its place by date as later pages arrive: left at the
+  // end of the page it was put back into, it would sit above all of the next.
+  mail.setOnly(new Set(['unread']))
+  await mail.refresh()
+  const inOrder = [...mail.threads]
+  assert.ok(inOrder.length >= 4, 'the seed has enough unread mail to split into pages')
+  const held = inOrder.at(-1)
+  await mail.openThreadById(held.id)
+  const pageTwoAt = 2
+  api.threadsAcross = (mailboxes, filter, cursor) => ({
+    threads: (cursor ? inOrder.slice(pageTwoAt, -1) : inOrder.slice(0, pageTwoAt)).map((t) => ({
+      ...t,
+    })),
+    nextCursor: cursor ? null : 'next',
+  })
+  await mail.refresh()
+  assert.equal(mail.threads.at(-1).id, held.id, 'put back at the end of what is loaded')
+  await mail.loadMore()
+  assert.deepEqual(
+    mail.threads.map((t) => t.id),
+    inOrder.map((t) => t.id),
+    'the next page goes above it, where the dates say',
+  )
+  api.threadsAcross = across
+  mail.closeThread()
+  await mail.markUnread(held.id)
+  mail.setOnly(new Set())
+  await mail.refresh()
+
   // However many rows are held on to, a refresh asks for no more than it did:
   // counting them would ask further down the mailbox every time.
   mail.setOnly(new Set())

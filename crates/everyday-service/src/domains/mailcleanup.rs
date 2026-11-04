@@ -288,13 +288,13 @@ pub(crate) fn inbox_messages(
 /// thread, so it is checked here on the page that comes back.
 ///
 /// Pages newest first and stops at the first page whose last thread's
-/// `last_date` is before `since`. That stop is safe because of how the two
-/// dates relate: the list is ordered by each thread's newest message *in
-/// this mailbox*, and a thread's own `last_date` -- its newest message
-/// anywhere -- is never older than that. So once one row's `last_date` is
-/// before the window, its newest Inbox message is too, and every row after
-/// it in the order is older still: no later thread has an Inbox message in
-/// the window, and an Inbox message is all that is counted.
+/// `last_date` is before `since`. That stop is safe because a listed thread's
+/// `last_date` is what the list is ordered by, and no Inbox message of its is
+/// newer: that date is the newest of what is filed there and what was sent in
+/// the thread. So once one row's is before the window, its newest Inbox message
+/// is too, and every row after it in the order is older still: no later thread
+/// has an Inbox message in the window, and an Inbox message is all that is
+/// counted.
 /// [`MAX_INBOX_THREADS`] stops the walk regardless.
 fn inbox_threads(
     vault: &Vault,

@@ -1532,18 +1532,26 @@ fn v19(d: Dialect) -> Vec<String> {
 ///
 /// `thread_mailboxes.last_date_us` was the newest message filed in the mailbox,
 /// and is now that or the newest the person sent in the thread, whichever is
-/// later: see `recompute_thread_mailboxes`, which only reaches a thread the next
-/// time something is written to it. This brings the rest up to date.
+/// later, except in Trash, Spam and Drafts: see `recompute_thread_mailboxes`,
+/// which only reaches a thread the next time something is written to it. This
+/// brings the rest up to date.
 ///
 /// Safe to replay: a row this has already moved is no longer older than what
-/// was sent.
+/// was sent. Only threads with something in Sent are read through, since this
+/// runs while the vault is opening.
 fn v20() -> Vec<String> {
     let sent = "SELECT MAX(m.date_us) FROM mail_messages m \
          JOIN message_mailboxes mm ON mm.message_id = m.id \
          JOIN mailboxes mb ON mb.id = mm.mailbox_id \
          WHERE m.thread_id = thread_mailboxes.thread_id AND mb.role = 'sent'";
     vec![format!(
-        "UPDATE thread_mailboxes SET last_date_us = ({sent}) WHERE last_date_us < ({sent})"
+        "UPDATE thread_mailboxes SET last_date_us = ({sent}) \
+         WHERE thread_id IN (SELECT m.thread_id FROM mail_messages m \
+             JOIN message_mailboxes mm ON mm.message_id = m.id \
+             JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mb.role = 'sent') \
+           AND mailbox_id NOT IN \
+             (SELECT id FROM mailboxes WHERE role IN ('trash', 'spam', 'drafts')) \
+           AND last_date_us < ({sent})"
     )]
 }
 

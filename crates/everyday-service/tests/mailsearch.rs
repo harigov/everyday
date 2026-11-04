@@ -116,6 +116,34 @@ async fn search_mail_finds_a_thread_by_body_text() {
     assert_eq!(threads[0]["id"], thread_id.to_string());
 }
 
+/// Results run by the date of what matched, so a row says that date, whatever
+/// else has happened in the thread since: going by the thread's own date put a
+/// row under a heading that was not its own.
+#[tokio::test]
+async fn a_search_result_says_the_date_of_what_matched() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let thread_id =
+        seed_searchable_thread(&svc, account, "Quarterly report", "the marmalade figures are in");
+    let vault = svc.get().unwrap();
+    let matched = vault.thread(thread_id).unwrap().0.last_date;
+
+    let inbox = vault.mailboxes(account).unwrap()[0].id;
+    let later = matched + jiff::SignedDuration::from_hours(24);
+    let mut newer = vault.thread(thread_id).unwrap().1[0].clone();
+    newer.id = MailMessageId::new();
+    newer.message_id_header = format!("<{}@example.com>", newer.id);
+    newer.date = later;
+    vault
+        .ingest_mail(account, vec![IngestMessage { message: newer, mailbox: inbox, uid: 2 }])
+        .unwrap();
+    assert_eq!(vault.thread(thread_id).unwrap().0.last_date, later);
+
+    let result = call(&svc, "search_mail", json!({ "query": "marmalade" })).await;
+    let date: Timestamp = result["threads"][0]["lastDate"].as_str().unwrap().parse().unwrap();
+    assert!(date < later, "{date} is the thread's newest, not what matched: {result}");
+}
+
 #[tokio::test]
 async fn search_mail_finds_nothing_for_an_unrelated_word() {
     let (svc, _dir) = service();
