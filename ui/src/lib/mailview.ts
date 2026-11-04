@@ -13,6 +13,7 @@
 // it. Keep this the only place that decision is made.
 
 import { isMock } from './api'
+import { adaptToPage, looksDesigned, readBody } from './mailbody'
 
 /** What `<iframe sandbox srcdoc>` needs, whichever world this is running in.
  * Exactly one of `url` and `html` is set:
@@ -182,14 +183,22 @@ function mockDocument(inner: string): string {
  * `mail/` addresses -- so a quoted image still asks the remote-image
  * allow-list before anything leaves the machine.
  *
- * Plain mail is drawn transparent and unpadded, so it reads as part of the
- * sheet rather than a card inside it, in the app's own text colours for
- * `dark` -- the same choice `applyBodyTheme` makes for a message body.
- * A styled one -- see `setsOwnColours` -- keeps a light card of its own
- * instead, whatever the theme, for the reason given there.
+ * Mail that was written is drawn transparent and unpadded, with its colours
+ * moved onto the sheet's -- the same as a message body -- so it reads as part
+ * of the sheet rather than a card inside it. A designed one keeps a light card
+ * of its own, whatever the theme: see `mailbody.ts`'s `isDesigned`.
  */
 export function quoteDocument(quotedHtml: string, dark: boolean): string {
-  const styled = setsOwnColours(quotedHtml)
+  /** Pressing Reply must not depend on this being able to read the message. */
+  function safely<T>(read: () => T, otherwise: T): T {
+    try {
+      return read()
+    } catch {
+      return otherwise
+    }
+  }
+
+  const styled = safely(() => looksDesigned(quotedHtml), true)
   const paper = !dark || styled
   const fg = paper ? '#1c1a17' : '#eceaf0'
   const muted = paper ? '#5f5a52' : '#a9a5b2'
@@ -197,6 +206,12 @@ export function quoteDocument(quotedHtml: string, dark: boolean): string {
   const card = styled
     ? `background:#ffffff;padding:12px 14px;border-radius:8px;`
     : 'background:transparent;padding:0 2px;'
+  const inner = styled
+    ? quotedHtml
+    : safely(
+        () => adaptToPage(quotedHtml, { background: dark ? '#201f24' : '#fffefc', text: fg }),
+        quotedHtml,
+      )
   return applyPlatformOrigin(
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src everyday: http://everyday.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
@@ -209,7 +224,7 @@ export function quoteDocument(quotedHtml: string, dark: boolean): string {
       `blockquote[type=cite],body>blockquote{margin:0;padding-left:12px;border-left:2px solid ${rule}}` +
       `a{color:inherit}img{max-width:100%;height:auto}table{max-width:100%}` +
       `pre{white-space:pre-wrap;font-family:inherit;margin:0}</style>` +
-      `</head><body>${quotedHtml}</body></html>`,
+      `</head><body>${inner}</body></html>`,
   )
 }
 
@@ -247,75 +262,185 @@ export async function loadBody(source: MailBodySource): Promise<LoadedMailBody> 
   return { html, imagesHidden: res.headers.get('x-mail-images-hidden') === 'true' }
 }
 
-/** A CSS declaration that colours text or what is behind it. */
-const COLOUR_DECLARATION = /(?:^|[\s;{])(?:color|background(?:-color)?)\s*:/i
+/** The card an open message is drawn on, which is also the page of the frame
+ *  inside it, so the two have one edge. Written out because the frame's
+ *  document has no access to the theme's custom properties. */
+export const MAIL_CARD = { dark: '#2a292f', light: '#f7f6f3' } as const
 
-/**
- * Whether a sender's markup sets colours of its own: a text colour or a
- * background in a `style` attribute or a style sheet, or the `bgcolor` and
- * `<font color>` of mail written before CSS.
- *
- * Such a message was designed for the page its sender had in mind, which is
- * nearly always white -- dark grey text, light panels, a logo drawn for a
- * light background. On the app's dark page it keeps its own dark text and
- * loses the white behind it, and all but vanishes. A newsletter set in
- * `#363737` is the usual case.
- *
- * Erring towards yes on purpose: a declaration that only colours a border
- * counts too. A wrong yes costs a plain message drawn on a light page; a
- * wrong no costs a message nobody can read.
- */
-export function setsOwnColours(html: string): boolean {
-  if (/<[^>]+\s(?:bg)?color\s*=/i.test(html)) return true
-  for (const [, double, single] of html.matchAll(/\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
-    if (COLOUR_DECLARATION.test(double ?? single ?? '')) return true
+/** The page a designed message was made for. */
+const PAPER = { background: '#ffffff', text: '#1c1a17' }
+
+/** The colours of the app's own text, from `theme.css`. */
+const APP_TEXT = { dark: '#eceaf0', light: '#1c1a17' } as const
+
+/** The document's `<head>`, its markup, and what closes it. `null` for
+ *  anything that is not a document `body_document` or {@link bodyDocument}
+ *  built, which has nothing to add a style to. */
+function splitDocument(html: string): { head: string; inner: string; tail: string } | null {
+  const headEnd = html.indexOf('</head>')
+  if (headEnd < 0) return null
+  const open = /<body[^>]*>/i.exec(html.slice(headEnd))
+  const bodyEnd = html.lastIndexOf('</body>')
+  if (!open || bodyEnd < 0)
+    return { head: html.slice(0, headEnd), inner: '', tail: html.slice(headEnd) }
+  const innerStart = headEnd + open.index + open[0].length
+  return {
+    head: html.slice(0, headEnd),
+    inner: html.slice(innerStart, bodyEnd),
+    tail: html.slice(bodyEnd),
   }
-  for (const [, sheet] of html.matchAll(/<style\b[^>]*>([^<]*)/gi)) {
-    if (COLOUR_DECLARATION.test(sheet ?? '')) return true
-  }
-  return false
+}
+
+/** The sender's own `prefers-color-scheme: dark` rules, switched off. They
+ *  answer to the system's setting rather than to the page they are drawn on,
+ *  and would set light text on white. */
+function withoutDarkRules(inner: string): string {
+  return inner.replace(/prefers-color-scheme\s*:\s*dark/gi, 'prefers-color-scheme: none')
+}
+
+/** A message body as it is about to be read -- see {@link renderBody}. */
+export interface RenderedBody {
+  /** The document, ready for `iframe.srcdoc`. */
+  html: string
+  /** There is history under the sender's own words; {@link RenderOptions}
+   *  decides whether `html` shows it. */
+  hasHistory: boolean
+  /** Drawn on a white page of its own rather than the card. */
+  paper: boolean
+  /** Whether a picture nobody has allowed yet is somewhere in what is shown,
+   *  so that "Images hidden" is not offered for one folded out of sight. */
+  hidesImages: boolean
+  /** The body's own `imagesHidden`, which the frame's height depends on. */
+  imagesHidden: boolean
+}
+
+export interface RenderOptions {
+  dark: boolean
+  showHistory: boolean
+  subject: string
+  /** The body's own `imagesHidden`. */
+  imagesHidden: boolean
 }
 
 /**
- * Set a message body's page to this application's theme -- or, for a
- * message that sets its own colours, to a white page in either theme.
+ * A message body as a thread shows it: its history folded unless asked for,
+ * and on the app's own page unless it was designed for one of its own.
  *
- * Three cases, each a `<style>` appended just before `</head>`, after
- * `mailview.rs`'s `BASE_STYLE`, so it wins over that by order alone while a
- * sender's own `style=""` or style sheet still wins over it by specificity:
+ * A designed message keeps every colour it came with, on the white page it was
+ * made for, in either theme. Anything else takes the card's colour for its
+ * page, with its colours moved to suit (`mailbody.ts`), and gives up the frame's
+ * padding, so that a note reads as part of the card rather than a box inside
+ * it.
  *
- * - **A styled message** (`setsOwnColours`) gets white behind it whatever
- *   the theme, the page it was designed for -- see that function for what
- *   happens otherwise. This is what most mail clients do with HTML mail in
- *   a dark theme, and what `quoteDocument` already did for the quoted part
- *   of a reply. Its own `prefers-color-scheme: dark` rules are switched off
- *   too: they answer to the system's setting rather than to this page, and
- *   would set light text on it.
- * - **A plain message in the dark theme** -- a plain-text one in the `<pre>`
- *   this app wraps it in, or bare HTML -- gets the app's own dark colours.
- * - **A plain message in the light theme** gets the light ones, written out
- *   rather than left to `BASE_STYLE`, whose dark colours sit behind a
- *   `prefers-color-scheme` query. That query answers to the operating
- *   system, never to this application's own light/dark/system switch
- *   (`state.svelte.ts`'s `theme`): the frame's `srcdoc` document is a
- *   browsing context of its own, and nothing in it can ask the app which
- *   theme it chose. So a light app on a dark desktop used to draw plain
- *   mail on a dark page.
+ * A picture with no background of its own is usually a logo drawn for white, so
+ * it gets one on a dark page, where it would otherwise all but vanish. One nobody
+ * has allowed yet takes no room at all until it is: it would be a white box with
+ * nothing in it.
+ *
+ * Never throws. This runs while a thread is being drawn, on a stranger's markup,
+ * and a mistake here should cost one message its theming rather than the whole
+ * pane: such a message is shown as it was stored, in the same frame.
+ */
+export function renderBody(html: string, options: RenderOptions): RenderedBody {
+  try {
+    return readForTheme(html, options)
+  } catch {
+    const { imagesHidden } = options
+    return { html, hasHistory: false, paper: false, hidesImages: imagesHidden, imagesHidden }
+  }
+}
+
+function readForTheme(html: string, options: RenderOptions): RenderedBody {
+  const parts = splitDocument(html)
+  const { dark, imagesHidden } = options
+  if (!parts) return { html, hasHistory: false, paper: false, hidesImages: false, imagesHidden }
+  const page = {
+    background: dark ? MAIL_CARD.dark : MAIL_CARD.light,
+    text: dark ? APP_TEXT.dark : APP_TEXT.light,
+  }
+  const read = readBody(parts.inner, {
+    page,
+    showHistory: options.showHistory,
+    subject: options.subject,
+  })
+  const hidesImages = imagesHidden && read.html.includes('/mail/img/')
+  if (read.designed) {
+    const style =
+      `:root{color-scheme:light}html{background:${PAPER.background}}` +
+      `body{color:${PAPER.text};background:${PAPER.background}}`
+    return {
+      html: `${parts.head}<style>${style}</style>${bodyTag(parts, withoutDarkRules(read.html))}`,
+      hasHistory: read.hasHistory,
+      paper: true,
+      hidesImages,
+      imagesHidden,
+    }
+  }
+  const rule = dark ? '#4a4851' : '#d6d2ca'
+  const style =
+    `:root{color-scheme:${dark ? 'dark' : 'light'}}` +
+    `html{background:${page.background}}` +
+    `body{color:${page.text};background:${page.background};padding:0}` +
+    `body>:first-child,body>style:first-child+*,body>:first-child>:first-child{margin-top:0}` +
+    `body>:last-child,body>:last-child>:last-child{margin-bottom:0}` +
+    `details>summary{display:none}` +
+    `blockquote{margin:0.5em 0;padding-left:12px;border-left:2px solid ${rule}}` +
+    `hr{border:0;border-top:1px solid ${rule}}` +
+    (imagesHidden ? `img[src*="/mail/img/"]{display:none}` : '') +
+    (dark ? 'img{background:#ffffff}' : '')
+  // A quote left in the middle of an answer is part of reading the answer.
+  const opened = read.html.replace(/<details(?=[\s>])/gi, '<details open')
+  return {
+    html: `${parts.head}<style>${style}</style>${bodyTag(parts, opened)}`,
+    hasHistory: read.hasHistory,
+    paper: false,
+    hidesImages,
+    imagesHidden,
+  }
+}
+
+/** `</head>`, through `<body>`, `inner`, and the close of the document. */
+function bodyTag(parts: { tail: string }, inner: string): string {
+  const close = parts.tail.lastIndexOf('</body>')
+  if (close >= 0) return `</head><body>\n${inner}\n${parts.tail.slice(close)}`
+  return parts.tail
+}
+
+/**
+ * The same page decision for a story in the Feed, which has its own frame: a
+ * designed one on white, the rest on the theme's page with its colours moved to
+ * suit. Nothing is folded -- a story has no history -- and the frame's padding
+ * stays, since a story's page is not a card.
+ *
+ * Written out in the light theme as well as the dark rather than left to
+ * `BASE_STYLE`, whose dark colours sit behind a `prefers-color-scheme` query.
+ * That query answers to the operating system, never to this application's own
+ * light/dark/system switch (`state.svelte.ts`'s `theme`): the frame's `srcdoc`
+ * document is a browsing context of its own, and nothing in it can ask the app
+ * which theme it chose. So a light app on a dark desktop used to draw plain
+ * mail on a dark page.
  */
 export function applyBodyTheme(html: string, dark: boolean): string {
-  const at = html.indexOf('</head>')
-  if (at < 0) return html
-  let body = html.slice(at)
-  let style: string
-  if (setsOwnColours(body)) {
-    body = body.replace(/prefers-color-scheme\s*:\s*dark/gi, 'prefers-color-scheme: none')
-    style = ':root{color-scheme:light}body{color:#1c1a17;background:#ffffff}summary{color:#8b857c}'
-  } else if (dark) {
-    style = ':root{color-scheme:dark}body{color:#eceaf0;background:#17161a}summary{color:#7d7a86}'
-  } else {
-    style = ':root{color-scheme:light}body{color:#1c1a17;background:#f7f6f3}summary{color:#8b857c}'
+  try {
+    return themedDocument(html, dark)
+  } catch {
+    return html
   }
-  return `${html.slice(0, at)}<style>${style}</style>${body}`
+}
+
+function themedDocument(html: string, dark: boolean): string {
+  const parts = splitDocument(html)
+  if (!parts) return html
+  if (looksDesigned(parts.inner)) {
+    const style =
+      ':root{color-scheme:light}body{color:#1c1a17;background:#ffffff}summary{color:#8b857c}'
+    return `${parts.head}<style>${style}</style>${bodyTag(parts, withoutDarkRules(parts.inner))}`
+  }
+  const background = dark ? '#17161a' : '#f7f6f3'
+  const text = dark ? APP_TEXT.dark : APP_TEXT.light
+  const summary = dark ? '#7d7a86' : '#8b857c'
+  const style = `:root{color-scheme:${dark ? 'dark' : 'light'}}body{color:${text};background:${background}}summary{color:${summary}}`
+  return `${parts.head}<style>${style}</style>${bodyTag(parts, adaptToPage(parts.inner, { background, text }))}`
 }
 
 function escapeAndLinkify(text: string): string {

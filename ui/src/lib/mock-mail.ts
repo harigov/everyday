@@ -241,6 +241,48 @@ function bodyHtmlFor(from: MailAddress, subject: string, seed: number): string {
 }
 
 /**
+ * A reply with what it replied over still under it, the way each of the big
+ * clients writes one -- `mailbody.ts` is what folds that away and takes the
+ * black off it, and it has nothing to do in a preview where every message is
+ * only the sender's own words.
+ */
+function replyHtmlFor(from: MailAddress, subject: string, seed: number, quotes: boolean): string {
+  const own = bodyHtmlFor(from, subject, seed)
+  if (!quotes) return own
+  const earlier = pick(SNIPPETS, seed + 3)
+  switch (seed % 3) {
+    case 0:
+      // Outlook on the desktop: black on every span, in a Word style sheet.
+      return (
+        `<style>p.MsoNormal{margin:0in;font-size:11.0pt;font-family:"Calibri",sans-serif}` +
+        `a:link,span.MsoHyperlink{color:#0563C1}</style><div class="WordSection1">` +
+        `<p class="MsoNormal"><span style="color:black">${pick(SNIPPETS, seed)} next week.</span></p>` +
+        `<p class="MsoNormal"><span style="color:#1F497D">${from.name.split(' ')[0]}</span></p>` +
+        `<p class="MsoNormal">&nbsp;</p>` +
+        `<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0in 0in 0in">` +
+        `<p class="MsoNormal"><b>From: </b>${ME.name} &lt;${ME.email}&gt;<br><b>Sent: </b>` +
+        `Friday, October 30, 2026 4:14 PM<br><b>To: </b>${from.name} &lt;${from.email}&gt;<br>` +
+        `<b>Subject: </b>${subject}</p></div>` +
+        `<p class="MsoNormal"><span style="color:black">${earlier} then.</span></p></div>`
+      )
+    case 1:
+      return (
+        `<div dir="ltr">${own}</div><br><div class="gmail_quote"><div dir="ltr" class="gmail_attr">` +
+        `On Thu, Oct 29, 2026 at 9:00 AM ${ME.name} &lt;${ME.email}&gt; wrote:<br></div>` +
+        `<blockquote class="gmail_quote" style="margin:0 0 0 .8ex;border-left:1px solid #ccc;` +
+        `padding-left:1ex"><div dir="ltr">${earlier} then.</div></blockquote></div>`
+      )
+    default:
+      return (
+        `${own}<div id="appendonsend"></div><hr style="display:inline-block;width:98%">` +
+        `<div id="divRplyFwdMsg" dir="ltr"><b>From:</b> ${ME.name}<br><b>Sent:</b> Monday<br>` +
+        `<b>To:</b> ${from.name}<br><b>Subject:</b> ${subject}</div>` +
+        `<div style="color:rgb(0,0,0);background-color:rgb(255,255,255)">${earlier} then.</div>`
+      )
+  }
+}
+
+/**
  * A newsletter as one really arrives: laid out in tables and set in the
  * dark grey its sender chose for a white page, with no page colour of its
  * own -- the shape that vanished into the dark theme before
@@ -256,6 +298,10 @@ function newsletterHtmlFor(from: MailAddress, subject: string, seed: number): st
     `<td align="right"><a href="https://example.com/app" style="${ink};font-size:13px;` +
     `border:1px solid #e0e0e0;border-radius:4px;padding:8px 14px;text-decoration:none">` +
     `READ IN APP</a></td></tr></table>` +
+    `<img alt="" width="300" style="display:block;height:60px;margin:0 0 12px;background:#3aa0d8" ` +
+    // A fragment is all that marks this as a picture waiting on permission:
+    // `mailview.ts` looks for the address a real one would have.
+    `src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==#/mail/img/">` +
     `<p style="${ink};font-size:17px;line-height:1.6">${pick(SNIPPETS, seed)} next week. ` +
     `${pick(SNIPPETS, seed + 1)} then.</p>` +
     `<blockquote style="border-left:4px solid #3aa0d8;margin:0;padding-left:20px;` +
@@ -440,7 +486,7 @@ function buildSeed(): Seeded {
         msgId,
         category === 'newsletter'
           ? newsletterHtmlFor(sender, message.subject, i + m)
-          : bodyHtmlFor(sender, message.subject, i + m),
+          : replyHtmlFor(sender, message.subject, i + m, m < messageCount - 1),
       )
       if (message.hasAttachments) attachments.set(msgId, attachmentsFor(i))
       msgIds.push(msgId)

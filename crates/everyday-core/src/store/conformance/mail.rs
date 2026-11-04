@@ -1490,6 +1490,7 @@ pub(super) fn garbage_collection_learns_about_mail_attachments(store: &dyn Journ
             mime_type: "image/jpeg".into(),
             size: 13,
             blob: Some(attached),
+            attached: false,
         }],
         remote_images: Vec::new(),
     };

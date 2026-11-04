@@ -46,14 +46,28 @@ import type {
  * drew that as ruled lines under the subject. The snippet is sealed with
  * the message, so it is cleaned here, where it is drawn, rather than
  * waiting on mail that has already been fetched to be fetched again.
+ *
+ * The same goes for a reply stored before `everyday_mail::text`'s quote
+ * detection learned that its text renderer writes a bold label as
+ * `**From: **`: its snippet ran straight on into the message it answered. That
+ * header and everything after it is cut here, along with the renderer's bold
+ * markers wherever else they turned up.
  */
 export function snippetText(snippet: string): string {
   const text = snippet
     .replace(/[\u2500-\u257f]+/g, ' ')
     .replace(/\s+/g, ' ')
+    .replace(REPLY_HEADER, '')
+    .replaceAll('**', '')
     .trim()
   return /[\p{L}\p{N}]/u.test(text) ? text : ''
 }
+
+/** The start of a quoted message, in a snippet: a bold `From:` always, a plain
+ *  one with a `Sent:`/`Date:` after it, or "On … wrote:" with a date in it, which
+ *  is what tells that from somebody's sentence. */
+const REPLY_HEADER =
+  /\s*(?:\*\*From:\s*\*\*|From:\s.{0,160}?\s(?:\*\*)?(?:Sent|Date):|\bOn\s[^.!?]{0,80}\d.{0,120}?\swrote:(?:\s|$)|-{3,}\s*Original Message).*$/
 
 // ── Sender-list formatting ─────────────────────────────────────────────
 
@@ -69,6 +83,51 @@ export function formatSenders(participants: MailAddress[], max = 2): string {
   if (names.length === 0) return ''
   if (names.length <= max) return names.join(', ')
   return `${names.slice(0, max).join(', ')} +${names.length - max}`
+}
+
+/**
+ * What a person is called in a thread: "Josh" for Josh Grischkan, "Dustin" for
+ * "Cook, Dustin", and whatever comes before the `@` for someone who gave no
+ * name. A long thread is read by who is talking, and the same few first names
+ * say that with less to read past.
+ *
+ * Only a person has a first name: "The Economist", "Bank of America" and
+ * "Dr. Lee" stay whole. After a comma is a given name only if it is not a suffix:
+ * "Stripe, Inc." is Stripe and "Jane Doe, MD" is Jane.
+ */
+export function firstName(person: MailAddress): string {
+  const name = person.name.trim().replace(/^["']|["']$/g, '')
+  if (!name) return person.email.split('@')[0] || person.email
+  const comma = name.indexOf(',')
+  const after = comma > 0 ? name.slice(comma + 1).trim() : ''
+  const whole = !after
+    ? name
+    : NAME_SUFFIX.test(after.split(/\s+/)[0] ?? '')
+      ? name.slice(0, comma)
+      : after
+  const first = whole.split(/\s+/)[0] || whole
+  return NOT_A_GIVEN_NAME.test(first) || NOT_A_PERSON.test(whole) ? whole : first
+}
+
+const NAME_SUFFIX =
+  /^(?:inc|llc|ltd|limited|corp|co|gmbh|plc|llp|lp|pty|sa|ag|bv|nv|md|phd|dds|do|rn|cpa|mba|esq|jr|sr|ii|iii|iv)\.?$/i
+const NOT_A_GIVEN_NAME = /^(?:the|a|an|my|your|our|team|mr|mrs|ms|mx|dr|prof|sir)\.?$/i
+const NOT_A_PERSON =
+  /(?:^|\s)(?:of|and|for|the|at|&|bank|team|support|calendar|notifications?|news|newsletter|billing|services?|updates|alerts|security|group|labs|university|college|foundation|company|customer|sales|help|info|noreply|no-reply|mail|mailer|digest|community)(?:\s|$)/i
+
+/** "John & Me", "Dustin, Priya & Me", "Dustin, Priya, Tom, Ana +3": everybody a
+ *  message went to, the reader last, because that is where a reader looks. */
+export function peopleLine(
+  people: readonly MailAddress[],
+  own: ReadonlySet<string>,
+  max = 4,
+): string {
+  const isOwn = (p: MailAddress) => own.has(p.email.toLowerCase())
+  const others = people.filter((p) => !isOwn(p)).map(firstName)
+  const names = people.some(isOwn) ? [...others, 'Me'] : others
+  if (names.length <= 1) return names[0] ?? ''
+  if (names.length > max) return `${names.slice(0, max).join(', ')} +${names.length - max}`
+  return `${names.slice(0, -1).join(', ')} & ${names[names.length - 1]}`
 }
 
 /** Everybody on a list with the address each one really goes to -- for where
@@ -462,9 +521,9 @@ export function earliestSnoozeDate(now = new Date()): string {
  * let happen and which `MailThread.svelte`'s own doc explains why this app
  * never grants. Strip the tags, count the characters, divide by a plausible
  * line length at the width the reader actually has. Wrong on the first
- * paint of anything unusual -- a table, an image not yet loaded -- which is
- * why the frame's container keeps `overflow-y: auto`: a short guess scrolls
- * a few pixels further than it needed to rather than clipping the message.
+ * paint of anything unusual -- a table, an image not yet loaded -- so the
+ * frame scrolls what a short guess leaves over rather than clipping the
+ * message.
  *
  * `bodyHtml` is the whole document `bodyDocument`/`body_document` builds --
  * `<head>`, the base style, a sender's own `<style>` block and all -- not

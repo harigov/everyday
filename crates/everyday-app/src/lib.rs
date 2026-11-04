@@ -133,6 +133,7 @@ pub fn run() {
                 .decorations(cfg!(target_os = "macos"))
                 // Never anywhere but the interface itself -- see `navigation`.
                 .on_navigation(navigation::guard(navigation::dev_url(app.handle())))
+                .on_new_window(navigation::new_window(app.handle().clone()))
                 .build()?;
 
             let handle = app.handle().clone();
@@ -271,6 +272,7 @@ pub fn run() {
             // touches the webview: see `transfer.rs`.
             transfer::save_export,
             transfer::open_import,
+            transfer::save_mail_part,
             // This process's own furniture.
             commands::set_opens_itself,
             commands::ready_to_close,

@@ -37,7 +37,21 @@
 //! opening the system browser on a stranger's say-so would only move the
 //! problem.
 
+//!
+//! A link that asks for a window of its own is the other way out, and the only
+//! one that goes anywhere: every link in a message or a story has
+//! `target="_blank"` (`sanitize.rs` puts it there, and the frame's `<base>` says
+//! the same). WebKitGTK answers one by asking the application for a new view,
+//! and an application with nothing to say about that gets no window, no
+//! navigation and no error, so the link is simply dead. [`new_window`] hands
+//! the web's addresses to the system browser, and refuses the rest. That is safe
+//! to do where the top-level case above is not, because such a request can only
+//! come from a click: the frames it can come from have no script to fake one
+//! with, and the sandbox's `allow-popups` lets nothing else ask.
+
 use tauri::Url;
+use tauri::webview::NewWindowResponse;
+use tauri_plugin_opener::OpenerExt;
 
 /// The guard both windows are built with. `dev` is the dev server's address
 /// when this is a `tauri dev` build, and `None` otherwise.
@@ -54,6 +68,31 @@ pub fn guard(dev: Option<Url>) -> impl Fn(&Url) -> bool + Send + 'static {
 /// The dev server's address, when this build loads the interface from one.
 pub fn dev_url<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<Url> {
     if tauri::is_dev() { app.config().build.dev_url.clone() } else { None }
+}
+
+/// What a window does when something in it asks for another. No window is ever
+/// made: see the module docs.
+pub fn new_window<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> impl Fn(Url, tauri::webview::NewWindowFeatures) -> NewWindowResponse<R> + Send + 'static {
+    move |url, _| {
+        if opens_in_browser(&url) {
+            if let Err(e) = app.opener().open_url(url.as_str(), None::<&str>) {
+                tracing::warn!(error = %e, "could not hand a link to the system browser");
+            }
+        } else {
+            tracing::warn!(%url, "refused a link that is not a web address");
+        }
+        NewWindowResponse::Deny
+    }
+}
+
+fn opens_in_browser(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https")
+        && !url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case("tauri.localhost")
+                || host.eq_ignore_ascii_case("everyday.localhost")
+        })
 }
 
 fn allowed(url: &Url, dev: Option<&Url>) -> bool {
@@ -100,6 +139,25 @@ mod tests {
             "http://everyday.localhost/0123456789abcdef",
         ] {
             assert!(allowed(&url(ok), None), "{ok} should be allowed");
+        }
+    }
+
+    #[test]
+    fn only_the_web_goes_to_the_system_browser() {
+        for yes in ["https://example.com/a?b=1", "http://example.com/"] {
+            assert!(opens_in_browser(&url(yes)), "{yes} should open");
+        }
+        for no in [
+            "everyday://mail/part/m/0",
+            "http://everyday.localhost/mail/part/m/0",
+            "https://tauri.localhost/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "mailto:someone@example.com",
+            "about:blank",
+        ] {
+            assert!(!opens_in_browser(&url(no)), "{no} should not");
         }
     }
 

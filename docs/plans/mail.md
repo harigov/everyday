@@ -360,11 +360,35 @@ Sanitising happens once, at sync, in Rust: `lol_html` rewrites `src` to
 `everyday://mail/img/…` and `cid:` to `everyday://mail/part/…`, `ammonia`
 removes everything with behaviour, and the result is sealed as the body row.
 The interface puts it in one reused `<iframe sandbox srcdoc>` — never
-`allow-scripts` — with its own CSP meta tag, sized by a `ResizeObserver`.
-Remote images are fetched by the protocol handler only when the sender is
-trusted or the user asks, then cached as blobs; no request leaves from the
-webview, so the sender learns nothing from opening. The app's CSP gains
-`frame-src 'self'` and nothing else.
+`allow-scripts` — with its own CSP meta tag. Remote images are fetched by the
+protocol handler only when the sender is trusted or the user asks, then cached
+as blobs; no request leaves from the webview, so the sender learns nothing from
+opening. The app's CSP gains `frame-src 'self'` and nothing else.
+
+What is read differs from what is stored, and the difference is made at display
+(`ui/src/lib/mailbody.ts`), since a stored body is never sanitised again:
+
+- **History folds.** The trailing part a client quoted — found by the classes
+  and ids clients write, or an "On … wrote:" or `From:`/`Sent:` block — sits
+  behind "•••". Only what trails the sender's last words folds: an inline or
+  bottom-posted reply is shown whole, and so is a forward.
+- **A message is either written or designed.** Designed means laid out for a page
+  of its own: a share of its words on a colour, a fixed-width table it opens with,
+  a background picture, a sheet with breakpoints. It keeps its colours on white, in either
+  theme. Everything else is drawn on the app's page: near-white backgrounds go,
+  black becomes the page's text, other colours keep their hue and move until
+  they can be read against what is behind them, and a client's font is dropped.
+- **A frame's height is a guess.** Its sandbox stops anything asking it how tall
+  its message came out, and that sandbox is not worth weakening to find out (no
+  `allow-same-origin`, on any frame). The guess walks the message's real lines
+  and errs tall; where it still falls short, the frame scrolls.
+- **Parts are not all attachments.** `Body::parts` holds every leaf, including the
+  message's own alternatives and the pictures its body draws; `is_attachment` in
+  `mailview.rs` decides what gets a chip and what `has_attachments` says, and a
+  chip saves through the shell, because WebKitGTK cannot follow or download an
+  `everyday:` link. A message stored before this keeps the flag it has, so the
+  list's paperclip can be wrong about one until it is synced again; an open
+  thread reads the real list.
 
 ## The data model
 

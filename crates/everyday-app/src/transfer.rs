@@ -98,6 +98,67 @@ pub async fn save_export(
     Ok(true)
 }
 
+/// Save one part of a message where the person says.
+///
+/// A plain link to an `everyday:` address cannot do this. Following one in the
+/// webview, as a click or from its context menu, is a download of a custom
+/// scheme, which it has no way to carry out; the file never lands. This goes
+/// round the webview altogether, the way [`save_export`] does and for the same
+/// reason: the path belongs to this machine, so the shell chooses it and writes
+/// to it, whichever machine the vault is on.
+///
+/// Answers `false` when the dialog was dismissed.
+#[tauri::command]
+pub async fn save_mail_part(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    message_id: String,
+    identifier: String,
+    name: String,
+) -> CommandResult<bool> {
+    let session = state.session();
+    let Some(path) = ask_where_part(&app, &safe_file_name(&name)).await else {
+        return Ok(false);
+    };
+    let bytes = crate::protocol::mail_part_bytes(session, &message_id, &identifier).await?;
+    write_beside(&path, &bytes).map_err(|e| io(&path, e))?;
+    Ok(true)
+}
+
+/// Write `bytes` to `path` by way of a neighbouring file, so a full disk cannot
+/// leave half an attachment where somebody expects a whole one.
+///
+/// The neighbour's name owes nothing to the file's. A file name here comes from a
+/// stranger, and one built from it could be somebody's own `report.part`, or the
+/// one another save in that folder is writing right now, and `create_new` refuses
+/// to touch anything already there.
+fn write_beside(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_file_name(format!(".everyday-{}-{n}.part", std::process::id()));
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
+/// A sender's idea of a file name, as something to offer in a save dialog. Only
+/// ever a suggestion, since the person sees it and answers the dialog, but it
+/// should not arrive reaching into another folder.
+fn safe_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let clean: String = base.chars().filter(|c| !c.is_control()).collect();
+    let trimmed = clean.trim().trim_start_matches('.');
+    if trimmed.is_empty() { "attachment".to_string() } else { trimmed.to_string() }
+}
+
 /// Pick an archive and hand it to the service, chunk by chunk.
 ///
 /// Answers `None` when the dialog was dismissed. What comes back is the handle
@@ -177,6 +238,14 @@ async fn ask_where(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
     rx.await.ok().flatten().and_then(|p| p.into_path().ok())
 }
 
+async fn ask_where_part(app: &tauri::AppHandle, name: &str) -> Option<PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title("Save attachment").set_file_name(name).save_file(move |path| {
+        let _ = tx.send(path);
+    });
+    rx.await.ok().flatten().and_then(|p| p.into_path().ok())
+}
+
 async fn ask_which(app: &tauri::AppHandle) -> Option<PathBuf> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -195,4 +264,52 @@ fn json_handle(handle: &str) -> serde_json::Value {
 
 fn io(path: &std::path::Path, e: std::io::Error) -> CommandError {
     CommandError::new("io", format!("{}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saving_touches_nothing_but_the_file_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        // Which the old way of naming the neighbour would have written over and
+        // then renamed away, saving `report.pdf` beside it.
+        std::fs::write(dir.path().join("report.part"), b"somebody's own").unwrap();
+        let path = dir.path().join("report.pdf");
+
+        write_beside(&path, b"the attachment").unwrap();
+        write_beside(&path, b"saved again").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"saved again");
+        assert_eq!(std::fs::read(dir.path().join("report.part")).unwrap(), b"somebody's own");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2, "nothing left behind");
+    }
+
+    #[test]
+    fn a_save_that_fails_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        // A folder where the file should go: the write works and the rename cannot.
+        let path = dir.path().join("taken");
+        std::fs::create_dir(&path).unwrap();
+        assert!(write_beside(&path, b"x").is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "only the folder");
+    }
+
+    #[test]
+    fn a_file_name_cannot_reach_into_another_folder() {
+        for (given, want) in [
+            ("invoice.pdf", "invoice.pdf"),
+            ("../../.config/autostart/x.desktop", "x.desktop"),
+            ("..\\..\\evil.exe", "evil.exe"),
+            ("/etc/passwd", "passwd"),
+            (".bashrc", "bashrc"),
+            ("a\u{0}b\n.txt", "ab.txt"),
+            ("", "attachment"),
+            ("..", "attachment"),
+            ("folder/", "attachment"),
+        ] {
+            assert_eq!(safe_file_name(given), want, "{given:?}");
+        }
+    }
 }
