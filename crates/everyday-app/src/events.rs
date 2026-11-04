@@ -5,16 +5,15 @@
 //!
 //! # Why this only emits
 //!
-//! There is a perfectly good `tauri-plugin-notification` API in Rust, and this
-//! module deliberately does not call it. Whether a notification should become a
-//! banner in the operating system or a toast inside the window depends on
-//! whether the window is in front of the user, on whether the notification
-//! carries a button, and on whether permission was ever granted -- and the
-//! interface is the only side that knows the first two. Answering that question
-//! in two places would mean answering it differently within a release. So the
-//! shell states the *facts* and `ui/src/lib/notify.svelte.ts` decides where
-//! they go. The plugin is registered so the webview can reach it; this side
-//! never posts directly -- with the one exception below.
+//! Whether a notification should become a banner in the operating system or a
+//! toast inside the window depends on whether the window is in front of the
+//! user, on whether the notification carries a button, and on whether
+//! permission was ever granted -- and the interface is the only side that knows
+//! the first two. Answering that question in two places would mean answering it
+//! differently within a release. So the shell states the *facts* and
+//! `ui/src/lib/notify.svelte.ts` decides where they go, handing what should
+//! leave the window back to [`crate::notice::post_notification`]. This side
+//! never decides for itself -- with the one exception below.
 //!
 //! # The fourth event
 //!

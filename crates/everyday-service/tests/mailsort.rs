@@ -7,7 +7,7 @@ mod support;
 
 use std::sync::{Arc, Mutex};
 
-use everyday_core::account::{Account, Provider};
+use everyday_core::account::{Account, MailNotify, Provider};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::llm::{DecisionApi, DecisionConfig, ModelSettings, ModelTier};
 use everyday_core::mail::{
@@ -15,8 +15,8 @@ use everyday_core::mail::{
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
-use everyday_service::Service;
 use everyday_service::ctx::Ctx;
+use everyday_service::{EventSink, Notification, Service};
 use jiff::{SignedDuration, Timestamp};
 use serde_json::{Value, json};
 
@@ -270,6 +270,55 @@ async fn recent_mail_is_sorted_into_the_persons_own_categories_over_typesafe() {
     // Asked once; a second tick has nothing new to ask about.
     everyday_service::mailai::categorize_tick(&svc).await;
     assert_eq!(fake.seen().len(), 2, "a sorted thread is not asked about again");
+}
+
+#[derive(Default)]
+struct Told(Mutex<Vec<Notification>>);
+
+impl EventSink for Told {
+    fn notify(&self, notification: Notification) {
+        self.0.lock().unwrap().push(notification);
+    }
+}
+
+/// With a decision model on, the rules hardly ever say Priority and the small
+/// model's pass does not run, so this is the only moment most mail is known to
+/// be what somebody asked to hear about. It used to say nothing at all.
+#[tokio::test]
+async fn sorting_tells_you_about_what_it_files_where_you_asked_to_hear() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    seed(&svc, account.id, inbox, 1, "Your order has shipped", DAY);
+    seed(&svc, account.id, inbox, 2, "Lunch on Friday?", DAY);
+    seed(&svc, account.id, inbox, 3, "Lunch last week?", DAY * 3);
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+
+    let told = told.0.lock().unwrap();
+    assert_eq!(told.len(), 1, "the receipt is not wanted, and old mail was sorted not delivered");
+    assert_eq!(told[0].body.as_deref(), Some("Lunch on Friday?"));
+    assert!(matches!(told[0].reach, everyday_service::Reach::User));
+}
+
+#[tokio::test]
+async fn a_category_of_your_own_can_be_what_you_asked_to_hear_about() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, mut account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    account.mail_notify =
+        MailNotify::Categories { tabs: Vec::new(), sorted: vec!["receipts".into()] };
+    svc.get().unwrap().save_account(&account).unwrap();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    seed(&svc, account.id, inbox, 1, "Your order has shipped", DAY);
+    seed(&svc, account.id, inbox, 2, "Lunch on Friday?", DAY);
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+
+    let told = told.0.lock().unwrap();
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0].body.as_deref(), Some("Your order has shipped"));
 }
 
 #[tokio::test]

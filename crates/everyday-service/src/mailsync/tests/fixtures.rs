@@ -552,7 +552,7 @@ pub(super) struct TestEnv {
     pub(super) vault: Arc<Vault>,
     pub(super) packs: Arc<dyn PackStore>,
     pub(super) index: Arc<dyn MailSearch>,
-    statuses: StatusRegistry,
+    pub(super) statuses: StatusRegistry,
     pub(super) account_id: AccountId,
     /// Last, because fields drop in order: the directory must go after the
     /// vault and index that have files open in it, or the index can still be

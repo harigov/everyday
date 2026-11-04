@@ -53,6 +53,7 @@ import type {
 } from './types'
 import { VaultError } from './types'
 import { senderMatches } from './mail'
+import { mockRaiseChange } from './mock-jobs'
 
 const GOOGLE: AccountId = 'acct-google'
 const FASTMAIL: AccountId = 'acct-fastmail'
@@ -1387,7 +1388,9 @@ export function mockNewDraft(opts: {
     createdAt: now,
     updatedAt: now,
   }
-  drafts.push(draft)
+  // Handed to the composer and not kept, as `new_draft` does: there is no row
+  // until the first save, which is the case a blank draft being thrown away
+  // has to get right.
   return draft
 }
 
@@ -1442,6 +1445,60 @@ const sendTimers = new Map<DraftId, QueuedSend>()
 /** `sendAt`, when given, is kept verbatim as the send's moment, the way
  *  `send_draft` in Rust uses it -- not re-derived from `delaySeconds`,
  *  which the mock's own latency would otherwise shift by a second. */
+/**
+ * A message landing in a thread, as a sync pass stores one -- and, as a sync
+ * pass does, saying so with a thread change that names no thread. What sending
+ * a reply comes to, a moment later; exported for a test to deliver one itself.
+ */
+export function mockDeliverToThread(
+  threadId: ThreadId,
+  from: MailAddress,
+  html: string,
+  seen: boolean,
+): MailMessage {
+  const at = seed.threads.findIndex((t) => t.id === threadId)
+  const thread = seed.threads[at]
+  if (!thread) throw new VaultError('notFound', 'no such thread')
+  const last = messagesOf(threadId).at(-1)!
+  const id: MailMessageId = nextId('msg')
+  const now = new Date().toISOString()
+  const message: MailMessage = {
+    ...last,
+    id,
+    messageIdHeader: `${id}@example.com`,
+    date: now,
+    from,
+    to: last.from.email === from.email ? last.to : [last.from],
+    subject: thread.subject,
+    snippet: html
+      .replace(/<[^>]*>/g, ' ')
+      .trim()
+      .slice(0, 120),
+    flags: { ...last.flags, seen },
+    hasAttachments: false,
+    invite: null,
+  }
+  seed.messages.set(id, message)
+  seed.bodies.set(id, html)
+  // A new row, not this one changed: the real backend answers with a fresh
+  // object every time, and the list only redraws a row it has not seen.
+  seed.threads[at] = {
+    ...thread,
+    messageCount: thread.messageCount + 1,
+    lastDate: now,
+    snippet: message.snippet,
+    unreadCount: thread.unreadCount + (seen ? 0 : 1),
+  }
+  mockRaiseChange({ kind: 'thread', op: 'updated', origin: 'mock-sync' })
+  return message
+}
+
+function mockDeliverSent(draft: Draft): void {
+  const parent = draft.inReplyTo ? seed.messages.get(draft.inReplyTo) : undefined
+  if (!parent) return
+  mockDeliverToThread(parent.threadId, { name: 'Me', email: draft.identity }, draft.bodyHtml, true)
+}
+
 export function mockSendDraft(id: DraftId, delaySeconds: number, sendAt?: string): Draft {
   const d = drafts.find((x) => x.id === id)
   if (!d) throw new VaultError('notFound', 'no such draft')
@@ -1450,7 +1507,9 @@ export function mockSendDraft(id: DraftId, delaySeconds: number, sendAt?: string
   const at = sendAt ?? new Date(Date.now() + delaySeconds * 1000).toISOString()
   const timer = setTimeout(() => {
     sendTimers.delete(id)
-    if (d.state.type === 'queued') d.state = { type: 'sent' }
+    if (d.state.type !== 'queued') return
+    d.state = { type: 'sent' }
+    mockDeliverSent(d)
   }, delaySeconds * 1000)
   sendTimers.set(id, { timer, at, scheduled: delaySeconds > UNDO_WINDOW_MAX_S })
   return d

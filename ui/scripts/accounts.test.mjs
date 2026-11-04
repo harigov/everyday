@@ -17,6 +17,10 @@ const {
   endpointOf,
   providersLabel,
   isPasswordAuth,
+  mailNotifyOf,
+  mailNotifyForChoice,
+  withChosen,
+  MAIL_NOTIFY_CHOICES,
 } = accounts
 
 // ── signInArgs ────────────────────────────────────────────────────────
@@ -173,6 +177,30 @@ assert.ok(
     scopes: [],
   }),
 )
+
+// ── Which new mail raises a notification ─────────────────────────────
+
+assert.deepEqual(mailNotifyOf({}), { type: 'important' }, 'an account that never chose')
+assert.deepEqual(mailNotifyOf({ mailNotify: { type: 'off' } }), { type: 'off' })
+assert.deepEqual(
+  MAIL_NOTIFY_CHOICES.map((c) => c.type).sort(),
+  ['all', 'categories', 'important', 'off', 'replies'],
+  'every rule is on offer',
+)
+
+const important = { type: 'important' }
+assert.deepEqual(mailNotifyForChoice('all', important), { type: 'all' })
+assert.deepEqual(
+  mailNotifyForChoice('categories', important),
+  { type: 'categories', tabs: ['priority', 'important'], sorted: [] },
+  'choosing categories does not begin by going quiet',
+)
+const picked = { type: 'categories', tabs: ['other'], sorted: ['bills'] }
+assert.equal(mailNotifyForChoice('categories', picked), picked, 'a pick is not thrown away')
+
+assert.deepEqual(withChosen(['a'], 'b', true), ['a', 'b'])
+assert.deepEqual(withChosen(['a', 'b'], 'a', false), ['b'])
+assert.deepEqual(withChosen(['a'], 'a', true), ['a'], 'ticked once')
 
 await close()
 console.log('accounts: all checks passed')

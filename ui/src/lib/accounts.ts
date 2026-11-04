@@ -13,11 +13,12 @@ import type {
   AccountStatus,
   AgentMailAccess,
   AuthMethod,
-  Endpoint,
-  MailAi,
-  MailProvider,
   DecisionApi,
   DecisionConfig,
+  Endpoint,
+  MailAi,
+  MailNotify,
+  MailProvider,
   ModelSettings,
   OAuthPreset,
   Services,
@@ -109,6 +110,47 @@ export const SYNC_INTERVALS: { minutes: number | null; label: string }[] = [
   { minutes: 30, label: 'Every 30 minutes' },
   { minutes: 60, label: 'Every hour' },
 ]
+
+/** "Notify me about", as Settings → Accounts offers it. */
+export const MAIL_NOTIFY_CHOICES: { type: MailNotify['type']; label: string; hint: string }[] = [
+  {
+    type: 'important',
+    label: 'Important mail',
+    hint: 'What lands on the Priority and Important tabs.',
+  },
+  { type: 'all', label: 'All new mail', hint: 'Every new message that reaches the Inbox.' },
+  {
+    type: 'categories',
+    label: 'Categories I choose',
+    hint: 'Only what lands in the ones ticked here. Nothing, until something is.',
+  },
+  {
+    type: 'replies',
+    label: 'Threads I have replied to',
+    hint: 'New messages in a conversation you have written in.',
+  },
+  { type: 'off', label: 'Nothing', hint: 'Mail still arrives; it just does not interrupt you.' },
+]
+
+/** What an account's setting comes to, absent being the default. */
+export function mailNotifyOf(account: { mailNotify?: MailNotify }): MailNotify {
+  return account.mailNotify ?? { type: 'important' }
+}
+
+/** The rule for a choice from the select. Choosing categories starts from what
+ *  was already wanted -- the last pick, or the two tabs "important" means -- so
+ *  it does not begin by going quiet. */
+export function mailNotifyForChoice(type: MailNotify['type'], current: MailNotify): MailNotify {
+  if (type !== 'categories') return { type }
+  if (current.type === 'categories') return current
+  return { type, tabs: ['priority', 'important'], sorted: [] }
+}
+
+/** `items` with `item` in it or out of it. */
+export function withChosen<T>(items: readonly T[], item: T, chosen: boolean): T[] {
+  const rest = items.filter((i) => i !== item)
+  return chosen ? [...rest, item] : rest
+}
 
 /** The six things a caller can be let do, in the order the grid draws them. */
 export const PERMISSIONS: { key: keyof AgentMailAccess; label: string }[] = [

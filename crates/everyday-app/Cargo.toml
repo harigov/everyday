@@ -37,10 +37,9 @@ base64 = "0.22"
 tauri = { workspace = true, features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-# The portability layer for notifications. One API over UserNotifications on
-# macOS, the XDG notification service on Linux, WinRT toasts on Windows, and
-# the two mobile targets when their shells exist -- so `notify.rs` and the
-# interface's notification service contain no per-platform code at all.
+# Notifications on macOS and Windows, and the permission question on all of
+# them. On Linux it cannot post at all, under this build's features: see
+# `notice.rs`, which talks to the XDG notification service itself there.
 tauri-plugin-notification = "2"
 serde.workspace = true
 serde_json.workspace = true

@@ -31,7 +31,7 @@ stubBrowser({
 })
 
 const {
-  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }],
+  modules: [mailModule, stateModule, liveApplyModule, mailApi, { api }, mockMail],
   close,
 } = await load(
   [
@@ -40,6 +40,7 @@ const {
     '/src/lib/live-apply.ts',
     '/src/lib/mail-api.ts',
     '/src/lib/api.ts',
+    '/src/lib/mock-mail.ts',
   ],
   { svelte: true },
 )
@@ -166,6 +167,81 @@ assert.equal(
   const now = mail.threads.find((t) => t.id === id)
   assert.ok(now, 'the row is still in the list after being patched')
   assert.equal(typeof now.unreadCount, typeof before, 'the row was replaced with a fresh fetch')
+}
+
+// ── The open thread follows a sync pass ──────────────────────────────
+//
+// A pass names no thread, and the reply somebody just sent only ever reaches
+// the thread they are reading this way. The pane used to go on showing the
+// thread as it was until they left it and came back.
+
+{
+  const inbox = mail.mailboxes.find((m) => m.role === 'inbox')
+  await mail.selectMailbox(inbox.id)
+  const id = mail.threads.find((t) => t.messageCount > 1).id
+  await mail.openThreadById(id)
+  const before = mail.openThread.messages.length
+  const opened = new Set(mail.expanded)
+  const older = mail.openThread.messages[0].id
+  mail.toggleExpanded(older)
+
+  const sent = mockMail.mockDeliverToThread(
+    id,
+    { name: 'Me', email: 'me@example.com' },
+    '<p>The reply I just sent</p>',
+    true,
+  )
+  assert.equal(mail.openThread.messages.length, before, 'nothing moves until the pass says so')
+  const accepted = applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  assert.equal(accepted, true, 'a change naming no thread is taken')
+  await new Promise((r) => setTimeout(r, 900))
+
+  assert.equal(mail.openThread.messages.length, before + 1, 'and now it is in the pane')
+  assert.equal(mail.openThread.messages.at(-1).id, sent.id)
+  assert.equal(
+    mail.threads.find((t) => t.id === id).messageCount,
+    before + 1,
+    'and the list row says so too',
+  )
+  assert.ok(mail.expanded.has(sent.id), 'open, as the newest message is')
+  assert.ok(mail.expanded.has(older), 'what somebody opened stays open')
+  for (const message of opened) assert.ok(mail.expanded.has(message), 'and so does the rest')
+
+  // Nothing new: nothing opens, and what was closed stays closed.
+  mail.toggleExpanded(sent.id)
+  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  await new Promise((r) => setTimeout(r, 900))
+  assert.ok(!mail.expanded.has(sent.id), 'a pass with nothing new reopens nothing')
+
+  // Moved on while it was on its way: the other thread keeps the pane.
+  const other = mail.threads.find((t) => t.id !== id).id
+  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  await mail.openThreadById(other)
+  await new Promise((r) => setTimeout(r, 900))
+  assert.equal(mail.openThread.thread.id, other)
+
+  // Something somebody else wrote stays unread behind a window nobody is
+  // looking at: there is nothing in front of them to have read it in.
+  const unreadBefore = mail.openThread.thread.unreadCount
+  mockMail.mockDeliverToThread(other, { name: 'Ada', email: 'ada@example.com' }, '<p>Hi</p>', false)
+  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  await new Promise((r) => setTimeout(r, 900))
+  assert.equal(mail.openThread.thread.unreadCount, unreadBefore + 1, 'still unread')
+}
+
+// ── Drafts nobody typed in ───────────────────────────────────────────
+//
+// `new_draft` keeps nothing, so a blank one has no row until it is saved. The
+// bin on one used to answer "Draft <id> not found" -- and the autosave its
+// failure path started is why a second click worked.
+
+{
+  const account = mail.mailboxes[0].accountId
+  const draft = await mailApi.newDraft({ account })
+  await mailApi.discardDraft(draft.id)
+  await mailApi.restoreDraft(draft.id)
+  await mailApi.saveDraft(draft)
+  await mailApi.discardDraft(draft.id)
 }
 
 // ── Priority ─────────────────────────────────────────────────────────

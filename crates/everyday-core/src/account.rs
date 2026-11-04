@@ -40,6 +40,7 @@
 //! whether one exists.
 
 use crate::id::AccountId;
+use crate::mail::Category;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -499,11 +500,72 @@ pub struct Account {
     /// before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_minutes: Option<u32>,
+    /// Which of this account's new mail raises a notification.
+    ///
+    /// `skip_serializing_if` for the same reason as `sync_minutes`.
+    #[serde(default, skip_serializing_if = "MailNotify::is_default")]
+    pub mail_notify: MailNotify,
     pub status: AccountStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_synced_at: Option<Timestamp>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+/// Which of an account's new mail is worth interrupting its owner for --
+/// Settings → Accounts.
+///
+/// Only ever mail that is new, unread and in the Inbox, and never the
+/// account's own: `everyday_service::arrivals` decides that part, and asks
+/// this about what is left.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum MailNotify {
+    /// Nothing from this account.
+    Off,
+    /// What the Priority and Important tabs hold.
+    #[default]
+    Important,
+    /// Every new message.
+    All,
+    /// The tabs named, and the categories of somebody's own named by
+    /// [`crate::mail::SortCategory::id`] -- which only a decision model can
+    /// file anything under.
+    Categories {
+        #[serde(default)]
+        tabs: Vec<Category>,
+        #[serde(default)]
+        sorted: Vec<String>,
+    },
+    /// New messages in a thread the account has written in.
+    Replies,
+}
+
+impl MailNotify {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Does this ask for mail filed under `category`, and sorted into the
+    /// category of somebody's own `sorted_as`? Says nothing about
+    /// [`MailNotify::Replies`], which depends on the thread and not on where
+    /// the message was filed: see [`MailNotify::wants_replies`].
+    pub fn wants_filed(&self, category: Option<Category>, sorted_as: Option<&str>) -> bool {
+        match self {
+            Self::Off | Self::Replies => false,
+            Self::All => true,
+            Self::Important => matches!(category, Some(Category::Priority | Category::Important)),
+            Self::Categories { tabs, sorted } => {
+                category.is_some_and(|c| tabs.contains(&c))
+                    || sorted_as.is_some_and(|id| sorted.iter().any(|s| s == id))
+            }
+        }
+    }
+
+    pub fn wants_replies(&self) -> bool {
+        matches!(self, Self::Replies)
+    }
 }
 
 /// The Google scope that lets events be written -- requested with calendar.
@@ -604,6 +666,7 @@ impl Account {
             mail_ai: MailAi::default(),
             attachment_cap_bytes: None,
             sync_minutes: None,
+            mail_notify: MailNotify::default(),
             status: AccountStatus::NeedsSignIn { reason: "not yet signed in".into() },
             last_synced_at: None,
             created_at: now,
@@ -1007,6 +1070,49 @@ mod tests {
         assert_eq!(json["status"]["type"], "needsSignIn");
         assert!(json.get("caldav").is_none(), "no caldav on a fresh gmail account");
         assert!(json.get("syncMinutes").is_none(), "an unset interval is left off the record");
+    }
+
+    #[test]
+    fn mail_notify_says_which_filed_mail_it_wants() {
+        use Category::{Important, Newsletter, Notification, Other, Priority};
+        let important = MailNotify::Important;
+        assert!(important.wants_filed(Some(Priority), None));
+        assert!(important.wants_filed(Some(Important), None));
+        assert!(!important.wants_filed(Some(Other), None));
+        assert!(!important.wants_filed(None, None));
+
+        assert!(MailNotify::All.wants_filed(Some(Newsletter), None));
+        assert!(MailNotify::All.wants_filed(None, None));
+
+        assert!(!MailNotify::Off.wants_filed(Some(Priority), None));
+        assert!(!MailNotify::Replies.wants_filed(Some(Priority), None));
+        assert!(MailNotify::Replies.wants_replies());
+        assert!(!MailNotify::All.wants_replies());
+
+        let picked =
+            MailNotify::Categories { tabs: vec![Notification], sorted: vec!["bills".into()] };
+        assert!(picked.wants_filed(Some(Notification), None));
+        assert!(!picked.wants_filed(Some(Priority), None));
+        assert!(picked.wants_filed(Some(Other), Some("bills")), "its own category counts");
+        assert!(!picked.wants_filed(Some(Other), Some("receipts")));
+    }
+
+    #[test]
+    fn an_account_that_never_chose_seals_as_it_did_and_reads_as_important() {
+        let a = Account::new(Provider::Fastmail, "me@fastmail.com");
+        let sealed = serde_json::to_value(&a).unwrap();
+        assert!(sealed.get("mailNotify").is_none(), "nothing written for the default");
+        let read: Account = serde_json::from_value(sealed).unwrap();
+        assert_eq!(read.mail_notify, MailNotify::Important);
+
+        let mut picked = a;
+        picked.mail_notify =
+            MailNotify::Categories { tabs: vec![Category::Other], sorted: Vec::new() };
+        let sealed = serde_json::to_value(&picked).unwrap();
+        assert_eq!(sealed["mailNotify"]["type"], "categories");
+        assert_eq!(sealed["mailNotify"]["tabs"][0], "other");
+        let read: Account = serde_json::from_value(sealed).unwrap();
+        assert_eq!(read.mail_notify, picked.mail_notify);
     }
 
     #[test]

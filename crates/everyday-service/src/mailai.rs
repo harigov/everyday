@@ -354,7 +354,8 @@ async fn categorize_account(
         crate::quick::run_prompt(client, model, CATEGORIZE_SYSTEM, &user, categorize_schema())
             .await?;
 
-    apply_categorize_answer(vault, &items, answer).await;
+    let filed = apply_categorize_answer(vault, &items, answer).await;
+    announce_filed(service, vault, account, &filed).await;
     // Every thread this tick actually asked about is marked as such,
     // whatever the model said -- including "still other" -- which is what
     // makes the filter above skip it next tick until a new message arrives.
@@ -371,8 +372,13 @@ async fn categorize_account(
 /// Every entry outside `labels` (a bad index, or a string outside the fixed
 /// list the schema already constrains it to) is silently ignored, per the
 /// plan's own rule: "any output outside the list is ignored."
-async fn apply_categorize_answer(vault: &Arc<Vault>, items: &[CategorizeCandidate], answer: Value) {
-    let Some(labels) = answer.get("labels").and_then(Value::as_array) else { return };
+async fn apply_categorize_answer(
+    vault: &Arc<Vault>,
+    items: &[CategorizeCandidate],
+    answer: Value,
+) -> Vec<Filed> {
+    let mut filed = Vec::new();
+    let Some(labels) = answer.get("labels").and_then(Value::as_array) else { return filed };
     for entry in labels {
         let Some(index) = entry.get("index").and_then(Value::as_u64) else { continue };
         let Some(raw) = entry.get("category").and_then(Value::as_str) else { continue };
@@ -382,8 +388,14 @@ async fn apply_categorize_answer(vault: &Arc<Vault>, items: &[CategorizeCandidat
         };
         let message_id = item.message_id;
         let vault = vault.clone();
-        let _ = blocking(move || Ok(vault.set_mail_message_category(message_id, category)?)).await;
+        if blocking(move || Ok(vault.set_mail_message_category(message_id, category)?))
+            .await
+            .is_ok()
+        {
+            filed.push(Filed { message: message_id, sorted_as: None });
+        }
     }
+    filed
 }
 
 // ---- model-assisted prioritisation -----------------------------------------
@@ -589,7 +601,7 @@ async fn prioritize_account(
             .await?;
 
     let promoted = apply_priority_answer(vault, &items, answer).await;
-    announce_promoted_priority(service, vault, account_id, &promoted).await;
+    announce_filed(service, vault, account, &promoted).await;
     // Every thread this tick actually asked about is marked as such,
     // whatever the model said -- including a `false` -- which is what
     // makes the filter above skip it next tick until a new message
@@ -634,7 +646,7 @@ async fn apply_priority_answer(
     vault: &Arc<Vault>,
     items: &[PriorityCandidate],
     answer: Value,
-) -> Vec<MailMessageId> {
+) -> Vec<Filed> {
     let mut promoted = Vec::new();
     for (index, priority) in parse_priority_answer(&answer) {
         if !priority {
@@ -650,29 +662,38 @@ async fn apply_priority_answer(
             .await
             .is_ok()
         {
-            promoted.push(message_id);
+            promoted.push(Filed { message: message_id, sorted_as: None });
         }
     }
     promoted
 }
 
-/// A thread the model just moved to Priority, when the message is still
-/// unread, still recent and in the inbox. The pass also sorts a backlog the
-/// first time it runs, and mail filtered past the inbox; neither is mail
-/// arriving. See `arrivals::promoted_is_news`.
-async fn announce_promoted_priority(
+/// A message a model just filed, and the category of somebody's own it was
+/// sorted into if it was one.
+pub(crate) struct Filed {
+    pub(crate) message: MailMessageId,
+    pub(crate) sorted_as: Option<String>,
+}
+
+/// Tell somebody about what a model just filed where they asked to hear about
+/// it, when the message is still unread, still recent and in the inbox. The
+/// passes also sort a backlog the first time they run, and mail filtered past
+/// the inbox; neither is mail arriving. See `arrivals::filed_is_news`.
+pub(crate) async fn announce_filed(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
-    account_id: AccountId,
-    ids: &[MailMessageId],
+    account: &Account,
+    filed: &[Filed],
 ) {
-    if ids.is_empty() {
+    if filed.is_empty() {
         return;
     }
     let now = service.now();
+    let own = own_addresses(account);
+    let statuses = service.mail_statuses();
     let mut mail = Vec::new();
-    for id in ids {
-        let id = *id;
+    for item in filed {
+        let id = item.message;
         let vault = vault.clone();
         let Ok((msg, in_inbox)) = blocking(move || {
             let msg = vault.mail_message(id)?;
@@ -688,24 +709,32 @@ async fn announce_promoted_priority(
         else {
             continue;
         };
-        if !crate::arrivals::promoted_is_news(&crate::arrivals::PromotedFacts {
-            unread: msg.flags.unread(),
-            in_inbox,
-            deleted: msg.flags.deleted,
-            draft: msg.flags.draft,
-            sent_at: msg.date,
-            now,
-        }) {
+        if !account.mail_notify.wants_filed(msg.category, item.sorted_as.as_deref())
+            || !crate::arrivals::filed_is_news(&crate::arrivals::FiledFacts {
+                unread: msg.flags.unread(),
+                in_inbox,
+                deleted: msg.flags.deleted,
+                draft: msg.flags.draft,
+                own: own.contains(&msg.from.email.to_lowercase()),
+                sent_at: msg.date,
+                now,
+            })
+        {
             continue;
         }
-        mail.push(crate::arrivals::PriorityMail {
+        // Last: the rules may have announced it already as it arrived, and
+        // marking one that was then skipped would swallow it.
+        if statuses.as_ref().is_some_and(|s| !s.first_announcement(&msg.id.to_string())) {
+            continue;
+        }
+        mail.push(crate::arrivals::NewMail {
             message_id: msg.id.to_string(),
             from: crate::arrivals::sender_label(&msg.from.name, &msg.from.email),
             subject: msg.subject,
         });
     }
     if let Some(notice) =
-        crate::arrivals::priority_mail_notice(&account_id.to_string(), &mail, mail.len())
+        crate::arrivals::new_mail_notice(&account.id.to_string(), &mail, mail.len())
     {
         service.events().notify(notice);
     }

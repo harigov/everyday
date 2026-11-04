@@ -653,6 +653,14 @@ export const api = {
   // ── The OS-wide hotkey ─────────────────────────────────────────────
 
   /**
+   * Raise a desktop notification. By name, not through `call`: it is the
+   * shell's to post, and only `notify.svelte.ts` should be deciding to. See
+   * `crates/everyday-app/src/notice.rs` for why the plugin does not do it.
+   */
+  postNotification: (title: string, body: string | null, key: string | null) =>
+    invoke<void>('post_notification', { title, body, key }),
+
+  /**
    * Whether the desktop granted the key that raises the palette.
    *
    * False is an ordinary answer, not an error: Wayland has no protocol for an

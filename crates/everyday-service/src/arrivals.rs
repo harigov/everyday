@@ -1,23 +1,34 @@
 //! Notifications for mail and calendar events that arrived on their own.
 //!
 //! The sync tasks already write the records and tell an open window to
-//! reload. That is not the same as telling a person. A priority message
-//! that lands while the window is buried, and a meeting that starts while
-//! they are in the journal, have to leave the process -- [`Reach::User`],
-//! which `ui/src/lib/notify.svelte.ts` routes to the notification centre
-//! when the window is not in front and to a toast when it is.
+//! reload. That is not the same as telling a person. A message they asked to
+//! hear about that lands while the window is buried, and a meeting that
+//! starts while they are in the journal, have to leave the process --
+//! [`Reach::User`], which `ui/src/lib/notify.svelte.ts` routes to the
+//! notification centre when the window is not in front and to a toast when
+//! it is.
 //!
 //! What counts as news is decided here, with no vault and no clock of its
 //! own, so the rules can be tested without either. The call sites are the
-//! mail sync task, the model priority pass, the calendar sync commands and
-//! the minute scheduler.
+//! mail sync task, the model passes that file mail, the calendar sync
+//! commands and the minute scheduler.
+//!
+//! # Mail, twice
+//!
+//! Which mail is wanted is
+//! [`MailNotify`](everyday_core::account::MailNotify), and where a message is filed can
+//! change after it arrives: the rules file it as it is stored, and a model
+//! files it again a minute later. So both moments ask. A message wanted at
+//! either is announced then, and
+//! [`StatusRegistry::first_announcement`](crate::mailsync::status::StatusRegistry::first_announcement)
+//! stops the second moment announcing it again.
 
 use std::collections::HashSet;
 
 use everyday_core::calendar::{
     AccountCalendarSource, Calendar, CalendarOrigin, Event, EventStatus,
 };
-use everyday_core::id::CalendarId;
+use everyday_core::id::{CalendarId, ThreadId};
 use everyday_core::mail::MailboxRole;
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::{Result as CoreResult, Vault};
@@ -63,9 +74,9 @@ const REMIND_LOOKBACK_SECS: i64 = 2 * 60;
 /// that gained a dozen meetings should not fill it.
 const FRESH_INDIVIDUAL_CAP: usize = 3;
 
-/// A high-priority message, as much of it as a notification needs.
+/// A message to tell somebody about, as much of it as a notification needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PriorityMail {
+pub struct NewMail {
     pub message_id: String,
     /// Already a display label -- a name where the header had one, the
     /// address otherwise. See [`sender_label`].
@@ -77,11 +88,15 @@ pub struct PriorityMail {
 #[derive(Debug, Clone, Copy)]
 pub struct IngestFacts {
     pub is_new: bool,
-    pub priority: bool,
+    /// [`MailNotify`](everyday_core::account::MailNotify) asks for it, as far
+    /// as a headers pass can tell.
+    pub wanted: bool,
     pub unread: bool,
     pub in_inbox: bool,
     pub deleted: bool,
     pub draft: bool,
+    /// The account's own address sent it.
+    pub own: bool,
     /// The mailbox has finished a sync before this pass. False on the fill
     /// that brings an account's history in.
     pub mailbox_known: bool,
@@ -113,48 +128,62 @@ pub fn in_inbox(role: MailboxRole, labels: &[String]) -> bool {
 
 /// Should a message just stored by sync raise a notification?
 ///
-/// Priority, unread, and actually in the inbox. A mailbox this account has
-/// already been syncing announces every such message -- a delayed one with
-/// an old `Date` still just arrived. The first fill of a mailbox announces
-/// only mail that is still current, so connecting an account does not
-/// announce the archive and does announce this morning's.
+/// Wanted, unread, somebody else's, and actually in the inbox. A mailbox this
+/// account has already been syncing announces every such message -- a delayed
+/// one with an old `Date` still just arrived. The first fill of a mailbox
+/// announces only mail that is still current, so connecting an account does
+/// not announce the archive and does announce this morning's.
 pub fn ingest_is_news(facts: &IngestFacts) -> bool {
     if !facts.is_new
-        || !facts.priority
+        || !facts.wanted
         || !facts.unread
         || !facts.in_inbox
         || facts.deleted
         || facts.draft
+        || facts.own
     {
         return false;
     }
     facts.mailbox_known || is_recent(facts.sent_at, facts.now)
 }
 
-/// Should the model promoting a thread to Priority raise a notification?
+/// Should a model filing a message where it is wanted raise a notification?
 ///
-/// The pass walks every Important thread, eventually, including ones from
-/// months ago the first time it is switched on, and whichever mailbox they
-/// are in. Only a recent unread message in the inbox is news, on the same
+/// The passes walk every thread in their reach, eventually, including ones
+/// from months ago the first time one is switched on, and whichever mailbox
+/// they are in. Only a recent unread message in the inbox is news, on the same
 /// terms as [`ingest_is_news`]; the rest were sorted, not delivered.
-pub fn promoted_is_news(facts: &PromotedFacts) -> bool {
+pub fn filed_is_news(facts: &FiledFacts) -> bool {
     facts.unread
         && facts.in_inbox
         && !facts.deleted
         && !facts.draft
+        && !facts.own
         && is_recent(facts.sent_at, facts.now)
 }
 
-/// What [`promoted_is_news`] reads about the newest message of a thread
-/// the model just promoted.
+/// What [`filed_is_news`] reads about the message a model just filed.
 #[derive(Debug, Clone, Copy)]
-pub struct PromotedFacts {
+pub struct FiledFacts {
     pub unread: bool,
     pub in_inbox: bool,
     pub deleted: bool,
     pub draft: bool,
+    pub own: bool,
     pub sent_at: Timestamp,
     pub now: Timestamp,
+}
+
+/// Has this account written in `thread`? What
+/// [`MailNotify::Replies`](everyday_core::account::MailNotify::Replies) asks of
+/// a new message there, from the thread's own messages: somebody's own copy
+/// of what they sent is in the thread on every provider, whichever client
+/// they sent it from. A draft on the server is not something they said yet.
+/// `own` is lower-case, as `SyncContext::identities` is.
+pub fn thread_has_own_message(vault: &Vault, thread: ThreadId, own: &[String]) -> bool {
+    vault.thread(thread).is_ok_and(|(_, messages)| {
+        messages.iter().any(|m| !m.flags.draft && own.contains(&m.from.email.to_lowercase()))
+    })
 }
 
 fn is_recent(sent_at: Timestamp, now: Timestamp) -> bool {
@@ -162,19 +191,15 @@ fn is_recent(sent_at: Timestamp, now: Timestamp) -> bool {
     (-NEWS_FUTURE_SKEW_SECS..=NEWS_MAX_AGE_SECS).contains(&age)
 }
 
-/// One notification for a batch of priority mail from a single pass.
+/// One notification for a batch of new mail from a single pass.
 ///
 /// `total` is how many messages the batch held, which can be more than
 /// `mail` -- a pass keeps only the first few for their names. One message
 /// names its sender. Several are one line, keyed on the account and the
-/// batch's first message: a later batch, from the next pass or from the
-/// model's priority pass, posts its own line rather than replacing this
-/// one and losing who wrote.
-pub fn priority_mail_notice(
-    account_id: &str,
-    mail: &[PriorityMail],
-    total: usize,
-) -> Option<Notification> {
+/// batch's first message: a later batch, from the next pass or from a
+/// model's own, posts its own line rather than replacing this one and losing
+/// who wrote.
+pub fn new_mail_notice(account_id: &str, mail: &[NewMail], total: usize) -> Option<Notification> {
     let total = total.max(mail.len());
     match mail {
         [] => None,
@@ -192,21 +217,21 @@ pub fn priority_mail_notice(
                 .collect::<Vec<_>>()
                 .join(" · ");
             Some(
-                Notification::new(Level::Info, format!("{total} priority emails"))
+                Notification::new(Level::Info, format!("{total} new emails"))
                     .body(preview)
                     .for_user()
-                    .key(format!("mail-priority:{account_id}:{}", many[0].message_id)),
+                    .key(format!("mail-new:{account_id}:{}", many[0].message_id)),
             )
         }
     }
 }
 
-fn sender_or(mail: &PriorityMail) -> String {
+fn sender_or(mail: &NewMail) -> String {
     let from = mail.from.trim();
     if from.is_empty() { "New email".to_string() } else { excerpt(from, 80) }
 }
 
-fn subject_or(mail: &PriorityMail) -> String {
+fn subject_or(mail: &NewMail) -> String {
     let subject = mail.subject.trim();
     if subject.is_empty() { "(no subject)".to_string() } else { excerpt(subject, 140) }
 }
@@ -508,36 +533,38 @@ mod tests {
         Timestamp::from_second(secs).unwrap()
     }
 
-    fn facts(priority: bool, mailbox_known: bool) -> IngestFacts {
+    fn facts(wanted: bool, mailbox_known: bool) -> IngestFacts {
         let now = ts(1_700_000_000);
         IngestFacts {
             is_new: true,
-            priority,
+            wanted,
             unread: true,
             in_inbox: true,
             deleted: false,
             draft: false,
+            own: false,
             mailbox_known,
             sent_at: now,
             now,
         }
     }
 
-    fn mail(id: &str, from: &str, subject: &str) -> PriorityMail {
-        PriorityMail { message_id: id.into(), from: from.into(), subject: subject.into() }
+    fn mail(id: &str, from: &str, subject: &str) -> NewMail {
+        NewMail { message_id: id.into(), from: from.into(), subject: subject.into() }
     }
 
     #[test]
-    fn a_new_unread_priority_message_in_the_inbox_is_news() {
+    fn a_new_unread_wanted_message_in_the_inbox_is_news() {
         assert!(ingest_is_news(&facts(true, true)));
     }
 
     #[test]
-    fn anything_short_of_priority_unread_inbox_mail_is_not_news() {
+    fn anything_short_of_wanted_unread_inbox_mail_from_somebody_else_is_not_news() {
         let mut read = facts(true, true);
         read.unread = false;
-        let mut other = facts(false, true);
-        other.priority = false;
+        let unwanted = facts(false, true);
+        let mut own = facts(true, true);
+        own.own = true;
         let mut seen_before = facts(true, true);
         seen_before.is_new = false;
         let mut archived = facts(true, true);
@@ -546,13 +573,13 @@ mod tests {
         deleted.deleted = true;
         let mut draft = facts(true, true);
         draft.draft = true;
-        for facts in [read, other, seen_before, archived, deleted, draft] {
+        for facts in [read, unwanted, own, seen_before, archived, deleted, draft] {
             assert!(!ingest_is_news(&facts), "{facts:?}");
         }
     }
 
     #[test]
-    fn a_first_sync_announces_recent_priority_mail_and_not_the_archive() {
+    fn a_first_sync_announces_recent_mail_and_not_the_archive() {
         let mut recent = facts(true, false);
         assert!(ingest_is_news(&recent), "this morning's mail is news even on the first fill");
 
@@ -577,58 +604,56 @@ mod tests {
     }
 
     #[test]
-    fn promoting_old_mail_is_not_news_and_promoting_unread_recent_mail_is() {
+    fn filing_old_mail_is_not_news_and_filing_unread_recent_mail_is() {
         let now = ts(1_700_000_000);
-        let news = PromotedFacts {
+        let news = FiledFacts {
             unread: true,
             in_inbox: true,
             deleted: false,
             draft: false,
+            own: false,
             sent_at: now,
             now,
         };
-        assert!(promoted_is_news(&news));
-        assert!(!promoted_is_news(&PromotedFacts { unread: false, ..news }), "already read");
-        assert!(!promoted_is_news(&PromotedFacts { deleted: true, ..news }), "deleted");
-        assert!(!promoted_is_news(&PromotedFacts { draft: true, ..news }), "a draft");
-        assert!(
-            !promoted_is_news(&PromotedFacts { in_inbox: false, ..news }),
-            "filtered past the inbox"
-        );
+        assert!(filed_is_news(&news));
+        assert!(!filed_is_news(&FiledFacts { unread: false, ..news }), "already read");
+        assert!(!filed_is_news(&FiledFacts { deleted: true, ..news }), "deleted");
+        assert!(!filed_is_news(&FiledFacts { draft: true, ..news }), "a draft");
+        assert!(!filed_is_news(&FiledFacts { own: true, ..news }), "the account's own");
+        assert!(!filed_is_news(&FiledFacts { in_inbox: false, ..news }), "filtered past the inbox");
         let old = ts(now.as_second() - NEWS_MAX_AGE_SECS - 1);
-        assert!(!promoted_is_news(&PromotedFacts { sent_at: old, ..news }), "the backlog");
+        assert!(!filed_is_news(&FiledFacts { sent_at: old, ..news }), "the backlog");
     }
 
     #[test]
-    fn one_priority_email_names_its_sender_and_several_are_one_line() {
-        let one =
-            priority_mail_notice("acct", &[mail("m1", "Ada Lovelace", "The proof")], 1).unwrap();
+    fn one_email_names_its_sender_and_several_are_one_line() {
+        let one = new_mail_notice("acct", &[mail("m1", "Ada Lovelace", "The proof")], 1).unwrap();
         assert_eq!(one.title, "Ada Lovelace");
         assert_eq!(one.body.as_deref(), Some("The proof"));
         assert_eq!(one.key.as_deref(), Some("mail:m1"));
         assert!(matches!(one.reach, Reach::User));
 
-        let many = priority_mail_notice(
+        let many = new_mail_notice(
             "acct",
             &[mail("m1", "Ada", "One"), mail("m2", "Grace", "Two"), mail("m3", "Edsger", "Three")],
             3,
         )
         .unwrap();
-        assert_eq!(many.title, "3 priority emails");
-        assert_eq!(many.key.as_deref(), Some("mail-priority:acct:m1"), "one line per batch");
+        assert_eq!(many.title, "3 new emails");
+        assert_eq!(many.key.as_deref(), Some("mail-new:acct:m1"), "one line per batch");
         assert!(many.body.unwrap().contains("Ada: One"));
-        assert!(priority_mail_notice("acct", &[], 0).is_none());
+        assert!(new_mail_notice("acct", &[], 0).is_none());
     }
 
     #[test]
     fn a_batch_counts_the_mail_it_did_not_keep() {
-        let notice = priority_mail_notice("acct", &[mail("m1", "Ada", "One")], 50).unwrap();
-        assert_eq!(notice.title, "50 priority emails");
+        let notice = new_mail_notice("acct", &[mail("m1", "Ada", "One")], 50).unwrap();
+        assert_eq!(notice.title, "50 new emails");
     }
 
     #[test]
     fn a_blank_sender_still_reads_as_mail() {
-        let notice = priority_mail_notice("acct", &[mail("m1", "  ", "")], 1).unwrap();
+        let notice = new_mail_notice("acct", &[mail("m1", "  ", "")], 1).unwrap();
         assert_eq!(notice.title, "New email");
         assert_eq!(notice.body.as_deref(), Some("(no subject)"));
     }

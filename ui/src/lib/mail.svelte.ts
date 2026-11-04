@@ -20,6 +20,7 @@
 import * as mailApi from './mail-api'
 import { accounts } from './accounts.svelte'
 import { registerApply, type ChangeWithIds } from './live-apply'
+import { windowInFront } from './notify.svelte'
 import { proposals } from './proposals.svelte'
 import {
   CATEGORY_TABS,
@@ -1687,6 +1688,7 @@ class MailState {
     if (changes.some((c) => c.kind === 'thread' && !c.id && !c.ids?.length)) {
       this.#scheduleLiveRefresh()
       this.#scheduleUnreadRefresh()
+      this.#scheduleOpenThreadReload()
       void this.refreshSyncStatus()
       return true
     }
@@ -1768,10 +1770,52 @@ class MailState {
         // those: `#applyChanges` has asked for a debounced refresh already.
         if (this.only.size === 0) await this.refresh()
       }
-      if (this.selectedThread === id) this.openThread = detail
+      if (this.selectedThread === id) this.#showNewer(detail)
     } catch {
       await this.refresh()
     }
+  }
+
+  #openReloadTimer: ReturnType<typeof setTimeout> | null = null
+  #scheduleOpenThreadReload() {
+    if (this.#openReloadTimer) clearTimeout(this.#openReloadTimer)
+    this.#openReloadTimer = setTimeout(() => {
+      this.#openReloadTimer = null
+      void this.#reloadOpenThread()
+    }, LIVE_REFRESH_DEBOUNCE_MS)
+  }
+
+  /**
+   * A sync pass names no thread, and may have put a message in the one being
+   * read -- the reply just sent, most of all, which only ever arrives this
+   * way. The list has heard already; without this the pane went on showing
+   * the thread as it was until somebody left it and came back.
+   */
+  async #reloadOpenThread() {
+    const id = this.selectedThread
+    if (!id) return
+    try {
+      const detail = await mailApi.getThread(id)
+      if (this.selectedThread === id) this.#showNewer(detail)
+    } catch (e) {
+      // Gone: the list's own refresh is what closes it.
+      await quietly(e)
+    }
+  }
+
+  /** A fresh copy of the open thread. What somebody has opened and closed
+   *  stays as it is, and what has arrived since opens, as the newest message
+   *  does when a thread is opened. Marked read only if it is being looked at:
+   *  one that came in behind somebody's back is still news to them. */
+  #showNewer(detail: ThreadDetail) {
+    const had = this.openThread?.thread.id === detail.thread.id ? this.openThread : null
+    this.openThread = detail
+    if (!had) return
+    const known = new Set(had.messages.map((m) => m.id))
+    const newest = detail.messages.at(-1)
+    if (!newest || known.has(newest.id)) return
+    this.expanded = new Set([...this.expanded, newest.id])
+    if (detail.thread.unreadCount > 0 && windowInFront()) void this.markRead(detail.thread.id)
   }
 
   // ── derived ──────────────────────────────────────────────────────

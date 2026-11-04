@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use everyday_core::id::{AccountId, BlobId, MailMessageId, MailboxId};
 use everyday_core::mail::categorize::{self, CategorizeInput};
-use everyday_core::mail::{Body, Category, MailboxRole, Message, PartRef};
+use everyday_core::mail::{Body, MailboxRole, Message, PartRef};
 use everyday_core::packstore::{PackRef, PackStore};
 use everyday_core::store::mail::IngestMessage;
 use everyday_core::{MailDoc, MailSearch, Vault};
@@ -418,6 +418,10 @@ pub async fn sync_headers<S: MailSession>(
         // Newest first within the batch too, matching the plan's ordering.
         headers.sort_by(|a, b| b.uid.cmp(&a.uid).then(b.internal_date.cmp(&a.internal_date)));
 
+        // Read per batch rather than once when the task started, so a change
+        // in Settings applies from the next mail in, and only when there is
+        // mail to ask it about.
+        let notify = ctx.vault.account(ctx.account_id).map(|a| a.mail_notify).unwrap_or_default();
         let mut ingest_batch = Vec::with_capacity(headers.len());
         let mut arrivals = Vec::new();
         for header in &headers {
@@ -449,26 +453,32 @@ pub async fn sync_headers<S: MailSession>(
             // batch is the wrong place to post, and a first sync of
             // thousands of messages would otherwise post thousands of
             // times. The decision of which messages are news at all lives
-            // in `arrivals`.
+            // in `arrivals`. A question about the thread waits for the batch
+            // too: the account's own word may be in it.
             if crate::arrivals::ingest_is_news(&crate::arrivals::IngestFacts {
                 is_new: resolved.is_new,
-                priority: resolved.message.category == Some(Category::Priority),
+                wanted: notify.wants_replies()
+                    || notify.wants_filed(resolved.message.category, None),
                 unread: resolved.message.flags.unread(),
                 in_inbox: crate::arrivals::in_inbox(mailbox.row.role, &resolved.message.labels),
                 deleted: resolved.message.flags.deleted,
                 draft: resolved.message.flags.draft,
+                own: ctx.identities.contains(&resolved.message.from.email.to_lowercase()),
                 mailbox_known,
                 sent_at: resolved.message.date,
                 now: jiff::Timestamp::now(),
             }) {
-                arrivals.push(crate::arrivals::PriorityMail {
-                    message_id: resolved.message.id.to_string(),
-                    from: crate::arrivals::sender_label(
-                        &resolved.message.from.name,
-                        &resolved.message.from.email,
-                    ),
-                    subject: resolved.message.subject.clone(),
-                });
+                arrivals.push((
+                    resolved.message.thread_id,
+                    crate::arrivals::NewMail {
+                        message_id: resolved.message.id.to_string(),
+                        from: crate::arrivals::sender_label(
+                            &resolved.message.from.name,
+                            &resolved.message.from.email,
+                        ),
+                        subject: resolved.message.subject.clone(),
+                    },
+                ));
             }
             ingest_batch.push(IngestMessage {
                 message: resolved.message.clone(),
@@ -541,8 +551,17 @@ pub async fn sync_headers<S: MailSession>(
             // then -- noting it now as well would announce it twice, the
             // first time for mail that is not in the vault.
             Ok(_) => {
-                for arrival in arrivals {
-                    ctx.statuses.note_priority_mail(ctx.account_id, arrival);
+                for (thread, arrival) in arrivals {
+                    if notify.wants_replies()
+                        && !crate::arrivals::thread_has_own_message(
+                            ctx.vault,
+                            thread,
+                            &ctx.identities,
+                        )
+                    {
+                        continue;
+                    }
+                    ctx.statuses.note_new_mail(ctx.account_id, arrival);
                 }
             }
             Err(e) => {

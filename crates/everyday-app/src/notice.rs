@@ -1,4 +1,14 @@
-//! A desktop notification with buttons, for an offer to take notes.
+//! A desktop notification, with buttons when it is an offer to take notes.
+//!
+//! Every notification this application raises goes through here, because
+//! `tauri-plugin-notification` cannot deliver one on Linux: its `show` spawns
+//! a task on the tokio runtime and calls `notify_rust`'s blocking `show` from
+//! inside it, which is `zbus::block_on`, and with zbus's `tokio` feature on
+//! (`ashpd` switches it on, and features are per build, not per crate) that
+//! panics with "Cannot start a runtime from within a runtime". Tokio catches
+//! the panic, the plugin reports success, and nothing arrives. So
+//! `notify.svelte.ts` still decides *whether* something leaves the window, and
+//! [`post_notification`] is how it goes.
 //!
 //! An offer that only ever shows inside the window is no offer to somebody
 //! who is in another application -- which, for a call starting, is exactly
@@ -8,7 +18,7 @@
 //! with no buttons can only say "a meeting is starting", never ask the
 //! question. This module is the shell raising the notification itself, so
 //! it can carry "Take notes" and "Not now" and hear which was pressed. See
-//! [`crate::offers`], the one caller, for what is said and when.
+//! [`crate::offers`] for what is said and when.
 //!
 //! # Buttons are Linux-only, for now
 //!
@@ -33,7 +43,29 @@
 //! they were sent, and is also the one place the daemon's `ActionInvoked`
 //! and `NotificationClosed` signals are read.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use everyday_service::error::CommandResult;
 use tauri::AppHandle;
+
+/// A plain notification the interface has decided should leave the window.
+///
+/// `key` is the notification's identity, so a condition that recurs replaces
+/// its own banner. One with no identity gets one of its own, because the same
+/// map is what stops two notifications being taken for the same one. A click
+/// raises the window: see [`crate::offers::on_notice_action`].
+#[tauri::command]
+pub async fn post_notification(
+    app: AppHandle,
+    title: String,
+    body: Option<String>,
+    key: Option<String>,
+) -> CommandResult<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let key = key.unwrap_or_else(|| format!("plain:{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+    show(&app, &key, &title, body.as_deref().unwrap_or_default(), &[]);
+    Ok(())
+}
 
 /// Show (or replace) the notification for offer `key`. `actions` are
 /// `(action key, label)` pairs; a press comes back through
@@ -294,6 +326,30 @@ mod linux {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Nothing but this file may ask the plugin to post: on Linux that reports
+    /// success and delivers nothing, and the only sign of it is a panic line in
+    /// the log, which is how every notification went missing for two weeks
+    /// without a test noticing. See the module docs.
+    #[test]
+    fn nothing_else_posts_through_the_plugin() {
+        fn walk(dir: &std::path::Path, offenders: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, offenders);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && path.file_name().is_some_and(|n| n != "notice.rs")
+                    && std::fs::read_to_string(&path).unwrap().contains(".notification()")
+                {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+        let mut offenders = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut offenders);
+        assert_eq!(offenders, Vec::<String>::new(), "use `notice::show`");
+    }
 
     #[test]
     fn the_default_action_is_always_last() {

@@ -582,12 +582,13 @@ pub struct DraftRef {
 }
 
 /// Bring back a draft just discarded -- see
-/// [`everyday_core::Vault::restore_draft`].
+/// [`everyday_core::Vault::restore_draft`]. One thrown away before its first
+/// save has no row to bring back, and the save that follows this makes one.
 async fn restore_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandResult<()> {
     let vault = svc.require()?;
-    blocking(move || {
-        vault.restore_draft(args.id)?;
-        Ok(())
+    blocking(move || match vault.restore_draft(args.id) {
+        Ok(_) | Err(everyday_core::error::Error::NotFound { .. }) => Ok(()),
+        Err(e) => Err(e.into()),
     })
     .await
 }
@@ -595,9 +596,19 @@ async fn restore_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandR
 /// Discard a draft, and wake the account task when doing so left an
 /// [`everyday_core::mail::OpKind::DiscardDraft`] op to drain -- see
 /// [`everyday_core::Vault::discard_draft`]'s own docs for when that is.
+///
+/// A draft nobody has typed in has no row: [`new_draft`] only hands one to
+/// the composer, and [`save_draft`] is what first stores it. There is nothing
+/// to discard then, which is what was asked for, not a failure -- it used to
+/// answer "Draft <id> not found" for every empty draft thrown away.
 async fn discard_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandResult<()> {
     let vault = svc.require()?;
-    let op = blocking(move || Ok(vault.discard_draft(args.id)?.1)).await?;
+    let op = blocking(move || match vault.discard_draft(args.id) {
+        Ok((_, op)) => Ok(op),
+        Err(everyday_core::error::Error::NotFound { .. }) => Ok(None),
+        Err(e) => Err(e.into()),
+    })
+    .await?;
     if let Some(op) = op {
         svc.notify_outbox(op.account_id);
     }

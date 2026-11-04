@@ -642,6 +642,9 @@
     commitTyped('cc', ccText)
     commitTyped('bcc', bccText)
     syncBody()
+    // Written whatever `saver` thinks: a reply nobody has typed in has never
+    // been saved, and there is no draft to send until it has.
+    saver.touch(working.id)
     await saver.flush()
     onclose()
     // Not awaited: `mail.send` handles its own failure (a toast, via
@@ -690,16 +693,21 @@
   async function discard() {
     syncBody()
     if (isBlankDraft(working)) {
-      await mailApi.discardDraft(working.id)
-      // The draft above no longer exists to write to. Without this,
-      // `onDestroy`'s safety-net `flush()` still finds `working.id` dirty
-      // from whatever `touch()` ran before this blank check, and writes
-      // `saveDraft` for a draft that was just discarded -- resurrecting it
-      // locally, and, once that write reaches the outbox, on the server too.
-      // `forget()` is `Autosave`'s own answer to "the record it would write
-      // is already gone" -- the same call `notes.svelte.ts`'s `remove()`
-      // makes for the same reason -- so there is nothing left for that
-      // safety net to do.
+      // Before the discard, not after, and whatever is on its way lands
+      // first: `onDestroy`'s safety-net `flush()`, or a write already on the
+      // wire, would otherwise follow the discard and bring back a draft that
+      // was just thrown away -- locally, and, once that write reaches the
+      // outbox, on the server too. `forget()` is `Autosave`'s own answer to
+      // "the record it would write is already gone" -- the same call
+      // `notes.svelte.ts`'s `remove()` makes for the same reason.
+      saver.forget(working.id)
+      try {
+        await saver.flush()
+        await mailApi.discardDraft(working.id)
+      } catch (e) {
+        await handle(e)
+        return
+      }
       saver.forget(working.id)
     } else {
       await saver.flush()
