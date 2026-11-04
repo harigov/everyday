@@ -8,12 +8,18 @@ import { load, stubBrowser } from './harness.mjs'
 stubBrowser({ window: globalThis, location: new URL('http://localhost/'), navigator: true })
 
 const {
-  modules: [mailview, mail, mailbody],
+  modules: [mailview, mail, mailbody, mailheight],
   close,
-} = await load(['/src/lib/mailview.ts', '/src/lib/mail.ts', '/src/lib/mailbody.ts'])
+} = await load([
+  '/src/lib/mailview.ts',
+  '/src/lib/mail.ts',
+  '/src/lib/mailbody.ts',
+  '/src/lib/mailheight.ts',
+])
 const { applyBodyTheme, quoteDocument, renderBody, MAIL_CARD } = mailview
 const { firstName, peopleLine, snippetText } = mail
-const { estimateDesignedHeight, estimateWrittenHeight, looksDesigned, readBody } = mailbody
+const { looksDesigned, readBody } = mailbody
+const { measureBody } = mailheight
 
 const DARK_PAGE = { background: MAIL_CARD.dark, text: '#eceaf0' }
 const read = (html, options = {}) => readBody(html, { page: DARK_PAGE, ...options })
@@ -405,33 +411,49 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
   assert.equal(out.hidesImages, true, 'and its pictures can still be asked for')
 }
 
-// ── estimateWrittenHeight ─────────────────────────────────────────────
+// ── measureBody ───────────────────────────────────────────────────────
 
 {
-  const page = (inner) => `<html><head></head><body>\n${inner}\n</body></html>`
-  const near = (inner, width, want, why) => {
-    const got = estimateWrittenHeight(page(inner), width)
+  const SHEET =
+    '<style>details>summary{display:none}pre{white-space:pre-wrap;margin:0 0 1em}</style>'
+  const PICTURE = 'src="everyday://mail/img/m/t"'
+  const page = (inner) => `<html><head>${SHEET}</head><body>\n${inner}\n</body></html>`
+  const guess = (inner, width, more = {}) =>
+    measureBody({ html: page(inner), paper: false, imagesHidden: false, ...more })(width)
+  const near = (inner, width, want, why, more) => {
+    const got = guess(inner, width, more)
     assert.ok(got >= want && got <= want + 24, `${why}: wanted about ${want}, guessed ${got}`)
   }
   const long = 'word '.repeat(30).trim()
+
+  // What somebody wrote, on the card.
   near('<div dir="ltr">Sounds great.</div>', 520, 24, 'one line')
   near('<div>Hi,</div><div><br></div><div>Thanks</div>', 520, 72, 'a blank line counts')
   near('Hi,<br><br>Thanks', 520, 72, 'and written as two breaks')
   near(
-    '<p class="MsoNormal">a</p><p class="MsoNormal">&nbsp;</p><p class="MsoNormal">b</p>',
+    '<style>p.MsoNormal{margin:0in}</style><p class="MsoNormal">a</p>' +
+      '<p class="MsoNormal">&nbsp;</p><p class="MsoNormal">b</p>',
     520,
     72,
     'Word',
   )
-  near('<p>a</p><p>b</p>', 520, 78, "a paragraph's gap")
+  near('<p>a</p><p>b</p>', 520, 63, "a paragraph's gap, and none off the card's edges")
   near('<p style="margin:0">a</p><p style="margin:0">b</p>', 520, 48, 'unless taken away')
+  near(
+    '<div><div><p>a</p></div></div>',
+    520,
+    54,
+    "the card's sheet only reaches two levels in, so a paragraph deeper keeps its margins",
+  )
   near(`<div>${long}</div>`, 520, 72, 'a long line wraps')
   near(`<div>${long}</div>`, 1000, 48, 'less at a wider pane')
-  near('<div>a</div><img height="48" width="160">', 520, 72, 'a picture says how tall it is')
-  near('<div>a</div><img style="height:48px;width:160px">', 520, 72, 'in its style as well')
-  near('<div>a</div><img height="200" width="1040">', 520, 124, 'scaled down to the column')
-  near('<div>a</div><img>', 520, 124, 'or a guess when it does not')
-  near('<pre>one\ntwo\n\nfour</pre>', 520, 111, 'preformatted lines are its own')
+  near(`<div>a</div><img ${PICTURE} height="48" width="160">`, 520, 72, 'a picture says how tall')
+  near(`<div>a</div><img ${PICTURE} style="height:48px;width:160px">`, 520, 72, 'in its style too')
+  near(`<div>a</div><img ${PICTURE} height="200" width="1040">`, 520, 124, 'scaled to the column')
+  near(`<div>a</div><img ${PICTURE}>`, 520, 124, 'or a guess when it does not say')
+  near('<div>a</div><img height="48" width="160">', 520, 24, 'a picture with no address is nothing')
+  near('<pre>one\ntwo\n\nfour</pre>', 520, 96, 'preformatted lines are its own')
+  near('<pre>one\ntwo\n</pre>', 520, 48, 'and a newline at the end starts nothing')
   near('<style>p{color:red;margin:0}</style><div>a</div>', 520, 24, 'a sheet draws nothing')
   near(
     '<div>a</div><div style="display:none">a hidden preheader</div>',
@@ -440,43 +462,433 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
     'nor does hidden text',
   )
   near(
-    '<div>a</div><div style="display:none"><img height="400"></div>',
+    `<div>a</div><div style="display:none"><img ${PICTURE} height="400"></div>`,
     520,
     24,
     'or what is in it',
   )
-  near(
-    '<details open><summary>Quoted</summary><pre>x</pre></details>',
-    520,
-    39,
-    'or a hidden summary',
-  )
-  const waiting = '<div>a</div><img src="everyday://mail/img/m/t">'.repeat(1)
+  near('<details open><summary>Quoted</summary><pre>x</pre></details>', 520, 24, 'or a summary')
+  near('a<wbr>b<wbr>c', 520, 24, 'a <wbr> is not a line break')
+  near('a<br style="display:none">b', 520, 24, 'nor a <br> that is hidden')
+  const waiting = `<div>a</div><img ${PICTURE}>`
+  near(waiting, 520, 24, 'a picture nobody has allowed yet takes no room', { imagesHidden: true })
+  assert.ok(guess(waiting, 520) > 100, 'once allowed, it does')
   assert.ok(
-    estimateWrittenHeight(page(waiting), 520, true) < 40,
-    'a picture nobody has allowed yet takes no room',
-  )
-  assert.ok(estimateWrittenHeight(page(waiting), 520) > 100, 'once allowed, it does')
-  assert.ok(
-    estimateWrittenHeight(page(`<div>${'漢'.repeat(300)}</div>`), 600) >= 192,
+    guess(`<div>${'漢'.repeat(300)}</div>`, 600) >= 192,
     'characters drawn twice as wide take twice the lines',
   )
-  assert.ok(
-    estimateWrittenHeight(page(`<div>${'word '.repeat(200000)}</div>`), 520) <= 60000,
-    'it does have a limit',
+
+  // Plain text: `plain_text_body` wraps every message in a `<pre>` and links
+  // every address, so a list of them has its newlines in text of their own.
+  const links = Array.from({ length: 30 }, (_, i) => `<a href="#">u${i}</a>`).join('\n')
+  near(`<pre>${links}</pre>`, 520, 720, 'a line of its own for every link')
+  const paragraph = 'abcdefghijkl '.repeat(1000).trim()
+  assert.equal(
+    guess(`<pre>${paragraph}</pre>`, 520),
+    guess(`<div>${paragraph}</div>`, 520),
+    'a long paragraph wraps at its words in a <pre> as anywhere else',
   )
 
-  const row =
-    '<tr><td><h2>A headline</h2><img height="300" width="600"><p>Some words.</p></td></tr>'
+  // What a template is made of. Every one of these used to add to a screen of
+  // white under the message, or to a scrollbar inside it.
+  const paper = { paper: true }
+  const plainTable = (rows) => `<table cellpadding="0" cellspacing="0" width="100%">${rows}</table>`
+  const wrapped = (inner) => plainTable(`<tr><td>${inner}</td></tr>`)
+  near(wrapped(wrapped(wrapped(wrapped('one line')))), 600, 24, 'wrapper tables add nothing', paper)
+  near(
+    plainTable(`<tr><td width="50%">${long}</td><td width="50%">${long}</td></tr>`),
+    1000,
+    72,
+    'cells side by side are as tall as the taller',
+    paper,
+  )
+  near(
+    plainTable(`<tr><td>x</td></tr>`.repeat(50)),
+    600,
+    1200,
+    'rows do stack, with nothing more for being rows',
+    paper,
+  )
+  near(
+    plainTable('<tr><td height="32" style="font-size:0;line-height:0">&nbsp;</td></tr>'),
+    600,
+    32,
+    'a row that is a gap',
+    paper,
+  )
+  near(plainTable('<tr><td style="padding:40px 20px">x</td></tr>'), 600, 104, 'a cell pads', paper)
+  near(
+    `<style>.pad{padding:40px}</style>${plainTable('<tr><td class="pad">x</td></tr>')}`,
+    600,
+    104,
+    "as the sender's sheet says, not only its inline styles",
+    paper,
+  )
+  near(
+    `<style>.mobile{display:none}</style><div class="mobile">${long}</div><div>x</div>`,
+    600,
+    24,
+    "the sheet hides what it hides, so a phone's copy of a block is not counted",
+    paper,
+  )
+  const narrowOnly = `<style>@media (max-width:600px){.wide{display:none}}</style><div class="wide">x</div><div>y</div>`
+  near(narrowOnly, 500, 24, 'a breakpoint holds below its width', paper)
+  near(narrowOnly, 800, 48, 'and not above it', paper)
+  const inEms = `<style>@media (max-width:40em){.wide{display:none}}</style><div class="wide">x</div><div>y</div>`
+  near(inEms, 500, 24, 'a breakpoint in ems is in ems', paper)
+  near(inEms, 800, 48, 'at sixteen pixels each', paper)
+  near(
+    '<style>@media yahoo{.gone{display:none}}</style><div class="gone">x</div>',
+    600,
+    24,
+    'a media type aimed at one client is not this one',
+    paper,
+  )
+  near(
+    '<style>@charset "utf-8";.pad{padding:40px}</style><div class="pad">x</div>',
+    600,
+    104,
+    'a statement ahead of a rule does not swallow it',
+    paper,
+  )
+  near(
+    `<img ${PICTURE} width="24" height="24">`.repeat(5),
+    600,
+    32,
+    'icons in a row are one line of them',
+    paper,
+  )
+  near(
+    `<img ${PICTURE} width="24" height="24" style="display:block">`.repeat(5),
+    600,
+    120,
+    'unless each is a block',
+    paper,
+  )
+  const column = `<div style="height:100px"></div>`
+  const floated = `<table cellpadding="0" cellspacing="0" width="192" align="left"><tr><td>${column}</td></tr></table>\n`
+  near(floated.repeat(3), 576, 100, 'floated columns fill their row exactly', paper)
+  near(floated.repeat(3), 400, 200, 'and fall under one another when they do not fit', paper)
+  const unsized = `<style>table{max-width:100%}</style>${`<table cellpadding="0" cellspacing="0" align="left"><tr><td>x</td></tr></table>\n`.repeat(3)}`
+  near(unsized, 600, 24, 'a float with no width of its own is as wide as what it holds', paper)
+  const block = `<div style="display:inline-block;width:100%;max-width:50%;min-width:240px">${column}</div>\n`
+  near(`<div style="font-size:0">${block.repeat(2)}</div>`, 600, 100, 'inline blocks too', paper)
+  near(
+    plainTable('<tr><td style="width:87.5%">x</td></tr>') +
+      plainTable(`<tr><td style="width:87.5%">${'word '.repeat(19).trim()}</td></tr>`),
+    800,
+    48,
+    'a lone cell has the whole of its table',
+    paper,
+  )
+
+  // Tables, as a browser shares them out.
+  const words40 = 'word '.repeat(40).trim()
+  near(
+    plainTable(
+      '<tr><td width="100">a</td><td width="400">b</td><td width="100">c</td></tr>' +
+        `<tr><td colspan="2">a</td><td>${words40}</td></tr>`,
+    ),
+    600,
+    24 + 480,
+    'a cell after a span takes the column it is in',
+    paper,
+  )
+  near(
+    plainTable(`<tr><td colspan="2">${long}</td></tr><tr><td width="50%">a</td><td>b</td></tr>`),
+    600,
+    48 + 24,
+    'a span has the room of all its columns',
+    paper,
+  )
+  // Measured in WebKitGTK: the cell holds a fixed table open, whatever `max-width`
+  // says, and text in it wraps at the table's width rather than the pane's.
+  near(
+    plainTable(
+      `<tr><td><table cellpadding="0" cellspacing="0" width="600" style="width:100%"><tr><td>${long}</td></tr></table></td></tr>`,
+    ),
+    480,
+    72,
+    "a style's `width: 100%` beats the attribute, so a table made to fit does fit",
+    paper,
+  )
+  const sixHundred = `<table cellpadding="0" cellspacing="0" width="600" style="max-width:100%"><tr><td>${long}</td></tr></table>`
+  near(plainTable(`<tr><td>${sixHundred}</td></tr>`), 480, 48, 'a fixed table in a cell', paper)
+  near(sixHundred, 480, 72, 'where one straight on the page does shrink', paper)
+  near(
+    plainTable('<tr><td width="1">&nbsp;</td><td>x</td></tr>'),
+    600,
+    24,
+    'a spacer one pixel wide is still one line tall',
+    paper,
+  )
+  near(
+    plainTable('<tr><td width="1%">Date:</td><td>x</td></tr>'),
+    600,
+    24,
+    'and no column goes under its longest word',
+    paper,
+  )
+  near(
+    '<table cellpadding="0" cellspacing="0" border="1">' +
+      '<tr><td>x</td></tr>'.repeat(30) +
+      '</table>',
+    600,
+    30 * 26 + 2,
+    "the lines around a bordered table's cells",
+    paper,
+  )
+  near(
+    `<table cellpadding="0" cellspacing="0"><caption>Title</caption><tr><td>x</td></tr></table>`,
+    600,
+    48,
+    'a caption',
+    paper,
+  )
+  const stacking = (css) =>
+    `<style>${css}</style>` +
+    plainTable(
+      `<tr><td class="col" width="50%">${column}</td><td class="col" width="50%">${column}</td></tr>`,
+    )
+  const stackedBelow = stacking(
+    '@media (max-width:600px){td.col{display:block!important;width:100%!important}}',
+  )
+  near(stackedBelow, 500, 200, 'cells made blocks for a phone stack', paper)
+  near(stackedBelow, 800, 100, 'and sit side by side above the breakpoint', paper)
+  const tableOf = (inner) =>
+    `<div style="display:table;width:100%"><div style="display:table-row">${inner}</div></div>`
+  near(
+    tableOf(`<div style="display:table-cell">${'<div>x</div>'.repeat(20)}</div>`),
+    600,
+    480,
+    'display: table is a table',
+    paper,
+  )
+  near(
+    tableOf(
+      `<div style="display:table-cell;width:50%">${column}</div><div style="display:table-cell;width:50%">${column}</div>`,
+    ),
+    600,
+    100,
+    'with its cells beside each other',
+    paper,
+  )
+  near('<div style="display:table">x</div>', 600, 24, 'and text straight inside one counts', paper)
+
+  // The sender's sheet, read the way a browser reads it.
+  near(
+    '<style>td[class=pad]{padding:40px}</style><table cellpadding="0" cellspacing="0"><tr><td class="pad">x</td></tr></table>',
+    600,
+    104,
+    'an attribute selector for a class is a class',
+    paper,
+  )
+  near('<style>#pad{padding:40px}</style><div id="pad">x</div>', 600, 104, 'an id selects', paper)
+  near(
+    '<style>#a{padding:40px}.b{padding:0}</style><div id="a" class="b">x</div>',
+    600,
+    104,
+    'and outweighs a class',
+    paper,
+  )
+  near(
+    '<style>.a{padding:100px}.b{padding:0}</style><div class="b a">x</div>',
+    600,
+    24,
+    'of two classes the later rule wins, in whatever order the attribute names them',
+    paper,
+  )
+  near(
+    '<style>.b{padding:0}.a{padding:40px}</style><div class="a b">x</div>',
+    600,
+    104,
+    'either way round',
+    paper,
+  )
+  near(
+    '<style>div{font:inherit}</style><div>a</div><div>b</div><div>c</div><div>d</div>',
+    600,
+    96,
+    '`font: inherit` leaves the line height alone',
+    paper,
+  )
+  near(
+    '<style>div{font-weight:inherit;font-style:inherit;text-transform:inherit}</style><div>x</div>',
+    600,
+    24,
+    'as it does the rest',
+    paper,
+  )
+  near(
+    '<font size="+2"><span>x</span></font>',
+    600,
+    24 * (24 / 15),
+    '`size="+2"` counts from three',
+    paper,
+  )
+  near(
+    `<ul><li>${'word '.repeat(14).trim()}</li></ul>`,
+    520,
+    48,
+    "a list's bullets take room from its text",
+    { paper: false },
+  )
+  near(`<dl><dd>${'word '.repeat(14).trim()}</dd></dl>`, 520, 48, 'as does a `dd`', {
+    paper: false,
+  })
+  near(
+    '<style>ul{padding:0}</style><ul><li>' + 'word '.repeat(14).trim() + '</li></ul>',
+    520,
+    24,
+    'unless a style takes it away',
+    { paper: false },
+  )
+
+  const withBody = (css, inner) => ({
+    html: `<html><head><style>${css}</style></head><body>${inner}</body></html>`,
+    paper: true,
+    imagesHidden: false,
+  })
+  const padded = measureBody(withBody('body{padding:16px}', '<div>x</div>'))(600)
+  const undone = measureBody(
+    withBody('body{padding:16px}', '<style>body{padding:0}</style><div>x</div>'),
+  )(600)
+  assert.equal(padded - undone, 32, "a template's sheet takes off the page's padding")
+  const narrow = measureBody(withBody('body{max-width:300px}', `<div>${'word '.repeat(60)}</div>`))
+  const atNarrow = measureBody(withBody('', `<div>${'word '.repeat(60)}</div>`))(300)
+  assert.equal(narrow(1000), atNarrow, 'a body with a width of its own wraps at that width')
+  const closedBody = `<details><summary>More</summary>${'<div>x</div>'.repeat(10)}</details>`
+  const closed = measureBody(withBody('', closedBody))(600)
+  assert.ok(closed >= 264, `a closed <details> keeps room for what opens: ${closed}`)
+
+  // One width after another, from one read of the markup.
+  const heights = measureBody(withBody('', `<div>${long}</div>`))
+  assert.ok(heights(1000) < heights(300), 'a narrower pane is taller')
+  assert.equal(heights(1000), heights(1000), 'and the same width gives the same height')
+
+  // A canvas, as a real one behaves: it ignores a font it cannot read and goes
+  // on with the one it had, so the first font a message asks for must be good.
+  {
+    const made = []
+    globalThis.document = {
+      createElement: () => ({
+        getContext: () => {
+          const pen = {
+            current: '10px sans-serif',
+            get font() {
+              return this.current
+            },
+            set font(value) {
+              if (!/inherit|"$/.test(value)) this.current = value
+            },
+            measureText(text) {
+              return { width: text.length * parseFloat(this.current.match(/([\d.]+)px/)[1]) * 0.5 }
+            },
+          }
+          made.push(pen)
+          return pen
+        },
+      }),
+    }
+    try {
+      const words = 'word '.repeat(60).trim()
+      const plain = guess(`<div>${words}</div>`, 520)
+      assert.equal(
+        guess(`<div style="font-family:inherit">${words}</div>`, 520),
+        plain,
+        '`font-family: inherit` measures in the font it inherits',
+      )
+      assert.equal(
+        guess(`<style>pre{font-family:inherit}</style><pre>${words}</pre>`, 520),
+        plain,
+        "as `BASE_STYLE`'s `pre` does, which is every plain-text message",
+      )
+      assert.ok(
+        guess(`<div>${words}</div>`, 520) ===
+          guess(`<div style='font-family:"'>${words}</div>`, 520),
+        'a face a canvas will not read still measures at the right size',
+      )
+      assert.ok(made.length >= 4, 'measured on a canvas of its own')
+      assert.ok(
+        guess(`<div style="font-size:32px">${words}</div>`, 520) > plain,
+        'a bigger type wraps sooner',
+      )
+    } finally {
+      delete globalThis.document
+    }
+  }
+
+  // A stranger's markup, which must neither break the pane nor stop it.
+  const nasty = [
+    ['deep', '<div>'.repeat(200000)],
+    ['long', `<div>${'word '.repeat(200000)}</div>`],
+    [
+      'names',
+      '<style>.constructor{padding:1e9px}.__proto__{height:NaN}</style><div class="constructor __proto__">x</div>',
+    ],
+    ['unclosed media', `<style>${'@media all{'.repeat(50000)}</style>x`],
+    ['unclosed comments', `<style>${'/* '.repeat(50000)}</style>x`],
+    ['at signs', `<style>;${'@'.repeat(100000)}{}</style>x`],
+    ['spaces', `<div style="padding:1px${' '.repeat(100000)}x">x</div>`],
+    [
+      'a selector list',
+      `<style>${'div,'.repeat(50000)}div{padding:1px}</style>${'<div>x</div>'.repeat(50)}`,
+    ],
+    ['many rules', `<style>${'*{padding:1px}'.repeat(2000)}</style>${'<div>x</div>'.repeat(5000)}`],
+    [
+      'nonsense cells',
+      '<table><tr><td colspan="-5" rowspan="0" width="-1" height="1e400">x</td></tr></table>',
+    ],
+    ['huge spans', `<table><tr>${'<td colspan="99999">x</td>'.repeat(2000)}</tr></table>`],
+    ['a wide word', '<div style="letter-spacing:99999999999999999999px">hi</div>'],
+    ['a wide word in a sheet', '<style>div{letter-spacing:1e30px}</style><div>hi</div>'],
+    ['a huge type', '<div style="font-size:99999999999px;line-height:0">hi there</div>'],
+    ['margins that go backwards', '<style>body{margin:-9999px}</style><div>x</div>'],
+    ['padding that goes backwards', '<div style="padding:-9999px">x</div>'],
+  ]
+  for (const [what, inner] of nasty) {
+    const started = performance.now()
+    const got = guess(inner, 600, paper)
+    const took = performance.now() - started
+    assert.ok(Number.isFinite(got) && got > 0 && got <= 60000, `a sane height, on ${what}: ${got}`)
+    assert.ok(took < 5000, `and soon, on ${what}: ${Math.round(took)} ms`)
+  }
+
+  const row = `<tr><td><h2>A headline</h2><img ${PICTURE} height="300" width="600"><p>Some words.</p></td></tr>`
   const newsletter = page(`<table width="600">${row.repeat(30)}</table>`)
-  assert.ok(estimateDesignedHeight(newsletter, 800) > 11000, 'a long newsletter is not cut short')
+  const designed = (html) => measureBody({ html, paper: true, imagesHidden: false })
+  assert.ok(designed(newsletter)(800) > 11000, 'a long one is not cut short')
   assert.ok(
-    estimateDesignedHeight(page('<table width="600"><tr><td>Short.</td></tr></table>'), 800) < 150,
-    'and a short designed message is not given a page of white',
+    designed(page('<table width="600"><tr><td>Short.</td></tr></table>'))(800) < 60,
+    'and a short one is not given a page of white',
   )
 }
 
 // ── renderBody ────────────────────────────────────────────────────────
+
+{
+  // A 1x1 stand-in under `height: auto` is a square as wide as the picture says
+  // it is, so a designed message was a column of blank blocks. It must beat the
+  // `display:block` that templates write on every picture.
+  const hero =
+    '<style>@media (max-width:600px){td{padding:0}}</style>' +
+    '<table width="600"><tr><td><img src="everyday://mail/img/m/t" width="600" style="display:block"></td></tr></table>'
+  for (const dark of [false, true]) {
+    const shown = { ...options, dark }
+    const hidden = renderBody(doc(hero), { ...shown, imagesHidden: true })
+    assert.equal(hidden.paper, true)
+    assert.ok(added(hidden.html).includes('img[src*="/mail/img/"]{display:none!important}'))
+    assert.ok(hidden.hidesImages, 'and the bar still offers them')
+    const allowed = renderBody(doc(hero), { ...shown, imagesHidden: false })
+    assert.ok(!added(allowed.html).includes('/mail/img/'), 'until they are allowed')
+  }
+  const written = renderBody(doc(`<div>hello</div><img src="everyday://mail/img/m/t">`), {
+    ...options,
+    imagesHidden: true,
+  })
+  assert.equal(written.paper, false)
+  assert.ok(added(written.html).includes('img[src*="/mail/img/"]{display:none!important}'))
+}
 
 {
   const plain = renderBody(doc(GMAIL), options)
