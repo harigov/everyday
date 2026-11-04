@@ -8,9 +8,6 @@ use everyday_core::mail::Category;
 use everyday_mail::session::Flags;
 
 use super::fixtures::*;
-use crate::mailsync::discovery::LabelMailboxes;
-use crate::mailsync::ingest::ThreadIndex;
-use crate::mailsync::passes;
 
 const DATE: &str = "01 Jan 2024 09:00:00 +0000";
 
@@ -82,10 +79,7 @@ async fn all_tells_you_about_everything_but_what_you_wrote_or_already_read() {
     );
 
     let mut session = FakeMailSession::new(server);
-    let ctx = passes::SyncContext { identities: vec!["me@example.com".to_string()], ..env.ctx() };
-    let mut labels = LabelMailboxes::new(&env.vault, env.account_id);
-    let mut threads = ThreadIndex::new();
-    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+    env.sync(&mut session).await;
 
     assert_eq!(noted(&env), ["stranger", "wanted"]);
 }
@@ -141,11 +135,8 @@ async fn replies_tell_you_only_about_threads_you_have_written_in() {
             None,
         );
     }
-    let ctx = passes::SyncContext { identities: vec!["me@example.com".to_string()], ..env.ctx() };
-    let mut labels = LabelMailboxes::new(&env.vault, env.account_id);
-    let mut threads = ThreadIndex::new();
     let mut session = FakeMailSession::new(server.clone());
-    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+    env.sync(&mut session).await;
     assert_eq!(noted(&env), Vec::<String>::new());
 
     {
@@ -177,7 +168,7 @@ async fn replies_tell_you_only_about_threads_you_have_written_in() {
             None,
         );
     }
-    passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await.unwrap();
+    env.sync(&mut session).await;
 
     assert_eq!(noted(&env), ["in a thread I answered"]);
 }
@@ -206,4 +197,113 @@ async fn a_message_told_as_it_arrived_is_not_told_again_when_a_model_files_it() 
         ),
         "a model filing it next will find it told already"
     );
+}
+
+/// A phone, overnight: the account's answer and the reply to it both reach this
+/// app in one pass. Off Gmail the Inbox is synced before Sent, so the reply is
+/// stored first, and a message is only new the once.
+#[tokio::test]
+async fn a_reply_is_told_when_your_own_answer_arrives_in_the_same_pass() {
+    let (env, server) = synced_with(MailNotify::Replies).await;
+    server.lock().unwrap().append(
+        "INBOX",
+        raw_message("asked@example.com", None, "someone@example.com", "Asked", DATE, "hi"),
+        Flags::SEEN,
+        None,
+    );
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    assert_eq!(noted(&env), Vec::<String>::new());
+
+    {
+        let mut s = server.lock().unwrap();
+        s.append(
+            "INBOX",
+            raw_message(
+                "reply@example.com",
+                Some("asked@example.com"),
+                "someone@example.com",
+                "after my answer from my phone",
+                DATE,
+                "thanks",
+            ),
+            Flags::NONE,
+            None,
+        );
+        s.append(
+            "Sent",
+            raw_message(
+                "answered@example.com",
+                Some("asked@example.com"),
+                "me@example.com",
+                "Re: Asked",
+                DATE,
+                "yes",
+            ),
+            Flags::SEEN,
+            None,
+        );
+    }
+    env.sync(&mut session).await;
+
+    assert_eq!(noted(&env), ["after my answer from my phone"]);
+}
+
+/// An address is the account's own however it was typed, and from the moment it
+/// is added, not from the next restart.
+#[tokio::test]
+async fn your_own_mail_is_yours_whatever_case_you_typed_and_whenever_you_added_it() {
+    let (env, server) = synced_with(MailNotify::All).await;
+    let mut account = env.vault.account(env.account_id).unwrap();
+    account.address = "Me@Example.COM".into();
+    env.vault.save_account(&account).unwrap();
+    arrive(&server, "own", "me@example.com");
+    arrive(&server, "alias", "alias@example.com");
+    arrive(&server, "someone", "someone@example.com");
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    assert_eq!(noted(&env), ["alias", "someone"]);
+
+    account.identities.push(everyday_core::account::Identity {
+        name: String::new(),
+        address: "Alias@Example.com".into(),
+        signature_html: String::new(),
+    });
+    env.vault.save_account(&account).unwrap();
+    arrive(&server, "alias again", "alias@example.com");
+    env.sync(&mut session).await;
+    assert_eq!(noted(&env), Vec::<String>::new());
+}
+
+/// What a model may announce a moment later is what a pass just stored. Read
+/// mail, the account's own, and everything from before are not arrivals.
+#[tokio::test]
+async fn a_pass_says_what_arrived_for_a_model_to_announce_later() {
+    let (env, server) = synced_with(MailNotify::Off).await;
+    let id_of = |header: &str| {
+        env.vault
+            .message_by_message_id_header(env.account_id, header)
+            .unwrap()
+            .unwrap()
+            .id
+            .to_string()
+    };
+    let now = std::time::Instant::now;
+    assert!(!env.statuses.arrived_lately(&id_of("first@example.com"), now()), "from before");
+
+    arrive(&server, "just-now", "someone@example.com");
+    server.lock().unwrap().append(
+        "INBOX",
+        raw_message("read", None, "someone@example.com", "read", DATE, "hi"),
+        Flags::SEEN,
+        None,
+    );
+    arrive(&server, "mine", "me@example.com");
+    let mut session = FakeMailSession::new(server);
+    env.sync(&mut session).await;
+
+    assert!(env.statuses.arrived_lately(&id_of("just-now"), now()), "whether wanted or not");
+    assert!(!env.statuses.arrived_lately(&id_of("read"), now()));
+    assert!(!env.statuses.arrived_lately(&id_of("mine"), now()));
+    assert_eq!(noted(&env), Vec::<String>::new(), "and nobody is told yet");
 }

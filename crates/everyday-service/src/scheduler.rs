@@ -208,10 +208,6 @@ pub async fn tick(service: &Arc<Service>) {
     // `supports_routines` below; both are no-ops, cheaply, on a vault with
     // meeting notes off. See `crate::meeting::watch` and
     // `crate::meeting::spool::expire_failed_tick`.
-    //
-    // Ahead of the model passes below, which can spend minutes on a slow
-    // endpoint: a meeting does not wait for them, and a reminder that comes
-    // late enough never comes at all.
     {
         let vault = vault.clone();
         let service = service.clone();
@@ -232,8 +228,19 @@ pub async fn tick(service: &Arc<Service>) {
     // docs for why neither is a tool, and why each keeps its own per-minute
     // budget rather than sharing `check_mail_rate_limit`'s. Both are no-ops,
     // cheaply, on every account that has not turned them on.
-    crate::mailai::categorize_tick(service).await;
-    crate::mailai::auto_draft_tick(service).await;
+    //
+    // Beside the tick rather than in it, because a slow endpoint can spend
+    // minutes on them, and the next tick is what the meeting watcher, the
+    // reminders and every routine are waiting for: a meeting does not wait,
+    // and a reminder that comes late enough never comes at all. One at a time:
+    // a tick that finds the last ones still going leaves them to it.
+    {
+        let passes = service.clone();
+        service.detach_mail_passes(async move {
+            crate::mailai::categorize_tick(&passes).await;
+            crate::mailai::auto_draft_tick(&passes).await;
+        });
+    }
 
     if !vault.supports_routines() {
         return;

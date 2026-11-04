@@ -17,6 +17,7 @@ import type {
   DecisionConfig,
   Endpoint,
   MailAi,
+  MailCategory,
   MailNotify,
   MailProvider,
   ModelSettings,
@@ -137,13 +138,27 @@ export function mailNotifyOf(account: { mailNotify?: MailNotify }): MailNotify {
   return account.mailNotify ?? { type: 'important' }
 }
 
+/** Every tab there is to tick, for an account that was asking for all of it. */
+const ALL_TABS: MailCategory[] = ['priority', 'important', 'other', 'newsletter', 'notification']
+
 /** The rule for a choice from the select. Choosing categories starts from what
- *  was already wanted -- the last pick, or the two tabs "important" means -- so
- *  it does not begin by going quiet. */
-export function mailNotifyForChoice(type: MailNotify['type'], current: MailNotify): MailNotify {
+ *  was picked last, if there was a pick this visit, and otherwise from what was
+ *  already wanted: so it neither forgets the ticks of a moment ago, nor starts
+ *  telling somebody about mail they had just said nothing about. */
+export function mailNotifyForChoice(
+  type: MailNotify['type'],
+  current: MailNotify,
+  lastPick: Extract<MailNotify, { type: 'categories' }> | null = null,
+): MailNotify {
   if (type !== 'categories') return { type }
-  if (current.type === 'categories') return current
-  return { type, tabs: ['priority', 'important'], sorted: [] }
+  if (lastPick) return lastPick
+  const tabs: MailCategory[] =
+    current.type === 'important'
+      ? ['priority', 'important']
+      : current.type === 'all'
+        ? [...ALL_TABS]
+        : []
+  return { type, tabs, sorted: [] }
 }
 
 /** `items` with `item` in it or out of it. */

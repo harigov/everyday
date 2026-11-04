@@ -193,10 +193,26 @@ assert.deepEqual(mailNotifyForChoice('all', important), { type: 'all' })
 assert.deepEqual(
   mailNotifyForChoice('categories', important),
   { type: 'categories', tabs: ['priority', 'important'], sorted: [] },
-  'choosing categories does not begin by going quiet',
+  'choosing categories starts from what important means',
 )
+assert.deepEqual(
+  mailNotifyForChoice('categories', { type: 'all' }).tabs,
+  ['priority', 'important', 'other', 'newsletter', 'notification'],
+  'and from everything, for somebody asking for everything',
+)
+for (const quiet of ['off', 'replies']) {
+  assert.deepEqual(
+    mailNotifyForChoice('categories', { type: quiet }).tabs,
+    [],
+    `and from nothing, coming from ${quiet}`,
+  )
+}
 const picked = { type: 'categories', tabs: ['other'], sorted: ['bills'] }
-assert.equal(mailNotifyForChoice('categories', picked), picked, 'a pick is not thrown away')
+assert.equal(
+  mailNotifyForChoice('categories', { type: 'all' }, picked),
+  picked,
+  'a pick from a moment ago comes back',
+)
 
 assert.deepEqual(withChosen(['a'], 'b', true), ['a', 'b'])
 assert.deepEqual(withChosen(['a', 'b'], 'a', false), ['b'])

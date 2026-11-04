@@ -21,14 +21,17 @@
 //! files it again a minute later. So both moments ask. A message wanted at
 //! either is announced then, and
 //! [`StatusRegistry::first_announcement`](crate::mailsync::status::StatusRegistry::first_announcement)
-//! stops the second moment announcing it again.
+//! stops the second moment announcing it again. A model only speaks for what a
+//! pass just stored -- see
+//! [`StatusRegistry::note_arrival`](crate::mailsync::status::StatusRegistry::note_arrival)
+//! -- since the rest of what it files was delivered long ago.
 
 use std::collections::HashSet;
 
 use everyday_core::calendar::{
     AccountCalendarSource, Calendar, CalendarOrigin, Event, EventStatus,
 };
-use everyday_core::id::{CalendarId, ThreadId};
+use everyday_core::id::{CalendarId, MailMessageId};
 use everyday_core::mail::MailboxRole;
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::{Result as CoreResult, Vault};
@@ -88,9 +91,6 @@ pub struct NewMail {
 #[derive(Debug, Clone, Copy)]
 pub struct IngestFacts {
     pub is_new: bool,
-    /// [`MailNotify`](everyday_core::account::MailNotify) asks for it, as far
-    /// as a headers pass can tell.
-    pub wanted: bool,
     pub unread: bool,
     pub in_inbox: bool,
     pub deleted: bool,
@@ -126,16 +126,17 @@ pub fn in_inbox(role: MailboxRole, labels: &[String]) -> bool {
     }
 }
 
-/// Should a message just stored by sync raise a notification?
+/// Did a message just stored by sync arrive, as far as anybody could want to
+/// be told about it? Whether they do is
+/// [`MailNotify`](everyday_core::account::MailNotify)'s to say.
 ///
-/// Wanted, unread, somebody else's, and actually in the inbox. A mailbox this
-/// account has already been syncing announces every such message -- a delayed
-/// one with an old `Date` still just arrived. The first fill of a mailbox
-/// announces only mail that is still current, so connecting an account does
-/// not announce the archive and does announce this morning's.
+/// Unread, somebody else's, and actually in the inbox. A mailbox this account
+/// has already been syncing announces every such message -- a delayed one with
+/// an old `Date` still just arrived. The first fill of a mailbox announces only
+/// mail that is still current, so connecting an account does not announce the
+/// archive and does announce this morning's.
 pub fn ingest_is_news(facts: &IngestFacts) -> bool {
     if !facts.is_new
-        || !facts.wanted
         || !facts.unread
         || !facts.in_inbox
         || facts.deleted
@@ -147,19 +148,10 @@ pub fn ingest_is_news(facts: &IngestFacts) -> bool {
     facts.mailbox_known || is_recent(facts.sent_at, facts.now)
 }
 
-/// Should a model filing a message where it is wanted raise a notification?
-///
-/// The passes walk every thread in their reach, eventually, including ones
-/// from months ago the first time one is switched on, and whichever mailbox
-/// they are in. Only a recent unread message in the inbox is news, on the same
-/// terms as [`ingest_is_news`]; the rest were sorted, not delivered.
+/// Is a message a model just filed where it is wanted still somewhere it is
+/// news? It may have been read, archived or trashed since it arrived.
 pub fn filed_is_news(facts: &FiledFacts) -> bool {
-    facts.unread
-        && facts.in_inbox
-        && !facts.deleted
-        && !facts.draft
-        && !facts.own
-        && is_recent(facts.sent_at, facts.now)
+    facts.unread && facts.in_inbox && !facts.deleted && !facts.draft && !facts.own
 }
 
 /// What [`filed_is_news`] reads about the message a model just filed.
@@ -170,18 +162,23 @@ pub struct FiledFacts {
     pub deleted: bool,
     pub draft: bool,
     pub own: bool,
-    pub sent_at: Timestamp,
-    pub now: Timestamp,
 }
 
-/// Has this account written in `thread`? What
+/// Has this account written in `message`'s thread? What
 /// [`MailNotify::Replies`](everyday_core::account::MailNotify::Replies) asks of
 /// a new message there, from the thread's own messages: somebody's own copy
 /// of what they sent is in the thread on every provider, whichever client
 /// they sent it from. A draft on the server is not something they said yet.
-/// `own` is lower-case, as `SyncContext::identities` is.
-pub fn thread_has_own_message(vault: &Vault, thread: ThreadId, own: &[String]) -> bool {
-    vault.thread(thread).is_ok_and(|(_, messages)| {
+/// `own` is lower-case. By message and not by thread, because storing the
+/// account's own answer can fold the thread this message started in into
+/// another.
+pub fn thread_has_own_message(
+    vault: &Vault,
+    message: MailMessageId,
+    own: &HashSet<String>,
+) -> bool {
+    let Ok(message) = vault.mail_message(message) else { return false };
+    vault.thread(message.thread_id).is_ok_and(|(_, messages)| {
         messages.iter().any(|m| !m.flags.draft && own.contains(&m.from.email.to_lowercase()))
     })
 }
@@ -533,11 +530,10 @@ mod tests {
         Timestamp::from_second(secs).unwrap()
     }
 
-    fn facts(wanted: bool, mailbox_known: bool) -> IngestFacts {
+    fn facts(mailbox_known: bool) -> IngestFacts {
         let now = ts(1_700_000_000);
         IngestFacts {
             is_new: true,
-            wanted,
             unread: true,
             in_inbox: true,
             deleted: false,
@@ -554,39 +550,38 @@ mod tests {
     }
 
     #[test]
-    fn a_new_unread_wanted_message_in_the_inbox_is_news() {
-        assert!(ingest_is_news(&facts(true, true)));
+    fn a_new_unread_message_in_the_inbox_is_news() {
+        assert!(ingest_is_news(&facts(true)));
     }
 
     #[test]
-    fn anything_short_of_wanted_unread_inbox_mail_from_somebody_else_is_not_news() {
-        let mut read = facts(true, true);
+    fn anything_short_of_unread_inbox_mail_from_somebody_else_is_not_news() {
+        let mut read = facts(true);
         read.unread = false;
-        let unwanted = facts(false, true);
-        let mut own = facts(true, true);
+        let mut own = facts(true);
         own.own = true;
-        let mut seen_before = facts(true, true);
+        let mut seen_before = facts(true);
         seen_before.is_new = false;
-        let mut archived = facts(true, true);
+        let mut archived = facts(true);
         archived.in_inbox = false;
-        let mut deleted = facts(true, true);
+        let mut deleted = facts(true);
         deleted.deleted = true;
-        let mut draft = facts(true, true);
+        let mut draft = facts(true);
         draft.draft = true;
-        for facts in [read, unwanted, own, seen_before, archived, deleted, draft] {
+        for facts in [read, own, seen_before, archived, deleted, draft] {
             assert!(!ingest_is_news(&facts), "{facts:?}");
         }
     }
 
     #[test]
     fn a_first_sync_announces_recent_mail_and_not_the_archive() {
-        let mut recent = facts(true, false);
+        let mut recent = facts(false);
         assert!(ingest_is_news(&recent), "this morning's mail is news even on the first fill");
 
         recent.sent_at = ts(recent.now.as_second() - NEWS_MAX_AGE_SECS - 1);
         assert!(!ingest_is_news(&recent), "a first fill must not announce the archive");
 
-        let mut known_old = facts(true, true);
+        let mut known_old = facts(true);
         known_old.sent_at = ts(known_old.now.as_second() - 400 * 24 * 60 * 60);
         assert!(
             ingest_is_news(&known_old),
@@ -604,25 +599,15 @@ mod tests {
     }
 
     #[test]
-    fn filing_old_mail_is_not_news_and_filing_unread_recent_mail_is() {
-        let now = ts(1_700_000_000);
-        let news = FiledFacts {
-            unread: true,
-            in_inbox: true,
-            deleted: false,
-            draft: false,
-            own: false,
-            sent_at: now,
-            now,
-        };
+    fn what_a_model_files_is_news_only_while_it_is_unread_in_the_inbox() {
+        let news =
+            FiledFacts { unread: true, in_inbox: true, deleted: false, draft: false, own: false };
         assert!(filed_is_news(&news));
         assert!(!filed_is_news(&FiledFacts { unread: false, ..news }), "already read");
         assert!(!filed_is_news(&FiledFacts { deleted: true, ..news }), "deleted");
         assert!(!filed_is_news(&FiledFacts { draft: true, ..news }), "a draft");
         assert!(!filed_is_news(&FiledFacts { own: true, ..news }), "the account's own");
         assert!(!filed_is_news(&FiledFacts { in_inbox: false, ..news }), "filtered past the inbox");
-        let old = ts(now.as_second() - NEWS_MAX_AGE_SECS - 1);
-        assert!(!filed_is_news(&FiledFacts { sent_at: old, ..news }), "the backlog");
     }
 
     #[test]

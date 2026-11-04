@@ -150,13 +150,7 @@ export function mockRaiseChange(change: ChangeEvent): void {
  * window's write and ignores -- a job is nobody's write but its own.
  */
 function emit(kind: ChangeEvent['kind'], op: ChangeEvent['op'], id: string): void {
-  for (const handler of handlers) {
-    try {
-      handler({ kind, op, id, origin: 'mock-jobs' })
-    } catch {
-      // One listener's fault is not another's.
-    }
-  }
+  mockRaiseChange({ kind, op, id, origin: 'mock-jobs' })
 }
 
 // ── Records ─────────────────────────────────────────────────────────────

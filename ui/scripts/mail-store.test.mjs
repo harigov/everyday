@@ -220,13 +220,147 @@ assert.equal(
   await new Promise((r) => setTimeout(r, 900))
   assert.equal(mail.openThread.thread.id, other)
 
-  // Something somebody else wrote stays unread behind a window nobody is
-  // looking at: there is nothing in front of them to have read it in.
-  const unreadBefore = mail.openThread.thread.unreadCount
-  mockMail.mockDeliverToThread(other, { name: 'Ada', email: 'ada@example.com' }, '<p>Hi</p>', false)
-  applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
-  await new Promise((r) => setTimeout(r, 900))
-  assert.equal(mail.openThread.thread.unreadCount, unreadBefore + 1, 'still unread')
+  // What somebody else wrote is read once somebody can see it, and not before.
+  const reload = () => new Promise((r) => setTimeout(r, 900))
+  const deliver = () =>
+    mockMail.mockDeliverToThread(
+      other,
+      { name: 'Ada', email: 'ada@example.com' },
+      '<p>Hi</p>',
+      false,
+    )
+  const pass = () => applier([{ kind: 'thread', op: 'updated', origin: 'sync' }])
+  const unread = () => mail.openThread.thread.unreadCount
+  const look = (visible, focused) => {
+    document.visibilityState = visible ? 'visible' : 'hidden'
+    document.hasFocus = () => focused
+  }
+
+  // Behind another application: still unread, though it opens ready.
+  look(true, false)
+  mail.setOnScreen(true)
+  const behind = deliver()
+  pass()
+  await reload()
+  assert.ok(unread() > 0, 'a window in the background has read nothing')
+  assert.ok(mail.expanded.has(behind.id), 'though it is open for when they come back')
+  // ...and they come back, by the banner, as the window does.
+  look(true, true)
+  mail.seeOpenThread()
+  await reload()
+  assert.equal(unread(), 0, 'coming back to it is reading it')
+
+  // In the app, in Journal or in Settings: the window has focus and Mail is
+  // not what it is showing.
+  mail.setOnScreen(false)
+  const elsewhere = deliver()
+  pass()
+  await reload()
+  assert.ok(mail.expanded.has(elsewhere.id))
+  assert.ok(unread() > 0, 'Mail off screen has read nothing, with the window in front')
+  mail.seeOpenThread()
+  assert.ok(unread() > 0, 'and coming back to the window is not coming back to Mail')
+  mail.setOnScreen(true)
+  await reload()
+  assert.equal(unread(), 0, 'coming back to Mail is')
+
+  // In front of them: read as it lands.
+  deliver()
+  pass()
+  await reload()
+  assert.equal(unread(), 0, 'looking at it is reading it')
+
+  // Marked unread by hand: a sync later is no reason to undo that.
+  look(true, false)
+  deliver()
+  pass()
+  await reload()
+  await mail.markUnread(other)
+  look(true, true)
+  mail.seeOpenThread()
+  await reload()
+  assert.ok(unread() > 0, 'they said unread, so it stays unread')
+
+  // Two at once, one dated earlier than the end of the thread: both are mail
+  // that arrived, and being older is no reason to stay shut.
+  const late = mockMail.mockDeliverToThread(
+    other,
+    { name: 'Ada', email: 'ada@example.com' },
+    '<p>Sent a while ago, delayed</p>',
+    true,
+  )
+  mockMail.mockBackdate(late.id, '2000-01-01T00:00:00.000Z')
+  const onTime = deliver()
+  pass()
+  await reload()
+  assert.equal(mail.openThread.messages[0].id, late.id, 'filed by its date')
+  assert.ok(mail.expanded.has(late.id), 'the delayed one opens')
+  assert.ok(mail.expanded.has(onTime.id), 'and so does the other')
+
+  // A draft's copy on the server is what the composer below is writing. It is
+  // not news, and it does not join a thread already open.
+  const count = mail.openThread.messages.length
+  const draftCopy = mockMail.mockDeliverToThread(
+    other,
+    { name: 'Me', email: 'me@example.com' },
+    '<p>Half a thought</p>',
+    true,
+  )
+  mockMail.mockMarkDraft(draftCopy.id)
+  pass()
+  await reload()
+  assert.equal(mail.openThread.messages.length, count, 'a server copy of a draft stays out of it')
+  assert.ok(!mail.expanded.has(draftCopy.id))
+
+  // An older answer arriving last is not drawn over a newer one.
+  const real = api.thread
+  let release = () => {}
+  const holdNextRead = () => {
+    api.thread = (id) => {
+      // A copy, as a real answer is: what the backend said when it said it.
+      const answer = real(id).then((detail) => structuredClone(detail))
+      api.thread = real
+      return new Promise((resolve) => {
+        release = () => answer.then(resolve)
+      })
+    }
+  }
+  holdNextRead()
+  pass()
+  await reload()
+  const newer = deliver()
+  pass()
+  await reload()
+  assert.ok(
+    mail.openThread.messages.some((m) => m.id === newer.id),
+    'the newer answer is drawn',
+  )
+  release()
+  await new Promise((r) => setTimeout(r, 50))
+  assert.ok(
+    mail.openThread.messages.some((m) => m.id === newer.id),
+    'and the older one, landing after it, does not take the message back',
+  )
+  await reload()
+
+  // A change made here while a read is out is not undone by it, and what the
+  // read saw still comes: it is asked for again.
+  holdNextRead()
+  pass()
+  await reload()
+  const during = deliver()
+  const wasStarred = mail.openThread.thread.starred
+  await mail.toggleStar(other)
+  release()
+  await new Promise((r) => setTimeout(r, 50))
+  assert.equal(mail.openThread.thread.starred, !wasStarred, 'the change made meanwhile stands')
+  await reload()
+  assert.ok(
+    mail.openThread.messages.some((m) => m.id === during.id),
+    'and the message arrives',
+  )
+  look(false, false)
+  mail.setOnScreen(false)
 }
 
 // ── Drafts nobody typed in ───────────────────────────────────────────

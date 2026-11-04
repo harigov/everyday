@@ -281,6 +281,11 @@ impl EventSink for Told {
     }
 }
 
+/// A pass having stored `message` just now, as a sync would have.
+fn arrived(svc: &Arc<Service>, message: &Message) {
+    svc.mail_statuses().unwrap().note_arrival(&message.id.to_string(), svc.instant());
+}
+
 /// With a decision model on, the rules hardly ever say Priority and the small
 /// model's pass does not run, so this is the only moment most mail is known to
 /// be what somebody asked to hear about. It used to say nothing at all.
@@ -288,37 +293,152 @@ impl EventSink for Told {
 async fn sorting_tells_you_about_what_it_files_where_you_asked_to_hear() {
     let fake = fake_decisions(DecisionApi::TypeSafe).await;
     let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    svc.unlocked();
     let told = Arc::new(Told::default());
     svc.set_events(told.clone());
-    seed(&svc, account.id, inbox, 1, "Your order has shipped", DAY);
-    seed(&svc, account.id, inbox, 2, "Lunch on Friday?", DAY);
-    seed(&svc, account.id, inbox, 3, "Lunch last week?", DAY * 3);
+    let order = seed(&svc, account.id, inbox, 1, "Your order has shipped", DAY);
+    let lunch = seed(&svc, account.id, inbox, 2, "Lunch on Friday?", DAY);
+    arrived(&svc, &order);
+    arrived(&svc, &lunch);
 
     everyday_service::mailai::categorize_tick(&svc).await;
 
     let told = told.0.lock().unwrap();
-    assert_eq!(told.len(), 1, "the receipt is not wanted, and old mail was sorted not delivered");
+    assert_eq!(told.len(), 1, "the receipt is not what was asked for");
     assert_eq!(told[0].body.as_deref(), Some("Lunch on Friday?"));
     assert!(matches!(told[0].reach, everyday_service::Reach::User));
+}
+
+/// Switching a model on files whatever is in the window, and an unread message
+/// from this morning has been in the list all morning. It was sorted, not
+/// delivered, however recent its date.
+#[tokio::test]
+async fn sorting_does_not_announce_mail_that_arrived_a_while_ago() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    svc.unlocked();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    seed(&svc, account.id, inbox, 1, "Lunch on Friday?", SignedDuration::from_mins(5));
+
+    everyday_service::mailai::categorize_tick(&svc).await;
+
+    assert_eq!(fake.seen().len(), 1, "it was sorted");
+    assert!(told.0.lock().unwrap().is_empty(), "and nobody was told");
 }
 
 #[tokio::test]
 async fn a_category_of_your_own_can_be_what_you_asked_to_hear_about() {
     let fake = fake_decisions(DecisionApi::TypeSafe).await;
     let (svc, _dir, mut account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    svc.unlocked();
     account.mail_notify =
         MailNotify::Categories { tabs: Vec::new(), sorted: vec!["receipts".into()] };
     svc.get().unwrap().save_account(&account).unwrap();
     let told = Arc::new(Told::default());
     svc.set_events(told.clone());
-    seed(&svc, account.id, inbox, 1, "Your order has shipped", DAY);
-    seed(&svc, account.id, inbox, 2, "Lunch on Friday?", DAY);
+    let order = seed(&svc, account.id, inbox, 1, "Your order has shipped", DAY);
+    let lunch = seed(&svc, account.id, inbox, 2, "Lunch on Friday?", DAY);
+    arrived(&svc, &order);
+    arrived(&svc, &lunch);
 
     everyday_service::mailai::categorize_tick(&svc).await;
 
     let told = told.0.lock().unwrap();
     assert_eq!(told.len(), 1);
     assert_eq!(told[0].body.as_deref(), Some("Your order has shipped"));
+}
+
+/// A model that never answers: the tick still ends, the reminder it owes still
+/// goes out on the next one, and the passes do not pile up behind the first.
+#[tokio::test]
+async fn a_slow_model_holds_up_neither_the_tick_nor_the_reminders() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counting = accepted.clone();
+    // Takes the request and says nothing, for as long as the test runs.
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            counting.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            held.push(stream);
+        }
+    });
+    let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &url);
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    seed(&svc, account.id, inbox, 1, "Lunch on Friday?", DAY);
+
+    let tick = std::time::Duration::from_secs(10);
+    tokio::time::timeout(tick, everyday_service::scheduler::tick(&svc))
+        .await
+        .expect("the tick does not wait for the model");
+    for _ in 0..200 {
+        if accepted.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::SeqCst), 1, "the model was asked");
+
+    // An event coming up, while the model still has not answered.
+    let vault = svc.get().unwrap();
+    let mut calendar =
+        everyday_core::calendar::Calendar::subscribed("Work", "https://example.com/w");
+    calendar.origin = everyday_core::calendar::CalendarOrigin::Account {
+        account_id: account.id,
+        remote_id: "primary".into(),
+        remote_name: "Work".into(),
+        source: everyday_core::calendar::AccountCalendarSource::Google,
+    };
+    vault.save_calendar(&calendar).unwrap();
+    let now = Timestamp::now();
+    let start = now + SignedDuration::from_mins(5);
+    let day = |at: Timestamp| at.to_zoned(jiff::tz::TimeZone::system()).date();
+    let event = everyday_core::calendar::Event {
+        id: everyday_core::id::EventId::new(),
+        calendar_id: calendar.id,
+        uid: "standup".into(),
+        title: "Stand-up".into(),
+        description: String::new(),
+        location: String::new(),
+        start,
+        end: start + SignedDuration::from_mins(30),
+        local_date: day(start),
+        end_date: day(start),
+        tz: "UTC".into(),
+        all_day: false,
+        status: everyday_core::calendar::EventStatus::Confirmed,
+        organizer: String::new(),
+        attendees: Vec::new(),
+        url: String::new(),
+        busy: true,
+        series: None,
+        own: None,
+        updated_at: now,
+    };
+    vault
+        .sync_account_calendar(
+            calendar.id,
+            std::slice::from_ref(&event),
+            &[],
+            everyday_core::calendar::AccountSyncCursor::default(),
+        )
+        .unwrap();
+
+    tokio::time::timeout(tick, everyday_service::scheduler::tick(&svc))
+        .await
+        .expect("and neither does the next one");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    assert_eq!(
+        accepted.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the last passes are still going, so no second lot was started"
+    );
+    let told = told.0.lock().unwrap();
+    assert!(told.iter().any(|n| n.title == "Stand-up"), "the reminder went out: {told:?}");
 }
 
 #[tokio::test]

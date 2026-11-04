@@ -3,6 +3,7 @@
 
 use everyday_core::RoutineId;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -37,6 +38,8 @@ pub(crate) struct RoutineRuntime {
     /// start the same slot again -- or record it missed -- while it is still
     /// going.
     in_flight: Arc<Mutex<HashSet<RoutineId>>>,
+    /// The model's passes over mail are going on beside the tick.
+    mail_passes: Arc<AtomicBool>,
     /// Flipped to tell every run waiting on an answer to stop waiting: the
     /// scheduler is stopping, or the vault is closing. Replaced by a fresh
     /// one each time, so a run started afterwards is not born withdrawn.
@@ -121,6 +124,29 @@ impl RoutineRuntime {
         let mut detached = self.detached.lock().unwrap();
         detached.retain(|h| !h.is_finished());
         detached.push(handle);
+    }
+
+    /// [`RoutineRuntime::detach`] the model's passes over mail, unless the last
+    /// ones are still going. Marked done however they finish, an abort on lock
+    /// and a panic among them, or they would never run again.
+    pub(crate) fn detach_mail_passes(
+        &self,
+        run: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        struct Landed(Arc<AtomicBool>);
+        impl Drop for Landed {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+        if self.mail_passes.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let landed = Landed(self.mail_passes.clone());
+        self.detach(None, async move {
+            let _landed = landed;
+            run.await;
+        });
     }
 
     /// Wait for every detached run to finish.

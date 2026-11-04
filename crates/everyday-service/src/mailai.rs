@@ -676,24 +676,26 @@ pub(crate) struct Filed {
 }
 
 /// Tell somebody about what a model just filed where they asked to hear about
-/// it, when the message is still unread, still recent and in the inbox. The
-/// passes also sort a backlog the first time they run, and mail filtered past
-/// the inbox; neither is mail arriving. See `arrivals::filed_is_news`.
+/// it, when a sync pass stored it lately and it is still unread in the inbox.
+/// The passes also sort a backlog the first time they run, and mail filtered
+/// past the inbox, and with no sync having stored a message in this process
+/// there is nothing here to say it arrived; none of that is mail arriving. See
+/// `StatusRegistry::note_arrival` and `arrivals::filed_is_news`.
 pub(crate) async fn announce_filed(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
     account: &Account,
     filed: &[Filed],
 ) {
-    if filed.is_empty() {
-        return;
-    }
-    let now = service.now();
+    let Some(statuses) = service.mail_statuses() else { return };
+    let at = service.instant();
     let own = own_addresses(account);
-    let statuses = service.mail_statuses();
     let mut mail = Vec::new();
     for item in filed {
         let id = item.message;
+        if !statuses.arrived_lately(&id.to_string(), at) {
+            continue;
+        }
         let vault = vault.clone();
         let Ok((msg, in_inbox)) = blocking(move || {
             let msg = vault.mail_message(id)?;
@@ -716,15 +718,13 @@ pub(crate) async fn announce_filed(
                 deleted: msg.flags.deleted,
                 draft: msg.flags.draft,
                 own: own.contains(&msg.from.email.to_lowercase()),
-                sent_at: msg.date,
-                now,
             })
         {
             continue;
         }
         // Last: the rules may have announced it already as it arrived, and
         // marking one that was then skipped would swallow it.
-        if statuses.as_ref().is_some_and(|s| !s.first_announcement(&msg.id.to_string())) {
+        if !statuses.first_announcement(&msg.id.to_string()) {
             continue;
         }
         mail.push(crate::arrivals::NewMail {

@@ -296,14 +296,23 @@
     if (notifyRule.type === 'categories') void sorting.load()
   })
 
+  /** The ticks somebody just left, for if they come back this visit. */
+  let lastNotifyPick = $state<Extract<MailNotify, { type: 'categories' }> | null>(null)
+  /** Bumped to draw the controls afresh from what is stored: a select or a box
+   *  a failed save left showing the choice would say something untrue, and
+   *  nothing changed for Svelte to redraw them over. */
+  let notifyRedraw = $state(0)
+
   async function setMailNotify(mailNotify: MailNotify) {
     if (!original) return
     notifySaving = true
     try {
+      if (notifyRule.type === 'categories') lastNotifyPick = notifyRule
       await api.saveAccount($state.snapshot({ ...original, mailNotify }))
       await accounts.refresh()
     } catch (e) {
       notice = errorMessage(e)
+      notifyRedraw++
     } finally {
       notifySaving = false
     }
@@ -606,48 +615,54 @@
 
       <section>
         <label class="eyebrow" for="detail-notify">Notify me about</label>
-        <select
-          id="detail-notify"
-          class="interval"
-          value={notifyRule.type}
-          disabled={notifySaving}
-          onchange={(e) =>
-            void setMailNotify(
-              mailNotifyForChoice(e.currentTarget.value as MailNotify['type'], notifyRule),
-            )}
-        >
-          {#each MAIL_NOTIFY_CHOICES as choice (choice.type)}
-            <option value={choice.type}>{choice.label}</option>
-          {/each}
-        </select>
-        <p class="hint">{notifyHint}</p>
-        {#if notifyRule.type === 'categories'}
-          {@const rule = notifyRule}
-          <div class="notify-picks" role="group" aria-label="Categories to notify about">
-            {#each CATEGORY_TABS as tab (tab.key)}
-              <label class="check">
-                <input
-                  type="checkbox"
-                  checked={rule.tabs.includes(tab.key)}
-                  disabled={notifySaving}
-                  onchange={(e) => toggleNotifyTab(tab.key, e.currentTarget.checked)}
-                />
-                {tab.label}
-              </label>
+        {#key notifyRedraw}
+          <select
+            id="detail-notify"
+            class="interval"
+            value={notifyRule.type}
+            disabled={notifySaving}
+            onchange={(e) =>
+              void setMailNotify(
+                mailNotifyForChoice(
+                  e.currentTarget.value as MailNotify['type'],
+                  notifyRule,
+                  lastNotifyPick,
+                ),
+              )}
+          >
+            {#each MAIL_NOTIFY_CHOICES as choice (choice.type)}
+              <option value={choice.type}>{choice.label}</option>
             {/each}
-            {#each ownCategories as category (category.id)}
-              <label class="check">
-                <input
-                  type="checkbox"
-                  checked={rule.sorted.includes(category.id)}
-                  disabled={notifySaving}
-                  onchange={(e) => toggleNotifySorted(category.id, e.currentTarget.checked)}
-                />
-                {category.name}
-              </label>
-            {/each}
-          </div>
-        {/if}
+          </select>
+          <p class="hint">{notifyHint}</p>
+          {#if notifyRule.type === 'categories'}
+            {@const rule = notifyRule}
+            <div class="notify-picks" role="group" aria-label="Categories to notify about">
+              {#each CATEGORY_TABS as tab (tab.key)}
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    checked={rule.tabs.includes(tab.key)}
+                    disabled={notifySaving}
+                    onchange={(e) => toggleNotifyTab(tab.key, e.currentTarget.checked)}
+                  />
+                  {tab.label}
+                </label>
+              {/each}
+              {#each ownCategories as category (category.id)}
+                <label class="check">
+                  <input
+                    type="checkbox"
+                    checked={rule.sorted.includes(category.id)}
+                    disabled={notifySaving}
+                    onchange={(e) => toggleNotifySorted(category.id, e.currentTarget.checked)}
+                  />
+                  {category.name}
+                </label>
+              {/each}
+            </div>
+          {/if}
+        {/key}
       </section>
     {/if}
 

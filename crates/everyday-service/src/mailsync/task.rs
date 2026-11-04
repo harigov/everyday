@@ -200,9 +200,7 @@ where
         }
     };
 
-    let identities: Vec<String> = std::iter::once(account.address.clone())
-        .chain(account.identities.iter().map(|i| i.address.clone()))
-        .collect();
+    let identities: Vec<String> = crate::mailai::own_addresses(&account).into_iter().collect();
     let ctx = passes::SyncContext {
         vault: &vault,
         account_id,

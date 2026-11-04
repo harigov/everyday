@@ -45,7 +45,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use everyday_service::error::CommandResult;
+use everyday_service::error::{CommandError, CommandResult, codes};
 use tauri::AppHandle;
 
 /// A plain notification the interface has decided should leave the window.
@@ -54,6 +54,11 @@ use tauri::AppHandle;
 /// its own banner. One with no identity gets one of its own, because the same
 /// map is what stops two notifications being taken for the same one. A click
 /// raises the window: see [`crate::offers::on_notice_action`].
+///
+/// Answers once the desktop has, and with an error if it would not take it --
+/// a session with no notification service is an ordinary one -- because
+/// `notify.svelte.ts` puts up a toast instead, and that is the difference
+/// between the message being late and being lost.
 #[tauri::command]
 pub async fn post_notification(
     app: AppHandle,
@@ -63,8 +68,36 @@ pub async fn post_notification(
 ) -> CommandResult<()> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let key = key.unwrap_or_else(|| format!("plain:{}", NEXT.fetch_add(1, Ordering::Relaxed)));
-    show(&app, &key, &title, body.as_deref().unwrap_or_default(), &[]);
-    Ok(())
+    if deliver(&app, &key, &title, body.as_deref().unwrap_or_default()).await {
+        Ok(())
+    } else {
+        Err(CommandError::new(codes::UNSUPPORTED, "the desktop did not take the notification"))
+    }
+}
+
+/// [`show`] with no buttons, answering whether the desktop took it.
+async fn deliver(app: &AppHandle, key: &str, summary: &str, body: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let (done, answer) = tokio::sync::oneshot::channel();
+        linux::send(
+            app,
+            linux::Cmd::Show {
+                key: key.to_string(),
+                summary: summary.to_string(),
+                body: body.to_string(),
+                actions: Vec::new(),
+                done: Some(done),
+            },
+        );
+        answer.await.unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        use tauri_plugin_notification::NotificationExt;
+        let _ = key;
+        app.notification().builder().title(summary).body(body).show().is_ok()
+    }
 }
 
 /// Show (or replace) the notification for offer `key`. `actions` are
@@ -84,6 +117,7 @@ pub fn show(app: &AppHandle, key: &str, summary: &str, body: &str, actions: &[(&
             summary: summary.to_string(),
             body: body.to_string(),
             actions: actions.iter().map(|(k, l)| (k.to_string(), l.to_string())).collect(),
+            done: None,
         },
     );
     #[cfg(not(target_os = "linux"))]
@@ -152,7 +186,7 @@ mod linux {
     use futures_util::StreamExt;
     use futures_util::stream::{self, BoxStream};
     use tauri::AppHandle;
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, oneshot};
     use zbus::zvariant::Value;
 
     const SERVICE: &str = "org.freedesktop.Notifications";
@@ -160,8 +194,17 @@ mod linux {
     const INTERFACE: &str = "org.freedesktop.Notifications";
 
     pub(super) enum Cmd {
-        Show { key: String, summary: String, body: String, actions: Vec<(String, String)> },
-        Withdraw { key: String },
+        Show {
+            key: String,
+            summary: String,
+            body: String,
+            actions: Vec<(String, String)>,
+            /// Told whether the desktop took it, by whoever wants to know.
+            done: Option<oneshot::Sender<bool>>,
+        },
+        Withdraw {
+            key: String,
+        },
     }
 
     /// What the worker wakes for.
@@ -221,7 +264,11 @@ mod linux {
             Ok(proxy) => proxy,
             Err(e) => {
                 tracing::debug!(error = %e, "no notification service to talk to");
-                while rx.recv().await.is_some() {}
+                while let Some(cmd) = rx.recv().await {
+                    if let Cmd::Show { done: Some(done), .. } = cmd {
+                        let _ = done.send(false);
+                    }
+                }
                 return;
             }
         };
@@ -263,7 +310,7 @@ mod linux {
 
         while let Some(wake) = wakes.next().await {
             match wake {
-                Wake::Cmd(Cmd::Show { key, summary, body, actions }) => {
+                Wake::Cmd(Cmd::Show { key, summary, body, actions, done }) => {
                     let replaces = ids.by_key.get(&key).copied().unwrap_or(0);
                     let flat = super::flatten_actions(&actions);
                     let hints: HashMap<&str, Value<'_>> = HashMap::from([
@@ -287,9 +334,13 @@ mod linux {
                             ),
                         )
                         .await;
+                    let took = reply.is_ok();
                     match reply {
                         Ok(id) => ids.set(&key, id),
                         Err(e) => tracing::debug!(error = %e, "a notification could not be shown"),
+                    }
+                    if let Some(done) = done {
+                        let _ = done.send(took);
                     }
                 }
                 Wake::Cmd(Cmd::Withdraw { key }) => {

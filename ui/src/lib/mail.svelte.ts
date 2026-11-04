@@ -294,6 +294,9 @@ class MailState {
     this.#unreadRefreshTimer = null
     if (this.#liveRefreshTimer) clearTimeout(this.#liveRefreshTimer)
     this.#liveRefreshTimer = null
+    if (this.#openReloadTimer) clearTimeout(this.#openReloadTimer)
+    this.#openReloadTimer = null
+    this.#unseenIn = null
     this.mailboxes = []
     this.unifiedMailboxes = []
     this.threads = []
@@ -769,6 +772,7 @@ class MailState {
     // lost: see `parkedDraft`.
     if (this.composing && !this.composeInline) this.#park()
     this.selectedThread = id
+    this.#unseenIn = null
     this.summary = null
     // Opening one thread is leaving the many behind -- see `checked`.
     this.clearChecked()
@@ -1040,7 +1044,10 @@ class MailState {
     const openId = this.openThread?.thread.id
     const openBefore = openId && ids.includes(openId) ? this.openThread!.thread : null
     if (openBefore) {
+      this.#openVersion++
       this.openThread = { ...this.openThread!, thread: { ...openBefore, ...patch } }
+      // Told it is unread, or told it is read: either way it is decided.
+      this.#unseenIn = null
     }
     try {
       await call([...ids])
@@ -1349,6 +1356,7 @@ class MailState {
   async respondToInvite(messageId: MailMessageId, response: 'accepted' | 'tentative' | 'declined') {
     const before = this.openThread
     if (before) {
+      this.#openVersion++
       this.openThread = {
         ...before,
         messages: before.messages.map((m) =>
@@ -1756,6 +1764,7 @@ class MailState {
    * and change what happens, not merely how it is spelled.
    */
   async #patchOne(id: ThreadId) {
+    const version = this.selectedThread === id ? ++this.#openVersion : this.#openVersion
     try {
       const detail = await mailApi.getThread(id)
       const at = this.threads.findIndex((t) => t.id === id)
@@ -1770,7 +1779,7 @@ class MailState {
         // those: `#applyChanges` has asked for a debounced refresh already.
         if (this.only.size === 0) await this.refresh()
       }
-      if (this.selectedThread === id) this.#showNewer(detail)
+      if (this.selectedThread === id && version === this.#openVersion) this.#showNewer(detail)
     } catch {
       await this.refresh()
     }
@@ -1785,6 +1794,10 @@ class MailState {
     }, LIVE_REFRESH_DEBOUNCE_MS)
   }
 
+  /** Bumped by every read of the open thread and every change made to it
+   *  here, so an answer overtaken by either is not drawn over it. */
+  #openVersion = 0
+
   /**
    * A sync pass names no thread, and may have put a message in the one being
    * read -- the reply just sent, most of all, which only ever arrives this
@@ -1794,28 +1807,70 @@ class MailState {
   async #reloadOpenThread() {
     const id = this.selectedThread
     if (!id) return
+    const version = ++this.#openVersion
     try {
       const detail = await mailApi.getThread(id)
-      if (this.selectedThread === id) this.#showNewer(detail)
+      if (this.selectedThread !== id) return
+      // Overtaken: read again, or a message this read saw waits for a pass
+      // that may be a long time coming.
+      if (version !== this.#openVersion) this.#scheduleOpenThreadReload()
+      else this.#showNewer(detail)
     } catch (e) {
       // Gone: the list's own refresh is what closes it.
       await quietly(e)
     }
   }
 
-  /** A fresh copy of the open thread. What somebody has opened and closed
-   *  stays as it is, and what has arrived since opens, as the newest message
-   *  does when a thread is opened. Marked read only if it is being looked at:
-   *  one that came in behind somebody's back is still news to them. */
+  /**
+   * A fresh copy of the open thread. What somebody has opened and closed stays
+   * as it is, and what has arrived since opens, as the newest message does when
+   * a thread is opened.
+   *
+   * A copy of a draft on the server is no arrival: it is the words being typed
+   * in the composer below, uploaded by autosave, and each upload has a new id.
+   * It is kept out of a thread already open.
+   */
   #showNewer(detail: ThreadDetail) {
     const had = this.openThread?.thread.id === detail.thread.id ? this.openThread : null
-    this.openThread = detail
-    if (!had) return
+    if (!had) {
+      this.openThread = detail
+      return
+    }
     const known = new Set(had.messages.map((m) => m.id))
-    const newest = detail.messages.at(-1)
-    if (!newest || known.has(newest.id)) return
-    this.expanded = new Set([...this.expanded, newest.id])
-    if (detail.thread.unreadCount > 0 && windowInFront()) void this.markRead(detail.thread.id)
+    const messages = detail.messages.filter((m) => known.has(m.id) || !m.flags.draft)
+    this.openThread = { ...detail, messages }
+    const arrived = messages.filter((m) => !known.has(m.id))
+    if (arrived.length === 0) return
+    this.expanded = new Set([...this.expanded, ...arrived.map((m) => m.id)])
+    if (detail.thread.unreadCount > 0) {
+      this.#unseenIn = detail.thread.id
+      this.seeOpenThread()
+    }
+  }
+
+  /** The open thread, while something arrived in it that nobody has seen. */
+  #unseenIn: ThreadId | null = null
+  /** Is `MailView` drawn? Not the same as `app.section`, which Settings leaves
+   *  as it was while standing in its place. */
+  #onScreen = false
+
+  /** `MailView` coming and going. */
+  setOnScreen(onScreen: boolean) {
+    this.#onScreen = onScreen
+    if (onScreen) this.seeOpenThread()
+  }
+
+  /**
+   * Mark read what arrived in the open thread, once somebody can see it: Mail
+   * on screen, in a window in front. Until then it is still news to them --
+   * and they get here by clicking its banner, so `MailView` asks again as the
+   * window comes back.
+   */
+  seeOpenThread() {
+    const id = this.#unseenIn
+    if (!id || !this.#onScreen || !windowInFront()) return
+    this.#unseenIn = null
+    if (id === this.selectedThread) void this.markRead(id)
   }
 
   // ── derived ──────────────────────────────────────────────────────

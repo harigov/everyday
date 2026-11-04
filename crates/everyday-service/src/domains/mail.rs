@@ -587,10 +587,19 @@ pub struct DraftRef {
 async fn restore_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandResult<()> {
     let vault = svc.require()?;
     blocking(move || match vault.restore_draft(args.id) {
-        Ok(_) | Err(everyday_core::error::Error::NotFound { .. }) => Ok(()),
+        Ok(_) => Ok(()),
+        Err(e) if no_such_draft(&e) => Ok(()),
         Err(e) => Err(e.into()),
     })
     .await
+}
+
+/// Is this the draft itself missing, as one nobody has saved yet is? Not any
+/// record missing: a queued draft's op having gone is damage, not a draft with
+/// nothing to do, and answering success for it would leave the draft queued.
+fn no_such_draft(error: &everyday_core::error::Error) -> bool {
+    matches!(error, everyday_core::error::Error::NotFound { kind, .. }
+        if *kind == everyday_core::record::RecordKind::Draft.not_found_noun())
 }
 
 /// Discard a draft, and wake the account task when doing so left an
@@ -605,7 +614,7 @@ async fn discard_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandR
     let vault = svc.require()?;
     let op = blocking(move || match vault.discard_draft(args.id) {
         Ok((_, op)) => Ok(op),
-        Err(everyday_core::error::Error::NotFound { .. }) => Ok(None),
+        Err(e) if no_such_draft(&e) => Ok(None),
         Err(e) => Err(e.into()),
     })
     .await?;

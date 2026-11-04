@@ -1442,9 +1442,6 @@ const UNDO_WINDOW_MAX_S = 30
 
 const sendTimers = new Map<DraftId, QueuedSend>()
 
-/** `sendAt`, when given, is kept verbatim as the send's moment, the way
- *  `send_draft` in Rust uses it -- not re-derived from `delaySeconds`,
- *  which the mock's own latency would otherwise shift by a second. */
 /**
  * A message landing in a thread, as a sync pass stores one -- and, as a sync
  * pass does, saying so with a thread change that names no thread. What sending
@@ -1474,7 +1471,7 @@ export function mockDeliverToThread(
       .replace(/<[^>]*>/g, ' ')
       .trim()
       .slice(0, 120),
-    flags: { ...last.flags, seen },
+    flags: { ...last.flags, seen, draft: false },
     hasAttachments: false,
     invite: null,
   }
@@ -1493,12 +1490,27 @@ export function mockDeliverToThread(
   return message
 }
 
+/** A delayed message: one that arrives now and is dated long ago. For a test. */
+export function mockBackdate(id: MailMessageId, date: string): void {
+  const message = seed.messages.get(id)
+  if (message) seed.messages.set(id, { ...message, date })
+}
+
+/** The server's copy of a draft, as autosave uploads one. For a test. */
+export function mockMarkDraft(id: MailMessageId): void {
+  const message = seed.messages.get(id)
+  if (message) seed.messages.set(id, { ...message, flags: { ...message.flags, draft: true } })
+}
+
 function mockDeliverSent(draft: Draft): void {
   const parent = draft.inReplyTo ? seed.messages.get(draft.inReplyTo) : undefined
   if (!parent) return
   mockDeliverToThread(parent.threadId, { name: 'Me', email: draft.identity }, draft.bodyHtml, true)
 }
 
+/** `sendAt`, when given, is kept verbatim as the send's moment, the way
+ *  `send_draft` in Rust uses it -- not re-derived from `delaySeconds`,
+ *  which the mock's own latency would otherwise shift by a second. */
 export function mockSendDraft(id: DraftId, delaySeconds: number, sendAt?: string): Draft {
   const d = drafts.find((x) => x.id === id)
   if (!d) throw new VaultError('notFound', 'no such draft')

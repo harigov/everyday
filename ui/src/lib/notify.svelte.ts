@@ -74,9 +74,8 @@ async function tauriChannel(): Promise<OsChannel> {
     },
     // Not the plugin's `sendNotification`, which on Linux reports success
     // and delivers nothing: see `crates/everyday-app/src/notice.rs`. The
-    // shell queues this and answers at once, so a rejection only ever means
-    // the shell could not be asked, and a daemon that then refuses it is a
-    // line in the log.
+    // shell answers once the desktop has, so a rejection is what lets the
+    // caller put up a toast on a session with no notification service.
     send: (toast) => api.postNotification(toast.title, toast.body, toast.key),
   }
 }
@@ -302,19 +301,27 @@ let osUsable = true
 
 /** Deliver to the notification centre. False if it did not get out. */
 async function deliverToOs(spec: NotifySpec): Promise<boolean> {
+  let channel: OsChannel
   try {
-    const channel = await osChannel
+    channel = await osChannel
     if (!(await channel.ready())) {
       osUsable = false
       return false
     }
-    await channel.send(toToast(spec, 0))
-    return true
   } catch {
     // A notification that cannot be delivered is not worth raising an error
     // about a notification. The caller puts up a toast on a false, so
     // failing quietly here loses nothing.
     osUsable = false
+    return false
+  }
+  try {
+    await channel.send(toToast(spec, 0))
+    return true
+  } catch {
+    // The desktop would not take this one. That is no answer about the next:
+    // a notification daemon can be restarting, so this one becomes a toast
+    // and the next one is tried.
     return false
   }
 }
