@@ -385,6 +385,15 @@ fn default_refresh() -> u32 {
 /// four servers is a laptop with a worse battery.
 pub const DEFAULT_REFRESH_MINUTES: u32 = 60;
 
+/// How often an account's own calendar is asked what has changed.
+///
+/// Sooner than a feed, because these are the calendars a change made on a phone
+/// is expected to arrive from, and the question costs less than a feed's whole
+/// document. Google and a Microsoft primary calendar hear only what moved; CalDAV
+/// lists etags, or asks what changed where the server offers `sync-collection`.
+/// The dearest is a Microsoft secondary calendar, which lists its window each time.
+pub const DEFAULT_ACCOUNT_REFRESH_MINUTES: u32 = 15;
+
 /// Calendar accents. The journal palette, so one vault has one set of colours.
 pub const DEFAULT_CALENDAR_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;
 
@@ -463,7 +472,7 @@ impl Calendar {
             },
             provider: CalendarProvider::from_account(account_provider),
             visible: true,
-            refresh_minutes: DEFAULT_REFRESH_MINUTES,
+            refresh_minutes: DEFAULT_ACCOUNT_REFRESH_MINUTES,
             last_synced_at: None,
             last_error: None,
             role_id: None,
@@ -999,6 +1008,10 @@ pub struct SyncReport {
     pub calendar_id: Option<CalendarId>,
     /// Events written for this calendar, replacing whatever was there.
     pub events: u64,
+    /// Events this sync took away. Only the refresher reads it, to tell a sync
+    /// that changed something from one that did not, so it stays off the wire.
+    #[serde(skip)]
+    pub removed: u64,
     /// Occurrences the feed described that fell outside the synced window.
     pub skipped: u64,
     /// The name the feed calls itself, if it offered one.
@@ -1133,7 +1146,10 @@ mod tests {
 
         cal.mark_synced();
         assert!(!cal.is_due(now));
-        assert!(cal.is_due(now + jiff::SignedDuration::from_mins(61)));
+        assert!(
+            cal.is_due(now + jiff::SignedDuration::from_mins(16)),
+            "sooner than a feed: asking what changed is cheap"
+        );
 
         cal.refresh_minutes = 0;
         assert!(!cal.is_due(now + jiff::SignedDuration::from_hours(48)), "manual means manual");

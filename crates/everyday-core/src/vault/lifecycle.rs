@@ -202,6 +202,13 @@ impl Vault {
         {
             tracing::warn!(error = %e, "could not carry the models over from the assistant's settings");
         }
+        // Best-effort for the same reason: a calendar left on the old interval
+        // still refreshes, and the next unlock tries again.
+        if self.is_writable()
+            && let Err(e) = self.carry_over_account_refresh()
+        {
+            tracing::warn!(error = %e, "could not move account calendars to their own refresh interval");
+        }
         Ok(())
     }
 

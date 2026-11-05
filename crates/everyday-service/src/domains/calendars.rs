@@ -21,7 +21,7 @@ use crate::error::{CommandError, CommandResult, codes};
 use crate::events::Notification;
 use crate::feeds;
 use crate::service::{Service, blocking};
-use everyday_core::account::Account;
+use everyday_core::account::{Account, AccountStatus};
 use everyday_core::calendar::{
     Calendar, CalendarAccess, CalendarOrigin, CalendarProvider, EditableEvent, Event, EventDraft,
     EventScope, SyncReport,
@@ -401,8 +401,7 @@ async fn sync_calendar(
     args: CalendarRef,
 ) -> CommandResult<SyncReport> {
     let vault = svc.require()?;
-    let calendar = vault.calendar(args.id)?;
-    let report = sync_telling_about_new_events(&svc, &vault, &calendar).await?;
+    let report = sync_telling_about_new_events(&svc, &vault, args.id).await?;
     // A hand-driven refresh that works ends the outage as much as a background
     // one does, so the next failure is news again. Without this, a feed fixed
     // from the sidebar would never notify a second time.
@@ -410,47 +409,82 @@ async fn sync_calendar(
     Ok(report)
 }
 
-/// Fetch every subscription -- a feed's URL or an account's own calendars --
-/// whose refresh interval has elapsed.
-///
-/// Polled rather than driven by a timer in here, so that a locked vault is
-/// never fetched into and a window nobody is looking at is never the reason a
-/// laptop wakes its radio. Failures are collected, not raised: one calendar
-/// being down must not stop the other three. Only the writable vault holder
-/// syncs -- see the guard below -- which for an account calendar matters as
-/// much as it does for a feed: a read-only replica has no claim to spend an
-/// account's rate limit refreshing something nobody here can store.
+/// Refresh what is due, or with `force` everything: the Refresh button. The same
+/// pass runs on its own schedule from [`crate::calendar_refresh`].
 async fn sync_due_calendars(
     svc: Arc<Service>,
     _ctx: Ctx,
     args: SyncDue,
 ) -> CommandResult<Vec<SyncReport>> {
     let vault = svc.require()?;
+    Ok(sync_due(&svc, &vault, args.force).await?.reports)
+}
+
+/// What one pass over the calendars came to.
+#[derive(Default)]
+pub(crate) struct DuePass {
+    pub reports: Vec<SyncReport>,
+    /// Somebody looking at the calendar would see something different now: an
+    /// event came or went, or one of them started or stopped failing.
+    pub changed: bool,
+}
+
+/// An account waiting for somebody to sign in again. Asking on its behalf would
+/// send the dead token to the provider every five minutes for as long as nobody
+/// did, and signing in moves it straight back to `Ok`, so nothing is missed.
+fn waits_for_sign_in(vault: &Vault, calendar: &Calendar) -> bool {
+    calendar.origin.account_id().is_some_and(|id| {
+        vault.account(id).is_ok_and(|a| matches!(a.status, AccountStatus::NeedsSignIn { .. }))
+    })
+}
+
+/// Fetch every subscription -- a feed's URL or an account's own calendars --
+/// whose refresh interval has elapsed, or all of them if `force`.
+///
+/// Failures are collected, not raised: one calendar being down must not stop
+/// the other three. Only the writable vault holder syncs -- see the guard
+/// below -- which for an account calendar matters as much as it does for a
+/// feed: a read-only replica has no claim to spend an account's rate limit
+/// refreshing something nobody here can store.
+pub(crate) async fn sync_due(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    force: bool,
+) -> CommandResult<DuePass> {
     // A read-only vault cannot store what a sync fetches, and a failed sync
     // would also try to record the failure on the subscription -- another
     // write. Fetching over the network to throw the bytes away is not a
     // useful thing to do on a timer, so the whole pass is skipped.
     if !vault.is_writable() {
-        return Ok(Vec::new());
+        return Ok(DuePass::default());
     }
     let now = svc.now();
     // The name travels with the id because the notification below needs it, and
     // re-reading the subscription after a failed sync to find out what to call
     // it is a second decrypt for a string we already had.
-    let due: Vec<(CalendarId, String)> = vault
-        .calendars()?
-        .into_iter()
-        .filter(|c| c.origin.is_syncable() && (args.force || c.is_due(now)))
-        .map(|c| (c.id, c.name))
-        .collect();
+    let due: Vec<(CalendarId, String, Option<String>)> = {
+        let vault = vault.clone();
+        blocking(move || {
+            Ok(vault
+                .calendars()?
+                .into_iter()
+                .filter(|c| {
+                    c.origin.is_syncable()
+                        && (force || (c.is_due(now) && !waits_for_sign_in(&vault, c)))
+                })
+                .map(|c| (c.id, c.name, c.last_error))
+                .collect())
+        })
+        .await?
+    };
 
-    let mut out = Vec::new();
-    for (id, name) in due {
-        let Ok(calendar) = vault.calendar(id) else { continue };
-        match sync_telling_about_new_events(&svc, &vault, &calendar).await {
+    let mut out = DuePass::default();
+    for (id, name, error_before) in due {
+        match sync_telling_about_new_events(svc, vault, id).await {
             Ok(report) => {
                 svc.feed_recovered(id);
-                out.push(report);
+                out.changed |= report.events > 0 || report.removed > 0 || error_before.is_some();
+                out.reports.push(report);
             }
             // The failure itself is already recorded on the subscription by
             // `sync_one`, and the calendar sidebar shows it there, beside the
@@ -461,12 +495,18 @@ async fn sync_due_calendars(
             // the journal while a subscription they rely on has been quietly
             // returning nothing.
             //
-            // Once per outage, never on a refresh the user asked for by hand --
-            // they are looking at the calendar, and the sidebar has just told
-            // them.
+            // Once per outage, and only one that has lasted (see `feed_failed`),
+            // never on a refresh the user asked for by hand -- they are looking
+            // at the calendar, and the sidebar has just told them. Nor for an
+            // account that needs signing in: the account view says that, once,
+            // for all of its calendars.
             Err(e) => {
+                // Locked, or removed while this pass was out: not a calendar
+                // that has stopped refreshing, and nothing to say about it.
+                let Ok(after) = vault.calendar(id) else { continue };
+                out.changed |= after.last_error != error_before;
                 tracing::info!(%id, error = %e, "a calendar could not be refreshed");
-                if !args.force && svc.feed_failed(id) {
+                if !force && e.code != codes::FORBIDDEN && svc.feed_failed(id, now) {
                     svc.events().notify(
                         Notification::warning(format!("{name} is not refreshing"))
                             // Deliberately not `e.message`: a feed URL is a
@@ -497,11 +537,17 @@ async fn sync_due_calendars(
 /// from here while the sync is out (or brought back by a write's own
 /// resync) is missing from it. `arrivals::select_fresh` leaves the
 /// account's own events out for exactly that reason.
+///
+/// The calendar is read after waiting for the turn, not before: a sync that
+/// had to wait for another has just moved this calendar's sync token.
 async fn sync_telling_about_new_events(
     svc: &Arc<Service>,
     vault: &Arc<Vault>,
-    calendar: &Calendar,
+    id: CalendarId,
 ) -> CommandResult<SyncReport> {
+    let turn = svc.calendar_sync_turn(id);
+    let _turn = turn.lock().await;
+    let calendar = &vault.calendar(id)?;
     let before = if calendar.visible && calendar.last_synced_at.is_some() {
         let (svc, vault, calendar) = (svc.clone(), vault.clone(), calendar.clone());
         blocking(move || Ok(crate::arrivals::event_identities(&vault, &calendar, svc.now())?))
@@ -529,7 +575,7 @@ async fn sync_telling_about_new_events(
 /// The split this dispatches over is exactly [`CalendarOrigin`]'s: a `Url`
 /// goes through `feeds.rs`, an `Account` through `accountcal::sync`, and a
 /// `File` is never `is_due`, so it never reaches here at all -- both
-/// [`sync_calendar`] and [`sync_due_calendars`] go through
+/// [`sync_calendar`] and [`sync_due`] go through
 /// [`sync_telling_about_new_events`], which calls this, so the choice is
 /// made in exactly one place.
 async fn sync_dispatch(
@@ -805,6 +851,10 @@ async fn subscribe_account_calendar(
         .await?;
     }
 
+    // Saved a moment ago and never synced, so already due as far as the
+    // background pass can see.
+    let turn = svc.calendar_sync_turn(id);
+    let _turn = turn.lock().await;
     match accountcal::sync(&svc, &vault, &calendar).await {
         Ok(report) => Ok(info_after_adding(&vault, id, report.events)?),
         Err(e) => {

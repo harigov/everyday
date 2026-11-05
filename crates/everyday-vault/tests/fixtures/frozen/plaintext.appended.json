@@ -249,7 +249,7 @@
       },
       "provider": "other",
       "readOnly": false,
-      "refreshMinutes": 60,
+      "refreshMinutes": 15,
       "roleId": "00000000-0000-0000-0000-000000000001",
       "updatedAt": "2023-11-14T22:13:38Z",
       "visible": true
@@ -277,7 +277,7 @@
       },
       "provider": "other",
       "readOnly": false,
-      "refreshMinutes": 60,
+      "refreshMinutes": 15,
       "roleId": "00000000-0000-0000-0000-0000000f4240",
       "updatedAt": "2027-01-15T08:00:18Z",
       "visible": true

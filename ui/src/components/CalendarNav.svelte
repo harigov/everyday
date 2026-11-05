@@ -230,7 +230,7 @@
         label: 'Refresh every calendar',
         icon: 'refresh',
         disabled: calendar.syncing,
-        run: () => calendar.syncDue(true),
+        run: () => calendar.syncAll(),
       },
       SEP,
       { label: 'Jump to today', icon: 'sun', run: () => calendar.goToday() },
@@ -271,7 +271,7 @@
           class:spin={calendar.syncing}
           title="Refresh all calendars"
           aria-label="Refresh all calendars"
-          onclick={() => calendar.syncDue(true)}
+          onclick={() => calendar.syncAll()}
         >
           <Icon name="refresh" size={14} />
         </button>

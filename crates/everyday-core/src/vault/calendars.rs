@@ -12,7 +12,10 @@
 
 use super::Vault;
 use super::session::Domain;
-use crate::calendar::{AccountSyncCursor, Calendar, CalendarOrigin, Event, SyncReport};
+use crate::calendar::{
+    AccountSyncCursor, Calendar, CalendarOrigin, DEFAULT_ACCOUNT_REFRESH_MINUTES,
+    DEFAULT_REFRESH_MINUTES, Event, SyncReport,
+};
 use crate::error::{Error, Result};
 use crate::id::{AccountId, CalendarId, EventId};
 use crate::record::RecordKind;
@@ -31,6 +34,32 @@ impl Vault {
 
     pub fn calendars(&self) -> Result<Vec<Calendar>> {
         self.with_calendars(|c| c.list_calendars())
+    }
+
+    /// Move account calendars off the hourly refresh they were all created
+    /// with onto [`DEFAULT_ACCOUNT_REFRESH_MINUTES`].
+    ///
+    /// Sealed in each record, so it can only happen with the key in hand, and
+    /// unlock runs it. It needs no mark to say it has been done: nothing in the
+    /// interface sets this interval, so an account calendar at exactly the old
+    /// default is one nobody chose, and asking again costs one read of a short
+    /// list. A calendar set to manual (`0`) is left alone, as is every feed. The
+    /// calendar's `updated_at` stays as it was: nobody changed it.
+    pub(super) fn carry_over_account_refresh(&self) -> Result<()> {
+        self.writable()?;
+        if !self.supports_calendars() {
+            return Ok(());
+        }
+        for mut calendar in self.calendars()? {
+            if matches!(calendar.origin, CalendarOrigin::Account { .. })
+                && calendar.refresh_minutes == DEFAULT_REFRESH_MINUTES
+            {
+                calendar.refresh_minutes = DEFAULT_ACCOUNT_REFRESH_MINUTES;
+                self.with_calendars(|c| c.put_calendar(&calendar))?;
+                self.wrote(RecordKind::Calendar, calendar.id);
+            }
+        }
+        Ok(())
     }
 
     pub fn calendar(&self, id: CalendarId) -> Result<Calendar> {
@@ -264,6 +293,7 @@ impl Vault {
         let feed = crate::ics::parse(ics);
         let (events, skipped) = crate::ics::events_for(&calendar, &feed, window, default_tz);
 
+        let removed = self.with_calendars(|c| c.count_events(id))?;
         self.with_calendars(|c| c.replace_events(id, &events))?;
         for event in &events {
             self.wrote(RecordKind::Event, event.id);
@@ -284,6 +314,7 @@ impl Vault {
         Ok(SyncReport {
             calendar_id: Some(id),
             events: events.len() as u64,
+            removed,
             skipped,
             feed_name: feed.name,
             writable: None,
@@ -349,6 +380,7 @@ impl Vault {
         Ok(SyncReport {
             calendar_id: Some(id),
             events: upsert.len() as u64,
+            removed: remove.len() as u64,
             skipped: 0,
             feed_name: None,
             writable: None,

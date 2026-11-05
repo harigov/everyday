@@ -68,7 +68,7 @@ export const RELOAD = {
   journals: () => app.refreshJournals(),
   entries: () => app.queueListRefresh(),
   todo: () => todo.refresh(),
-  calendar: () => calendar.refresh(),
+  calendar: () => calendar.refreshIfOpen(),
   notes: () => notes.refresh(),
   assistant: () => assistant.refresh(),
   // Work the assistant is doing in the background: a job moving from queued

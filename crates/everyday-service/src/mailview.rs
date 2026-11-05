@@ -41,7 +41,8 @@
 //! below, because the far end of that fetch is a URL a stranger wrote, not
 //! one the person chose.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use everyday_core::Vault;
 use everyday_core::id::MailMessageId;
@@ -664,6 +665,62 @@ enum Ready {
     Fetch { url: String },
 }
 
+/// A fetch somebody has started, shared with whoever else asks while it is out.
+/// The frame asks for a message's pictures, and so does the window working out how
+/// tall the frame should be, usually in the same moment. The sender's server should
+/// see one request, and the same answer goes to both, a failure included. Held
+/// only while the fetch is out.
+type SharedFetch = Arc<tokio::sync::OnceCell<CommandResult<Vec<u8>>>>;
+static FETCHING: LazyLock<Mutex<HashMap<(MailMessageId, String), SharedFetch>>> =
+    LazyLock::new(Mutex::default);
+
+/// One at a time, because a body is read, changed and saved whole: two pictures of
+/// one message arriving together would otherwise each forget the other was cached.
+static CACHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// The fetch itself, and storing what it brought. Looks once more first: this may
+/// have been decided on just as somebody else's fetch finished.
+async fn fetch_once(
+    vault: &Arc<Vault>,
+    client: &reqwest::Client,
+    message_id: MailMessageId,
+    token: &str,
+    url: String,
+    allow_loopback: bool,
+) -> CommandResult<Vec<u8>> {
+    let cached = {
+        let vault = vault.clone();
+        let token = token.to_string();
+        blocking(move || {
+            let body = vault.body(message_id)?;
+            match body.remote_images.iter().find(|r| r.token == token).and_then(|r| r.cached_blob) {
+                Some(blob) => Ok(Some(vault.with_store(|s| s.get_blob(blob))?)),
+                None => Ok(None),
+            }
+        })
+        .await?
+    };
+    if let Some(bytes) = cached {
+        return Ok(bytes);
+    }
+    let fetched = fetch_remote_image(client, &url, allow_loopback).await?;
+    let _caching = CACHING.lock().await;
+    let vault = vault.clone();
+    let cache = fetched.clone();
+    let token = token.to_string();
+    blocking(move || {
+        let blob = vault.put_blob(&cache)?;
+        let mut body = vault.body(message_id)?;
+        if let Some(entry) = body.remote_images.iter_mut().find(|r| r.token == token) {
+            entry.cached_blob = Some(blob);
+        }
+        vault.save_body(&body)?;
+        Ok(())
+    })
+    .await?;
+    Ok(fetched)
+}
+
 async fn remote_image_inner(
     vault: &Arc<Vault>,
     client: &reqwest::Client,
@@ -696,21 +753,19 @@ async fn remote_image_inner(
         Ready::Placeholder => return Ok(placeholder_pixel()),
         Ready::Cached(bytes) => bytes,
         Ready::Fetch { url } => {
-            let fetched = fetch_remote_image(client, &url, allow_loopback).await?;
-            let vault = vault.clone();
-            let cache = fetched.clone();
-            let token = token.to_string();
-            blocking(move || {
-                let blob = vault.put_blob(&cache)?;
-                let mut body = vault.body(message_id)?;
-                if let Some(entry) = body.remote_images.iter_mut().find(|r| r.token == token) {
-                    entry.cached_blob = Some(blob);
+            let key = (message_id, token.to_string());
+            let shared = FETCHING.lock().unwrap().entry(key.clone()).or_default().clone();
+            let outcome = shared
+                .get_or_init(|| fetch_once(vault, client, message_id, token, url, allow_loopback))
+                .await
+                .clone();
+            {
+                let mut fetching = FETCHING.lock().unwrap();
+                if fetching.get(&key).is_some_and(|held| Arc::ptr_eq(held, &shared)) {
+                    fetching.remove(&key);
                 }
-                vault.save_body(&body)?;
-                Ok(())
-            })
-            .await?;
-            fetched
+            }
+            outcome?
         }
     };
 
@@ -1325,6 +1380,93 @@ mod tests {
         assert!(settings.allows("anyone@mail.trusted.example"));
         assert!(!settings.allows("anyone@evil-trusted.example"));
         assert!(!settings.allows("stranger@example.org"));
+    }
+
+    // ---- asking twice at once ---------------------------------------------
+
+    /// The frame and the window working out how tall to make it ask for a picture
+    /// in the same moment. A slow server, so the two really do overlap.
+    async fn spawn_slow_test_server(status: u16) -> TestServer {
+        spawn_test_server(move |hits| {
+            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+            png.extend_from_slice(&[0u8; 16]);
+            response(status, "image/png", &png)
+        })
+        .await
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_asking_at_once_is_one_request_to_the_senders_server() {
+        let server = spawn_slow_test_server(200).await;
+        let (_dir, vault) = test_vault();
+        let vault = Arc::new(vault);
+        let url = format!("http://{}/x.png", server.addr);
+        let (id, token) = seeded_with_remote_image(&vault, "a@example.com", &url);
+        let client = http::client().unwrap();
+
+        let (first, second) = tokio::join!(
+            remote_image_allowing_loopback_for_test(&vault, client, id, &token, true),
+            remote_image_allowing_loopback_for_test(&vault, client, id, &token, true),
+        );
+
+        assert_eq!(first.unwrap().bytes, second.unwrap().bytes);
+        assert_eq!(server.hits(), 1);
+        assert!(vault.body(id).unwrap().remote_images[0].cached_blob.is_some());
+        assert!(FETCHING.lock().unwrap().keys().all(|(message, _)| *message != id));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_asking_at_once_share_a_failure_too() {
+        let server = spawn_slow_test_server(404).await;
+        let (_dir, vault) = test_vault();
+        let vault = Arc::new(vault);
+        let url = format!("http://{}/x.png", server.addr);
+        let (id, token) = seeded_with_remote_image(&vault, "a@example.com", &url);
+        let client = http::client().unwrap();
+
+        let (first, second) = tokio::join!(
+            remote_image_allowing_loopback_for_test(&vault, client, id, &token, true),
+            remote_image_allowing_loopback_for_test(&vault, client, id, &token, true),
+        );
+
+        assert!(first.is_err() && second.is_err());
+        assert_eq!(server.hits(), 1);
+        assert!(FETCHING.lock().unwrap().keys().all(|(message, _)| *message != id));
+    }
+
+    /// A body is read, changed and saved whole, so without a turn each of these
+    /// forgets the other was cached, and the next open fetches it again.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_pictures_of_one_message_arriving_together_are_both_remembered() {
+        let server = spawn_test_image_server().await;
+        let (_dir, vault) = test_vault();
+        let vault = Arc::new(vault);
+        let url = format!("http://{}/x.png", server.addr);
+        let (id, token) = seeded_with_remote_image(&vault, "a@example.com", &url);
+        let mut body = vault.body(id).unwrap();
+        for other in 0..8 {
+            body.remote_images.push(RemoteImage {
+                original_url: format!("{url}?{other}"),
+                token: format!("tok{other}"),
+                cached_blob: None,
+            });
+        }
+        vault.save_body(&body).unwrap();
+        let client = http::client().unwrap();
+
+        let tokens: Vec<String> =
+            std::iter::once(token).chain((0..8).map(|n| format!("tok{n}"))).collect();
+        let asked = tokens
+            .iter()
+            .map(|t| remote_image_allowing_loopback_for_test(&vault, client, id, t, true));
+        for served in futures::future::join_all(asked).await {
+            served.unwrap();
+        }
+
+        let body = vault.body(id).unwrap();
+        assert!(body.remote_images.iter().all(|r| r.cached_blob.is_some()));
     }
 
     // ---- a tiny local HTTP server, for the fetch tests above -------------

@@ -110,6 +110,9 @@ pub(crate) fn serve(
         // the vault is already open and unlocked (`--keychain`), this starts
         // every switched-on link straight away; otherwise unlocking does.
         service.set_chat_runner(std::sync::Arc::new(everyday_chat::Runner));
+        // The refreshers likewise: unlocking starts them on a vault that needs
+        // it, and nothing else will on one that is already open.
+        service.start_refreshers();
 
         // The local socket as well, always. It is how `everyday new` writes
         // through a running server instead of coming up read-only beside it,

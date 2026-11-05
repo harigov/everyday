@@ -251,13 +251,11 @@ pub fn describe(command: &Command) -> CommandInfo {
 /// * `status` is polled by the connection banner and read on every reconnect.
 /// * `list_commands` is introspection, asked once by a generator or a client
 ///   working out what it is talking to.
-/// * `sync_due_calendars` is the calendar app's five-minute refresh, which
-///   runs for as long as that app has been opened once in this session. On a
-///   vault whose screen lock is "Never" nothing ever stopped it, so it
-///   deferred the key timer for ever -- the exact failure this list exists to
-///   prevent, arriving from the one background timer that was not on it. A
-///   refresh somebody *asked* for still counts as presence, because the press
-///   that asked for it sends a `touch` of its own.
+/// * `sync_due_calendars` is what a window on an older build still polls every
+///   five minutes, from a machine paired with this one. On a vault whose screen
+///   lock is "Never" nothing ever stopped that, so it would defer the key timer
+///   for ever. This build's interface only sends it when somebody presses
+///   Refresh, and that press sends a `touch` of its own.
 ///
 /// `touch` is deliberately absent: it is the command whose entire job is to
 /// say somebody is here, and the interface sends it on real interaction.

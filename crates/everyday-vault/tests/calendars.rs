@@ -320,3 +320,102 @@ fn a_repeating_block_is_written_ahead_and_can_be_changed_or_cut_short_from_any_p
     assert_eq!(spent, 4, "73, 49, 25 and 1 hours ago");
     assert_eq!(written.len() - spent, 2);
 }
+
+#[test]
+fn unlocking_moves_an_account_calendar_off_the_old_hourly_refresh() {
+    use everyday_core::AccountId;
+    use everyday_core::account::Provider;
+    use everyday_core::calendar::{
+        AccountCalendarSource, Calendar, DEFAULT_ACCOUNT_REFRESH_MINUTES, DEFAULT_REFRESH_MINUTES,
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = VaultConfig {
+        name: "Test".into(),
+        backend: "sqlite".into(),
+        settings: Default::default(),
+        password: Some("pw".into()),
+        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+        auto_lock_seconds: 900,
+        forget_key_seconds: 0,
+    };
+    let vault = create(dir.path(), config).unwrap();
+    let account = |name: &str| {
+        Calendar::from_account(
+            AccountId::new(),
+            Provider::Google,
+            AccountCalendarSource::Google,
+            name,
+            name,
+        )
+    };
+
+    // As a vault from before the two intervals parted holds them.
+    let mut old = account("old");
+    old.refresh_minutes = DEFAULT_REFRESH_MINUTES;
+    vault.save_calendar(&old).unwrap();
+    let mut manual = account("manual");
+    manual.refresh_minutes = 0;
+    vault.save_calendar(&manual).unwrap();
+    let feed = Calendar::subscribed("Feed", "https://example.com/f.ics");
+    vault.save_calendar(&feed).unwrap();
+    let new = account("new");
+    assert_eq!(new.refresh_minutes, DEFAULT_ACCOUNT_REFRESH_MINUTES);
+
+    vault.lock();
+    vault.unlock(Some("pw")).unwrap();
+
+    let moved = vault.calendar(old.id).unwrap();
+    assert_eq!(moved.refresh_minutes, DEFAULT_ACCOUNT_REFRESH_MINUTES);
+    assert_eq!(moved.name, "old", "nothing else about it changed");
+    assert_eq!(vault.calendar(manual.id).unwrap().refresh_minutes, 0, "manual means manual");
+    assert_eq!(
+        vault.calendar(feed.id).unwrap().refresh_minutes,
+        DEFAULT_REFRESH_MINUTES,
+        "a feed sends everything each time, so it keeps its hour"
+    );
+}
+
+#[test]
+fn a_sync_says_how_many_events_it_took_away() {
+    use everyday_core::AccountId;
+    use everyday_core::account::Provider;
+    use everyday_core::calendar::{AccountCalendarSource, AccountSyncCursor, Calendar};
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = VaultConfig {
+        name: "Test".into(),
+        backend: "sqlite".into(),
+        settings: Default::default(),
+        password: None,
+        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+        auto_lock_seconds: 900,
+        forget_key_seconds: 0,
+    };
+    let vault = create(dir.path(), config).unwrap();
+    let feed = Calendar::subscribed("Feed", "https://example.com/f.ics");
+    vault.save_calendar(&feed).unwrap();
+    const ONE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a\r\n\
+        DTSTAMP:20260101T000000Z\r\nDTSTART:20260601T100000Z\r\nSUMMARY:x\r\nEND:VEVENT\r\n\
+        END:VCALENDAR\r\n";
+    const NONE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR\r\n";
+    let window = (jiff::civil::date(2026, 1, 1), jiff::civil::date(2027, 1, 1));
+    let first = vault.sync_calendar_from_ics(feed.id, ONE, window, "UTC").unwrap();
+    assert_eq!((first.events, first.removed), (1, 0));
+    let emptied = vault.sync_calendar_from_ics(feed.id, NONE, window, "UTC").unwrap();
+    assert_eq!((emptied.events, emptied.removed), (0, 1), "a feed emptied is a change");
+
+    let account = Calendar::from_account(
+        AccountId::new(),
+        Provider::Google,
+        AccountCalendarSource::Google,
+        "primary",
+        "Mine",
+    );
+    vault.save_calendar(&account).unwrap();
+    let gone = everyday_core::EventId::new();
+    let report = vault
+        .sync_account_calendar(account.id, &[], &[gone], AccountSyncCursor::default())
+        .unwrap();
+    assert_eq!((report.events, report.removed), (0, 1));
+}

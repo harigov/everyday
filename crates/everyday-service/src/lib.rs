@@ -43,6 +43,7 @@ pub mod accountcal;
 pub mod agent;
 pub mod arrivals;
 pub mod browser;
+pub mod calendar_refresh;
 pub mod chat;
 pub mod clock;
 pub mod command;

@@ -148,7 +148,7 @@
       },
       "provider": "other",
       "readOnly": false,
-      "refreshMinutes": 60,
+      "refreshMinutes": 15,
       "roleId": "00000000-0000-0000-0000-000000000001",
       "updatedAt": "2023-11-14T22:13:38Z",
       "visible": true

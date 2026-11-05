@@ -340,6 +340,13 @@ Some care went into a feed's parts that are easy to get wrong:
   generated before. Windows zone names (`W. Europe Standard Time`) are
   mapped; a floating time is read in your own zone, which is what a floating
   time means.
+- **Calendars refresh in the service, not a window.** One supervised task,
+  running from unlock to lock whether or not the calendar has been opened,
+  because the meeting notices and the tray read these events with no window
+  at all. An account's calendars are asked what changed every 15 minutes; a
+  feed, which sends everything each time, is fetched hourly. A calendar has to
+  have been failing for an hour before a notification says so, since the first
+  pass after a laptop wakes usually finds no wifi yet.
 - **A failed refresh keeps what was already there.** A captive portal, an
   expired link, a 200 with an error page in it: all of them parse to zero
   events, and all of them would otherwise empty a working calendar. Anything

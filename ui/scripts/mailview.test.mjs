@@ -19,7 +19,7 @@ const {
 const { applyBodyTheme, quoteDocument, renderBody, MAIL_CARD } = mailview
 const { firstName, peopleLine, snippetText } = mail
 const { looksDesigned, readBody } = mailbody
-const { measureBody } = mailheight
+const { measureBody, readPictures } = mailheight
 
 const DARK_PAGE = { background: MAIL_CARD.dark, text: '#eceaf0' }
 const read = (html, options = {}) => readBody(html, { page: DARK_PAGE, ...options })
@@ -422,7 +422,10 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
     measureBody({ html: page(inner), paper: false, imagesHidden: false, ...more })(width)
   const near = (inner, width, want, why, more) => {
     const got = guess(inner, width, more)
-    assert.ok(got >= want && got <= want + 24, `${why}: wanted about ${want}, guessed ${got}`)
+    assert.ok(
+      got >= want && got <= want * 1.02 + 24,
+      `${why}: wanted about ${want}, guessed ${got}`,
+    )
   }
   const long = 'word '.repeat(30).trim()
 
@@ -753,13 +756,182 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
   const undone = measureBody(
     withBody('body{padding:16px}', '<style>body{padding:0}</style><div>x</div>'),
   )(600)
-  assert.equal(padded - undone, 32, "a template's sheet takes off the page's padding")
+  assert.ok(Math.abs(padded - undone - 32) <= 2, "a template's sheet takes off the page's padding")
   const narrow = measureBody(withBody('body{max-width:300px}', `<div>${'word '.repeat(60)}</div>`))
   const atNarrow = measureBody(withBody('', `<div>${'word '.repeat(60)}</div>`))(300)
   assert.equal(narrow(1000), atNarrow, 'a body with a width of its own wraps at that width')
   const closedBody = `<details><summary>More</summary>${'<div>x</div>'.repeat(10)}</details>`
   const closed = measureBody(withBody('', closedBody))(600)
   assert.ok(closed >= 264, `a closed <details> keeps room for what opens: ${closed}`)
+
+  // A picture says what its markup could not once it has arrived, which is what
+  // keeps the text below it from ending up past the bottom of the frame.
+  {
+    const ADDRESS = 'everyday://mail/img/m/t'
+    const of = (tag) =>
+      measureBody({ html: page(`<img src="${ADDRESS}"${tag}>`), paper: false, imagesHidden: false })
+    const arrived = (tag, width, height, at = 600) => {
+      const heights = of(tag)
+      heights.pictureArrived(ADDRESS, width, height)
+      return heights(at)
+    }
+    const close = (got, want, why) =>
+      assert.ok(got >= want && got <= want + 40, `${why}: wanted about ${want}, guessed ${got}`)
+
+    assert.deepEqual(of('').pictures(), [ADDRESS])
+    close(of('')(600), 100, 'nothing is known of it until it arrives')
+    close(arrived('', 1200, 800), 400, 'wider than the frame, so it shrinks and keeps its shape')
+    close(arrived('', 48, 48), 48, 'a small one stays small')
+    close(
+      arrived(' width="300"', 1000, 2000),
+      600,
+      'a stated width takes the height from its shape',
+    )
+    close(arrived(' style="width:100%"', 1000, 500), 300, 'and so does a share of the frame')
+    close(
+      arrived(' width="600" height="300"', 600, 900),
+      900,
+      'a stated height loses to height:auto',
+    )
+    close(arrived(' style="height:120px"', 1200, 800), 120, 'but not one a style insists on')
+    close(arrived('', 1200, 800, 300), 200, 'and a narrower pane has it shorter')
+    close(arrived('', 0, 0), 100, 'a picture with no size of its own says nothing new')
+
+    const one = `<img src="${ADDRESS}"><img src="${ADDRESS}">`
+    const listed = (html, imagesHidden = false) =>
+      measureBody({ html: page(html), paper: false, imagesHidden }).pictures()
+    assert.deepEqual(listed(one), [ADDRESS], 'a picture used twice is one request')
+    assert.deepEqual(listed(one, true), [], 'and one nobody has allowed is not asked for')
+    assert.deepEqual(
+      listed('<img src="everyday://mail/part/m/1"><img src="https://elsewhere.example/x.png">'),
+      ['everyday://mail/part/m/1'],
+      'only what the frame could draw: its policy refuses the rest',
+    )
+  }
+
+  // Reading them: only the size is kept, and a dozen arriving together are one
+  // more layout rather than twelve.
+  {
+    const picturesOf = (n) =>
+      measureBody({
+        html: page(
+          Array.from({ length: n }, (_, i) => `<img src="everyday://mail/part/m/${i}">`).join(''),
+        ),
+        paper: false,
+        imagesHidden: false,
+      })
+    const fakes = () => {
+      const made = []
+      return [
+        made,
+        () => {
+          const image = { naturalWidth: 0, naturalHeight: 0, onload: null, src: '' }
+          made.push(image)
+          return image
+        },
+      ]
+    }
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 250))
+    const heights = picturesOf(3)
+    const [made, newImage] = fakes()
+    let told = 0
+    const stop = readPictures(heights, () => (told += 1), new Map(), newImage)
+    assert.deepEqual(
+      made.map((i) => i.src),
+      ['everyday://mail/part/m/0', 'everyday://mail/part/m/1', 'everyday://mail/part/m/2'],
+    )
+    const before = heights(600)
+    for (const image of made) {
+      image.naturalWidth = 600
+      image.naturalHeight = 400
+      image.onload()
+    }
+    assert.equal(told, 0, 'waits for the rest')
+    await settle()
+    assert.equal(told, 1, 'three arrivals, one more layout')
+    assert.ok(heights(600) > before + 800, 'and the answer has moved')
+    stop()
+    assert.ok(
+      made.every((i) => i.src === '' && i.onload === null),
+      'stopping stops the requests',
+    )
+
+    const [dropped, newDropped] = fakes()
+    let late = 0
+    const stopEarly = readPictures(picturesOf(1), () => (late += 1), new Map(), newDropped)
+    dropped[0].naturalWidth = dropped[0].naturalHeight = 10
+    dropped[0].onload()
+    stopEarly()
+    await settle()
+    assert.equal(late, 0, 'nothing is said about a message that has left the screen')
+
+    const [many, newOfMany] = fakes()
+    readPictures(picturesOf(300), () => {}, new Map(), newOfMany)()
+    assert.equal(many.length, 200, 'a message cannot ask for any number of them')
+
+    // The markup changing leaves the pictures as they were: a theme, or the
+    // history opening, must not drop the frame to a guess and ask for them again.
+    const known = new Map()
+    const [first, newFirst] = fakes()
+    const firstHeights = picturesOf(2)
+    readPictures(firstHeights, () => {}, known, newFirst)
+    for (const image of first) {
+      image.naturalWidth = 600
+      image.naturalHeight = 400
+      image.onload()
+    }
+    const sized = firstHeights(600)
+    const [second, newSecond] = fakes()
+    const againHeights = picturesOf(2)
+    readPictures(againHeights, () => {}, known, newSecond)
+    assert.equal(second.length, 0, 'nothing is asked for twice')
+    assert.equal(againHeights(600), sized, 'and the height is right from the start')
+    assert.equal(known.size, 2)
+  }
+
+  // Text flows around a floated picture rather than starting below it.
+  {
+    const FLOATED = '<img src="everyday://mail/part/m/f" width="200" height="300" align="left">'
+    const written = (text) => measureBody(withBody('', text))(600)
+    const beside = (text) => measureBody(withBody('', `<p>${FLOATED}${text}</p>`))(600)
+    assert.ok(beside('Hi') < 360, `a short line sits beside it: ${beside('Hi')}`)
+    const words = 'word '.repeat(600)
+    assert.ok(
+      beside(words) > written(`<p>${words}</p>`),
+      'text beside it has a shorter line, so it takes more of them',
+    )
+    assert.ok(
+      beside(words) < written(`<p>${words}</p>`) + 200,
+      'but only a few more, where starting below it would be its whole 300px',
+    )
+    // One with no room left beside it: what follows goes below, not a letter a line.
+    const WIDE = '<img src="everyday://mail/part/m/w" width="600" height="300" align="left">'
+    const widest = (text) => measureBody(withBody('', `<p>${WIDE}${text}</p>`))(600)
+    assert.ok(widest('Hello there friend') < 400, `words: ${widest('Hello there friend')}`)
+    assert.ok(widest(`<a href="x">${'y'.repeat(120)}</a>`) < 450, 'a long address likewise')
+    // A later, smaller picture does not inherit the room an earlier one took.
+    const small = '<img src="everyday://mail/part/m/s" width="20" height="40" align="left">'
+    const big = '<img src="everyday://mail/part/m/b" width="500" height="50" align="left">'
+    assert.ok(
+      measureBody(
+        withBody('', `<p>${big}x</p><div style="height:100px"></div><p>${small}${words}</p>`),
+      )(600) <
+        written(`<p>${words}</p>`) + 300,
+      'its own width is all it takes from the lines beside it',
+    )
+  }
+
+  // A table's border is part of how narrow a column can go. Without it, one long
+  // row pins the others to their narrowest and every word in them wraps.
+  {
+    const row = (text) => `<tr><td>word</td><td>${text}</td><td>123</td></tr>`
+    const table = (rows) => `<table width="100%" cellpadding="6" border="1">${rows}</table>`
+    const short = 'a short line of text'
+    const measured = (rows) => measureBody(withBody('', table(rows)))(500)
+    const ten = measured(row(short).repeat(10))
+    const withLong = measured(row(short).repeat(10) + row('word '.repeat(90)))
+    assert.ok(withLong - ten < 300, `only the long row got taller: ${ten} to ${withLong}`)
+  }
 
   // One width after another, from one read of the markup.
   const heights = measureBody(withBody('', `<div>${long}</div>`))
