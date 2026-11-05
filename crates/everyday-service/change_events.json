@@ -525,6 +525,30 @@
       ]
     },
     {
+      "command": "delete_forever",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "empty_mailbox",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "allow_remote_images",
       "events": [
         {

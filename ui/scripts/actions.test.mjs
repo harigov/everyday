@@ -265,5 +265,14 @@ assert.equal(
   `${asksAboutDialogs.label} stayed inapplicable after the dialog closed`,
 )
 
+// ── Ctrl+Shift with nothing bound to it is Ctrl ───────────────────────
+//
+// `chordOf` keeps Shift under Ctrl so Reply all can be Ctrl+Shift+R. That must
+// not take away the chords people have always pressed with Shift held too.
+
+assert.equal(press('K', { ctrlKey: true, shiftKey: true }), true, 'Ctrl+Shift+K reaches Ctrl+K')
+press('k', { ctrlKey: true }) // the palette it opened, closed again
+assert.equal(press('Q', { ctrlKey: true, shiftKey: true }), false, 'nothing is bound to Ctrl+Q')
+
 await close()
 console.log('actions: all checks passed')

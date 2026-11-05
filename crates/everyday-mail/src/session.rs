@@ -694,9 +694,20 @@ pub trait MailSession: Send {
     /// The caller of a `Send` or [`OpKind::DiscardDraft`](everyday_core::mail::OpKind::DiscardDraft)
     /// op reaches for this to remove a draft's own stale server copy, once
     /// it is genuinely done with -- see `everyday_mail::outbox`'s "a draft's
-    /// server copy" docs. [`Self::move_to`]'s no-`MOVE` fallback marks and
-    /// expunges the very same way; nothing here is specific to a draft.
+    /// server copy" docs, and an
+    /// [`OpKind::DeleteForever`](everyday_core::mail::OpKind::DeleteForever)
+    /// op for whatever a thread has in Trash or Spam. [`Self::move_to`]'s
+    /// no-`MOVE` fallback marks and expunges the very same way; nothing here
+    /// is specific to a draft.
     async fn delete(&mut self, uids: &UidSet) -> Result<()>;
+
+    /// A plain `EXPUNGE` of the selected mailbox: everything in it flagged
+    /// `\Deleted`, whoever flagged it. Only for a server without `UIDPLUS`,
+    /// and only where that is what was on its way anyway -- a Trash or Spam
+    /// being deleted from for good, where [`Self::delete`] alone would leave
+    /// the mail flagged on the server for ever. See
+    /// `everyday_mail::outbox::execute_relocations`.
+    async fn expunge(&mut self) -> Result<()>;
 
     /// Block until something changes in the selected mailbox, or `stop`
     /// fires. Returns [`Err`] only for a connection problem; a clean stop is

@@ -215,6 +215,8 @@ import {
   mockSetThreadPriority,
   mockScheduledSends,
   mockTrash,
+  mockDeleteForever,
+  mockEmptyMailbox,
   mockUndoSend,
   mockUnlabel,
   mockUnsnooze,
@@ -7236,6 +7238,12 @@ export const mockInvoke = async <T>(
     case 'trash':
       requireUnlocked()
       return mockTrash(strArray(args.threads)) as T
+    case 'delete_forever':
+      requireUnlocked()
+      return mockDeleteForever(strArray(args.threads), strArray(args.from)) as T
+    case 'empty_mailbox':
+      requireUnlocked()
+      return mockEmptyMailbox(str(args.mailbox)) as T
     case 'move_to_mailbox':
       requireUnlocked()
       return mockMoveToMailbox(strArray(args.threads), str(args.to)) as T

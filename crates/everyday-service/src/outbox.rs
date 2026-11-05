@@ -67,7 +67,7 @@ use everyday_core::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, Op
 use everyday_core::mail::{Draft, DraftState, MailboxRole, Op, OpKind, OpState, OpTarget};
 use everyday_mail::outbox::{
     ExecContext, Executed, Located, Lookups, Sender, execute, execute_relocations, is_retryable,
-    relocates,
+    relocates, same_run,
 };
 use everyday_mail::session::{MailError, MailSession};
 
@@ -152,6 +152,7 @@ where
         packs: svc.packs(),
     };
     let mut signed_out = false;
+    let mut deleted: Vec<(MailboxId, Vec<MailMessageId>)> = Vec::new();
 
     // In order, but a run of archives, trashes or moves of one kind --
     // what a bulk action queues, an op per conversation -- goes to the
@@ -162,7 +163,9 @@ where
     while let Some(first) = ops.next() {
         let mut run = vec![first];
         if runs_together(&run[0]) {
-            while let Some(next) = ops.next_if(|op| runs_together(op) && op.kind == run[0].kind) {
+            while let Some(next) =
+                ops.next_if(|op| runs_together(op) && same_run(&op.kind, &run[0].kind))
+            {
                 run.push(next);
             }
         }
@@ -181,10 +184,76 @@ where
         };
         for (mut op, outcome) in run.into_iter().zip(outcomes) {
             settle(svc, &vault, account, &mut op, outcome, &mut report, &mut signed_out).await?;
+            if let (OpState::Done, OpKind::DeleteForever { from, messages }) = (&op.state, op.kind)
+            {
+                deleted.push((from, messages));
+            }
         }
     }
 
+    forget_deleted(svc, &vault, deleted).await;
     Ok(report)
+}
+
+/// Take what a delete forever just removed from the server out of the vault
+/// too -- the rows, the pack frames, the search index -- rather than leave
+/// it findable until the next sync of that mailbox notices it gone. The same
+/// removal [`crate::mailsync::passes`] makes when it does, once per mailbox
+/// for everything this drain deleted there, with one index commit.
+///
+/// Best-effort, as that removal is: the server already agrees, and the next
+/// sync takes out whatever this could not.
+async fn forget_deleted(
+    svc: &Arc<Service>,
+    vault: &Arc<everyday_core::Vault>,
+    deleted: Vec<(MailboxId, Vec<MailMessageId>)>,
+) {
+    if deleted.is_empty() {
+        return;
+    }
+    let vault = vault.clone();
+    let (packs, index) = (svc.packs(), svc.mail_index());
+    let removed = blocking(move || {
+        let mut by_mailbox: std::collections::BTreeMap<MailboxId, Vec<u32>> =
+            std::collections::BTreeMap::new();
+        for (from, messages) in deleted {
+            for message in messages {
+                for (mailbox, uid) in vault.mail_message_locations(message)? {
+                    if mailbox == from {
+                        by_mailbox.entry(from).or_default().push(uid);
+                    }
+                }
+            }
+        }
+        let mut removed = Vec::new();
+        for (mailbox, uids) in by_mailbox {
+            removed.extend(vault.remove_mail_uids(mailbox, &uids)?);
+        }
+        Ok(removed)
+    })
+    .await;
+    let removed = match removed {
+        Ok(removed) => removed,
+        Err(e) => {
+            tracing::warn!(error = %e, "deleted for good, but could not take it out of the vault yet");
+            return;
+        }
+    };
+    if removed.is_empty() {
+        return;
+    }
+    if let Some(packs) = packs {
+        let refs: Vec<_> = removed.iter().map(|(_, r)| r.clone()).collect();
+        if let Err(e) = packs.mark_dead(&refs) {
+            tracing::warn!(error = %e, "could not mark a deleted message's pack frame dead");
+        }
+    }
+    if let Some(index) = index {
+        let keys: Vec<String> = removed.iter().map(|(id, _)| id.to_string()).collect();
+        if let Err(e) = index.delete(&keys).and_then(|()| index.commit()) {
+            tracing::warn!(error = %e, "could not remove a deleted message from the search index");
+        }
+    }
 }
 
 /// Whether `op` can go to the server in one command with its neighbours:
@@ -898,6 +967,18 @@ impl Lookups for VaultLookups {
     fn mailbox_name(&self, mailbox: MailboxId) -> everyday_mail::session::Result<String> {
         let vault = self.vault().map_err(lookup_err)?;
         Ok(vault.mailbox(mailbox).map_err(vault_err)?.remote_name)
+    }
+
+    fn mailbox_role(
+        &self,
+        mailbox: MailboxId,
+    ) -> everyday_mail::session::Result<Option<MailboxRole>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        match vault.mailbox(mailbox) {
+            Ok(found) => Ok(Some(found.role)),
+            Err(everyday_core::Error::NotFound { .. }) => Ok(None),
+            Err(e) => Err(vault_err(e)),
+        }
     }
 
     fn is_gmail(&self) -> bool {

@@ -30,6 +30,7 @@
     type MailOnly,
   } from '../lib/mail'
   import { mail } from '../lib/mail.svelte'
+  import { notify } from '../lib/notify.svelte'
   import { sorting } from '../lib/sorting.svelte'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -43,6 +44,7 @@
     Thread,
     ThreadId,
   } from '../lib/types'
+  import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import MailCleanup from './MailCleanup.svelte'
@@ -170,6 +172,9 @@
 
   let cleaning = $state(false)
 
+  /** What the platform calls the key Ctrl+click is held with. */
+  const modKey = navigator.userAgent.includes('Mac') ? '⌘' : 'Ctrl'
+
   /** Is the list column currently the Snoozed view -- the one place a row's
    *  own date column means "comes back" rather than "last arrived", and the
    *  one place "Unsnooze" belongs in a row's own menu (an ordinary mailbox
@@ -293,8 +298,58 @@
       },
       SEP,
       { label: 'Archive', icon: 'layers', run: () => void mail.archive(t.id) },
-      { label: 'Trash', icon: 'trash', danger: true, run: () => void mail.trash(t.id) },
+      ...deleteItems([t.id]),
     ])
+  }
+
+  /**
+   * The end of a row's menu and the bulk one: to Trash, and -- in Trash or
+   * Spam -- for good. Trash itself offers only the second, since trashing
+   * what is already there changes nothing.
+   */
+  function deleteItems(ids: ThreadId[]): (MenuItem | false)[] {
+    const role = mail.emptiableRole
+    const box = mail.mailbox
+    return [
+      role !== 'trash' && {
+        label: 'Trash',
+        icon: 'trash',
+        danger: true,
+        run: () => void mail.trashMany(ids),
+      },
+      role !== null &&
+        !!box && {
+          label: 'Delete forever…',
+          icon: 'trash',
+          danger: true,
+          run: () => (mail.wantsForever = { ids, mailbox: box }),
+        },
+    ]
+  }
+
+  function confirmForever() {
+    // Copied out before clearing: the dialog's own reading of it is reactive.
+    const ask = mail.wantsForever
+    mail.wantsForever = null
+    if (ask) void mail.deleteForeverMany(ask.ids, ask.mailbox)
+  }
+
+  /** "every account's Trash", or the one account's address it is in. */
+  function emptyScope(box: Mailbox): string {
+    if (isUnifiedMailbox(box)) return `every account's ${mailboxDisplayName(box)}`
+    const address = accounts.account(box.accountId)?.address
+    return address ? `${mailboxDisplayName(box)} for ${address}` : mailboxDisplayName(box)
+  }
+
+  async function confirmEmpty() {
+    const box = mail.wantsEmpty
+    mail.wantsEmpty = null
+    if (!box) return
+    const count = await mail.emptyMailbox(box)
+    if (count === null) return
+    const name = mailboxDisplayName(box)
+    if (count === 0) notify.success(`${name} was already empty`)
+    else notify.success(`Deleted ${plural(count, 'conversation')} for good`, { body: name })
   }
 
   /** The picked threads, in list order -- see `mail.checked`. */
@@ -341,7 +396,7 @@
       { label: 'Move to category', icon: 'inbox', items: categoryMoveItems(ids, null) },
       SEP,
       { label: 'Archive', icon: 'layers', run: () => void mail.archiveMany(ids) },
-      { label: 'Trash', icon: 'trash', danger: true, run: () => void mail.trashMany(ids) },
+      ...deleteItems(ids),
     ])
   }
 
@@ -389,7 +444,7 @@
 <svelte:window onfocus={() => mail.seeOpenThread()} />
 <svelte:document onvisibilitychange={() => mail.seeOpenThread()} />
 
-<section class="list">
+<section class="list" data-thread-list data-mail-pane>
   <div class="top">
     <div class="pane-titles">
       <span class="pane-title">{heading}</span>
@@ -478,6 +533,16 @@
             {label}
           </button>
         {/each}
+      </div>
+    {/if}
+
+    {#if mail.emptiableRole && mail.mailbox && (mail.threads.length > 0 || mail.only.size > 0)}
+      {@const box = mail.mailbox}
+      <div class="empty-bar">
+        <span>Emptying can't be undone.</span>
+        <button class="empty-btn" onclick={() => (mail.wantsEmpty = box)}>
+          <Icon name="trash" size={13} /> Empty {mailboxDisplayName(box)}
+        </button>
       </div>
     {/if}
 
@@ -571,6 +636,7 @@
   {@const sorted = sorting.categoryOf(t)}
   <button
     class="row list-row"
+    data-thread={t.id}
     class:sel={mail.selectedThread === t.id}
     class:checked={picked}
     class:unread={t.unreadCount > 0}
@@ -618,7 +684,7 @@
   </button>
 {/snippet}
 
-<main class="main">
+<main class="main" data-mail-pane>
   {#if mail.composing && !mail.composeInline}
     <!-- A new message, or a draft reopened, where a thread is read rather
          than in a dialog over everything: the list stays in reach beside
@@ -634,9 +700,21 @@
         <button class="btn btn-outline" onclick={() => void mail.archiveMany(mail.targets)}>
           <Icon name="layers" size={14} /> Archive <kbd>E</kbd>
         </button>
-        <button class="btn btn-outline" onclick={() => void mail.trashMany(mail.targets)}>
-          <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
-        </button>
+        {#if mail.emptiableRole !== 'trash'}
+          <button class="btn btn-outline" onclick={() => void mail.trashMany(mail.targets)}>
+            <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
+          </button>
+        {/if}
+        {#if mail.emptiableRole && mail.mailbox}
+          {@const box = mail.mailbox}
+          <button
+            class="btn btn-outline"
+            onclick={() => (mail.wantsForever = { ids: mail.targets, mailbox: box })}
+          >
+            <Icon name="trash" size={14} /> Delete forever…
+            {#if mail.emptiableRole === 'trash'}<kbd>#</kbd>{/if}
+          </button>
+        {/if}
         {#if pickedThreads.some((t) => t.unreadCount > 0)}
           <button class="btn btn-outline" onclick={() => void mail.markReadMany(mail.targets)}>
             <Icon name="check" size={14} /> Mark read <kbd>I</kbd>
@@ -654,9 +732,8 @@
         <button class="btn btn-outline" onclick={(e) => menu.show(e, bulkMenu())}> More… </button>
       </div>
       <p class="bulk-hint">
-        Shift-click picks a run of threads, {navigator.userAgent.includes('Mac')
-          ? '⌘'
-          : 'Ctrl'}-click adds or removes one, and <kbd>X</kbd> picks the one under the cursor.
+        Shift-click or <kbd>Shift</kbd>+<kbd>↓</kbd> picks a run of threads, {modKey}-click adds or
+        removes one, and <kbd>X</kbd> picks the one under the cursor.
       </p>
       <button class="link" onclick={() => mail.clearChecked()}>Clear selection (Esc)</button>
     </div>
@@ -727,14 +804,26 @@
           >
             <Icon name="clock" size={17} />
           </button>
-          <button
-            class="tool"
-            title="Trash (#)"
-            aria-label="Trash"
-            onclick={() => void mail.trash(open.thread.id)}
-          >
-            <Icon name="trash" size={17} />
-          </button>
+          {#if mail.emptiableRole === 'trash' && mail.mailbox}
+            {@const box = mail.mailbox}
+            <button
+              class="tool"
+              title="Delete forever… (#)"
+              aria-label="Delete forever"
+              onclick={() => (mail.wantsForever = { ids: [open.thread.id], mailbox: box })}
+            >
+              <Icon name="trash" size={17} />
+            </button>
+          {:else}
+            <button
+              class="tool"
+              title="Trash (#)"
+              aria-label="Trash"
+              onclick={() => void mail.trash(open.thread.id)}
+            >
+              <Icon name="trash" size={17} />
+            </button>
+          {/if}
         </div>
         <div class="group">
           <button
@@ -864,6 +953,30 @@
 
 {#if mail.wantsLabel}
   <MailLabelPicker onchoose={applyLabel} oncancel={() => (mail.wantsLabel = null)} />
+{/if}
+
+{#if mail.wantsForever}
+  {@const count = mail.wantsForever.ids.length}
+  {@const where = mailboxDisplayName(mail.wantsForever.mailbox)}
+  <ConfirmDialog
+    title={count === 1
+      ? 'Delete this conversation forever?'
+      : `Delete ${plural(count, 'conversation')} forever?`}
+    detail={`${count === 1 ? 'Its' : 'Their'} messages in ${where} are deleted for good, on the server too. This can't be undone.`}
+    confirmLabel="Delete forever"
+    onconfirm={confirmForever}
+    oncancel={() => (mail.wantsForever = null)}
+  />
+{/if}
+
+{#if mail.wantsEmpty}
+  <ConfirmDialog
+    title={`Empty ${mailboxDisplayName(mail.wantsEmpty)}?`}
+    detail={`Everything in ${emptyScope(mail.wantsEmpty)} is deleted for good, on the server too. This can't be undone.`}
+    confirmLabel={`Empty ${mailboxDisplayName(mail.wantsEmpty)}`}
+    onconfirm={() => void confirmEmpty()}
+    oncancel={() => (mail.wantsEmpty = null)}
+  />
 {/if}
 
 {#if cleaning}
@@ -1040,6 +1153,43 @@
   .only-toggle.on {
     background: color-mix(in oklab, var(--accent) 16%, transparent);
     color: color-mix(in oklab, var(--accent) 72%, var(--fg));
+  }
+
+  /* Trash and Spam: the one thing to do with all of it, said once. */
+  .empty-bar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    margin: 0 var(--sp-4) var(--sp-2);
+    padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-3);
+    border-radius: var(--radius);
+    background: var(--bg-hover);
+    font-size: var(--text-xs);
+    color: var(--fg-subtle);
+  }
+  .empty-bar > span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .empty-btn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 26px;
+    padding: 0 var(--sp-2);
+    border-radius: 999px;
+    font-weight: 600;
+    color: var(--danger);
+    white-space: nowrap;
+    transition: background var(--fast) var(--ease);
+  }
+  .empty-btn:hover {
+    background: color-mix(in oklab, var(--danger) 14%, transparent);
   }
 
   /* ── Rows ───────────────────────────────────────────────────────── */

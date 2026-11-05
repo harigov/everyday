@@ -559,6 +559,22 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "archive", json!({ "threads": [thread_id.to_string()] })).await;
     run(&svc, &h, "trash", json!({ "threads": [thread_id.to_string()] })).await;
+    let trash_id = {
+        let mailbox = Mailbox::new(mail_account_id, "Trash", MailboxRole::Trash);
+        let id = mailbox.id;
+        vault.save_mailbox(&mailbox).unwrap();
+        id
+    };
+    let trashed = seed_thread(&vault, mail_account_id, trash_id, 1, "Already in Trash");
+    run(
+        &svc,
+        &h,
+        "delete_forever",
+        json!({ "threads": [trashed.to_string()], "from": [trash_id.to_string()] }),
+    )
+    .await;
+    seed_thread(&vault, mail_account_id, trash_id, 2, "Also in Trash");
+    run(&svc, &h, "empty_mailbox", json!({ "mailbox": trash_id.to_string() })).await;
 
     run(
         &svc,

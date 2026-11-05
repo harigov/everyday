@@ -46,6 +46,7 @@ import {
   serializeOnlyPref,
   snoozeChoices,
   stepCategoryTab,
+  emptiableRole,
   sumCategoryCounts,
   syncInProgress,
   syntheticSnoozedMailboxId,
@@ -188,6 +189,13 @@ class MailState {
   /** The threads the label picker is open for -- the proper picker `l`
    *  opens in place of a `window.prompt`. */
   wantsLabel = $state<ThreadId[] | null>(null)
+  /** The threads "Delete forever" is asking about, and whose Trash or Spam
+   *  they go from -- the confirmation `MailView` draws for it, raised by a
+   *  menu, a button or Delete pressed in Trash. */
+  wantsForever = $state<{ ids: ThreadId[]; mailbox: Mailbox } | null>(null)
+  /** The Trash or Spam "Empty" is asking about: one account's, or an "All
+   *  accounts" row. */
+  wantsEmpty = $state<Mailbox | null>(null)
   /**
    * The account whose Scheduled list `MailView`'s list column is showing in
    * place of a mailbox's threads, or `null` -- a view state alongside
@@ -285,6 +293,8 @@ class MailState {
     this.parkedDraft = null
     this.wantsSnooze = null
     this.wantsLabel = null
+    this.wantsForever = null
+    this.wantsEmpty = null
     this.viewingScheduledFor = null
     this.summary = null
     if (this.#undoTimer) clearInterval(this.#undoTimer)
@@ -929,6 +939,26 @@ class MailState {
     this.#anchor = id
   }
 
+  /**
+   * Shift+Down/Up: move the cursor a row and pick every thread from where
+   * the picking started to it, the keyboard's Shift+click. The first press
+   * starts from the thread under the cursor -- the open one, usually -- so
+   * it and the next are picked together.
+   */
+  extendChecked(step: 1 | -1) {
+    const shown = this.#shownThreads
+    const listed = (id: ThreadId | null) => id !== null && shown.some((t) => t.id === id)
+    const next = this.#neighbour(step)
+    if (!next) return
+    // An anchor left over from a thread since removed, or from another
+    // mailbox, starts the run afresh from the cursor rather than picking
+    // one row at a time.
+    if (!listed(this.#anchor))
+      this.#anchor = listed(this.selectedThread) ? this.selectedThread : next.id
+    this.selectedThread = next.id
+    this.checked = new Set(threadRange(shown, this.#anchor, next.id))
+  }
+
   /** Mod+A: every thread the list has loaded. */
   checkAll() {
     this.checked = new Set(this.#shownThreads.map((t) => t.id))
@@ -1216,6 +1246,72 @@ class MailState {
   }
   trashMany(ids: readonly ThreadId[]) {
     return this.#remove(ids, mailApi.trashMany)
+  }
+
+  /** Trash or Spam, when that is the list on screen -- see `emptiableRole`.
+   *  `null` over a search, whose results come from anywhere. */
+  get emptiableRole(): 'trash' | 'spam' | null {
+    if (this.viewingScheduledFor !== null || this.searchQuery.trim()) return null
+    return emptiableRole(this.mailbox)
+  }
+
+  /** Delete, Backspace and `#`: to Trash -- or, in Trash itself, where that
+   *  would change nothing, ask whether to delete them for good. */
+  deleteTargets() {
+    const ids = this.targets
+    const box = this.mailbox
+    if (ids.length === 0) return
+    if (box && this.emptiableRole === 'trash') this.wantsForever = { ids, mailbox: box }
+    else void this.trashMany(ids)
+  }
+
+  /** Delete `ids` for good from `box`, a Trash or Spam -- every mailbox an
+   *  "All accounts" row gathers, so each thread goes from whichever of them
+   *  it is in. Gone from the list at once, like a trash; asked about first,
+   *  by the caller. */
+  deleteForeverMany(ids: readonly ThreadId[], box: Mailbox) {
+    const from = emptiableRole(box) ? listTarget(box, this.mailboxes)?.mailboxIds : undefined
+    if (!from) return Promise.resolve()
+    return this.#remove(ids, (t) => mailApi.deleteForeverMany(t, from))
+  }
+
+  /**
+   * Empty `box`, a Trash or Spam, or each account's at once from an "All
+   * accounts" row. Answers how many conversations went, or `null` when it
+   * failed and has said so.
+   *
+   * The list on screen empties at once when everything it gathers is being
+   * emptied -- the mailbox itself, or one account's under the "All accounts"
+   * row being emptied. When only some of it is (one account's Trash, under
+   * that row on screen), which rows go is the backend's to say, so the list
+   * is asked for again once it has.
+   */
+  async emptyMailbox(box: Mailbox): Promise<number | null> {
+    const target = emptiableRole(box) ? listTarget(box, this.mailboxes) : null
+    if (!target) return null
+    const emptied = new Set(target.mailboxIds)
+    const shown = this.emptiableRole ? listTarget(this.mailbox, this.mailboxes) : null
+    const all = !!shown && shown.mailboxIds.every((id) => emptied.has(id))
+    const some = !!shown && !all && shown.mailboxIds.some((id) => emptied.has(id))
+    if (all && this.threads.length > 0) {
+      this.#advanceIfOpen(new Set(this.threads.map((t) => t.id)))
+      this.checked = new Set()
+      this.threads = []
+    }
+    let count = 0
+    try {
+      for (const id of target.mailboxIds) count += await mailApi.emptyMailbox(id)
+      if (some) void this.refresh()
+      return count
+    } catch (e) {
+      // Some of it may have gone before the failure: the list is asked for
+      // again rather than put back as it was.
+      if (all || some) void this.refresh()
+      await handle(e)
+      return null
+    } finally {
+      this.#scheduleUnreadRefresh()
+    }
   }
 
   /** Quick cleanup's Archive: every thread in `ids` at once. Answers whether

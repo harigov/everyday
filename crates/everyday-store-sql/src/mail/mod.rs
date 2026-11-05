@@ -555,6 +555,57 @@ impl MailStore for SqlStore {
         write::restore_thread_mailboxes(self, thread)
     }
 
+    fn unhide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()> {
+        write::unhide_thread_from_mailbox(self, thread, mailbox)
+    }
+
+    fn listed_messages_in(
+        &self,
+        mailbox: MailboxId,
+        threads: Option<&[ThreadId]>,
+    ) -> Result<Vec<(ThreadId, MailMessageId)>> {
+        // Joined to `thread_mailboxes` on the same mailbox, which is what
+        // "listed" means: a thread an op has already hidden there has no row.
+        const SELECT: &str = "SELECT m.thread_id, mm.message_id FROM message_mailboxes mm
+             JOIN mail_messages m ON m.id = mm.message_id
+             JOIN thread_mailboxes tm ON tm.thread_id = m.thread_id AND tm.mailbox_id = mm.mailbox_id";
+        let parse = |rows: Vec<crate::conn::Row>| -> Result<Vec<(ThreadId, MailMessageId)>> {
+            rows.into_iter()
+                .map(|r| {
+                    let invalid = |e: String| everyday_core::error::Error::Invalid(e);
+                    let thread: ThreadId =
+                        r.text(0)?.parse().map_err(|e: <ThreadId as std::str::FromStr>::Err| {
+                            invalid(e.to_string())
+                        })?;
+                    let message: MailMessageId = r.text(1)?.parse().map_err(
+                        |e: <MailMessageId as std::str::FromStr>::Err| invalid(e.to_string()),
+                    )?;
+                    Ok((thread, message))
+                })
+                .collect()
+        };
+        let Some(threads) = threads else {
+            let rows = self.read().query(
+                &format!("{SELECT} WHERE mm.mailbox_id = ?1"),
+                &vals![mailbox.to_string()],
+            )?;
+            return parse(rows);
+        };
+        let mut out = Vec::new();
+        for chunk in threads.chunks(write::IN_CHUNK) {
+            let (where_sql, args) = Where::new()
+                .eq("mm.mailbox_id", mailbox.to_string())
+                .in_list("m.thread_id", chunk.iter().map(|t| t.to_string()))
+                .finish();
+            out.extend(parse(self.read().query(&format!("{SELECT} WHERE {where_sql}"), &args)?)?);
+        }
+        Ok(out)
+    }
+
+    fn hide_and_enqueue(&self, mailbox: MailboxId, ops: &[Op]) -> Result<()> {
+        write::hide_and_enqueue(self, mailbox, ops)
+    }
+
     fn set_thread_snoozed_until(&self, thread: ThreadId, until: Option<Timestamp>) -> Result<()> {
         write::set_thread_snoozed_until(self, thread, until)
     }

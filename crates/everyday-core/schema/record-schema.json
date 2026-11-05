@@ -4131,6 +4131,32 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "Delete, for good, `messages`' copies in `from` -- a Trash or Spam,\nand never anywhere else: see [`MailboxRole::empties`]. What \"Delete\nforever\" and emptying a mailbox both queue, one op per thread.\n\n`messages` is what the thread had in `from` when the person said yes,\nso a reply filed there afterwards is not deleted unseen by an op that\nwaited to run. Only `from`'s copies go: a conversation with one\nmessage in Trash and the rest in the Inbox keeps the rest.",
+            "properties": {
+              "from": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "messages": {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "deleteForever",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "from",
+              "messages"
+            ],
+            "type": "object"
           }
         ]
       },

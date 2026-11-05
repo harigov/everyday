@@ -147,6 +147,10 @@ export function chord(parts: {
  * `?` is already Shift+/ on most layouts and Shift+, on some; recording the
  * modifier as well would mean a binding table that only works on one
  * keyboard. What is typed is what is matched.
+ *
+ * Except under Ctrl or Cmd. There Shift is the whole difference between two
+ * of the commonest chords there are -- Ctrl+R replies, Ctrl+Shift+R replies
+ * to all -- and the key is a letter rather than a symbol a layout moves.
  */
 export function chordOf(event: {
   key: string
@@ -162,8 +166,24 @@ export function chordOf(event: {
     key,
     mod: event.ctrlKey || event.metaKey,
     alt: event.altKey,
-    shift: event.shiftKey && !printable,
+    shift: event.shiftKey && (!printable || event.ctrlKey || event.metaKey),
   })
+}
+
+/**
+ * `chord` with Shift taken back out, when [`chordOf`] only kept it because
+ * Ctrl or Cmd was held on a printable key -- `null` for every other chord.
+ *
+ * What a press falls back to when nothing is bound to it as typed. Ctrl+Shift+K
+ * still opens the palette, and a layout that needs Shift to type `,` still
+ * reaches Ctrl+, -- only a binding that names Shift itself, like Reply all's,
+ * tells the two apart.
+ */
+export function withoutShift(chord: string): string | null {
+  const parts = chord.split('+')
+  const key = parts.at(-1) ?? ''
+  if (key.length !== 1 || !parts.includes('mod') || !parts.includes('shift')) return null
+  return parts.filter((p) => p !== 'shift').join('+')
 }
 
 /**
@@ -261,6 +281,8 @@ export function chordLabel(spec: string, mac: boolean): string {
     ArrowDown: '↓',
     Escape: 'Esc',
     Enter: mac ? '↩' : 'Enter',
+    Backspace: mac ? '⌫' : 'Backspace',
+    Delete: mac ? '⌦' : 'Delete',
     ' ': 'Space',
   }
   const shown = names[key] ?? (key.length === 1 ? key.toUpperCase() : key)

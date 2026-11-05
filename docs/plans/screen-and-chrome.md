@@ -81,7 +81,8 @@ offers only what has a command behind it today.
 - **Cross-app results in the bar.** The vault's search index could put the
   best notes and entries under any query; the row list is shaped for it
   (`Row` is a union), but it is a different feature from replacing five fields.
-- **Folder operations with no command.** Renaming a mailbox, emptying Trash.
+- **Folder operations with no command.** Renaming a mailbox. (Emptying Trash
+  and Spam has one now: `empty_mailbox`, offered on the row's menu.)
 - **macOS traffic-light position.** The window controls now sit over the
   46px strip instead of the app bar's 54px cap. Untested on a Mac; if they
   look high, `trafficLightPosition` in `tauri.conf.json` is the knob.

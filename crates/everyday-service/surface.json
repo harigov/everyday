@@ -873,6 +873,31 @@
     {
       "args": [
         {
+          "name": "threads",
+          "required": true,
+          "type": "ThreadId[]"
+        },
+        {
+          "name": "from",
+          "required": true,
+          "type": "MailboxId[]"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "delete_forever",
+      "orScope": null,
+      "returns": "Op[]",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "GoalId"
@@ -1412,6 +1437,26 @@
       "name": "draft_with_ai",
       "orScope": null,
       "returns": "WrittenText",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "mailbox",
+          "required": true,
+          "type": "MailboxId"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "empty_mailbox",
+      "orScope": null,
+      "returns": "number",
       "scope": "mail",
       "sensitive": false,
       "streams": false

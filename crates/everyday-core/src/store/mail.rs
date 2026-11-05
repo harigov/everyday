@@ -535,6 +535,29 @@ pub trait MailStore: Send + Sync {
     /// hid.
     fn restore_thread_mailboxes(&self, thread: ThreadId) -> Result<()>;
 
+    /// Clear the one marker [`MailStore::hide_thread_from_mailbox`] left for
+    /// `(thread, mailbox)`, then recompute `thread`'s `thread_mailboxes` rows
+    /// -- what a permanently failed op that hid it there undoes. Unlike
+    /// [`MailStore::restore_thread_mailboxes`], a marker another op still
+    /// waiting left in a different mailbox stays where it is.
+    fn unhide_thread_from_mailbox(&self, thread: ThreadId, mailbox: MailboxId) -> Result<()>;
+
+    /// Every message filed in `mailbox` whose thread is listed there -- not
+    /// hidden by an op still waiting -- as `(thread, message)` ids, decrypting
+    /// nothing; only `threads`' when given. What deleting threads for good
+    /// from a Trash or Spam, or emptying one, names its ops from.
+    fn listed_messages_in(
+        &self,
+        mailbox: MailboxId,
+        threads: Option<&[ThreadId]>,
+    ) -> Result<Vec<(ThreadId, MailMessageId)>>;
+
+    /// [`MailStore::hide_thread_from_mailbox`] for each thread-targeted op's
+    /// thread, and [`MailStore::enqueue_op`] for each op, all in one
+    /// transaction: emptying a Trash of thousands is one commit rather than
+    /// two per conversation, and never half done.
+    fn hide_and_enqueue(&self, mailbox: MailboxId, ops: &[Op]) -> Result<()>;
+
     /// Set message `id`'s own category directly -- what the model-assisted
     /// categorisation pass writes once it has an answer for a message the
     /// rules could only call `Other`, on the same optimistic-write terms

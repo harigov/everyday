@@ -454,6 +454,12 @@ impl MailSession for FakeMailSession {
         Ok(())
     }
 
+    /// `delete` above removes outright, as if every server had `UIDPLUS`,
+    /// so there is never anything left flagged for this to remove.
+    async fn expunge(&mut self) -> SessionResult<()> {
+        Ok(())
+    }
+
     /// `UID SEARCH HEADER Message-ID` stood in for by a linear scan of
     /// `mailbox`'s own messages, comparing each one's parsed `Message-ID`
     /// header -- exactly what the recovery path this fake exists for

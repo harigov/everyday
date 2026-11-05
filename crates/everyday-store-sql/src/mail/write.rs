@@ -23,10 +23,11 @@ use everyday_core::error::{Error, Result};
 use everyday_core::id::{AccountId, MailMessageId, MailboxId, PackId, ThreadId};
 use everyday_core::mail::{
     Address, Category, CategoryMatch, CategoryRules, CategorySource, Invite, MailboxRole, Message,
-    MessageFlags, SortedAs, Thread,
+    MessageFlags, Op, OpTarget, SortedAs, Thread,
     categorize::{self, CategorizeInput},
 };
 use everyday_core::packstore::PackRef;
+use everyday_core::record::RecordDescriptor;
 use everyday_core::store::mail::{IngestMessage, MailStore, message_aad, thread_aad};
 
 use crate::conn::{Sql, SqlExt, Value};
@@ -423,6 +424,56 @@ pub(super) fn restore_thread_mailboxes(store: &SqlStore, thread: ThreadId) -> Re
         &vals![thread.to_string()],
     )?;
     recompute_thread_mailboxes(tx.as_mut(), thread)?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::unhide_thread_from_mailbox`].
+pub(super) fn unhide_thread_from_mailbox(
+    store: &SqlStore,
+    thread: ThreadId,
+    mailbox: MailboxId,
+) -> Result<()> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    tx.execute(
+        "DELETE FROM hidden_thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
+        &vals![thread.to_string(), mailbox.to_string()],
+    )?;
+    recompute_thread_mailboxes(tx.as_mut(), thread)?;
+    tx.commit()
+}
+
+/// See [`everyday_core::store::mail::MailStore::hide_and_enqueue`]: the
+/// marker and the row [`hide_thread_from_mailbox`] writes for each op's
+/// thread, and the op itself, in one transaction. Sealed before the writer
+/// is taken, as every batch here is.
+pub(super) fn hide_and_enqueue(store: &SqlStore, mailbox: MailboxId, ops: &[Op]) -> Result<()> {
+    if ops.is_empty() {
+        return Ok(());
+    }
+    let sealed = ops
+        .iter()
+        .map(|op| Ok((op, store.seal(&Op::aad(op.id), op)?)))
+        .collect::<Result<Vec<_>>>()?;
+    let mailbox_s = mailbox.to_string();
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    for (op, data) in sealed {
+        if let OpTarget::Thread(thread) = op.target {
+            let thread_s = thread.to_string();
+            tx.execute(
+                "INSERT INTO hidden_thread_mailboxes (thread_id, mailbox_id) VALUES (?1, ?2)
+                 ON CONFLICT (thread_id, mailbox_id) DO NOTHING",
+                &vals![thread_s.clone(), mailbox_s.clone()],
+            )?;
+            tx.execute(
+                "DELETE FROM thread_mailboxes WHERE thread_id = ?1 AND mailbox_id = ?2",
+                &vals![thread_s, mailbox_s.clone()],
+            )?;
+        }
+        let (sql, args) = upsert_stmt(op, data);
+        tx.execute(&sql, &args)?;
+    }
     tx.commit()
 }
 

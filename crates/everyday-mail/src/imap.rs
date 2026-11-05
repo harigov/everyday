@@ -518,6 +518,18 @@ impl MailSession for ImapSession {
         Ok(())
     }
 
+    async fn expunge(&mut self) -> Result<()> {
+        let session = self.session_mut()?;
+        session
+            .expunge()
+            .await
+            .map_err(classify)?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(classify)?;
+        Ok(())
+    }
+
     async fn append(&mut self, mailbox: &str, raw: &[u8], flags: Flags) -> Result<Option<Uid>> {
         let flags_part = flags.to_imap_list().map(|f| format!(" {f}")).unwrap_or_default();
         let command =

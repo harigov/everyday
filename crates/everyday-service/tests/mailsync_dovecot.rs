@@ -700,6 +700,94 @@ async fn write_actions_sync_through_a_real_server() {
     );
 }
 
+/// Emptying Trash on a real server: what was in Trash is expunged there,
+/// what the same conversation has in the Inbox is not, and the next sync
+/// takes the deleted messages out of the vault rather than bringing them
+/// back. No other test in this suite touches Trash, so emptying the whole of
+/// it here takes nothing another test is relying on.
+#[tokio::test]
+async fn emptying_trash_deletes_it_on_a_real_server_and_the_next_sync_agrees() {
+    let Some(cfg) = config() else { return };
+
+    let run = std::process::id();
+    let first = format!("empty-trash-first-{run}");
+    let reply = format!("empty-trash-reply-{run}");
+    let alone = format!("empty-trash-alone-{run}");
+    let full = |id: &str| format!("{id}@everyday-mail.test");
+
+    let mut seed_session = connect(&cfg).await;
+    // Dovecot's own image may already have one; either way there is one now.
+    let _ = seed_session.create_mailbox("Trash").await;
+    let trashed = plain_message("A conversation", &first, None, "the part that was deleted");
+    seed_session.append("Trash", &trashed, Flags::NONE).await.expect("APPEND to Trash");
+    let answer = plain_message("Re: A conversation", &reply, Some(&first), "the part still here");
+    seed_session.append("INBOX", &answer, Flags::NONE).await.expect("APPEND to INBOX");
+    let lone = plain_message("Deleted on its own", &alone, None, "nothing else of it anywhere");
+    seed_session.append("Trash", &lone, Flags::NONE).await.expect("APPEND to Trash");
+    drop(seed_session);
+
+    let (svc, _dir) = support::vault::service(None);
+    let vault = svc.get().unwrap();
+    let account = Account::new(Provider::Custom, "everyday@example.com");
+    let account_id = account.id;
+    vault.save_account(&account).unwrap();
+
+    let mut session = connect(&cfg).await;
+    sync_once_against(&svc, &vault, account_id, &mut session).await;
+    let trash = vault
+        .mailboxes(account_id)
+        .unwrap()
+        .into_iter()
+        .find(|m| m.role == everyday_core::mail::MailboxRole::Trash)
+        .expect("Trash should have synced with its role");
+    for id in [&first, &reply, &alone] {
+        assert!(
+            vault.message_by_message_id_header(account_id, &full(id)).unwrap().is_some(),
+            "{id} should have synced"
+        );
+    }
+
+    let emptied = call(&svc, "empty_mailbox", serde_json::json!({ "mailbox": trash.id })).await;
+    assert!(emptied.as_u64().unwrap() >= 2, "both Trash conversations were queued: {emptied}");
+    let sender = TestSmtpSender::new(String::new(), 0);
+    let report = everyday_service::outbox::drain_outbox(&svc, account_id, &mut session, &sender)
+        .await
+        .expect("draining the deletes");
+    assert_eq!(report.failed, 0, "{report:?}");
+    assert!(report.done >= 2, "{report:?}");
+
+    let mut verify = connect(&cfg).await;
+    for id in [&first, &alone] {
+        let found = verify.search_message_id("Trash", &full(id)).await.expect("SEARCH Trash");
+        assert!(found.is_none(), "{id} should be gone from Trash on the server");
+    }
+    let kept = verify.search_message_id("INBOX", &full(&reply)).await.expect("SEARCH INBOX");
+    assert!(kept.is_some(), "the conversation's Inbox message must not be touched");
+    for id in [&first, &alone] {
+        assert!(
+            vault.message_by_message_id_header(account_id, &full(id)).unwrap().is_none(),
+            "{id} should leave the vault as soon as the server has deleted it"
+        );
+    }
+
+    sync_once_against(&svc, &vault, account_id, &mut session).await;
+    for id in [&first, &alone] {
+        assert!(
+            vault.message_by_message_id_header(account_id, &full(id)).unwrap().is_none(),
+            "{id} should be gone from the vault once the sync has seen it go"
+        );
+    }
+    assert!(vault.message_by_message_id_header(account_id, &full(&reply)).unwrap().is_some());
+    let listed = vault.list_threads(trash.id, &ThreadFilter::default(), None, 50).unwrap();
+    assert!(
+        listed
+            .threads
+            .iter()
+            .all(|t| t.subject != "A conversation" && t.subject != "Deleted on its own"),
+        "nothing of what was emptied is listed in Trash again"
+    );
+}
+
 // ---------------------------------------------------------------------
 // Cancelling IDLE must not lose the connection (finding 1)
 // ---------------------------------------------------------------------

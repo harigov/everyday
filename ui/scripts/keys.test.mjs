@@ -31,7 +31,7 @@ import assert from 'node:assert/strict'
 import { load } from './harness.mjs'
 
 const { module: keys, close } = await load('/src/lib/keys.ts')
-const { chord, chordLabel, chordOf, isTyping, keysLabel, match, sequence } = keys
+const { chord, chordLabel, chordOf, isTyping, keysLabel, match, sequence, withoutShift } = keys
 
 /** A key event, with the four flags defaulted off. */
 function press(key, flags = {}) {
@@ -62,6 +62,17 @@ assert.equal(chordOf(press('?', { shiftKey: true })), '?')
 assert.equal(chordOf(press('J', { shiftKey: true })), 'j')
 // But it is recorded for a named key, where there is no character to go on.
 assert.equal(chordOf(press('Tab', { shiftKey: true })), 'shift+Tab')
+assert.equal(chordOf(press('ArrowDown', { shiftKey: true })), 'shift+ArrowDown')
+// And under Ctrl or Cmd, where it is all that tells Reply all from Reply.
+assert.equal(chordOf(press('R', { ctrlKey: true, shiftKey: true })), 'mod+shift+r')
+assert.equal(chordOf(press('R', { metaKey: true, shiftKey: true })), 'mod+shift+r')
+assert.equal(chordOf(press('r', { ctrlKey: true })), 'mod+r')
+// ...which a press falls back from when nothing is bound with the Shift.
+assert.equal(withoutShift('mod+shift+k'), 'mod+k')
+assert.equal(withoutShift('mod+alt+shift+k'), 'mod+alt+k')
+assert.equal(withoutShift('mod+k'), null)
+assert.equal(withoutShift('shift+Tab'), null, 'a named key keeps its Shift')
+assert.equal(withoutShift('mod+shift+ArrowDown'), null)
 
 // ── Matching, including sequences ─────────────────────────────────────
 
@@ -130,6 +141,10 @@ assert.equal(chordLabel('mod+n', false), 'Ctrl+N')
 assert.equal(chordLabel('mod+shift+k', false), 'Ctrl+Shift+K')
 assert.equal(chordLabel('Escape', false), 'Esc')
 assert.equal(chordLabel('ArrowLeft', false), '←')
+// The Mac's "delete" key is Backspace, and is printed with this.
+assert.equal(chordLabel('Backspace', true), '⌫')
+assert.equal(chordLabel('Backspace', false), 'Backspace')
+assert.equal(chordLabel('Delete', true), '⌦')
 assert.equal(keysLabel('g j', false), 'G then J')
 
 await close()

@@ -67,6 +67,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     messages_filed_in_leaves_out_what_a_thread_holds_elsewhere(store);
     uids_filed_without_asks_of_the_message_not_of_the_uid(store);
     a_thread_list_can_keep_to_threads_with_nothing_newer_than_a_date(store);
+    deleting_forever_names_what_is_listed_and_hides_it_in_one_go(store);
+    unhiding_one_mailbox_leaves_another_hidden(store);
 
     eprintln!("--- mail suite passed ---");
 }
@@ -2150,6 +2152,99 @@ fn a_thread_list_can_keep_to_threads_with_nothing_newer_than_a_date(store: &dyn 
         vec![answered, quiet],
         "in the Inbox's own order, the answered thread placed by its answer"
     );
+
+    cleanup_account(store, account);
+}
+
+/// `listed_messages_in` names, by id, what each listed thread has in the
+/// one mailbox -- not what it has elsewhere, and nothing of a thread already
+/// hidden there -- and `hide_and_enqueue` hides and queues a batch at once.
+fn deleting_forever_names_what_is_listed_and_hides_it_in_one_go(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let trash = Mailbox::new(account, "Trash", MailboxRole::Trash);
+    m.put_mailbox(&inbox).unwrap();
+    m.put_mailbox(&trash).unwrap();
+
+    let now = Timestamp::now();
+    let split = ThreadId::new();
+    let trashed = message(account, split, "Split", "a@example.com", now);
+    let kept = message(account, split, "Re: Split", "b@example.com", now);
+    let alone_thread = ThreadId::new();
+    let alone = message(account, alone_thread, "Alone", "c@example.com", now);
+    let hidden_thread = ThreadId::new();
+    let hidden = message(account, hidden_thread, "Hidden", "d@example.com", now);
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: trashed.clone(), mailbox: trash.id, uid: 1 },
+            IngestMessage { message: kept.clone(), mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: alone.clone(), mailbox: trash.id, uid: 2 },
+            IngestMessage { message: hidden.clone(), mailbox: trash.id, uid: 3 },
+        ],
+    )
+    .unwrap();
+    m.hide_thread_from_mailbox(hidden_thread, trash.id).unwrap();
+
+    let mut all = m.listed_messages_in(trash.id, None).unwrap();
+    all.sort();
+    let mut expected = vec![(split, trashed.id), (alone_thread, alone.id)];
+    expected.sort();
+    assert_eq!(all, expected, "Trash's own copies, of the threads still listed there");
+    let some = m.listed_messages_in(trash.id, Some(&[split, hidden_thread])).unwrap();
+    assert_eq!(some, vec![(split, trashed.id)], "narrowed to the threads asked about");
+    assert!(m.listed_messages_in(trash.id, Some(&[])).unwrap().is_empty());
+
+    let ops: Vec<Op> = [split, alone_thread]
+        .iter()
+        .map(|&t| Op::new(account, OpKind::Archive, OpTarget::Thread(t), Origin::Person))
+        .collect();
+    m.hide_and_enqueue(trash.id, &ops).unwrap();
+    let listed = m.list_threads(trash.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert!(listed.threads.is_empty(), "every thread hidden from Trash");
+    let inbox_list = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(inbox_list.threads.len(), 1, "the Inbox half is untouched");
+    let due = m.due_ops(account, now + SignedDuration::from_secs(60), 10).unwrap();
+    assert_eq!(due.len(), 2, "both ops queued");
+    // Recomputing the thread (a flag change) does not bring it back.
+    m.set_message_flags(trashed.id, MessageFlags { seen: true, ..MessageFlags::default() })
+        .unwrap();
+    let listed = m.list_threads(trash.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert!(listed.threads.is_empty(), "the markers hold through a recompute");
+
+    cleanup_account(store, account);
+}
+
+/// Unhiding a thread from one mailbox puts it back there and leaves a marker
+/// another op set elsewhere where it is.
+fn unhiding_one_mailbox_leaves_another_hidden(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let trash = Mailbox::new(account, "Trash", MailboxRole::Trash);
+    m.put_mailbox(&inbox).unwrap();
+    m.put_mailbox(&trash).unwrap();
+    let thread = ThreadId::new();
+    let now = Timestamp::now();
+    let a = message(account, thread, "Split", "a@example.com", now);
+    let b = message(account, thread, "Re: Split", "b@example.com", now);
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: a, mailbox: trash.id, uid: 1 },
+            IngestMessage { message: b, mailbox: inbox.id, uid: 1 },
+        ],
+    )
+    .unwrap();
+    m.hide_thread_from_mailbox(thread, inbox.id).unwrap();
+    m.hide_thread_from_mailbox(thread, trash.id).unwrap();
+
+    m.unhide_thread_from_mailbox(thread, trash.id).unwrap();
+    let in_trash = m.list_threads(trash.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert_eq!(in_trash.threads.len(), 1, "back in Trash");
+    let in_inbox = m.list_threads(inbox.id, &ThreadFilter::default(), None, 10).unwrap();
+    assert!(in_inbox.threads.is_empty(), "still hidden from the Inbox");
 
     cleanup_account(store, account);
 }

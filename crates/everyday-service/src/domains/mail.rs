@@ -250,6 +250,22 @@ pub struct MoveThreads {
     pub to: MailboxId,
 }
 
+/// `delete_forever`'s arguments: the threads, and the Trash or Spam
+/// mailboxes to delete them from -- whichever the list on screen gathers.
+/// See [`Vault::delete_forever`].
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteForever {
+    pub threads: Vec<ThreadId>,
+    pub from: Vec<MailboxId>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmptyMailbox {
+    pub mailbox: MailboxId,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelThreads {
@@ -318,6 +334,39 @@ async fn move_to_mailbox(
     args: MoveThreads,
 ) -> CommandResult<Vec<Op>> {
     batch_op(svc, args.threads, OpKind::Move { to: args.to }).await
+}
+
+/// Delete for good what `threads` have in the mailboxes `from` names -- the
+/// list's "Delete forever", and the Delete key inside Trash. Answers the ops
+/// queued, which leave out any thread with nothing there.
+async fn delete_forever(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: DeleteForever,
+) -> CommandResult<Vec<Op>> {
+    let origin = Origin::Person;
+    svc.check_mail_rate_limit(&origin, "person")?;
+    let vault = svc.require()?;
+    let ops =
+        blocking(move || Ok(vault.delete_forever(&args.threads, &args.from, origin)?)).await?;
+    for account in ops.iter().map(|op| op.account_id).collect::<BTreeSet<_>>() {
+        svc.notify_mail_write(account);
+    }
+    Ok(ops)
+}
+
+/// Delete for good everything in one Trash or Spam -- "Empty Trash". Answers
+/// how many conversations went, rather than an op for each: a Trash can hold
+/// thousands, and nothing on the other side reads them.
+async fn empty_mailbox(svc: Arc<Service>, _ctx: Ctx, args: EmptyMailbox) -> CommandResult<u32> {
+    let origin = Origin::Person;
+    svc.check_mail_rate_limit(&origin, "person")?;
+    let vault = svc.require()?;
+    let ops = blocking(move || Ok(vault.empty_mailbox(args.mailbox, origin)?)).await?;
+    if let Some(op) = ops.first() {
+        svc.notify_mail_write(op.account_id);
+    }
+    Ok(u32::try_from(ops.len()).unwrap_or(u32::MAX))
 }
 
 /// Refuse a label that is empty or carries a control character, before
@@ -1660,6 +1709,23 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: ThreadIds, returns: "Op[]",
         signature: &[("threads", "ThreadId[]", true)],
         run: trash,
+    },
+    command! {
+        name: "delete_forever", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        ids: |a: &DeleteForever| a.threads.iter().map(|t| t.to_string()).collect(),
+        args: DeleteForever, returns: "Op[]",
+        signature: &[("threads", "ThreadId[]", true), ("from", "MailboxId[]", true)],
+        run: delete_forever,
+    },
+    // Every thread in a mailbox: one change with no ids, which the interface
+    // reads as "reload the list and the counts", rather than thousands of ids.
+    command! {
+        name: "empty_mailbox", scope: Mail, effect: Write,
+        change: Thread/Updated,
+        args: EmptyMailbox, returns: "number",
+        signature: &[("mailbox", "MailboxId", true)],
+        run: empty_mailbox,
     },
     command! {
         name: "move_to_mailbox", scope: Mail, effect: Write,

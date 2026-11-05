@@ -284,6 +284,7 @@ export interface Commands {
   deleteConversation: { args: { id: ConversationId }; result: void }
   deleteEntry: { args: { id: EntryId }; result: void }
   deleteEvent: { args: { id: EventId; scope?: EventScope }; result: void }
+  deleteForever: { args: { threads: ThreadId[]; from: MailboxId[] }; result: Op[] }
   deleteGoal: { args: { id: GoalId }; result: void }
   deleteItem: { args: { id: ItemId }; result: void }
   deleteJob: { args: { id: JobId }; result: void }
@@ -322,6 +323,7 @@ export interface Commands {
     }
     result: WrittenText
   }
+  emptyMailbox: { args: { mailbox: MailboxId }; result: number }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
   enrolVoice: { args: { pcm: string }; result: VoiceprintInfo }
@@ -753,6 +755,7 @@ export const COMMAND_NAMES = {
   deleteConversation: 'delete_conversation',
   deleteEntry: 'delete_entry',
   deleteEvent: 'delete_event',
+  deleteForever: 'delete_forever',
   deleteGoal: 'delete_goal',
   deleteItem: 'delete_item',
   deleteJob: 'delete_job',
@@ -779,6 +782,7 @@ export const COMMAND_NAMES = {
   dismissMeetingOffer: 'dismiss_meeting_offer',
   downloadSpeechModel: 'download_speech_model',
   draftWithAi: 'draft_with_ai',
+  emptyMailbox: 'empty_mailbox',
   endExport: 'end_export',
   endImport: 'end_import',
   enrolVoice: 'enrol_voice',
@@ -1087,6 +1091,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_conversation',
   'delete_entry',
   'delete_event',
+  'delete_forever',
   'delete_goal',
   'delete_item',
   'delete_job',
@@ -1113,6 +1118,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'dismiss_meeting_offer',
   'download_speech_model',
   'draft_with_ai',
+  'empty_mailbox',
   'end_export',
   'end_import',
   'enrol_voice',
@@ -1407,6 +1413,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_conversation',
   'delete_entry',
   'delete_event',
+  'delete_forever',
   'delete_goal',
   'delete_item',
   'delete_job',
@@ -1431,6 +1438,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_recording',
   'dismiss_meeting_offer',
   'download_speech_model',
+  'empty_mailbox',
   'enrol_voice',
   'fetch_attachment',
   'fetch_full_article',
@@ -1568,6 +1576,7 @@ export const CHANGE_KINDS = {
   delete_conversation: 'conversation',
   delete_entry: 'entry',
   delete_event: 'event',
+  delete_forever: 'thread',
   delete_goal: 'goal',
   delete_item: 'item',
   delete_job: 'job',
@@ -1591,6 +1600,7 @@ export const CHANGE_KINDS = {
   discard_draft: 'draft',
   discard_recording: 'recording',
   download_speech_model: 'settings',
+  empty_mailbox: 'thread',
   enrol_voice: 'voiceprint',
   fetch_full_article: 'story',
   finish_recording: 'recording',

@@ -66,6 +66,14 @@ pub enum MailboxRole {
 }
 
 impl MailboxRole {
+    /// Is this a mailbox whose mail can be deleted for good -- emptied, or
+    /// a thread in it deleted forever? Trash and Spam: what is in either is
+    /// already on its way out, which is why a provider's own client offers
+    /// to empty both and nothing else.
+    pub fn empties(self) -> bool {
+        matches!(self, MailboxRole::Trash | MailboxRole::Spam)
+    }
+
     pub const ALL: [MailboxRole; 8] = [
         MailboxRole::Inbox,
         MailboxRole::Sent,
@@ -1013,6 +1021,18 @@ pub enum OpKind {
     ///
     /// [`Vault::discard_draft`]: crate::vault::Vault::discard_draft
     DiscardDraft,
+    /// Delete, for good, `messages`' copies in `from` -- a Trash or Spam,
+    /// and never anywhere else: see [`MailboxRole::empties`]. What "Delete
+    /// forever" and emptying a mailbox both queue, one op per thread.
+    ///
+    /// `messages` is what the thread had in `from` when the person said yes,
+    /// so a reply filed there afterwards is not deleted unseen by an op that
+    /// waited to run. Only `from`'s copies go: a conversation with one
+    /// message in Trash and the rest in the Inbox keeps the rest.
+    DeleteForever {
+        from: MailboxId,
+        messages: Vec<MailMessageId>,
+    },
 }
 
 impl OpKind {
@@ -1381,6 +1401,7 @@ mod tests {
             OpKind::Send,
             OpKind::AppendDraft,
             OpKind::DiscardDraft,
+            OpKind::DeleteForever { from: MailboxId::new(), messages: Vec::new() },
         ];
         for kind in &not_flag_changes {
             assert!(!kind.is_flag_change(), "{kind:?}");
