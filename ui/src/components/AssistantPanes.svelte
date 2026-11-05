@@ -20,6 +20,7 @@
   import { models } from '../lib/models.svelte'
   import { app } from '../lib/state.svelte'
   import { DECLINE_REASONS, proposals, recordAs } from '../lib/proposals.svelte'
+  import { library } from '../lib/library.svelte'
   import { menu } from '../lib/menu.svelte'
   import { panels } from '../lib/panels.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
@@ -264,6 +265,14 @@
       case 'skill':
         panels.openSettings('skills')
         break
+      case 'log': {
+        panels.closeSettings()
+        const value = recordAs(p, 'log')
+        void app.goTo('library').then((went) => {
+          if (went && value && !value.newContact) void library.open(value.log.itemId)
+        })
+        break
+      }
     }
   }
 

@@ -33,6 +33,7 @@
 
 use crate::error::Result;
 use crate::id::{ItemId, KindId, LogId};
+use crate::keepintouch::KeepInTouch;
 use crate::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
@@ -308,6 +309,18 @@ pub trait LibraryStore: Send + Sync {
     fn put_log(&self, log: &LogEntry) -> Result<()>;
 
     fn delete_log(&self, id: LogId) -> Result<()>;
+
+    // ---- keeping in touch -----------------------------------------------
+
+    /// The one [`KeepInTouch`] record. The default when nothing was ever saved.
+    fn keep_in_touch(&self) -> Result<KeepInTouch>;
+
+    fn put_keep_in_touch(&self, record: &KeepInTouch) -> Result<()>;
+}
+
+/// Additional authenticated data for the sealed [`KeepInTouch`] record.
+pub fn keep_in_touch_aad() -> Vec<u8> {
+    b"everyday.keep_in_touch.v1".to_vec()
 }
 
 /// Associated data bound into a record's ciphertext. See

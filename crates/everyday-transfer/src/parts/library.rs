@@ -29,7 +29,7 @@ use super::doc;
 use super::index::{Namer, index_map, owner};
 use crate::text::{Csv, Table, safe_name};
 use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
-use everyday_core::library::{Item, ItemStatus, Kind, LogEntry, LogEvent, Progress};
+use everyday_core::library::{Item, ItemStatus, Kind, LogEntry, LogEvent, Progress, Via};
 use everyday_core::store::JournalStore;
 use everyday_core::store::library::{ItemQuery, LibraryStore, LogQuery};
 use everyday_core::{ItemId, KindId, LogId, Result};
@@ -96,8 +96,10 @@ const SHELF_COLUMNS: &[&str] = &[
     "id",
 ];
 
-const LOG_COLUMNS: &[&str] =
-    &["date", "item", "shelf", "event", "rating", "position", "minutes", "note", "item_id", "id"];
+const LOG_COLUMNS: &[&str] = &[
+    "date", "item", "shelf", "event", "rating", "position", "minutes", "via", "note", "item_id",
+    "id",
+];
 
 impl Portable for LibraryPart {
     fn spec(&self) -> &'static Spec {
@@ -190,6 +192,7 @@ impl Portable for LibraryPart {
                     log.rating.map(|r| r.to_string()).unwrap_or_default(),
                     log.position.map(|p| p.to_string()).unwrap_or_default(),
                     log.minutes.map(|m| m.to_string()).unwrap_or_default(),
+                    log.via.map(|v| v.as_str().to_string()).unwrap_or_default(),
                     log.note.clone(),
                     log.item_id.to_string(),
                     log.id.to_string(),
@@ -503,6 +506,8 @@ fn read_log(
             rating: None,
             position: None,
             minutes: None,
+            via: None,
+            source: None,
             created_at: jiff::Timestamp::now(),
             updated_at: jiff::Timestamp::now(),
         },
@@ -516,6 +521,7 @@ fn read_log(
     log.rating = row.parse::<u8>("rating").filter(|r| (1..=10).contains(r));
     log.position = row.parse("position");
     log.minutes = row.parse("minutes");
+    log.via = Via::parse(row.get("via"));
     log.note = row.get("note").to_string();
     log.updated_at = jiff::Timestamp::now();
     library.put_log(log)?;

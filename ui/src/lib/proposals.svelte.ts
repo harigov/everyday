@@ -27,6 +27,7 @@ import type {
   ProposalId,
   ProposalKind,
   ProposalQuery,
+  ProposedLog,
   ProposedRecord,
   Routine,
   Skill,
@@ -42,6 +43,7 @@ export interface RecordByKind {
   routine: Routine
   note: Note
   skill: Skill
+  log: ProposedLog
 }
 
 type Listener = (p: Proposal) => void | Promise<void>

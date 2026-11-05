@@ -12,6 +12,7 @@
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { itemMenu } from '../lib/menus'
+  import { isContactShelf, lateness } from '../lib/keepintouch'
   import type { Item, ItemSort } from '../lib/types'
   import AddItem from './AddItem.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
@@ -130,9 +131,16 @@
       <select
         class="sort"
         aria-label="Sort"
-        value={library.sort}
-        onchange={(e) => library.setSort(e.currentTarget.value as ItemSort)}
+        value={library.dueFirst && isContactShelf(shelf) ? 'due' : library.sort}
+        onchange={(e) => {
+          const value = e.currentTarget.value
+          if (value === 'due') library.setDueFirst()
+          else library.setSort(value as ItemSort)
+        }}
       >
+        {#if isContactShelf(shelf)}
+          <option value="due">Due to get in touch</option>
+        {/if}
         {#each SORTS as s (s.id)}
           <option value={s.id}>{s.label}</option>
         {/each}
@@ -295,6 +303,7 @@
         <div class="rows">
           {#each library.items as row (row.id)}
             {@const kind = library.kindOf(row)}
+            {@const due = library.dueOf(row.id)}
             <button
               class="row list-row"
               class:sel={library.selected === row.id}
@@ -313,7 +322,9 @@
               </span>
               <span class="cell name">
                 <span class="t">{row.title}</span>
-                {#if row.creator}<span class="c">{row.creator}</span>{/if}
+                {#if due && due.daysOver >= -7}
+                  <span class="c">{lateness(due)}</span>
+                {:else if row.creator}<span class="c">{row.creator}</span>{/if}
               </span>
               <span class="cell shelf">{kind?.name ?? ''}</span>
               <span class="cell state">{library.label(kind, row.status)}</span>

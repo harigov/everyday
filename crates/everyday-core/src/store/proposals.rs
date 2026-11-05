@@ -13,7 +13,9 @@
 
 use crate::Result;
 use crate::id::{ProposalId, RoutineRunId};
-use crate::proposal::{AboutKind, Proposal, ProposalKind, ProposalSource, ProposalState};
+use crate::proposal::{
+    AboutKind, Proposal, ProposalKind, ProposalSource, ProposalState, ProposalTrace,
+};
 use jiff::Timestamp;
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
@@ -128,6 +130,16 @@ pub trait ProposalStore: Send + Sync {
     /// is the bug `mark_runs_seen` already records.
     fn expire_proposals(&self, now: Timestamp) -> Result<Vec<ProposalId>>;
 
+    /// Delete every proposal made at or before `cutoff` that was not accepted,
+    /// pending ones included, and leave a [`ProposalTrace`] of each that counts
+    /// towards the stop list, in one transaction. Returns the ids deleted.
+    /// Traces are kept to the newest
+    /// [`MAX_PROPOSAL_TRACES`](crate::proposal::MAX_PROPOSAL_TRACES).
+    fn purge_proposals(&self, cutoff: Timestamp) -> Result<Vec<ProposalId>>;
+
+    /// What [`ProposalStore::purge_proposals`] has left behind, oldest first.
+    fn proposal_traces(&self) -> Result<Vec<ProposalTrace>>;
+
     /// How many proposals are pending. One indexed count.
     fn count_pending(&self) -> Result<u64>;
 
@@ -136,6 +148,11 @@ pub trait ProposalStore: Send + Sync {
 
     /// Mark proposals as looked at. Empty means every pending one.
     fn mark_proposals_seen(&self, ids: &[ProposalId]) -> Result<()>;
+}
+
+/// Additional authenticated data for the sealed list of traces.
+pub fn proposal_traces_aad() -> Vec<u8> {
+    b"everyday.proposal_traces.v1".to_vec()
 }
 
 /// Additional authenticated data for a sealed proposal.

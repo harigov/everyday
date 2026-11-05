@@ -191,7 +191,7 @@ fn the_month_digest_names_birthdays_in_the_month_ahead() {
     dana.facts.insert("birthday".into(), "1988-10-08".into());
     vault.save_item(&dana).unwrap();
     vault
-        .save_log(&LogEntry::new(dana.id, LogEvent::Finished, jiff::civil::date(2026, 7, 2), "UTC"))
+        .save_log(&LogEntry::new(dana.id, LogEvent::Contact, jiff::civil::date(2026, 7, 2), "UTC"))
         .unwrap();
 
     let mut far = Item::new(contacts.id, "Sam");

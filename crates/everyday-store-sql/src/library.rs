@@ -25,11 +25,12 @@
 
 use everyday_core::error::Result;
 use everyday_core::id::{ItemId, KindId, LogId};
+use everyday_core::keepintouch::KeepInTouch;
 use everyday_core::library::{Item, ItemStatus, Kind, LogEntry};
 use everyday_core::purpose::Purpose;
 use everyday_core::record::RecordKind;
 use everyday_core::store::library::{
-    ItemQuery, LibraryStore, LogQuery, item_aad, kind_aad, log_aad,
+    ItemQuery, LibraryStore, LogQuery, item_aad, keep_in_touch_aad, kind_aad, log_aad,
 };
 
 use crate::conn::{SqlExt, ToValue, Value, Where};
@@ -91,6 +92,26 @@ impl Record for LogEntry {
 }
 
 impl LibraryStore for SqlStore {
+    // ---- keeping in touch -------------------------------------------------
+
+    fn keep_in_touch(&self) -> Result<KeepInTouch> {
+        let sealed = self.read().sealed("SELECT data FROM keep_in_touch WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&keep_in_touch_aad(), &sealed),
+            None => Ok(KeepInTouch::default()),
+        }
+    }
+
+    fn put_keep_in_touch(&self, record: &KeepInTouch) -> Result<()> {
+        let data = self.seal(&keep_in_touch_aad(), record)?;
+        self.write().execute(
+            "INSERT INTO keep_in_touch (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
     // ---- kinds ----------------------------------------------------------
 
     fn list_kinds(&self) -> Result<Vec<Kind>> {

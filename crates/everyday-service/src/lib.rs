@@ -58,6 +58,7 @@ pub mod feeds;
 pub mod http;
 pub mod idempotency;
 pub mod jobs;
+pub mod keepintouch;
 pub mod llm;
 pub mod mailai;
 pub mod mailsort;

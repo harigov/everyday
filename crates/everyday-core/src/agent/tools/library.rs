@@ -9,7 +9,8 @@ use super::{
 };
 use crate::error::Result;
 use crate::id::{ItemId, LogId};
-use crate::library::{Item, ItemStatus, Kind, LogEntry, LogEvent};
+use crate::keepintouch::note_from_journal;
+use crate::library::{Item, ItemStatus, Kind, LogEntry, LogEvent, Via};
 use crate::store::library::{ItemQuery, LogQuery};
 use crate::timestamped::Timestamped;
 use crate::websearch::{Source, http_url};
@@ -18,7 +19,11 @@ const ITEM_STATUSES: &[&str] = &["wishlist", "active", "paused", "done", "abando
 
 /// Wire spellings for [`LogEvent`], in the order [`LogEvent::ALL`] gives
 /// them -- shared by `list_logs`' filter and `log_item`'s own argument.
-const LOG_EVENTS: &[&str] = &["started", "progress", "finished", "revisited", "note", "stopped"];
+const LOG_EVENTS: &[&str] =
+    &["started", "progress", "finished", "revisited", "note", "stopped", "contact"];
+
+/// Wire spellings for [`Via`].
+const VIAS: &[&str] = &["call", "video", "message", "email", "inPerson", "other"];
 
 pub(super) static TOOLS: &[Tool] = &[
     tool!(
@@ -179,14 +184,31 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("rating", decimal("Out of 10, if this occasion is worth rating on its own.")),
                 ("position", number("Where you got to, for a progress entry.")),
                 ("minutes", number("How long you spent, if you care to say.")),
+                ("via", one_of("For a person: how you were in touch.", VIAS)),
             ],
             &["item_id", "event"]
         ),
         "Add a line to an item's own history directly: a re-read, a passing thought, or an \
          entry you want to date in the past. update_item already adds one of these on its \
          own whenever a status actually changes -- started, finished, paused or abandoned -- \
-         so reach for this beside that, not instead of it.",
+         so reach for this beside that, not instead of it. On the Contacts shelf, when they say \
+         they talked to somebody, log event `contact` on that person with `via` saying how and \
+         `note` for what it was about. A `note` about somebody, or a change of status, does not \
+         count as having been in touch.",
         run_log_item
+    ),
+    tool!(
+        "people_due",
+        Read,
+        Library,
+        schema(vec![limit_arg()], &[]),
+        "Who on the Contacts shelf is due a catch-up, most overdue first, as a share of how \
+         often each is due, with when they last caught up, how, and any note about it. Use it \
+         when planning a day or a week, or when asked who to get in touch with. Only people \
+         with a circle or a frequency are listed. Separately from this, the app already \
+         proposes a few of these as tasks each week, so check list_proposals before \
+         proposing one of them again.",
+        run_people_due
     ),
     tool!(
         "delete_log",
@@ -613,7 +635,18 @@ fn run_delete_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     )
 }
 
-fn log_json(l: &LogEntry) -> Value {
+/// Whether this caller may be shown what the journal said, on a row it wrote.
+///
+/// A catch-up read out of the journal keeps a few of its words as its note. An
+/// external agent may have been given the library and not the journal, and has
+/// no business reading the one through the other. Tools do not see a caller's
+/// scopes, so every one of them is treated so; the assistant reads the journal
+/// itself.
+fn sees_journal(ctx: &ToolContext<'_>) -> bool {
+    !matches!(ctx.caller, Some(super::Caller::Mcp { .. }))
+}
+
+fn log_json(l: &LogEntry, journal: bool) -> Value {
     let mut v = json!({
         "id": l.id.to_string(),
         "item_id": l.item_id.to_string(),
@@ -621,7 +654,7 @@ fn log_json(l: &LogEntry) -> Value {
         "date": l.date.to_string(),
     });
     let m = v.as_object_mut().unwrap();
-    if !l.note.trim().is_empty() {
+    if !l.note.trim().is_empty() && (journal || !note_from_journal(l)) {
         m.insert("note".into(), json!(l.note));
     }
     if let Some(r) = l.rating {
@@ -632,6 +665,9 @@ fn log_json(l: &LogEntry) -> Value {
     }
     if let Some(min) = l.minutes {
         m.insert("minutes".into(), json!(min));
+    }
+    if let Some(via) = l.via {
+        m.insert("via".into(), json!(via.as_str()));
     }
     v
 }
@@ -647,7 +683,7 @@ fn run_list_logs(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let rows = ctx.vault.logs(&query)?;
     Ok(json!({
         "count": rows.len(),
-        "logs": rows.iter().map(log_json).collect::<Vec<_>>(),
+        "logs": rows.iter().map(|l| log_json(l, sees_journal(ctx))).collect::<Vec<_>>(),
     }))
 }
 
@@ -663,9 +699,43 @@ fn run_log_item(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     log.rating = rating_out_of_ten(args)?;
     log.position = args.opt_u32("position");
     log.minutes = args.opt_u32("minutes");
+    log.via = args.opt_str("via").and_then(Via::parse);
 
     ctx.vault.save_log(&log)?;
     done("logged", "entry", &format!("{} on {date}", item.title), log.id.to_string())
+}
+
+fn run_people_due(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
+    let limit = args.limit() as usize;
+    let people: Vec<Value> = ctx
+        .vault
+        .people_due(ctx.today, ctx.tz)?
+        .into_iter()
+        .filter(|p| p.days_over >= 0)
+        .take(limit)
+        .map(|p| if sees_journal(ctx) { p } else { p.without_journal() })
+        .map(|p| {
+            let mut v = json!({
+                "item_id": p.item_id.to_string(),
+                "name": p.name,
+                "every_days": p.every_days,
+                "days_since": p.days_since,
+                "days_over": p.days_over,
+            });
+            let m = v.as_object_mut().unwrap();
+            if let Some(day) = p.last_contact {
+                m.insert("last_contact".into(), json!(day.to_string()));
+            }
+            if let Some(via) = p.last_via {
+                m.insert("last_via".into(), json!(via.as_str()));
+            }
+            if !p.last_note.is_empty() {
+                m.insert("last_note".into(), json!(p.last_note));
+            }
+            v
+        })
+        .collect();
+    Ok(json!({ "count": people.len(), "people": people }))
 }
 
 fn run_delete_log(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

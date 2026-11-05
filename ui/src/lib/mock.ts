@@ -49,6 +49,8 @@ import type {
   ItemQuery,
   ItemStatus,
   Kind,
+  KeepInTouchSettings,
+  KeepInTouchStatus,
   KindInfo,
   LibraryStats,
   LogEntry,
@@ -121,6 +123,8 @@ import type {
   ModelSettings,
   ModelSettingsView,
   ModelSlot,
+  PassReport,
+  PersonDue,
   Proposal,
   ProposalQuery,
   ProposedRecord,
@@ -607,16 +611,21 @@ const kinds: KindInfo[] = [
     verbs: verbs('To meet', 'In touch', 'Met', 'met'),
     fields: [
       field('relationship', 'How you know them', 'text', ['Family', 'Friend', 'Colleague']),
+      field('circle', 'Circle', 'text', ['Inner circle', 'Close', 'Occasional']),
+      field('every_days', 'Or every (days)', 'number'),
       field('email', 'Email', 'text'),
       field('phone', 'Telephone', 'text'),
       field('birthday', 'Birthday', 'date'),
+      field('aliases', 'Also known as', 'list'),
+      field('celebrates', 'Celebrates', 'list'),
+      field('key_dates', 'Dates to remember', 'list'),
     ],
     source: 'none',
     progressUnit: '',
     sortOrder: 8,
     builtin: true,
     visible: true,
-    revision: 1,
+    revision: 3,
     createdAt: iso(300),
     updatedAt: iso(300),
     items: 0,
@@ -859,9 +868,38 @@ const items: Item[] = [
     kindId: 'k-contact',
     title: 'Ada Byron',
     status: 'active',
-    facts: { relationship: 'Friend', email: 'ada@example.com' },
+    facts: { relationship: 'Friend', email: 'ada@example.com', circle: 'Inner circle' },
     notes: 'Owes me a book recommendation.',
-    createdAt: iso(20),
+    createdAt: iso(200),
+  }),
+  seedItem({
+    id: 'i-ravi-k',
+    kindId: 'k-contact',
+    title: 'Ravi Kumar',
+    status: 'active',
+    facts: { relationship: 'Friend', circle: 'Close', phone: '+44 20 7946 0100' },
+    createdAt: iso(200),
+  }),
+  seedItem({
+    id: 'i-ravi-m',
+    kindId: 'k-contact',
+    title: 'Ravi Menon',
+    status: 'active',
+    facts: { relationship: 'Colleague', circle: 'Occasional' },
+    createdAt: iso(200),
+  }),
+  seedItem({
+    id: 'i-amma',
+    kindId: 'k-contact',
+    title: 'Lakshmi Iyer',
+    status: 'active',
+    facts: {
+      relationship: 'Family',
+      circle: 'Inner circle',
+      aliases: 'Amma',
+      celebrates: 'Diwali\nPongal',
+    },
+    createdAt: iso(200),
   }),
   seedItem({
     id: 'i-abandoned',
@@ -944,7 +982,95 @@ const logs: LogEntry[] = [
     createdAt: iso(33),
     updatedAt: iso(33),
   },
+  {
+    id: 'l-ada',
+    itemId: 'i-ada',
+    event: 'contact',
+    date: day(26),
+    tz: 'Europe/London',
+    note: 'Her new flat, and the book she still owes me.',
+    via: 'call',
+    source: { type: 'entry', id: 'e-1' },
+    createdAt: iso(26),
+    updatedAt: iso(26),
+  },
+  {
+    id: 'l-ravi-k',
+    itemId: 'i-ravi-k',
+    event: 'contact',
+    date: day(12),
+    tz: 'Europe/London',
+    note: 'Coffee',
+    via: 'inPerson',
+    createdAt: iso(12),
+    updatedAt: iso(12),
+  },
+  {
+    id: 'l-amma',
+    itemId: 'i-amma',
+    event: 'contact',
+    date: day(3),
+    tz: 'Europe/London',
+    note: '',
+    via: 'video',
+    createdAt: iso(3),
+    updatedAt: iso(3),
+  },
 ]
+
+// ── Keeping in touch ──────────────────────────────────────────────────
+
+const keepInTouch: KeepInTouchStatus = {
+  settings: {
+    enabled: true,
+    readJournal: true,
+    circles: [
+      { name: 'Inner circle', everyDays: 14 },
+      { name: 'Close', everyDays: 30 },
+      { name: 'Occasional', everyDays: 90 },
+    ],
+    perWeek: 3,
+    leadDays: 2,
+  },
+  lastRun: day(0),
+  lastReport: { entriesRead: 2, logged: 1, asked: 1, suggested: 1, occasions: 0 },
+}
+
+/** Who is due, worked out the way `everyday_core::keepintouch` does. */
+function peopleDue(): PersonDue[] {
+  const s = keepInTouch.settings
+  const today = new Date(day(0)).getTime()
+  const out: PersonDue[] = []
+  for (const item of items.filter((i) => i.kindId === 'k-contact')) {
+    if (item.status === 'paused' || item.status === 'abandoned') continue
+    const own = Number.parseInt(item.facts.every_days ?? '', 10)
+    const circle = (item.facts.circle ?? '').trim()
+    const every = Number.isFinite(own)
+      ? own
+      : s.circles.find((c) => c.name.toLowerCase() === circle.toLowerCase())?.everyDays
+    if (!every) continue
+    const last = logs
+      .filter((l) => l.itemId === item.id && (l.event === 'contact' || l.event === 'revisited'))
+      .sort((a, b) => b.date.localeCompare(a.date))[0]
+    const since = new Date(last?.date ?? item.createdAt.slice(0, 10)).getTime()
+    const daysSince = Math.round((today - since) / 86_400_000)
+    out.push({
+      itemId: item.id,
+      name: item.title,
+      circle,
+      everyDays: every,
+      lastContact: last?.date ?? null,
+      lastVia: last?.via ?? null,
+      lastNote: last?.note ?? '',
+      lastSource: last?.source ?? null,
+      daysSince,
+      daysOver: daysSince - every,
+    })
+  }
+  return out.sort(
+    (a, b) => b.daysSince * a.everyDays - a.daysSince * b.everyDays || a.name.localeCompare(b.name),
+  )
+}
 
 /** A log row dated today, as `new_log` mints one. */
 function newLogEntry(itemId: string, event: LogEvent): LogEntry {
@@ -3819,6 +3945,68 @@ mockJobsInit({
 
 const proposals: Proposal[] = [
   {
+    id: 'prop-touch',
+    kind: 'task',
+    payload: {
+      type: 'create',
+      record: {
+        kind: 'task',
+        value: seedTask({
+          id: 't-prop-ada',
+          title: 'Get in touch with Ada Byron',
+          notes: 'Last caught up by phone: her new flat, and the book she still owes me.',
+        }),
+      },
+    },
+    caption: 'Get in touch with Ada Byron',
+    why: 'Every 14 days, and it has been 26. Last caught up by phone: her new flat.',
+    about: { kind: 'item', id: 'i-ada' },
+    madeBy: { type: 'keepInTouch' },
+    madeAt: iso(0),
+    expiresAt: iso(-7),
+    outcome: { type: 'pending' },
+    seen: false,
+    updatedAt: iso(0),
+  },
+  {
+    id: 'prop-which-ravi',
+    kind: 'log',
+    payload: {
+      type: 'create',
+      record: {
+        kind: 'log',
+        value: {
+          log: {
+            id: 'l-prop-ravi',
+            itemId: 'i-ravi-k',
+            event: 'contact',
+            date: day(1),
+            tz: 'Europe/London',
+            note: 'Talked about the move',
+            via: 'call',
+            source: { type: 'entry', id: 'e-1' },
+            createdAt: iso(0),
+            updatedAt: iso(0),
+          },
+          candidates: [
+            { itemId: 'i-ravi-k', name: 'Ravi Kumar' },
+            { itemId: 'i-ravi-m', name: 'Ravi Menon' },
+          ],
+          askedAs: 'Ravi',
+        },
+      },
+    },
+    caption: 'Which Ravi were you in touch with yesterday?',
+    why: 'Talked about the move',
+    about: { kind: 'entry', id: 'e-1' },
+    madeBy: { type: 'keepInTouch' },
+    madeAt: iso(0),
+    expiresAt: iso(-7),
+    outcome: { type: 'pending' },
+    seen: false,
+    updatedAt: iso(0),
+  },
+  {
     id: 'prop-task',
     kind: 'task',
     payload: {
@@ -4148,6 +4336,17 @@ function applyProposal(p: Proposal, edited: ProposedRecord | null, confirm: bool
       return upsert(notes, record.value)
     case 'skill':
       return upsert(skills, record.value)
+    case 'log': {
+      const { log, newContact, candidates } = record.value
+      if (!edited && (candidates?.length ?? 0) > 1) {
+        throw new VaultError('invalid', 'this needs to say which person it was')
+      }
+      if (newContact) {
+        items.push({ ...newContact, status: 'active' })
+        log.itemId = newContact.id
+      }
+      return upsert(logs, { ...log, updatedAt: new Date().toISOString() })
+    }
   }
 }
 
@@ -6060,6 +6259,30 @@ export const mockInvoke = async <T>(
     case 'library_stats':
       requireUnlocked()
       return libraryStats() as T
+
+    case 'keep_in_touch_status':
+      requireUnlocked()
+      return structuredClone(keepInTouch) as T
+
+    case 'save_keep_in_touch_settings':
+      requireUnlocked()
+      keepInTouch.settings = structuredClone(args.settings as KeepInTouchSettings)
+      return undefined as T
+
+    case 'list_people_due':
+      requireUnlocked()
+      return peopleDue() as T
+
+    case 'run_keep_in_touch': {
+      requireUnlocked()
+      if (!keepInTouch.settings.enabled) {
+        throw new VaultError('unsupported', 'keeping in touch is switched off')
+      }
+      const report: PassReport = { entriesRead: 1, logged: 0, asked: 0, suggested: 0, occasions: 0 }
+      keepInTouch.lastRun = day(0)
+      keepInTouch.lastReport = report
+      return report as T
+    }
 
     // ── Roles and goals ──────────────────────────────────────────────
 

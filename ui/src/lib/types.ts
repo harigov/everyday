@@ -2703,6 +2703,8 @@ export const LOG_EVENTS = [
   'revisited',
   'note',
   'stopped',
+  /** A catch-up with somebody on the Contacts shelf. Not a completion. */
+  'contact',
 ] as const
 export type LogEvent = (typeof LOG_EVENTS)[number]
 
@@ -2724,8 +2726,72 @@ export interface LogEntry {
   rating?: number | null
   position?: number | null
   minutes?: number | null
+  /** On a shelf of people, how this catch-up happened. */
+  via?: CatchUpVia | null
+  /** What wrote this row, when the person did not type it. */
+  source?: LogSource | null
   createdAt: string
   updatedAt: string
+}
+
+// ── Keeping in touch ─────────────────────────────────────────────────────
+//
+// Mirrors `everyday_core::keepintouch`. A person is an item on the Contacts
+// shelf and a catch-up is a row in its log. See docs/plans/keep-in-touch.md.
+
+/** How a catch-up happened. `Via` on the Rust side; that name is the chat's here. */
+export const VIAS = ['call', 'video', 'message', 'email', 'inPerson', 'other'] as const
+export type CatchUpVia = (typeof VIAS)[number]
+
+export type LogSource =
+  | { type: 'entry'; id: EntryId }
+  | { type: 'thread'; id: ThreadId }
+  | { type: 'event'; id: EventId }
+  | { type: 'task'; id: TaskId }
+
+export interface Circle {
+  name: string
+  everyDays: number
+}
+
+export interface KeepInTouchSettings {
+  enabled: boolean
+  readJournal: boolean
+  circles: Circle[]
+  perWeek: number
+  leadDays: number
+}
+
+/** What the last pass did. */
+export interface PassReport {
+  entriesRead: number
+  logged: number
+  asked: number
+  suggested: number
+  occasions: number
+  journalProblem?: string | null
+}
+
+export interface KeepInTouchStatus {
+  settings: KeepInTouchSettings
+  lastRun: string | null
+  lastReport: PassReport | null
+}
+
+/** Somebody with a frequency, and where they stand against it. */
+export interface PersonDue {
+  itemId: ItemId
+  name: string
+  circle: string
+  everyDays: number
+  lastContact?: string | null
+  lastVia?: CatchUpVia | null
+  lastNote: string
+  /** What wrote the last catch-up. */
+  lastSource?: LogSource | null
+  daysSince: number
+  /** Days past due. Negative while there is still time. */
+  daysOver: number
 }
 
 export type ItemSort =
@@ -3568,8 +3634,19 @@ export const PROPOSAL_KINDS = [
   'note',
   'mail',
   'skill',
+  'log',
 ] as const
 export type ProposalKind = (typeof PROPOSAL_KINDS)[number]
+
+/** A catch-up the journal described, waiting to be told who with. */
+export interface ProposedLog {
+  log: LogEntry
+  /** The card to make, when the name is nobody on the shelf yet. */
+  newContact?: Item | null
+  /** Who the name might mean, when it fits several. Accepting picks one. */
+  candidates?: { itemId: ItemId; name: string }[]
+  askedAs: string
+}
 
 export type ProposedRecord =
   | { kind: 'task'; value: Task }
@@ -3578,6 +3655,7 @@ export type ProposedRecord =
   | { kind: 'routine'; value: Routine }
   | { kind: 'note'; value: Note }
   | { kind: 'skill'; value: Skill }
+  | { kind: 'log'; value: ProposedLog }
 
 export type ProposalPayload =
   /** Save a record that does not exist yet. */
@@ -3599,6 +3677,7 @@ export const ABOUT_KINDS = [
   'memory',
   'routine',
   'goal',
+  'item',
 ] as const
 export type AboutKind = (typeof ABOUT_KINDS)[number]
 
@@ -3608,7 +3687,10 @@ export interface ProposalAbout {
 }
 
 export type ProposalSource =
-  { type: 'run'; runId: RoutineRunId } | { type: 'conversation'; conversationId: ConversationId }
+  | { type: 'run'; runId: RoutineRunId }
+  | { type: 'conversation'; conversationId: ConversationId }
+  /** Keeping in touch's nightly pass. */
+  | { type: 'keepInTouch' }
 
 /** Why somebody said no. Optional, and one tap. */
 export type DeclineReason =
