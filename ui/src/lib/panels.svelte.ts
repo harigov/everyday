@@ -49,6 +49,8 @@ export type SettingsTab =
   // The assistant reached from a chat app on another device -- bot accounts
   // on a server the person runs, listed and edited in `ChatLinksPanel`.
   | 'chat'
+  // The Plaid keys a person brings for Money -- see `docs/plans/money.md`.
+  | 'money'
   | 'meetings'
   | 'data'
   | 'vault'

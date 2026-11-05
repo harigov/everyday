@@ -1588,6 +1588,13 @@ pub(crate) fn confirmation_question(kind: &str, subject: &str, can_park: bool) -
                 format!("{head}\n\n`{}`", one_line(subject).replace('`', "'"))
             }
         }
+        // A money rule, or a change to many transactions, after somebody
+        // else's words -- a transfer's memo, a mail -- were read.
+        "rewrite" => with_quote(
+            "**Change these transactions?** I've read words from someone else in this \
+             conversation, so I'm checking before I rewrite many of them at once.",
+            subject,
+        ),
         _ => with_quote("**Go ahead with this?**", subject),
     };
     markdown.push_str("\n\n");

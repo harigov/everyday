@@ -51,6 +51,11 @@
      * stronger. `-1` for none, where the rank is a sum of the columns.
      */
     lead?: number
+    /**
+     * How wide each figure column is. The default fits a count or a short
+     * duration; money with cents ("$1,850.00") needs more.
+     */
+    figureWidth?: string
   }
 
   const {
@@ -61,6 +66,7 @@
     empty,
     color = 'var(--accent)',
     lead = 0,
+    figureWidth = '5.5em',
   }: Props = $props()
 
   const shown = $derived(rows.slice(0, limit))
@@ -70,7 +76,7 @@
 {#if rows.length === 0}
   <p class="empty">{empty}</p>
 {:else}
-  <table style="--bar: {color}">
+  <table style="--bar: {color}; --figure-width: {figureWidth}">
     <thead>
       <tr>
         <th scope="col" class="who">{head}</th>
@@ -158,7 +164,7 @@
   }
 
   .num {
-    width: 5.5em;
+    width: var(--figure-width);
     padding-left: var(--sp-2);
     text-align: right;
     color: var(--fg-muted);

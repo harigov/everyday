@@ -166,6 +166,9 @@ pub struct Service {
     pub(crate) chat: crate::chat::ChatHub,
     /// The background-job worker's session state. See [`crate::jobs`].
     pub(crate) jobs: crate::jobs::JobRuntime,
+    /// Money's session state: bank sign-ins in flight and one sync lock per
+    /// link. See [`crate::money::MoneyRuntime`].
+    pub(crate) money: crate::money::MoneyRuntime,
 }
 
 impl Default for Service {
@@ -205,6 +208,7 @@ impl Service {
             meetings: MeetingRuntime::default(),
             chat: crate::chat::ChatHub::default(),
             jobs: crate::jobs::JobRuntime::default(),
+            money: crate::money::MoneyRuntime::default(),
             weather_cache: WeatherCache::new(),
         }
     }
@@ -571,6 +575,9 @@ impl Service {
     pub async fn locked(&self) {
         self.transfers.clear();
         self.sign_ins.clear();
+        // A bank sign-in in flight holds a Plaid link token, a bearer
+        // credential for as long as it lives.
+        self.money.on_lock();
         self.token_cache.clear().await;
         // The assistant's browsers: whatever a page has open in one is part
         // of a conversation the key no longer unlocks.
@@ -599,6 +606,7 @@ impl Service {
         if vault.is_unlocked() && vault.is_writable() {
             crate::news::ensure_task(self, &vault);
             crate::calendar_refresh::ensure_task(self, &vault);
+            crate::money::ensure_task(self, &vault);
         }
     }
 
@@ -801,6 +809,7 @@ impl Service {
     pub async fn close(&self) {
         self.transfers.clear();
         self.sign_ins.clear();
+        self.money.on_lock();
         self.token_cache.try_clear();
         self.reported_feeds.write().unwrap().clear();
         self.calendar_sync.lock().unwrap().clear();

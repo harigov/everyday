@@ -33,7 +33,16 @@ stubBrowser({
 })
 
 const {
-  modules: [onscreen, screenModule, stateModule, mailModule, todoModule, panelsModule, feedModule],
+  modules: [
+    onscreen,
+    screenModule,
+    stateModule,
+    mailModule,
+    todoModule,
+    panelsModule,
+    feedModule,
+    moneyModule,
+  ],
   close,
 } = await load(
   [
@@ -44,6 +53,7 @@ const {
     '/src/lib/todo.svelte.ts',
     '/src/lib/panels.svelte.ts',
     '/src/lib/feed.svelte.ts',
+    '/src/lib/money.svelte.ts',
   ],
   { svelte: true },
 )
@@ -54,6 +64,7 @@ const { mail } = mailModule
 const { todo } = todoModule
 const { panels } = panelsModule
 const { feed } = feedModule
+const { money } = moneyModule
 
 const { check, ok, finish } = makeCheck()
 
@@ -70,6 +81,16 @@ check(
   'a blank name gets the kind’s own words',
   seen('note', 'n1', '  ')[0].label,
   'An untitled note',
+)
+check(
+  'a transaction with no payee is a transaction',
+  seen('txn', 't1', '')[0].label,
+  'A transaction',
+)
+check(
+  'a bank account is not a mail account',
+  seen('bankAccount', 'a1', '')[0].label,
+  'A bank account',
 )
 
 const showing = {
@@ -217,6 +238,46 @@ check(
   ['newsSource', 'newsSource'],
 )
 ok('feed: and no source names', !/Shipyard|Radio/.test(JSON.stringify(wire)))
+
+// Money: an account narrows the list, the open transaction is what is open,
+// and the view is the pane and the month in the interface's words -- never a
+// payee, which is a bank's (and so a stranger's) words.
+app.section = 'money'
+await money.start()
+ok('the mock vault keeps some accounts', money.accounts.length > 0)
+money.setView('transactions')
+const checking = money.accounts.find((a) => a.name === 'Everyday Checking')
+await money.setAccount(checking.id)
+const txn = money.page?.txns[0]
+ok('the mock account has a transaction to open', txn !== undefined)
+money.open(txn.id)
+money.setQuery('market')
+now = onScreenNow()
+check('money: the app', now.app, 'money')
+ok(
+  'money: the view is the list and its month',
+  /^transactions for \S+ \d{4}$/.test(now.showing.view),
+)
+check('money: the account narrows it', now.showing.within, [
+  { kind: 'bankAccount', id: checking.id, label: 'Everyday Checking' },
+])
+check(
+  'money: the open transaction is what is open',
+  now.showing.open?.map((s) => [s.kind, s.id]),
+  [['txn', txn.id]],
+)
+check('money: the search goes too', now.showing.query, 'market')
+const moneyWire = toWire('money', now.showing)
+ok('money: no payee leaves the interface', !JSON.stringify(moneyWire).includes(txn.payee))
+ok('money: nor the account’s name', !JSON.stringify(moneyWire).includes('Everyday Checking'))
+money.setQuery('')
+
+// Another pane is another place: the list's account and open row do not go.
+money.setView('budget')
+now = onScreenNow()
+ok('money: the budget says its month', /^the budget for /.test(now.showing.view))
+check('money: nothing narrows the budget by account', now.showing.within, [])
+check('money: and nothing is open there', now.showing.open, [])
 
 // Settings stands where the app was, so the app is not on screen at all.
 panels.openSettings('accounts')

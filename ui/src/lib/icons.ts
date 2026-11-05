@@ -346,6 +346,41 @@ export const ICONS = {
     '<path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/>' +
     '<circle cx="5" cy="19" r="1"/>',
 
+  // ── Money ──────────────────────────────────────────────────────────────
+  //
+  // Lucide's geometry throughout, for the reason the header gives. The app
+  // itself is a wallet; a bank is the columned building every banking app
+  // draws; a transaction is a receipt with its torn edge.
+
+  /** Lucide's "wallet": the Money app. */
+  wallet:
+    '<path d="M19 7V4a1 1 0 0 0-1-1H5a2 2 0 0 0 0 4h15a1 1 0 0 1 1 1v4h-3a2 2 0 0 0 0 4h3a1 1 0 0 0 1-1v-2a1 1 0 0 0-1-1"/>' +
+    '<path d="M3 5v14a2 2 0 0 0 2 2h15a1 1 0 0 0 1-1v-4"/>',
+
+  /** Lucide's "landmark": a bank, and the Accounts pane. */
+  landmark:
+    '<path d="M3 22h18"/><path d="M6 18v-7"/><path d="M10 18v-7"/><path d="M14 18v-7"/>' +
+    '<path d="M18 18v-7"/>' +
+    '<path d="M11.12 2.2a2 2 0 0 1 1.76 0l7.87 3.85c.47.23.31.95-.22.95H3.47c-.53 0-.7-.72-.22-.95z"/>',
+
+  /** Lucide's "receipt": a transaction, and the Transactions pane. */
+  receipt:
+    '<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/>' +
+    '<path d="M16 8h-6a2 2 0 1 0 0 4h4a2 2 0 1 1 0 4H8"/><path d="M12 17.5v-11"/>',
+
+  /** Lucide's "chart-column": bars on an axis, for the Reports pane. */
+  chart:
+    '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/>' +
+    '<path d="M8 17v-3"/>',
+
+  /** Lucide's "repeat": what comes round again -- rent, a subscription. */
+  repeat:
+    '<path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/>' +
+    '<path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/>',
+
+  /** Lucide's "list-filter": three narrowing lines, for the Rules pane. */
+  filter: '<path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>',
+
   /** Lucide's "users": the Overview's people widgets. */
   people:
     '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>' +

@@ -1,0 +1,5 @@
+Transaction Date,Posted Date,Card No.,Description,Category,Debit,Credit
+2026-10-30,2026-10-31,1234,UBER   *TRIP,Other Travel,18.75,
+2026-10-21,2026-10-22,1234,CAPITAL ONE AUTOPAY PYMT,Payment/Credit,,412.00
+2026-10-09,2026-10-10,1234,STARBUCKS STORE 01234,Dining,$6.45,
+2026-10-01,2026-10-02,1234,REFUND - REI #11,Merchandise,,-29.99

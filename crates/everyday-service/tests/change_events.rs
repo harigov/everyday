@@ -46,6 +46,14 @@
 //!   to the network. `add_news_source` and `refresh_news` are run against a
 //!   newsletter source instead, which asks only the mail index; the OPML
 //!   import fetches nothing at all.
+//! - **Money over the network**: `start_bank_link` and `check_bank_link`
+//!   ask Plaid for a Hosted Link session and how it stands, and
+//!   `delete_bank_link` and `sync_bank_links` against a real link tell Plaid
+//!   to forget it and ask it for transactions. The bank the Money section
+//!   renames is seeded straight into the vault instead, as a finished link
+//!   stores it, and is never synced or disconnected. (`sync_bank_links` is
+//!   *not* skipped: run before any bank exists, it has nothing to ask
+//!   Plaid, answers `[]`, and still announces its `change:`.)
 //! - **`respond_to_invite`**: needs a message carrying a real,
 //!   ICS-bearing invite written into the local pack store -- more raw-byte
 //!   plumbing than this net is trying to buy -- and its own reply queues an
@@ -133,6 +141,9 @@ use everyday_core::id::{MailMessageId, MailboxId, NewsSourceId, PackId, StoryId,
 use everyday_core::library::Kind;
 use everyday_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use everyday_core::meeting::{MeetingSettings, Recording};
+use everyday_core::money::{
+    AccessToken, BankLink, CategoryKind, LinkProvider, MoneyCategory, MoneyRule, PlaidEnvironment,
+};
 use everyday_core::news::Story;
 use everyday_core::packstore::PackRef;
 use everyday_core::proposal::{Payload, ProposedRecord};
@@ -253,7 +264,9 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("begin_oauth_sign_in", "OAuth: a loopback redirect to a real provider"),
     ("begin_recording", "refuses unless the transcriber's speech kit is genuinely on disk"),
     ("cancel_oauth_sign_in", "OAuth: cancels the sign-in begin_oauth_sign_in above needs"),
+    ("check_bank_link", "asks Plaid how a Hosted Link session stands"),
     ("create_event", "writes to an account calendar's server over the network"),
+    ("delete_bank_link", "tells Plaid to forget the bank's sign-in before forgetting it here"),
     ("download_speech_model", "a real ~40MB network download"),
     ("enrol_voice", "needs the speech/voice model kit to embed real audio"),
     ("fetch_attachment", "needs a message's raw bytes from a real synced pack"),
@@ -270,6 +283,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
     ("sort_older_mail", "refuses without a decision model, which would be asked over the network"),
+    ("start_bank_link", "asks Plaid for a Hosted Link session"),
     ("start_chat_verification", "needs a chat bot signed in to a real Matrix server"),
     ("subscribe_account_calendar", "fetches a remote account's calendar over the network"),
     ("subscribe_calendar", "fetches a remote ICS feed over the network"),
@@ -688,6 +702,86 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "add_story_to_library", json!({ "id": first })).await;
     run(&svc, &h, "import_opml", json!({ "xml": OPML })).await;
     run(&svc, &h, "delete_news_source", json!({ "id": source_id })).await;
+
+    // ---- money ----------------------------------------------------------------
+    //
+    // Everything a person can do to Money with Plaid off the line. The keys
+    // are saved and cleared again first, so that nothing below could reach
+    // Plaid even by mistake; `sync_bank_links` runs before any bank exists,
+    // when it has nothing to ask; and the bank `save_bank_link` renames is
+    // seeded straight into the vault, the way a finished link stores it,
+    // because linking one is Plaid's to do.
+    run(
+        &svc,
+        &h,
+        "save_plaid_credentials",
+        json!({
+            "clientId": "client-id-for-the-snapshot",
+            "secret": "not-a-real-secret",
+            "environment": "sandbox",
+        }),
+    )
+    .await;
+    run(&svc, &h, "clear_plaid_credentials", json!({})).await;
+    // A session nobody started: forgetting it is a no-op that still answers.
+    run(&svc, &h, "cancel_bank_link", json!({ "session": "0".repeat(64) })).await;
+    run(&svc, &h, "sync_bank_links", json!({})).await;
+
+    let bank = BankLink::new(
+        LinkProvider::Plaid {
+            item_id: "item-for-the-snapshot".into(),
+            institution_id: String::new(),
+            environment: PlaidEnvironment::Sandbox,
+        },
+        "Test Bank",
+    );
+    vault.add_bank_link(&bank, &AccessToken("x".into())).unwrap();
+    let mut renamed_bank = serde_json::to_value(&bank).unwrap();
+    renamed_bank["name"] = json!("Test Bank, renamed");
+    run(&svc, &h, "save_bank_link", json!({ "link": renamed_bank })).await;
+
+    let mut wallet = run(
+        &svc,
+        &h,
+        "create_manual_account",
+        json!({ "name": "Wallet", "kind": "cash", "currency": "USD" }),
+    )
+    .await;
+    let wallet_id = wallet["id"].clone();
+    wallet["name"] = json!("Wallet, renamed");
+    run(&svc, &h, "save_bank_account", json!({ "account": wallet })).await;
+
+    let typed = run(
+        &svc,
+        &h,
+        "add_manual_transaction",
+        json!({
+            "txn": { "accountId": wallet_id, "date": "2026-10-01", "amount": -450, "payee": "Cafe" },
+        }),
+    )
+    .await;
+    run(
+        &svc,
+        &h,
+        "update_transactions",
+        json!({ "ids": [typed["id"]], "patch": { "note": "Sam" } }),
+    )
+    .await;
+    run(&svc, &h, "import_transactions", json!({ "accountId": wallet_id, "content": MONEY_CSV }))
+        .await;
+    run(&svc, &h, "delete_transactions", json!({ "ids": [typed["id"]] })).await;
+
+    // The rule arrives after the imported lines, so applying it has two to
+    // sort -- and deleting the category then has two to let go of.
+    let coffee = MoneyCategory::new("Coffee", "Food", CategoryKind::Expense);
+    run(&svc, &h, "save_money_category", json!({ "category": coffee })).await;
+    let mut rule = MoneyRule::new("bakery");
+    rule.category = Some(coffee.id);
+    run(&svc, &h, "save_money_rule", json!({ "rule": rule })).await;
+    run(&svc, &h, "apply_money_rules", json!({})).await;
+    run(&svc, &h, "delete_money_rule", json!({ "id": rule.id })).await;
+    run(&svc, &h, "delete_money_category", json!({ "id": coffee.id })).await;
+    run(&svc, &h, "delete_bank_account", json!({ "id": wallet_id })).await;
 
     // ---- meetings -----------------------------------------------------------
     let meeting_settings = MeetingSettings { enabled: false, ..Default::default() };
@@ -1142,6 +1236,10 @@ const OPML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <outline type="rss" text="Other" title="Other" xmlUrl="https://feeds.example.com/b.xml"/>
   </body>
 </opml>"#;
+
+/// Two lines a bank's export might hold, both for the rule above to find.
+const MONEY_CSV: &str =
+    "Date,Payee,Amount\n2026-10-02,Corner Bakery,-3.50\n2026-10-03,Corner Bakery,-4.25\n";
 
 /// `count` stories under `source`, newest first, each an hour apart -- the
 /// light half of what a refresh would have stored, which is all a state

@@ -69,6 +69,13 @@
 //! | `news_fetch` (`source_id`, `next_us`) | when each source is next asked for news -- never what it said last time |
 //! | news story `source_id`, `dedupe_key`, `published_us`, `is_read`, `saved`, `expired`, `mail_message_id` | how many stories each source brought, when, and which were read or saved; the key is a *keyed* hash, so it cannot be matched against a list of known addresses; and which mail message a newsletter story is -- never a title, an address or a word of one |
 //! | `news_bodies` (`story_id`) | that a story's body has been kept -- nothing about it |
+//! | bank link `sort_order`, `created_us`, `updated_us` | how many banks are linked and when each was -- never the bank's name or Plaid's item id; the access token is not in this table at all but a sealed `record_secrets` row |
+//! | `money_link_state` (`link_id`, `next_us`) | when each bank is next synced -- never the cursor, the last error, or whether it wants signing in again |
+//! | bank account `link_id`, `sort_order`, `created_us`, `updated_us` | how many accounts there are, which bank each came through and which are kept by hand -- never a name, a mask, a kind, a balance, a limit or the provider's id |
+//! | `money_balances` (`account_id`, `day`) | which days an account's balance was recorded on -- never the balance |
+//! | `money_txns` `account_id`, `dedupe_key`, `day`, `created_us`, `updated_us` | how many transactions each account has and on which days, when each arrived and when it was last changed (so roughly when somebody sorted them); the key is a *keyed* hash, so it cannot be matched against a provider's transaction ids or a statement -- never an amount, a payee, a description, a category or a note |
+//! | money category `sort_order`, `created_us`, `updated_us` | how many categories there are -- never a name, a kind or a budget |
+//! | money rule `sort_order`, `created_us`, `updated_us` | how many rules there are -- never what one matches or what it does |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -146,6 +153,7 @@ mod library;
 pub mod mail;
 mod meetings;
 mod models;
+mod money;
 mod news;
 mod notes;
 pub mod packs;

@@ -63,6 +63,7 @@ const FULL_CAPABILITIES = {
   accounts: true,
   mail: true,
   news: true,
+  money: true,
 }
 const FULL_STATUS = {
   name: 'Test',
@@ -84,7 +85,18 @@ app.status = FULL_STATUS
 
 assert.deepEqual(
   APP_ORDER,
-  ['overview', 'notes', 'todo', 'calendar', 'library', 'mail', 'feed', 'assistant', 'journal'],
+  [
+    'overview',
+    'notes',
+    'todo',
+    'calendar',
+    'library',
+    'mail',
+    'feed',
+    'money',
+    'assistant',
+    'journal',
+  ],
   'APP_ORDER must match the order app.nextSection has always cycled in',
 )
 
@@ -96,6 +108,7 @@ const EXPECTED_APPS = {
   library: { label: 'Library', icon: 'book' },
   mail: { label: 'Mail', icon: 'mail' },
   feed: { label: 'Feed', icon: 'rss' },
+  money: { label: 'Money', icon: 'wallet' },
   assistant: { label: 'Assistant', icon: 'sparkle' },
   journal: { label: 'Journal', icon: 'quote' },
 }
@@ -105,15 +118,16 @@ for (const [section, want] of Object.entries(EXPECTED_APPS)) {
   assert.equal(got.icon, want.icon, `${section}'s icon changed`)
 }
 
-// The accent: `journal`, `todo`, `library` and `feed` read a live colour --
-// the Feed's a fixed one of its own, so the window is not the vault's orange
-// there; every other app is the vault's own accent regardless of what it is
-// handed.
+// The accent: `journal`, `todo`, `library`, `feed` and `money` read a live
+// colour -- the Feed's and Money's fixed ones of their own, so the window is
+// not the vault's orange there; every other app is the vault's own accent
+// regardless of what it is handed.
 const accentDeps = {
   app: { accent: 'J' },
   todo: { accent: 'T' },
   library: { accent: 'L' },
   feed: { accent: 'F' },
+  money: { accent: 'M' },
 }
 const EXPECTED_ACCENTS = {
   overview: 'var(--accent)',
@@ -123,6 +137,7 @@ const EXPECTED_ACCENTS = {
   library: 'L',
   mail: 'var(--accent)',
   feed: 'F',
+  money: 'M',
   assistant: 'var(--accent)',
   journal: 'J',
 }
@@ -154,6 +169,7 @@ const EXPECTED_GROUPS = [
   'Library',
   'Mail',
   'Feed',
+  'Money',
   'Overview',
   'Assistant',
   'Vault',
@@ -168,7 +184,7 @@ const actionShape = (a) => ({
   tray: a.tray === true,
 })
 
-// The nine "Go to" rows plus "the next app", in the order they have always
+// The ten "Go to" rows plus "the next app", in the order they have always
 // been declared -- deliberately not `APP_ORDER`, since the app bar's own
 // order starts at the journal rather than the overview. See `apps.ts`'s own
 // note on why they stay hand-written.
@@ -180,6 +196,7 @@ const EXPECTED_GO_TO = [
   { id: null, keys: 'g l', label: 'Library', group: 'Go to', tray: false },
   { id: null, keys: 'g m', label: 'Mail', group: 'Go to', tray: false },
   { id: null, keys: 'g f', label: 'Feed', group: 'Go to', tray: false },
+  { id: null, keys: 'g b', label: 'Money', group: 'Go to', tray: false },
   { id: null, keys: 'g o', label: 'Overview', group: 'Go to', tray: false },
   { id: null, keys: 'g a', label: 'Assistant', group: 'Go to', tray: false },
   { id: null, keys: 'mod+j', label: 'The next app', group: 'Go to', tray: false },
@@ -205,6 +222,7 @@ const EXPECTED_TRAY_ROWS = [
   { id: 'mail:compose', keys: null, label: 'Compose a message', group: 'Mail', tray: true },
   { id: 'feed:add', keys: null, label: 'Add a feed', group: 'Feed', tray: true },
   { id: 'feed:refresh', keys: null, label: 'Refresh feeds', group: 'Feed', tray: true },
+  { id: 'money:sync', keys: null, label: 'Sync banks', group: 'Money', tray: true },
   {
     id: 'assistant:runs',
     keys: null,
@@ -252,6 +270,7 @@ const EXPECTED_TRAY_MENUS = {
     { id: 'feed:add', label: 'Add a feed' },
     { id: 'feed:refresh', label: 'Refresh feeds' },
   ],
+  Money: [{ id: 'money:sync', label: 'Sync banks' }],
   Overview: [
     { id: 'overview:page', label: 'How things are going' },
     { id: 'overview:log', label: 'Record a reading' },

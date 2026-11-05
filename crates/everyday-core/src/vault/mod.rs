@@ -41,6 +41,7 @@ mod llm;
 mod mail;
 mod maintenance;
 mod meetings;
+mod money;
 mod news;
 mod notes;
 mod profile;

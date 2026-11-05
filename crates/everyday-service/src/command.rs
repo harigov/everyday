@@ -394,6 +394,23 @@ fn assert_declared_matches_touched(
 /// alone -- see the doc on the vault method or the command each one names.
 #[cfg(any(debug_assertions, test))]
 const KNOWN_MISMATCHES: &[&str] = &[
+    // Money's batch writes declare what they were *asked* to change, and the
+    // vault records what actually did: `Vault::update_transactions` skips a
+    // transaction already in the state asked for (re-applying the category
+    // it has) and `Vault::delete_transactions` one that is already gone, so
+    // the declared ids can be a superset of the touched ones. The declared
+    // set is the right thing to announce -- it is what a list showing those
+    // rows should reload -- and an identical second press is not an error.
+    "update_transactions",
+    "delete_transactions",
+    // And the three that may find nothing to do: a sync with nothing new at
+    // the bank, rules that match nothing still open, and an import of a file
+    // already imported. Each declares `Txn` with no id because which rows it
+    // will touch is only known once it has run; none is wrong to announce a
+    // reload of a list that turned out not to change.
+    "sync_bank_links",
+    "apply_money_rules",
+    "import_transactions",
     // Declares `Role/Created` unconditionally because it cannot know ahead
     // of running whether the vault already has roles -- `Vault::seed_roles`
     // is a no-op, touching nothing, on every call after the first. This
@@ -624,6 +641,14 @@ mod tests {
         // kind, no other window learns about it. The exceptions are listed
         // rather than inferred, so adding one is a decision somebody made.
         const INVISIBLE: &[&str] = &[
+            // Linking a bank: starting keeps a sign-in in this process's
+            // memory, cancelling forgets one, and neither writes a record.
+            // Checking writes the link once it is done, and raises its own
+            // `BankLink` and `Txn` changes then -- a fixed `change:` would
+            // fire on every poll while the person is still at their bank.
+            "start_bank_link",
+            "check_bank_link",
+            "cancel_bank_link",
             // Defers the moment the key is dropped. Changes nothing anybody
             // draws.
             "touch",

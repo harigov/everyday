@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -110,6 +110,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v19(d),
         v20(),
         v21(d),
+        v22(d),
     ]
 }
 
@@ -1566,6 +1567,111 @@ fn v21(d: Dialect) -> Vec<String> {
              data        {blob} NOT NULL
          )"
     )]
+}
+
+/// Version 22: Money -- the banks somebody linked, the accounts they brought
+/// or that are kept by hand, each account's balance day by day, the
+/// transactions, and the categories and rules that sort them. See
+/// `docs/plans/money.md` and `everyday_core::money`.
+///
+/// Additive. Seven tables, because seven things here are written by
+/// different hands at different rates, as the Feed's four are:
+///
+/// - `money_links`: one sign-in at a bank. In the clear: its order and the
+///   two timestamps. Sealed: the bank's name, Plaid's item id. The access
+///   token is not here at all -- it is a `record_secrets` row.
+/// - `money_link_state`: what sync learned, apart from the link so a rename
+///   cannot be overwritten by a sync. In the clear: when it is next due.
+/// - `money_accounts`: in the clear, which link an account came through (so
+///   disconnecting can find them) and its order. Sealed: name, mask, kind,
+///   balances, the provider's id.
+/// - `money_balances`: one row per account per day. In the clear: which
+///   account and which day. The amount is sealed.
+/// - `money_txns`: in the clear, which account, a *keyed* hash of the
+///   provider's id (so the column cannot be matched against anything outside
+///   this vault), and the day -- which is what a month's report is read by.
+///   Never an amount, a payee or a word of a description.
+/// - `money_categories`, `money_rules`: their order and timestamps.
+///
+/// The unique `(account_id, dedupe_key)` index is what makes a sync and an
+/// import idempotent. Days are `YYYY-MM-DD` text, which sorts as dates do in
+/// both dialects.
+fn v22(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_links (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_link_state (
+                 link_id  TEXT    PRIMARY KEY NOT NULL,
+                 next_us  {int} NOT NULL,
+                 data     {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS money_link_state_by_due ON money_link_state (next_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_accounts (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 link_id     TEXT,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS money_accounts_by_link ON money_accounts (link_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_balances (
+                 account_id  TEXT    NOT NULL,
+                 day         TEXT    NOT NULL,
+                 data        {blob} NOT NULL,
+                 PRIMARY KEY (account_id, day)
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS money_balances_by_day ON money_balances (day)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_txns (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 account_id  TEXT    NOT NULL,
+                 dedupe_key  TEXT    NOT NULL,
+                 day         TEXT    NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS money_txns_by_account_key
+             ON money_txns (account_id, dedupe_key)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS money_txns_by_day ON money_txns (day, id)".into(),
+        "CREATE INDEX IF NOT EXISTS money_txns_by_account_day ON money_txns (account_id, day)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_categories (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_rules (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+    ]
 }
 
 #[cfg(test)]

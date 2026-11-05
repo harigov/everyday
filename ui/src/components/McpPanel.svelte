@@ -54,8 +54,13 @@
   // choice somebody makes on purpose, not the default they have to notice
   // and opt out of.
   let scopes = $state<Set<string>>(new Set(DOMAIN_SCOPES.map((d) => d.scope)))
+  // Money is apart from the boxes above, and off until ticked: an agent
+  // reaches it only through a token that names it, never through `all`
+  // (see `everyday-server`'s `mcp.rs`, "Money needs asking for by name").
+  // Every bank transaction is not something to hand over by default.
+  let money = $state(false)
   const allScopesTicked = $derived(scopes.size === DOMAIN_SCOPES.length)
-  const noScopesTicked = $derived(scopes.size === 0)
+  const noScopesTicked = $derived(scopes.size === 0 && !money)
 
   function toggleScope(scope: string, checked: boolean) {
     const next = new Set(scopes)
@@ -122,7 +127,8 @@
       // that happens to cover everything today. Otherwise exactly what is
       // ticked: `mcp_issue_token` never widens a narrower list back to
       // `all` on its own.
-      token = await api.mcpIssueToken(allScopesTicked ? ['all'] : Array.from(scopes))
+      const domains = allScopesTicked ? ['all'] : Array.from(scopes)
+      token = await api.mcpIssueToken(money ? [...domains, 'money'] : domains)
       mcp = await api.mcpStatus()
     } catch (e) {
       notify.error(e instanceof Error ? e.message : String(e))
@@ -216,7 +222,24 @@
                 {d.label}
               </label>
             {/each}
+            {#if app.supportsMoney}
+              <label class="scope">
+                <input
+                  type="checkbox"
+                  checked={money}
+                  disabled={busy}
+                  onchange={(e) => (money = e.currentTarget.checked)}
+                />
+                Money
+              </label>
+            {/if}
           </div>
+          {#if app.supportsMoney}
+            <p class="hint">
+              Money is never included unless ticked here: a token for everything else still cannot
+              read your accounts or transactions.
+            </p>
+          {/if}
           <div>
             <button class="btn" disabled={busy || noScopesTicked} onclick={issueToken}>
               <Icon name="sparkle" /> Issue a token…

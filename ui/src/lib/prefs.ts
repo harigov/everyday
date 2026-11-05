@@ -25,6 +25,7 @@ export type PrefKey =
   | 'everyday.library.enrich'
   | 'everyday.feed.filter'
   | 'everyday.feed.folders.closed'
+  | 'everyday.money.view'
   | 'everyday.journal.calendar'
   | 'everyday.overview.layout'
   | 'everyday.overview.introduced'

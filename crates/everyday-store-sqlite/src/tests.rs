@@ -1615,3 +1615,99 @@ fn the_database_file_contains_no_readable_meeting_text() {
         );
     }
 }
+
+#[test]
+fn the_database_file_contains_no_readable_money_text() {
+    // What somebody earns and spends, and the provider ids that would let a
+    // stranger line their file up against a bank's, must never sit in a
+    // clear column. What is meant to be readable is a transaction's day and
+    // its *keyed* dedupe hash -- see `everyday_store_sql::schema`'s `v22`.
+    use everyday_core::money::{
+        AccountKind, BalanceSnapshot, BankAccount, BankLink, LinkProvider, LinkState,
+        MoneyCategory, MoneyRule, PlaidEnvironment, Txn,
+    };
+    use everyday_core::store::money::MoneyStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+    let link = BankLink::new(
+        LinkProvider::Plaid {
+            item_id: "item-nobody-should-see".into(),
+            institution_id: "ins_nobodyshouldsee".into(),
+            environment: PlaidEnvironment::Sandbox,
+        },
+        "A bank nobody should see",
+    );
+    store.put_link(&link).unwrap();
+    let mut state = LinkState::new(link.id);
+    state.cursor = "cursor-nobody-should-see".into();
+    state.last_error = Some("an error nobody should see".into());
+    store.put_link_state(&state).unwrap();
+
+    let mut account = BankAccount::manual("An account nobody should see", AccountKind::Cash, "USD");
+    account.link_id = Some(link.id);
+    account.provider_account_id = "acct-nobody-should-see".into();
+    account.official_name = "An official name nobody should see".into();
+    // Longer than a real mask, so it cannot turn up by chance in the hex of
+    // an id in a clear column.
+    account.mask = "913782".into();
+    account.balance = Some(8_675_309);
+    store.put_account(&account).unwrap();
+    store
+        .put_balance(&BalanceSnapshot {
+            account_id: account.id,
+            day: jiff::civil::date(2026, 11, 5),
+            balance: 8_675_309,
+            available: Some(8_675_308),
+        })
+        .unwrap();
+
+    let mut txn = Txn::new(
+        account.id,
+        "a3f0c9d28e7b4f5e9d0e2c7f8a6b5d4e",
+        jiff::civil::date(2026, 11, 5),
+        -4_242_424,
+        "USD",
+    );
+    txn.provider_id = "txn-nobody-should-see".into();
+    txn.payee = "A payee nobody should see".into();
+    txn.description = "A memo nobody should see".into();
+    txn.note = "A note nobody should see".into();
+    txn.bank_category = "FOOD_AND_DRINK/FOOD_AND_DRINK_NOBODY".into();
+    store.put_txns(std::slice::from_ref(&txn)).unwrap();
+
+    let mut category = MoneyCategory::new(
+        "A category nobody should see",
+        "A group nobody should see",
+        everyday_core::money::CategoryKind::Expense,
+    );
+    category.budget = Some(1_234_567);
+    store.put_category(&category).unwrap();
+    let mut rule = MoneyRule::new("rule text nobody should see");
+    rule.rename = "a rename nobody should see".into();
+    store.put_rule(&rule).unwrap();
+    store.flush().unwrap();
+
+    let raw = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    for needle in [
+        b"nobody should see".as_slice(),
+        b"nobodyshouldsee",
+        b"nobody-should-see",
+        b"NOBODY",
+        b"913782",
+        b"8675309",
+        b"86753.09",
+        b"4242424",
+        b"42424.24",
+        b"1234567",
+        b"FOOD_AND_DRINK",
+    ] {
+        assert!(
+            !raw.windows(needle.len()).any(|w| w == needle),
+            "found {:?} in the database file",
+            String::from_utf8_lossy(needle)
+        );
+    }
+    assert!(raw.windows(10).any(|w| w == b"2026-11-05"), "the day column is meant to be readable");
+}

@@ -85,6 +85,11 @@
       yes: 'Save',
       icon: 'globe',
     },
+    rewrite: {
+      ask: 'Somebody else’s words — a transfer’s memo, a mail — were read in this conversation, so it is checking before it changes many transactions at once.',
+      yes: 'Change',
+      icon: 'wallet',
+    },
   } as const satisfies Record<string, { ask: string; yes: string; icon: IconName }>
   const asking = $derived(ASKS[card.confirmKind ?? 'destructive'])
   /** One answer for several calls says so on its button. */

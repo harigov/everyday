@@ -130,6 +130,16 @@ typed_id!(LogId, "log");
 typed_id!(NewsSourceId, "news_source");
 typed_id!(StoryId, "story");
 
+// Money: one sign-in at a bank, an account it brought (or one kept by hand),
+// a transaction in it, and the categories and rules that sort them. `Txn`
+// rather than `Transaction`, which the store crates already mean something
+// by. See `crate::money`.
+typed_id!(BankLinkId, "bank_link");
+typed_id!(BankAccountId, "bank_account");
+typed_id!(TxnId, "txn");
+typed_id!(MoneyCategoryId, "money_category");
+typed_id!(MoneyRuleId, "money_rule");
+
 // The tracking domain. A `TrackerId` names a thing you decided to record --
 // a habit, a supplement, a symptom -- and is a vault record in its own right,
 // not a setting of any one journal; a `ReadingId` names one recorded value. The split matters more here than

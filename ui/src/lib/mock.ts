@@ -174,6 +174,7 @@ import {
   mockStoryBody,
   mockStoryForLibrary,
 } from './mock-feed'
+import { mockMoney } from './mock-money'
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
@@ -4260,6 +4261,7 @@ function status(): VaultStatus {
           accounts: true,
           mail: true,
           news: true,
+          money: true,
           jobs: true,
         }
       : undefined,
@@ -7522,6 +7524,50 @@ export const mockInvoke = async <T>(
     case 'mock_story_body':
       requireUnlocked()
       return mockStoryBody(str(args.id)) as T
+
+    // ── Money -- docs/plans/money.md ────────────────────────────────────
+    //
+    // `mock-money.ts` holds the banks, accounts, transactions, categories
+    // and rules, and narrows its own arguments; these only check the vault
+    // is open and hand the call over. `mock_money_link_outcome` is the
+    // mock's own, called by name from a test to decide how the next bank
+    // sign-in ends, and is never generated into the surface.
+
+    case 'plaid_setup':
+    case 'save_plaid_credentials':
+    case 'clear_plaid_credentials':
+    case 'start_bank_link':
+    case 'check_bank_link':
+    case 'cancel_bank_link':
+    case 'list_bank_links':
+    case 'save_bank_link':
+    case 'delete_bank_link':
+    case 'sync_bank_links':
+    case 'list_bank_accounts':
+    case 'save_bank_account':
+    case 'create_manual_account':
+    case 'delete_bank_account':
+    case 'list_transactions':
+    case 'get_transaction':
+    case 'update_transactions':
+    case 'add_manual_transaction':
+    case 'delete_transactions':
+    case 'preview_import':
+    case 'import_transactions':
+    case 'list_money_categories':
+    case 'save_money_category':
+    case 'delete_money_category':
+    case 'list_money_rules':
+    case 'save_money_rule':
+    case 'delete_money_rule':
+    case 'apply_money_rules':
+    case 'money_month':
+    case 'money_cash_flow':
+    case 'money_net_worth':
+    case 'money_recurring':
+    case 'mock_money_link_outcome':
+      requireUnlocked()
+      return mockMoney(cmd, args) as T
 
     // An Articles item on the library's shelf, made the way the library's
     // own `add_item` makes one. The mock library has no Articles shelf until

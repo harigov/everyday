@@ -69,6 +69,9 @@ pub(super) enum Domain {
     /// The Feed: sources, stories and their bodies -- see [`crate::news`]
     /// and [`crate::store::news`].
     News,
+    /// Money: links, accounts, transactions, categories and rules -- see
+    /// [`crate::money`] and [`crate::store::money`].
+    Money,
 }
 
 impl Domain {
@@ -92,6 +95,7 @@ impl Domain {
             Domain::Mail => "mail (this vault's backend stores journals only)",
             Domain::Meetings => "meeting notes (this vault's backend stores journals only)",
             Domain::News => "a feed (this vault's backend stores journals only)",
+            Domain::Money => "money (this vault's backend stores journals only)",
         }
     }
 }

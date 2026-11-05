@@ -95,6 +95,19 @@ pub enum RecordKind {
     Story,
     /// One use of writing help -- see [`crate::writing::WritingAssist`].
     WritingAssist,
+    /// One sign-in at a bank -- see [`crate::money::BankLink`].
+    BankLink,
+    /// An account a link brought, or one kept by hand -- see
+    /// [`crate::money::BankAccount`].
+    BankAccount,
+    /// A transaction -- see [`crate::money::Txn`].
+    Txn,
+    /// A spending or income category, with its budget -- see
+    /// [`crate::money::MoneyCategory`].
+    MoneyCategory,
+    /// A rule that sorts transactions as they arrive -- see
+    /// [`crate::money::MoneyRule`].
+    MoneyRule,
 }
 
 impl RecordKind {
@@ -145,6 +158,11 @@ impl RecordKind {
             RecordKind::NewsSource => "news_source",
             RecordKind::Story => "story",
             RecordKind::WritingAssist => "writing_assist",
+            RecordKind::BankLink => "bank_link",
+            RecordKind::BankAccount => "bank_account",
+            RecordKind::Txn => "txn",
+            RecordKind::MoneyCategory => "money_category",
+            RecordKind::MoneyRule => "money_rule",
         }
     }
 
@@ -191,7 +209,12 @@ impl RecordKind {
             | RecordKind::Voiceprint
             | RecordKind::NewsSource
             | RecordKind::Story
-            | RecordKind::WritingAssist => None,
+            | RecordKind::WritingAssist
+            | RecordKind::BankLink
+            | RecordKind::BankAccount
+            | RecordKind::Txn
+            | RecordKind::MoneyCategory
+            | RecordKind::MoneyRule => None,
         }
     }
 
@@ -204,6 +227,9 @@ impl RecordKind {
     pub fn secret_owner(self) -> Option<&'static str> {
         match self {
             RecordKind::Account => Some("account"),
+            // A link's access token -- see
+            // `everyday_core::money::BANK_LINK_SECRET_OWNER_KIND`.
+            RecordKind::BankLink => Some("bank_link"),
             RecordKind::Journal
             | RecordKind::Entry
             | RecordKind::Note
@@ -237,7 +263,11 @@ impl RecordKind {
             | RecordKind::Voiceprint
             | RecordKind::NewsSource
             | RecordKind::Story
-            | RecordKind::WritingAssist => None,
+            | RecordKind::WritingAssist
+            | RecordKind::BankAccount
+            | RecordKind::Txn
+            | RecordKind::MoneyCategory
+            | RecordKind::MoneyRule => None,
         }
     }
 
@@ -290,6 +320,11 @@ impl RecordKind {
             RecordKind::NewsSource => "news_source",
             RecordKind::Story => "story",
             RecordKind::WritingAssist => "writing_assist",
+            RecordKind::BankLink => "bank_link",
+            RecordKind::BankAccount => "bank_account",
+            RecordKind::Txn => "txn",
+            RecordKind::MoneyCategory => "money_category",
+            RecordKind::MoneyRule => "money_rule",
         }
     }
 }
@@ -693,6 +728,61 @@ impl RecordDescriptor for crate::writing::WritingAssist {
     }
 }
 
+impl RecordDescriptor for crate::money::BankLink {
+    const KIND: RecordKind = RecordKind::BankLink;
+    type Id = crate::id::BankLinkId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::money::bank_link_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::money::BankAccount {
+    const KIND: RecordKind = RecordKind::BankAccount;
+    type Id = crate::id::BankAccountId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::money::bank_account_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::money::Txn {
+    const KIND: RecordKind = RecordKind::Txn;
+    type Id = crate::id::TxnId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::money::txn_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::money::MoneyCategory {
+    const KIND: RecordKind = RecordKind::MoneyCategory;
+    type Id = crate::id::MoneyCategoryId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::money::money_category_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::money::MoneyRule {
+    const KIND: RecordKind = RecordKind::MoneyRule;
+    type Id = crate::id::MoneyRuleId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::money::money_rule_aad(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ties [`RecordKind::aad_word`] to every [`RecordDescriptor::aad`],
@@ -757,6 +847,11 @@ mod tests {
         check::<crate::news::NewsSource>(id());
         check::<crate::news::Story>(id());
         check::<crate::writing::WritingAssist>(id());
+        check::<crate::money::BankLink>(id());
+        check::<crate::money::BankAccount>(id());
+        check::<crate::money::Txn>(id());
+        check::<crate::money::MoneyCategory>(id());
+        check::<crate::money::MoneyRule>(id());
     }
 
     #[test]
@@ -774,7 +869,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 35] = [
+    const ALL: [RecordKind; 40] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -810,5 +905,10 @@ mod tests {
         RecordKind::NewsSource,
         RecordKind::Story,
         RecordKind::WritingAssist,
+        RecordKind::BankLink,
+        RecordKind::BankAccount,
+        RecordKind::Txn,
+        RecordKind::MoneyCategory,
+        RecordKind::MoneyRule,
     ];
 }
