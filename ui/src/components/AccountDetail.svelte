@@ -49,6 +49,7 @@
   import AgentAccessGrid from './AgentAccessGrid.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import SignatureField from './SignatureField.svelte'
   import SignInLink from './SignInLink.svelte'
 
   let { id, onclose }: { id: AccountId; onclose: () => void } = $props()
@@ -136,6 +137,7 @@
 
   interface Draft {
     displayName: string
+    signatureHtml: string
     identities: Identity[]
     services: { mail: boolean; calendar: boolean }
     capEnabled: boolean
@@ -150,6 +152,7 @@
     if (!draft && original) {
       draft = {
         displayName: original.displayName,
+        signatureHtml: original.signatureHtml ?? '',
         identities: original.identities.map((i) => ({ ...i })),
         services: { ...original.services },
         capEnabled: original.attachmentCapBytes != null,
@@ -177,6 +180,7 @@
       const account: Account = $state.snapshot({
         ...original,
         displayName: draft.displayName.trim() || original.address,
+        signatureHtml: draft.signatureHtml,
         identities: draft.identities
           .map((i) => ({ ...i, name: i.name.trim(), address: i.address.trim() }))
           .filter((i) => i.address),
@@ -479,8 +483,20 @@
     </section>
 
     <section>
+      <span class="eyebrow">Signature</span>
+      <SignatureField label="Signature" bind:value={draft.signatureHtml} />
+      <p class="hint">
+        Starts off every new message, reply and forward from this account, under where you write and
+        above the quote. It is ordinary text there: change it or delete it for that one message.
+      </p>
+    </section>
+
+    <section>
       <span class="eyebrow">Identities</span>
-      <p class="hint">A second address this account can send as, with its own signature.</p>
+      <p class="hint">
+        A second address this account can send as, chosen under From when you write. With no
+        signature of its own, it uses the one above.
+      </p>
       {#each draft.identities as identity, i (i)}
         <div class="identity">
           <div class="row">
@@ -490,12 +506,11 @@
               <Icon name="trash" size={14} />
             </button>
           </div>
-          <textarea
-            class="field sig"
+          <SignatureField
+            label="This identity's signature"
             placeholder="Signature"
-            rows="3"
             bind:value={identity.signatureHtml}
-          ></textarea>
+          />
         </div>
       {/each}
       <div>
@@ -914,13 +929,6 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
   }
-  .sig {
-    min-height: 60px;
-    padding: var(--sp-2) var(--sp-3);
-    resize: vertical;
-    font: inherit;
-  }
-
   .services {
     display: flex;
     gap: var(--sp-4);

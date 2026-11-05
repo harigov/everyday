@@ -166,14 +166,24 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
     let account = args.account;
     let account_id = account.id;
     let mail_on = account.services.mail;
-    blocking({
+    let signatures_changed = blocking({
         let vault = vault.clone();
         move || {
             check_acknowledgement(&vault, &account)?;
-            Ok(vault.save_account(&account)?)
+            let stored = vault.account(account_id).ok();
+            account.check_signatures(stored.as_ref())?;
+            let changed = stored.is_some_and(|old| !old.signatures().eq(account.signatures()));
+            vault.save_account(&account)?;
+            Ok(changed)
         }
     })
     .await?;
+    // Suggestions are written around the signature, and what was measured of
+    // this account's writing may have it in as their sign-off.
+    if signatures_changed {
+        svc.mail_voice_cache_forget(account_id);
+        svc.mail_replies_cache_clear();
+    }
     if mail_on {
         crate::mailsync::wiring::ensure_account_task(&svc, &vault, account_id);
         if let Some(statuses) = svc.mail_statuses() {

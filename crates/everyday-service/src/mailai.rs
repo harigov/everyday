@@ -47,7 +47,7 @@ use everyday_core::Vault;
 use everyday_core::account::Account;
 use everyday_core::id::{AccountId, MailMessageId, ThreadId};
 use everyday_core::llm::{ModelAccess, ModelTier};
-use everyday_core::mail::voice::{self, VoiceProfile};
+use everyday_core::mail::voice;
 use everyday_core::mail::{
     Address, Category, CategorySource, Draft, DraftState, MailAiFeature, MailAiRefusal, Message,
     Origin, Thread, compose, mail_ai_allowed,
@@ -1130,7 +1130,7 @@ async fn draft_for_thread(
     // Spent here, on the call itself -- not below, on whether it led to a
     // saved draft. See this function's own doc for why.
     *budget -= 1;
-    let system = format!("{AUTO_DRAFT_SYSTEM}\n\n{}", crate::mailvoice::HUMAN_WRITING_RULES);
+    let system = voice.system_prompt(AUTO_DRAFT_SYSTEM);
     let answer =
         crate::quick::run_prompt(client, &small.config.model, &system, &user, auto_draft_schema())
             .await?;
@@ -1150,14 +1150,19 @@ async fn draft_for_thread(
     // `auto_draft_schema`'s own doc) -- `draft_body_text_to_html` is the
     // one, pure place every answer is turned into markup, so nothing the
     // model wrote as HTML can ever reach a draft directly.
-    let body_html = draft_body_text_to_html(body_text, &voice.profile);
+    let body_html = draft_body_text_to_html(body_text, &voice);
+    // Nothing left once cleaned: a signature and a quote are not a draft.
+    if body_html.is_empty() {
+        return Ok(());
+    }
 
     let origin = Origin::Assistant { conversation: AUTO_DRAFT_CONVERSATION.to_string() };
     let mut draft = Draft::new(account.id, account.address.clone(), origin.clone());
     draft.in_reply_to = Some(eligible.id);
     draft.subject = compose::reply_subject(&thread.subject);
     draft.to = vec![eligible.from.clone()];
-    draft.body_html = compose::quote_reply(&body_html, &eligible.from, eligible.date, &quoted_html);
+    let own_part = compose::with_signature(&body_html, account.signature_for(&account.address));
+    draft.body_html = compose::quote_reply(&own_part, &eligible.from, eligible.date, &quoted_html);
 
     let vault2 = vault.clone();
     // `append: false` -- an auto-draft is never eagerly pushed to the
@@ -1336,8 +1341,8 @@ fn auto_draft_user_prompt(
 /// never `body_html`, specifically so that nothing the model wrote as
 /// markup can reach a draft directly -- every character of its answer
 /// passes through here, as plain text, first.
-fn draft_body_text_to_html(body_text: &str, profile: &VoiceProfile) -> String {
-    voice::text_to_html(&voice::humanize(body_text, profile))
+fn draft_body_text_to_html(body_text: &str, voice_ctx: &VoiceContext) -> String {
+    voice::text_to_html(&voice_ctx.clean(body_text))
 }
 
 #[cfg(test)]
@@ -1609,9 +1614,9 @@ mod tests {
             "On Tue wrote:\n> old stuff\n\nCan you confirm Friday?".to_string(),
         )];
         let voice = VoiceContext {
-            profile: Arc::new(VoiceProfile::default()),
             examples: vec!["Thanks, sounds good.".to_string()],
             name: Some("Hari".to_string()),
+            ..Default::default()
         };
         let prompt = auto_draft_user_prompt(&t, &context, &voice, Some("Sam"));
         assert!(prompt.contains("untrusted_text"), "{prompt}");
@@ -1651,8 +1656,8 @@ mod tests {
 
     #[test]
     fn draft_body_text_to_html_escapes_the_models_plain_text_answer() {
-        let profile = VoiceProfile::default();
-        let html = draft_body_text_to_html("Sounds good <Friday>!\n\nThanks.", &profile);
+        let html =
+            draft_body_text_to_html("Sounds good <Friday>!\n\nThanks.", &VoiceContext::default());
         assert!(!html.contains("<Friday>"), "{html}");
         assert!(html.contains("&lt;Friday&gt;"), "{html}");
     }

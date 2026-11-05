@@ -491,6 +491,20 @@ impl Vault {
         self.with_mail(|m| m.put_mail_sorting(sorting))
     }
 
+    // ---- what is said about writing ------------------------------------------
+
+    /// What the person has said about how mail is written for them -- see
+    /// [`crate::mail::writing`].
+    pub fn mail_writing(&self) -> Result<crate::mail::MailWriting> {
+        self.with_mail(|m| m.mail_writing())
+    }
+
+    pub fn save_mail_writing(&self, writing: &crate::mail::MailWriting) -> Result<()> {
+        self.writable()?;
+        writing.validate()?;
+        self.with_mail(|m| m.put_mail_writing(writing))
+    }
+
     /// A decision model's answer for one message -- see
     /// [`crate::store::mail::MailStore::sort_message`]. Answers whether
     /// anything was written: a person's own mark is never replaced.

@@ -2163,6 +2163,7 @@ fn build(
             history_trimmed,
             can_remember,
             calendar: calendar_offered.then(|| calendar_guidance(&vault)).flatten(),
+            mail_voice: mail_offered.then(|| mail_voice_guidance(&vault)).flatten(),
             own_journal,
             // Only where there is somebody to put the one question to: a
             // job, or a routine that asks nobody, has each call refused or
@@ -2240,6 +2241,8 @@ struct Guidance {
     /// `None` when `create_event` is not offered, or there is only one place
     /// an event could go.
     calendar: Option<String>,
+    /// How they want their email to sound -- see [`mail_voice_guidance`].
+    mail_voice: Option<String>,
     /// Whether `write_own_journal` is offered: the assistant's own journal.
     own_journal: bool,
     /// Whether several deletes or sends in one step are asked about together
@@ -2320,6 +2323,10 @@ impl std::fmt::Display for Guidance {
             f.write_str("\n\n")?;
             f.write_str(calendar)?;
         }
+        if let Some(mail_voice) = &self.mail_voice {
+            f.write_str("\n\n")?;
+            f.write_str(mail_voice)?;
+        }
         if self.together {
             f.write_str(
                 "\n\nWhen one request means several deletions or sends -- clearing a day's \
@@ -2395,6 +2402,20 @@ impl std::fmt::Display for Guidance {
         }
         Ok(())
     }
+}
+
+/// Settings → Mail writing, for the mail the assistant writes itself. What it
+/// drafts goes out as them just as a suggested reply does, and they said this
+/// once, not once per way of drafting. `None` until they have said anything.
+fn mail_voice_guidance(vault: &Vault) -> Option<String> {
+    let writing = vault.mail_writing().ok()?;
+    let instructions = writing.instructions.trim();
+    (!instructions.is_empty()).then(|| {
+        format!(
+            "When you write email for them, it goes out as them. They have said how they want \
+             to sound, in their own words:\n---\n{instructions}\n---"
+        )
+    })
 }
 
 /// Where new events go, as the preamble says it: the default calendar by
@@ -5641,6 +5662,7 @@ mod tests {
             history_trimmed: false,
             can_remember: true,
             calendar: None,
+            mail_voice: None,
             own_journal: false,
             together: false,
             choosing: false,
@@ -5663,6 +5685,7 @@ mod tests {
             history_trimmed: false,
             can_remember: true,
             calendar: None,
+            mail_voice: None,
             own_journal: false,
             together: false,
             choosing: false,
@@ -5684,6 +5707,7 @@ mod tests {
             history_trimmed: false,
             can_remember: true,
             calendar: None,
+            mail_voice: None,
             own_journal: false,
             together: false,
             choosing: false,
@@ -5701,6 +5725,7 @@ mod tests {
             history_trimmed: true,
             can_remember: true,
             calendar: None,
+            mail_voice: None,
             own_journal: false,
             together: false,
             choosing: false,
@@ -5717,6 +5742,7 @@ mod tests {
             history_trimmed: true,
             can_remember: false,
             calendar: None,
+            mail_voice: None,
             own_journal: false,
             together: false,
             // Offered choices too: the line about learning from a pick names
@@ -5730,6 +5756,22 @@ mod tests {
     /// The default calendar is named in the preamble, by name and account, and
     /// whether this computer is a calendar too -- so an appointment goes where
     /// they keep them without the model having to look.
+    #[test]
+    fn the_assistant_is_told_how_they_want_their_mail_to_sound_once_they_have_said() {
+        let (vault, _dir) = test_vault();
+        assert_eq!(mail_voice_guidance(&vault), None);
+
+        vault
+            .save_mail_writing(&everyday_core::mail::MailWriting {
+                instructions: "Never apologise.".into(),
+                use_calendar: true,
+            })
+            .unwrap();
+        let said = mail_voice_guidance(&vault).unwrap();
+        assert!(said.contains("goes out as them"), "{said}");
+        assert!(said.contains("Never apologise."), "{said}");
+    }
+
     #[test]
     fn the_preamble_names_the_default_calendar_and_whether_this_computer_is_one() {
         use everyday_core::account::{Account, AuthMethod, Provider};
@@ -5777,6 +5819,7 @@ mod tests {
             history_trimmed: false,
             can_remember: true,
             calendar: Some(off.clone()),
+            mail_voice: None,
             own_journal: false,
             together: false,
             choosing: false,
@@ -5802,6 +5845,7 @@ mod tests {
                 history_trimmed: false,
                 can_remember: true,
                 calendar: None,
+                mail_voice: None,
                 own_journal: false,
                 together: false,
                 choosing: false,
@@ -6548,6 +6592,7 @@ mod tests {
                 history_trimmed: false,
                 can_remember: true,
                 calendar: None,
+                mail_voice: None,
                 own_journal: false,
                 together: false,
                 choosing: false,

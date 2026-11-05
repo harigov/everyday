@@ -18,6 +18,10 @@ use jiff::{SignedDuration, Timestamp};
 
 use crate::mailsync::wiring::MailState;
 
+/// A thread's suggestions: how many messages it had, when they were written, and
+/// the suggestions.
+type CachedReplies = (u32, Timestamp, Vec<crate::mailwrite::ReplySuggestion>);
+
 pub(crate) struct MailRuntime {
     /// Mail's pack store and search index, and each account's sync
     /// progress -- open and populated for exactly as long as the vault they
@@ -96,10 +100,11 @@ pub(crate) struct MailRuntime {
     /// decrypts dozens of sent messages, so `everyday_service::mailvoice`
     /// keeps it for a while rather than paying that on every suggestion.
     voice_cache: Mutex<HashMap<AccountId, (Timestamp, Arc<VoiceProfile>)>>,
-    /// `suggest_replies`' cache, on the same terms as `summary_cache`: a
-    /// thread's three suggestions, keyed by how many messages it had when
-    /// they were written, so reopening a thread does not ask again.
-    reply_cache: Mutex<HashMap<ThreadId, (u32, Vec<crate::mailwrite::ReplySuggestion>)>>,
+    /// `suggest_replies`' cache: a thread's three suggestions, keyed by how
+    /// many messages it had when they were written, so reopening a thread does
+    /// not ask again. Unlike `summary_cache`, also by when: a suggestion can
+    /// offer a time, and a time goes stale without the thread changing at all.
+    reply_cache: Mutex<HashMap<ThreadId, CachedReplies>>,
 }
 
 impl MailRuntime {
@@ -357,18 +362,31 @@ impl MailRuntime {
         &self,
         thread: ThreadId,
         message_count: u32,
+        oldest: Timestamp,
     ) -> Option<Vec<crate::mailwrite::ReplySuggestion>> {
         let cache = self.reply_cache.lock().unwrap();
-        cache.get(&thread).filter(|(n, _)| *n == message_count).map(|(_, r)| r.clone())
+        cache
+            .get(&thread)
+            .filter(|(n, written, _)| *n == message_count && *written >= oldest)
+            .map(|(_, _, r)| r.clone())
     }
 
     pub(crate) fn replies_cache_put(
         &self,
         thread: ThreadId,
         message_count: u32,
+        now: Timestamp,
         replies: Vec<crate::mailwrite::ReplySuggestion>,
     ) {
-        self.reply_cache.lock().unwrap().insert(thread, (message_count, replies));
+        self.reply_cache.lock().unwrap().insert(thread, (message_count, now, replies));
+    }
+
+    pub(crate) fn voice_cache_forget(&self, account: AccountId) {
+        self.voice_cache.lock().unwrap().remove(&account);
+    }
+
+    pub(crate) fn replies_cache_clear(&self) {
+        self.reply_cache.lock().unwrap().clear();
     }
 
     pub(crate) fn summary_cached(&self, thread: ThreadId, message_count: u32) -> Option<String> {

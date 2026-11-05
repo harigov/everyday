@@ -92,7 +92,7 @@ export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string 
   {
     key: 'writing',
     label: 'Writing help',
-    hint: 'Suggest three replies when you open a thread, write a draft from a few words, and polish what you wrote, all in your own voice.',
+    hint: 'Suggest three replies when you open a thread, write a draft from a few words, and polish what you wrote, all in your own voice, with your calendar for suggesting times. Settings → Mail writing is how you steer it.',
   },
 ]
 

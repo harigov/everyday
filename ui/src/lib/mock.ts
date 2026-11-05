@@ -114,6 +114,7 @@ import type {
   DreamScope,
   LLMConfig,
   MailSorting,
+  MailWriting,
   MailSortingView,
   Memory,
   MemoryOrigin,
@@ -140,6 +141,7 @@ import type {
   VerificationAnswer,
 } from './types'
 import { sameAccount, validateLink } from './chat'
+import { signatureFor } from './mailwrite'
 import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
 import {
   mockAnswerJob,
@@ -194,10 +196,12 @@ import {
   mockMoveToMailbox,
   mockNewDraft,
   mockMailSorting,
+  mockMailWriting,
   mockOlderSortViews,
   mockRecategorizeMail,
   mockRespondToInvite,
   mockSaveMailSorting,
+  mockSaveMailWriting,
   mockSortOlderMail,
   mockStopSortingOlderMail,
   mockSaveDraft,
@@ -7303,6 +7307,15 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       return mockRecategorizeMail(args.account as string | null | undefined) as T
 
+    case 'mail_writing':
+      requireUnlocked()
+      return mockMailWriting() as T
+
+    case 'save_mail_writing':
+      requireUnlocked()
+      mockSaveMailWriting(args.writing as MailWriting)
+      return mockMailWriting() as T
+
     case 'mail_sorting':
       requireUnlocked()
       return mailSortingView() as T
@@ -7361,11 +7374,20 @@ export const mockInvoke = async <T>(
     case 'list_drafts':
       requireUnlocked()
       return mockListDrafts(str(args.account)) as T
-    case 'new_draft':
+    case 'new_draft': {
       requireUnlocked()
-      return mockNewDraft(
-        args as { account: string; inReplyTo?: string; forwardOf?: string; replyAll?: boolean },
-      ) as T
+      const account = accounts.find((a) => a.id === args.account)
+      const signatureHtml = account ? signatureFor(account, account.address) : ''
+      return mockNewDraft({
+        ...(args as {
+          account: string
+          inReplyTo?: string
+          forwardOf?: string
+          replyAll?: boolean
+        }),
+        signatureHtml,
+      }) as T
+    }
     case 'save_draft':
       requireUnlocked()
       mockSaveDraft(args.draft as Draft)

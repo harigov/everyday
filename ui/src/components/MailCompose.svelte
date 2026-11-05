@@ -43,11 +43,17 @@
     htmlToPlainText,
     joinQuoted,
     sendLaterChoices,
+    signatureFor,
     splitQuoted,
+    splitSignature,
+    withOwnWords,
+    withSignatureSwapped,
+    withoutEmptySignature,
   } from '../lib/mailwrite'
   import { mailwrite } from '../lib/mailwrite.svelte'
   import { quoteDocument } from '../lib/mailview'
   import { MarkdownClipboard } from '../lib/markdown-clipboard'
+  import { Signature, signatureRange } from '../lib/signature'
   import { mail } from '../lib/mail.svelte'
   import { notify } from '../lib/notify.svelte'
   import { menu } from '../lib/menu.svelte'
@@ -165,13 +171,15 @@
    *  they start folded behind its first line -- open when there is nobody to
    *  send to yet, and whenever there is something in them to check first: a
    *  draft anything but the person wrote, recipients anything but the person
-   *  changed, and a Bcc, which the line it folds behind has no way to flag. */
+   *  changed, and a Bcc or a second From address, which the line it folds behind
+   *  has no way to flag. */
   let showFields = $state(
     untrack(
       () =>
         placement === 'pane' ||
         working.to.length === 0 ||
         working.bcc.length > 0 ||
+        (accounts.account(working.accountId)?.address ?? working.identity) !== working.identity ||
         working.origin.type !== 'person' ||
         !!working.recipientsChangedBy,
     ),
@@ -242,6 +250,34 @@
       account?.displayName ||
       working.identity,
   )
+  /** Every address this draft can go out from: the account's own and each
+   *  identity's, and whichever it is from now, which may be one since removed.
+   *  One address is no choice, and is not shown as one. */
+  const fromChoices = $derived.by(() => {
+    if (!account) return []
+    const addresses = [account.address, ...account.identities.map((i) => i.address)]
+    const seen = new Set<string>()
+    return [...addresses, working.identity].filter((address) => {
+      const key = address.trim().toLowerCase()
+      if (!key || seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  })
+
+  function setFrom(address: string) {
+    if (!account || address === working.identity) return
+    const before = signatureFor(account, working.identity)
+    working.identity = address
+    const ed = editor
+    if (ed) {
+      const html = ed.getHTML()
+      const swapped = withSignatureSwapped(html, before, signatureFor(account, address))
+      if (swapped !== html) ed.commands.setContent(swapped)
+    }
+    touch()
+  }
+
   const writingEnabled = $derived(account?.mailAi?.writing === true)
   /** Why the sparkle and Improve buttons are disabled, when they are --
    *  read as `title`, so a mouse finds out why without opening Settings. */
@@ -413,11 +449,29 @@
   $effect(() => {
     const el = host
     if (!el) return
+    // A message with words in it opens after the last of them, which is not the
+    // end of the document: the signature is under them, and what is typed into
+    // it stays there, unseen by Write and Improve.
+    const afterWords =
+      !underThread &&
+      working.to.length > 0 &&
+      Boolean(
+        splitSignature(initialBody.own)
+          .words.replace(/<[^>]*>/g, '')
+          .trim(),
+      )
     const ed = new Editor({
       element: el,
       extensions: [
         // StarterKit carries a link of its own; this one is configured below.
-        StarterKit.configure({ heading: false, link: false }),
+        // No trailing paragraph under a signature: there is nothing to type
+        // there, and it would go out as a blank line above the quote.
+        StarterKit.configure({
+          heading: false,
+          link: false,
+          trailingNode: { notAfter: ['paragraph', 'signature'] },
+        }),
+        Signature,
         Placeholder.configure({
           // `untrack`: read while the editor is being built, inside this very
           // effect, it would otherwise rebuild the editor when Settings
@@ -455,18 +509,17 @@
       // once (a forward's recipients can follow); a draft with words of its
       // own already, after the last of them. A new message, with nobody to
       // send it to yet, leaves focus to the To field instead.
-      autofocus: underThread
-        ? 'start'
-        : working.to.length === 0
-          ? false
-          : initialBody.own.replace(/<[^>]*>/g, '').trim()
-            ? 'end'
-            : 'start',
+      autofocus: underThread || (working.to.length > 0 && !afterWords) ? 'start' : false,
+      onCreate: ({ editor: created }) => {
+        if (!afterWords) return
+        const signature = signatureRange(created.state.doc)
+        created.commands.focus(signature && signature.from > 0 ? signature.from - 1 : 'end')
+      },
       onUpdate: () => touch(),
     })
     editor = ed
     return () => {
-      working.bodyHtml = joinQuoted(ed.getHTML(), quotedHtml)
+      working.bodyHtml = joinQuoted(withoutEmptySignature(ed.getHTML()), quotedHtml)
       ed.destroy()
       editor = null
     }
@@ -474,7 +527,7 @@
 
   /** The editor's text, with the quote put back behind it. */
   function syncBody() {
-    if (editor) working.bodyHtml = joinQuoted(editor.getHTML(), quotedHtml)
+    if (editor) working.bodyHtml = joinQuoted(withoutEmptySignature(editor.getHTML()), quotedHtml)
   }
 
   // ── writing help ─────────────────────────────────────────────────
@@ -490,20 +543,21 @@
   // what autosaves it and puts it in place before `send()` ever reads
   // `working.bodyHtml`.
 
-  /** The own part of the current body, as plain text -- `currentText` for
-   *  `draft_with_ai`, and `text` for a whole-body `improve_writing`. */
+  /** What the person wrote, as plain text, without the quote or the signature
+   *  -- `currentText` for `draft_with_ai`, and `text` for a whole-body
+   *  `improve_writing`. */
   function ownText(): string {
     syncBody()
-    return htmlToPlainText(splitQuoted(working.bodyHtml).own)
+    return htmlToPlainText(splitSignature(splitQuoted(working.bodyHtml).own).words)
   }
 
-  /** Replaces the own part of the body with `ownHtml`, keeping the quote
-   *  below exactly as it was. Returns the HTML it replaced, for the
-   *  "Rewritten · Undo" note. */
+  /** Replaces what the person wrote with `ownHtml`, keeping the signature and
+   *  the quote below exactly as they were. Returns the HTML it replaced, for
+   *  the "Rewritten · Undo" note. */
   function replaceOwnPart(ed: Editor, ownHtml: string): string {
     const previousHtml = ed.getHTML()
-    const { quoted } = splitQuoted(previousHtml)
-    ed.commands.setContent(joinQuoted(ownHtml, quoted))
+    const { own, quoted } = splitQuoted(previousHtml)
+    ed.commands.setContent(joinQuoted(withOwnWords(own, ownHtml), quoted))
     return previousHtml
   }
 
@@ -531,6 +585,7 @@
         inReplyTo: working.inReplyTo ?? null,
         instruction,
         currentText: ownText() || null,
+        identity: working.identity,
       })
       const ed = editor
       if (ed) aiNote = { previousHtml: replaceOwnPart(ed, result.bodyHtml) }
@@ -548,13 +603,28 @@
    * inline within one paragraph and a `<p>` in the middle of it would split
    * the block the selection never asked to leave -- otherwise the whole own
    * part, the same path `submitAiPrompt` takes.
+   *
+   * A selection running into the signature stops at it: Select All and Polish
+   * means their words, and replacing the range as it stood would take the block
+   * with it. One entirely inside the signature was asked for, and is rewritten
+   * there. All of their words selected is the same as nothing selected, and
+   * keeps their paragraphs.
    */
   async function applyImprove(mode: ImproveMode) {
     const ed = editor
     if (!ed || improving || !writingEnabled) return
-    const { from, to, empty } = ed.state.selection
-    const selected = empty ? '' : ed.state.doc.textBetween(from, to, '\n\n')
-    const useSelection = selected.trim().length > 0
+    const { doc, selection } = ed.state
+    const signature = signatureRange(doc)
+    let { from, to } = selection
+    let allWords = false
+    if (signature && from < signature.from && to > signature.from) {
+      to = signature.from - 1
+      allWords = from <= 1
+    } else if (signature && from > signature.from && from < signature.to && to > signature.to) {
+      from = signature.to
+    }
+    const selected = selection.empty ? '' : doc.textBetween(from, to, '\n\n')
+    const useSelection = selected.trim().length > 0 && !allWords
     const text = useSelection ? selected : ownText()
     if (!text.trim()) return
     improving = true
@@ -955,6 +1025,21 @@
 
   {#if showFields}
     <div class="fields">
+      {#if fromChoices.length > 1}
+        <div class="line">
+          <span class="label">From</span>
+          <select
+            class="from"
+            aria-label="From"
+            value={working.identity}
+            onchange={(e) => setFrom(e.currentTarget.value)}
+          >
+            {#each fromChoices as address (address)}
+              <option value={address}>{address}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
       {@render addressRow('to')}
       {#if showCcBcc}
         {@render addressRow('cc')}
@@ -1371,6 +1456,17 @@
   .subject {
     width: 100%;
   }
+  .from {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: none;
+    color: var(--fg);
+    font-size: var(--text-base);
+  }
+  .from:focus-visible {
+    outline: 1px solid var(--accent);
+  }
   .textlink {
     flex: none;
     font-size: var(--text-xs);
@@ -1489,7 +1585,16 @@
   .prose :global(.selectedCell) {
     background: color-mix(in oklab, var(--accent) 14%, transparent);
   }
-  .prose :global(p.is-editor-empty:first-child::before) {
+  /* Quieter than what is being written, and a line clear of it. Only here: it
+     goes out as ordinary text. */
+  .prose :global([data-signature]) {
+    margin-top: var(--sp-4);
+    color: var(--fg-muted);
+  }
+  /* `is-empty` rather than `is-editor-empty`: a new message has its signature
+     in it, so the editor as a whole is never empty, and the line to write on
+     still is. */
+  .prose :global(.ed-content > p.is-empty:first-child::before) {
     content: attr(data-placeholder);
     float: left;
     height: 0;

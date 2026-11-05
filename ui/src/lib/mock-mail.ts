@@ -33,6 +33,7 @@ import type {
   MailInvite,
   MailSender,
   MailSorting,
+  MailWriting,
   Mailbox,
   MailboxId,
   MailboxRole,
@@ -1122,6 +1123,25 @@ export function mockSetThreadPriority(ids: ThreadId[], priority: boolean): void 
   }
 }
 
+// ── Mail writing (what writing help is told) ───────────────────────────
+
+let mockWriting: MailWriting = { instructions: '', useCalendar: false }
+
+export function mockMailWriting(): MailWriting {
+  return structuredClone(mockWriting)
+}
+
+export function mockSaveMailWriting(writing: MailWriting): void {
+  // The check `MailWriting::validate` makes, so the pane's error is real.
+  if (writing.instructions.length > 4_000) {
+    throw new VaultError(
+      'invalid',
+      'that is too long to go with every reply; keep it under 4000 characters',
+    )
+  }
+  mockWriting = structuredClone(writing)
+}
+
 // ── Mail sorting (a decision model's categories) ───────────────────────
 
 /** Which of `MOCK_SORTING`'s categories a seeded thread was "sorted" into. */
@@ -1358,8 +1378,14 @@ export function mockNewDraft(opts: {
   inReplyTo?: MailMessageId
   forwardOf?: MailMessageId
   replyAll?: boolean
+  /** The account's signature, which `mock.ts` is the one holding. */
+  signatureHtml?: string
 }): Draft {
   const now = new Date().toISOString()
+  // The shape `compose::blank_with_signature` writes.
+  const signature = opts.signatureHtml?.replace(/<[^>]*>/g, '').trim()
+    ? `<div data-signature="">${opts.signatureHtml}</div>`
+    : ''
   const source = opts.inReplyTo ?? opts.forwardOf
   const original = source ? seed.messages.get(source) : undefined
   // Only a reply knows who it is to, as `new_draft` has it: a forward starts
@@ -1379,9 +1405,9 @@ export function mockNewDraft(opts: {
     // The shape `quote_html` in `everyday-mail/src/compose.rs` writes, so
     // `mailwrite.ts`'s `splitQuoted` finds the quote here as it does there.
     bodyHtml: original
-      ? `<p></p><p>On ${new Date(original.date).toDateString()}, ${original.from.name || original.from.email} wrote:</p>` +
+      ? `<p></p>${signature}<p>On ${new Date(original.date).toDateString()}, ${original.from.name || original.from.email} wrote:</p>` +
         `<blockquote type="cite">${mockMessageBodyHtml(original.id)}</blockquote>`
-      : '<p></p>',
+      : `<p></p>${signature}`,
     attachments: [],
     origin: { type: 'person' },
     state: { type: 'editing' },

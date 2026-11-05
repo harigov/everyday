@@ -904,6 +904,16 @@ assert.equal(
   true,
   'empty paragraph tags from a fresh editor are not "content"',
 )
+assert.equal(
+  isBlankDraft(draft({ bodyHtml: '<p></p><div data-signature=""><p>Hari G</p></div>' })),
+  true,
+  'a signature is what every new draft starts with, so it is not something written',
+)
+assert.equal(
+  isBlankDraft(draft({ bodyHtml: '<p>hello</p><div data-signature=""><p>Hari G</p></div>' })),
+  false,
+  'words over a signature are still words',
+)
 assert.equal(isBlankDraft(draft({ subject: 'Hi' })), false, 'a subject alone is worth keeping')
 assert.equal(
   isBlankDraft(draft({ bodyHtml: '<p>hello</p>' })),

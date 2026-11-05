@@ -274,12 +274,14 @@ export const draftWithAi = (opts: {
   inReplyTo?: MailMessageId | null
   instruction: string
   currentText?: string | null
+  identity?: string | null
 }): Promise<WrittenText> =>
   callCommand<WrittenText>('draft_with_ai', {
     account: opts.account,
     inReplyTo: opts.inReplyTo ?? null,
     instruction: opts.instruction,
     currentText: opts.currentText ?? null,
+    identity: opts.identity ?? null,
   })
 
 /** `text` rewritten per `mode`, or per `instruction` when given. */

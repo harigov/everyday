@@ -31,6 +31,7 @@
 //! the shapes that get sealed.
 
 pub mod ai_gate;
+pub mod availability;
 pub mod categorize;
 pub mod cleanup;
 pub mod compose;
@@ -40,6 +41,7 @@ pub mod rate_limit;
 pub mod records;
 pub mod sorting;
 pub mod voice;
+pub mod writing;
 
 pub use ai_gate::{MailAiFeature, MailAiRefusal, mail_ai_allowed};
 pub use categorize::{CategorizeInput, CategoryMatch, CategoryRule, CategoryRules, categorize};
@@ -51,6 +53,7 @@ pub use outbox::{
 pub use rate_limit::{RateLimitState, TokenBucket};
 pub use records::*;
 pub use sorting::{MailSorting, SortCategory, SortMark, SortedAs};
+pub use writing::MailWriting;
 
 /// What is wrong with `label` as a mail label, or `None` if nothing is.
 ///

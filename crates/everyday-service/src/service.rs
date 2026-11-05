@@ -329,13 +329,15 @@ impl Service {
     }
 
     /// `thread`'s cached reply suggestions, if `message_count` still matches
-    /// what they were written against.
+    /// what they were written against and they are recent enough that a time
+    /// one of them offers is still likely to be free.
     pub fn mail_replies_cached(
         &self,
         thread: ThreadId,
         message_count: u32,
     ) -> Option<Vec<crate::mailwrite::ReplySuggestion>> {
-        self.mail.replies_cached(thread, message_count)
+        let oldest = self.now() - jiff::SignedDuration::from_hours(1);
+        self.mail.replies_cached(thread, message_count, oldest)
     }
 
     pub fn mail_replies_cache_put(
@@ -344,7 +346,20 @@ impl Service {
         message_count: u32,
         replies: Vec<crate::mailwrite::ReplySuggestion>,
     ) {
-        self.mail.replies_cache_put(thread, message_count, replies);
+        self.mail.replies_cache_put(thread, message_count, self.now(), replies);
+    }
+
+    /// Forget what was measured of `account`'s writing, for when what that was
+    /// measured with has changed: a signature, which is not their writing, may
+    /// be in it otherwise as their sign-off.
+    pub fn mail_voice_cache_forget(&self, account: AccountId) {
+        self.mail.voice_cache_forget(account);
+    }
+
+    /// Forget every suggested reply: what they were written from has changed,
+    /// and a person who just changed it reopens a thread to see the difference.
+    pub fn mail_replies_cache_clear(&self) {
+        self.mail.replies_cache_clear();
     }
 
     /// `thread`'s cached summary, if one exists and `message_count` still

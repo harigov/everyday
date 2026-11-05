@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -109,6 +109,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v18(d),
         v19(d),
         v20(),
+        v21(d),
     ]
 }
 
@@ -1552,6 +1553,18 @@ fn v20() -> Vec<String> {
            AND mailbox_id NOT IN \
              (SELECT id FROM mailboxes WHERE role IN ('trash', 'spam', 'drafts')) \
            AND last_date_us < ({sent})"
+    )]
+}
+
+/// Version 21: Settings → Mail writing, what the person has said about how
+/// mail is written for them. One sealed row, the way [`v18`]'s is.
+fn v21(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS mail_writing (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
     )]
 }
 

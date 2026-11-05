@@ -48,7 +48,7 @@ use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
     Body, Category, CategoryRules, CategorySource, ContactBook, Draft, Invite, MailSorting,
-    Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+    MailWriting, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
 };
 use crate::packstore::PackRef;
 use jiff::Timestamp;
@@ -825,6 +825,11 @@ pub trait MailStore: Send + Sync {
     fn mail_sorting(&self) -> Result<MailSorting>;
 
     fn put_mail_sorting(&self, sorting: &MailSorting) -> Result<()>;
+    /// What the person has said about how mail is written for them. The
+    /// defaults until somebody saves it.
+    fn mail_writing(&self) -> Result<MailWriting>;
+    /// Replace it.
+    fn put_mail_writing(&self, writing: &MailWriting) -> Result<()>;
 
     /// A decision model's answer for one message: its category set to
     /// `category`, [`crate::mail::CategorySource::Model`] written beside it,
@@ -887,6 +892,12 @@ pub fn remote_image_settings_aad() -> Vec<u8> {
 /// [`remote_image_settings_aad`] is.
 pub fn mail_sorting_aad() -> Vec<u8> {
     b"everyday.mail_sorting.v1".to_vec()
+}
+
+/// The one row of [`crate::mail::MailWriting`], sealed on the same terms
+/// [`remote_image_settings_aad`] is.
+pub fn mail_writing_aad() -> Vec<u8> {
+    b"everyday.mail_writing.v1".to_vec()
 }
 
 /// The one row of [`crate::mail::ContactBook`], sealed on the same terms

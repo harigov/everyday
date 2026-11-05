@@ -87,6 +87,7 @@ import type {
   MailSorting,
   MailSortingView,
   MailSyncProgress,
+  MailWriting,
   Mailbox,
   MailboxId,
   MeetingActivity,
@@ -317,6 +318,7 @@ export interface Commands {
       inReplyTo?: MailMessageId | null
       instruction: string
       currentText?: string | null
+      identity?: string | null
     }
     result: WrittenText
   }
@@ -450,6 +452,7 @@ export interface Commands {
   }
   mailActivity: { args: { from: string; to: string; tz?: string }; result: MailActivity }
   mailSorting: { args: Record<string, never>; result: MailSortingView }
+  mailWriting: { args: Record<string, never>; result: MailWriting }
   markAllStoriesRead: { args: { sources: NewsSourceId[]; upTo: string }; result: StoryId[] }
   markJobsSeen: { args: { ids?: JobId[] }; result: void }
   markProposalsSeen: { args: { ids?: ProposalId[] }; result: void }
@@ -589,6 +592,7 @@ export interface Commands {
   saveKind: { args: { kind: Kind }; result: void }
   saveLog: { args: { log: LogEntry }; result: void }
   saveMailSorting: { args: { sorting: MailSorting }; result: MailSortingView }
+  saveMailWriting: { args: { writing: MailWriting }; result: MailWriting }
   saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
   saveModelSettings: { args: { settings: ModelSettings }; result: ModelSettingsView }
@@ -853,6 +857,7 @@ export const COMMAND_NAMES = {
   mailActionsByOrigin: 'mail_actions_by_origin',
   mailActivity: 'mail_activity',
   mailSorting: 'mail_sorting',
+  mailWriting: 'mail_writing',
   markAllStoriesRead: 'mark_all_stories_read',
   markJobsSeen: 'mark_jobs_seen',
   markProposalsSeen: 'mark_proposals_seen',
@@ -948,6 +953,7 @@ export const COMMAND_NAMES = {
   saveKind: 'save_kind',
   saveLog: 'save_log',
   saveMailSorting: 'save_mail_sorting',
+  saveMailWriting: 'save_mail_writing',
   saveMeetingSettings: 'save_meeting_settings',
   saveMemory: 'save_memory',
   saveModelSettings: 'save_model_settings',
@@ -1185,6 +1191,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'mail_actions_by_origin',
   'mail_activity',
   'mail_sorting',
+  'mail_writing',
   'mark_all_stories_read',
   'mark_jobs_seen',
   'mark_proposals_seen',
@@ -1280,6 +1287,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_kind',
   'save_log',
   'save_mail_sorting',
+  'save_mail_writing',
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
@@ -1477,6 +1485,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_kind',
   'save_log',
   'save_mail_sorting',
+  'save_mail_writing',
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
@@ -1624,6 +1633,7 @@ export const CHANGE_KINDS = {
   save_kind: 'shelf',
   save_log: 'log',
   save_mail_sorting: 'settings',
+  save_mail_writing: 'settings',
   save_meeting_settings: 'settings',
   save_memory: 'memory',
   save_model_settings: 'settings',

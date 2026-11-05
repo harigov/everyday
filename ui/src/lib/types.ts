@@ -1735,6 +1735,8 @@ export interface Account {
   address: string
   displayName: string
   identities: Identity[]
+  /** What a new draft from this address ends with -- absent until written. */
+  signatureHtml?: string
   imap: Endpoint
   smtp: Endpoint
   caldav?: string | null
@@ -2017,6 +2019,14 @@ export interface MailSorting {
   categories: SortCategory[]
   /** How many days back mail is sorted without being asked. */
   windowDays: number
+}
+
+/** Settings → Mail writing -- `everyday_core::mail::MailWriting`. */
+export interface MailWriting {
+  /** How they want to sound, in their own words. */
+  instructions: string
+  /** Whether writing help is given the next four weeks of calendar. */
+  useCalendar: boolean
 }
 
 /** An asked-for sort of older mail, while it runs. */

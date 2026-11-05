@@ -34,6 +34,7 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   profile: 'the About You tab, their profile and roles',
   accounts: 'the Accounts tab',
   sorting: 'the Mail sorting tab, the categories their mail is sorted into',
+  writing: 'the Mail writing tab, how they want mail written for them to sound',
   models: 'the Models tab, which model each kind of work runs on',
   assistant: "the Assistant tab, the assistant's own settings",
   runs: 'the list of what the assistant did on its own',

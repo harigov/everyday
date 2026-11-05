@@ -15,7 +15,13 @@
   import * as mailApi from '../lib/mail-api'
   import { mail } from '../lib/mail.svelte'
   import { mailwrite } from '../lib/mailwrite.svelte'
-  import { joinQuoted, splitQuoted } from '../lib/mailwrite'
+  import {
+    SUGGESTION_LASTS_MS,
+    joinQuoted,
+    splitQuoted,
+    suggestionsFresh,
+    withOwnWords,
+  } from '../lib/mailwrite'
   import { handle, quietly } from '../lib/state.svelte'
   import type { MailMessageDetail, ReplySuggestion } from '../lib/types'
   import Icon from './Icon.svelte'
@@ -36,13 +42,21 @@
 
   let suggestions = $state<ReplySuggestion[] | null>(null)
   let loading = $state(false)
+  /** When the suggestions on show were written. */
+  let writtenAt = $state(0)
+  /** They have outlived `SUGGESTION_LASTS_MS` with the thread still open. They
+   *  go, and "Suggest again" stands in for them, rather than being replaced
+   *  unasked: a window left open overnight should not be calling a model hourly. */
+  let stale = $state(false)
+  /** Bumped by "Suggest again". */
+  let again = $state(0)
 
   /** Keyed by message id, local to this instance -- cheap insurance against
    *  `eligible` flickering (an account list still loading, say) asking
    *  `suggest_replies` twice for the same message; a genuinely new newest
    *  message is a new `message.id`; and the Svelte `{#each}` key above
    *  already remounts this component when one shows up. */
-  const cache = new Map<string, ReplySuggestion[]>()
+  const cache = new Map<string, { suggestions: ReplySuggestion[]; at: number }>()
 
   /** Guards the async answer the same way `MailCompose`'s own
    *  `addressGeneration` does: a slow `suggest_replies` must not land after
@@ -51,14 +65,17 @@
 
   $effect(() => {
     const id = message.id
+    void again
+    stale = false
     if (!eligible) {
       suggestions = null
       loading = false
       return
     }
     const cached = cache.get(id)
-    if (cached) {
-      suggestions = cached
+    if (cached && suggestionsFresh(cached.at)) {
+      suggestions = cached.suggestions
+      writtenAt = cached.at
       loading = false
       return
     }
@@ -69,7 +86,9 @@
       .suggestReplies(message.threadId)
       .then((r) => {
         if (gen !== generation) return
-        cache.set(id, r.suggestions)
+        const at = Date.now()
+        cache.set(id, { suggestions: r.suggestions, at })
+        writtenAt = at
         suggestions = r.suggestions
       })
       .catch((e) => void quietly(e))
@@ -78,15 +97,28 @@
       })
   })
 
+  /** A timer does not count time a laptop spends asleep, so this also looks when
+   *  the window comes back and when a suggestion is about to be used. */
+  function checkFresh() {
+    if (suggestions?.length && !suggestionsFresh(writtenAt)) stale = true
+  }
+
+  $effect(() => {
+    if (!suggestions?.length || stale) return
+    const left = writtenAt + SUGGESTION_LASTS_MS - Date.now()
+    const timer = setTimeout(checkFresh, Math.max(0, left))
+    return () => clearTimeout(timer)
+  })
+
   async function choose(s: ReplySuggestion) {
-    if (mail.composing) return
+    checkFresh()
+    if (mail.composing || stale) return
     try {
       const draft = await mailApi.newDraft({ account: message.accountId, inReplyTo: message.id })
-      // The suggestion's own text above the quote the fresh draft already
-      // carries -- `splitQuoted(draft.bodyHtml).own` is empty on a brand new
-      // reply, but asking anyway is what keeps this correct the day
-      // `new_draft` stops being the only thing that can produce one.
-      draft.bodyHtml = joinQuoted(s.bodyHtml, splitQuoted(draft.bodyHtml).quoted)
+      // The suggestion's own text above the signature and the quote the fresh
+      // draft already carries.
+      const { own, quoted } = splitQuoted(draft.bodyHtml)
+      draft.bodyHtml = joinQuoted(withOwnWords(own, s.bodyHtml), quoted)
       await mailApi.saveDraft(draft)
       mail.openInlineDraft(draft)
     } catch (e) {
@@ -107,7 +139,7 @@
   // `1`/`2`/`3` are rows in `shortcuts.svelte.ts`, not a listener here:
   // offered while these buttons are showing, withdrawn when they go.
   $effect(() => {
-    const shown = eligible && !loading && suggestions ? suggestions : []
+    const shown = eligible && !loading && !stale && suggestions ? suggestions : []
     if (shown.length === 0) {
       mailwrite.withdrawSuggestions()
       return
@@ -120,6 +152,8 @@
   })
 </script>
 
+<svelte:window onfocus={checkFresh} />
+
 {#if eligible && (loading || (suggestions && suggestions.length > 0))}
   <span class="qr-divider" aria-hidden="true"></span>
   {#if loading}
@@ -127,6 +161,15 @@
     {#each [0, 1, 2] as i (i)}
       <span class="qr-btn qr-placeholder" aria-hidden="true"></span>
     {/each}
+  {:else if stale}
+    <button class="qr-btn qr-quiet" onclick={() => again++}>
+      <Icon name="sparkle" size={11} />
+      Suggest again
+    </button>
+    <button class="qr-btn qr-quiet" aria-label="Write a reply with AI" onclick={writeWithAi}>
+      <Icon name="sparkle" size={11} />
+      Write with AI…
+    </button>
   {:else if suggestions}
     {#each suggestions as s, i (s.label)}
       <button

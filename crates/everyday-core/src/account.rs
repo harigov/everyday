@@ -259,6 +259,10 @@ pub struct Identity {
     pub signature_html: String,
 }
 
+/// Longest one signature may be, as HTML: room for a few lines and links, not
+/// for an image pasted into it as data.
+pub const MAX_SIGNATURE_BYTES: usize = 8_000;
+
 /// The two ways this application ever authenticates to a mail server.
 ///
 /// OAuth is preferred wherever a provider offers it, per the plan's settled
@@ -459,6 +463,15 @@ pub struct Account {
     pub display_name: String,
     #[serde(default)]
     pub identities: Vec<Identity>,
+    /// What a new draft from this account's own address ends with, above any
+    /// quote, for the person to keep, change or delete there -- see
+    /// [`Account::signature_for`]. HTML, because the compose sheet's editor
+    /// keeps a bold line and a link; never read as anything but the person's
+    /// own words.
+    ///
+    /// `skip_serializing_if` for the same reason as `sync_minutes`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signature_html: String,
     pub imap: Endpoint,
     pub smtp: Endpoint,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -655,6 +668,7 @@ impl Account {
             display_name: address.clone(),
             address,
             identities: Vec::new(),
+            signature_html: String::new(),
             imap: preset.imap,
             smtp: preset.smtp,
             caldav: preset.caldav,
@@ -672,6 +686,42 @@ impl Account {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// The signature a draft sent as `address` starts with: that identity's
+    /// own, when it has one, and otherwise this account's. Empty when neither
+    /// has been written.
+    pub fn signature_for(&self, address: &str) -> &str {
+        self.identities
+            .iter()
+            .find(|i| {
+                i.address.eq_ignore_ascii_case(address) && !i.signature_html.trim().is_empty()
+            })
+            .map_or(self.signature_html.as_str(), |i| i.signature_html.as_str())
+    }
+
+    /// Every signature on this account, the identities' included.
+    pub fn signatures(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.signature_html.as_str())
+            .chain(self.identities.iter().map(|i| i.signature_html.as_str()))
+    }
+
+    /// Refuse a signature too long to go on every message, for the person
+    /// saving this record over `stored`.
+    ///
+    /// Not a rule on every write of an account. Sync marks its status with
+    /// [`crate::vault::Vault::save_account`] and ignores what comes back, and a
+    /// signature saved before there was a limit must not quietly stop all of
+    /// that. For the same reason one already stored stays allowed here: it
+    /// should not refuse somebody flipping a switch on the same account.
+    pub fn check_signatures(&self, stored: Option<&Account>) -> crate::error::Result<()> {
+        let unchanged = |s: &str| stored.is_some_and(|a| a.signatures().any(|old| old == s));
+        if self.signatures().any(|s| s.len() > MAX_SIGNATURE_BYTES && !unchanged(s)) {
+            return Err(crate::error::Error::Invalid(
+                "that signature is too long to go on every message; keep it to a few lines".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Access for one caller: the assistant, or an MCP client.
@@ -855,6 +905,51 @@ impl std::fmt::Debug for AccountSecret {
             .field("password", &redact(&self.password))
             .field("client_secret", &redact(&self.client_secret))
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+
+    fn account() -> Account {
+        let mut account = Account::new(Provider::Custom, "me@example.com");
+        account.signature_html = "<p>The account's</p>".into();
+        account.identities = vec![Identity {
+            name: "Me".into(),
+            address: "alias@example.com".into(),
+            signature_html: "<p>The alias's</p>".into(),
+        }];
+        account
+    }
+
+    #[test]
+    fn each_address_has_its_own_signature() {
+        let account = account();
+        assert_eq!(account.signature_for("me@example.com"), "<p>The account's</p>");
+        assert_eq!(account.signature_for("ALIAS@example.com"), "<p>The alias's</p>");
+    }
+
+    #[test]
+    fn an_address_with_none_of_its_own_uses_the_accounts() {
+        let mut account = account();
+        account.identities[0].signature_html = "   ".into();
+        assert_eq!(account.signature_for("alias@example.com"), "<p>The account's</p>");
+    }
+
+    #[test]
+    fn a_new_signature_has_a_limit_and_an_old_one_does_not_block_anything() {
+        let mut account = account();
+        let long = "x".repeat(MAX_SIGNATURE_BYTES + 1);
+        assert!(account.check_signatures(None).is_ok());
+
+        let before = account.clone();
+        account.signature_html = long.clone();
+        assert!(account.check_signatures(Some(&before)).is_err(), "newly over the limit");
+
+        let already = account.clone();
+        account.mail_ai.writing = true;
+        assert!(account.check_signatures(Some(&already)).is_ok(), "over it, and not what changed");
     }
 }
 

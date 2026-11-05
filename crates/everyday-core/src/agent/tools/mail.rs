@@ -210,9 +210,9 @@ pub(super) static TOOLS: &[Tool] = &[
                 (
                     "body_html",
                     text(
-                        "Your reply, as HTML paragraphs (<p>...</p>). The original message \
-                         is quoted underneath automatically \u{2014} do not repeat it \
-                         yourself."
+                        "Your reply, as HTML paragraphs (<p>...</p>). The account's signature \
+                         and the quoted original message are added underneath automatically \
+                         \u{2014} do not write either yourself."
                     )
                 ),
                 (
@@ -238,7 +238,13 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("cc", list("Carbon-copy email addresses.")),
                 ("bcc", list("Blind carbon-copy email addresses.")),
                 ("subject", text("The subject line.")),
-                ("body_html", text("The message, as HTML paragraphs (<p>...</p>).")),
+                (
+                    "body_html",
+                    text(
+                        "The message, as HTML paragraphs (<p>...</p>). The account's signature \
+                         is added underneath automatically \u{2014} do not write it yourself."
+                    )
+                ),
             ],
             &["account_id", "to", "subject", "body_html"]
         ),
@@ -1342,7 +1348,8 @@ fn run_draft_reply(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     require_permission(ctx, &account, Permission::Draft, "draft_reply")?;
 
     let quoted_html = ctx.vault.body(message_id).map(|b| b.html_sanitised).unwrap_or_default();
-    let html = compose::quote_reply(body_html, &parent.from, parent.date, &quoted_html);
+    let signed = compose::with_signature(body_html, account.signature_for(&account.address));
+    let html = compose::quote_reply(&signed, &parent.from, parent.date, &quoted_html);
 
     let origin = origin_of(ctx);
     let mut draft = Draft::new(account.id, account.address.clone(), origin.clone());
@@ -1402,7 +1409,8 @@ fn run_draft_message(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     draft.cc = cc;
     draft.bcc = bcc;
     draft.subject = args.str("subject")?.to_string();
-    draft.body_html = args.str("body_html")?.to_string();
+    draft.body_html =
+        compose::with_signature(args.str("body_html")?, account.signature_for(&account.address));
 
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
@@ -1442,7 +1450,7 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         draft.subject = subject.to_string();
     }
     if let Some(body_html) = args.opt_str("body_html") {
-        draft.body_html = body_html.to_string();
+        draft.body_html = compose::carry_signature(&draft.body_html, body_html);
     }
     draft.touch();
     // Marked only for a non-person caller -- see

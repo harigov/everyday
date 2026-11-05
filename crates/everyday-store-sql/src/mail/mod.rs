@@ -20,13 +20,14 @@ use everyday_core::id::{
 };
 use everyday_core::mail::{
     Body, Category, CategoryMatch, CategoryRules, CategorySource, ContactBook, Draft, Invite,
-    MailSorting, Mailbox, Message, MessageFlags, Op, OpTarget, RemoteImageSettings, Thread,
+    MailSorting, MailWriting, Mailbox, Message, MessageFlags, Op, OpTarget, RemoteImageSettings,
+    Thread,
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{
     CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad,
-    category_rules_aad, contacts_aad, draft_aad, mail_sorting_aad, mailbox_aad, message_aad,
-    op_aad, remote_image_settings_aad,
+    category_rules_aad, contacts_aad, draft_aad, mail_sorting_aad, mail_writing_aad, mailbox_aad,
+    message_aad, op_aad, remote_image_settings_aad,
 };
 use jiff::Timestamp;
 
@@ -820,6 +821,24 @@ impl MailStore for SqlStore {
         let data = self.seal(&mail_sorting_aad(), sorting)?;
         self.write().execute(
             "INSERT INTO mail_sorting (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
+    fn mail_writing(&self) -> Result<MailWriting> {
+        let sealed = self.read().sealed("SELECT data FROM mail_writing WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&mail_writing_aad(), &sealed),
+            None => Ok(MailWriting::default()),
+        }
+    }
+
+    fn put_mail_writing(&self, writing: &MailWriting) -> Result<()> {
+        let data = self.seal(&mail_writing_aad(), writing)?;
+        self.write().execute(
+            "INSERT INTO mail_writing (id, data) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET data = ?1",
             &vals![data],
         )?;

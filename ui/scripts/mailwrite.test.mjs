@@ -4,7 +4,21 @@ import assert from 'node:assert/strict'
 import { load } from './harness.mjs'
 
 const { module: mailwrite, close } = await load('/src/lib/mailwrite.ts')
-const { splitQuoted, joinQuoted, htmlToPlainText, escapeHtml, sendLaterChoices } = mailwrite
+const {
+  splitQuoted,
+  joinQuoted,
+  splitSignature,
+  withOwnWords,
+  withoutEmptySignature,
+  signatureFor,
+  signatureBlock,
+  withSignatureSwapped,
+  suggestionsFresh,
+  SUGGESTION_LASTS_MS,
+  htmlToPlainText,
+  escapeHtml,
+  sendLaterChoices,
+} = mailwrite
 
 /** A local date/time, the same way `sendLaterChoices` itself reads `now` --
  *  never an ISO/UTC string, which would drift against `getHours`/`getDay`
@@ -12,6 +26,124 @@ const { splitQuoted, joinQuoted, htmlToPlainText, escapeHtml, sendLaterChoices }
 function at(year, month, day, hours = 0, minutes = 0) {
   return new Date(year, month - 1, day, hours, minutes, 0, 0)
 }
+
+// ── splitSignature / withOwnWords ────────────────────────────────────────
+//
+// `compose::signature_block` writes the block, and the editor reads it back
+// the same (`signature.ts`).
+
+const SIGNED = '<div data-signature=""><p>Hari G<br>ViyaMD</p></div>'
+
+assert.deepEqual(splitSignature(`<p>Yes.</p>${SIGNED}`), {
+  words: '<p>Yes.</p>',
+  signature: SIGNED,
+})
+assert.deepEqual(
+  splitSignature('<p>Yes.</p>'),
+  { words: '<p>Yes.</p>', signature: '' },
+  'a body with no signature is all words',
+)
+assert.deepEqual(
+  splitSignature(`<p></p>${SIGNED}<p>PS: bring the deck</p>`),
+  { words: '<p></p><p>PS: bring the deck</p>', signature: SIGNED },
+  'what is typed under it is still theirs',
+)
+{
+  const nested = '<div data-signature=""><div>Hari</div><div>CEO</div></div>'
+  assert.deepEqual(
+    splitSignature(`<p>Yes.</p>${nested}`),
+    { words: '<p>Yes.</p>', signature: nested },
+    'the block ends at its own closing tag, not the first one along',
+  )
+}
+
+assert.equal(
+  withOwnWords(`<p></p>${SIGNED}`, '<p>Thursday works.</p>'),
+  `<p>Thursday works.</p>${SIGNED}`,
+  'a rewrite goes above the signature',
+)
+assert.equal(
+  withOwnWords('<p>Old</p>', '<p>New</p>'),
+  '<p>New</p>',
+  'a deleted signature does not come back',
+)
+{
+  // A whole reply through both seams, the way a suggestion is chosen.
+  const quote = '<p>On Tue, Sam wrote:</p><blockquote type="cite"><p>Are you free?</p></blockquote>'
+  const { own, quoted } = splitQuoted(`<p></p>${SIGNED}${quote}`)
+  assert.equal(own, `<p></p>${SIGNED}`)
+  assert.equal(joinQuoted(withOwnWords(own, '<p>Yes.</p>'), quoted), `<p>Yes.</p>${SIGNED}${quote}`)
+}
+
+assert.equal(
+  htmlToPlainText(splitSignature(`<p>Thursday works.</p>${SIGNED}`).words),
+  'Thursday works.',
+  'a model asked to polish this is not shown the signature',
+)
+
+assert.equal(withoutEmptySignature(`<p>Yes.</p>${SIGNED}`), `<p>Yes.</p>${SIGNED}`)
+assert.equal(
+  withoutEmptySignature('<p>Yes.</p><div data-signature=""><p></p></div>'),
+  '<p>Yes.</p>',
+  'one with everything deleted from it does not go out as a blank line',
+)
+assert.equal(withoutEmptySignature('<p>Yes.</p>'), '<p>Yes.</p>')
+
+// ── a second address ─────────────────────────────────────────────────────
+
+{
+  const account = {
+    signatureHtml: '<p>The account</p>',
+    identities: [
+      { name: 'Me', address: 'alias@example.com', signatureHtml: '<p>The alias</p>' },
+      { name: 'Me', address: 'bare@example.com', signatureHtml: '  ' },
+    ],
+  }
+  assert.equal(signatureFor(account, 'me@example.com'), '<p>The account</p>')
+  assert.equal(signatureFor(account, 'ALIAS@example.com'), '<p>The alias</p>')
+  assert.equal(
+    signatureFor(account, 'bare@example.com'),
+    '<p>The account</p>',
+    "an address with none of its own uses the account's",
+  )
+  assert.equal(signatureFor({ identities: [] }, 'me@example.com'), '', 'nobody has written one')
+
+  assert.equal(signatureBlock('<p>Hari</p>'), '<div data-signature=""><p>Hari</p></div>')
+  assert.equal(signatureBlock('<p> </p>'), '', 'a signature with no words in it is none')
+
+  const words = '<p>Yes.</p>'
+  const from = (html) => `${words}<div data-signature="">${html}</div>`
+  assert.equal(
+    withSignatureSwapped(from('<p>The account</p>'), '<p>The account</p>', '<p>The alias</p>'),
+    from('<p>The alias</p>'),
+    'changing From changes the signature',
+  )
+  assert.equal(
+    withSignatureSwapped(from('<p>Edited</p>'), '<p>The account</p>', '<p>The alias</p>'),
+    from('<p>Edited</p>'),
+    'one changed for this message is left alone',
+  )
+  assert.equal(
+    withSignatureSwapped(words, '<p>The account</p>', '<p>The alias</p>'),
+    words,
+    'one deleted from this message stays deleted',
+  )
+  assert.equal(
+    withSignatureSwapped(words, '', '<p>The alias</p>'),
+    from('<p>The alias</p>'),
+    'an address with no signature to one with: it arrives',
+  )
+  assert.equal(
+    withSignatureSwapped(from('<p>The alias</p>'), '<p>The alias</p>', ''),
+    words,
+    'and the other way round, it goes',
+  )
+}
+
+// ── how long a suggestion stands ─────────────────────────────────────────
+
+assert.equal(suggestionsFresh(1_000, 1_000 + SUGGESTION_LASTS_MS - 1), true)
+assert.equal(suggestionsFresh(1_000, 1_000 + SUGGESTION_LASTS_MS), false)
 
 // ── splitQuoted / joinQuoted ─────────────────────────────────────────────
 //

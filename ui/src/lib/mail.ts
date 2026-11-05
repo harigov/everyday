@@ -10,6 +10,7 @@ import {
   timeOfDay,
   weekdayShort,
 } from './format'
+import { splitSignature } from './mailwrite'
 import { isoDate, startOfDay } from './time'
 import type {
   Account,
@@ -685,7 +686,9 @@ export function estimateQuoteHeight(html: string, widthPx: number): number {
  * asked to throw away reappearing behind their back.
  */
 export function isBlankDraft(draft: Pick<Draft, 'subject' | 'bodyHtml' | 'to'>): boolean {
-  return !draft.subject && !draft.bodyHtml.replace(/<[^>]*>/g, '').trim() && draft.to.length === 0
+  // A signature is no reason to keep one: every new draft starts with it.
+  const words = splitSignature(draft.bodyHtml).words
+  return !draft.subject && !words.replace(/<[^>]*>/g, '').trim() && draft.to.length === 0
 }
 
 /**

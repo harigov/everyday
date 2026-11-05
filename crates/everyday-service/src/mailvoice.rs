@@ -68,9 +68,62 @@ pub struct VoiceContext {
     /// The name the person signs with, when one is known -- the account's
     /// identity name or display name.
     pub name: Option<String>,
+    /// Settings → Mail writing, in their own words. Empty when they have said
+    /// nothing.
+    pub instructions: String,
+    /// The address this is being written from, so an instruction true of only
+    /// one of their accounts can say which.
+    pub address: String,
+    /// The signature that goes under whatever is written, as plain text.
+    /// Empty when the account has none.
+    pub signature: String,
 }
 
 impl VoiceContext {
+    /// A drafting prompt's whole system message: `task`, the fixed
+    /// [`HUMAN_WRITING_RULES`], then what the person has said themselves --
+    /// last, and in the system message rather than with the measured part in
+    /// the user's, because it is the one thing here that is an instruction
+    /// from them, and because "wins over what was measured" is only a promise
+    /// if it is said where it carries.
+    pub fn system_prompt(&self, task: &str) -> String {
+        let mut out = format!("{task}\n\n{HUMAN_WRITING_RULES}");
+        let instructions = self.instructions.trim();
+        if !instructions.is_empty() {
+            out.push_str(&format!(
+                "\n\nThis person has told you how they want to sound, in their own words. On \
+                 tone, length, wording and how they open and close, it wins over the style \
+                 guide and the examples. It does not change the rule against inventing facts.\n\
+                 ---\n{instructions}\n---"
+            ));
+        }
+        out
+    }
+
+    /// What a model wrote, with what gives a model away taken out.
+    pub fn humanized(&self, body: &str) -> String {
+        voice::humanize_keeping(body, &self.profile, &self.instructions)
+    }
+
+    /// What every call that writes a message for them does to the answer: on top
+    /// of [`Self::humanized`], a closing the signature already says goes. Not for
+    /// a rewrite of their own text, where a line like that is one they typed.
+    pub fn clean(&self, body: &str) -> String {
+        voice::drop_repeated_signature(&self.humanized(body), &self.signature)
+            .trim_end()
+            .to_string()
+    }
+
+    /// This, for writing from `address` rather than the account's own -- an
+    /// address that is not one of the account's changes nothing.
+    pub fn sent_as(mut self, account: &Account, address: &str) -> Self {
+        if own_addresses(account).contains(&address.to_lowercase()) {
+            self.address = address.to_string();
+            self.signature = signature_text(account, address);
+        }
+        self
+    }
+
     /// The part of a prompt's user message that describes the person's
     /// voice: the style guide, then the examples, each clearly marked as
     /// the person's own writing, for voice only.
@@ -86,7 +139,19 @@ impl VoiceContext {
         if !style_guide.is_empty() {
             sections.push(format!("How this person writes:\n{style_guide}"));
         }
-        if let Some(name) = &self.name {
+        if !self.address.is_empty() {
+            sections.push(format!("This is being written from {}.", self.address));
+        }
+        // The signature replaces the name rather than joining it: told both,
+        // a model signs twice.
+        let signature = self.signature.trim();
+        if !signature.is_empty() {
+            sections.push(format!(
+                "Their signature goes under what you write, automatically. Stop before it, and \
+                 repeat none of it: not the name, and not a closing it already has.\n---\n\
+                 {signature}\n---"
+            ));
+        } else if let Some(name) = &self.name {
             sections.push(format!("They sign as {name}."));
         }
         sections.push(format!("Never use these phrases: {}.", voice::AI_TELLS.join(", ")));
@@ -170,7 +235,34 @@ pub async fn voice_context(
     let recent_texts: Vec<String> = recent.into_iter().map(|(_, text)| text).collect();
     let examples = choose_examples(targeted, recent_texts, MAX_EXAMPLES);
 
-    Ok(VoiceContext { profile, examples, name: voice_name(account) })
+    let instructions = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.mail_writing()?)).await.unwrap_or_default().instructions
+    };
+
+    Ok(VoiceContext {
+        profile,
+        examples,
+        name: voice_name(account),
+        instructions,
+        address: account.address.clone(),
+        signature: signature_text(account, &account.address),
+    })
+}
+
+/// The signature `address` sends with, as plain text. The link markers matter:
+/// a link reads `[ViyaMD][1]` with a footnote, and that is neither what a model
+/// should be told nor anything a line of a message can be matched against.
+fn signature_text(account: &Account, address: &str) -> String {
+    let text = everyday_mail::text::html_to_text(account.signature_for(address));
+    everyday_mail::text::without_link_markers(&text)
+}
+
+/// What the person typed in a sent message: [`voice::own_words`], less the
+/// signature it went out with.
+fn typed_words(text: &str, signature: &str) -> String {
+    let words = everyday_mail::text::without_link_markers(&voice::own_words(text));
+    voice::strip_signature(&words, signature)
 }
 
 /// Every address this account's own mail can arrive from or send as --
@@ -236,7 +328,7 @@ async fn build_profile(vault: &Arc<Vault>, account: &Account) -> CommandResult<V
                     Ok(vault2.body(mid).ok().map(|b| b.model_text()).unwrap_or_default())
                 })
                 .await?;
-                let words = voice::own_words(&text);
+                let words = typed_words(&text, &signature_text(account, &message.from.email));
                 if !words.trim().is_empty() {
                     samples.push(words);
                 }
@@ -314,7 +406,7 @@ async fn recent_own_messages(
                     Ok(vault2.body(mid).ok().map(|b| b.model_text()).unwrap_or_default())
                 })
                 .await?;
-                let words = voice::own_words(&text);
+                let words = typed_words(&text, &signature_text(account, &message.from.email));
                 if !words.trim().is_empty() {
                     out.push((recipients, clamp_chars(&words, EXAMPLE_CHARS)));
                 }
@@ -370,7 +462,7 @@ async fn examples_for_correspondent(
         let text =
             blocking(move || Ok(vault2.body(mid).ok().map(|b| b.model_text()).unwrap_or_default()))
                 .await?;
-        let words = voice::own_words(&text);
+        let words = typed_words(&text, &signature_text(account, &message.from.email));
         if !words.trim().is_empty() {
             out.push(clamp_chars(&words, EXAMPLE_CHARS));
         }
@@ -467,6 +559,7 @@ mod tests {
             profile: Arc::new(profile),
             examples: vec!["Thanks, see you then.".to_string(), "Works for me.".to_string()],
             name: Some("Hari".to_string()),
+            ..Default::default()
         };
         let section = ctx.prompt_section();
         assert!(section.starts_with("How this person writes:\n- Open with"));
@@ -503,6 +596,113 @@ mod tests {
     fn choose_examples_skips_anything_under_three_words() {
         let chosen = choose_examples(Vec::new(), vec!["ok".to_string(), "no".to_string()], 5);
         assert!(chosen.is_empty());
+    }
+
+    // ---- what the person said -----------------------------------------------
+
+    #[test]
+    fn their_own_words_go_in_the_system_message_and_outrank_what_was_measured() {
+        let voice =
+            VoiceContext { instructions: "  Never apologise.  ".into(), ..Default::default() };
+        let system = voice.system_prompt("TASK");
+        assert!(system.starts_with("TASK"), "{system}");
+        assert!(system.contains(HUMAN_WRITING_RULES), "{system}");
+        assert!(system.contains("---\nNever apologise.\n---"), "{system}");
+        assert!(system.contains("wins over the style guide"), "{system}");
+        // Measured below it, in the user's message, not repeated here.
+        assert!(!voice.prompt_section().contains("Never apologise"));
+    }
+
+    #[test]
+    fn saying_nothing_changes_nothing() {
+        let system = VoiceContext::default().system_prompt("TASK");
+        assert_eq!(system, format!("TASK\n\n{HUMAN_WRITING_RULES}"));
+    }
+
+    #[test]
+    fn a_phrase_they_asked_for_survives_cleaning() {
+        let profile = Arc::new(VoiceProfile { samples: 5, ..Default::default() });
+        let plain = VoiceContext { profile: profile.clone(), ..Default::default() };
+        assert_eq!(plain.clean("Thanks for reaching out."), "");
+        let theirs = VoiceContext {
+            profile,
+            instructions: "I always say thanks for reaching out".into(),
+            ..Default::default()
+        };
+        assert_eq!(theirs.clean("Thanks for reaching out."), "Thanks for reaching out.");
+    }
+
+    #[test]
+    fn a_signature_replaces_being_told_what_name_to_sign() {
+        let named = VoiceContext { name: Some("Hari".into()), ..Default::default() };
+        assert!(named.prompt_section().contains("They sign as Hari."));
+
+        let signed = VoiceContext {
+            name: Some("Hari".into()),
+            signature: "Hari Govardhanam\nViyaMD".into(),
+            address: "hari@example.com".into(),
+            ..Default::default()
+        };
+        let section = signed.prompt_section();
+        assert!(!section.contains("They sign as"), "{section}");
+        assert!(section.contains("Hari Govardhanam\nViyaMD"), "{section}");
+        assert!(section.contains("repeat none of it"), "{section}");
+        assert!(section.contains("written from hari@example.com"), "{section}");
+    }
+
+    #[test]
+    fn a_signature_with_a_link_in_it_reads_as_it_does_on_screen() {
+        let mut account = Account::new(Provider::Custom, "me@example.com");
+        account.signature_html =
+            r#"<p>Hari G<br><a href="https://viyamd.com">ViyaMD</a></p>"#.to_string();
+        let signature = signature_text(&account, &account.address);
+        assert!(!signature.contains('['), "{signature}");
+        assert!(!signature.contains("https://"), "{signature}");
+
+        // A reply stops at the quote above its footnote, and a new message with
+        // another link in it numbers this one [2]. The same either way.
+        let reply = "Thursday works.\n\nHari G\n[ViyaMD][1]\n\nOn Tue, Sam wrote:\n> Hi";
+        assert_eq!(typed_words(reply, &signature), "Thursday works.");
+        let new = "See [this][1].\n\nHari G\n[ViyaMD][2]\n\n[1]: https://a.example\n[2]: https://viyamd.com";
+        assert_eq!(typed_words(new, &signature), "See this.");
+    }
+
+    #[test]
+    fn a_second_address_is_written_with_its_own_signature() {
+        let mut account = Account::new(Provider::Custom, "me@example.com");
+        account.signature_html = "<p>The account's</p>".to_string();
+        account.identities = vec![everyday_core::account::Identity {
+            name: "Me".to_string(),
+            address: "alias@example.com".to_string(),
+            signature_html: "<p>The alias's</p>".to_string(),
+        }];
+        let voice = VoiceContext {
+            address: "me@example.com".into(),
+            signature: signature_text(&account, &account.address),
+            ..Default::default()
+        };
+        let alias = voice.clone().sent_as(&account, "ALIAS@example.com");
+        assert_eq!(alias.signature, "The alias's");
+        assert_eq!(alias.address, "ALIAS@example.com");
+        let stranger = voice.sent_as(&account, "someone@else.example");
+        assert_eq!(stranger.signature, "The account's");
+        assert_eq!(stranger.address, "me@example.com");
+    }
+
+    /// Their own text being polished: if they typed the name, it is theirs.
+    #[test]
+    fn a_rewrite_of_their_own_words_keeps_a_closing_they_typed() {
+        let voice = VoiceContext { signature: "Hari Govardhanam".into(), ..Default::default() };
+        assert_eq!(voice.humanized("Thursday works.\n\nHari"), "Thursday works.\n\nHari");
+        assert_eq!(voice.clean("Thursday works.\n\nHari"), "Thursday works.");
+    }
+
+    #[test]
+    fn a_sent_messages_signature_is_not_taken_for_their_writing() {
+        assert_eq!(
+            typed_words("Thursday works.\n\nHari G\nViyaMD", "Hari G\nViyaMD"),
+            "Thursday works."
+        );
     }
 
     // ---- voice_name ------------------------------------------------------

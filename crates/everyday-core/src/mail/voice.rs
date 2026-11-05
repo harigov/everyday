@@ -323,8 +323,19 @@ impl VoiceProfile {
 /// swap, not the placeholder check -- since that text is somebody else's,
 /// quoted back, not the model's own output to clean up.
 pub fn humanize(text: &str, profile: &VoiceProfile) -> String {
+    humanize_keeping(text, profile, "")
+}
+
+/// [`humanize`], minding what the person has said about how they write: a
+/// phrase from [`AI_TELLS`] that `instructions` asks for -- "I always open with
+/// 'thanks for reaching out'" -- is theirs and stays, and so do em dashes if it
+/// asks for those. Merely being named there is not asking: see [`asks_for`].
+pub fn humanize_keeping(text: &str, profile: &VoiceProfile, instructions: &str) -> String {
     let without_subject = strip_subject_line(text);
-    let tells = active_tells(profile);
+    let tells: Vec<&str> =
+        active_tells(profile).into_iter().filter(|t| !asks_for(instructions, &[*t])).collect();
+    let keep_em_dashes =
+        profile.uses_em_dash || asks_for(instructions, &["em dash", "em-dash", "emdash"]);
 
     let mut lines: Vec<String> = Vec::new();
     for line in without_subject.lines() {
@@ -333,7 +344,7 @@ pub fn humanize(text: &str, profile: &VoiceProfile) -> String {
             continue;
         }
         let mut line = strip_filler_sentences(line, &tells);
-        if !profile.uses_em_dash {
+        if !keep_em_dashes {
             line = replace_em_dashes(&line);
         }
         if is_placeholder_signature(&line) {
@@ -343,6 +354,122 @@ pub fn humanize(text: &str, profile: &VoiceProfile) -> String {
     }
 
     collapse_blank_lines(&lines.join("\n")).trim().to_string()
+}
+
+/// Does `instructions` ask for one of `phrases`, rather than only mention it?
+///
+/// "Never say 'thanks for reaching out'" and a bare list of things to avoid both
+/// mention a phrase, and neither may switch off the cleanup that removes it. So
+/// a sentence counts only if it says to use the phrase and has no negative in
+/// it. Words rather than understanding, so it will sometimes miss being asked,
+/// and then the phrase is cleaned away as it is for anybody who said nothing:
+/// the wrong way to be wrong is the other one.
+fn asks_for(instructions: &str, phrases: &[&str]) -> bool {
+    const NEGATIVES: &[&str] = &[
+        "never", "no", "not", "don't", "dont", "avoid", "stop", "without", "ban", "banned", "hate",
+        "skip", "won't", "cannot", "can't", "instead", "rather",
+    ];
+    const USES: &[&str] = &[
+        "always", "usually", "often", "say", "use", "write", "open", "start", "close", "end",
+        "sign", "keep", "like", "love", "prefer",
+    ];
+    let lower = instructions.to_lowercase().replace('\u{2019}', "'");
+    lower.lines().flat_map(sentence_spans).any(|(sentence, terminator)| {
+        let whole = format!("{sentence}{terminator}");
+        phrases.iter().any(|phrase| {
+            let Some(at) = whole.find(phrase) else { return false };
+            // The phrase's own words say nothing about it: "please don't
+            // hesitate to" is not a negative, and is what is being asked for.
+            let around = format!("{} {}", &whole[..at], &whole[at + phrase.len()..]);
+            let words: Vec<&str> = around
+                .split(|c: char| !c.is_alphanumeric() && c != '\'')
+                .filter(|w| !w.is_empty())
+                .collect();
+            !words.iter().any(|w| NEGATIVES.contains(w)) && words.iter().any(|w| USES.contains(w))
+        })
+    })
+}
+
+/// `text` with a trailing `signature` cut off, when it ends in every line of
+/// it, for reading a sent message that carries one. [`own_words`] only knows
+/// the `-- ` kind, and what a signature block sends has no such line, so
+/// without this a person's name and title would be learned as their sign-off
+/// and shown to the model as words they write.
+pub fn strip_signature(text: &str, signature: &str) -> String {
+    let wanted: Vec<String> = comparable_lines(signature);
+    if wanted.is_empty() {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let mut at = lines.len();
+    for want in wanted.iter().rev() {
+        while at > 0 && lines[at - 1].trim().is_empty() {
+            at -= 1;
+        }
+        if at == 0 || comparable(lines[at - 1]) != *want {
+            return text.to_string();
+        }
+        at -= 1;
+    }
+    lines[..at].join("\n").trim_end().to_string()
+}
+
+/// `text` -- a model's answer -- without the closing lines the signature
+/// already says, so "Thanks,\nHari" over a signature that starts "Hari
+/// Govardhanam" sends the name once, and "Best,\nHari" over one that starts
+/// "Best," sends the closing once. Asking the model not to repeat it is most
+/// of the answer and small models do it anyway.
+///
+/// Only a line of a few words at the very end, and only one the signature says
+/// outright, or a name a signature line starts with ("Hari" over "Hari
+/// Govardhanam"). "Call me." over "Call me anytime" is a sentence, and stays.
+pub fn drop_repeated_signature(text: &str, signature: &str) -> String {
+    let said = comparable_lines(signature);
+    if said.is_empty() {
+        return text.to_string();
+    }
+    let mut lines: Vec<&str> = text.lines().collect();
+    loop {
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        let Some(last) = lines.last() else { break };
+        let line = comparable(last);
+        let repeats = word_count(&line) <= 4
+            && said.iter().any(|s| {
+                *s == line || (looks_like_a_name(last) && s.starts_with(&format!("{line} ")))
+            });
+        if !repeats {
+            break;
+        }
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+/// One to three words, each capitalised, and nothing that ends a sentence.
+fn looks_like_a_name(line: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    (1..=3).contains(&words.len())
+        && words.iter().all(|w| {
+            w.chars().next().is_some_and(char::is_uppercase)
+                && w.chars().all(|c| c.is_alphabetic() || c == '-' || c == '\'')
+        })
+}
+
+fn comparable_lines(text: &str) -> Vec<String> {
+    text.lines().map(comparable).filter(|l| !l.is_empty()).collect()
+}
+
+/// A line as two copies of it can be compared: case, spacing and the comma or
+/// stop after a closing word do not make it a different line.
+fn comparable(line: &str) -> String {
+    line.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_matches(|c: char| matches!(c, ',' | '.' | '!' | '-' | '\u{2014}'))
+        .trim()
+        .to_lowercase()
 }
 
 /// [`AI_TELLS`], minus any phrase the profile's own greeting or sign-off
@@ -802,6 +929,98 @@ fn is_list_line(line: &str) -> bool {
     }
     let digits_end = t.find(|c: char| !c.is_ascii_digit()).unwrap_or(0);
     digits_end > 0 && t[digits_end..].starts_with(". ")
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+
+    #[test]
+    fn a_sent_messages_signature_is_not_read_as_their_words() {
+        let sent = "Thursday works.\n\nThanks,\n\nHari Govardhanam\nViyaMD";
+        assert_eq!(
+            strip_signature(sent, "Hari Govardhanam\n\nViyaMD"),
+            "Thursday works.\n\nThanks,"
+        );
+    }
+
+    #[test]
+    fn a_message_not_ending_in_the_whole_signature_is_left_as_it_is() {
+        let sent = "Thursday works.\n\nHari";
+        assert_eq!(strip_signature(sent, "Hari Govardhanam\nViyaMD"), sent);
+        assert_eq!(strip_signature(sent, ""), sent);
+    }
+
+    #[test]
+    fn a_name_the_signature_already_says_is_not_written_twice() {
+        assert_eq!(
+            drop_repeated_signature("Thursday works.\n\nThanks,\nHari", "Hari Govardhanam\nViyaMD"),
+            "Thursday works.\n\nThanks,"
+        );
+    }
+
+    #[test]
+    fn a_closing_the_signature_already_says_is_not_written_twice() {
+        assert_eq!(
+            drop_repeated_signature("Thursday works.\n\nBest,\nHari", "Best,\nHari Govardhanam"),
+            "Thursday works."
+        );
+    }
+
+    #[test]
+    fn a_closing_the_signature_does_not_say_stays() {
+        assert_eq!(
+            drop_repeated_signature("Thursday works.\n\nThanks,", "Hari Govardhanam"),
+            "Thursday works.\n\nThanks,"
+        );
+    }
+
+    #[test]
+    fn a_sentence_is_never_taken_for_a_signature() {
+        let reply = "Hari Govardhanam will send the numbers on Friday after the board call";
+        assert_eq!(drop_repeated_signature(reply, "Hari Govardhanam"), reply);
+    }
+
+    #[test]
+    fn what_the_person_asked_for_is_not_cleaned_away() {
+        let profile = VoiceProfile { samples: 5, ..Default::default() };
+        let text = "Thanks for reaching out.\nA hard call \u{2014} yes.";
+        assert_eq!(humanize(text, &profile), "A hard call - yes.");
+        assert_eq!(
+            humanize_keeping(
+                text,
+                &profile,
+                "I open with 'Thanks for reaching out'. I use em dashes."
+            ),
+            text
+        );
+    }
+
+    /// The same words, with the opposite meaning. Saying not to use something
+    /// must not be what lets it through.
+    #[test]
+    fn what_the_person_forbade_is_still_cleaned_away() {
+        let profile = VoiceProfile { samples: 5, ..Default::default() };
+        let text = "Thanks for reaching out.\nA hard call \u{2014} yes.";
+        for instructions in [
+            "Never say \"thanks for reaching out\". No em dashes (\u{2014}).",
+            "Don\u{2019}t use thanks for reaching out, and avoid the em dash.",
+            "Things I hate:\n- thanks for reaching out\n- em dashes",
+            "Short \u{2014} no pleasantries",
+        ] {
+            assert_eq!(
+                humanize_keeping(text, &profile, instructions),
+                "A hard call - yes.",
+                "{instructions}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sentence_starting_like_a_signature_line_stays() {
+        let reply = "Thursday works.\n\nCall me.";
+        assert_eq!(drop_repeated_signature(reply, "Call me anytime: 555-0100"), reply);
+    }
 }
 
 #[cfg(test)]

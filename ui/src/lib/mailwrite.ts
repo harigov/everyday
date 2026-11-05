@@ -5,11 +5,16 @@
 //   - `splitQuoted`/`joinQuoted` -- where a reply or forward draft's own
 //     text ends and the quoted parent begins, so `MailCompose.svelte` can
 //     rewrite the one without touching the other.
+//   - `splitSignature`/`withOwnWords` -- within that own text, where the
+//     person's words stop and their signature starts, so a rewrite leaves
+//     the signature be.
 //   - `htmlToPlainText`/`escapeHtml` -- the two directions between a
 //     `Draft.bodyHtml` fragment and the plain text `draft_with_ai`,
 //     `improve_writing` and a TipTap selection all actually deal in.
 //   - `sendLaterChoices` -- the send-later popover's fixed presets, each a
 //     label and the instant it means right now.
+
+import type { Account } from './types'
 
 /**
  * Where a reply/forward draft's own text ends and the quoted parent begins.
@@ -59,6 +64,98 @@ export function splitQuoted(html: string): SplitBody {
  *  by prefixing it to the quote rather than joining the two with a separator. */
 export function joinQuoted(own: string, quoted: string): string {
   return own + quoted
+}
+
+/** What `compose::signature_block` wraps a signature in, and `signature.ts`
+ *  keeps it in through the editor. */
+const SIGNATURE_OPEN = /<div\b[^>]*\bdata-signature\b[^>]*>/i
+
+export interface SplitSignature {
+  words: string
+  signature: string
+}
+
+/**
+ * The own part of a draft, told apart into what the person wrote and the
+ * signature block. Anything typed below the signature is still their words.
+ *
+ * Counts `<div>`s to find where the block ends rather than asking for the last
+ * `</div>`: nothing says a table pasted under it has none. A body with no
+ * signature, whether it never had one or it was deleted, answers with no
+ * `signature` at all -- and a rewrite does not put one back.
+ */
+export function splitSignature(own: string): SplitSignature {
+  const open = SIGNATURE_OPEN.exec(own)
+  if (!open) return { words: own, signature: '' }
+  const tags = /<(\/?)div\b[^>]*>/gi
+  tags.lastIndex = open.index
+  let depth = 0
+  let end = own.length
+  for (let tag = tags.exec(own); tag; tag = tags.exec(own)) {
+    depth += tag[1] ? -1 : 1
+    if (depth === 0) {
+      end = tags.lastIndex
+      break
+    }
+  }
+  return {
+    words: own.slice(0, open.index) + own.slice(end),
+    signature: own.slice(open.index, end),
+  }
+}
+
+/** The own part of a draft with its words replaced by `wordsHtml`, and the
+ *  signature, if it still has one, kept under them. */
+export function withOwnWords(own: string, wordsHtml: string): string {
+  return wordsHtml + splitSignature(own).signature
+}
+
+/** `Account::signature_for`: an address's own signature when it has one, and
+ *  otherwise the account's. */
+export function signatureFor(
+  account: Pick<Account, 'identities' | 'signatureHtml'>,
+  address: string,
+): string {
+  const own = account.identities.find(
+    (i) => i.address.toLowerCase() === address.toLowerCase() && i.signatureHtml.trim(),
+  )
+  return own?.signatureHtml ?? account.signatureHtml ?? ''
+}
+
+/** `compose::signature_block`: a signature as a draft holds it, or nothing for
+ *  one with no words in it. */
+export function signatureBlock(signatureHtml: string): string {
+  return signatureHtml.replace(/<[^>]*>/g, '').trim()
+    ? `<div data-signature="">${signatureHtml.trim()}</div>`
+    : ''
+}
+
+/**
+ * The own part of a draft now going out from a different address: `before`, the
+ * signature the old address starts with, swapped for `after`. Only if what is
+ * there still is `before`. One the person has changed for this message, or
+ * deleted, is theirs, and changing From does not undo that.
+ */
+export function withSignatureSwapped(own: string, before: string, after: string): string {
+  const { words, signature } = splitSignature(own)
+  if (htmlToPlainText(signature) !== htmlToPlainText(before)) return own
+  return words + signatureBlock(after)
+}
+
+/** How long a suggested reply stands, the same hour `mail_replies_cached` keeps
+ *  one for: it may offer a time, and a time goes stale with the thread unchanged. */
+export const SUGGESTION_LASTS_MS = 60 * 60 * 1000
+
+export function suggestionsFresh(writtenAt: number, now: number = Date.now()): boolean {
+  return now - writtenAt < SUGGESTION_LASTS_MS
+}
+
+/** The body as it should go out: a signature block with everything deleted
+ *  from it is an empty block, and a blank line nobody put there. */
+export function withoutEmptySignature(own: string): string {
+  const { words, signature } = splitSignature(own)
+  if (!signature || signature.replace(/<[^>]*>/g, '').trim()) return own
+  return words
 }
 
 /**

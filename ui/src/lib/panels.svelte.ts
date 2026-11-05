@@ -30,6 +30,8 @@ export type SettingsTab =
   // The categories a decision model sorts mail into -- under Accounts, whose
   // mail it is, though it is the models that read it.
   | 'sorting'
+  // What the person says about how mail is written for them, beside it.
+  | 'writing'
   // Which model each size of work runs on -- application settings, not the
   // assistant's, though the assistant is the main thing that asks one.
   | 'models'

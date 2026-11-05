@@ -582,6 +582,8 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "rebuild_mail_index", json!({ "id": null })).await;
     let sorting = call(&svc, &h, "mail_sorting", json!({})).await;
     run(&svc, &h, "save_mail_sorting", json!({ "sorting": sorting["sorting"] })).await;
+    let writing = call(&svc, &h, "mail_writing", json!({})).await;
+    run(&svc, &h, "save_mail_writing", json!({ "writing": writing })).await;
     // Forgets a sort of older mail that is not running: session state only,
     // announced by nothing.
     run(&svc, &h, "stop_sorting_older_mail", json!({})).await;

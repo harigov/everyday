@@ -863,6 +863,26 @@ Two changes this phase's tool file cannot make itself, because they live in
   to the same correspondent first, a list of phrases that mark text as a
   model's — forbidden in the prompt and stripped from the answer — and a
   plain-text answer escaped into HTML here, never model-written HTML.
+- **Settings → Mail writing** (`MailWriting`, one sealed row, schema v21):
+  the person's own instructions, in every drafting system prompt after the
+  fixed rules and over what was measured, and whether `suggest_replies` and
+  `draft_with_ai` get the calendar, off until ticked. One per vault, since it
+  describes a person.
+  Auto-drafts get the instructions and not the calendar: one can sit for days.
+- **The calendar for a reply** (`everyday-core/src/mail/availability.rs`): four
+  weeks of visible calendars and time blocks, written down per day with
+  meetings, plans and the open time left apart. The sorting is done there
+  rather than by the model. `Event.url` cannot be a signal, since Google gives
+  every event its own page link. A meeting the person declined still holds its
+  time, because no adapter records their answer. Nothing is sent unless every
+  shown calendar is current (`is_current`), since a stale one would read as free
+  time, and an account without writing help on gives times but not titles.
+- **Signatures** (`Account.signature_html`, `Identity.signature_html`) start
+  every draft as `<div data-signature="">` above the quote. That mark is how a
+  rewrite leaves it alone and how a signature-only draft still counts as blank;
+  `signature.ts` keeps it one block in TipTap. Sent copies are stripped of the
+  current signature before the voice reads them, and a closing the model
+  repeats from the signature is cut from its answer.
 - **Scheduled** lists every send queued for later (`scheduled_sends`);
   **Snoozed** is the inbox filtered to snoozed threads, drawn by the
   interface, since snooze never leaves the device.

@@ -395,6 +395,11 @@ async fn new_draft(svc: Arc<Service>, _ctx: Ctx, args: NewDraft) -> CommandResul
     blocking(move || {
         let account = vault.account(args.account)?;
         let mut draft = Draft::new(args.account, account.address.clone(), Origin::Person);
+        // Above any quote, and an ordinary part of what is written: the person
+        // can change it or delete it there, for this message alone.
+        draft.body_html = everyday_core::mail::compose::blank_with_signature(
+            account.signature_for(&account.address),
+        );
 
         let own: std::collections::HashSet<String> = std::iter::once(&account.address)
             .chain(account.identities.iter().map(|i| &i.address))
@@ -439,7 +444,7 @@ async fn new_draft(svc: Arc<Service>, _ctx: Ctx, args: NewDraft) -> CommandResul
             } else {
                 draft.subject = compose::forward_subject(&parent.subject);
             }
-            draft.body_html = quoted;
+            draft.body_html.push_str(&quoted);
         }
 
         Ok(draft)

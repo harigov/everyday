@@ -62,6 +62,7 @@ import type {
   MailboxId,
   MailMessageId,
   MailSorting,
+  MailWriting,
   McpStatus,
   MeetingSettings,
   Memory,
@@ -1579,6 +1580,11 @@ export const api = {
   thread: (id: ThreadId) => call('getThread', { id }),
   /** `mailbox`'s threads counted by category -- the inbox tabs' badges. */
   categoryCounts: (mailbox: MailboxId) => call('categoryCounts', { mailbox }),
+
+  // ── Mail writing: what writing help is told ──────────────────────────
+
+  mailWriting: () => call('mailWriting', {}),
+  saveMailWriting: (writing: MailWriting) => call('saveMailWriting', { writing }),
 
   // ── Mail sorting: the categories a decision model sorts into ─────────
 

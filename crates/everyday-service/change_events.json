@@ -569,6 +569,18 @@
       ]
     },
     {
+      "command": "save_mail_writing",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "stop_sorting_older_mail",
       "events": []
     },

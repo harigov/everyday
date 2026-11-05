@@ -146,7 +146,7 @@ pub fn snippet(text: &str) -> String {
 /// foot of it, which would otherwise use up a short snippet's length on
 /// addresses. A linked picture, `[[Company logo]][1]`, is its description.
 /// Brackets of any other kind are somebody's own and stay.
-fn without_link_markers(text: &str) -> String {
+pub fn without_link_markers(text: &str) -> String {
     let kept: Vec<&str> = text.lines().filter(|line| !is_link_footnote(line)).collect();
     let text = kept.join("\n");
     let mut out = String::with_capacity(text.len());

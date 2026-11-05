@@ -965,6 +965,29 @@ hesitate to reach out") are forbidden in the request and removed again
 from what comes back, and nothing a model writes is let into a draft as
 HTML: it answers in plain text, which is escaped here.
 
+**Settings → Mail writing** is where you tell it what your sent mail cannot:
+how you want to sound, in your own words. That goes with every reply, draft
+and rewrite, the assistant's included, and wins over what was measured.
+
+The same page can let the three replies and **Write** read your calendar, so a
+reply can offer real times. It is off until you tick it. The next four weeks of
+the calendars you show go to the model: times and titles, never descriptions or
+guest lists, and only the times from an account with writing help off. What is
+on them is sorted before the model sees it. Anything with somebody else on it,
+a place to be, or a subscribed feed behind it is a meeting, and its time is
+never offered. Your own events with nobody else on them, and time blocks, are
+plans: notes on what you mean to work on, which it works around where it can and
+which do not make you unavailable. Open time is worked out for it, 9 to 5 on
+weekdays unless you say otherwise. If a calendar you show cannot be read right
+now, it leaves times out rather than guess, and drafts written ahead of you do
+not read the calendar at all, since a time in one could be stale by the time you
+open it.
+
+**Signatures** are per account, under Settings → Accounts, and an identity can
+have its own, used when you pick that address under From. A new message, reply
+or forward starts with it, under where you write and above the quote. It is ordinary text there, to change or delete for
+that one message; rewrites and suggested replies leave it where it is.
+
 ### Invitations
 
 A calendar invitation inside a message draws its own banner above it —

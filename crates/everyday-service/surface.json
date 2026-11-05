@@ -1400,6 +1400,11 @@
           "name": "currentText",
           "required": false,
           "type": "string | null"
+        },
+        {
+          "name": "identity",
+          "required": false,
+          "type": "string | null"
         }
       ],
       "changes": null,
@@ -2787,6 +2792,17 @@
       "name": "mail_sorting",
       "orScope": null,
       "returns": "MailSortingView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "mail_writing",
+      "orScope": null,
+      "returns": "MailWriting",
       "scope": "mail",
       "sensitive": false,
       "streams": false
@@ -4657,6 +4673,26 @@
       "name": "save_mail_sorting",
       "orScope": null,
       "returns": "MailSortingView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "writing",
+          "required": true,
+          "type": "MailWriting"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_mail_writing",
+      "orScope": null,
+      "returns": "MailWriting",
       "scope": "mail",
       "sensitive": false,
       "streams": false

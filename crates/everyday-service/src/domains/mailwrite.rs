@@ -1,22 +1,26 @@
 //! Writing help's commands -- thin doors onto [`crate::mailwrite`], where
 //! the gate, the voice and the model calls all live.
 //!
-//! Every command here is `effect: Read`, on `summarize_thread`'s own
+//! The three that ask a model are `effect: Read`, on `summarize_thread`'s own
 //! reasoning (`domains::mail`'s own module docs): reaching a model is not a
-//! write to the vault, and none of the three ever saves anything -- a
-//! suggestion is only ever written once a person has picked it, through
-//! `save_draft`, which announces its own `change:`.
+//! write to the vault, and none of them ever saves anything -- a suggestion is
+//! only ever written once a person has picked it, through `save_draft`, which
+//! announces its own `change:`. Settings → Mail writing is here too, being what
+//! they are all told.
 
 use std::sync::Arc;
 
 use everyday_core::id::{AccountId, MailMessageId, ThreadId};
+use everyday_core::mail::MailWriting;
 use serde::{Deserialize, Serialize};
 
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
 use crate::mailwrite::{ImproveMode, ReplySuggestion, WrittenText};
-use crate::service::Service;
+use crate::service::{Service, blocking};
+
+use super::Nothing;
 
 // ---- suggested replies ------------------------------------------------------
 
@@ -55,6 +59,9 @@ pub struct DraftWithAiArgs {
     pub instruction: String,
     #[serde(default)]
     pub current_text: Option<String>,
+    /// The address it is being written from, when that is not the account's own.
+    #[serde(default)]
+    pub identity: Option<String>,
 }
 
 async fn draft_with_ai(
@@ -68,6 +75,7 @@ async fn draft_with_ai(
         args.in_reply_to,
         args.instruction,
         args.current_text,
+        args.identity,
     )
     .await
 }
@@ -93,7 +101,47 @@ async fn improve_writing(
         .await
 }
 
+// ---- Settings → Mail writing -----------------------------------------------
+
+async fn mail_writing(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<MailWriting> {
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.mail_writing()?)).await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveMailWriting {
+    pub writing: MailWriting,
+}
+
+async fn save_mail_writing(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SaveMailWriting,
+) -> CommandResult<MailWriting> {
+    let vault = svc.require()?;
+    let saved = blocking(move || {
+        vault.save_mail_writing(&args.writing)?;
+        Ok(vault.mail_writing()?)
+    })
+    .await?;
+    svc.mail_replies_cache_clear();
+    Ok(saved)
+}
+
 pub static COMMANDS: &[crate::command::Command] = &[
+    command! {
+        name: "mail_writing", scope: Mail, effect: Read,
+        args: Nothing, returns: "MailWriting", signature: &[],
+        run: mail_writing,
+    },
+    command! {
+        name: "save_mail_writing", scope: Mail, effect: Write,
+        change: Settings / Updated,
+        args: SaveMailWriting, returns: "MailWriting",
+        signature: &[("writing", "MailWriting", true)],
+        run: save_mail_writing,
+    },
     command! {
         name: "suggest_replies", scope: Mail, effect: Read,
         args: SuggestRepliesArgs, returns: "ReplySuggestions",
@@ -108,6 +156,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("inReplyTo", "MailMessageId | null", false),
             ("instruction", "string", true),
             ("currentText", "string | null", false),
+            ("identity", "string | null", false),
         ],
         run: draft_with_ai,
     },

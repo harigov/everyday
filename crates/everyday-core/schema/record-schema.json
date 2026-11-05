@@ -448,6 +448,10 @@
       "services": {
         "$ref": "#/$defs/Services"
       },
+      "signatureHtml": {
+        "description": "What a new draft from this account's own address ends with, above any\nquote, for the person to keep, change or delete there -- see\n[`Account::signature_for`]. HTML, because the compose sheet's editor\nkeeps a bold line and a link; never read as anything but the person's\nown words.\n\n`skip_serializing_if` for the same reason as `sync_minutes`.",
+        "type": "string"
+      },
       "smtp": {
         "$ref": "#/$defs/Endpoint"
       },

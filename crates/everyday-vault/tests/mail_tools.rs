@@ -419,6 +419,45 @@ fn an_unattended_run_may_draft_but_never_send() {
 }
 
 #[test]
+fn a_draft_the_assistant_writes_carries_the_signature_and_keeps_it_when_rewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = vault(dir.path());
+    let mut account = seed_account(&v, true);
+    account.signature_html = "<p>Hari G</p>".into();
+    v.save_account(&account).unwrap();
+    let ctx = ctx(&v, Some(Caller::Mcp { client: "claude".into() }), None);
+
+    let drafted = tools::dispatch(
+        &ctx,
+        "draft_message",
+        &serde_json::json!({
+            "account_id": account.id.to_string(),
+            "to": ["friend@example.com"],
+            "subject": "hello",
+            "body_html": "<p>hi</p>",
+        }),
+    )
+    .expect("mcp may draft by default");
+    let draft_id = drafted["id"].as_str().unwrap().to_string();
+    let id: everyday_core::id::DraftId = draft_id.parse().unwrap();
+    assert_eq!(
+        v.draft(id).unwrap().body_html,
+        r#"<p>hi</p><div data-signature=""><p>Hari G</p></div>"#
+    );
+
+    tools::dispatch(
+        &ctx,
+        "update_draft",
+        &serde_json::json!({ "draft_id": draft_id, "body_html": "<p>hello</p>" }),
+    )
+    .expect("mcp may edit by default");
+    assert_eq!(
+        v.draft(id).unwrap().body_html,
+        r#"<p>hello</p><div data-signature=""><p>Hari G</p></div>"#
+    );
+}
+
+#[test]
 fn send_draft_is_refused_for_an_account_with_send_off_and_permitted_once_it_is_on() {
     let dir = tempfile::tempdir().unwrap();
     let v = vault(dir.path());

@@ -1081,7 +1081,7 @@
             "type": "array"
           },
           "body_html": {
-            "description": "The message, as HTML paragraphs (<p>...</p>).",
+            "description": "The message, as HTML paragraphs (<p>...</p>). The account's signature is added underneath automatically — do not write it yourself.",
             "type": "string"
           },
           "cc": {
@@ -1123,7 +1123,7 @@
         "additionalProperties": false,
         "properties": {
           "body_html": {
-            "description": "Your reply, as HTML paragraphs (<p>...</p>). The original message is quoted underneath automatically — do not repeat it yourself.",
+            "description": "Your reply, as HTML paragraphs (<p>...</p>). The account's signature and the quoted original message are added underneath automatically — do not write either yourself.",
             "type": "string"
           },
           "message_id": {

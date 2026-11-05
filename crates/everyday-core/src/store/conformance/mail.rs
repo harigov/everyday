@@ -43,6 +43,7 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     a_persons_own_mark_outranks_the_model_and_the_backfill(store);
     priority_asked_marker_round_trips(store);
     mail_sorting_round_trips(store);
+    mail_writing_round_trips(store);
     a_sorted_label_lasts_until_the_thread_moves_on(store);
     a_tie_on_date_still_labels_the_message_listed_last(store);
     removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
@@ -1172,6 +1173,21 @@ fn mail_sorting_round_trips(store: &dyn JournalStore) {
     assert_eq!(m.mail_sorting().unwrap(), mine);
     m.put_mail_sorting(&MailSorting::default()).unwrap();
     assert_eq!(m.mail_sorting().unwrap(), MailSorting::default(), "replaced, not merged");
+}
+
+/// What is said about writing is one sealed singleton on the same terms.
+fn mail_writing_round_trips(store: &dyn JournalStore) {
+    use crate::mail::MailWriting;
+
+    let m = mail_store(store);
+    assert_eq!(m.mail_writing().unwrap(), MailWriting::default(), "the defaults");
+
+    let mine =
+        MailWriting { instructions: "Short. No exclamation marks.".into(), use_calendar: false };
+    m.put_mail_writing(&mine).unwrap();
+    assert_eq!(m.mail_writing().unwrap(), mine);
+    m.put_mail_writing(&MailWriting::default()).unwrap();
+    assert_eq!(m.mail_writing().unwrap(), MailWriting::default(), "replaced, not merged");
 }
 
 /// [`MailStore::sort_message`] files the message and labels its thread in

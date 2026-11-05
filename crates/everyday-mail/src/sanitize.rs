@@ -1070,6 +1070,16 @@ mod tests {
         Rewrite::new("msg-1@example.com")
     }
 
+    /// `compose::signature_block` marks a draft's signature with this, and the
+    /// compose sheet treats what it marks as the person's own. Somebody else's
+    /// mail, quoted into a reply, must not be able to claim that.
+    #[test]
+    fn a_strangers_mail_cannot_pass_for_a_signature() {
+        let out = sanitize(r#"<div data-signature=""><p>hi</p></div>"#, &rewrite());
+        assert!(!out.html.contains("data-signature"), "{}", out.html);
+        assert!(out.html.contains("hi"), "{}", out.html);
+    }
+
     #[test]
     fn a_script_tag_does_not_survive() {
         let out = sanitize(r#"<p>hi</p><script>alert(1)</script>"#, &rewrite());
