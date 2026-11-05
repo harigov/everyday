@@ -151,6 +151,11 @@ pub async fn tick(service: &Arc<Service>) {
     // rest of the minute.
     crate::reminders::sweep(service).await;
 
+    // Keeping in touch: tasks ticked off, and the day's pass once it is due,
+    // which goes off on its own rather than holding up this tick. See
+    // `keepintouch`.
+    crate::keepintouch::sweep(service).await;
+
     // Proposals: the expiry sweep, beside the snooze release just above and
     // independent of whether this vault has routines at all, on the same
     // reasoning -- a vault without proposals answers `false` immediately
@@ -1543,6 +1548,10 @@ static SETTLED_VAULT: std::sync::Mutex<usize> = std::sync::Mutex::new(0);
 /// is logged and skipped rather than propagated: one bad row must not stop
 /// the rest of the sweep, the way one routine's trouble does not stop
 /// another's in the loop above.
+///
+/// Then whatever has been kept long enough is deleted, so a proposal nobody
+/// accepted is off the screen and out of the database within a week of being
+/// made. See [`everyday_core::Vault::purge_proposals`].
 fn sweep_proposals(vault: &Vault, now: Timestamp) -> bool {
     use everyday_core::proposal::{Payload, ProposalKind};
     use everyday_core::store::proposals::ProposalQuery;
@@ -1553,13 +1562,11 @@ fn sweep_proposals(vault: &Vault, now: Timestamp) -> bool {
         Err(e) => tracing::warn!(error = %e, "could not expire due proposals"),
     }
 
-    let pending = match vault.proposals(&ProposalQuery::pending_of(ProposalKind::Mail)) {
-        Ok(p) => p,
-        Err(e) => {
+    let pending =
+        vault.proposals(&ProposalQuery::pending_of(ProposalKind::Mail)).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "could not list pending mail proposals");
-            return closed;
-        }
-    };
+            Vec::new()
+        });
     for mut proposal in pending {
         let Payload::SendMail { draft_id } = &proposal.payload else { continue };
         let draft_id = *draft_id;
@@ -1577,6 +1584,10 @@ fn sweep_proposals(vault: &Vault, now: Timestamp) -> bool {
             Ok(()) => closed = true,
             Err(e) => tracing::warn!(error = %e, "could not close a stale mail proposal"),
         }
+    }
+    match vault.purge_proposals(now) {
+        Ok(ids) => closed |= !ids.is_empty(),
+        Err(e) => tracing::warn!(error = %e, "could not delete old proposals"),
     }
     closed
 }

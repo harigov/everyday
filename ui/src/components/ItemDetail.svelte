@@ -7,7 +7,7 @@
   import { coverRatio, library } from '../lib/library.svelte'
   import { ratingLabel } from '../lib/rating'
   import { looksThingsUp, sourceLabel } from '../lib/websearch'
-  import { ITEM_STATUSES } from '../lib/types'
+  import { ITEM_STATUSES, VIAS } from '../lib/types'
   import type {
     FieldDef,
     Item,
@@ -15,8 +15,17 @@
     KindInfo,
     LogEvent,
     QuickFields,
+    CatchUpVia,
     SearchResult,
   } from '../lib/types'
+  import {
+    VIA_LABELS,
+    every,
+    isContactShelf,
+    lastLine,
+    catchUpSource,
+    lateness,
+  } from '../lib/keepintouch'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Cover from './Cover.svelte'
   import CoverSearch from './CoverSearch.svelte'
@@ -34,6 +43,9 @@
 
   const color = $derived(kind?.color ?? 'var(--accent)')
   const unit = $derived(item.progress?.unit || kind?.progressUnit || '')
+  /** A person, whose log is catch-ups and who may be due one. */
+  const person = $derived(isContactShelf(kind))
+  const due = $derived(person ? library.dueOf(item.id) : null)
 
   let confirming = $state(false)
   let tagDraft = $state('')
@@ -255,6 +267,8 @@
       // sentence no shelf's wording makes read well.
       case 'revisited':
         return 'Again'
+      case 'contact':
+        return 'Caught up'
       case 'progress':
         return 'Progress'
       case 'stopped':
@@ -528,6 +542,22 @@
       {/each}
     </div>
 
+    {#if person}
+      <!-- Keeping in touch, in one line: how often, how it stands, and when
+           last. Somebody with no circle and no frequency is never suggested,
+           and says so rather than leaving the line out. -->
+      {#if due}
+        <p class="touch" class:late={due.daysOver > 0}>
+          <span class="lead">{lateness(due)}</span>
+          · {every(due.everyDays)} · {lastLine(due, friendlyDate)}
+        </p>
+      {:else}
+        <p class="touch">
+          Give them a circle, or a number of days, to be reminded to keep in touch.
+        </p>
+      {/if}
+    {/if}
+
     {#if item.startedOn || item.finishedOn}
       <!-- `friendlyDate`, not the long form: two full weekday-and-month dates
            on one line wrap in a 380px panel, and the same shortening is
@@ -733,8 +763,12 @@
           <button class="mini" onclick={() => void library.addLog(item.id, 'note')}>
             <Icon name="plus" size={12} /> Note
           </button>
-          <button class="mini" onclick={() => void library.addLog(item.id, 'revisited')}>
-            <Icon name="refresh" size={12} /> Again
+          <button
+            class="mini"
+            onclick={() => void library.addLog(item.id, person ? 'contact' : 'revisited')}
+          >
+            <Icon name="refresh" size={12} />
+            {person ? 'Caught up' : 'Again'}
           </button>
         </div>
       </div>
@@ -750,7 +784,25 @@
             <li>
               <span class="when">{friendlyDate(entry.date)}</span>
               <span class="what">
-                <span class="event">{logLabel(entry.event)}</span>
+                {#if person && (entry.event === 'contact' || entry.event === 'revisited')}
+                  <select
+                    class="via"
+                    aria-label="How you were in touch"
+                    title={catchUpSource(entry.source) || 'How you were in touch'}
+                    value={entry.via ?? ''}
+                    onchange={(e) => {
+                      entry.via = (e.currentTarget.value || null) as CatchUpVia | null
+                      void library.saveLogEntry(entry)
+                    }}
+                  >
+                    <option value="">Caught up</option>
+                    {#each VIAS as via (via)}
+                      <option value={via}>{VIA_LABELS[via]}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <span class="event">{logLabel(entry.event)}</span>
+                {/if}
                 {#if entry.position !== null && entry.position !== undefined}
                   <!-- `plural`, not the bare unit: "412 page" is a typo the
                      eye trips over every time it reads the column. -->
@@ -1408,6 +1460,33 @@
     flex-direction: column;
     gap: 1px;
   }
+  .touch {
+    margin: var(--sp-2) 0 0;
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+  }
+  .touch .lead {
+    color: var(--fg);
+    font-weight: 500;
+  }
+  .touch.late .lead {
+    color: var(--tint, var(--accent));
+  }
+  .via {
+    font: inherit;
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius);
+    padding: 0 var(--sp-1);
+    max-width: 9rem;
+  }
+  .via:hover,
+  .via:focus-visible {
+    border-color: var(--border);
+  }
+
   .event {
     font-size: var(--text-sm);
     font-weight: 550;

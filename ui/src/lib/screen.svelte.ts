@@ -44,6 +44,7 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   skills: "the assistant's skills",
   chat: 'the Chat tab, where the assistant is reached from a chat app',
   meetings: 'the Meetings tab',
+  keepintouch: 'the Keeping in touch tab, how often to keep up with people',
   data: 'the Data tab, import and export',
   vault: 'the Vault tab',
 }

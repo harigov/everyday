@@ -23,6 +23,7 @@ pub fn run_proposal_suite(store: &dyn JournalStore) {
     proposals_are_queried_unseen_limited_and_newest_first(store);
     counts_pending_and_unseen_pending(store);
     expire_proposals_closes_only_pending_past_due_rows(store);
+    purge_deletes_old_unaccepted_proposals_and_leaves_a_trace(store);
     mark_proposals_seen_marks_ids_or_all_pending_but_never_the_answered(store);
 
     proposal_cleanup(store);
@@ -335,6 +336,50 @@ fn counts_pending_and_unseen_pending(store: &dyn JournalStore) {
     assert_eq!(p.count_pending().unwrap(), 1);
     assert_eq!(p.count_unseen_pending().unwrap(), 0, "the only unseen one is now answered");
 
+    proposal_cleanup(store);
+}
+
+fn purge_deletes_old_unaccepted_proposals_and_leaves_a_trace(store: &dyn JournalStore) {
+    let p = proposal_store(store);
+    let old = Timestamp::from_second(1_600_000_000).unwrap();
+    let new = Timestamp::from_second(1_700_000_000).unwrap();
+    let cutoff = Timestamp::from_second(1_650_000_000).unwrap();
+    let before = p.proposal_traces().expect("proposal_traces").len();
+
+    let pending_old = Proposal::new(note_payload("Pending, old"), "Create note", old, "UTC")
+        .with_about(Some(About { kind: AboutKind::Goal, id: "g".into() }));
+    let mut declined_old = Proposal::new(note_payload("Declined, old"), "Create note", old, "UTC");
+    declined_old.close(ProposalOutcome::Declined { at: old, reason: None }, old);
+    let mut accepted_old = Proposal::new(note_payload("Accepted, old"), "Create note", old, "UTC");
+    accepted_old
+        .close(ProposalOutcome::Accepted { at: old, saved_as: "x".into(), edited: false }, old);
+    // Keeping in touch's own: deleted like the rest, and no trace left.
+    let person_old = Proposal::new(note_payload("About a person"), "Create note", old, "UTC")
+        .with_about(Some(About { kind: AboutKind::Item, id: "c".into() }));
+    let pending_new = Proposal::new(note_payload("Pending, new"), "Create note", new, "UTC");
+    for proposal in [&pending_old, &declined_old, &accepted_old, &person_old, &pending_new] {
+        p.put_proposal(proposal).expect("put_proposal");
+    }
+
+    let mut gone = p.purge_proposals(cutoff).expect("purge_proposals");
+    gone.sort_by_key(|id| id.to_string());
+    let mut want = vec![pending_old.id, declined_old.id, person_old.id];
+    want.sort_by_key(|id| id.to_string());
+    assert_eq!(gone, want, "everything old but the accepted one");
+
+    let left: Vec<ProposalId> =
+        p.list_proposals(&ProposalQuery::default()).unwrap().into_iter().map(|x| x.id).collect();
+    assert!(left.contains(&accepted_old.id) && left.contains(&pending_new.id));
+    assert_eq!(left.len(), 2);
+
+    let traces = p.proposal_traces().expect("proposal_traces");
+    assert_eq!(traces.len(), before + 2, "one trace each, none for the person");
+    let mine = &traces[traces.len() - 2..];
+    assert!(mine.iter().all(|t| t.kind == ProposalKind::Note && t.made_at == old));
+    assert!(mine.iter().any(|t| t.about == Some(AboutKind::Goal)));
+
+    assert!(p.purge_proposals(cutoff).unwrap().is_empty(), "a second purge finds nothing");
+    assert_eq!(p.proposal_traces().unwrap().len(), before + 2);
     proposal_cleanup(store);
 }
 

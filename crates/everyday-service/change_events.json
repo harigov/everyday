@@ -313,6 +313,30 @@
       ]
     },
     {
+      "command": "save_keep_in_touch_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "run_keep_in_touch",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "log",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "apply_metadata",
       "events": [
         {

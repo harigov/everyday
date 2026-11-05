@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { lateness } from '../lib/keepintouch'
   import { library } from '../lib/library.svelte'
   import type { Item, KindInfo } from '../lib/types'
   import Cover from './Cover.svelte'
@@ -35,6 +36,11 @@
 
   const color = $derived(kind?.color ?? 'var(--accent)')
 
+  const due = $derived.by(() => {
+    const p = library.dueOf(item.id)
+    return p && p.daysOver >= -7 ? p : null
+  })
+
   const progress = $derived(
     item.progress && item.progress.total
       ? Math.min(Math.max(item.progress.position / item.progress.total, 0), 1)
@@ -64,7 +70,11 @@
 
     <div class="text">
       <span class="title">{item.title}</span>
-      {#if item.creator || item.year}
+      {#if due}
+        <!-- Only on a shelf of people with a frequency, and only once it is
+             near: "due in 40 days" on every card is noise. -->
+        <span class="due" class:late={due.daysOver > 0}>{lateness(due)}</span>
+      {:else if item.creator || item.year}
         <span class="byline">
           {item.creator}{#if item.creator && item.year}&nbsp;·&nbsp;{/if}{item.year ?? ''}
         </span>
@@ -202,6 +212,15 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  .due {
+    font-size: var(--text-sm);
+    color: var(--fg-subtle);
+  }
+  .due.late {
+    color: var(--tint);
+    font-weight: 500;
+  }
+
   .byline {
     font-size: var(--text-sm);
     color: var(--fg-subtle);

@@ -64,6 +64,7 @@ import type {
   KindInfo,
   Project,
   LibraryStats,
+  PersonDue,
   MailActivity,
   MeetingActivity,
   NoteSummary,
@@ -149,6 +150,8 @@ class OverviewState {
   /** Tasks dated into the week on screen, whatever their state. */
   weekTasks = $state<Task[]>([])
   libraryStats = $state<LibraryStats | null>(null)
+  /** Everybody with a frequency, most overdue first. */
+  peopleDue = $state<PersonDue[]>([])
   entries = $state<EntrySummary[]>([])
   notes = $state<NoteSummary[]>([])
   /** Minutes recorded and planned for today, from the blocks alone. */
@@ -433,6 +436,7 @@ class OverviewState {
     this.taskStats = null
     this.weekTasks = []
     this.libraryStats = null
+    this.peopleDue = []
     this.entries = []
     this.notes = []
     this.mail = {}
@@ -546,6 +550,7 @@ class OverviewState {
           goingProjects,
           goingItems,
           goingShelves,
+          peopleDue,
         ],
         mail,
         meetings,
@@ -600,6 +605,7 @@ class OverviewState {
             [],
           ),
           ask(needs.has('going') && app.supportsLibrary, () => api.kinds(), []),
+          ask(needs.has('people') && app.supportsLibrary, () => api.peopleDue(), []),
         ]),
         counted('mail', app.supportsMail, api.mailActivity),
         counted('meetings', app.supportsCalendar, api.meetingActivity),
@@ -622,6 +628,7 @@ class OverviewState {
       this.goingProjects = goingProjects
       this.goingItems = goingItems
       this.goingShelves = goingShelves
+      this.peopleDue = peopleDue
       this.bookedToday = blocks.reduce(
         (sum, b) => {
           if (b.localDate !== today) return sum

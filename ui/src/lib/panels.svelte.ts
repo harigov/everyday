@@ -50,6 +50,8 @@ export type SettingsTab =
   // on a server the person runs, listed and edited in `ChatLinksPanel`.
   | 'chat'
   | 'meetings'
+  // Settings for the Contacts shelf's catch-ups -- see KeepInTouchPanel.
+  | 'keepintouch'
   | 'data'
   | 'vault'
 

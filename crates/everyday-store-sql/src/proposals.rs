@@ -7,8 +7,12 @@
 
 use everyday_core::error::Result;
 use everyday_core::id::ProposalId;
-use everyday_core::proposal::{Outcome, Proposal, ProposalState};
-use everyday_core::store::proposals::{ProposalQuery, ProposalStore, proposal_aad};
+use everyday_core::proposal::{
+    MAX_PROPOSAL_TRACES, Outcome, Proposal, ProposalState, ProposalTrace, counts_towards_stop_list,
+};
+use everyday_core::store::proposals::{
+    ProposalQuery, ProposalStore, proposal_aad, proposal_traces_aad,
+};
 use jiff::Timestamp;
 
 use crate::conn::{SqlExt, ToValue, Value, Where};
@@ -91,6 +95,51 @@ impl ProposalStore for SqlStore {
         )?;
         tx.commit()?;
         Ok(closed)
+    }
+
+    fn purge_proposals(&self, cutoff: Timestamp) -> Result<Vec<ProposalId>> {
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        let rows = tx.records(
+            "SELECT id, data FROM proposals WHERE outcome <> ?1 AND made_us <= ?2",
+            &vals![ProposalState::Accepted.as_str(), to_us(cutoff)],
+        )?;
+        let gone: Vec<Proposal> = self.collect(rows, proposal_aad)?;
+        if gone.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut traces = match tx.sealed("SELECT data FROM proposal_traces WHERE id = 1", &[])? {
+            Some(sealed) => self.unseal(&proposal_traces_aad(), &sealed)?,
+            None => Vec::<ProposalTrace>::new(),
+        };
+        let mut ids = Vec::with_capacity(gone.len());
+        for p in &gone {
+            tx.execute("DELETE FROM proposals WHERE id = ?1", &vals![p.id.to_string()])?;
+            ids.push(p.id);
+            if counts_towards_stop_list(p) {
+                traces.push(ProposalTrace::of(p));
+            }
+        }
+        traces.sort_by_key(|t| t.made_at);
+        let over = traces.len().saturating_sub(MAX_PROPOSAL_TRACES);
+        traces.drain(..over);
+        let data = self.seal(&proposal_traces_aad(), &traces)?;
+        tx.execute(
+            "INSERT INTO proposal_traces (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        tx.commit()?;
+        Ok(ids)
+    }
+
+    fn proposal_traces(&self) -> Result<Vec<ProposalTrace>> {
+        let sealed = self.read().sealed("SELECT data FROM proposal_traces WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&proposal_traces_aad(), &sealed),
+            None => Ok(Vec::new()),
+        }
     }
 
     fn count_pending(&self) -> Result<u64> {

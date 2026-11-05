@@ -15,11 +15,12 @@
 
 use crate::command;
 use crate::covers;
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use crate::websearch;
 use everyday_core::id::BlobId;
+use everyday_core::keepintouch::{KeepInTouchSettings, PassReport, PersonDue, note_from_journal};
 use everyday_core::library::{Item, ItemStatus, Kind, LibraryStats, LogEntry, LogEvent};
 use everyday_core::model::{system_tz, today_local};
 use everyday_core::store::library::{ItemQuery, LogQuery};
@@ -403,8 +404,17 @@ async fn set_item_progress(svc: Arc<Service>, _ctx: Ctx, args: SetProgress) -> C
     .await
 }
 
-async fn list_logs(svc: Arc<Service>, _ctx: Ctx, args: Logs) -> CommandResult<Vec<LogEntry>> {
-    svc.on_vault(move |vault| vault.logs(&args.query)).await
+async fn list_logs(svc: Arc<Service>, ctx: Ctx, args: Logs) -> CommandResult<Vec<LogEntry>> {
+    let journal = ctx.holds(Scope::Journals);
+    let mut rows = svc.on_vault(move |vault| vault.logs(&args.query)).await?;
+    // A catch-up the journal described keeps a few of its words; a client
+    // given the library and not the journal does not get them this way.
+    if !journal {
+        for log in rows.iter_mut().filter(|l| note_from_journal(l)) {
+            log.note.clear();
+        }
+    }
+    Ok(rows)
 }
 
 /// Mint a log row dated today on the machine's own calendar. Unsaved.
@@ -423,6 +433,73 @@ async fn save_log(svc: Arc<Service>, _ctx: Ctx, args: SaveLog) -> CommandResult<
 
 async fn delete_log(svc: Arc<Service>, _ctx: Ctx, args: LogRef) -> CommandResult<()> {
     svc.on_vault(move |vault| vault.delete_log(args.id)).await
+}
+
+/// What Settings draws about keeping in touch: the choices, and what the last
+/// pass did. Not the record: what a pass remembers is nobody's to edit.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KeepInTouchStatus {
+    pub settings: KeepInTouchSettings,
+    pub last_run: Option<jiff::civil::Date>,
+    pub last_report: Option<PassReport>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveKeepInTouch {
+    pub settings: KeepInTouchSettings,
+}
+
+async fn keep_in_touch_status(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<KeepInTouchStatus> {
+    svc.on_vault(move |vault| {
+        let record = vault.keep_in_touch()?;
+        Ok(KeepInTouchStatus {
+            settings: record.settings,
+            last_run: record.last_run,
+            last_report: record.last_report,
+        })
+    })
+    .await
+}
+
+async fn save_keep_in_touch_settings(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SaveKeepInTouch,
+) -> CommandResult<()> {
+    svc.on_vault(move |vault| vault.save_keep_in_touch_settings(&args.settings)).await
+}
+
+/// Everybody with a frequency, most overdue first, those with time left included.
+async fn list_people_due(
+    svc: Arc<Service>,
+    ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<Vec<PersonDue>> {
+    let now = svc.now();
+    let journal = ctx.holds(Scope::Journals);
+    let people = svc
+        .on_vault(move |vault| {
+            let tz = vault.person_tz();
+            let zone = jiff::tz::TimeZone::get(&tz).unwrap_or(jiff::tz::TimeZone::UTC);
+            let today = now.to_zoned(zone).date();
+            vault.people_due(today, &tz)
+        })
+        .await?;
+    Ok(if journal { people } else { people.into_iter().map(PersonDue::without_journal).collect() })
+}
+
+async fn run_keep_in_touch(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    _args: Nothing,
+) -> CommandResult<PassReport> {
+    crate::keepintouch::run_now(&svc).await
 }
 
 /// Counts for the library sidebar, as of the machine's own calendar year.
@@ -565,6 +642,29 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: LogRef, returns: "void",
         signature: &[("id", "LogId", true)],
         run: delete_log,
+    },
+    command! {
+        name: "keep_in_touch_status", scope: Library, effect: Read,
+        args: Nothing, returns: "KeepInTouchStatus", signature: &[],
+        run: keep_in_touch_status,
+    },
+    command! {
+        name: "save_keep_in_touch_settings", scope: Library, effect: Write,
+        change: Settings / Updated,
+        args: SaveKeepInTouch, returns: "void",
+        signature: &[("settings", "KeepInTouchSettings", true)],
+        run: save_keep_in_touch_settings,
+    },
+    command! {
+        name: "list_people_due", scope: Library, effect: Read,
+        args: Nothing, returns: "PersonDue[]", signature: &[],
+        run: list_people_due,
+    },
+    command! {
+        name: "run_keep_in_touch", scope: Library, effect: Write,
+        change: Log / Updated,
+        args: Nothing, returns: "PassReport", signature: &[],
+        run: run_keep_in_touch,
     },
     command! {
         name: "library_stats", scope: Library, effect: Read,

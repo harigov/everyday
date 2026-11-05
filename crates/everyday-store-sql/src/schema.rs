@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -110,6 +110,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v19(d),
         v20(),
         v21(d),
+        v22(d),
     ]
 }
 
@@ -1566,6 +1567,27 @@ fn v21(d: Dialect) -> Vec<String> {
              data        {blob} NOT NULL
          )"
     )]
+}
+
+/// Version 22: two sealed singletons, on the pattern of `mail_contacts`.
+///
+/// `keep_in_touch` is [`everyday_core::keepintouch::KeepInTouch`]: the settings
+/// and what a pass remembers between runs. `proposal_traces` is what is left of
+/// the proposals nobody accepted once they are deleted after a week, which is
+/// what keeps the weekly dream's stop list able to see past that week.
+fn v22(d: Dialect) -> Vec<String> {
+    let (int, blob) = (d.int(), d.blob());
+    ["keep_in_touch", "proposal_traces"]
+        .into_iter()
+        .map(|table| {
+            format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                     id          {int} PRIMARY KEY CHECK (id = 1),
+                     data        {blob} NOT NULL
+                 )"
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

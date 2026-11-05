@@ -126,6 +126,19 @@ pub async fn run_prompt(
     user: &str,
     schema: Value,
 ) -> CommandResult<Value> {
+    run_prompt_within(client, model, system, user, schema, timeout_for(model)).await
+}
+
+/// [`run_prompt`] with a clock of the caller's, for what runs with nobody
+/// waiting on it. Never shorter than `model` is owed: see [`timeout_for`].
+pub async fn run_prompt_within(
+    client: crate::llm::Client,
+    model: &LLMModelConfig,
+    system: &str,
+    user: &str,
+    schema: Value,
+    within: Duration,
+) -> CommandResult<Value> {
     // The answer arrives as the arguments of the tool call rather than as
     // prose, which is the whole point: there is no fenced block to find, no
     // preamble to strip and no chance of "Sure! Here's the JSON:".
@@ -167,7 +180,7 @@ pub async fn run_prompt(
 
     // The timeout wraps the whole exchange rather than one request, because
     // the failure it exists for is a model that answers slowly twice.
-    let timeout = timeout_for(model);
+    let timeout = within.max(timeout_for(model));
     let turn = tokio::time::timeout(timeout, agent.prompt(user).max_turns(MAX_TURNS));
     match turn.await {
         Ok(Ok(_)) => {}

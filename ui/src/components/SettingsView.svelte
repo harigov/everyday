@@ -61,6 +61,7 @@
   import AssistantPanes from './AssistantPanes.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import DataPanel from './DataPanel.svelte'
+  import KeepInTouchPanel from './KeepInTouchPanel.svelte'
   import MailSortingPanel from './MailSortingPanel.svelte'
   import MailWritingPanel from './MailWritingPanel.svelte'
   import MeetingsPanel from './MeetingsPanel.svelte'
@@ -206,6 +207,9 @@
     // mailboxes.
     { id: 'chat', label: 'Chat', icon: 'globe' },
     { id: 'meetings', label: 'Meetings', icon: 'mic' },
+    // Beside Meetings: another thing the app does with your days on its own,
+    // reading the Library's Contacts shelf rather than a calendar.
+    { id: 'keepintouch', label: 'Keeping in touch', icon: 'people' },
     { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
   ]
@@ -241,6 +245,7 @@
       .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
       .filter((t) => t.id !== 'meetings' || meetings.supported)
+      .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
       .filter((t) => t.id !== 'writing' || (agent.supported && app.supportsMail)),
   )
@@ -410,6 +415,8 @@
       <ChatLinksPanel />
     {:else if tab === 'meetings'}
       <MeetingsPanel />
+    {:else if tab === 'keepintouch'}
+      <KeepInTouchPanel />
     {:else if tab === 'profile'}
       <ProfilePanel />
     {:else if tab === 'accounts'}

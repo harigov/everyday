@@ -120,6 +120,19 @@ async fn accept_proposal(svc: Arc<Service>, ctx: Ctx, args: Accept) -> CommandRe
         // created them. What this event is for is the one record the
         // proposal saved, which is exactly what `saved_as` names.
         let origin = ctx.caller.origin().map(str::to_string);
+        // A catch-up with somebody new made their card too, and the shelf is
+        // as much in need of reloading as the log.
+        if let Payload::Create { record: ProposedRecord::Log(log) } = &accepted.payload
+            && let Some(contact) = &log.new_contact
+        {
+            svc.events().changed(Change {
+                kind: Kind::Item,
+                op: Op::Created,
+                id: Some(contact.id.to_string()),
+                ids: Vec::new(),
+                origin: origin.clone(),
+            });
+        }
         svc.events().changed(Change { kind, op, id: Some(saved_as), ids: Vec::new(), origin });
     }
     Ok(accepted)
@@ -139,6 +152,7 @@ fn change_for_accept(proposal: &Proposal) -> Option<(Kind, Op, String)> {
         ProposalKind::Note => Kind::Note,
         ProposalKind::Mail => Kind::Draft,
         ProposalKind::Skill => Kind::Skill,
+        ProposalKind::Log => Kind::Log,
     };
     let op = match &proposal.payload {
         Payload::Create { .. } => Op::Created,

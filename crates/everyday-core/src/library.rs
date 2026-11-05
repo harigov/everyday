@@ -61,7 +61,7 @@
 //! and note that the webview's content security policy does not permit the
 //! alternative even if this changed its mind.
 
-use crate::id::{BlobId, ItemId, KindId, LogId};
+use crate::id::{BlobId, EntryId, EventId, ItemId, KindId, LogId, TaskId, ThreadId};
 use crate::purpose::Purpose;
 use crate::timestamped::Timestamped;
 use jiff::{Timestamp, civil::Date};
@@ -654,10 +654,41 @@ fn drink_type_field() -> FieldDef {
         ])
 }
 
+/// The slug of the shelf of people. What keeping in touch reads, and what a
+/// shelf has to be called underneath for it to be read.
+pub const CONTACT_SLUG: &str = "contact";
+
+fn circle_field() -> FieldDef {
+    use crate::keepintouch as k;
+    FieldDef::new(k::FACT_CIRCLE, "Circle", FieldType::Text)
+        .with_placeholder("Sets how often to keep in touch")
+        .with_suggestions(&[k::CIRCLE_INNER, k::CIRCLE_CLOSE, k::CIRCLE_OCCASIONAL])
+}
+
+fn every_days_field() -> FieldDef {
+    FieldDef::new(crate::keepintouch::FACT_EVERY_DAYS, "Or every (days)", FieldType::Number)
+        .with_placeholder("Their circle's; 0 for never")
+}
+
+fn aliases_field() -> FieldDef {
+    FieldDef::new(crate::keepintouch::FACT_ALIASES, "Also known as", FieldType::List)
+        .with_placeholder("Amma\nMum")
+}
+
+fn celebrates_field() -> FieldDef {
+    FieldDef::new(crate::keepintouch::FACT_CELEBRATES, "Celebrates", FieldType::List)
+        .with_placeholder("Diwali\nChristmas")
+}
+
+fn key_dates_field() -> FieldDef {
+    FieldDef::new(crate::keepintouch::FACT_KEY_DATES, "Dates to remember", FieldType::List)
+        .with_placeholder("Anniversary: 2015-06-21")
+}
+
 /// People. A shelf like any other — a log row is a catch-up, a note is a
 /// note — except that nothing on it is ever looked up. See [`NO_SOURCE`].
 fn contacts_kind() -> Kind {
-    Kind::new("contact", "Contacts", "Contact")
+    Kind::new(CONTACT_SLUG, "Contacts", "Contact")
         .with_icon("\u{1f464}")
         .with_verbs(Verbs::new("To meet", "In touch", "Met", "met"))
         .with_source(NO_SOURCE)
@@ -665,12 +696,17 @@ fn contacts_kind() -> Kind {
             FieldDef::new("relationship", "How you know them", FieldType::Text)
                 .with_placeholder("Friend, colleague, neighbour…")
                 .with_suggestions(&["Family", "Friend", "Colleague", "Neighbour", "Client"]),
+            circle_field(),
+            every_days_field(),
             FieldDef::new("email", "Email", FieldType::Text),
             FieldDef::new("phone", "Telephone", FieldType::Text),
             FieldDef::new("birthday", "Birthday", FieldType::Date),
             FieldDef::new("company", "Works at", FieldType::Text),
             FieldDef::new("address", "Address", FieldType::Multiline),
             FieldDef::new("url", "Website", FieldType::Url),
+            aliases_field(),
+            celebrates_field(),
+            key_dates_field(),
         ])
 }
 
@@ -684,7 +720,9 @@ fn contacts_kind() -> Kind {
 ///    and a Contacts shelf was added.
 /// 2. Recipes gained a course, a cuisine, ingredients and a method, and a
 ///    Drinks shelf was added.
-pub const LIBRARY_REVISION: u32 = 2;
+/// 3. Contacts gained what keeping in touch asks of a card: a circle, how often
+///    if not the circle's, other names, what they celebrate, and dates of theirs.
+pub const LIBRARY_REVISION: u32 = 3;
 
 /// Bring an existing library's shelves up to [`LIBRARY_REVISION`]. Returns
 /// the shelves to write — every one, stamped — or nothing when the library
@@ -720,7 +758,7 @@ pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
                 _ => {}
             }
         }
-        if !kinds.iter().any(|k| k.slug == "contact") {
+        if !kinds.iter().any(|k| k.slug == CONTACT_SLUG) {
             push_shelf(&mut kinds, contacts_kind());
         }
     }
@@ -750,6 +788,27 @@ pub fn upgrade_kinds(mut kinds: Vec<Kind>) -> Vec<Kind> {
         });
         if !has_drinks {
             push_shelf(&mut kinds, drinks_kind());
+        }
+    }
+
+    if revision < 3 {
+        // The two short fields beside how you know them, where they are read
+        // together; the lists after whatever is already there. A field
+        // somebody already added under the same key is theirs and stays.
+        for kind in kinds.iter_mut().filter(|k| k.builtin && k.slug == CONTACT_SLUG) {
+            let mut at = kind.fields.iter().position(|f| f.key == "relationship").map(|i| i + 1);
+            for field in [circle_field(), every_days_field()] {
+                if !kind.fields.iter().any(|f| f.key == field.key) {
+                    let here = at.unwrap_or(kind.fields.len());
+                    kind.fields.insert(here, field);
+                    at = at.map(|i| i + 1);
+                }
+            }
+            for field in [aliases_field(), celebrates_field(), key_dates_field()] {
+                if !kind.fields.iter().any(|f| f.key == field.key) {
+                    kind.fields.push(field);
+                }
+            }
         }
     }
 
@@ -1153,16 +1212,23 @@ pub enum LogEvent {
     /// Set aside or given up. Kept in the log because *when* you stopped is
     /// as much a fact as when you started.
     Stopped,
+    /// In touch with a person on the Contacts shelf: a call, a message, a
+    /// coffee. Its own event rather than `Revisited`, because a catch-up is
+    /// not a completion: a goal of "finish 24 things this year" must not go
+    /// up every time somebody emails their mother. See
+    /// [`crate::keepintouch`].
+    Contact,
 }
 
 impl LogEvent {
-    pub const ALL: [LogEvent; 6] = [
+    pub const ALL: [LogEvent; 7] = [
         LogEvent::Started,
         LogEvent::Progress,
         LogEvent::Finished,
         LogEvent::Revisited,
         LogEvent::Note,
         LogEvent::Stopped,
+        LogEvent::Contact,
     ];
 
     /// Does this row mean "I got to the end of it"? Both of the ones that
@@ -1179,12 +1245,83 @@ impl LogEvent {
             LogEvent::Revisited => "revisited",
             LogEvent::Note => "note",
             LogEvent::Stopped => "stopped",
+            LogEvent::Contact => "contact",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|event| event.as_str() == s)
     }
+}
+
+/// How a catch-up with somebody happened.
+///
+/// A closed set for the reason [`ItemStatus`] is one: "how long since I last
+/// spoke to anyone on the phone" is a question asked across people, and free
+/// text would make "call", "phone" and "rang" three answers to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum Via {
+    Call,
+    Video,
+    /// A text, a chat, a voice note: anything typed into somebody's phone.
+    Message,
+    Email,
+    InPerson,
+    Other,
+}
+
+impl Via {
+    pub const ALL: [Via; 6] =
+        [Via::Call, Via::Video, Via::Message, Via::Email, Via::InPerson, Via::Other];
+
+    /// The wire spelling. Also what a tool's argument and a model's answer use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Via::Call => "call",
+            Via::Video => "video",
+            Via::Message => "message",
+            Via::Email => "email",
+            Via::InPerson => "inPerson",
+            Via::Other => "other",
+        }
+    }
+
+    /// Words for it in a sentence that begins "last caught up".
+    pub fn phrase(self) -> &'static str {
+        match self {
+            Via::Call => "by phone",
+            Via::Video => "on a video call",
+            Via::Message => "by message",
+            Via::Email => "by email",
+            Via::InPerson => "in person",
+            Via::Other => "",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|via| via.as_str().eq_ignore_ascii_case(s.trim()))
+    }
+}
+
+/// Where a log row came from, when something other than the person typed it.
+///
+/// What makes logging automatically safe to repeat: a row that already names
+/// its source for that person is not written again, however many times the
+/// entry is edited or the pass runs. It is also what a card links back to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum LogSource {
+    /// A journal entry that says so.
+    Entry { id: EntryId },
+    /// A message sent to them.
+    Thread { id: ThreadId },
+    /// A meeting they were at.
+    Event { id: EventId },
+    /// A task to get in touch with them, ticked off.
+    Task { id: TaskId },
 }
 
 /// One occasion on which you did something about an item.
@@ -1219,6 +1356,13 @@ pub struct LogEntry {
     /// How long you spent, if you care to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minutes: Option<u32>,
+    /// On a shelf of people, how this catch-up happened. `None` everywhere
+    /// else, and on a catch-up nobody said the means of.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<Via>,
+    /// What wrote this row, if it was not typed here. See [`LogSource`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<LogSource>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -1236,6 +1380,8 @@ impl LogEntry {
             rating: None,
             position: None,
             minutes: None,
+            via: None,
+            source: None,
             created_at: now,
             updated_at: now,
         }
@@ -1384,6 +1530,32 @@ mod tests {
 
     fn keys(kind: &Kind) -> Vec<&str> {
         kind.fields.iter().map(|f| f.key.as_str()).collect()
+    }
+
+    #[test]
+    fn contacts_gain_what_keeping_in_touch_reads_in_revision_three() {
+        use crate::keepintouch::{FACT_ALIASES, FACT_CELEBRATES, FACT_CIRCLE, FACT_EVERY_DAYS};
+        let mut kinds = default_kinds();
+        for kind in &mut kinds {
+            kind.revision = 2;
+            if kind.slug == CONTACT_SLUG {
+                kind.fields.retain(|f| {
+                    ![FACT_CIRCLE, FACT_EVERY_DAYS, FACT_ALIASES, FACT_CELEBRATES, "key_dates"]
+                        .contains(&f.key.as_str())
+                });
+                // Somebody's own list of what a friend celebrates stays theirs.
+                kind.fields.push(FieldDef::new(FACT_CELEBRATES, "Holidays", FieldType::Text));
+            }
+        }
+        let upgraded = upgrade_kinds(kinds);
+        let contacts = by_slug(&upgraded, CONTACT_SLUG);
+        let keys: Vec<&str> = contacts.fields.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(&keys[..3], ["relationship", FACT_CIRCLE, FACT_EVERY_DAYS]);
+        assert_eq!(keys.iter().filter(|k| **k == FACT_CELEBRATES).count(), 1);
+        let theirs = contacts.fields.iter().find(|f| f.key == FACT_CELEBRATES).unwrap();
+        assert_eq!(theirs.label, "Holidays");
+        assert!(keys.contains(&"key_dates") && keys.contains(&FACT_ALIASES));
+        assert!(upgraded.iter().all(|k| k.revision == LIBRARY_REVISION));
     }
 
     fn by_slug<'a>(kinds: &'a [Kind], slug: &str) -> &'a Kind {
