@@ -737,7 +737,10 @@ impl Vault {
     ///   home.
     /// * [`OpKind::Snooze`] — [`MailStore::set_thread_snoozed_until`].
     ///
-    /// [`OpKind::Send`] and [`OpKind::AppendDraft`] are refused with
+    /// [`OpKind::DeleteForever`] is refused with [`Error::Invalid`]: it names
+    /// the messages it deletes, which [`Vault::delete_forever`] and
+    /// [`Vault::empty_mailbox`] work out. [`OpKind::Send`] and
+    /// [`OpKind::AppendDraft`] are refused with
     /// [`Error::Invalid`]: both target a [`crate::id::DraftId`], never a
     /// thread, and belong to [`Vault::queue_draft_send`] and
     /// [`Vault::save_draft_and_append`] instead.
@@ -749,6 +752,11 @@ impl Vault {
     ) -> Result<Vec<Op>> {
         if matches!(kind, OpKind::Send | OpKind::AppendDraft | OpKind::DiscardDraft) {
             return Err(Error::Invalid(format!("{kind:?} does not target a thread")));
+        }
+        if matches!(kind, OpKind::DeleteForever { .. }) {
+            return Err(Error::Invalid(
+                "deleting for good names its messages: see Vault::delete_forever".into(),
+            ));
         }
         self.writable()?;
         let ops = self.write(|u| {
@@ -782,6 +790,67 @@ impl Vault {
         Ok(ops)
     }
 
+    /// Delete for good what `threads` have in any of `from` -- each a Trash
+    /// or Spam, and [`Error::Invalid`] before anything is written if one is
+    /// not (see [`MailboxRole::empties`]). One [`OpKind::DeleteForever`] per
+    /// thread and mailbox it is listed in, naming the messages it has there
+    /// now.
+    ///
+    /// Mailboxes rather than a role, because what is on screen decides: the
+    /// "All accounts" Trash is every account's Trash at once, and an account
+    /// can have two mailboxes taken for Trash. A thread listed in none of
+    /// them is left alone -- a missing one, or one already waiting to be
+    /// deleted -- rather than queued for nothing: the hidden marker such an
+    /// op would leave behind would keep the thread out of that mailbox later,
+    /// once something of it really is filed there.
+    pub fn delete_forever(
+        &self,
+        threads: &[ThreadId],
+        from: &[MailboxId],
+        origin: Origin,
+    ) -> Result<Vec<Op>> {
+        self.writable()?;
+        let ops = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let boxes = from.iter().map(|&id| emptiable(mail, id)).collect::<Result<Vec<_>>>()?;
+            let mut ops = Vec::new();
+            for from in &boxes {
+                ops.extend(delete_forever_from(mail, from, Some(threads), &origin)?);
+            }
+            Ok(ops)
+        })?;
+        // Every thread asked about, as `apply_thread_ops` announces them: one
+        // left alone is a reload that finds nothing changed.
+        for &thread in threads {
+            self.wrote(RecordKind::Thread, thread);
+        }
+        Ok(ops)
+    }
+
+    /// Delete for good every thread listed in `mailbox`, which must be a
+    /// Trash or Spam ([`Error::Invalid`] otherwise) -- "Empty Trash". One
+    /// [`OpKind::DeleteForever`] per thread, so the outbox sends them the way
+    /// it sends any bulk action: a run of them together, a `SELECT` and a few
+    /// commands for the lot.
+    ///
+    /// Everything listed, whatever the list on screen is filtered to, snoozed
+    /// threads included. What arrives after this returns is not touched: each
+    /// op names the messages it deletes.
+    pub fn empty_mailbox(&self, mailbox: MailboxId, origin: Origin) -> Result<Vec<Op>> {
+        self.writable()?;
+        let ops = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let from = emptiable(mail, mailbox)?;
+            delete_forever_from(mail, &from, None, &origin)
+        })?;
+        for op in &ops {
+            if let OpTarget::Thread(thread) = op.target {
+                self.wrote(RecordKind::Thread, thread);
+            }
+        }
+        Ok(ops)
+    }
+
     /// Undo [`Vault::apply_thread_ops`]'s local effect for one thread, once
     /// its op has failed permanently -- see
     /// [`crate::mail::outbox::apply_optimistic`]'s own docs on why a
@@ -802,7 +871,17 @@ impl Vault {
                     }
                     Ok(())
                 }
-                Inverse::RestoreMailboxes => mail.restore_thread_mailboxes(thread),
+                // Only the Inbox marker the op set, never another op's:
+                // a thread split between Trash and the Inbox can have an
+                // archive and a delete forever waiting at once.
+                Inverse::UnhideInbox => {
+                    let (t, _) = mail.thread(thread)?;
+                    match inbox_mailbox(mail, t.account_id)? {
+                        Some(inbox) => mail.unhide_thread_from_mailbox(thread, inbox),
+                        None => Ok(()),
+                    }
+                }
+                Inverse::Unhide(mailbox) => mail.unhide_thread_from_mailbox(thread, mailbox),
                 Inverse::ClearSnooze => mail.set_thread_snoozed_until(thread, None),
                 Inverse::None => Ok(()),
             }
@@ -1049,7 +1128,10 @@ impl Vault {
 /// What [`Vault::revert_thread_op`] undoes a given [`OpKind`] with.
 enum Inverse {
     Flag(OpKind),
-    RestoreMailboxes,
+    /// What an archive, trash or move hid: the account's Inbox.
+    UnhideInbox,
+    /// What a delete forever hid: the mailbox it was deleting from.
+    Unhide(MailboxId),
     ClearSnooze,
     /// [`OpKind::Snooze`]'s own moment has not been reverted-into by
     /// anything but [`ClearSnooze`] above; this arm exists only so the
@@ -1066,7 +1148,8 @@ fn inverse_of(kind: &OpKind) -> Inverse {
         OpKind::Unstar => Inverse::Flag(OpKind::Star),
         OpKind::Label { label } => Inverse::Flag(OpKind::Unlabel { label: label.clone() }),
         OpKind::Unlabel { label } => Inverse::Flag(OpKind::Label { label: label.clone() }),
-        OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => Inverse::RestoreMailboxes,
+        OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => Inverse::UnhideInbox,
+        OpKind::DeleteForever { from, .. } => Inverse::Unhide(*from),
         OpKind::Snooze { .. } => Inverse::ClearSnooze,
         OpKind::Send | OpKind::AppendDraft | OpKind::DiscardDraft => Inverse::None,
     }
@@ -1110,7 +1193,10 @@ fn apply_local_effect(
         | OpKind::Unlabel { .. }
         | OpKind::Send
         | OpKind::AppendDraft
-        | OpKind::DiscardDraft => unreachable!("handled above or refused before this is called"),
+        | OpKind::DiscardDraft
+        | OpKind::DeleteForever { .. } => {
+            unreachable!("handled above or refused before this is called")
+        }
     }
     Ok(())
 }
@@ -1130,6 +1216,45 @@ fn apply_local_effect_one(
         }
         _ => mail.set_message_flags(message.id, message.flags),
     }
+}
+
+/// `id`'s mailbox, when it is one whose mail can be deleted for good -- see
+/// [`MailboxRole::empties`].
+fn emptiable(mail: &dyn MailStore, id: MailboxId) -> Result<Mailbox> {
+    let mailbox = mail.get_mailbox(id)?;
+    if !mailbox.role.empties() {
+        return Err(Error::Invalid(format!(
+            "mail in {} cannot be deleted forever",
+            mailbox.role.as_str()
+        )));
+    }
+    Ok(mailbox)
+}
+
+/// One [`OpKind::DeleteForever`] for each thread listed in `from` -- of
+/// `threads`, when given -- naming the messages it has there, each thread
+/// hidden from `from` and every op queued in one transaction. Ids only:
+/// nothing is decrypted to find them.
+fn delete_forever_from(
+    mail: &dyn MailStore,
+    from: &Mailbox,
+    threads: Option<&[ThreadId]>,
+    origin: &Origin,
+) -> Result<Vec<Op>> {
+    let mut by_thread: std::collections::BTreeMap<ThreadId, Vec<MailMessageId>> =
+        std::collections::BTreeMap::new();
+    for (thread, message) in mail.listed_messages_in(from.id, threads)? {
+        by_thread.entry(thread).or_default().push(message);
+    }
+    let ops: Vec<Op> = by_thread
+        .into_iter()
+        .map(|(thread, messages)| {
+            let kind = OpKind::DeleteForever { from: from.id, messages };
+            Op::new(from.account_id, kind, OpTarget::Thread(thread), origin.clone())
+        })
+        .collect();
+    mail.hide_and_enqueue(from.id, &ops)?;
+    Ok(ops)
 }
 
 fn inbox_mailbox(mail: &dyn MailStore, account: AccountId) -> Result<Option<MailboxId>> {

@@ -144,6 +144,9 @@ export const starMany = (ids: ThreadId[]): Promise<Op[]> => api.star(ids)
 export const unstarMany = (ids: ThreadId[]): Promise<Op[]> => api.unstar(ids)
 export const archiveMany = (ids: ThreadId[]): Promise<Op[]> => api.archive(ids)
 export const trashMany = (ids: ThreadId[]): Promise<Op[]> => api.trash(ids)
+export const deleteForeverMany = (ids: ThreadId[], from: MailboxId[]): Promise<Op[]> =>
+  api.deleteForever(ids, from)
+export const emptyMailbox = (mailbox: MailboxId): Promise<number> => api.emptyMailbox(mailbox)
 export const moveManyToMailbox = (ids: ThreadId[], mailbox: MailboxId): Promise<Op[]> =>
   api.moveToMailbox(ids, mailbox)
 export const labelMany = (ids: ThreadId[], labelName: string): Promise<Op[]> =>

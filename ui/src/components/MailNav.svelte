@@ -15,6 +15,7 @@
   import { accounts } from '../lib/accounts.svelte'
   import { accountColor } from '../lib/avatar'
   import {
+    emptiableRole,
     gmailSystemLabel,
     mailboxDisplayName,
     syncInProgress,
@@ -201,10 +202,24 @@
   // ── What a right-click offers ─────────────────────────────────────
   //
   // The same three layers every other sidebar has: the list's own blank
-  // space, a heading, and a row. What is *not* here is anything a folder
-  // would need the server's say-so for -- renaming one, emptying Trash --
-  // because there is no command for either yet, and a menu row that cannot
-  // work is worse than one that is not there.
+  // space, a heading, and a row. What is *not* here is renaming a folder,
+  // because there is no command for it yet, and a menu row that cannot work
+  // is worse than one that is not there. Emptying Trash or Spam is here: it
+  // asks first, in `MailView`, which draws the confirmation.
+
+  /** "Empty Trash…" on a Trash or Spam row, an account's or every
+   *  account's. */
+  function emptyItem(box: Mailbox | undefined, label: string): MenuItem | false {
+    return (
+      !!box &&
+      emptiableRole(box) !== null && {
+        label: `Empty ${label}…`,
+        icon: 'trash',
+        danger: true,
+        run: () => (mail.wantsEmpty = box),
+      }
+    )
+  }
 
   /** About the account a row belongs to: offered on its heading and, after
    *  a rule, on every mailbox under it, so nobody has to aim for the
@@ -242,6 +257,8 @@
           hint: row.count > 0 ? String(row.count) : undefined,
           run: () => markAllRead(box, row.label),
         },
+        SEP,
+        emptyItem(box, row.label),
       ])
     }
     return tidyMenu([
@@ -262,6 +279,8 @@
         hint: row.count > 0 ? String(row.count) : undefined,
         run: () => markAllRead(box, row.label),
       },
+      SEP,
+      emptyItem(box, row.label),
       SEP,
       ...accountItems(row.accountId),
     ])
@@ -390,7 +409,7 @@
   }
 </script>
 
-<nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
+<nav class="scroll side-nav" data-mail-pane oncontextmenu={(e) => menu.show(e, navMenu())}>
   {#if mailAccounts.length === 0}
     <p class="hint">
       No mail accounts yet. <button class="link" onclick={() => panels.openSettings('accounts')}

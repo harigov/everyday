@@ -395,6 +395,7 @@ const OP_LABELS: Record<OpKind['type'], { past: string; base: string }> = {
   snooze: { past: 'Snoozed', base: 'snooze it' },
   send: { past: 'Sent', base: 'send it' },
   appendDraft: { past: 'Saved a draft copy', base: 'save a draft copy' },
+  deleteForever: { past: 'Deleted forever', base: 'delete it forever' },
 }
 
 /** Who did it, in words -- `null` for a person, who needs no mark. */
@@ -1307,6 +1308,16 @@ export function threadRange(
   if (from < 0) return [toId]
   const [lo, hi] = from <= to ? [from, to] : [to, from]
   return list.slice(lo, hi + 1).map((t) => t.id)
+}
+
+/** Which kind of mailbox `box` is, when its mail can be deleted for good --
+ *  Trash or Spam, an account's own or the "All accounts" row gathering
+ *  them -- and `null` for every other. What decides where "Empty" and
+ *  "Delete forever" are offered; the backend refuses the rest regardless. */
+export function emptiableRole(
+  box: Pick<Mailbox, 'role'> | null | undefined,
+): 'trash' | 'spam' | null {
+  return box?.role === 'trash' || box?.role === 'spam' ? box.role : null
 }
 
 /** The next or previous thread in `list`, `step` positions from

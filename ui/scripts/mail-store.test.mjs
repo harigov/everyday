@@ -820,6 +820,77 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 900))
   assert.equal(await mail.archiveThreads([]), true, 'nothing to do is not a failure')
 }
 
+// ── Trash: Delete asks first, Shift+arrows pick, Empty empties ──────
+
+{
+  await mail.selectMailbox('unified:trash')
+  assert.equal(mail.emptiableRole, 'trash')
+  assert.ok(mail.threads.length >= 5, 'the seed has a few threads in Trash')
+
+  const first = mail.threads[0].id
+  await mail.openThreadById(first)
+  mail.deleteTargets()
+  assert.deepEqual(mail.wantsForever?.ids, [first])
+  assert.equal(
+    mail.wantsForever?.mailbox.id,
+    'unified:trash',
+    'in Trash, Delete asks to delete for good rather than trashing again',
+  )
+  assert.ok(
+    mail.threads.some((t) => t.id === first),
+    'nothing goes until the question is answered',
+  )
+  const ask = mail.wantsForever
+  mail.wantsForever = null
+  await mail.deleteForeverMany(ask.ids, ask.mailbox)
+  assert.ok(!mail.threads.some((t) => t.id === first), 'gone from the list at once')
+  await mail.refresh()
+  assert.ok(!mail.threads.some((t) => t.id === first), 'and still gone when asked again')
+
+  // Shift+Down from the open thread picks it and the ones below; Shift+Up
+  // walks the run back.
+  const [a, b, c] = mail.threads.map((t) => t.id)
+  await mail.openThreadById(a)
+  mail.extendChecked(1)
+  mail.extendChecked(1)
+  assert.deepEqual([...mail.checked].sort(), [a, b, c].sort())
+  assert.equal(mail.selectedThread, c, 'the cursor moves with it')
+  mail.extendChecked(-1)
+  assert.deepEqual([...mail.checked].sort(), [a, b].sort())
+  assert.deepEqual(mail.targets, [a, b], 'and Delete would act on the run')
+  mail.clearChecked()
+
+  // An anchor whose thread has gone starts the run afresh from the cursor,
+  // rather than picking one row at a time.
+  await mail.openThreadById(a)
+  await mail.deleteForeverMany([a], ask.mailbox)
+  const [b2, c2, d2] = mail.threads.map((t) => t.id)
+  assert.equal(mail.selectedThread, b2, 'the cursor moved on to the next row')
+  mail.extendChecked(1)
+  mail.extendChecked(1)
+  assert.deepEqual([...mail.checked].sort(), [b2, c2, d2].sort())
+  mail.clearChecked()
+
+  const trash = mail.mailbox
+  const emptied = await mail.emptyMailbox(trash)
+  assert.ok(emptied > 0, 'something was there to empty')
+  assert.equal(mail.threads.length, 0, 'the list empties at once')
+  await mail.refresh()
+  assert.equal(mail.threads.length, 0, 'and stays empty')
+  assert.equal(await mail.emptyMailbox(trash), 0, 'emptying it again finds nothing')
+
+  // Anywhere else, Delete is Trash, as `#` is.
+  await mail.selectMailbox('unified:inbox')
+  assert.equal(mail.emptiableRole, null)
+  assert.equal(await mail.emptyMailbox(mail.mailbox), null, 'an Inbox is never emptied')
+  const doomed = mail.threads[0].id
+  await mail.openThreadById(doomed)
+  mail.deleteTargets()
+  assert.equal(mail.wantsForever, null, 'nothing to ask outside Trash')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(!mail.threads.some((t) => t.id === doomed), 'trashed')
+}
+
 await close()
 console.log('mail-store: all checks passed')
 

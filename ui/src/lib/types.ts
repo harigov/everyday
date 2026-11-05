@@ -2288,6 +2288,7 @@ export type OpKind =
   | { type: 'snooze'; until: string }
   | { type: 'send' }
   | { type: 'appendDraft' }
+  | { type: 'deleteForever'; from: MailboxId; messages: MailMessageId[] }
 
 export type OpTarget =
   | { type: 'thread'; id: ThreadId }

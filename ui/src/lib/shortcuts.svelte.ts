@@ -33,7 +33,7 @@ import { agent } from './agent.svelte'
 import { APPS } from './apps'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
-import { SEQUENCE_MS, chordOf, isTyping, match, type Binding } from './keys'
+import { SEQUENCE_MS, chordOf, isTyping, match, withoutShift, type Binding } from './keys'
 import { library } from './library.svelte'
 import { mailboxDisplayName, mailboxHasTabs, unifiedMailboxId } from './mail'
 import { mail } from './mail.svelte'
@@ -642,14 +642,45 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     label: 'The thread below',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')(),
-    run: () => void mail.moveSelection(1),
+    run: () => stepThread(1),
   },
   {
     keys: 'k',
     label: 'The thread above',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')(),
-    run: () => void mail.moveSelection(-1),
+    run: () => stepThread(-1),
+  },
+  // What every mail client with a list beside the message does with them --
+  // but only while the list has the keyboard, so the reading pane still
+  // scrolls with them once it is the pane last clicked. See `listOwnsArrows`.
+  {
+    keys: 'ArrowDown',
+    label: 'The thread below',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && listOwnsArrows(),
+    run: () => stepThread(1),
+  },
+  {
+    keys: 'ArrowUp',
+    label: 'The thread above',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && listOwnsArrows(),
+    run: () => stepThread(-1),
+  },
+  {
+    keys: 'shift+ArrowDown',
+    label: 'Select the thread below too',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && listOwnsArrows() && mailListShowing(),
+    run: () => mail.extendChecked(1),
+  },
+  {
+    keys: 'shift+ArrowUp',
+    label: 'Select the thread above too',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && listOwnsArrows() && mailListShowing(),
+    run: () => mail.extendChecked(-1),
   },
   {
     keys: 'Enter',
@@ -709,13 +740,30 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
     run: () => void mail.archiveMany(mail.targets),
   },
-  {
-    keys: '#',
-    label: 'Trash',
-    group: 'Mail',
-    when: () => anywhere() && inApp('mail')() && mail.targets.length > 0,
-    run: () => void mail.trashMany(mail.targets),
-  },
+  // `#` is Gmail's; Delete and Backspace are everybody else's, Backspace
+  // being the key a Mac labels "delete". In Trash, where moving mail to
+  // Trash would change nothing, the same keys ask to delete it for good.
+  // Delete and Backspace only from Mail's own panes: see `inMailPanes`.
+  ...(['#', 'Delete', 'Backspace'] as const).flatMap((keys) => {
+    const reach = () =>
+      anywhere() && inApp('mail')() && mail.targets.length > 0 && (keys === '#' || inMailPanes())
+    return [
+      {
+        keys,
+        label: 'Trash',
+        group: 'Mail' as const,
+        when: () => reach() && mail.emptiableRole !== 'trash',
+        run: () => mail.deleteTargets(),
+      },
+      {
+        keys,
+        label: 'Delete forever…',
+        group: 'Mail' as const,
+        when: () => reach() && mail.emptiableRole === 'trash',
+        run: () => mail.deleteTargets(),
+      },
+    ]
+  }),
   {
     keys: 's',
     label: 'Star',
@@ -778,6 +826,22 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   },
   {
     keys: 'w',
+    label: 'Reply all',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => void mail.reply(mail.openThread!.messages.at(-1)!.id, true),
+  },
+  // The desktop clients' own spellings of the two above -- Outlook's,
+  // Thunderbird's and Apple Mail's alike.
+  {
+    keys: 'mod+r',
+    label: 'Reply',
+    group: 'Mail',
+    when: () => anywhere() && inApp('mail')() && !!mail.openThread,
+    run: () => void mail.reply(mail.openThread!.messages.at(-1)!.id, false),
+  },
+  {
+    keys: 'mod+shift+r',
     label: 'Reply all',
     group: 'Mail',
     when: () => anywhere() && inApp('mail')() && !!mail.openThread,
@@ -1455,6 +1519,65 @@ function moveMenu() {
   menu.showAt(window.innerWidth / 2, window.innerHeight / 2, items)
 }
 
+/** Where the pointer last went down -- see `Shortcuts.pointerDown`. */
+let pressedIn: Element | null = null
+
+/**
+ * Is the keyboard in the part of the window `selector` names?
+ *
+ * Where focus is, when it is anywhere. Focus on nothing at all is the usual
+ * state just after a row has gone (trashed, archived) or after a click on
+ * plain text, and there the place the pointer last went down decides. Pressed
+ * somewhere no longer on screen -- the row just trashed -- or nowhere yet
+ * counts as in it.
+ */
+function keyboardIn(selector: string): boolean {
+  const el = document.activeElement
+  if (el && el !== document.body) return el.closest(selector) !== null
+  return !pressedIn?.isConnected || pressedIn.closest(selector) !== null
+}
+
+/**
+ * Do the arrow keys belong to the thread list right now?
+ *
+ * Whichever pane has the keyboard has them, as in any mail client with a
+ * list beside the message: the list column, and they move through the
+ * threads; the reading pane, and it scrolls with them.
+ */
+function listOwnsArrows(): boolean {
+  return keyboardIn('[data-thread-list]')
+}
+
+/**
+ * Is the keyboard in Mail's own panes -- its sidebar, the list, the reading
+ * pane? What Delete and Backspace ask before they trash anything: both are
+ * pressed by reflex, as a correction a moment after a field let go of the
+ * caret, and that must not reach the open thread from the assistant's rail
+ * or a button somewhere else in the window.
+ */
+function inMailPanes(): boolean {
+  return keyboardIn('[data-mail-pane]')
+}
+
+/**
+ * `j`/`k` and the arrows: move through the list, taking the keyboard focus
+ * along when it was on a row. Left behind, it would be on the row just
+ * left, and Enter or Space pressed next would open that one again.
+ */
+function stepThread(step: 1 | -1) {
+  const onRow = document.activeElement?.closest('[data-thread]') != null
+  void mail.moveSelection(step)
+  if (!onRow) return
+  // Once the list has drawn the row -- it scrolls to the selection itself.
+  requestAnimationFrame(() => {
+    const id = mail.selectedThread
+    if (!id) return
+    document
+      .querySelector<HTMLElement>(`[data-thread="${CSS.escape(id)}"]`)
+      ?.focus({ preventScroll: true })
+  })
+}
+
 /** Is a thread list on screen for Mod+A to select from -- a mailbox's, or a
  *  search's -- rather than the Scheduled list, which has no threads. */
 function mailListShowing(): boolean {
@@ -1507,6 +1630,12 @@ class Shortcuts {
   pending = $state<string[]>([])
   #timer: ReturnType<typeof setTimeout> | null = null
 
+  /** Note where the pointer went down, for the arrow keys to read -- see
+   *  `listOwnsArrows`. Called by the window's own `pointerdown`. */
+  pointerDown(target: EventTarget | null) {
+    pressedIn = target instanceof Element ? target : null
+  }
+
   /** Handle a key press. Returns true if a shortcut took it. */
   press(event: KeyboardEvent): boolean {
     // Something nearer the key has already dealt with it. The assistant's
@@ -1527,7 +1656,13 @@ class Shortcuts {
     // One pass over the table, and -- see `oneSweep` -- one answer to the
     // dialog question for the whole of it. `run` is deliberately outside:
     // what it opens must be visible to the next press, not to this one.
-    const { hit, pending } = oneSweep(() => match(ACTIONS, pressed, typing))
+    // Ctrl+Shift+K with nothing bound to it as typed is Ctrl+K: see
+    // `withoutShift`.
+    const { hit, pending } = oneSweep(() => {
+      const found = match(ACTIONS, pressed, typing)
+      const loose = found.hit || found.pending ? null : withoutShift(chord)
+      return loose ? match(ACTIONS, [...pressed.slice(0, -1), loose], typing) : found
+    })
 
     if (hit) {
       this.#clear()

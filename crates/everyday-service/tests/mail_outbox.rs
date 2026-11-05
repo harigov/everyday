@@ -199,6 +199,10 @@ impl MailSession for FakeSession {
         self.calls.push(format!("delete {} on {:?}", uids.to_imap(), self.selected));
         Ok(())
     }
+    async fn expunge(&mut self) -> SessionResult<()> {
+        self.calls.push(format!("expunge on {:?}", self.selected));
+        Ok(())
+    }
     async fn append(
         &mut self,
         mailbox: &str,
@@ -303,6 +307,232 @@ async fn archiving_hides_a_thread_and_a_permanent_failure_brings_it_back() {
     let vault = svc.get().unwrap();
     let op = vault.op(op_id.parse().unwrap()).unwrap();
     assert_eq!(op.state, OpState::Failed { permanent: true, message: fake_error().to_string() });
+}
+
+// ---- deleting forever, and emptying Trash ----------------------------------
+
+/// One message of `thread`'s, filed in `mailbox` at `uid` -- several of these
+/// make one conversation filed in more than one place.
+fn seed_in_thread(
+    svc: &Arc<Service>,
+    account: AccountId,
+    thread_id: ThreadId,
+    mailbox: MailboxId,
+    uid: u32,
+) -> MailMessageId {
+    let vault = svc.get().unwrap();
+    let message_id = MailMessageId::new();
+    let message = Message {
+        id: message_id,
+        account_id: account,
+        thread_id,
+        message_id_header: format!("<{message_id}@example.com>"),
+        date: Timestamp::now(),
+        from: Address::bare("sender@example.com"),
+        to: vec![Address::bare("me@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "Part of a conversation".into(),
+        snippet: String::new(),
+        flags: MessageFlags::default(),
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
+    message_id
+}
+
+fn listed(threads: &Value) -> Vec<String> {
+    let mut ids: Vec<String> = threads["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_str().unwrap().to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[tokio::test]
+async fn emptying_trash_deletes_what_is_in_trash_and_nothing_else() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let trash = seed_mailbox(&svc, account, "Trash", MailboxRole::Trash);
+    // One message of this conversation trashed, its reply still in the Inbox.
+    let split = ThreadId::new();
+    let trashed_part = seed_in_thread(&svc, account, split, trash, 5);
+    let reply = seed_in_thread(&svc, account, split, inbox, 1);
+    let trashed = seed_message(&svc, account, trash, 6);
+    let kept = seed_message(&svc, account, inbox, 2);
+
+    let emptied = call(&svc, "empty_mailbox", json!({ "mailbox": trash })).await;
+    assert_eq!(emptied, json!(2));
+
+    let in_trash = call(&svc, "list_threads", json!({ "mailbox": trash })).await;
+    assert!(listed(&in_trash).is_empty(), "emptied at once, ahead of the server");
+    let in_inbox = call(&svc, "list_threads", json!({ "mailbox": inbox })).await;
+    let mut expected = vec![split.to_string(), kept.to_string()];
+    expected.sort();
+    assert_eq!(listed(&in_inbox), expected, "what is in the Inbox stays");
+    assert!(!listed(&in_inbox).contains(&trashed.to_string()));
+
+    let mut session = FakeSession {
+        capabilities: Capabilities { uidplus: true, ..Default::default() },
+        ..Default::default()
+    };
+    let sender = FakeSender::default();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!((report.attempted, report.done, report.failed), (2, 2, 0), "{report:?}");
+    assert_eq!(
+        session.calls,
+        ["select Trash", "delete 5:6 on Some(\"Trash\")"],
+        "one SELECT and one delete for the lot, and the Inbox copy never touched"
+    );
+
+    // Gone from the vault as soon as the server agrees, not at the next sync.
+    let vault = svc.get().unwrap();
+    assert!(vault.mail_message_locations(trashed_part).unwrap().is_empty());
+    assert_eq!(vault.mail_message_locations(reply).unwrap(), vec![(inbox, 1)]);
+}
+
+#[tokio::test]
+async fn only_trash_and_spam_can_be_emptied_or_deleted_from_forever() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let trash = seed_mailbox(&svc, account, "Trash", MailboxRole::Trash);
+    let thread = seed_message(&svc, account, inbox, 1);
+    let in_trash = seed_message(&svc, account, trash, 2);
+
+    let err = fails(&svc, "empty_mailbox", json!({ "mailbox": inbox })).await;
+    assert_eq!(err.code, "invalid");
+    // Refused whole, before anything is written, though Trash was named too.
+    let err = fails(
+        &svc,
+        "delete_forever",
+        json!({ "threads": [thread, in_trash], "from": [trash, inbox] }),
+    )
+    .await;
+    assert_eq!(err.code, "invalid");
+
+    let still = call(&svc, "list_threads", json!({ "mailbox": inbox })).await;
+    assert_eq!(listed(&still), vec![thread.to_string()]);
+    let still = call(&svc, "list_threads", json!({ "mailbox": trash })).await;
+    assert_eq!(listed(&still), vec![in_trash.to_string()]);
+    assert!(svc.get().unwrap().due_ops(account, Timestamp::now(), 10).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn deleting_forever_covers_every_mailbox_named_and_a_failure_brings_it_back() {
+    let (svc, _dir) = service();
+    let first = seed_account(&svc);
+    let first_inbox = seed_mailbox(&svc, first, "INBOX", MailboxRole::Inbox);
+    let first_trash = seed_mailbox(&svc, first, "Trash", MailboxRole::Trash);
+    // A second mailbox taken for Trash, the way a server without SPECIAL-USE
+    // can have both "Trash" and "Deleted Messages".
+    let also_trash = seed_mailbox(&svc, first, "Deleted Messages", MailboxRole::Trash);
+    let second = seed_account(&svc);
+    let second_trash = seed_mailbox(&svc, second, "Deleted Items", MailboxRole::Trash);
+    let a = seed_message(&svc, first, first_trash, 3);
+    let b = seed_message(&svc, second, second_trash, 4);
+    let c = seed_message(&svc, first, also_trash, 5);
+    // Nothing of this one is in Trash: no op, and no marker left to hide it
+    // there once something of it is.
+    let inbox_only = seed_message(&svc, first, first_inbox, 1);
+    // Not a thread at all any more: skipped, not a failure.
+    let missing = ThreadId::new();
+
+    let ops = call(
+        &svc,
+        "delete_forever",
+        json!({
+            "threads": [a, b, c, inbox_only, missing],
+            "from": [first_trash, also_trash, second_trash],
+        }),
+    )
+    .await;
+    let ops: Vec<Op> = serde_json::from_value(ops).unwrap();
+    let from: Vec<(ThreadId, MailboxId)> = ops
+        .iter()
+        .map(|op| match (&op.target, &op.kind) {
+            (OpTarget::Thread(t), OpKind::DeleteForever { from, messages }) => {
+                assert_eq!(messages.len(), 1, "{op:?}");
+                (*t, *from)
+            }
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(from, vec![(a, first_trash), (c, also_trash), (b, second_trash)]);
+
+    let gone = call(&svc, "list_threads", json!({ "mailbox": first_trash })).await;
+    assert!(listed(&gone).is_empty());
+
+    // A refusal from the server is permanent: the thread comes back.
+    let mut session = FakeSession {
+        fail_next: Some(MailError::Server("NO [CANNOT] not allowed".into())),
+        capabilities: Capabilities { uidplus: true, ..Default::default() },
+        ..FakeSession::default()
+    };
+    let sender = FakeSender::default();
+    let report = drain_outbox(&svc, first, &mut session, &sender).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+    let back = call(&svc, "list_threads", json!({ "mailbox": first_trash })).await;
+    assert_eq!(listed(&back), vec![a.to_string()]);
+}
+
+/// A reply filed in Trash after the person said yes is not theirs to lose:
+/// the op names the messages that were there, and runs on those alone.
+#[tokio::test]
+async fn deleting_forever_leaves_what_arrived_after_it_was_asked() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let trash = seed_mailbox(&svc, account, "Trash", MailboxRole::Trash);
+    let thread = ThreadId::new();
+    seed_in_thread(&svc, account, thread, trash, 7);
+
+    call(&svc, "delete_forever", json!({ "threads": [thread], "from": [trash] })).await;
+    let later = seed_in_thread(&svc, account, thread, trash, 8);
+
+    let mut session = FakeSession {
+        capabilities: Capabilities { uidplus: true, ..Default::default() },
+        ..Default::default()
+    };
+    let sender = FakeSender::default();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.done, 1, "{report:?}");
+    assert_eq!(session.calls, ["select Trash", "delete 7 on Some(\"Trash\")"]);
+    assert_eq!(svc.get().unwrap().mail_message_locations(later).unwrap(), vec![(trash, 8)]);
+}
+
+/// Undoing a failed delete forever puts the thread back in Trash and
+/// nowhere else: an archive of its Inbox half, still waiting, stays hidden.
+#[tokio::test]
+async fn a_failed_delete_forever_undoes_only_its_own_hiding() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let trash = seed_mailbox(&svc, account, "Trash", MailboxRole::Trash);
+    let split = ThreadId::new();
+    seed_in_thread(&svc, account, split, trash, 5);
+    seed_in_thread(&svc, account, split, inbox, 1);
+
+    let vault = svc.get().unwrap();
+    vault.apply_thread_ops(&[split], OpKind::Archive, Origin::Person).unwrap();
+    let ops = vault.delete_forever(&[split], &[trash], Origin::Person).unwrap();
+    vault.revert_thread_op(split, &ops[0].kind).unwrap();
+
+    let in_trash = call(&svc, "list_threads", json!({ "mailbox": trash })).await;
+    assert_eq!(listed(&in_trash), vec![split.to_string()], "back in Trash");
+    let in_inbox = call(&svc, "list_threads", json!({ "mailbox": inbox })).await;
+    assert!(listed(&in_inbox).is_empty(), "the archive still waiting keeps it out of the Inbox");
 }
 
 // ---- undo send, inside and outside the window ------------------------------

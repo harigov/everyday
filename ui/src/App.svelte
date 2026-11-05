@@ -216,7 +216,10 @@
      a block, working the board, reading down a long entry. -->
 <svelte:window
   onkeydown={onKeydown}
-  onpointerdown={() => app.touch()}
+  onpointerdown={(e: PointerEvent) => {
+    app.touch()
+    shortcuts.pointerDown(e.target)
+  }}
   onwheel={() => app.touch()}
   onbeforeunload={onBeforeUnload}
 />

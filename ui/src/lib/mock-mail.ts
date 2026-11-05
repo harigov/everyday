@@ -1078,6 +1078,52 @@ export function mockTrash(ids: ThreadId[]): Op[] {
   return opsFor(ids, { type: 'trash' })
 }
 
+/** `mailbox`, when its mail may be deleted for good -- what the real
+ *  backend refuses everything else with. */
+function emptiableMailbox(mailbox: MailboxId): Mailbox {
+  const box = mailboxes.find((m) => m.id === mailbox)
+  if (!box || (box.role !== 'trash' && box.role !== 'spam')) {
+    throw new VaultError(
+      'invalid',
+      `mail in ${box?.role ?? 'that mailbox'} cannot be deleted forever`,
+    )
+  }
+  return box
+}
+
+/** Out of each of `from` the thread is filed in -- `delete_forever`. */
+export function mockDeleteForever(ids: ThreadId[], from: MailboxId[]): Op[] {
+  for (const id of from) emptiableMailbox(id)
+  const ops: Op[] = []
+  for (const id of ids) {
+    for (const box of from) {
+      const filed = seed.threadMailboxes.get(id) ?? []
+      if (!filed.includes(box)) continue
+      seed.threadMailboxes.set(
+        id,
+        filed.filter((m) => m !== box),
+      )
+      ops.push(...opsFor([id], { type: 'deleteForever', from: box, messages: [] }))
+    }
+  }
+  return ops
+}
+
+/** Every thread filed in `mailbox` -- `empty_mailbox`. */
+export function mockEmptyMailbox(mailbox: MailboxId): number {
+  emptiableMailbox(mailbox)
+  let count = 0
+  for (const [id, filed] of seed.threadMailboxes) {
+    if (!filed.includes(mailbox)) continue
+    seed.threadMailboxes.set(
+      id,
+      filed.filter((m) => m !== mailbox),
+    )
+    count++
+  }
+  return count
+}
+
 export function mockMoveToMailbox(ids: ThreadId[], mailbox: MailboxId): Op[] {
   for (const id of ids) seed.threadMailboxes.set(id, [mailbox])
   return opsFor(ids, { type: 'move', to: mailbox })

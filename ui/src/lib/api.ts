@@ -1615,6 +1615,12 @@ export const api = {
   unstar: (threads: ThreadId[]) => call('unstar', { threads }),
   archive: (threads: ThreadId[]) => call('archive', { threads }),
   trash: (threads: ThreadId[]) => call('trash', { threads }),
+  /** For good, and only what each thread has in `from` -- Trash or Spam
+   *  mailboxes, which the backend checks -- nothing it has anywhere else. */
+  deleteForever: (threads: ThreadId[], from: MailboxId[]) =>
+    call('deleteForever', { threads, from }),
+  /** Every thread in one Trash or Spam, for good. Answers how many. */
+  emptyMailbox: (mailbox: MailboxId) => call('emptyMailbox', { mailbox }),
   moveToMailbox: (threads: ThreadId[], to: MailboxId) => call('moveToMailbox', { threads, to }),
   label: (threads: ThreadId[], label: string) => call('label', { threads, label }),
   unlabel: (threads: ThreadId[], label: string) => call('unlabel', { threads, label }),
