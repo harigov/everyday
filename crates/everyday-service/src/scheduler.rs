@@ -2,12 +2,13 @@
 //!
 //! The first background task this crate has ever owned, and the reason is
 //! worth stating because the crate has been arguing the other way until now.
-//! Every periodic thing in the application has been polled by a *window*: the
-//! calendar refreshes on a five-minute `setInterval`, the lock timer on a
-//! five-second one. The comment on `sync_due_calendars` gives the argument --
-//! *"so that a locked vault is never fetched into and a window nobody is
-//! looking at is never the reason a laptop wakes its radio"* -- and it was
-//! right for a feature whose only consumer was the window in front of you.
+//! Every periodic thing in the application had been polled by a *window*: the
+//! calendar refreshed on a five-minute `setInterval`, the lock timer on a
+//! five-second one. The argument was *"so that a locked vault is never fetched
+//! into and a window nobody is looking at is never the reason a laptop wakes
+//! its radio"*, and it was right for a feature whose only consumer was the
+//! window in front of you. (The calendar outgrew it as well once this loop began
+//! reading its events; see [`crate::calendar_refresh`].)
 //!
 //! It cannot be right for this. A routine set for seven in the morning has to
 //! run at seven whether or not anybody has opened a window, which means the

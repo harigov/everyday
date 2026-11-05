@@ -286,7 +286,20 @@ async fn close_clears_routine_feed_and_remote_image_bookkeeping_even_while_a_cla
     assert!(svc.routine_failed("r1".to_string()));
     let claim = svc.claim_run("run-1".into());
     assert!(svc.claims_run("run-1"));
-    assert!(svc.feed_failed(calendar));
+    let failed_at: jiff::Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
+    let on = |mins| failed_at + jiff::SignedDuration::from_mins(mins);
+    assert!(!svc.feed_failed(calendar, failed_at), "a first failure may only be no wifi yet");
+    assert!(!svc.feed_failed(calendar, on(25)));
+    assert!(!svc.feed_failed(calendar, on(50)));
+    assert!(svc.feed_failed(calendar, on(65)), "it has lasted, so it is worth saying");
+    assert!(!svc.feed_failed(calendar, on(70)), "and worth saying once");
+    // One failure before a night's sleep and another on waking are two blips.
+    let asleep = CalendarId::new();
+    assert!(!svc.feed_failed(asleep, failed_at));
+    assert!(!svc.feed_failed(asleep, on(16 * 60)), "nothing is known about the night");
+    assert!(!svc.feed_failed(asleep, on(16 * 60 + 25)));
+    assert!(!svc.feed_failed(asleep, on(16 * 60 + 50)));
+    assert!(svc.feed_failed(asleep, on(16 * 60 + 65)), "but it has lasted since waking");
     svc.allow_remote_images_once(message);
     assert!(svc.remote_images_allowed_once(message));
 
@@ -295,7 +308,10 @@ async fn close_clears_routine_feed_and_remote_image_bookkeeping_even_while_a_cla
     assert_eq!(svc.running_routine(), None);
     assert!(svc.routine_failed("r1".to_string()), "cleared, so reporting it again is news again");
     assert!(!svc.claims_run("run-1"), "close() clears claimed runs even with the guard still held");
-    assert!(svc.feed_failed(calendar), "cleared, so the outage is news again");
+    assert!(!svc.feed_failed(calendar, on(70)), "cleared, so this is a new outage");
+    assert!(!svc.feed_failed(calendar, on(95)));
+    assert!(!svc.feed_failed(calendar, on(120)));
+    assert!(svc.feed_failed(calendar, on(135)), "which is news again once it has lasted");
     assert!(!svc.remote_images_allowed_once(message));
 
     // The guard for the run close() already forgot must still drop

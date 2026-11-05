@@ -39,7 +39,7 @@ use everyday_core::mail::rate_limit::RateLimitRefusal;
 use everyday_core::{BlobId, CalendarId, Vault};
 use jiff::Timestamp;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -54,6 +54,22 @@ use std::time::Instant;
 /// result changes shape. Adding a command, or an optional argument, does not:
 /// an older client simply does not call it.
 pub const PROTOCOL: u32 = 1;
+
+/// How long a calendar has to have been failing before anybody is told. An
+/// hour outlasts a laptop finding its wifi and a server having a bad moment.
+const FEED_OUTAGE_WORTH_SAYING_SECS: i64 = 60 * 60;
+
+/// Failures further apart than this are not one outage. The refresher tries
+/// every five minutes, so a gap like this is a machine that has been asleep, and
+/// nothing is known about what was going on while it was.
+const FEED_OUTAGE_GAP_SECS: i64 = 30 * 60;
+
+/// A calendar that is currently failing to refresh.
+struct FeedOutage {
+    since: Timestamp,
+    last: Timestamp,
+    said: bool,
+}
 
 /// Holds the open vault, if any.
 ///
@@ -96,7 +112,9 @@ pub struct Service {
     /// a fact about *this session's* telling, not about the calendar: the vault
     /// already records the failure itself, and reopening the app is a
     /// reasonable moment to be told again.
-    reported_feeds: RwLock<HashSet<CalendarId>>,
+    reported_feeds: RwLock<HashMap<CalendarId, FeedOutage>>,
+    /// One per calendar that has synced. See [`Service::calendar_sync_turn`].
+    calendar_sync: std::sync::Mutex<HashMap<CalendarId, Arc<tokio::sync::Mutex<()>>>>,
     /// The Feed's sources that have already said they are failing, so an
     /// outage is reported once rather than once per attempt -- the courtesy
     /// `reported_feeds` extends to a calendar.
@@ -170,7 +188,8 @@ impl Service {
             pending: Arc::default(),
             idempotency: Idempotency::default(),
             transfers: Arc::default(),
-            reported_feeds: RwLock::new(HashSet::new()),
+            reported_feeds: RwLock::new(HashMap::new()),
+            calendar_sync: std::sync::Mutex::default(),
             reported_news: RwLock::new(HashSet::new()),
             routines: RoutineRuntime::default(),
             sign_ins: Arc::new(SignIns::new()),
@@ -550,6 +569,24 @@ impl Service {
         self.events().lock_state(true);
     }
 
+    /// Start what keeps the open vault's subscriptions current: the Feed's
+    /// refresher and the calendars', one supervised task each, started on the
+    /// first unlock and restarted by `restart_registered` on every one after.
+    /// Only where this process may write, as with chat: a refresh stores what it
+    /// fetched.
+    ///
+    /// [`Service::unlocked`] calls this, and so does a shell after setting a vault
+    /// that is already usable, which is never unlocked: one with no password, or
+    /// one just created. Not [`Service::set`], which every test calls, most of
+    /// them with no runtime to start a task on.
+    pub fn start_refreshers(self: &Arc<Self>) {
+        let Some(vault) = self.get() else { return };
+        if vault.is_unlocked() && vault.is_writable() {
+            crate::news::ensure_task(self, &vault);
+            crate::calendar_refresh::ensure_task(self, &vault);
+        }
+    }
+
     /// Say the vault has unlocked, and act on it.
     ///
     /// The other half of [`Service::locked`]: every task that was running
@@ -567,13 +604,7 @@ impl Service {
         // very first poll, and both must already answer `Some`.
         self.open_mail(&vault);
         self.supervisor().restart_registered();
-        // The Feed's refresher: one supervised task for every source, started
-        // here on the first unlock and restarted by `restart_registered`
-        // above on every one after. Only where this process may write, as
-        // with chat below: a refresh stores what it fetched.
-        if vault.is_writable() {
-            crate::news::ensure_task(self, &vault);
-        }
+        self.start_refreshers();
         // Chat links, last of the supervised tasks, because it has the final
         // say: `restart_registered` brings back every task that was stopped
         // by the lock, including one whose link has since been switched off
@@ -757,6 +788,7 @@ impl Service {
         self.sign_ins.clear();
         self.token_cache.try_clear();
         self.reported_feeds.write().unwrap().clear();
+        self.calendar_sync.lock().unwrap().clear();
         self.reported_news.write().unwrap().clear();
         self.routines.on_lock();
         self.remote_image_once.write().unwrap().clear();
@@ -839,15 +871,39 @@ impl Service {
 
     // ---- feeds ----------------------------------------------------------
 
-    /// Note that `id`'s refresh has failed. True the first time, so the caller
-    /// says something once per outage rather than once per attempt.
-    pub fn feed_failed(&self, id: CalendarId) -> bool {
-        self.reported_feeds.write().unwrap().insert(id)
+    /// Note that `id`'s refresh failed at `now`. True once per outage rather
+    /// than once per attempt, and not until the outage has gone on for
+    /// `FEED_OUTAGE_WORTH_SAYING_SECS`: these passes run with nobody watching,
+    /// so the first of them after a laptop wakes usually finds no wifi yet, on
+    /// every calendar at once, and the next one finds everything fine. A failure
+    /// before a sleep and one after it are two blips, not a long outage.
+    pub fn feed_failed(&self, id: CalendarId, now: Timestamp) -> bool {
+        let mut feeds = self.reported_feeds.write().unwrap();
+        let outage = feeds.entry(id).or_insert(FeedOutage { since: now, last: now, said: false });
+        if now.as_second() - outage.last.as_second() > FEED_OUTAGE_GAP_SECS {
+            outage.since = now;
+        }
+        outage.last = now;
+        if outage.said || now.as_second() - outage.since.as_second() < FEED_OUTAGE_WORTH_SAYING_SECS
+        {
+            return false;
+        }
+        outage.said = true;
+        true
     }
 
     /// Note that `id`'s refresh worked, so the next outage is news again.
     pub fn feed_recovered(&self, id: CalendarId) {
         self.reported_feeds.write().unwrap().remove(&id);
+    }
+
+    /// Held while `id` syncs, and read the calendar only once it is held: the
+    /// background pass, a press of Refresh and a write's own resync all move the
+    /// same sync token, and one that started from an older token would store its
+    /// older answer over a newer one, or announce a new event a second time. Per
+    /// calendar, so a press of Refresh does not wait on some other server.
+    pub(crate) fn calendar_sync_turn(&self, id: CalendarId) -> Arc<tokio::sync::Mutex<()>> {
+        self.calendar_sync.lock().unwrap().entry(id).or_default().clone()
     }
 
     /// Note that one of the Feed's sources has failed. True the first time,

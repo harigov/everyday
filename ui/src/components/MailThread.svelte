@@ -45,7 +45,7 @@
   // of seed markup riding along in a production bundle that a bundler
   // tree-shakes once this stops being called with `MOCK` true.
   import { mockMessageBodyHtml } from '../lib/mock-mail'
-  import { measureBody } from '../lib/mailheight'
+  import { measureBody, readPictures, type PictureSizes } from '../lib/mailheight'
   import { formatInstantTime, humanBytes, longDate, plural } from '../lib/format'
   import { isoDate } from '../lib/time'
   import { accounts } from '../lib/accounts.svelte'
@@ -256,12 +256,14 @@
 
   /** Sizes the one iframe inside `node`, from its body string and never from
    *  what the iframe renders -- see the top of this file -- and again when the
-   *  pane changes width, which rewraps everything in it. Setting the height
-   *  resizes `node` too, which is not a reason to work it out again. */
+   *  pane changes width, which rewraps everything in it, or a picture arrives,
+   *  which says what the markup could not. Setting the height resizes `node`
+   *  too, which is not a reason to work it out again. */
   function autoSize(node: HTMLElement, first: RenderedBody) {
     const iframe = node.querySelector('iframe')
     let view = first
     let heightAt = measureBody(view)
+    const pictures: PictureSizes = new Map()
     let sizedAt = -1
     function apply() {
       const width = node.clientWidth
@@ -269,6 +271,11 @@
       sizedAt = width
       iframe.style.height = `${heightAt(width)}px`
     }
+    function again() {
+      sizedAt = -1
+      apply()
+    }
+    let stopReading = readPictures(heightAt, again, pictures)
     apply()
     const ro = new ResizeObserver(apply)
     ro.observe(node)
@@ -276,11 +283,15 @@
       update(next: RenderedBody) {
         if (next.html === view.html) return
         view = next
+        stopReading()
         heightAt = measureBody(view)
-        sizedAt = -1
-        apply()
+        stopReading = readPictures(heightAt, again, pictures)
+        again()
       },
-      destroy: () => ro.disconnect(),
+      destroy() {
+        ro.disconnect()
+        stopReading()
+      },
     }
   }
 </script>

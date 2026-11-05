@@ -1317,7 +1317,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Calendar',
     keywords: ['sync', 'feed', 'ics'],
     when: () => app.screen === 'main' && app.supportsCalendar,
-    run: () => calendar.syncDue(true),
+    run: () => calendar.syncAll(),
   },
   {
     label: 'Export my data',

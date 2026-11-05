@@ -204,6 +204,8 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
                         // nothing in this path will ever ask for.
                         if was_locked {
                             service.unlocked();
+                        } else {
+                            service.start_refreshers();
                         }
                     }
                     Err(e) => {
@@ -339,6 +341,7 @@ pub async fn create_vault(
     };
     service.remember(&path);
     let vault = service.set(created);
+    service.start_refreshers();
     Ok(vault.status())
 }
 
@@ -357,6 +360,7 @@ pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandRes
     };
     service.remember(&path);
     let vault = service.set(opened);
+    service.start_refreshers();
     Ok(vault.status())
 }
 

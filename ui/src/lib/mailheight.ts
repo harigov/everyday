@@ -1,14 +1,20 @@
-// How tall a message body comes out, from its markup alone. The sandbox that
-// keeps a message in its frame also stops anything asking the frame how tall it
-// turned out, so this lays the message out on paper instead: a block's children
-// stack, a table's columns are shared out the way a browser shares them, and a
-// box has the padding, the margins and the type its own styles and the sender's
-// sheet give it.
+// How tall a message body comes out, from its markup and the sizes of its
+// pictures. The sandbox that keeps a message in its frame also stops anything
+// asking the frame how tall it turned out, so this lays the message out on paper
+// instead: a block's children stack, a table's columns are shared out the way a
+// browser shares them, and a box has the padding, the margins and the type its
+// own styles and the sender's sheet give it.
 //
 // A template is a wrapper table around a table around a table, with its spacing
 // in the padding of cells and whole rows given to a gap. Counting lines and rows
 // over that adds up cells that sit side by side and misses everything that is
 // not text, which left a designed message with a screen of white under it.
+//
+// A picture is the one thing markup cannot say: most state a width or nothing,
+// and text below one that comes out taller than guessed ends up past the bottom
+// of the frame, where it looks like the end of the message. So `readPictures`
+// has the main window load the same address, which needs nothing of the frame,
+// and keeps only the size. The backend fetches a picture once however many ask.
 //
 // Like `mailbody.ts` it reads `sanitize::sanitize`'s output, and nothing here is
 // a wall: a misjudged box costs some blank or a scrollbar inside the frame. It
@@ -450,6 +456,8 @@ interface Parsed {
   penFont: string
   measured: Map<string, number>
   imagesHidden: boolean
+  /** The pictures that have arrived, by address. */
+  pictureSizes: Map<string, { width: number; height: number }>
 }
 
 /** The same at one width, which decides which of a sheet's breakpoints hold. */
@@ -780,6 +788,12 @@ function picture(
   const limit = length(style.get('max-width')?.value, type.size, available) ?? available
   const naturalWidth = styleWidth ?? attrWidth
   const naturalHeight = styleHeight ?? attrHeight
+  const real = layout.pictureSizes.get(attrOf(layout, at, 'src') ?? '')
+  if (real) {
+    const shape = real.height / real.width
+    const width = Math.min(limit, naturalWidth ?? (styleHeight ?? real.height) / shape, available)
+    return { width, height: styleHeight ?? width * shape }
+  }
   if (naturalWidth === null && naturalHeight === null) {
     return { width: Math.min(limit, UNSTATED_PICTURE_PX), height: UNSTATED_PICTURE_PX }
   }
@@ -793,10 +807,10 @@ function picture(
 /** The frame's policy refuses anything else, and a refused picture with no shape
  *  of its own draws nothing: an address the sanitiser left out, or a relative
  *  one, which has nothing to be relative to here. */
-function pictureIsDrawn(layout: Layout, at: number): boolean {
-  const src = attrOf(layout, at, 'src') ?? ''
+function pictureIsDrawn(parsed: Parsed, at: number): boolean {
+  const src = attrOf(parsed, at, 'src') ?? ''
   if (!/^(?:everyday:|https?:\/\/everyday\.localhost|data:)/i.test(src)) return false
-  return !(layout.imagesHidden && src.includes('/mail/img/'))
+  return !(parsed.imagesHidden && src.includes('/mail/img/'))
 }
 
 /** Whether a run of text draws anything: whitespace between tags does not, and
@@ -845,6 +859,7 @@ function pictureWants(layout: Layout, at: number, style: Declared, type: Type): 
   const most =
     length(style.get('width')?.value, type.size, null) ??
     length(attrOf(layout, at, 'width'), type.size, null) ??
+    layout.pictureSizes.get(attrOf(layout, at, 'src') ?? '')?.width ??
     UNSTATED_PICTURE_PX
   const squeezes =
     (style.get('max-width')?.value ?? '').includes('%') ||
@@ -900,8 +915,9 @@ function elementWants(layout: Layout, at: number, t: Token, outer: Type, depth: 
   }
   most = Math.max(most, run)
   if (type.nowrap) least = most
-  least += box.across
-  most += box.across
+  const edge = box.across + (isCell ? cellBorderOf(layout, at, style, type) * 2 : 0)
+  least += edge
+  most += edge
   const widthAttr = t.tag === 'table' || isCell ? attrOf(layout, at, 'width') : null
   const stated = statedWidth(style, widthAttr, type.size, null)
   if (stated !== null) {
@@ -926,11 +942,31 @@ function sitsOnALine(layout: Layout, at: number, t: Token): boolean {
   return display === 'inline' || sidesOn(layout, at, t.tag, style, display) !== null
 }
 
-/** The `cellpadding` of the table a cell is in, or a browser's own 1px. */
-function cellPaddingOf(layout: Layout, cell: number, type: Type): number {
+function tableOf(layout: Layout, cell: number): number {
   let p = layout.tokens[cell]?.parent ?? -1
   while (p >= 0 && layout.tokens[p]?.tag !== 'table') p = layout.tokens[p]?.parent ?? -1
-  return length(attrOf(layout, p, 'cellpadding'), type.size, null) ?? 1
+  return p
+}
+
+/** The `cellpadding` of the table a cell is in, or a browser's own 1px. */
+function cellPaddingOf(layout: Layout, cell: number, type: Type): number {
+  return length(attrOf(layout, tableOf(layout, cell), 'cellpadding'), type.size, null) ?? 1
+}
+
+/** The line a `<table border="1">` draws around each of its cells, per side. A
+ *  word has to fit inside it too, or a column at its narrowest wraps every row. */
+function cellBorderOf(layout: Layout, cell: number, style: Declared, type: Type): number {
+  if (style.has('border-top-width')) return 0
+  const border = length(attrOf(layout, tableOf(layout, cell), 'border'), type.size, null) ?? 0
+  return border > 0 ? 1 : 0
+}
+
+/** A picture that text flows around, by its style or the older `align`. */
+function floatsBeside(layout: Layout, at: number, style: Declared): boolean {
+  const float = style.get('float')?.value.trim().toLowerCase()
+  if (float) return float === 'left' || float === 'right'
+  const align = attrOf(layout, at, 'align')?.toLowerCase()
+  return align === 'left' || align === 'right'
 }
 
 /** Whether `at` sits beside things rather than under them. Old templates float
@@ -972,6 +1008,14 @@ function flow(
   let lineHeight = 0
   /** The line so far is floated boxes: space between those takes no room. */
   let floating = false
+  /** A picture floated to one side: lines this high up are that much shorter. */
+  let besideBottom = 0
+  let besideWidth = 0
+  const lineRoom = () => (height < besideBottom ? room - besideWidth : room)
+  /** What goes first on a line and does not fit beside the picture goes below it. */
+  const startLineFor = (w: number) => {
+    if (lineX === 0 && w > lineRoom()) height = Math.max(height, besideBottom)
+  }
 
   const endLine = () => {
     lineX = 0
@@ -986,7 +1030,8 @@ function flow(
   }
 
   const place = (w: number, h: number, leading: number) => {
-    if (lineX > 0 && lineX + w > room) endLine()
+    if (lineX > 0 && lineX + w > lineRoom()) endLine()
+    startLineFor(w)
     lineX += w
     lineHeight = Math.max(lineHeight, h, leading)
   }
@@ -997,21 +1042,23 @@ function flow(
       lineX += w
       return
     }
-    if (lineX > 0 && lineX + w > room) {
+    if (lineX > 0 && lineX + w > lineRoom()) {
       endLine()
       lineHeight = own.leading
     }
-    if (w <= room) {
+    startLineFor(w)
+    const across = lineRoom()
+    if (w <= across) {
       lineX += w
       return
     }
     // A word wider than the line breaks: `overflow-wrap` in `BASE_STYLE`. All at
     // once, since `letter-spacing` can make a word as wide as a sender likes.
-    const whole = Math.ceil(w / room) - 1
+    const whole = Math.ceil(w / across) - 1
     lineHeight = own.leading * whole
     endLine()
     lineHeight = own.leading
-    lineX = w - whole * room
+    lineX = w - whole * across
   }
 
   const words = (list: string[], own: Type) => {
@@ -1069,6 +1116,9 @@ function flow(
       pending = Math.max(pending, child.top, child.bottom)
       return
     }
+    // A block beside a floated picture really does wrap around it, but its lines
+    // are worked out elsewhere, at full width. Below it errs tall, not short.
+    height = Math.max(height, besideBottom)
     if (started || contained) height += Math.max(pending, child.top)
     else top = Math.max(top, pending, child.top)
     height += child.height
@@ -1096,6 +1146,23 @@ function flow(
       if (t.tag === 'img') {
         const drawn = picture(layout, at, style, childType, room)
         if (!drawn) continue
+        if (floatsBeside(layout, at, style)) {
+          // Its margins and `hspace` are small beside what is being judged here,
+          // and a line either way, so they are left out.
+          const top = height + pending
+          if (top >= besideBottom) {
+            besideWidth = drawn.width
+            besideBottom = top + drawn.height
+          } else if (besideWidth + drawn.width <= room) {
+            besideWidth += drawn.width
+            besideBottom = Math.max(besideBottom, top + drawn.height)
+          } else {
+            // No room beside the last one, so it starts under it.
+            besideWidth = Math.max(besideWidth, drawn.width)
+            besideBottom += drawn.height
+          }
+          continue
+        }
         if (display === 'block') {
           endLine()
           stack({ height: drawn.height, top: 0, bottom: 0 })
@@ -1170,6 +1237,7 @@ function flow(
 
   walk(children, type, depth)
   endLine()
+  height = Math.max(height, besideBottom)
   if (contained) return { height: height + pending, top: 0, bottom: 0 }
   return { height, top, bottom: pending }
 }
@@ -1502,7 +1570,7 @@ const MOST_PX = 60_000
 
 /** What the type really came to, and fractions of a pixel. It errs tall, since a
  *  little blank costs less than a scrollbar inside the thread's own. */
-const SLACK_RATIO = 1.01
+const SLACK_RATIO = 1.02
 const SLACK_PX = 8
 
 /** `body>:first-child` and the rest of what `readForTheme` writes for a message on
@@ -1569,6 +1637,7 @@ function parse(body: BodyToMeasure): Parsed {
     penFont: '',
     measured: new Map(),
     imagesHidden: body.imagesHidden,
+    pictureSizes: new Map(),
   }
 }
 
@@ -1606,13 +1675,22 @@ function layOut(parsed: Parsed, widthPx: number): number {
   return flowed.height + box.top + box.bottom + margin.top + margin.bottom
 }
 
+/** How tall the frame for a body should be, at any width. */
+export interface BodyHeight {
+  (widthPx: number): number
+  /** The addresses of the pictures the message draws. */
+  pictures(): string[]
+  /** How big a picture turned out to be, for every height asked for after this. */
+  pictureArrived(address: string, width: number, height: number): void
+}
+
 /**
  * How tall the frame for `body` should be, at any width. The markup is read once
  * and kept in what this returns, and only there, for as long as the caller holds
  * it. Neither this nor what it returns ever throws: this runs while a thread is
  * being drawn, on a stranger's markup.
  */
-export function measureBody(body: BodyToMeasure): (widthPx: number) => number {
+export function measureBody(body: BodyToMeasure): BodyHeight {
   const fallback = Math.max(400, Math.min(MOST_PX, Math.ceil(body.html.length / 8)))
   let parsed: Parsed | null
   try {
@@ -1620,7 +1698,7 @@ export function measureBody(body: BodyToMeasure): (widthPx: number) => number {
   } catch {
     parsed = null
   }
-  return (widthPx) => {
+  const heightAt = (widthPx: number) => {
     if (!parsed) return fallback
     try {
       const laid = layOut(parsed, widthPx)
@@ -1630,6 +1708,77 @@ export function measureBody(body: BodyToMeasure): (widthPx: number) => number {
       // Too much work, or too deep, which will be no less at the next width.
       parsed = null
       return fallback
+    }
+  }
+  return Object.assign(heightAt, {
+    pictures() {
+      const read = parsed
+      if (!read) return []
+      const drawn = new Set<string>()
+      read.tokens.forEach((token, at) => {
+        if (token.tag === 'img' && pictureIsDrawn(read, at)) {
+          drawn.add(attrOf(read, at, 'src') ?? '')
+        }
+      })
+      return [...drawn]
+    },
+    pictureArrived(address: string, width: number, height: number) {
+      // A picture with no size of its own, as an SVG can be, says nothing new.
+      if (width > 0 && height > 0) parsed?.pictureSizes.set(address, { width, height })
+    },
+  })
+}
+
+/** Pictures tend to arrive together, and laying a message out again is real work:
+ *  this much quiet, so a dozen of them are one more layout rather than twelve. */
+const PICTURES_SETTLE_MS = 150
+
+/** A stranger's markup can name any number of them, and every one is a request. */
+const MOST_PICTURES_READ = 200
+
+/** The pictures of a message that have arrived, by address. */
+export type PictureSizes = Map<string, { width: number; height: number }>
+
+/**
+ * Load `height`'s pictures, keeping only their sizes, and call `arrived` when
+ * that has changed the answer. Hands back what stops it.
+ *
+ * `known` outlives any one `height`: a theme or the history opening changes the
+ * markup and not the pictures, and asking again would drop the frame to a guess
+ * until they had all come back.
+ */
+export function readPictures(
+  height: BodyHeight,
+  arrived: () => void,
+  known: PictureSizes = new Map(),
+  newImage: () => HTMLImageElement = () => new Image(),
+): () => void {
+  let waiting: ReturnType<typeof setTimeout> | null = null
+  const wanted = height.pictures().slice(0, MOST_PICTURES_READ)
+  const unread = wanted.filter((address) => {
+    const size = known.get(address)
+    if (size) height.pictureArrived(address, size.width, size.height)
+    return !size
+  })
+  const reading = unread.map((address) => {
+    const image = newImage()
+    image.onload = () => {
+      const { naturalWidth: width, naturalHeight: tall } = image
+      known.set(address, { width, height: tall })
+      height.pictureArrived(address, width, tall)
+      waiting ??= setTimeout(() => {
+        waiting = null
+        arrived()
+      }, PICTURES_SETTLE_MS)
+    }
+    image.src = address
+    return image
+  })
+  return () => {
+    if (waiting !== null) clearTimeout(waiting)
+    for (const image of reading) {
+      image.onload = null
+      image.src = ''
     }
   }
 }

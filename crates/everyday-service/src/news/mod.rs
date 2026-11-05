@@ -128,11 +128,19 @@ pub fn ensure_task(svc: &Arc<Service>, vault: &Arc<Vault>) {
     if !vault.supports_news() {
         return;
     }
+    // Looks the vault up each time it starts rather than keeping one: the
+    // supervisor keeps this for as long as the process runs, and a vault held
+    // here would keep its write lock through a close, so opening it again would
+    // come up read-only, and a restart after switching would be refreshing the
+    // wrong vault.
     let svc_for_task = svc.clone();
-    let vault_for_task = vault.clone();
     svc.supervisor().ensure(TASK_KEY, move |stop| {
         let svc = svc_for_task.clone();
-        let vault = vault_for_task.clone();
-        Box::pin(async move { refresh::run(svc, vault, stop).await })
+        Box::pin(async move {
+            match svc.get() {
+                Some(vault) if vault.supports_news() => refresh::run(svc, vault, stop).await,
+                _ => Ok(crate::supervisor::Outcome::Done),
+            }
+        })
     });
 }

@@ -1212,6 +1212,13 @@
           "kind": "backgroundTask",
           "op": "updated",
           "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
         }
       ]
     }

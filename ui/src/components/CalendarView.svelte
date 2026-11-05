@@ -19,7 +19,10 @@
   // Readings are written in the journal app, under an entry, so coming back
   // to the calendar is the moment this store can learn about them. `start`
   // only runs once in a session; this runs every time the app is shown.
-  onMount(() => void calendar.refreshReadings())
+  onMount(() => {
+    void calendar.refreshReadings()
+    void calendar.reloadCalendars()
+  })
 
   // Every pending block proposal in the window on screen -- the week grid's
   // ghosts and the month grid's chips both come from here -- is seen the

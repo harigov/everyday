@@ -91,8 +91,6 @@ import type {
 } from './types'
 import { TASK_STATUSES, isOpen } from './types'
 
-/** How often the backend is asked to refresh calendars whose interval elapsed. */
-const SYNC_POLL_MS = 5 * 60_000
 /** Default length of a block created by a click rather than a drag. */
 export const DEFAULT_BLOCK_MINUTES = 60
 /** Where the running timer is remembered across a reload. */
@@ -389,7 +387,6 @@ class CalendarState {
     (id) => this.blocks.find((b) => b.id === id),
     this.#saves,
   )
-  #syncTimer: ReturnType<typeof setInterval> | null = null
   #clock: ReturnType<typeof setInterval> | null = null
   /**
    * The first load, once it has been asked for.
@@ -461,9 +458,7 @@ class CalendarState {
   }
 
   reset() {
-    if (this.#syncTimer) clearInterval(this.#syncTimer)
     if (this.#clock) clearInterval(this.#clock)
-    this.#syncTimer = null
     this.#clock = null
     this.#saves.cancel()
     this.#started = null
@@ -522,12 +517,13 @@ class CalendarState {
     // exactly the sort of thing that shows up in a battery report.
     this.#startClock()
     await this.refresh()
+  }
 
-    // Refreshing subscriptions is polled from here rather than driven by a
-    // timer in the backend, so a locked vault is never fetched into and a
-    // window nobody has opened never wakes the radio.
-    void this.syncDue(false)
-    this.#syncTimer = setInterval(() => void this.syncDue(false), SYNC_POLL_MS)
+  /** A change from somewhere else. A window that has not opened the calendar has
+   *  nothing drawn to bring up to date, `start` loads it when it does, and every
+   *  read here counts as somebody being at the keyboard. */
+  async refreshIfOpen() {
+    if (this.#started) await this.refresh()
   }
 
   // ── the window on screen ─────────────────────────────────────────────
@@ -2058,6 +2054,13 @@ class CalendarState {
    * to and which can be opened before the calendar app ever has been. Free
    * once the app has loaded, which reads the list too.
    */
+  /** Coming back to the calendar. The refresher in the backend only says something
+   *  when an event changed, so "Refreshed…" would be as old as the last change. */
+  async reloadCalendars() {
+    this.#calendarsKnown = false
+    await this.loadCalendars()
+  }
+
   async loadCalendars() {
     if (this.#calendarsKnown || !app.supportsCalendar) return
     this.#calendarsKnown = true
@@ -2437,9 +2440,9 @@ class CalendarState {
   /**
    * Refresh one feed, now.
    *
-   * Apart from `syncDue` because that one belongs to the timer: it walks
-   * every subscription and honours each one's interval, which is not what
-   * was asked for by somebody pointing at a single calendar. A failure is
+   * Calendars refresh on their own in the backend whether or not this app is
+   * open (`calendar_refresh.rs`); this and `syncAll` are somebody asking now,
+   * and this is somebody pointing at a single calendar. A failure is
    * recorded on the subscription by the backend, so the reload puts the
    * warning beside the calendar it belongs to -- which is where this app
    * says a broken feed is reported, rather than over the whole window.
@@ -2466,24 +2469,24 @@ class CalendarState {
     }
   }
 
-  /** Refresh every feed. `force` ignores each one's interval. */
-  async syncDue(force: boolean) {
+  /** Refresh every feed now, whatever each one's interval says. */
+  async syncAll() {
     if (!app.supportsCalendar || this.syncing) return
-    // Nothing a sync fetches can be stored on a read-only vault, so the
-    // background pass would be network traffic for its own sake.
+    // Nothing a sync fetches can be stored on a read-only vault.
     if (app.status?.writable === false) return
     if (!this.calendars.some((c) => c.origin.type !== 'file')) return
     this.syncing = true
     try {
-      const reports = await api.syncDueCalendars(force)
-      if (reports.length > 0) await this.refresh()
-      if (force) {
-        const total = reports.reduce((sum, r) => sum + r.events, 0)
-        this.syncNote =
-          reports.length === 0
-            ? 'Nothing to refresh.'
-            : `Refreshed ${reports.length} ${reports.length === 1 ? 'calendar' : 'calendars'}, ${total} events.`
-      }
+      const reports = await api.syncDueCalendars(true)
+      // Whatever came of it: a failure is recorded on its calendar, and this is
+      // what brings the warning to the sidebar.
+      await this.refresh()
+      const total = reports.reduce((sum, r) => sum + r.events, 0)
+      // Every subscription was tried, so none coming back means all of them failed.
+      this.syncNote =
+        reports.length === 0
+          ? 'Could not refresh your calendars.'
+          : `Refreshed ${reports.length} ${reports.length === 1 ? 'calendar' : 'calendars'}, ${total} events.`
     } catch (e) {
       // A feed that is down is recorded on the calendar it belongs to and
       // shown beside it. It is not an error over the whole application.

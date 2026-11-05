@@ -383,6 +383,8 @@ async fn writable_target(
 /// logged rather than returned: the write itself worked, and the next
 /// background sync will pick it up regardless.
 async fn resync_after_write(svc: &Arc<Service>, vault: &Arc<Vault>, calendar_id: CalendarId) {
+    let turn = svc.calendar_sync_turn(calendar_id);
+    let _turn = turn.lock().await;
     let latest = {
         let vault = vault.clone();
         blocking(move || Ok(vault.calendar(calendar_id)?)).await
