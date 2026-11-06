@@ -18,6 +18,7 @@
   import './lib/mail.svelte'
   import { feed } from './lib/feed.svelte'
   import { money } from './lib/money.svelte'
+  import { screentime } from './lib/screentime.svelte'
   import { assistant } from './lib/assistant.svelte'
   import { proposals } from './lib/proposals.svelte'
   import { purpose } from './lib/purpose.svelte'
@@ -44,6 +45,7 @@
   import MailView from './components/MailView.svelte'
   import FeedView from './components/FeedView.svelte'
   import MoneyView from './components/MoneyView.svelte'
+  import ScreenTimeView from './components/ScreenTimeView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import AssistantView from './components/AssistantView.svelte'
   import LockScreen from './components/LockScreen.svelte'
@@ -154,7 +156,7 @@
   // used to be a chain of ternaries with a fallback on the end, which had
   // grown a clause per app and quietly gave any new one the *journal's*
   // accent, which is the one answer that is wrong everywhere.
-  const accent = $derived(APPS[app.section].accent({ app, todo, library, feed, money }))
+  const accent = $derived(APPS[app.section].accent({ app, todo, library, feed, money, screentime }))
 
   // Each app's sidebar folds on its own -- see `sidebar.svelte.ts` -- and a
   // peek belongs to the app it was raised over, so changing app (or opening
@@ -252,6 +254,14 @@
   <ChoiceDialog title={q.title} detail={q.detail} options={q.options} oncancel={q.cancel} />
 {/if}
 
+<!-- Screen time's "are you sure": forgetting an app's or a site's history,
+     deleting a category or a stretch of recorded time. Asked by the store
+     (`screentime.question`), as Money's is. -->
+{#if screentime.question}
+  {@const q = screentime.question}
+  <ChoiceDialog title={q.title} detail={q.detail} options={q.options} oncancel={q.cancel} />
+{/if}
+
 <div class="app" style="--journal-accent: {accent}">
   {#if app.screen !== 'main'}
     <!-- The window's title bar on the screens that have no top bar. Off
@@ -329,6 +339,8 @@
             <FeedView />
           {:else if app.section === 'money'}
             <MoneyView />
+          {:else if app.section === 'screentime'}
+            <ScreenTimeView />
           {:else if app.section === 'overview'}
             <OverviewView />
           {:else}

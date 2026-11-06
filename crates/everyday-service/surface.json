@@ -1403,6 +1403,71 @@
         {
           "name": "id",
           "required": true,
+          "type": "ScreenAppId"
+        }
+      ],
+      "changes": {
+        "kind": "screenApp",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_screen_app",
+      "orScope": null,
+      "returns": "void",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ScreenCategoryId"
+        }
+      ],
+      "changes": {
+        "kind": "screenCategory",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_screen_category",
+      "orScope": null,
+      "returns": "void",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "screenSpan",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_screen_time",
+      "orScope": null,
+      "returns": "number",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "SkillId"
         }
       ],
@@ -1881,6 +1946,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "key",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "screenSpan",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "forget_screen_item",
+      "orScope": null,
+      "returns": "number",
+      "scope": "screentime",
       "sensitive": false,
       "streams": false
     },
@@ -2889,6 +2974,39 @@
       "orScope": null,
       "returns": "RoutineRun[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_screen_apps",
+      "orScope": null,
+      "returns": "ScreenAppRow[]",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_screen_categories",
+      "orScope": null,
+      "returns": "ScreenCategory[]",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_screen_devices",
+      "orScope": null,
+      "returns": "ScreenDevice[]",
+      "scope": "screentime",
       "sensitive": false,
       "streams": false
     },
@@ -4614,6 +4732,36 @@
     {
       "args": [
         {
+          "name": "device",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "collector",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "beats",
+          "required": true,
+          "type": "Heartbeat[]"
+        }
+      ],
+      "changes": {
+        "kind": "screenSpan",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "record_screen_time",
+      "orScope": null,
+      "returns": "IngestReport",
+      "scope": "heartbeats",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "source",
           "required": false,
           "type": "NewsSourceId | null"
@@ -5649,6 +5797,66 @@
     {
       "args": [
         {
+          "name": "app",
+          "required": true,
+          "type": "ScreenApp"
+        }
+      ],
+      "changes": {
+        "kind": "screenApp",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_screen_app",
+      "orScope": null,
+      "returns": "void",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "category",
+          "required": true,
+          "type": "ScreenCategory"
+        }
+      ],
+      "changes": {
+        "kind": "screenCategory",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_screen_category",
+      "orScope": null,
+      "returns": "void",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "settings",
+          "required": true,
+          "type": "ScreenTimeSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_screen_time_settings",
+      "orScope": null,
+      "returns": "void",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "skill",
           "required": true,
           "type": "Skill"
@@ -5765,6 +5973,72 @@
       "orScope": null,
       "returns": "ScheduledSend[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "screen_time_collector",
+      "orScope": null,
+      "returns": "CollectorConfig",
+      "scope": "heartbeats",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "ScreenQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "screen_time_report",
+      "orScope": null,
+      "returns": "ScreenReport",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "screen_time_settings",
+      "orScope": null,
+      "returns": "ScreenTimeSettings",
+      "scope": "screentime",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "date",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "devices",
+          "required": false,
+          "type": "string[]"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "screen_time_timeline",
+      "orScope": null,
+      "returns": "ScreenTimeline",
+      "scope": "screentime",
       "sensitive": false,
       "streams": false
     },

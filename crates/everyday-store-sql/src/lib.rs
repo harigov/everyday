@@ -76,6 +76,10 @@
 //! | `money_txns` `account_id`, `dedupe_key`, `day`, `created_us`, `updated_us` | how many transactions each account has and on which days, when each arrived and when it was last changed (so roughly when somebody sorted them); the key is a *keyed* hash, so it cannot be matched against a provider's transaction ids or a statement -- never an amount, a payee, a description, a category or a note |
 //! | money category `sort_order`, `created_us`, `updated_us` | how many categories there are -- never a name, a kind or a budget |
 //! | money rule `sort_order`, `created_us`, `updated_us` | how many rules there are -- never what one matches or what it does |
+//! | `screen_spans` `stream`, `start_us`, `end_us` | that some computer was in use from nine to five, and roughly how many machines and collectors there are; the stream is a *keyed* hash of a device and a collector, so it cannot be matched against a machine's name -- never which app, which site, which title or which device |
+//! | screen label `created_us`, `updated_us` | how many apps and sites somebody labelled, and when -- never which, or what they called them |
+//! | screen category `sort_order`, `created_us`, `updated_us` | how many categories screen time is filed under -- never a name or a colour |
+//! | `screen_settings` (singleton) | that screen time has been set up -- the idle limit, the retention and the browser list stay sealed |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -163,6 +167,7 @@ mod proposals;
 mod purpose;
 mod record;
 mod routines;
+mod screentime;
 mod secrets;
 mod tasks;
 mod trackers;

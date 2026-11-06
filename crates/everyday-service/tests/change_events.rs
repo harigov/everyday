@@ -148,6 +148,7 @@ use everyday_core::news::Story;
 use everyday_core::packstore::PackRef;
 use everyday_core::proposal::{Payload, ProposedRecord};
 use everyday_core::routine::Trigger;
+use everyday_core::screentime::{ScreenApp, ScreenCategory, ScreenTimeSettings, SpanKind};
 use everyday_core::store::mail::IngestMessage;
 use everyday_core::{AgentSettings, Note, Profile, Proposal};
 use everyday_service::Service;
@@ -793,6 +794,54 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "delete_money_rule", json!({ "id": rule.id })).await;
     run(&svc, &h, "delete_money_category", json!({ "id": coffee.id })).await;
     run(&svc, &h, "delete_bank_account", json!({ "id": wallet_id })).await;
+
+    // ---- screen time ------------------------------------------------------
+    //
+    // A collector's half first: one batch of heartbeats, a minute old so
+    // that no clock check refuses it. Then a person's: listing the
+    // categories (a read, which writes the starter ones the first time and
+    // announces nothing), a category of their own, a label filing the app
+    // under it, the settings, and every way of forgetting -- one item, a
+    // range, the label, the category.
+    let beat_start = Timestamp::now() - SignedDuration::from_secs(90);
+    let beat_end = Timestamp::now() - SignedDuration::from_secs(60);
+    run(
+        &svc,
+        &h,
+        "record_screen_time",
+        json!({
+            "device": "laptop",
+            "collector": "gnome",
+            "beats": [{
+                "kind": "app",
+                "app": "org.gnome.Ptyxis",
+                "start": beat_start.to_string(),
+                "end": beat_end.to_string(),
+            }],
+        }),
+    )
+    .await;
+    call(&svc, &h, "list_screen_categories", json!({})).await;
+    let side_projects = ScreenCategory::new("Side projects, for the snapshot");
+    run(&svc, &h, "save_screen_category", json!({ "category": side_projects })).await;
+    let mut terminal = ScreenApp::new("app:org.gnome.ptyxis", SpanKind::App);
+    terminal.category = Some(side_projects.id);
+    run(&svc, &h, "save_screen_app", json!({ "app": terminal })).await;
+    let no_titles = ScreenTimeSettings { keep_titles: false, ..Default::default() };
+    run(&svc, &h, "save_screen_time_settings", json!({ "settings": no_titles })).await;
+    run(&svc, &h, "forget_screen_item", json!({ "key": "app:org.gnome.ptyxis" })).await;
+    run(
+        &svc,
+        &h,
+        "delete_screen_time",
+        json!({
+            "from": (beat_start - SignedDuration::from_secs(3600)).to_string(),
+            "to": Timestamp::now().to_string(),
+        }),
+    )
+    .await;
+    run(&svc, &h, "delete_screen_app", json!({ "id": terminal.id })).await;
+    run(&svc, &h, "delete_screen_category", json!({ "id": side_projects.id })).await;
 
     // ---- meetings -----------------------------------------------------------
     let meeting_settings = MeetingSettings { enabled: false, ..Default::default() };

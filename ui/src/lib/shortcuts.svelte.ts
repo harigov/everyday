@@ -44,9 +44,11 @@ import { money } from './money.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
+import { screentime } from './screentime.svelte'
 import { sidebar } from './sidebar.svelte'
 import { assistant } from './assistant.svelte'
 import { app, type Section } from './state.svelte'
+import { addDays, todayIso } from './time'
 import { todo } from './todo.svelte'
 
 /**
@@ -249,6 +251,28 @@ function monthly(): boolean {
   return money.view !== 'accounts' && money.view !== 'rules'
 }
 
+/** Is Screen time on a pane that is about a stretch of time -- the summary
+ *  or the timeline -- where the arrows step it? */
+function stepsInTime(): boolean {
+  return screentime.view === 'summary' || screentime.view === 'timeline'
+}
+
+/** Is the summary's range, or the timeline's day, already today's? */
+function atScreenPresent(): boolean {
+  return screentime.view === 'timeline'
+    ? screentime.timelineDate >= todayIso()
+    : screentime.atPresent
+}
+
+/** One range on the summary, one day on the timeline. */
+function stepScreenTime(delta: -1 | 1) {
+  if (screentime.view === 'timeline') {
+    screentime.openTimeline(addDays(screentime.timelineDate, delta))
+  } else {
+    screentime.step(delta)
+  }
+}
+
 /** Move the journal's selection by `step` rows through the loaded list. */
 function stepEntry(step: 1 | -1) {
   const rows = app.entries
@@ -281,6 +305,7 @@ export const GROUPS = [
   'Mail',
   'Feed',
   'Money',
+  'Screen time',
   'Overview',
   'Assistant',
   'Vault',
@@ -376,6 +401,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('money'),
     run: () => app.setSection('money'),
+  },
+  {
+    // `h` for hourglass, its icon: `s` is Mail's Starred while Mail is open.
+    keys: 'g h',
+    label: 'Screen time',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('screentime'),
+    run: () => app.setSection('screentime'),
   },
   {
     keys: 'g o',
@@ -1170,6 +1203,40 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => money.create(),
   },
 
+  // ── Screen time ─────────────────────────────────────────────────────
+  //
+  // Money's shape: the arrows step the range on the summary (and the day on
+  // the timeline), `t` comes back to today, and `c` is "Start the next
+  // thing" -- a category, the one thing typed in here.
+  {
+    keys: 'ArrowLeft',
+    label: 'Earlier',
+    group: 'Screen time',
+    when: () => anywhere() && inApp('screentime')() && stepsInTime(),
+    run: () => stepScreenTime(-1),
+  },
+  {
+    keys: 'ArrowRight',
+    label: 'Later',
+    group: 'Screen time',
+    when: () => anywhere() && inApp('screentime')() && stepsInTime() && !atScreenPresent(),
+    run: () => stepScreenTime(1),
+  },
+  {
+    keys: 't',
+    label: 'Today',
+    group: 'Screen time',
+    when: () => anywhere() && inApp('screentime')() && stepsInTime(),
+    run: () => screentime.goToday(),
+  },
+  {
+    keys: 'c',
+    label: 'New category',
+    group: 'Screen time',
+    when: () => anywhere() && inApp('screentime')(),
+    run: () => screentime.create(),
+  },
+
   // ── Quick actions ───────────────────────────────────────────────────
   //
   // The rows the tray offers as well, and the ones that have no shortcut at
@@ -1393,6 +1460,21 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     },
   },
   {
+    id: 'screentime:today',
+    label: "Today's screen time",
+    group: 'Screen time',
+    keywords: ['usage', 'apps', 'sites', 'how long', 'today', 'screen time'],
+    icon: 'hourglass',
+    tray: true,
+    when: () => app.screen === 'main' && app.supportsScreenTime,
+    run: async () => {
+      if (!(await app.goTo('screentime'))) return
+      screentime.setView('summary')
+      screentime.setRange('day')
+      screentime.goToday()
+    },
+  },
+  {
     id: 'assistant:runs',
     label: 'What the assistant did',
     group: 'Assistant',
@@ -1555,6 +1637,7 @@ function create() {
     mail,
     feed,
     money,
+    screentime,
     overview,
     assistant,
     agent,

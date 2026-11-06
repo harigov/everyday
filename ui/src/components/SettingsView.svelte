@@ -67,6 +67,7 @@
   import MeetingsPanel from './MeetingsPanel.svelte'
   import ModelsPanel from './ModelsPanel.svelte'
   import MoneySettingsPanel from './MoneySettingsPanel.svelte'
+  import ScreenTimeSettingsPanel from './ScreenTimeSettingsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
@@ -211,6 +212,11 @@
     // under Accounts, which holds mailboxes: a bank is not signed in to here,
     // only the keys that let Money ask Plaid to sign one in.
     { id: 'money', label: 'Money', icon: 'wallet' },
+    // Whether this computer records its screen time, what it is called, the
+    // GNOME and browser extensions that do the watching, and how long the
+    // vault keeps it. Mostly this machine's, not the vault's -- which is why
+    // it is a tab here rather than a pane of the app.
+    { id: 'screentime', label: 'Screen time', icon: 'hourglass' },
     { id: 'meetings', label: 'Meetings', icon: 'mic' },
     // Beside Meetings: another thing the app does with your days on its own,
     // reading the Library's Contacts shelf rather than a calendar.
@@ -251,6 +257,7 @@
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
       .filter((t) => t.id !== 'meetings' || meetings.supported)
       .filter((t) => t.id !== 'money' || app.supportsMoney)
+      .filter((t) => t.id !== 'screentime' || app.supportsScreenTime)
       .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
       .filter((t) => t.id !== 'writing' || (agent.supported && app.supportsMail)),
@@ -421,6 +428,8 @@
       <ChatLinksPanel />
     {:else if tab === 'money'}
       <MoneySettingsPanel />
+    {:else if tab === 'screentime'}
+      <ScreenTimeSettingsPanel />
     {:else if tab === 'meetings'}
       <MeetingsPanel />
     {:else if tab === 'keepintouch'}

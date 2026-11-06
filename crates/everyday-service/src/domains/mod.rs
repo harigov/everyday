@@ -34,6 +34,7 @@ pub mod proposals;
 pub mod purpose;
 pub mod quick;
 pub mod routines;
+pub mod screentime;
 pub mod signin;
 pub mod speech;
 pub mod tasks;
@@ -86,6 +87,7 @@ pub fn catalog() -> &'static [&'static Command] {
             news::COMMANDS,
             newsmail::COMMANDS,
             money::COMMANDS,
+            screentime::COMMANDS,
             meetings::COMMANDS,
             notes::COMMANDS,
             trackers::COMMANDS,

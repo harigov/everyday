@@ -386,6 +386,15 @@ export const ICONS = {
   /** Lucide's "list-filter": three narrowing lines, for the Rules pane. */
   filter: '<path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/>',
 
+  // ── Screen time ────────────────────────────────────────────────────────
+
+  /** Lucide's "hourglass": the Screen time app -- time running through, not
+   *  a clock, which the routines and reminders already wear. */
+  hourglass:
+    '<path d="M5 22h14"/><path d="M5 2h14"/>' +
+    '<path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/>' +
+    '<path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+
   /** Lucide's "users": the Overview's people widgets. */
   people:
     '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>' +

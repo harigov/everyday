@@ -1,0 +1,233 @@
+/* Every Day Screen time: the options page and the popup. Calm and neutral,
+   light or dark as the system is. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f6f6f4;
+  --card: #ffffff;
+  --text: #1f2328;
+  --muted: #626970;
+  --line: #e2e2de;
+  --accent: #2f6f62;
+  --accent-text: #ffffff;
+  --problem: #a3371f;
+  --problem-bg: #fbeee9;
+  --focus: #2f6f62;
+  font:
+    15px/1.5 system-ui,
+    -apple-system,
+    "Segoe UI",
+    Cantarell,
+    Ubuntu,
+    sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #18191b;
+    --card: #222326;
+    --text: #e6e6e3;
+    --muted: #a1a5aa;
+    --line: #34363a;
+    --accent: #7cc2b1;
+    --accent-text: #10201c;
+    --problem: #f0a08c;
+    --problem-bg: #3a2420;
+    --focus: #7cc2b1;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+}
+
+h1 {
+  font-size: 1.6rem;
+  font-weight: 600;
+  margin: 0 0 0.25rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+}
+
+h2:not(:first-child) {
+  margin-top: 1.25rem;
+}
+
+.lede,
+.steps,
+.plain {
+  color: var(--muted);
+}
+
+.lede {
+  margin: 0 0 1.5rem;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1.25rem 1.25rem 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.live {
+  margin: 0 0 1rem;
+  font-weight: 500;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1.25rem;
+  margin: 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.steps,
+.plain {
+  margin: 0 0 1rem;
+  padding-left: 1.25rem;
+}
+
+.steps li,
+.plain li {
+  margin-bottom: 0.25rem;
+}
+
+label {
+  display: block;
+  font-weight: 500;
+  margin-bottom: 0.35rem;
+}
+
+textarea {
+  width: 100%;
+  font:
+    13px/1.4 ui-monospace,
+    "SF Mono",
+    "Cascadia Mono",
+    "DejaVu Sans Mono",
+    monospace;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+  resize: vertical;
+}
+
+code {
+  font:
+    0.92em ui-monospace,
+    "SF Mono",
+    "Cascadia Mono",
+    "DejaVu Sans Mono",
+    monospace;
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--muted);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+button.quiet {
+  color: var(--muted);
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+button:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--accent);
+}
+
+.problem {
+  margin: 0.75rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  background: var(--problem-bg);
+  color: var(--problem);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* The popup. */
+
+body.popup {
+  width: 20rem;
+}
+
+.popup main {
+  padding: 1rem 1rem 0.9rem;
+}
+
+.popup h1 {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.popup p {
+  margin: 0 0 0.6rem;
+}
+
+.popup .muted {
+  color: var(--muted);
+  font-size: 0.9rem;
+}

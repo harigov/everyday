@@ -47,10 +47,11 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Ten apps, one vault
+## Eleven apps, one vault
 
 A bar down the left edge switches between **Overview**, **Notes**, **Todo**,
-**Calendar**, **Library**, **Mail**, **Feed**, **Money**, **Assistant** and **Journal**
+**Calendar**, **Library**, **Mail**, **Feed**, **Money**, **Screen time**, **Assistant** and
+**Journal**
 (`Ctrl/Cmd J` cycles); right-clicking one of them offers what that app can
 start from a standing stop — the same actions the tray offers, from the same
 registration. They share a vault, a password and a lock; they share nothing
@@ -1129,6 +1130,60 @@ after it asks first, and a bank's description of a transaction — often the
 sender's own words, in a transfer — reaches it marked as somebody else's
 writing. It cannot see a key or a full account number, delete what a bank
 sent, or disconnect a bank. Everything leaves as CSV.
+
+## Screen time
+
+Which app or website had your attention, on which computer, and for how
+long — recorded, never limited. Nothing is blocked and nothing nags; it is a
+record to look at, and a measure a goal can be held to ("under an hour of
+social a day").
+
+**Only what is in use counts.** An app counts while its window has focus
+and you have touched the keyboard or mouse in the last few minutes (three
+by default) and the screen is not locked. A website counts while it is the
+active tab of the browser window that has focus. A window behind another
+one, a tab in the background, a video left playing in a browser you walked
+away from: none of them count. Each collector decides that for itself and
+only then says so, so the vault never has to guess.
+
+**Three collectors, one way in.** Every one sends the same small
+*heartbeat* — this app, or this site, from then until now — and the vault
+joins heartbeats into runs:
+
+- **This computer**, from the desktop app itself: the foreground window on
+  Windows and macOS, `_NET_ACTIVE_WINDOW` on X11, the foreground-toplevel
+  protocol on Sway, Hyprland and other wlroots compositors, and a KWin
+  script on KDE. On by default; Settings → Screen time turns it off.
+- **GNOME**, which tells no program outside the Shell which window has
+  focus, through a small Shell extension the app installs for you (it
+  starts at your next login). It watches focus and idleness inside the
+  Shell and sends its heartbeats itself.
+- **Browsers**, through the extension in `extensions/browser` (Chrome,
+  Edge, Brave, Firefox). **Connect a browser** in Settings hands you a code
+  to paste into it once; websites then count as apps of their own, grouped
+  by domain (`mail.google.com` and `docs.google.com` are `google.com` unless
+  you ask for them apart).
+
+The extensions post to the desktop app on `127.0.0.1:7399` — or, on a
+machine with no copy of the app, to a sharing server — with a token that can
+add heartbeats and nothing else. While a browser has focus, the browser's
+own time is split between the sites it showed; what no site claimed is left
+as "Firefox (other)".
+
+**What you see**: today, a week or a month, by hour or by day and by
+category; the apps and sites that took the most of it; a timeline of any
+day, machine by machine; and a list of everything seen, where you rename an
+app, file it under a category, leave it out of the totals, or forget its
+history. Categories start as Work, Communication, Social, Entertainment,
+Learning and Utilities, with well-known apps and sites already suggested
+into them.
+
+**What is sealed**: everything you would recognise — the machine's name,
+the app, the site, the window title. In the clear in the database is only
+when each run began and ended, and a keyed hash of which machine and
+collector sent it. Window titles can be switched off, or cleared once they
+are a set number of days old; the time itself is kept, so a goal like "under
+an hour of social a day" never loses its history.
 
 ## Notifications
 

@@ -140,6 +140,13 @@ typed_id!(TxnId, "txn");
 typed_id!(MoneyCategoryId, "money_category");
 typed_id!(MoneyRuleId, "money_rule");
 
+// Screen time: one run of an app or a site having somebody's attention, a
+// person's label for an app or a site, and the categories labels file them
+// under. See `crate::screentime`.
+typed_id!(ScreenSpanId, "screen_span");
+typed_id!(ScreenAppId, "screen_app");
+typed_id!(ScreenCategoryId, "screen_category");
+
 // The tracking domain. A `TrackerId` names a thing you decided to record --
 // a habit, a supplement, a symptom -- and is a vault record in its own right,
 // not a setting of any one journal; a `ReadingId` names one recorded value. The split matters more here than

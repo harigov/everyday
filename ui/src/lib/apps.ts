@@ -38,6 +38,7 @@ import type { calendar as calendarSingleton } from './calendar.svelte'
 import type { mail as mailSingleton } from './mail.svelte'
 import type { feed as feedSingleton } from './feed.svelte'
 import type { money as moneySingleton } from './money.svelte'
+import type { screentime as screentimeSingleton } from './screentime.svelte'
 import type { overview as overviewSingleton } from './overview.svelte'
 import type { assistant as assistantSingleton } from './assistant.svelte'
 import type { agent as agentSingleton } from './agent.svelte'
@@ -51,6 +52,7 @@ type CalendarLike = typeof calendarSingleton
 type MailLike = typeof mailSingleton
 type FeedLike = typeof feedSingleton
 type MoneyLike = typeof moneySingleton
+type ScreenTimeLike = typeof screentimeSingleton
 type OverviewLike = typeof overviewSingleton
 type AssistantLike = typeof assistantSingleton
 type AgentLike = typeof agentSingleton
@@ -70,6 +72,7 @@ export const APP_ORDER = [
   'mail',
   'feed',
   'money',
+  'screentime',
   'assistant',
   'journal',
 ] as const
@@ -86,6 +89,7 @@ export interface AppDeps {
   mail: MailLike
   feed: FeedLike
   money: MoneyLike
+  screentime: ScreenTimeLike
   overview: OverviewLike
 }
 
@@ -113,6 +117,7 @@ export interface AccentDeps {
   library: LibraryLike
   feed: FeedLike
   money: MoneyLike
+  screentime: ScreenTimeLike
 }
 
 /** What `shortcuts.svelte.ts`'s "start the next thing" needs from every
@@ -126,6 +131,7 @@ export interface CreateDeps {
   mail: MailLike
   feed: FeedLike
   money: MoneyLike
+  screentime: ScreenTimeLike
   overview: OverviewLike
   assistant: AssistantLike
   /** The conversation, which is what the Assistant app starts a new one of. */
@@ -281,6 +287,21 @@ export const APPS: Record<Section, AppModule> = {
             set: (q) => d.money.setQuery(q),
           }
         : null,
+  },
+  screentime: {
+    section: 'screentime',
+    label: 'Screen time',
+    icon: 'hourglass',
+    supported: (app) => app.supportsScreenTime,
+    accent: (d) => d.screentime.accent,
+    // Nothing in this app is typed in but a category, so that: the
+    // categories pane, its form asked to take the caret. See
+    // `screentime.create`.
+    create: (d) => d.screentime.create(),
+    onScreen: (d) => d.screentime.showing,
+    // What is listed are the person's apps and sites, a few dozen at most,
+    // read at a glance; there is nothing for a search to narrow.
+    search: () => null,
   },
   assistant: {
     section: 'assistant',

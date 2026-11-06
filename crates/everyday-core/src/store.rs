@@ -42,6 +42,7 @@ use crate::store::notes::NoteStore;
 use crate::store::proposals::ProposalStore;
 use crate::store::purpose::PurposeStore;
 use crate::store::routines::RoutineStore;
+use crate::store::screentime::ScreenTimeStore;
 use crate::store::secrets::SecretStore;
 use crate::store::tasks::TaskStore;
 use crate::store::trackers::TrackerStore;
@@ -208,6 +209,13 @@ pub struct Capabilities {
     /// in it reads another domain's records.
     #[serde(default)]
     pub money: bool,
+    /// Backend implements [`screentime::ScreenTimeStore`], so heartbeats
+    /// from this machine's collectors and the browser extension have
+    /// somewhere to land.
+    ///
+    /// False hides the Screen time app and refuses heartbeats.
+    #[serde(default)]
+    pub screentime: bool,
 }
 
 /// The facts about a backend that [`Capabilities`]' domain flags cannot
@@ -566,6 +574,7 @@ pub trait JournalStore: Send + Sync {
             meetings: self.meetings().is_some(),
             news: self.news().is_some(),
             money: self.money().is_some(),
+            screentime: self.screentime().is_some(),
         }
     }
 
@@ -738,6 +747,15 @@ pub trait JournalStore: Send + Sync {
     /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`money`](crate::store::money) for the rules an implementation keeps.
     fn money(&self) -> Option<&dyn MoneyStore> {
+        None
+    }
+
+    /// Storage for screen time, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::money`]. See
+    /// [`screentime`](crate::store::screentime) for the rules an
+    /// implementation keeps.
+    fn screentime(&self) -> Option<&dyn ScreenTimeStore> {
         None
     }
 
@@ -1141,6 +1159,7 @@ pub mod notes;
 pub mod proposals;
 pub mod purpose;
 pub mod routines;
+pub mod screentime;
 pub mod secrets;
 pub mod tasks;
 pub mod trackers;

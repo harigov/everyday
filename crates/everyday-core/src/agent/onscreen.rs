@@ -77,6 +77,10 @@ pub enum App {
     Mail,
     Feed,
     Money,
+    /// The Screen time app. On the wire as `screentime`, the interface's
+    /// own section name.
+    #[serde(rename = "screentime")]
+    ScreenTime,
     Assistant,
     Journal,
     /// Settings is a page drawn where the app would be, not a dialog over
@@ -97,6 +101,9 @@ impl App {
                 "the Feed, where the sites, newsletters and Hacker News they follow arrive"
             }
             App::Money => "Money, where their bank accounts, transactions and budgets are",
+            App::ScreenTime => {
+                "Screen time, where how long they spent in each app and on each website is"
+            }
             App::Assistant => {
                 "the Assistant app, where this conversation fills the window and nothing \
                  else is on screen"

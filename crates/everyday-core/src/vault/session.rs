@@ -72,6 +72,9 @@ pub(super) enum Domain {
     /// Money: links, accounts, transactions, categories and rules -- see
     /// [`crate::money`] and [`crate::store::money`].
     Money,
+    /// Screen time: spans, labels, categories and settings -- see
+    /// [`crate::screentime`] and [`crate::store::screentime`].
+    ScreenTime,
 }
 
 impl Domain {
@@ -96,6 +99,7 @@ impl Domain {
             Domain::Meetings => "meeting notes (this vault's backend stores journals only)",
             Domain::News => "a feed (this vault's backend stores journals only)",
             Domain::Money => "money (this vault's backend stores journals only)",
+            Domain::ScreenTime => "screen time (this vault's backend stores journals only)",
         }
     }
 }

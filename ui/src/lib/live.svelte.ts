@@ -32,6 +32,7 @@ import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { proposals } from './proposals.svelte'
 import { purpose } from './purpose.svelte'
+import { screentime } from './screentime.svelte'
 import { panels } from './panels.svelte'
 import { app } from './state.svelte'
 import { todo } from './todo.svelte'
@@ -113,6 +114,18 @@ export const RELOAD = {
   // sync that lands while somebody is writing in the journal. It reads
   // fresh when it is opened.
   money: () => (money.loaded ? money.reload() : undefined),
+  // A label or a category changed on another machine. Read again only
+  // while Screen time is the app on screen, and only once it has been
+  // opened since the vault did: it reads fresh whenever it is opened, and
+  // nothing outside it draws a label but a goal's measure picker, which
+  // asks for its own.
+  screentime: () =>
+    screentime.loaded && app.section === 'screentime' ? screentime.reload() : undefined,
+  // Heartbeats arriving -- every half minute from every machine while
+  // anything is in use. A target of its own so it can be held to far less
+  // than a label is: only while today is on screen, and at most once a
+  // minute. See `screentime.spansArrived`.
+  screentimeSpans: () => screentime.spansArrived(),
 } satisfies Record<string, () => Promise<unknown> | void>
 
 /**
@@ -254,6 +267,12 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   txn: 'money',
   moneyCategory: 'money',
   moneyRule: 'money',
+  // What somebody calls an app or a site, and the categories they sort
+  // them into; and the spans heartbeats become, which never carry an id --
+  // a batch from a collector is one change for the lot.
+  screenApp: 'screentime',
+  screenCategory: 'screentime',
+  screenSpan: 'screentimeSpans',
 }
 
 /**

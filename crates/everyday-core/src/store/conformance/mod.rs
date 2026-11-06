@@ -39,6 +39,7 @@ mod notes;
 mod proposals;
 mod purpose;
 mod routines;
+mod screentime;
 mod secrets;
 mod tasks;
 mod trackers;
@@ -57,6 +58,7 @@ pub use notes::run_note_suite;
 pub use proposals::run_proposal_suite;
 pub use purpose::run_purpose_suite;
 pub use routines::run_routine_suite;
+pub use screentime::run_screen_time_suite;
 pub use secrets::run_secret_suite;
 pub use tasks::run_task_suite;
 pub use trackers::run_tracker_suite;
@@ -263,6 +265,12 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.money() {
         Some(_) => run_money_suite(store),
         None => eprintln!("backend {name:?} stores no money; skipping the money suite"),
+    }
+
+    // And screen time, which reads nothing of any other domain's either.
+    match store.screentime() {
+        Some(_) => run_screen_time_suite(store),
+        None => eprintln!("backend {name:?} stores no screen time; skipping its suite"),
     }
 
     journal::cleanup(store);

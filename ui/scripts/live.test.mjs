@@ -74,6 +74,9 @@ const KINDS = [
   'txn',
   'moneyCategory',
   'moneyRule',
+  'screenApp',
+  'screenCategory',
+  'screenSpan',
   'recording',
   'voiceprint',
   'transcript',
@@ -129,6 +132,22 @@ assert.deepEqual(targetsFor(['bankLink', 'bankAccount', 'txn', 'moneyCategory', 
   'money',
 ])
 assert.deepEqual(targetsFor(['txn', 'txn', 'txn'], true), ['money'], 'a sync is one reload')
+
+// Screen time: a label and a category are one reload of what is on screen;
+// heartbeats -- a `screenSpan` change every half minute from every machine
+// while anything is in use -- are a target of their own, held to once a
+// minute and to today being on screen, so a burst of them is one call that
+// usually does nothing. Neither drags the Overview along.
+assert.deepEqual(targetsFor(['screenApp', 'screenCategory']), ['screentime'])
+assert.deepEqual(targetsFor(['screenSpan', 'screenSpan'], true), ['screentimeSpans'])
+assert.deepEqual(
+  new Set(targetsFor(['screenApp', 'screenSpan'])),
+  new Set(['screentime', 'screentimeSpans']),
+)
+// The app has not been opened here, so neither reads anything: a vault full
+// of heartbeats costs nothing while somebody writes in the journal.
+assert.equal(RELOAD.screentime(), undefined, 'no reload before Screen time is opened')
+assert.equal(RELOAD.screentimeSpans(), undefined, 'nor for heartbeats')
 
 // A job moving -- queued, running, a new progress line, done -- reloads the
 // jobs store alone, and does not drag the routines with it: the two are

@@ -42,6 +42,7 @@ const {
     panelsModule,
     feedModule,
     moneyModule,
+    screentimeModule,
   ],
   close,
 } = await load(
@@ -54,6 +55,7 @@ const {
     '/src/lib/panels.svelte.ts',
     '/src/lib/feed.svelte.ts',
     '/src/lib/money.svelte.ts',
+    '/src/lib/screentime.svelte.ts',
   ],
   { svelte: true },
 )
@@ -65,6 +67,7 @@ const { todo } = todoModule
 const { panels } = panelsModule
 const { feed } = feedModule
 const { money } = moneyModule
+const { screentime } = screentimeModule
 
 const { check, ok, finish } = makeCheck()
 
@@ -278,6 +281,38 @@ now = onScreenNow()
 ok('money: the budget says its month', /^the budget for /.test(now.showing.view))
 check('money: nothing narrows the budget by account', now.showing.within, [])
 check('money: and nothing is open there', now.showing.open, [])
+
+// Screen time: the pane and the range in the interface's words, and nothing
+// else -- no app, site, device or category name, which are the person's
+// and the web's, and have no record kind for the service to look up.
+app.section = 'screentime'
+await screentime.start()
+ok('the mock vault has screen time today or before', screentime.report !== null)
+screentime.setView('summary')
+screentime.setRange('day')
+screentime.goToday()
+now = onScreenNow()
+check('screentime: the app', now.app, 'screentime')
+check(
+  'screentime: the view is the summary and its day',
+  now.showing.view,
+  'their screen time for today',
+)
+check('screentime: nothing narrows it by record', now.showing.within, undefined)
+check('screentime: nothing is open', now.showing.open, undefined)
+screentime.setDevices(['desktop'])
+now = onScreenNow()
+ok('screentime: devices narrow it, by count', /narrowed to 1 device$/.test(now.showing.view))
+const stWire = JSON.stringify(toWire('screentime', now.showing))
+ok('screentime: no device’s name leaves the interface', !stWire.includes('desktop'))
+for (const item of screentime.report?.items ?? []) {
+  ok(`screentime: nor “${item.name}”`, !stWire.includes(item.name))
+}
+screentime.setDevices([])
+screentime.setView('apps')
+now = onScreenNow()
+ok('screentime: the apps pane says what it lists', /apps and websites/.test(now.showing.view))
+screentime.setView('summary')
 
 // Settings stands where the app was, so the app is not on screen at all.
 panels.openSettings('accounts')

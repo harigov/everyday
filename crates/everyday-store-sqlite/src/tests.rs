@@ -1712,3 +1712,104 @@ fn the_database_file_contains_no_readable_money_text() {
     }
     assert!(raw.windows(10).any(|w| w == b"2026-11-05"), "the day column is meant to be readable");
 }
+
+/// A span on the laptop, with something nobody should see in every field a
+/// person would recognise. For the two screen-time tests below.
+fn a_screen_span(start: i64, end: i64) -> everyday_core::screentime::ScreenSpan {
+    use everyday_core::screentime::{ScreenSpan, SpanKind};
+    ScreenSpan {
+        id: everyday_core::ScreenSpanId::new(),
+        device: "a-device-nobody-should-see".into(),
+        collector: "collectornobodyshouldsee".into(),
+        kind: SpanKind::Site,
+        app: "a-browser-nobody-should-see".into(),
+        name: "A browser name nobody should see".into(),
+        host: "a-host-nobody-should-see.example".into(),
+        title: "A tab title nobody should see".into(),
+        start: jiff::Timestamp::from_second(start).unwrap(),
+        end: jiff::Timestamp::from_second(end).unwrap(),
+    }
+}
+
+#[test]
+fn the_database_file_contains_no_readable_screen_time() {
+    // Which machine, which app, which site, which tab: none of it may sit in
+    // a clear column. What is meant to be readable is when a span started and
+    // ended, and the stream's *keyed* hash -- see `everyday_store_sql::schema`'s
+    // `v25`.
+    use everyday_core::screentime::{ScreenApp, ScreenCategory, ScreenTimeSettings, SpanKind};
+    use everyday_core::store::screentime::ScreenTimeStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+
+    let stream = "0123456789abcdef0123456789abcdef";
+    store.put_spans(stream, &[a_screen_span(1_800_000_000, 1_800_000_600)]).unwrap();
+
+    let mut category = ScreenCategory::new("A category nobody should see");
+    category.color = "#a1b2c3".into();
+    category.builtin = "builtinnobodyshouldsee".into();
+    store.put_category(&category).unwrap();
+    let mut label = ScreenApp::new("site:a-label-key-nobody-should-see.example", SpanKind::Site);
+    label.name = "A label nobody should see".into();
+    label.category = Some(category.id);
+    store.put_app(&label).unwrap();
+    store
+        .put_screen_settings(&ScreenTimeSettings {
+            browsers: vec!["a-browser-setting-nobody-should-see".into()],
+            ..ScreenTimeSettings::default()
+        })
+        .unwrap();
+    store.flush().unwrap();
+
+    // What is readable: the stream, exactly as the vault handed it over.
+    let held: String =
+        raw(dir.path()).query_row("SELECT stream FROM screen_spans", [], |r| r.get(0)).unwrap();
+    assert_eq!(held, stream, "the stream is an index column and stays in the clear");
+
+    let bytes = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    for needle in [
+        b"nobody should see".as_slice(),
+        b"nobodyshouldsee",
+        b"nobody-should-see",
+        b"#a1b2c3",
+        b"site:",
+    ] {
+        assert!(
+            !bytes.windows(needle.len()).any(|w| w == needle),
+            "found {:?} in the database file",
+            String::from_utf8_lossy(needle)
+        );
+    }
+}
+
+#[test]
+fn a_screen_span_copied_into_another_row_does_not_open_there() {
+    // Somebody who can write the file but does not hold the key moves one
+    // span's sealed payload into another's row. Bound to its own id, it will
+    // not open under the other's.
+    use everyday_core::store::screentime::ScreenTimeStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let first = a_screen_span(1_800_000_000, 1_800_000_060);
+    let second = a_screen_span(1_800_000_100, 1_800_000_160);
+    store.put_spans("stream", &[first.clone(), second.clone()]).unwrap();
+    store.flush().unwrap();
+    let from = jiff::Timestamp::from_second(1_799_999_000).unwrap();
+    let to = jiff::Timestamp::from_second(1_800_001_000).unwrap();
+    assert_eq!(store.spans(from, to).unwrap(), vec![first.clone(), second.clone()]);
+
+    raw(dir.path())
+        .execute(
+            "UPDATE screen_spans SET data = (SELECT data FROM screen_spans WHERE id = ?1)
+             WHERE id = ?2",
+            [first.id.to_string(), second.id.to_string()],
+        )
+        .unwrap();
+
+    let err = store.spans(from, to).unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+    let err = store.last_span("stream").unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+}

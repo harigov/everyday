@@ -30,6 +30,7 @@ mod portal;
 mod protocol;
 mod remote;
 mod remotes;
+mod screentime;
 mod sharing;
 mod state;
 mod transfer;
@@ -105,6 +106,8 @@ pub fn run() {
         // `offers` and `micwatch`.
         .manage(offers::Offers::default())
         .manage(micwatch::MicWatch::default())
+        // This machine's screen time -- see `screentime`.
+        .manage(screentime::ScreenTime::default())
         .setup(|app| {
             // The window, from its entry in `tauri.conf.json` -- marked
             // `create: false` so that it is built here, where it can be told
@@ -151,6 +154,10 @@ pub fn run() {
             // Another application taking the microphone is the second way a
             // call is noticed, beside the calendar. See `micwatch`.
             micwatch::spawn(&handle);
+            // Which app has focus, sent as screen time, and the door the
+            // browser and GNOME extensions send theirs through. See
+            // `screentime`.
+            screentime::spawn(&handle);
             // The assistant's routines. On Tauri's own runtime, never a second
             // one: two runtimes would double the blocking pool and, worse,
             // would mean the vault's single-writer rule was being kept by two
@@ -291,6 +298,12 @@ pub fn run() {
             meeting::voice_enrol,
             offers::meeting_offer_answer,
             offers::meeting_offers,
+            // Screen time on this machine. See `screentime.rs`.
+            screentime::screentime_status,
+            screentime::screentime_set_tracking,
+            screentime::screentime_set_device,
+            screentime::screentime_install_gnome_extension,
+            screentime::screentime_connect_browser,
         ])
         .on_window_event(|window, event| {
             // Writing help's popup is not the application: closing it is

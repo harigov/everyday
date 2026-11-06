@@ -17,6 +17,7 @@ pub mod money;
 pub mod news;
 pub mod notes;
 pub mod purpose;
+pub mod screentime;
 pub mod tasks;
 pub mod trackers;
 pub mod you;

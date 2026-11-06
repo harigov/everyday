@@ -155,6 +155,10 @@ impl JournalStore for SqlStore {
         Some(self)
     }
 
+    fn screentime(&self) -> Option<&dyn everyday_core::store::screentime::ScreenTimeStore> {
+        Some(self)
+    }
+
     fn profile(&self) -> Result<everyday_core::profile::Profile> {
         self.read_profile()
     }

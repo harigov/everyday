@@ -24,6 +24,14 @@ import type {
   TxnId,
   TxnPatch,
   TxnQuery,
+  BrowserConnection,
+  ScreenApp,
+  ScreenAppId,
+  ScreenCategory,
+  ScreenCategoryId,
+  ScreenQuery,
+  ScreenTimeSettings,
+  ScreenTimeStatus,
   DeclineReason,
   AgentCallerKind,
   AgentEvent,
@@ -1834,6 +1842,55 @@ export const api = {
   moneyCashFlow: (end: string, months: number) => call('moneyCashFlow', { end, months }),
   moneyNetWorth: (from: string, to: string) => call('moneyNetWorth', { from, to }),
   moneyRecurring: () => call('moneyRecurring', {}),
+
+  // ── Screen time ────────────────────────────────────────────────────
+  //
+  // Which app or site had somebody's attention, on which machine, and for
+  // how long -- see `docs/plans/screentime.md`. Available only when
+  // `status.capabilities.screentime` is true. Named as the commands are.
+  // `record_screen_time` and `screen_time_collector` are left out: they are
+  // the collectors' (the shell's own, the GNOME and browser extensions,
+  // over the heartbeats routes), and nothing in this window sends one.
+
+  /** Totals for a range of days, by item, category, day, hour and device. */
+  screenTimeReport: (query: ScreenQuery) => call('screenTimeReport', { query }),
+  /** One day's runs, in order. `devices` absent or empty is every device. */
+  screenTimeTimeline: (date: string, tz: string, devices?: string[]) =>
+    call('screenTimeTimeline', { date, tz, devices }),
+  /** Every item seen in the last 30 days and every labelled one. */
+  listScreenApps: () => call('listScreenApps', {}),
+  saveScreenApp: (app: ScreenApp) => call('saveScreenApp', { app }),
+  deleteScreenApp: (id: ScreenAppId) => call('deleteScreenApp', { id }),
+  /** The categories, in order; the first call writes the starter ones. */
+  listScreenCategories: () => call('listScreenCategories', {}),
+  saveScreenCategory: (category: ScreenCategory) => call('saveScreenCategory', { category }),
+  deleteScreenCategory: (id: ScreenCategoryId) => call('deleteScreenCategory', { id }),
+  listScreenDevices: () => call('listScreenDevices', {}),
+  screenTimeSettings: () => call('screenTimeSettings', {}),
+  saveScreenTimeSettings: (settings: ScreenTimeSettings) =>
+    call('saveScreenTimeSettings', { settings }),
+  /** Delete every span of one item (by key); answers how many went. */
+  forgetScreenItem: (key: string) => call('forgetScreenItem', { key }),
+  /** Delete everything recorded between two instants; answers how many spans went. */
+  deleteScreenTime: (from: string, to: string) => call('deleteScreenTime', { from, to }),
+
+  // This machine's half: whether it records, what it is called, how it
+  // watches focus. By name, not through `call`: these are the shell's own,
+  // answered by the computer this window runs on -- a window looking at a
+  // vault elsewhere still says whether *this* computer is tracked. Each
+  // answers the status as it is afterwards, except the browser connection,
+  // which is shown once and never again.
+  screentimeStatus: () => invoke<ScreenTimeStatus>('screentime_status'),
+  screentimeSetTracking: (on: boolean) =>
+    invoke<ScreenTimeStatus>('screentime_set_tracking', { on }),
+  screentimeSetDevice: (name: string) =>
+    invoke<ScreenTimeStatus>('screentime_set_device', { name }),
+  /** Copy the GNOME Shell extension into place, enable it, and write its token. */
+  screentimeInstallGnomeExtension: () =>
+    invoke<ScreenTimeStatus>('screentime_install_gnome_extension'),
+  /** Mint a heartbeats token for a browser extension, as one code to paste. */
+  screentimeConnectBrowser: (browser: string) =>
+    invoke<BrowserConnection>('screentime_connect_browser', { browser }),
 
   // ── Accounts ───────────────────────────────────────────────────────
   //

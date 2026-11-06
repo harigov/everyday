@@ -14,6 +14,7 @@ members = [
     "crates/everyday-mail",
     "crates/everyday-mailindex",
     "crates/everyday-chat",
+    "crates/everyday-focus",
     "crates/everyday-app",
 ]
 
@@ -36,6 +37,7 @@ default-members = [
     "crates/everyday-mail",
     "crates/everyday-mailindex",
     "crates/everyday-chat",
+    "crates/everyday-focus",
 ]
 
 [workspace.package]
@@ -58,6 +60,7 @@ everyday-server = { path = "crates/everyday-server" }
 everyday-mail = { path = "crates/everyday-mail" }
 everyday-mailindex = { path = "crates/everyday-mailindex" }
 everyday-chat = { path = "crates/everyday-chat" }
+everyday-focus = { path = "crates/everyday-focus" }
 
 tauri = "2"
 tauri-build = "2"

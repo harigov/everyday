@@ -49,6 +49,7 @@ mod profile;
 mod proposals;
 mod purpose;
 mod routines;
+mod screentime;
 mod session;
 mod tasks;
 #[cfg(test)]

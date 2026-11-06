@@ -1,0 +1,8 @@
+{
+  "uuid": "screentime@everyday.journal",
+  "name": "Every Day Screen time",
+  "description": "Tells the Every Day app which application had your attention: the focused window, while you are not idle and the screen is not locked. It reports only to the app on this computer, or to your own Every Day server, and is set up from Settings → Screen time in Every Day.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "session-modes": ["user", "unlock-dialog"],
+  "url": "https://github.com/harigov/everyday"
+}
