@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -111,6 +111,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v20(),
         v21(d),
         v22(d),
+        v23(d),
     ]
 }
 
@@ -1569,7 +1570,28 @@ fn v21(d: Dialect) -> Vec<String> {
     )]
 }
 
-/// Version 22: Money -- the banks somebody linked, the accounts they brought
+/// Version 22: two sealed singletons, on the pattern of `mail_contacts`.
+///
+/// `keep_in_touch` is [`everyday_core::keepintouch::KeepInTouch`]: the settings
+/// and what a pass remembers between runs. `proposal_traces` is what is left of
+/// the proposals nobody accepted once they are deleted after a week, which is
+/// what keeps the weekly dream's stop list able to see past that week.
+fn v22(d: Dialect) -> Vec<String> {
+    let (int, blob) = (d.int(), d.blob());
+    ["keep_in_touch", "proposal_traces"]
+        .into_iter()
+        .map(|table| {
+            format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                     id          {int} PRIMARY KEY CHECK (id = 1),
+                     data        {blob} NOT NULL
+                 )"
+            )
+        })
+        .collect()
+}
+
+/// Version 23: Money -- the banks somebody linked, the accounts they brought
 /// or that are kept by hand, each account's balance day by day, the
 /// transactions, and the categories and rules that sort them. See
 /// `docs/plans/money.md` and `everyday_core::money`.
@@ -1596,7 +1618,7 @@ fn v21(d: Dialect) -> Vec<String> {
 /// The unique `(account_id, dedupe_key)` index is what makes a sync and an
 /// import idempotent. Days are `YYYY-MM-DD` text, which sorts as dates do in
 /// both dialects.
-fn v22(d: Dialect) -> Vec<String> {
+fn v23(d: Dialect) -> Vec<String> {
     let (blob, int) = (d.blob(), d.int());
     vec![
         format!(

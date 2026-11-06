@@ -125,6 +125,8 @@ export const NEEDS = [
    * going on". Goals come with `purpose`.
    */
   'going',
+  /** Who on the Contacts shelf is due a catch-up. See docs/plans/keep-in-touch.md. */
+  'people',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -425,6 +427,15 @@ export const WIDGETS = {
     needs: ['mail', 'meetings'],
     windows: [7, 30, 90],
     window: 30,
+  },
+  peopleDue: {
+    label: 'Who to get in touch with',
+    note: 'Contacts past due for a catch-up, by how often you meant to.',
+    group: 'People',
+    icon: 'people',
+    size: 'medium',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['people'],
   },
   meetWith: {
     label: 'Who you meet with most',

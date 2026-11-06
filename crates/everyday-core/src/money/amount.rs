@@ -51,6 +51,12 @@ pub fn parse_decimal(text: &str, currency: &str) -> Result<i64> {
         negative = true;
         s = s[1..s.len() - 1].trim().to_string();
     }
+    // "42.17 DR" and "100.00 CR": how many British, Australian and Indian
+    // exports say which way money went. The marker *is* the sign -- a debit
+    // is money out, a credit money in -- so it decides, rather than being
+    // dropped with the other letters around a number.
+    let (rest, marker) = debit_credit(&s);
+    s = rest;
     // A sign, a currency symbol or code, and spaces may come before the
     // number; a symbol, a code or a trailing minus after it. Nothing but
     // digits and separators may come in the middle.
@@ -139,7 +145,52 @@ pub fn parse_decimal(text: &str, currency: &str) -> Result<i64> {
         .checked_mul(scale)
         .and_then(|w| w.checked_add(frac))
         .ok_or_else(|| Error::Invalid(format!("amount too large: {text:?}")))?;
-    Ok(if negative { -minor } else { minor })
+    Ok(match marker {
+        Some(Marker::Debit) => -minor,
+        Some(Marker::Credit) => minor,
+        None if negative => -minor,
+        None => minor,
+    })
+}
+
+/// Which way a `DR`/`CR` marker says the money went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Marker {
+    Debit,
+    Credit,
+}
+
+/// `text` without a leading or trailing `DR`/`CR` marker (any case, with or
+/// without a space or a full stop), and the marker. Only a whole word, or
+/// letters straight after the last digit: "CRC", a currency, is not one.
+fn debit_credit(text: &str) -> (String, Option<Marker>) {
+    let marker = |word: &str| match word.trim_end_matches('.').to_ascii_uppercase().as_str() {
+        "DR" => Some(Marker::Debit),
+        "CR" => Some(Marker::Credit),
+        _ => None,
+    };
+    let trimmed = text.trim();
+    // A trailing word: "42.17 DR", or glued to the digits: "42.17DR".
+    let tail_start = trimmed
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_ascii_alphabetic() || *c == '.')
+        .last()
+        .map(|(i, _)| i);
+    if let Some(i) = tail_start {
+        let (head, word) = trimmed.split_at(i);
+        let glued_or_spaced = head.ends_with(|c: char| c.is_ascii_digit() || c.is_whitespace());
+        if glued_or_spaced && let Some(found) = marker(word) {
+            return (head.trim().to_string(), Some(found));
+        }
+    }
+    // A leading word: "DR 42.17".
+    if let Some((word, rest)) = trimmed.split_once(char::is_whitespace)
+        && let Some(found) = marker(word)
+    {
+        return (rest.trim().to_string(), Some(found));
+    }
+    (trimmed.to_string(), None)
 }
 
 /// Minor units as a plain decimal string -- `-1234.50` -- with no symbol
@@ -210,6 +261,21 @@ mod tests {
         assert_eq!(parse_decimal("0.005", "USD").unwrap(), 1);
         assert_eq!(parse_decimal("-0.005", "USD").unwrap(), -1);
         assert_eq!(parse_decimal("0.004", "USD").unwrap(), 0);
+    }
+
+    #[test]
+    fn a_debit_or_credit_marker_is_the_sign() {
+        assert_eq!(parse_decimal("42.17 DR", "GBP").unwrap(), -4217);
+        assert_eq!(parse_decimal("42.17DR", "GBP").unwrap(), -4217);
+        assert_eq!(parse_decimal("100.00 CR", "AUD").unwrap(), 10_000);
+        assert_eq!(parse_decimal("100.00 cr.", "AUD").unwrap(), 10_000);
+        assert_eq!(parse_decimal("DR 5.00", "INR").unwrap(), -500);
+        // The marker decides even against a sign written beside it.
+        assert_eq!(parse_decimal("-42.17 DR", "GBP").unwrap(), -4217);
+        assert_eq!(parse_decimal("-100.00 CR", "GBP").unwrap(), 10_000);
+        // A currency code that happens to start with the letters is not one.
+        assert_eq!(parse_decimal("12.00 CRC", "CRC").unwrap(), 1200);
+        assert_eq!(parse_decimal("12.00 USD", "USD").unwrap(), 1200);
     }
 
     #[test]

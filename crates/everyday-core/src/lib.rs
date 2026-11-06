@@ -92,6 +92,7 @@ pub mod ics;
 pub mod id;
 pub mod insights;
 pub mod job;
+pub mod keepintouch;
 pub mod library;
 pub mod llm;
 pub mod lockfile;

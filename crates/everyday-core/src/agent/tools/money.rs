@@ -526,15 +526,14 @@ fn txn_ids(args: &Args<'_>) -> Result<Vec<TxnId>> {
 /// are not -- read before anything is written, so one stale id cannot fail
 /// a whole batch or be reported as changed. Refuses when none is.
 fn existing_txns(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<(Vec<TxnId>, Vec<String>)> {
-    let mut found = Vec::new();
-    let mut missing = Vec::new();
-    for id in txn_ids(args)? {
-        match ctx.vault.transaction(id) {
-            Ok(_) => found.push(id),
-            Err(Error::NotFound { .. }) => missing.push(id.to_string()),
-            Err(e) => return Err(e),
-        }
-    }
+    let wanted = txn_ids(args)?;
+    // One batched read to learn which exist, rather than a read and a decrypt
+    // per id ahead of the write that reads them all again.
+    let present: std::collections::HashSet<TxnId> =
+        ctx.vault.transactions_by_id(&wanted)?.into_iter().map(|t| t.id).collect();
+    let (found, missing): (Vec<TxnId>, Vec<TxnId>) =
+        wanted.into_iter().partition(|id| present.contains(id));
+    let missing: Vec<String> = missing.iter().map(ToString::to_string).collect();
     if found.is_empty() {
         return Err(
             args.bad("none of `ids` is a transaction. Call find_transactions and use ids from it.")

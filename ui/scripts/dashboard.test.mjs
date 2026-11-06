@@ -272,10 +272,16 @@ check(
 // another read of the vault; fourteen since the mail and meeting cards, which
 // share two reads between eight of them; fifteen since the Feed's, whose two
 // reads are one need; sixteen since "What's going on", whose three reads --
-// projects, what is under way, the shelves' verbs -- are one need too.
+// projects, what is under way, the shelves' verbs -- are one need too;
+// seventeen since "Who to get in touch with", one read of who is due.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 16,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 17,
+)
+check(
+  'the people card asks only for who is due',
+  [...needsOf(addWidget([], 'peopleDue'))],
+  ['people'],
 )
 // The Feed's card asks for the Feed and for nothing else, so a page with it on
 // does not also pay for a tracker window, and a page without it pays nothing

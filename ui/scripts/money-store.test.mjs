@@ -454,6 +454,13 @@ await money.setMonth(thisMonth())
   assert.equal(money.question, null, 'nothing to ask about')
   assert.match(app.error, /cannot be deleted/)
   app.error = null
+
+  // Decided by account, as the vault decides: a bank's line kept by hand --
+  // after its bank was disconnected with its history -- can go.
+  const bankLine = money.page.txns.find((t) => t.origin === 'bank')
+  const byHand = money.accounts.find((a) => a.linkId == null)
+  assert.equal(money.canDelete(bankLine), false)
+  assert.equal(money.canDelete({ ...bankLine, accountId: byHand.id }), true, 'by account')
 }
 
 // ── budgets and categories ───────────────────────────────────────────

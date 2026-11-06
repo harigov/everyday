@@ -570,10 +570,28 @@ is the one seeded shelf that **never looks anything up** — typing a friend's
 name does not send it to a search engine — and any other shelf can be set
 the same way with **Look things up on → Nowhere**.
 
+**Keeping in touch** (Settings → Keeping in touch, off until switched on)
+works from that shelf. Put somebody in a **circle** — Inner circle, Close,
+Occasional, each with its own number of days — or give them a number of
+their own, and the card says how they stand ("12 days overdue · Every 2
+weeks · Last caught up 10 Oct by phone"); **Due to get in touch** sorts the
+shelf by it. Each catch-up in the log says how it happened: a call, a
+message, in person. Every night the day's journal is read by the small model
+for who you were in touch with, and each person it names is logged against
+their card; a name that fits two contacts, or nobody yet, is asked about as a
+proposal rather than guessed. Mail you send to somebody's address and small
+meetings they are at are logged with no model at all. A few overdue people a
+week become **proposed tasks**, ticking one off counts as the catch-up, and a
+birthday, a date on their card or a festival they celebrate (from an all-day
+event on any calendar) is proposed a couple of days ahead with a reminder
+that morning. Any proposal not accepted is gone a week after it was made. See
+`docs/plans/keep-in-touch.md`.
+
 Seeded shelves are **upgraded once** when a release changes them — Films
 became Movies, Series became TV Shows, Places gained its type, Contacts
 arrived; later Recipes gained its ingredients and method, and Drinks
-arrived. A shelf you renamed keeps your name, a field you had already added
+arrived; then Contacts gained a circle, a frequency, other names, what they
+celebrate and dates to remember. A shelf you renamed keeps your name, a field you had already added
 is not added twice, a Drinks shelf you made yourself is not doubled, and a
 shelf you deleted after the upgrade stays deleted.
 

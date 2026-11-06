@@ -3171,6 +3171,108 @@
             "const": "stopped",
             "description": "Set aside or given up. Kept in the log because *when* you stopped is\nas much a fact as when you started.",
             "type": "string"
+          },
+          {
+            "const": "contact",
+            "description": "In touch with a person on the Contacts shelf: a call, a message, a\ncoffee. Its own event rather than `Revisited`, because a catch-up is\nnot a completion: a goal of \"finish 24 things this year\" must not go\nup every time somebody emails their mother. See\n[`crate::keepintouch`].",
+            "type": "string"
+          }
+        ]
+      },
+      "LogSource": {
+        "description": "Where a log row came from, when something other than the person typed it.\n\nWhat makes logging automatically safe to repeat: a row that already names\nits source for that person is not written again, however many times the\nentry is edited or the pass runs. It is also what a card links back to.",
+        "oneOf": [
+          {
+            "description": "A journal entry that says so.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "entry",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A message sent to them.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "thread",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A meeting they were at.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "event",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A task to get in touch with them, ticked off.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "task",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Via": {
+        "description": "How a catch-up with somebody happened.\n\nA closed set for the reason [`ItemStatus`] is one: \"how long since I last\nspoke to anyone on the phone\" is a question asked across people, and free\ntext would make \"call\", \"phone\" and \"rang\" three answers to it.",
+        "oneOf": [
+          {
+            "enum": [
+              "call",
+              "video",
+              "email",
+              "inPerson",
+              "other"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "message",
+            "description": "A text, a chat, a voice note: anything typed into somebody's phone.",
+            "type": "string"
           }
         ]
       }
@@ -3231,6 +3333,17 @@
           "null"
         ]
       },
+      "source": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/LogSource"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What wrote this row, if it was not typed here. See [`LogSource`]."
+      },
       "tz": {
         "description": "IANA time zone the date was decided in, so a log written in Tokyo\nstill reads as the day it was when it was written.",
         "type": "string"
@@ -3238,6 +3351,17 @@
       "updatedAt": {
         "format": "date-time",
         "type": "string"
+      },
+      "via": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Via"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "On a shelf of people, how this catch-up happened. `None` everywhere\nelse, and on a catch-up nobody said the means of."
       }
     },
     "required": [
@@ -5039,18 +5163,27 @@
       },
       "AboutKind": {
         "description": "What a proposal was reacting to, if anything.",
-        "enum": [
-          "task",
-          "block",
-          "event",
-          "note",
-          "entry",
-          "thread",
-          "memory",
-          "routine",
-          "goal"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "task",
+              "block",
+              "event",
+              "note",
+              "entry",
+              "thread",
+              "memory",
+              "routine",
+              "goal"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "item",
+            "description": "Somebody on the Contacts shelf. See [`crate::keepintouch`].",
+            "type": "string"
+          }
+        ]
       },
       "Assignee": {
         "description": "Who a task is for.",
@@ -5322,6 +5455,39 @@
           }
         ]
       },
+      "ExternalRating": {
+        "description": "Somebody else's score, as a source gave it.\n\nNormalised to `0..=100` on the way in so that four stars from one site\nand 82% from another can sit on the same row and be compared. `count`\ncarries how many people it is an average of, because 9.4 from eleven\npeople is a different fact from 9.4 from eleven thousand.",
+        "properties": {
+          "count": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "score": {
+            "description": "`0..=100`.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "source": {
+            "description": "Who said so: \"Open Library\", \"iTunes\".",
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "score"
+        ],
+        "type": "object"
+      },
       "Frequency": {
         "description": "How often a repeat comes round, before [`Recurrence::interval`] stretches\nit.",
         "enum": [
@@ -5331,6 +5497,459 @@
           "yearly"
         ],
         "type": "string"
+      },
+      "Item": {
+        "description": "One thing you are interested in.\n\nEvery field except `title` and `kind_id` is optional in practice, because\nthe fastest way to add something is to type its name and press Enter and\nlet the metadata arrive later — or never.",
+        "properties": {
+          "cover": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BlobId"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The cover, downloaded into the vault's blob store. See the module\ndocs for why it is not a URL the webview loads."
+          },
+          "coverUrl": {
+            "default": "",
+            "description": "Where the cover came from, kept so it can be fetched again if the\nblob is ever collected — and so the interface can say \"no picture\nyet\" rather than \"no picture\" while one is on its way.",
+            "type": "string"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "creator": {
+            "default": "",
+            "description": "Author, director, artist, developer, chef. One field rather than one\nper kind: it is what the card prints under the title and what the eye\nscans a shelf for, and a kind that wants finer distinctions has\n[`Kind::fields`] for them.",
+            "type": "string"
+          },
+          "external": {
+            "default": [],
+            "description": "Always written, even when empty -- as are `facts` and `links`.\n\nThe interface reads these three as a list or a map without asking\nwhether they are there, and they are empty on exactly the items a\nlookup found nothing for. Leaving them out of the JSON when empty\nmade every such card throw while drawing, so a film nothing online\nhad heard of was on the shelf and nowhere on the screen.",
+            "items": {
+              "$ref": "#/$defs/ExternalRating"
+            },
+            "type": "array"
+          },
+          "facts": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "description": "The kind's extra fields, keyed by [`FieldDef::key`].\n\nA `BTreeMap` rather than a `HashMap` so the serialised form is stable:\ntwo saves of an unchanged item produce identical bytes, which is what\nkeeps a conflict check honest and a backup diff readable.",
+            "type": "object"
+          },
+          "favourite": {
+            "default": false,
+            "description": "Starred. The same affordance a journal entry has, meaning the same\nthing: this one, out of all of them.",
+            "type": "boolean"
+          },
+          "finishedOn": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kindId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "links": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/Link"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "default": "",
+            "description": "Your notes. Plain text, for the reason a task's are: it keeps capture\nquick and keeps the shelf out of the attachment garbage collector.",
+            "type": "string"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Progress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Purpose"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What this is on the shelf *for*, if it is for anything.\n\nThe book you are reading because of a goal, rather than the twenty\nyou are reading because you like reading. Set on few items, and the\nreason \"read twelve books this year\" can be a goal with no project\nand no task anywhere near it."
+          },
+          "rating": {
+            "description": "Yours, `0..=100`. See [`stars`] for the conversion the interface uses.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sortOrder": {
+            "default": 0,
+            "description": "Manual ordering within a shelf; ties broken by the query's sort.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "source": {
+            "default": "",
+            "description": "Which metadata source filled this in, by\n[`Source`](crate::websearch::Source) slug. Empty for something typed\nin by hand, which is most of them.",
+            "type": "string"
+          },
+          "startedOn": {
+            "description": "When you started and finished, as *dates you chose*.\n\nDenormalised from the log on purpose. The log is the truth and a\nre-read adds to it; these two are the summary the card prints and the\nshelf sorts on, and computing them from an unbounded list of entries\non every draw is what a \"started\" column exists to avoid.",
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/$defs/ItemStatus",
+            "default": "wishlist"
+          },
+          "subtitle": {
+            "default": "",
+            "description": "A subtitle, a tagline, the name of the series a book is book three of.",
+            "type": "string"
+          },
+          "summary": {
+            "default": "",
+            "description": "The blurb, as a metadata source wrote it. Never edited by the app;\nwhat *you* think goes in `notes`, and keeping the two apart is what\nlets a re-fetch replace one without touching the other.",
+            "type": "string"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "year": {
+            "description": "Publication or release year. Signed, because history did not start in\n1970 and a place can be older than that.",
+            "format": "int16",
+            "maximum": 32767,
+            "minimum": -32768,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kindId",
+          "title",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "ItemStatus": {
+        "description": "Where an item is in its life.\n\nA closed set, unlike [`Kind`], and for the reason given in the module\ndocs: this is the axis every cross-kind question is asked along. What a\nkind gets to decide is the *word* — see [`Verbs`].",
+        "oneOf": [
+          {
+            "enum": [
+              "done"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "wishlist",
+            "description": "Noted down. The whole point of the app: somewhere to put a\nrecommendation before it evaporates.",
+            "type": "string"
+          },
+          {
+            "const": "active",
+            "description": "Reading it, watching it, playing it, now.",
+            "type": "string"
+          },
+          {
+            "const": "paused",
+            "description": "Started and set aside. Distinct from [`Abandoned`](Self::Abandoned):\nyou mean to come back to this one.",
+            "type": "string"
+          },
+          {
+            "const": "abandoned",
+            "description": "Given up on. Kept rather than deleted, because \"I tried it and it was\nnot for me\" is the answer you want the next time somebody recommends\nit, and a deleted row cannot give it.",
+            "type": "string"
+          }
+        ]
+      },
+      "Link": {
+        "description": "A link kept beside an item: where it was found, where to buy it, where\nthe recipe actually is.",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "url"
+        ],
+        "type": "object"
+      },
+      "LogCandidate": {
+        "description": "One of the people a name might mean.",
+        "properties": {
+          "itemId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "itemId",
+          "name"
+        ],
+        "type": "object"
+      },
+      "LogEntry": {
+        "description": "One occasion on which you did something about an item.\n\nSee the module docs: this exists so that \"what did I read when\" has an\nanswer that survives reading the thing twice.",
+        "properties": {
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "date": {
+            "description": "The day it happened, in `tz`. A civil date rather than an instant:\n\"I finished it on Tuesday\" is what a person knows, and pinning that\nto a clock time nobody recorded would be inventing precision.",
+            "format": "date",
+            "type": "string"
+          },
+          "event": {
+            "$ref": "#/$defs/LogEvent",
+            "default": "finished"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "itemId": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "minutes": {
+            "description": "How long you spent, if you care to say.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "note": {
+            "default": "",
+            "type": "string"
+          },
+          "position": {
+            "description": "Where you got to, for a [`LogEvent::Progress`] row.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rating": {
+            "description": "What you thought *at the time*. The item carries your current\nverdict; this carries the one you had on the day, and a re-read that\nchanges your mind leaves both on the record.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/LogSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What wrote this row, if it was not typed here. See [`LogSource`]."
+          },
+          "tz": {
+            "description": "IANA time zone the date was decided in, so a log written in Tokyo\nstill reads as the day it was when it was written.",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "via": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Via"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "On a shelf of people, how this catch-up happened. `None` everywhere\nelse, and on a catch-up nobody said the means of."
+          }
+        },
+        "required": [
+          "id",
+          "itemId",
+          "date",
+          "tz",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      },
+      "LogEvent": {
+        "description": "What sort of thing happened.\n\nThe set is short on purpose. A log is meant to be written in passing —\none tap on a card — and an app that first asks you to classify the event\nis an app whose log stays empty.",
+        "oneOf": [
+          {
+            "enum": [
+              "started"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "progress",
+            "description": "Got somewhere: page 143, episode 4. Carries\n[`LogEntry::position`].",
+            "type": "string"
+          },
+          {
+            "const": "finished",
+            "description": "Finished it. This is the row \"what did I watch in March\" counts.",
+            "type": "string"
+          },
+          {
+            "const": "revisited",
+            "description": "Went back to it — a re-read, a second visit, the album you have had\non all week. Distinct from a second `Finished` so that \"how many\ntimes\" and \"when did I first\" are both answerable.",
+            "type": "string"
+          },
+          {
+            "const": "note",
+            "description": "A thought, on a day, attached to nothing else.",
+            "type": "string"
+          },
+          {
+            "const": "stopped",
+            "description": "Set aside or given up. Kept in the log because *when* you stopped is\nas much a fact as when you started.",
+            "type": "string"
+          },
+          {
+            "const": "contact",
+            "description": "In touch with a person on the Contacts shelf: a call, a message, a\ncoffee. Its own event rather than `Revisited`, because a catch-up is\nnot a completion: a goal of \"finish 24 things this year\" must not go\nup every time somebody emails their mother. See\n[`crate::keepintouch`].",
+            "type": "string"
+          }
+        ]
+      },
+      "LogSource": {
+        "description": "Where a log row came from, when something other than the person typed it.\n\nWhat makes logging automatically safe to repeat: a row that already names\nits source for that person is not written again, however many times the\nentry is edited or the pass runs. It is also what a card links back to.",
+        "oneOf": [
+          {
+            "description": "A journal entry that says so.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "entry",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A message sent to them.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "thread",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A meeting they were at.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "event",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A task to get in touch with them, ticked off.",
+            "properties": {
+              "id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "task",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "id"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "MediaKind": {
         "enum": [
@@ -5683,18 +6302,54 @@
         ],
         "type": "string"
       },
+      "Progress": {
+        "description": "How far through you are.\n\n`unit` is copied from the [`Kind`] at the moment progress is first\nrecorded rather than read from it live, so that changing a kind from\npages to minutes does not silently relabel every book on the shelf.",
+        "properties": {
+          "position": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total": {
+            "description": "The finishing line, if it is known. A series you are watching as it\nairs has no total, and guessing one would be worse than saying\n\"episode 6\" and nothing else.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "position",
+          "unit"
+        ],
+        "type": "object"
+      },
       "ProposalKind": {
         "description": "What a proposal would make or change.\n\nAlso the unit [`ProposalPolicy`] switches on and off, so its spelling is\nthe settings' as well as the wire's.",
-        "enum": [
-          "task",
-          "block",
-          "memory",
-          "routine",
-          "note",
-          "mail",
-          "skill"
-        ],
-        "type": "string"
+        "oneOf": [
+          {
+            "enum": [
+              "task",
+              "block",
+              "memory",
+              "routine",
+              "note",
+              "mail",
+              "skill"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "log",
+            "description": "A catch-up the journal describes, when it is not clear who with or the\nperson is not a contact yet. See [`ProposedLog`].",
+            "type": "string"
+          }
+        ]
       },
       "ProposalSource": {
         "description": "Who made a proposal.",
@@ -5734,8 +6389,54 @@
               "conversationId"
             ],
             "type": "object"
+          },
+          {
+            "description": "Keeping in touch's nightly pass. See [`crate::keepintouch`].",
+            "properties": {
+              "type": {
+                "const": "keepInTouch",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         ]
+      },
+      "ProposedLog": {
+        "description": "A catch-up to write, once somebody has said who it was with.\n\nReading a journal logs a catch-up by itself when the name means one contact.\nThis is the other two cases. A name that fits nobody carries the card to make\nfor them in `new_contact`, and accepting makes it. A name that fits several\nlists them in `candidates`, and accepting has to say which, by way of an\nedited record whose `log` names that person.",
+        "properties": {
+          "askedAs": {
+            "description": "The name as the journal wrote it.",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/$defs/LogCandidate"
+            },
+            "type": "array"
+          },
+          "log": {
+            "$ref": "#/$defs/LogEntry"
+          },
+          "newContact": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Item"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "log",
+          "askedAs"
+        ],
+        "type": "object"
       },
       "ProposedRecord": {
         "description": "A record a proposal carries, whole.",
@@ -5828,6 +6529,23 @@
               },
               "value": {
                 "$ref": "#/$defs/Skill"
+              }
+            },
+            "required": [
+              "kind",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Boxed: a catch-up can carry a whole contact card, which would make every\nother record pay for its size.",
+            "properties": {
+              "kind": {
+                "const": "log",
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/ProposedLog"
               }
             },
             "required": [
@@ -6460,6 +7178,26 @@
               "type"
             ],
             "type": "object"
+          }
+        ]
+      },
+      "Via": {
+        "description": "How a catch-up with somebody happened.\n\nA closed set for the reason [`ItemStatus`] is one: \"how long since I last\nspoke to anyone on the phone\" is a question asked across people, and free\ntext would make \"call\", \"phone\" and \"rang\" three answers to it.",
+        "oneOf": [
+          {
+            "enum": [
+              "call",
+              "video",
+              "email",
+              "inPerson",
+              "other"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "message",
+            "description": "A text, a chat, a voice note: anything typed into somebody's phone.",
+            "type": "string"
           }
         ]
       },

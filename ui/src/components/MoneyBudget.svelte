@@ -72,8 +72,10 @@
     return { spent, budget }
   })
 
+  /** Spending in a category, signed as the core gives it: a month of refunds
+   *  can leave it below zero, and that is shown, never turned into spending. */
   function spentIn(id: MoneyCategoryId): number {
-    return Math.abs(spendById.get(id)?.spent ?? 0)
+    return spendById.get(id)?.spent ?? 0
   }
 
   function fmt(minor: number): string {
@@ -83,7 +85,7 @@
   /** How full the bar is, 0..100. Over budget draws a full bar. */
   function fill(spent: number, budget: number): number {
     if (budget <= 0) return 0
-    return Math.min(100, (spent / budget) * 100)
+    return Math.max(0, Math.min(100, (spent / budget) * 100))
   }
 
   function showTransactions(filter: CategoryFilter) {
@@ -169,6 +171,9 @@
       group: catGroup.trim(),
       kind: catKind,
       color: catColor,
+      // Only spending has a budget: one turned into income or a transfer
+      // gives its budget up, rather than being refused for keeping it.
+      budget: catKind === 'expense' ? c.budget : null,
     })
   }
 
@@ -369,7 +374,7 @@
                 {plural(uncategorized.count, 'transaction')} to sort
               </span>
             </span>
-            <span class="spent">{fmt(Math.abs(uncategorized.spent))}</span>
+            <span class="spent">{fmt(uncategorized.spent)}</span>
             <span class="limit">
               <button class="figure set" onclick={() => showTransactions('none')}>Sort them</button>
             </span>

@@ -2320,6 +2320,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "keep_in_touch_status",
+      "orScope": null,
+      "returns": "KeepInTouchStatus",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "threads",
@@ -2710,6 +2721,17 @@
       "orScope": null,
       "returns": "PartInfo[]",
       "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_people_due",
+      "orScope": null,
+      "returns": "PersonDue[]",
+      "scope": "library",
       "sensitive": false,
       "streams": false
     },
@@ -4742,6 +4764,20 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": {
+        "kind": "log",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "run_keep_in_touch",
+      "orScope": null,
+      "returns": "PassReport",
+      "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "id",
@@ -5145,6 +5181,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "settings",
+          "required": true,
+          "type": "KeepInTouchSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_keep_in_touch_settings",
+      "orScope": null,
+      "returns": "void",
+      "scope": "library",
       "sensitive": false,
       "streams": false
     },

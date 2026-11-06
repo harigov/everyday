@@ -78,6 +78,8 @@ import type {
   JobQuery,
   Journal,
   JournalId,
+  KeepInTouchSettings,
+  KeepInTouchStatus,
   Kind,
   KindId,
   KindInfo,
@@ -135,6 +137,8 @@ import type {
   Op,
   OpmlImportReport,
   PartInfo,
+  PassReport,
+  PersonDue,
   PlaidEnvironment,
   PlaidSetup,
   Profile,
@@ -424,6 +428,7 @@ export interface Commands {
     }
     result: InboxSender[]
   }
+  keepInTouchStatus: { args: Record<string, never>; result: KeepInTouchStatus }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
   lintMeetingTemplate: { args: { body: string }; result: string[] }
@@ -454,6 +459,7 @@ export interface Commands {
   listNewsSources: { args: Record<string, never>; result: SourceSummary[] }
   listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
+  listPeopleDue: { args: Record<string, never>; result: PersonDue[] }
   listProjects: { args: Record<string, never>; result: Project[] }
   listProposals: { args: { query?: ProposalQuery }; result: Proposal[] }
   listReadings: { args: { query: ReadingQuery }; result: Reading[] }
@@ -635,6 +641,7 @@ export interface Commands {
   }
   routineTemplates: { args: Record<string, never>; result: Template[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
+  runKeepInTouch: { args: Record<string, never>; result: PassReport }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
   runTool: {
     args: { name: string; arguments?: unknown; confirmDestructive?: boolean }
@@ -660,6 +667,7 @@ export interface Commands {
   saveItem: { args: { item: Item }; result: void }
   saveItems: { args: { items: Item[] }; result: void }
   saveJournal: { args: { journal: Journal }; result: void }
+  saveKeepInTouchSettings: { args: { settings: KeepInTouchSettings }; result: void }
   saveKind: { args: { kind: Kind }; result: void }
   saveLog: { args: { log: LogEntry }; result: void }
   saveMailSorting: { args: { sorting: MailSorting }; result: MailSortingView }
@@ -904,6 +912,7 @@ export const COMMAND_NAMES = {
   importTransactions: 'import_transactions',
   improveWriting: 'improve_writing',
   inboxSenders: 'inbox_senders',
+  keepInTouchStatus: 'keep_in_touch_status',
   label: 'label',
   libraryStats: 'library_stats',
   lintMeetingTemplate: 'lint_meeting_template',
@@ -931,6 +940,7 @@ export const COMMAND_NAMES = {
   listNewsSources: 'list_news_sources',
   listNotes: 'list_notes',
   listParts: 'list_parts',
+  listPeopleDue: 'list_people_due',
   listProjects: 'list_projects',
   listProposals: 'list_proposals',
   listReadings: 'list_readings',
@@ -1039,6 +1049,7 @@ export const COMMAND_NAMES = {
   rewriteSelection: 'rewrite_selection',
   routineTemplates: 'routine_templates',
   runImport: 'run_import',
+  runKeepInTouch: 'run_keep_in_touch',
   runRoutine: 'run_routine',
   runTool: 'run_tool',
   saveAccount: 'save_account',
@@ -1058,6 +1069,7 @@ export const COMMAND_NAMES = {
   saveItem: 'save_item',
   saveItems: 'save_items',
   saveJournal: 'save_journal',
+  saveKeepInTouchSettings: 'save_keep_in_touch_settings',
   saveKind: 'save_kind',
   saveLog: 'save_log',
   saveMailSorting: 'save_mail_sorting',
@@ -1272,6 +1284,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'import_transactions',
   'improve_writing',
   'inbox_senders',
+  'keep_in_touch_status',
   'label',
   'library_stats',
   'lint_meeting_template',
@@ -1299,6 +1312,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_news_sources',
   'list_notes',
   'list_parts',
+  'list_people_due',
   'list_projects',
   'list_proposals',
   'list_readings',
@@ -1407,6 +1421,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'rewrite_selection',
   'routine_templates',
   'run_import',
+  'run_keep_in_touch',
   'run_routine',
   'run_tool',
   'save_account',
@@ -1426,6 +1441,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_item',
   'save_items',
   'save_journal',
+  'save_keep_in_touch_settings',
   'save_kind',
   'save_log',
   'save_mail_sorting',
@@ -1627,6 +1643,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'revoke_remote_image_allowance',
   'rewrite_selection',
   'run_import',
+  'run_keep_in_touch',
   'run_routine',
   'run_tool',
   'save_account',
@@ -1646,6 +1663,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_item',
   'save_items',
   'save_journal',
+  'save_keep_in_touch_settings',
   'save_kind',
   'save_log',
   'save_mail_sorting',
@@ -1796,6 +1814,7 @@ export const CHANGE_KINDS = {
   restore_draft: 'draft',
   retry_recording: 'recording',
   revoke_remote_image_allowance: 'settings',
+  run_keep_in_touch: 'log',
   run_routine: 'routineRun',
   save_account: 'account',
   save_account_password: 'account',
@@ -1814,6 +1833,7 @@ export const CHANGE_KINDS = {
   save_item: 'item',
   save_items: 'item',
   save_journal: 'journal',
+  save_keep_in_touch_settings: 'settings',
   save_kind: 'shelf',
   save_log: 'log',
   save_mail_sorting: 'settings',

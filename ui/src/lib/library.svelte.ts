@@ -31,6 +31,7 @@ import { optimisticPatch } from './store/optimistic-patch'
 import { optimisticRemove } from './store/optimistic-remove'
 import { guardedRefresh } from './store/refresh'
 import { web, type SearchOutcome } from './websearch'
+import { isContactShelf } from './keepintouch'
 import type {
   ImageResult,
   Item,
@@ -42,6 +43,7 @@ import type {
   KindInfo,
   LibraryStats,
   LogEntry,
+  PersonDue,
   LogEvent,
   SearchResult,
 } from './types'
@@ -83,6 +85,14 @@ const viewPref = pref<View | null>(
 )
 const captureShelfPref = pref<KindId | null>('everyday.library.capture', (raw) => raw, null)
 
+/** Whoever is most overdue first, in the backend's order; everyone else after,
+ *  in the order the shelf was read in. */
+function dueOrder(items: Item[], due: PersonDue[]): Item[] {
+  const rank = new Map(due.map((p, i) => [p.itemId, p.daysOver >= 0 ? i : due.length + i]))
+  const last = due.length * 2
+  return [...items].sort((a, b) => (rank.get(a.id) ?? last) - (rank.get(b.id) ?? last))
+}
+
 class LibraryState {
   // -- what is on screen ------------------------------------------------
   view = $state<View>('grid')
@@ -114,6 +124,15 @@ class LibraryState {
   stats = $state<LibraryStats | null>(null)
   /** The open item's history, newest first. Loaded when it is opened. */
   logs = $state<LogEntry[]>([])
+  /**
+   * Everybody on the Contacts shelf with a frequency, most overdue first.
+   * Loaded with that shelf, and with nothing else: no other shelf asks.
+   */
+  due = $state<PersonDue[]>([])
+  /** On the Contacts shelf, whoever is most overdue first. */
+  dueFirst = $state(false)
+  /** `due` by person, so a grid of cards each finding itself is not n². */
+  dueById = $derived(new Map(this.due.map((p) => [p.itemId, p])))
   selected = $state<ItemId | null>(null)
 
   loading = $state(false)
@@ -213,6 +232,7 @@ class LibraryState {
     this.kinds = []
     this.items = []
     this.logs = []
+    this.due = []
     this.stats = null
     this.selected = null
     this.query = ''
@@ -264,7 +284,35 @@ class LibraryState {
 
   setSort(sort: ItemSort) {
     this.sort = sort
+    this.dueFirst = false
     void this.refresh()
+  }
+
+  /** Order the Contacts shelf by who is most overdue. Drawn here, not asked of
+   *  the backend: lateness is worked out from the log, not kept on the item. */
+  setDueFirst() {
+    this.dueFirst = true
+    void this.refresh()
+  }
+
+  /** Where one person stands, if they have a frequency. */
+  dueOf(id: ItemId): PersonDue | null {
+    return this.dueById.get(id) ?? null
+  }
+
+  /** Re-read who is due: on the Contacts shelf, or with a person open from
+   *  anywhere else -- the everything view, a search, Overview. */
+  async refreshDue() {
+    const person = this.item !== null && isContactShelf(this.kindOf(this.item))
+    if (!isContactShelf(this.kind) && !person) {
+      this.due = []
+      return
+    }
+    try {
+      this.due = await api.peopleDue()
+    } catch (e) {
+      await handle(e)
+    }
   }
 
   setView(view: View) {
@@ -396,7 +444,8 @@ class LibraryState {
     await guardedRefresh(
       this.#generation,
       async (isCurrent) => {
-        const [items, stats] = await Promise.all([
+        const people = isContactShelf(this.kind)
+        const [items, stats, due] = await Promise.all([
           api.items({
             kindId: this.shelf,
             statuses: statusesFor(this.filter),
@@ -410,9 +459,11 @@ class LibraryState {
             limit: null,
           }),
           api.libraryStats(),
+          people ? api.peopleDue() : Promise.resolve([]),
         ])
         if (!isCurrent()) return
-        this.items = items
+        this.due = due
+        this.items = this.dueFirst && this.due.length > 0 ? dueOrder(items, this.due) : items
         this.stats = stats
         // A selection that has scrolled out of the filter is dropped rather
         // than left pointing at a card nobody can see.
@@ -502,6 +553,7 @@ class LibraryState {
       const at = this.items.findIndex((i) => i.id === id)
       if (at >= 0) this.items[at] = fresh
       this.logs = await api.logs({ itemId: id })
+      if (isContactShelf(this.kindOf(fresh))) void this.refreshDue()
     } catch (e) {
       await handle(e)
     }
@@ -591,6 +643,7 @@ class LibraryState {
       await api.saveLog(entry)
       if (this.selected === id) this.logs = await api.logs({ itemId: id })
       void this.refreshCounts()
+      void this.refreshDue()
     } catch (e) {
       await handle(e)
     }
@@ -600,6 +653,7 @@ class LibraryState {
     try {
       await api.saveLog($state.snapshot(entry))
       if (this.selected) this.logs = await api.logs({ itemId: this.selected })
+      void this.refreshDue()
     } catch (e) {
       await handle(e)
     }
@@ -610,6 +664,7 @@ class LibraryState {
     try {
       await api.deleteLog(id)
       void this.refreshCounts()
+      void this.refreshDue()
     } catch (e) {
       await handle(e)
     }

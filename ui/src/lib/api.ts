@@ -69,6 +69,7 @@ import type {
   Journal,
   JournalId,
   Kind,
+  KeepInTouchSettings,
   KindId,
   LogEntry,
   LogEvent,
@@ -1190,6 +1191,10 @@ export const api = {
   deleteLog: (id: LogId) => call('deleteLog', { id }),
 
   libraryStats: () => call('libraryStats', {}),
+  keepInTouch: () => call('keepInTouchStatus', {}),
+  saveKeepInTouch: (settings: KeepInTouchSettings) => call('saveKeepInTouchSettings', { settings }),
+  peopleDue: () => call('listPeopleDue', {}),
+  runKeepInTouch: () => call('runKeepInTouch', {}),
 
   // ── Web search ─────────────────────────────────────────────────────
   //

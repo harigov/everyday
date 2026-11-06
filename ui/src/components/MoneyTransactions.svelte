@@ -43,7 +43,7 @@
   const pickedRows = $derived(rows.filter((t) => picked.has(t.id)))
   const allPicked = $derived(rows.length > 0 && pickedRows.length === rows.length)
   /** Only what was imported or typed in can be deleted; a bank's own rows come back on sync. */
-  const deletable = $derived(pickedRows.length > 0 && pickedRows.every((t) => t.origin !== 'bank'))
+  const deletable = $derived(pickedRows.length > 0 && pickedRows.every((t) => money.canDelete(t)))
   const allExcluded = $derived(pickedRows.length > 0 && pickedRows.every((t) => t.excluded))
 
   const narrowed = $derived(
@@ -129,7 +129,10 @@
         run: () => void money.categorize(ids, null),
       },
       SEP,
-      ids.every((id) => rows.find((r) => r.id === id)?.origin !== 'bank') && {
+      ids.every((id) => {
+        const row = rows.find((r) => r.id === id)
+        return !!row && money.canDelete(row)
+      }) && {
         label: 'Delete…',
         icon: 'trash',
         danger: true,
@@ -146,7 +149,7 @@
   }
 
   function deletePicked() {
-    const ids = pickedRows.filter((t) => t.origin !== 'bank').map((t) => t.id)
+    const ids = pickedRows.filter((t) => money.canDelete(t)).map((t) => t.id)
     if (ids.length > 0) void money.deleteTxns(ids)
   }
 

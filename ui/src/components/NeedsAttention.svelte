@@ -19,7 +19,8 @@
   import { assistant } from '../lib/assistant.svelte'
   import { groupMemories, PROPOSAL_KIND_LABELS } from '../lib/dream'
   import { panels } from '../lib/panels.svelte'
-  import { proposals } from '../lib/proposals.svelte'
+  import { library } from '../lib/library.svelte'
+  import { proposals, recordAs } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import { PROPOSAL_KINDS } from '../lib/types'
   import type { Proposal, ProposalKind } from '../lib/types'
@@ -85,7 +86,17 @@
       case 'skill':
         panels.openSettings('skills')
         break
+      case 'log':
+        void openPerson(p)
+        break
     }
+  }
+
+  /** A catch-up's person, on the Contacts shelf, once there is one to open. */
+  async function openPerson(p: Proposal) {
+    const value = recordAs(p, 'log')
+    if (!(await app.goTo('library'))) return
+    if (value && !value.newContact) await library.open(value.log.itemId)
   }
 </script>
 

@@ -16,7 +16,8 @@ use super::session::Domain;
 use crate::error::{Error, Result};
 use crate::id::{ItemId, KindId, LogId};
 use crate::library::{
-    Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds, upgrade_kinds,
+    CONTACT_SLUG, Item, ItemStatus, Kind, KindCount, LibraryStats, LogEntry, default_kinds,
+    upgrade_kinds,
 };
 use crate::record::RecordKind;
 use crate::store::library::{ItemQuery, LibraryStore, LogQuery};
@@ -27,7 +28,10 @@ impl Vault {
         self.with_library(|_| Ok(())).is_ok()
     }
 
-    fn with_library<T>(&self, f: impl FnOnce(&dyn LibraryStore) -> Result<T>) -> Result<T> {
+    pub(super) fn with_library<T>(
+        &self,
+        f: impl FnOnce(&dyn LibraryStore) -> Result<T>,
+    ) -> Result<T> {
         self.with_domain(Domain::Library, |s| s.library().map(f))
     }
 
@@ -181,6 +185,13 @@ impl Vault {
 
     pub fn delete_log(&self, id: LogId) -> Result<()> {
         self.writable()?;
+        // A row something other than the person wrote, deleted, is that thing
+        // being told it was wrong. See `KeepInTouch::dismissed`.
+        if let Ok(log) = self.log(id)
+            && log.source.is_some()
+        {
+            self.dismiss_catch_up(&log)?;
+        }
         self.with_library(|l| l.delete_log(id))?;
         self.wrote(RecordKind::Log, id);
         Ok(())
@@ -237,7 +248,17 @@ impl Vault {
                 (stats.rated > 0).then(|| (rated_total / stats.rated).min(100) as u8);
 
             let (from, to) = (jiff::civil::date(year, 1, 1), jiff::civil::date(year, 12, 31));
-            stats.finished_this_year = l.list_logs(&LogQuery::completions(from, to))?.len() as u64;
+            // People are not something anybody gets through: a catch-up is a
+            // completion to the log, and no answer to "what did I finish".
+            let people: std::collections::BTreeSet<ItemId> = {
+                let shelf = kinds.iter().find(|k| k.slug == CONTACT_SLUG).map(|k| k.id);
+                items.iter().filter(|i| Some(i.kind_id) == shelf).map(|i| i.id).collect()
+            };
+            stats.finished_this_year = l
+                .list_logs(&LogQuery::completions(from, to))?
+                .iter()
+                .filter(|log| !people.contains(&log.item_id))
+                .count() as u64;
 
             // Sidebar order, so the interface can render the counts against
             // the shelves without a join.

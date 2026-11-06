@@ -241,7 +241,7 @@ fn a_paused_link_gets_nothing() {
     vault.save_bank_link(&link).unwrap();
 
     let outcome = sync(&vault, &link, vec![bought("t1", 3, -100, "ONE")], &[]);
-    assert_eq!(outcome, SyncOutcome::default());
+    assert_eq!(outcome, SyncOutcome { paused: true, ..SyncOutcome::default() }, "and says why");
     assert!(vault.bank_accounts().unwrap().is_empty());
     assert!(all(&vault).is_empty());
 }
@@ -477,7 +477,11 @@ fn rules_never_override_a_persons_choice() {
     rule.category = Some(subscriptions.id);
     rule.rename = "Netflix".into();
     vault.save_money_rule(&rule).unwrap();
+    // "Run rules" sets the open one's category; applying the rule itself
+    // also gives it the rule's name, which a general run leaves to the
+    // person once a transaction is stored. Neither touches the person's.
     assert_eq!(vault.apply_money_rules(None).unwrap(), 1, "only the open one");
+    assert_eq!(vault.apply_money_rules(Some(rule.id)).unwrap(), 1, "its name, on purpose");
     assert_eq!(vault.apply_money_rules(Some(rule.id)).unwrap(), 0, "and nothing twice");
 
     let after = vault.transaction(mine.id).unwrap();
@@ -774,4 +778,104 @@ fn a_category_colour_is_a_hex_colour_and_nothing_a_style_could_run_on() {
         category.color = bad.into();
         assert!(vault.save_money_category(&category).is_err(), "{bad:?} was accepted");
     }
+}
+
+#[test]
+fn a_new_rule_applied_at_once_does_not_overrule_a_rule_above_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.ensure_money_defaults().unwrap();
+    let link = a_link(&vault);
+    let subscriptions = category_named(&vault, "Subscriptions");
+    let shopping = category_named(&vault, "General merchandise");
+    let mut prime = MoneyRule::new("amazon prime");
+    prime.category = Some(subscriptions.id);
+    prime.sort_order = 1;
+    vault.save_money_rule(&prime).unwrap();
+    sync(
+        &vault,
+        &link,
+        vec![bought("t1", 3, -1499, "AMAZON PRIME"), bought("t2", 4, -2599, "AMAZON MKTPLACE")],
+        &[],
+    );
+    assert_eq!(by_payee(&vault, "AMAZON PRIME").category, Some(subscriptions.id));
+
+    let mut amazon = MoneyRule::new("amazon");
+    amazon.category = Some(shopping.id);
+    amazon.sort_order = 2;
+    vault.save_money_rule(&amazon).unwrap();
+    vault.apply_money_rules(Some(amazon.id)).unwrap();
+    assert_eq!(
+        by_payee(&vault, "AMAZON PRIME").category,
+        Some(subscriptions.id),
+        "the rule above wins"
+    );
+    assert_eq!(by_payee(&vault, "AMAZON MKTPLACE").category, Some(shopping.id));
+
+    // And a full run agrees, so the answer does not depend on which ran last.
+    vault.apply_money_rules(None).unwrap();
+    assert_eq!(by_payee(&vault, "AMAZON PRIME").category, Some(subscriptions.id));
+}
+
+#[test]
+fn a_rerun_of_the_rules_leaves_a_persons_exclusion_and_name_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.ensure_money_defaults().unwrap();
+    let link = a_link(&vault);
+    let mut venmo = MoneyRule::new("venmo");
+    venmo.exclude = true;
+    venmo.rename = "Venmo".into();
+    vault.save_money_rule(&venmo).unwrap();
+    sync(&vault, &link, vec![bought("t1", 3, -2000, "VENMO PAYMENT")], &[]);
+    let t = only(&vault);
+    assert!(t.excluded && t.payee_override == "Venmo", "a rule acts as it arrives");
+
+    let patch = TxnPatch {
+        excluded: Some(false),
+        payee_override: Some(String::new()),
+        ..TxnPatch::default()
+    };
+    vault.update_transactions(&[t.id], &patch).unwrap();
+    vault.apply_money_rules(None).unwrap();
+    let t = only(&vault);
+    assert!(!t.excluded, "counted again stays counted");
+    assert!(t.payee_override.is_empty(), "a cleared name stays cleared");
+}
+
+#[test]
+fn a_bank_label_that_maps_to_nothing_takes_the_banks_category_away() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.ensure_money_defaults().unwrap();
+    let link = a_link(&vault);
+    let mut pay = bought("t1", 3, 250_000, "ACME CORP");
+    pay.bank_category = "INCOME/INCOME_WAGES".into();
+    sync(&vault, &link, vec![pay.clone()], &[]);
+    assert_eq!(only(&vault).categorized_by, CategorizedBy::Bank);
+
+    pay.bank_category = "TRANSFER_IN/TRANSFER_IN_DEPOSIT".into();
+    sync(&vault, &link, vec![pay], &[]);
+    let t = only(&vault);
+    assert_eq!(t.category, None);
+    assert_eq!(t.categorized_by, CategorizedBy::Nobody);
+}
+
+#[test]
+fn a_transaction_nobody_sorted_is_sorted_again_when_the_bank_renames_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    vault.ensure_money_defaults().unwrap();
+    let link = a_link(&vault);
+    let subscriptions = category_named(&vault, "Subscriptions");
+    let mut netflix = MoneyRule::new("netflix");
+    netflix.category = Some(subscriptions.id);
+    vault.save_money_rule(&netflix).unwrap();
+    sync(&vault, &link, vec![bought("t1", 3, -1549, "POS 1234")], &[]);
+    assert_eq!(only(&vault).category, None);
+
+    sync(&vault, &link, vec![bought("t1", 3, -1549, "NETFLIX.COM")], &[]);
+    let t = only(&vault);
+    assert_eq!(t.category, Some(subscriptions.id));
+    assert!(matches!(t.categorized_by, CategorizedBy::Rule { .. }));
 }

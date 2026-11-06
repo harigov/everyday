@@ -446,6 +446,14 @@ async fn every_offline_write_announces_what_was_written_down() {
         call(&svc, &h, "new_log", json!({ "itemId": item1_id, "event": "started" })).await;
     run(&svc, &h, "save_log", json!({ "log": log_entry })).await;
 
+    // Keeping in touch: its settings, then a check with the journal left
+    // unread, since there is no model here. What needs none still runs.
+    let mut touch = call(&svc, &h, "keep_in_touch_status", json!({})).await["settings"].clone();
+    touch["enabled"] = json!(true);
+    touch["readJournal"] = json!(false);
+    run(&svc, &h, "save_keep_in_touch_settings", json!({ "settings": touch })).await;
+    run(&svc, &h, "run_keep_in_touch", json!({})).await;
+
     run(
         &svc,
         &h,

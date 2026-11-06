@@ -52,6 +52,8 @@ export type SettingsTab =
   // The Plaid keys a person brings for Money -- see `docs/plans/money.md`.
   | 'money'
   | 'meetings'
+  // Settings for the Contacts shelf's catch-ups -- see KeepInTouchPanel.
+  | 'keepintouch'
   | 'data'
   | 'vault'
 

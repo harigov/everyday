@@ -46,6 +46,7 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   chat: 'the Chat tab, where the assistant is reached from a chat app',
   money: 'the Money tab, where the keys for linking banks through Plaid are kept',
   meetings: 'the Meetings tab',
+  keepintouch: 'the Keeping in touch tab, how often to keep up with people',
   data: 'the Data tab, import and export',
   vault: 'the Vault tab',
 }

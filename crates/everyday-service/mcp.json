@@ -1767,7 +1767,8 @@
               "finished",
               "revisited",
               "note",
-              "stopped"
+              "stopped",
+              "contact"
             ],
             "type": "string"
           },
@@ -1943,7 +1944,8 @@
               "routine",
               "note",
               "mail",
-              "skill"
+              "skill",
+              "log"
             ],
             "type": "string"
           },
@@ -2317,7 +2319,8 @@
               "finished",
               "revisited",
               "note",
-              "stopped"
+              "stopped",
+              "contact"
             ],
             "type": "string"
           },
@@ -2340,6 +2343,18 @@
           "rating": {
             "description": "Out of 10, if this occasion is worth rating on its own.",
             "type": "number"
+          },
+          "via": {
+            "description": "For a person: how you were in touch.",
+            "enum": [
+              "call",
+              "video",
+              "message",
+              "email",
+              "inPerson",
+              "other"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -2501,6 +2516,25 @@
       "scope": "journals",
       "sensitivity": "ordinary",
       "title": "Overview"
+    },
+    {
+      "domain": "library",
+      "effect": "read",
+      "name": "people_due",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "library",
+      "sensitivity": "ordinary",
+      "title": "People due"
     },
     {
       "domain": "agent",

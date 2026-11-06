@@ -47,6 +47,23 @@
 >   interface opens the normalised Hosted Link address, cancels a sign-in on
 >   a screen lock and reloads nothing behind the lock screen.
 >
+> - **From the code review** (15 findings, all fixed): a link paused while
+>   its pages arrive keeps its cursor (`SyncOutcome::paused`); Money's schema
+>   step is v23, after main's v22; one rule applied on purpose runs the whole
+>   list over just what it matches, so a rule above it keeps winning; a
+>   rule's rename and exclusion land only on arrival or when that rule is
+>   applied, never on a general "Run rules" (`rules::recategorize`);
+>   disconnecting refuses before telling Plaid when this copy may not write;
+>   `DR`/`CR` markers are the sign; net worth ends on the current balance
+>   only when it was known by the range's end; a bank label that now maps to
+>   nothing clears the bank's category, and a modified transaction nobody
+>   sorted is sorted again; the screens show refunds as negative spending
+>   rather than as spending; a category turned into income gives up its
+>   budget; deleting is offered by account, as the vault decides; moving a
+>   rule renumbers the list; the text helpers are one module
+>   (`money::text`); the categorise tools read the named transactions in one
+>   query.
+>
 > **Still open:**
 >
 > - Never run against a real Plaid account. Sandbox first (Plaid's
@@ -113,7 +130,7 @@
   (`everyday.money.key.v1`) of `plaid:<transaction_id>`,
   `import:<fitid>` or `import:<date|amount|payee|n>`, `manual:<id>`.
 
-## What is sealed, what is clear (schema v22)
+## What is sealed, what is clear (schema v23)
 
 Clear: ids, a transaction's account, keyed dedupe key and day; an account's
 link; a snapshot's account and day; a link state's next-due time; sort

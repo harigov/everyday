@@ -66,9 +66,6 @@ const MAX_BANK_TEXT: usize = 2000;
 /// The longest provider id (Plaid's, or a file's `FITID`) that is taken as
 /// one. Plaid's are under a hundred characters.
 const MAX_PROVIDER_ID: usize = 256;
-/// What is kept of a bank's account mask: the last four characters, so
-/// that whatever a provider sends, a full account number is never stored.
-const MASK_CHARS: usize = 4;
 /// The most problems an import reports by line.
 const MAX_PROBLEMS: usize = 20;
 
@@ -515,6 +512,13 @@ impl Vault {
         self.with_money(|m| m.get_txn(id))
     }
 
+    /// Many transactions at once, in no particular order; ids that do not
+    /// exist are left out rather than failing the call. One query, not one
+    /// per id.
+    pub fn transactions_by_id(&self, ids: &[TxnId]) -> Result<Vec<Txn>> {
+        self.with_money(|m| m.get_txns(ids))
+    }
+
     /// Apply a person's change to many transactions at once, inside one
     /// exclusive section. Setting a category makes it the person's
     /// ([`crate::money::CategorizedBy::Person`]); clearing it makes it
@@ -789,7 +793,9 @@ impl Vault {
     /// stored accounts know is skipped. (A stored account the delta left out
     /// still takes its transactions: dropping them while the caller moves
     /// its cursor past them would lose them for good.) Writes nothing to a
-    /// paused link's accounts -- the caller should not have synced it -- and
+    /// paused link's accounts -- and answers [`SyncOutcome::paused`], so a
+    /// caller that fetched the delta before the pause leaves its cursor alone --
+    /// and
     /// refuses a link that does not exist.
     ///
     /// The details a delta can get wrong are settled here rather than
@@ -808,7 +814,10 @@ impl Vault {
             let key = u.cipher.derive_subkey(MONEY_KEY_LABEL);
             let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
             if money.get_link(link)?.paused {
-                return Ok(Applied::default());
+                // Paused while the delta was on its way: say so, so the cursor
+                // stays where it was and the delta arrives again on unpause.
+                let outcome = SyncOutcome { paused: true, ..SyncOutcome::default() };
+                return Ok(Applied { outcome, ..Applied::default() });
             }
             apply_sync(money, &key, link, delta, today)
         })?;
@@ -1001,16 +1010,27 @@ impl Vault {
         self.writable()?;
         let changed = self.write(|u| {
             let money = pick_domain(u.store.as_ref(), Domain::Money, |s| s.money())?;
-            let rules = match only {
-                Some(id) => vec![money.get_rule(id)?],
-                None => ordered_rules(money)?,
-            };
+            let rules = ordered_rules(money)?;
             if rules.is_empty() {
                 return Ok(Vec::new());
             }
+            // One rule, applied on purpose (a new one, or its own "apply"):
+            // only what it matches is touched, and the whole list still
+            // decides -- a rule earlier in it keeps the transactions it
+            // already had, so a new rule cannot overrule one above it.
+            let target = match only {
+                Some(id) => Some(money.get_rule(id)?),
+                None => None,
+            };
             let mut changed = Vec::new();
             for mut txn in money.txns(&[], None, None)? {
-                if rules::apply(&rules, &mut txn) {
+                let touched = match &target {
+                    Some(rule) => rules::matches(rule, &txn) && rules::apply(&rules, &mut txn),
+                    // "Run rules" over the history: categories only, since a
+                    // stored transaction's name and exclusion are the person's.
+                    None => rules::recategorize(&rules, &mut txn),
+                };
+                if touched {
                     changed.push(txn);
                 }
             }
@@ -1190,13 +1210,12 @@ fn name_text(what: &str, text: &str) -> Result<String> {
 
 /// A currency a person chose: three ASCII letters, upper-cased.
 fn currency_code(text: &str) -> Result<String> {
-    let code = text.trim();
-    if code.len() != 3 || !code.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return Err(Error::Invalid(format!(
-            "a currency is a three-letter code, like USD -- not {code:?}"
-        )));
-    }
-    Ok(code.to_ascii_uppercase())
+    crate::money::text::currency_code(text).ok_or_else(|| {
+        Error::Invalid(format!(
+            "a currency is a three-letter code, like USD -- not {:?}",
+            text.trim()
+        ))
+    })
 }
 
 /// A currency a bank or a sync named, upper-cased. Plaid sends ISO codes
@@ -1221,26 +1240,10 @@ fn bank_text(text: &str, max: usize) -> String {
     // becomes a space.
     let cleaned: String = text
         .chars()
-        .filter(|c| !is_invisible(*c))
+        .filter(|c| !crate::money::text::is_invisible(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect();
     cleaned.trim().chars().take(max).collect()
-}
-
-/// Bidirectional overrides and isolates, zero-width characters and the
-/// byte-order mark: characters that change how text reads without being
-/// seen.
-fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
-    )
-}
-
-/// The last [`MASK_CHARS`] characters of a bank's mask.
-fn mask_of(text: &str) -> String {
-    let chars: Vec<char> = text.trim().chars().collect();
-    chars[chars.len().saturating_sub(MASK_CHARS)..].iter().collect()
 }
 
 /// What a newly synced account is called: the bank's name for it, else its
@@ -1254,7 +1257,7 @@ fn synced_name(account: &SyncedAccount) -> String {
     if !official.is_empty() {
         return official;
     }
-    let mask = mask_of(&account.mask);
+    let mask = crate::money::text::mask(&account.mask);
     if mask.is_empty() { "Account".to_string() } else { format!("Account {mask}") }
 }
 
@@ -1372,19 +1375,38 @@ impl Sorter {
         }
     }
 
-    /// A transaction the bank categorised before, now with the bank's
-    /// latest label. Anyone else's choice is left alone.
+    /// A stored transaction the bank changed. One the bank categorised
+    /// follows the bank's latest label -- to no category, if the label now
+    /// maps to none. One nobody categorised gets another look, since the
+    /// change often brings the merchant's real name where a pending charge
+    /// had a terminal's: the rules' categories, then the bank's label. A
+    /// rule's or a person's choice is left alone, and so are the name and
+    /// the exclusion, which are the person's once stored.
     fn refresh(&self, txn: &mut Txn) {
-        if txn.categorized_by == CategorizedBy::Bank {
-            self.categorize_from_bank(txn);
+        match txn.categorized_by {
+            CategorizedBy::Bank => {
+                if !self.categorize_from_bank(txn) {
+                    txn.category = None;
+                    txn.categorized_by = CategorizedBy::Nobody;
+                }
+            }
+            CategorizedBy::Nobody => {
+                if !rules::recategorize(&self.rules, txn) {
+                    self.categorize_from_bank(txn);
+                }
+            }
+            CategorizedBy::Rule { .. } | CategorizedBy::Person => {}
         }
     }
 
-    fn categorize_from_bank(&self, txn: &mut Txn) {
-        let Some(name) = defaults::for_bank_category(&txn.bank_category) else { return };
-        let Some(id) = self.by_name.get(&name.to_lowercase()).copied() else { return };
+    /// The bank's label mapped onto a category of that name. Whether one was
+    /// found (and set).
+    fn categorize_from_bank(&self, txn: &mut Txn) -> bool {
+        let Some(name) = defaults::for_bank_category(&txn.bank_category) else { return false };
+        let Some(id) = self.by_name.get(&name.to_lowercase()).copied() else { return false };
         txn.category = Some(id);
         txn.categorized_by = CategorizedBy::Bank;
+        true
     }
 }
 
@@ -1429,7 +1451,7 @@ fn apply_sync(
         // The bank's half. `name`, `hidden` and `sort_order` are the
         // person's and stay as they are.
         account.official_name = bank_text(&synced.official_name, MAX_NAME);
-        account.mask = mask_of(&synced.mask);
+        account.mask = crate::money::text::mask(&synced.mask);
         account.kind = synced.kind;
         account.subtype = bank_text(&synced.subtype, MAX_NAME);
         account.currency = synced_currency(&synced.currency, &account.currency);

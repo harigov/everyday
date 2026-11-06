@@ -302,15 +302,38 @@ async fn a_fake_clock_proves_the_sweep_without_waiting_a_week_or_backdating_anyt
         "six days into a seven-day expiry, the proposal must still be pending"
     );
 
-    // A day past it: the same tick closes it.
+    // A day past it: the same tick closes it, and since nobody accepted it in
+    // the week it was kept for, deletes it, leaving only a trace for the
+    // weekly dream's stop list.
     clock.set(made_at + jiff::SignedDuration::from_hours(24 * 8));
     scheduler::tick(&svc).await;
-    let closed = vault.proposal(proposal.id).unwrap();
     assert!(
-        matches!(closed.outcome, ProposalOutcome::Expired { .. }),
-        "eight days into a seven-day expiry, the proposal must have been swept: {:?}",
-        closed.outcome
+        vault.proposal(proposal.id).is_err(),
+        "eight days after it was made, an unanswered proposal must be gone"
     );
+    let traces = vault.proposal_traces().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!((traces[0].kind, traces[0].made_at), (proposal.kind, made_at));
+}
+
+#[tokio::test]
+async fn a_task_due_today_expires_tonight_and_stays_answered_for_the_week() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let made_at: Timestamp = "2026-01-01T09:00:00Z".parse().unwrap();
+    let clock = Arc::new(support::clock::FakeClock::at(made_at));
+    svc.set_clock(clock.clone());
+
+    let mut task = everyday_core::Task::new("Call the plumber");
+    task.due_date = Some(jiff::civil::date(2026, 1, 1));
+    let proposal =
+        Proposal::new(Payload::Create { record: ProposedRecord::Task(task) }, "x", made_at, "UTC");
+    vault.save_proposal(&proposal).unwrap();
+
+    clock.set(made_at + jiff::SignedDuration::from_hours(24));
+    scheduler::tick(&svc).await;
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(matches!(closed.outcome, ProposalOutcome::Expired { .. }), "{:?}", closed.outcome);
 }
 
 #[tokio::test]

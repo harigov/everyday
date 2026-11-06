@@ -908,7 +908,7 @@ fn synced_account(wire: WireAccount) -> Option<SyncedAccount> {
         provider_account_id,
         name,
         official_name,
-        mask: last_four(&nonblank_owned(wire.mask).unwrap_or_default()),
+        mask: everyday_core::money::text::mask(&nonblank_owned(wire.mask).unwrap_or_default()),
         kind: AccountKind::from_plaid(wire.kind.as_deref().unwrap_or_default()),
         subtype: nonblank_owned(wire.subtype).unwrap_or_default(),
         balance: minor(balances.current),
@@ -916,13 +916,6 @@ fn synced_account(wire: WireAccount) -> Option<SyncedAccount> {
         limit: minor(balances.limit),
         currency,
     })
-}
-
-/// At most the last four characters of a mask. Plaid sends two to four; a
-/// longer one is not something this application wants to be holding.
-fn last_four(mask: &str) -> String {
-    let chars: Vec<char> = mask.chars().collect();
-    chars[chars.len().saturating_sub(4)..].iter().collect()
 }
 
 /// `iso_currency_code`, else `unofficial_currency_code`, else dollars, upper
@@ -1280,7 +1273,7 @@ mod tests {
         assert_eq!(checking.subtype, "checking");
         assert_eq!(checking.name, "Plaid Checking");
         assert_eq!(checking.official_name, "Plaid Gold Standard 0% Interest Checking");
-        assert_eq!(last_four("123456789"), "6789");
+        assert_eq!(everyday_core::money::text::mask("123456789"), "6789");
     }
 
     #[test]

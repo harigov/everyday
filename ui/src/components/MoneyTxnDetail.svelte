@@ -176,7 +176,7 @@
 
     <section class="foot">
       <p class="hint">{origin}</p>
-      {#if txn.origin !== 'bank'}
+      {#if money.canDelete(txn)}
         <button class="btn btn-ghost-danger" onclick={() => void money.deleteTxns([txn.id])}>
           <Icon name="trash" size={14} /> Delete…
         </button>

@@ -38,7 +38,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::{Memory, Skill};
 use crate::error::{Error, Result};
-use crate::id::{ConversationId, DraftId, ProposalId, RoutineRunId};
+use crate::id::{ConversationId, DraftId, ItemId, ProposalId, RoutineRunId};
+use crate::library::{Item, LogEntry};
 use crate::note::Note;
 use crate::record::RecordKind;
 use crate::routine::{DreamScope, Routine};
@@ -56,6 +57,17 @@ pub const MAX_WHY_CHARS: usize = 200;
 /// vault refuses a new pending proposal past this, and a dream is told how
 /// many are pending before it starts.
 pub const MAX_PENDING_PROPOSALS: u64 = 40;
+
+/// How long a proposal is kept unless it is accepted.
+///
+/// The most any of them waits for an answer, whatever it is, and the point at
+/// which [`Vault::purge_proposals`](crate::Vault::purge_proposals) deletes one
+/// that was declined, ignored or left to expire. An accepted one stays, as the
+/// only record of where its task came from.
+pub const PROPOSAL_DAYS: i64 = 7;
+
+/// How many [`ProposalTrace`]s are kept.
+pub const MAX_PROPOSAL_TRACES: usize = 300;
 
 /// How many proposals one dream run may make.
 pub const fn max_per_run(scope: DreamScope) -> usize {
@@ -80,10 +92,13 @@ pub enum ProposalKind {
     Note,
     Mail,
     Skill,
+    /// A catch-up the journal describes, when it is not clear who with or the
+    /// person is not a contact yet. See [`ProposedLog`].
+    Log,
 }
 
 impl ProposalKind {
-    pub const ALL: [ProposalKind; 7] = [
+    pub const ALL: [ProposalKind; 8] = [
         ProposalKind::Task,
         ProposalKind::Block,
         ProposalKind::Memory,
@@ -91,6 +106,7 @@ impl ProposalKind {
         ProposalKind::Note,
         ProposalKind::Mail,
         ProposalKind::Skill,
+        ProposalKind::Log,
     ];
 
     /// The clear-column spelling. Stable: it is stored.
@@ -103,6 +119,7 @@ impl ProposalKind {
             ProposalKind::Note => "note",
             ProposalKind::Mail => "mail",
             ProposalKind::Skill => "skill",
+            ProposalKind::Log => "log",
         }
     }
 
@@ -125,12 +142,13 @@ impl From<ProposalKind> for RecordKind {
             ProposalKind::Note => RecordKind::Note,
             ProposalKind::Mail => RecordKind::Draft,
             ProposalKind::Skill => RecordKind::Skill,
+            ProposalKind::Log => RecordKind::Log,
         }
     }
 }
 
-/// The reverse of [`From<ProposalKind> for RecordKind`], for the seven kinds
-/// a proposal can actually carry. `Err(())` for the other twenty-six --
+/// The reverse of [`From<ProposalKind> for RecordKind`], for the eight kinds
+/// a proposal can actually carry. `Err(())` for the other twenty-five --
 /// there is no proposal kind for a journal entry or a mailbox, and returning
 /// that plainly is more honest than picking one.
 impl TryFrom<RecordKind> for ProposalKind {
@@ -145,6 +163,7 @@ impl TryFrom<RecordKind> for ProposalKind {
             RecordKind::Note => Ok(ProposalKind::Note),
             RecordKind::Draft => Ok(ProposalKind::Mail),
             RecordKind::Skill => Ok(ProposalKind::Skill),
+            RecordKind::Log => Ok(ProposalKind::Log),
             RecordKind::Journal
             | RecordKind::Entry
             | RecordKind::Project
@@ -152,7 +171,6 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::Event
             | RecordKind::Kind
             | RecordKind::Item
-            | RecordKind::Log
             | RecordKind::Tracker
             | RecordKind::Reading
             | RecordKind::Role
@@ -182,6 +200,35 @@ impl TryFrom<RecordKind> for ProposalKind {
     }
 }
 
+/// One of the people a name might mean.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct LogCandidate {
+    pub item_id: ItemId,
+    pub name: String,
+}
+
+/// A catch-up to write, once somebody has said who it was with.
+///
+/// Reading a journal logs a catch-up by itself when the name means one contact.
+/// This is the other two cases. A name that fits nobody carries the card to make
+/// for them in `new_contact`, and accepting makes it. A name that fits several
+/// lists them in `candidates`, and accepting has to say which, by way of an
+/// edited record whose `log` names that person.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ProposedLog {
+    pub log: LogEntry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_contact: Option<Item>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<LogCandidate>,
+    /// The name as the journal wrote it.
+    pub asked_as: String,
+}
+
 /// A record a proposal carries, whole.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -193,6 +240,9 @@ pub enum ProposedRecord {
     Routine(Routine),
     Note(Note),
     Skill(Skill),
+    /// Boxed: a catch-up can carry a whole contact card, which would make every
+    /// other record pay for its size.
+    Log(Box<ProposedLog>),
 }
 
 impl ProposedRecord {
@@ -204,6 +254,7 @@ impl ProposedRecord {
             ProposedRecord::Routine(_) => ProposalKind::Routine,
             ProposedRecord::Note(_) => ProposalKind::Note,
             ProposedRecord::Skill(_) => ProposalKind::Skill,
+            ProposedRecord::Log(_) => ProposalKind::Log,
         }
     }
 
@@ -216,6 +267,7 @@ impl ProposedRecord {
             ProposedRecord::Routine(r) => r.id.to_string(),
             ProposedRecord::Note(r) => r.id.to_string(),
             ProposedRecord::Skill(r) => r.id.to_string(),
+            ProposedRecord::Log(r) => r.log.id.to_string(),
         }
     }
 
@@ -227,6 +279,7 @@ impl ProposedRecord {
             ProposedRecord::Routine(r) => r.updated_at,
             ProposedRecord::Note(r) => r.updated_at,
             ProposedRecord::Skill(r) => r.updated_at,
+            ProposedRecord::Log(r) => r.log.updated_at,
         }
     }
 
@@ -246,6 +299,12 @@ impl ProposedRecord {
             ProposedRecord::Routine(r) => r.validate(),
             ProposedRecord::Note(n) => n.validate(),
             ProposedRecord::Skill(s) => s.validate(),
+            ProposedRecord::Log(l) => {
+                if l.new_contact.as_ref().is_some_and(|c| c.title.trim().is_empty()) {
+                    return Err(Error::Invalid("a contact needs a name".into()));
+                }
+                Ok(())
+            }
         }
     }
 
@@ -301,6 +360,11 @@ impl Payload {
                         "a mail proposal sends a draft; it cannot delete one".into(),
                     ));
                 }
+                if *kind == ProposalKind::Log {
+                    return Err(Error::Invalid(
+                        "a catch-up proposal writes a row; it cannot delete one".into(),
+                    ));
+                }
                 if id.trim().is_empty() {
                     return Err(Error::Invalid(
                         "a deletion needs the id of what it deletes".into(),
@@ -327,6 +391,8 @@ pub enum AboutKind {
     Memory,
     Routine,
     Goal,
+    /// Somebody on the Contacts shelf. See [`crate::keepintouch`].
+    Item,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -351,12 +417,13 @@ impl From<AboutKind> for RecordKind {
             AboutKind::Memory => RecordKind::Memory,
             AboutKind::Routine => RecordKind::Routine,
             AboutKind::Goal => RecordKind::Goal,
+            AboutKind::Item => RecordKind::Item,
         }
     }
 }
 
-/// The reverse, for the nine kinds a proposal's "about" can actually name.
-/// `Err(())` for the other twenty-four -- nothing has ever reacted to a
+/// The reverse, for the ten kinds a proposal's "about" can actually name.
+/// `Err(())` for the other twenty-three -- nothing has ever reacted to a
 /// mailbox or a recording, so there is no `AboutKind` for one.
 impl TryFrom<RecordKind> for AboutKind {
     type Error = ();
@@ -372,11 +439,11 @@ impl TryFrom<RecordKind> for AboutKind {
             RecordKind::Memory => Ok(AboutKind::Memory),
             RecordKind::Routine => Ok(AboutKind::Routine),
             RecordKind::Goal => Ok(AboutKind::Goal),
+            RecordKind::Item => Ok(AboutKind::Item),
             RecordKind::Journal
             | RecordKind::Project
             | RecordKind::Calendar
             | RecordKind::Kind
-            | RecordKind::Item
             | RecordKind::Log
             | RecordKind::Tracker
             | RecordKind::Reading
@@ -416,6 +483,8 @@ pub enum ProposalSource {
     Run { run_id: RoutineRunId },
     /// A conversation, through the rail's "later" button.
     Conversation { conversation_id: ConversationId },
+    /// Keeping in touch's nightly pass. See [`crate::keepintouch`].
+    KeepInTouch,
 }
 
 /// Why somebody said no. Optional, and one tap: forcing a reason is how a
@@ -432,6 +501,41 @@ pub enum DeclineReason {
     Other {
         text: String,
     },
+}
+
+/// What is left of a proposal nobody accepted, once it has been deleted.
+///
+/// That it happened, and nothing of what it was. The weekly dream's stop list
+/// asks whether the last three of a kind went unaccepted, and three can span
+/// more weeks than the proposals themselves are kept for. Without these it
+/// could only ever see the week, and a proposal left to expire is deleted the
+/// moment it does, so ignoring them would teach it nothing at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct ProposalTrace {
+    pub kind: ProposalKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<AboutKind>,
+    pub made_at: Timestamp,
+}
+
+impl ProposalTrace {
+    pub fn of(p: &Proposal) -> Self {
+        Self { kind: p.kind, about: p.about.as_ref().map(|a| a.kind), made_at: p.made_at }
+    }
+}
+
+/// Whether a proposal says anything about what the dreams should propose.
+///
+/// Keeping in touch makes its proposals in code, with its own cool-off. Ignoring
+/// three "get in touch with" tasks, or a festival's, is no reason to tell the
+/// dreams to stop proposing tasks. Known by who made it, and by the two shapes
+/// only it makes, for a proposal written before it said who.
+pub fn counts_towards_stop_list(p: &Proposal) -> bool {
+    p.made_by != Some(ProposalSource::KeepInTouch)
+        && p.kind != ProposalKind::Log
+        && p.about.as_ref().map(|a| a.kind) != Some(AboutKind::Item)
 }
 
 /// Where a proposal stands.
@@ -623,44 +727,34 @@ impl Proposal {
 
 /// When a proposal of this shape stops being worth answering.
 ///
+/// A week, or sooner when the thing itself has a date: nothing waits longer
+/// than [`PROPOSAL_DAYS`], so that what is on the screen is what the assistant
+/// made lately rather than a pile of what nobody got round to.
+///
 /// | Kind | Expires |
 /// |---|---|
-/// | Task | the end of its due day, or seven days |
-/// | Block | the block's end |
-/// | Memory | thirty days |
-/// | Routine | fourteen days |
-/// | Note | seven days |
-/// | Skill | fourteen days |
-/// | Mail | thirty days; the draft's own fate closes it sooner |
-/// | Delete | seven days |
+/// | Task | the end of its due day, or a week |
+/// | Block | the block's end, or a week |
+/// | Everything else | a week; a mail's draft's own fate closes it sooner |
 pub fn expiry_for(payload: &Payload, now: Timestamp, tz: &str) -> Timestamp {
-    let days = |n: i64| now + SignedDuration::from_hours(24 * n);
-    match payload {
-        Payload::Delete { .. } => days(7),
-        Payload::SendMail { .. } => days(30),
+    let latest = now + SignedDuration::from_hours(24 * PROPOSAL_DAYS);
+    let sooner = match payload {
         Payload::Create { record } | Payload::Replace { record, .. } => match record {
-            ProposedRecord::Task(t) => match t.due_date {
-                Some(due) => end_of_day(due, tz).filter(|end| *end > now).unwrap_or(days(1)),
-                None => days(7),
-            },
+            ProposedRecord::Task(t) => t.due_date.map(|due| {
+                end_of_day(due, tz)
+                    .filter(|end| *end > now)
+                    .unwrap_or(now + SignedDuration::from_hours(24))
+            }),
+            // A block already over is not worth offering; one hour lets a
+            // sweep close it rather than a save refuse it.
             ProposedRecord::Block(b) => {
-                if b.end > now {
-                    b.end
-                } else {
-                    // A block already over is not worth offering; one hour
-                    // lets a sweep close it rather than a save refuse it.
-                    now + SignedDuration::from_hours(1)
-                }
+                Some(if b.end > now { b.end } else { now + SignedDuration::from_hours(1) })
             }
-            ProposedRecord::Memory(_) => days(30),
-            // The same fourteen days as a routine: both are standing
-            // changes to how the assistant behaves rather than to one
-            // day's plan, so neither is worth the urgency a task's due
-            // date or a block's own end carries.
-            ProposedRecord::Routine(_) | ProposedRecord::Skill(_) => days(14),
-            ProposedRecord::Note(_) => days(7),
+            _ => None,
         },
-    }
+        _ => None,
+    };
+    sooner.map_or(latest, |at| at.min(latest))
 }
 
 fn end_of_day(day: Date, tz: &str) -> Option<Timestamp> {
@@ -724,28 +818,56 @@ mod tests {
     }
 
     #[test]
-    fn memory_routine_note_skill_delete_and_mail_have_fixed_lifetimes() {
-        let day = |n: i64| now() + SignedDuration::from_hours(24 * n);
+    fn everything_else_waits_a_week() {
+        let week = now() + SignedDuration::from_hours(24 * PROPOSAL_DAYS);
         let cases = [
-            (Payload::Create { record: ProposedRecord::Memory(Memory::new("x")) }, day(30)),
-            (
-                Payload::Create {
-                    record: ProposedRecord::Routine(Routine::new(
-                        "r",
-                        "do",
-                        crate::routine::Trigger::Manual,
-                    )),
-                },
-                day(14),
-            ),
-            (Payload::Create { record: ProposedRecord::Note(Note::new("n")) }, day(7)),
-            (Payload::Create { record: ProposedRecord::Skill(Skill::new("s")) }, day(14)),
-            (Payload::Delete { kind: ProposalKind::Task, id: "x".into() }, day(7)),
-            (Payload::SendMail { draft_id: DraftId::new() }, day(30)),
+            Payload::Create { record: ProposedRecord::Memory(Memory::new("x")) },
+            Payload::Create {
+                record: ProposedRecord::Routine(Routine::new(
+                    "r",
+                    "do",
+                    crate::routine::Trigger::Manual,
+                )),
+            },
+            Payload::Create { record: ProposedRecord::Note(Note::new("n")) },
+            Payload::Create { record: ProposedRecord::Skill(Skill::new("s")) },
+            Payload::Delete { kind: ProposalKind::Task, id: "x".into() },
+            Payload::SendMail { draft_id: DraftId::new() },
         ];
-        for (payload, expected) in cases {
-            assert_eq!(expiry_for(&payload, now(), "UTC"), expected, "{payload:?}");
+        for payload in cases {
+            assert_eq!(expiry_for(&payload, now(), "UTC"), week, "{payload:?}");
         }
+    }
+
+    #[test]
+    fn nothing_with_a_date_far_off_waits_past_the_week() {
+        let week = now() + SignedDuration::from_hours(24 * PROPOSAL_DAYS);
+        let mut task = Task::new("Renew the passport");
+        task.due_date = Some(date(2027, 3, 1));
+        let start: Timestamp = "2027-03-01T09:00:00Z".parse().unwrap();
+        let block = TimeBlock::new(BlockSubject::Adhoc, start, 60, "UTC");
+        for record in [ProposedRecord::Task(task), ProposedRecord::Block(block)] {
+            assert_eq!(expiry_for(&Payload::Create { record }, now(), "UTC"), week);
+        }
+    }
+
+    #[test]
+    fn keeping_in_touch_says_nothing_to_the_stop_list() {
+        let task = |about: Option<AboutKind>| {
+            Proposal::new(
+                Payload::Create { record: ProposedRecord::Task(Task::new("x")) },
+                "x",
+                now(),
+                "UTC",
+            )
+            .with_about(about.map(|kind| About { kind, id: "i".into() }))
+        };
+        assert!(counts_towards_stop_list(&task(None)));
+        assert!(counts_towards_stop_list(&task(Some(AboutKind::Goal))));
+        assert!(!counts_towards_stop_list(&task(Some(AboutKind::Item))));
+        // A festival's task is about an event, and still not the dreams' business.
+        let festival = task(Some(AboutKind::Event)).made_by(ProposalSource::KeepInTouch);
+        assert!(!counts_towards_stop_list(&festival));
     }
 
     #[test]
@@ -831,6 +953,7 @@ mod tests {
             AboutKind::Memory,
             AboutKind::Routine,
             AboutKind::Goal,
+            AboutKind::Item,
         ] {
             assert_eq!(AboutKind::try_from(RecordKind::from(k)), Ok(k));
         }

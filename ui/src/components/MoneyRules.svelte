@@ -40,15 +40,24 @@
     }
   }
 
-  /** Swap a rule with its neighbour, which is how the order is changed. */
+  /**
+   * Swap a rule with its neighbour, which is how the order is changed.
+   *
+   * The whole list is renumbered 0, 1, 2... in its new order, and every rule
+   * whose number changed is saved. Swapping just the two numbers fails when
+   * rules share one (they can: a rule's order defaults to 0), and giving the
+   * pair their list positions can collide with a third rule's number and
+   * move a rule nobody touched.
+   */
   async function move(index: number, delta: -1 | 1) {
-    const a = rules[index]
-    const b = rules[index + delta]
-    if (!a || !b) return
-    const [orderA, orderB] =
-      a.sortOrder === b.sortOrder ? [index + delta, index] : [b.sortOrder, a.sortOrder]
-    await money.saveRule({ ...$state.snapshot(a), sortOrder: orderA })
-    await money.saveRule({ ...$state.snapshot(b), sortOrder: orderB })
+    const target = index + delta
+    if (!rules[index] || !rules[target]) return
+    const order = rules.map((r) => $state.snapshot(r))
+    const [moved] = order.splice(index, 1)
+    order.splice(target, 0, moved!)
+    for (const [position, rule] of order.entries()) {
+      if (rule.sortOrder !== position) await money.saveRule({ ...rule, sortOrder: position })
+    }
   }
 
   function amountText(rule: MoneyRule): string | null {

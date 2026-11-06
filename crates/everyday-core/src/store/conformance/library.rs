@@ -22,6 +22,7 @@ pub fn run_library_suite(store: &dyn LibraryStore) {
     deleting_an_item_takes_its_log_with_it(store);
     deleting_a_kind_takes_its_shelf_with_it(store);
     unicode_survives_a_library_round_trip(store);
+    keeping_in_touch_round_trips(store);
 
     library_cleanup(store);
     eprintln!("--- library suite passed ---");
@@ -433,4 +434,24 @@ fn unicode_survives_a_library_round_trip(store: &dyn LibraryStore) {
     assert_eq!(found.unwrap().len(), 1, "a text filter must match non-ASCII");
 
     store.delete_kind(kind.id).expect("delete_kind");
+}
+
+fn keeping_in_touch_round_trips(store: &dyn LibraryStore) {
+    use crate::keepintouch::{KeepInTouch, TrackedTask};
+    assert_eq!(store.keep_in_touch().unwrap(), KeepInTouch::default(), "nothing saved yet");
+    let mut record = KeepInTouch::default();
+    record.settings.enabled = true;
+    record.settings.circles[0].every_days = 10;
+    record.last_run = Some(jiff::civil::date(2026, 11, 5));
+    record.suggested.insert(crate::id::ItemId::new(), jiff::civil::date(2026, 11, 1));
+    record.tracked.push(TrackedTask {
+        task_id: crate::id::TaskId::new(),
+        people: vec![crate::id::ItemId::new()],
+        made_on: jiff::civil::date(2026, 11, 1),
+    });
+    record.dismiss(crate::id::ItemId::new(), "entry:x".into());
+    store.put_keep_in_touch(&record).unwrap();
+    assert_eq!(store.keep_in_touch().unwrap(), record);
+    store.put_keep_in_touch(&KeepInTouch::default()).unwrap();
+    assert_eq!(store.keep_in_touch().unwrap(), KeepInTouch::default(), "a second write replaces");
 }

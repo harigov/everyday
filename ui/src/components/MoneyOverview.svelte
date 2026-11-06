@@ -39,7 +39,7 @@
       const category = money.categoryById(s.categoryId)
       const budget = s.budget ?? category?.budget ?? null
       if (!category || !budget || budget <= 0) continue
-      const spent = Math.abs(s.spent)
+      const spent = s.spent
       if (spent >= budget * 0.9) out.push({ category, spent, budget })
     }
     return out.sort((a, b) => b.spent / b.budget - a.spent / a.budget).slice(0, 5)
@@ -76,9 +76,9 @@
       />
       <StatTile
         label={current ? 'Out this month' : `Out, ${monthLabel(month)}`}
-        value={summary ? fmt(Math.abs(summary.spending)) : '—'}
+        value={summary ? fmt(summary.spending) : '—'}
         note={summary && summary.budgeted > 0 ? `of ${fmt(summary.budgeted)} budgeted` : undefined}
-        warn={!!summary && summary.budgeted > 0 && Math.abs(summary.spending) > summary.budgeted}
+        warn={!!summary && summary.budgeted > 0 && summary.spending > summary.budgeted}
       />
       <StatTile
         label="Left over"
@@ -126,8 +126,7 @@
               <span class="what">
                 <b>{plural(uncategorized.count, 'transaction')} with no category</b>
                 <span class="why">
-                  {fmt(Math.abs(uncategorized.spent))} of {monthLabel(month)}'s spending is in no
-                  budget.
+                  {fmt(uncategorized.spent)} of {monthLabel(month)}'s spending is in no budget.
                 </span>
               </span>
               <button class="btn btn-outline" onclick={sortUncategorized}>Sort them</button>

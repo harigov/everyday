@@ -586,17 +586,17 @@ class MoneyState {
     }
   }
 
-  /** Imported or typed-in only; asks first. */
+  /** Only in accounts kept by hand (see `canDelete`); asks first. */
   async deleteTxns(ids: TxnId[]): Promise<void> {
     if (ids.length === 0) return
     const rows = this.#rows(ids)
-    if (rows.some((t) => t.origin === 'bank')) {
+    if (rows.some((t) => !this.canDelete(t))) {
       // Said here rather than asked and then refused: the next sync would
       // bring a bank's line straight back.
       await handle(
         new VaultError(
           'invalid',
-          'A transaction from a bank cannot be deleted: the next sync would bring it back. Leave it out of the reports instead.',
+          'A transaction in a connected bank’s account cannot be deleted: the next sync would bring it back. Leave it out of the reports instead.',
         ),
       )
       return
@@ -1170,6 +1170,17 @@ class MoneyState {
   /** Categories not archived, in order. */
   get activeCategories(): MoneyCategory[] {
     return sortCategories(this.categories.filter((c) => !c.archived))
+  }
+
+  /**
+   * May this transaction be deleted? The vault's own rule: by account, not by
+   * where it came from. One in a connected bank's account would come straight
+   * back with the next sync; one in an account kept by hand -- typed, imported,
+   * or kept when its bank was disconnected -- would not.
+   */
+  canDelete(txn: Txn): boolean {
+    const account = this.accountById(txn.accountId)
+    return !!account && account.linkId == null
   }
 
   categoryById(id: MoneyCategoryId | null | undefined): MoneyCategory | undefined {

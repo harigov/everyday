@@ -66,6 +66,7 @@ pub mod defaults;
 pub mod recurring;
 pub mod report;
 pub mod rules;
+pub mod text;
 
 use crate::id::{BankAccountId, BankLinkId, MoneyCategoryId, MoneyRuleId, TxnId};
 use crate::timestamped::Timestamped;
@@ -764,6 +765,11 @@ pub struct SyncOutcome {
     pub removed: u32,
     /// Accounts that were not there before.
     pub new_accounts: u32,
+    /// Nothing was stored, because the link was paused by the time the delta
+    /// arrived. Whoever fetched it must not move the link's cursor past it:
+    /// the same delta has to arrive again once the link is switched back on.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
 }
 
 // ── Categories and rules ─────────────────────────────────────────────────

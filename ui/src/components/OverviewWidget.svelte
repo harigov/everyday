@@ -15,7 +15,15 @@
   // todo app, the timer stops -- because a number you cannot act on is a
   // number people stop reading.
 
-  import { formatClock, formatMinutes, plural, relativeTime, timeOfDay } from '../lib/format'
+  import {
+    formatClock,
+    formatMinutes,
+    friendlyDate,
+    plural,
+    relativeTime,
+    timeOfDay,
+  } from '../lib/format'
+  import { lastLine, lateness } from '../lib/keepintouch'
   import { calendar } from '../lib/calendar.svelte'
   import { api } from '../lib/api'
   import { overview } from '../lib/overview.svelte'
@@ -324,6 +332,9 @@
     if (!(await app.goTo('library'))) return
     await library.open(id)
   }
+
+  /** Who is past due, most overdue first, as the backend ranked them. */
+  const overdue = $derived(overview.peopleDue.filter((p) => p.daysOver >= 0))
 
   // ── Plan for tomorrow ────────────────────────────────────────────────
   //
@@ -1010,6 +1021,30 @@
         out, and so are meetings of more than eight people.
       </p>
     {/if}
+  {/if}
+
+  <!-- ── Who to get in touch with ──────────────────────────────────── -->
+{:else if widget.type === 'peopleDue'}
+  {#if overdue.length === 0}
+    <p class="dim">
+      {overview.peopleDue.length === 0
+        ? 'Nobody has a circle yet. Give people on the Contacts shelf one, and whoever is due a catch-up shows here.'
+        : 'Nobody is overdue a catch-up.'}
+    </p>
+  {:else}
+    <ul class="plain">
+      {#each overdue.slice(0, widget.size === 'small' ? 3 : widget.size === 'large' ? 12 : 6) as p (p.itemId)}
+        <li>
+          <button class="notelink" onclick={() => void openItem(p.itemId)}>
+            <span class="nname">{p.name}</span>
+            <span class="dim">{lateness(p)}</span>
+          </button>
+          {#if widget.size !== 'small'}
+            <span class="footnote">{lastLine(p, friendlyDate)}</span>
+          {/if}
+        </li>
+      {/each}
+    </ul>
   {/if}
 
   <!-- ── Who you meet with most ────────────────────────────────────── -->

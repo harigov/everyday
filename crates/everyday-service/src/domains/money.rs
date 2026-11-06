@@ -358,6 +358,16 @@ async fn save_bank_link(svc: Arc<Service>, _ctx: Ctx, args: SaveLink) -> Command
 /// finishes first rather than writing a state for a link that has just gone.
 async fn delete_bank_link(svc: Arc<Service>, _ctx: Ctx, args: DeleteLink) -> CommandResult<()> {
     let vault = svc.require_unlocked()?;
+    // Before Plaid is told anything: a copy of the app that may not write
+    // would otherwise remove the item at Plaid and then fail to forget it
+    // here, leaving a link whose token no longer works for the copy that can.
+    if !vault.is_writable() {
+        return Err(CommandError::new(
+            codes::VAULT_IN_USE,
+            "Another copy of Every Day is writing to this vault, so a bank cannot be \
+             disconnected from here.",
+        ));
+    }
     let DeleteLink { id, keep_history } = args;
     let turn = svc.money.sync_turn(id);
     let _held = turn.lock().await;
@@ -711,14 +721,12 @@ fn session_id(session: &str) -> CommandResult<&str> {
 
 /// A three-letter currency code, upper case.
 fn currency_code(text: &str) -> CommandResult<String> {
-    let code = text.trim();
-    if code.len() != 3 || !code.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return Err(CommandError::new(
+    everyday_core::money::text::currency_code(text).ok_or_else(|| {
+        CommandError::new(
             codes::INVALID,
-            format!("not a currency code (like USD or EUR): {:?}", clipped(code)),
-        ));
-    }
-    Ok(code.to_ascii_uppercase())
+            format!("not a currency code (like USD or EUR): {:?}", clipped(text.trim())),
+        )
+    })
 }
 
 /// The first day of a `YYYY-MM` month.

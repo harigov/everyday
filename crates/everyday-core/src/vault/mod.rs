@@ -34,6 +34,7 @@ mod chat;
 mod header;
 mod jobs;
 mod journal;
+mod keepintouch;
 mod keys;
 mod library;
 mod lifecycle;

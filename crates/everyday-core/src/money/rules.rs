@@ -64,6 +64,13 @@ pub fn matches(rule: &MoneyRule, txn: &Txn) -> bool {
 /// (a rename-only rule ahead of a categorising one): the list's order is the
 /// person's statement of which rule they meant, and two rules each doing
 /// half of what they say would be impossible to read back from the list.
+///
+/// For a transaction *arriving* -- from a sync, a file, a person typing it
+/// -- or one rule applied on purpose over what is already there. A rule's
+/// rename and exclusion land here and nowhere else: once a transaction is
+/// stored, its payee name and whether it counts are the person's, and a
+/// person who counted a transaction again, or cleared a name, must not see
+/// a later "Run rules" undo it. See [`recategorize`] for that run.
 pub fn apply(rules: &[MoneyRule], txn: &mut Txn) -> bool {
     if !txn.category_is_open() {
         return false;
@@ -71,15 +78,7 @@ pub fn apply(rules: &[MoneyRule], txn: &mut Txn) -> bool {
     let Some(rule) = rules.iter().find(|r| matches(r, txn)) else {
         return false;
     };
-    let mut changed = false;
-    if let Some(category) = rule.category {
-        let by = CategorizedBy::Rule { rule_id: rule.id };
-        if txn.category != Some(category) || txn.categorized_by != by {
-            txn.category = Some(category);
-            txn.categorized_by = by;
-            changed = true;
-        }
-    }
+    let mut changed = set_category(rule, txn);
     let rename = rule.rename.trim();
     if !rename.is_empty() && txn.payee_override.trim().is_empty() {
         txn.payee_override = rename.to_string();
@@ -93,6 +92,35 @@ pub fn apply(rules: &[MoneyRule], txn: &mut Txn) -> bool {
         txn.updated_at = Timestamp::now();
     }
     changed
+}
+
+/// The first matching rule's *category*, on a transaction already stored:
+/// what "Run rules" does over the history. Leaves its payee name and its
+/// exclusion as they are, which by then are the person's -- see [`apply`].
+pub fn recategorize(rules: &[MoneyRule], txn: &mut Txn) -> bool {
+    if !txn.category_is_open() {
+        return false;
+    }
+    let Some(rule) = rules.iter().find(|r| matches(r, txn)) else {
+        return false;
+    };
+    let changed = set_category(rule, txn);
+    if changed {
+        txn.updated_at = Timestamp::now();
+    }
+    changed
+}
+
+/// `rule`'s category on `txn`, if it sets one. Whether that changed it.
+fn set_category(rule: &MoneyRule, txn: &mut Txn) -> bool {
+    let Some(category) = rule.category else { return false };
+    let by = CategorizedBy::Rule { rule_id: rule.id };
+    if txn.category == Some(category) && txn.categorized_by == by {
+        return false;
+    }
+    txn.category = Some(category);
+    txn.categorized_by = by;
+    true
 }
 
 /// Sort rules into the order [`apply`] expects: `sort_order`, then
@@ -323,5 +351,24 @@ mod tests {
         let mut renaming = MoneyRule::new("amzn");
         renaming.rename = "Amazon".into();
         assert!(validate(&renaming).is_ok());
+    }
+
+    #[test]
+    fn a_rerun_sets_categories_and_leaves_a_persons_exclusion_and_name_alone() {
+        let account = crate::id::BankAccountId::new();
+        let mut rule = MoneyRule::new("venmo");
+        rule.category = Some(crate::id::MoneyCategoryId::new());
+        rule.exclude = true;
+        rule.rename = "Venmo".into();
+        let mut t = Txn::new(account, "k", jiff::civil::date(2026, 11, 1), -500, "USD");
+        t.payee = "VENMO PAYMENT".into();
+        assert!(apply(std::slice::from_ref(&rule), &mut t), "arriving: everything lands");
+        assert!(t.excluded && t.payee_override == "Venmo");
+
+        // The person counts it again and clears the name; a re-run keeps both.
+        t.excluded = false;
+        t.payee_override.clear();
+        assert!(!recategorize(std::slice::from_ref(&rule), &mut t));
+        assert!(!t.excluded && t.payee_override.is_empty());
     }
 }

@@ -40,16 +40,21 @@
   const flow = $derived(
     money.cashFlow.map((m) => ({
       month: m.month,
-      income: Math.abs(m.income),
-      spending: Math.abs(m.spending),
+      // Bars cannot go below the axis; a month whose refunds outweighed
+      // its spending draws none, and the totals below still count it.
+      income: Math.max(0, m.income),
+      spending: Math.max(0, m.spending),
     })),
   )
   const flowCeiling = $derived(Math.max(1, ...flow.map((m) => Math.max(m.income, m.spending))))
   const flowTotals = $derived(
-    flow.reduce((t, m) => ({ income: t.income + m.income, spending: t.spending + m.spending }), {
-      income: 0,
-      spending: 0,
-    }),
+    money.cashFlow.reduce(
+      (t, m) => ({ income: t.income + m.income, spending: t.spending + m.spending }),
+      {
+        income: 0,
+        spending: 0,
+      },
+    ),
   )
 
   const shortMonth = dateFormat({ month: 'short' })
@@ -71,17 +76,18 @@
     const summary = money.summary
     if (!summary) return []
     return summary.categories
-      .filter((c) => Math.abs(c.spent) > 0)
+      .filter((c) => c.spent !== 0)
       .map((c) => {
         const category = money.categoryById(c.categoryId)
-        const spent = Math.abs(c.spent)
+        // Signed: a category refunded more than it spent shows below zero.
+        const spent = c.spent
         const budget = c.budget ?? category?.budget ?? null
         return {
           id: c.categoryId ?? 'none',
           name: category?.name ?? 'No category',
           dot: category?.color || undefined,
           detail: c.count === 1 ? '1 transaction' : `${c.count} transactions`,
-          value: spent,
+          value: Math.max(0, spent),
           cells: [fmt(spent), budget ? fmt(budget) : '—'],
           onpick: () => showCategory(c.categoryId),
           pickLabel: `Show ${category?.name ?? 'uncategorised'} transactions`,
@@ -238,7 +244,7 @@
       <div class="card-head">
         <h2 class="eyebrow" id="rep-cats">Spending in {monthLabel(month)}</h2>
         {#if money.summary}
-          <span class="card-figure">{fmt(Math.abs(money.summary.spending))}</span>
+          <span class="card-figure">{fmt(money.summary.spending)}</span>
         {/if}
       </div>
       <RankTable

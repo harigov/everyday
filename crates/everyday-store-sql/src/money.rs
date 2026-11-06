@@ -1,7 +1,7 @@
 //! Money: links, what sync learned about each, accounts, their daily
 //! balances, transactions, categories and rules. See
 //! `everyday_core::store::money` for the rules an implementation keeps and
-//! `schema.rs`'s `v22` for the tables.
+//! `schema.rs`'s `v23` for the tables.
 //!
 //! What stays in the clear is only what an index is built from: which link
 //! an account came through, which account a transaction or a balance belongs
@@ -636,7 +636,7 @@ mod tests {
         AccountKind, CategorizedBy, CategoryKind, LinkProvider, PlaidEnvironment,
     };
 
-    /// The columns `v22` declares for `table`, in order, `id` and `data` left
+    /// The columns `v23` declares for `table`, in order, `id` and `data` left
     /// out -- the list [`Record::columns`] has to match.
     fn declared(table: &str) -> Vec<String> {
         let head = format!("CREATE TABLE IF NOT EXISTS {table} (");
@@ -718,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn the_clear_columns_are_exactly_the_ones_v22_declares() {
+    fn the_clear_columns_are_exactly_the_ones_v23_declares() {
         // `upsert_stmt` writes `columns()` into the table by name, so a
         // column here that the table lacks fails every write, and one the
         // table has that is missing here is left at its default forever.
@@ -761,7 +761,7 @@ mod tests {
                         );
                     }
                     Value::Bytes(_) | Value::Real(_) => {
-                        panic!("{record}.{name} is not a clear column of a kind v22 declares")
+                        panic!("{record}.{name} is not a clear column of a kind v23 declares")
                     }
                     Value::Null | Value::Bool(_) => {}
                 }

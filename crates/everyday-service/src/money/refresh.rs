@@ -468,6 +468,20 @@ pub(crate) async fn sync_one<L: Ledger>(
         }
     };
 
+    // Paused while the pages were on their way: nothing was stored, so the
+    // cursor stays where it was, and the same delta arrives again once the
+    // link is switched back on. Not a failure, so nothing is said.
+    if outcome.paused {
+        return Turn::quiet(SyncReport {
+            link_id: id,
+            added: 0,
+            updated: 0,
+            removed: 0,
+            needs_login: false,
+            error: None,
+        });
+    }
+
     // Only now that the delta is stored: a cursor saved ahead of it would
     // skip whatever the delta held if the write had failed.
     let finished = svc.now();
@@ -788,6 +802,12 @@ mod tests {
                 self.log.lock().unwrap().push("apply failed".into());
                 return Err(everyday_core::Error::Invalid("the disk is full".into()));
             }
+            // What the vault does for a link paused while its delta was on
+            // the way: stores nothing, and says so.
+            if self.link.lock().unwrap().paused {
+                self.log.lock().unwrap().push("apply paused".into());
+                return Ok(SyncOutcome { paused: true, ..SyncOutcome::default() });
+            }
             self.log.lock().unwrap().push("apply".into());
             self.applied.lock().unwrap().push(delta.clone());
             Ok(SyncOutcome {
@@ -795,6 +815,7 @@ mod tests {
                 updated: 0,
                 removed: delta.removed.len() as u32,
                 new_accounts: 0,
+                paused: false,
             })
         }
         fn save_state(&self, state: &LinkState) -> everyday_core::Result<()> {
@@ -895,6 +916,27 @@ mod tests {
         assert_eq!(state.failures, 1);
         assert!(state.last_error.is_some());
         assert!(turn.health_changed);
+    }
+
+    #[tokio::test]
+    async fn a_link_paused_while_its_pages_arrive_keeps_its_cursor() {
+        // Pause is pressed while Plaid is still answering: the vault stores
+        // nothing, so the cursor must not move past what it did not store.
+        let paused_book = Book::new(PlaidEnvironment::Sandbox);
+        let pauser = paused_book.clone();
+        let plaid = fake::serve(move |_, _| {
+            pauser.link.lock().unwrap().paused = true;
+            ok(page(vec![txn("t1", 4.5)], vec![], &[], "c-next", false))
+        })
+        .await;
+        let svc = Arc::new(Service::new());
+        paused_book.set_cursor("c-before");
+        let turn = sync_one(&svc, &paused_book, &plaid.host(), paused_book.id(), false).await;
+
+        assert_eq!(turn.report.error, None, "a pause is not a failure");
+        assert!(paused_book.log().contains(&"apply paused".to_string()));
+        assert!(!paused_book.log().iter().any(|l| l.starts_with("save cursor=c-next")));
+        assert_eq!(paused_book.current().cursor, "c-before");
     }
 
     #[tokio::test]

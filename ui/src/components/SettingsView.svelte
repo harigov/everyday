@@ -61,6 +61,7 @@
   import AssistantPanes from './AssistantPanes.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import DataPanel from './DataPanel.svelte'
+  import KeepInTouchPanel from './KeepInTouchPanel.svelte'
   import MailSortingPanel from './MailSortingPanel.svelte'
   import MailWritingPanel from './MailWritingPanel.svelte'
   import MeetingsPanel from './MeetingsPanel.svelte'
@@ -211,6 +212,9 @@
     // only the keys that let Money ask Plaid to sign one in.
     { id: 'money', label: 'Money', icon: 'wallet' },
     { id: 'meetings', label: 'Meetings', icon: 'mic' },
+    // Beside Meetings: another thing the app does with your days on its own,
+    // reading the Library's Contacts shelf rather than a calendar.
+    { id: 'keepintouch', label: 'Keeping in touch', icon: 'people' },
     { id: 'data', label: 'Data', icon: 'upload' },
     { id: 'vault', label: 'Vault', icon: 'lock' },
   ]
@@ -247,6 +251,7 @@
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
       .filter((t) => t.id !== 'meetings' || meetings.supported)
       .filter((t) => t.id !== 'money' || app.supportsMoney)
+      .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
       .filter((t) => t.id !== 'writing' || (agent.supported && app.supportsMail)),
   )
@@ -418,6 +423,8 @@
       <MoneySettingsPanel />
     {:else if tab === 'meetings'}
       <MeetingsPanel />
+    {:else if tab === 'keepintouch'}
+      <KeepInTouchPanel />
     {:else if tab === 'profile'}
       <ProfilePanel />
     {:else if tab === 'accounts'}

@@ -1328,10 +1328,13 @@ function addManual(input: NewTxn): Txn {
 function deleteTxns(ids: TxnId[]): void {
   checkIds(ids)
   const wanted = new Set(ids)
-  if (txns.some((t) => wanted.has(t.id) && t.origin === 'bank')) {
+  // The vault's rule: by account. A connected bank's would come back with
+  // the next sync; one in an account kept by hand would not.
+  const linked = new Set(accounts.filter((a) => a.linkId != null).map((a) => a.id))
+  if (txns.some((t) => wanted.has(t.id) && linked.has(t.accountId))) {
     throw new VaultError(
       'invalid',
-      'A transaction from a bank cannot be deleted: the next sync would bring it back. Leave it out of the reports instead.',
+      'A transaction in a connected bank’s account cannot be deleted: the next sync would bring it back. Leave it out of the reports instead.',
     )
   }
   removeWhere(txns, (t) => wanted.has(t.id))

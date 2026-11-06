@@ -227,6 +227,7 @@ fn made_by_label(ctx: &ToolContext<'_>, source: Option<ProposalSource>) -> Optio
         // Parked from the rail's own "later" button -- see
         // `docs/plans/dreaming.md`'s Phase 5 -- rather than a run.
         ProposalSource::Conversation { .. } => Some("a conversation".into()),
+        ProposalSource::KeepInTouch => Some("keeping in touch".into()),
     }
 }
 

@@ -10,7 +10,8 @@
 
   import type { Snippet } from 'svelte'
   import { menu } from '../lib/menu.svelte'
-  import { declineItems, proposals } from '../lib/proposals.svelte'
+  import { choose } from '../lib/keepintouch'
+  import { declineItems, proposals, recordAs } from '../lib/proposals.svelte'
   import type { DeclineReason, Proposal } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -48,6 +49,23 @@
   async function accept(e: Event) {
     e.stopPropagation()
     const closed = await proposals.accept(proposal, null, confirm)
+    if (closed) onaccepted?.(closed)
+  }
+
+  /**
+   * "Which Ravi?" is answered by naming one, so a catch-up that fits several
+   * people offers each of them in place of Accept.
+   */
+  const asked = $derived(recordAs(proposal, 'log'))
+  const choices = $derived(
+    asked && (asked.candidates?.length ?? 0) > 1 ? (asked.candidates ?? []) : [],
+  )
+
+  async function acceptAs(e: Event, itemId: string) {
+    e.stopPropagation()
+    const value = asked && choose(asked, itemId)
+    if (!value) return
+    const closed = await proposals.accept(proposal, { kind: 'log', value })
     if (closed) onaccepted?.(closed)
   }
 
@@ -91,16 +109,29 @@
   <!-- `choosing`, not `open`: `.open` is the title button's class, and its
        faded, clipped look would land here too. -->
   <div class="answers" class:choosing>
-    <button
-      class="yes"
-      disabled={busy}
-      onclick={accept}
-      aria-label="Accept proposal"
-      title="Accept"
-    >
-      <Icon name="tick" size={13} />
-      {#if !compact}Accept{/if}
-    </button>
+    {#each choices as c (c.itemId)}
+      <button
+        class="yes"
+        disabled={busy}
+        onclick={(e) => acceptAs(e, c.itemId)}
+        aria-label="It was {c.name}"
+        title="It was {c.name}"
+      >
+        <Icon name="tick" size={13} />
+        {c.name}
+      </button>
+    {:else}
+      <button
+        class="yes"
+        disabled={busy}
+        onclick={accept}
+        aria-label="Accept proposal"
+        title="Accept"
+      >
+        <Icon name="tick" size={13} />
+        {#if !compact}Accept{/if}
+      </button>
+    {/each}
     <button
       class="no"
       disabled={busy}

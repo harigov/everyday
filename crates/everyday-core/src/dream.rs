@@ -54,6 +54,7 @@ use crate::id::MemoryId;
 use crate::model::truncate_on_char_boundary;
 use crate::proposal::{
     AboutKind, DeclineReason, MAX_PENDING_PROPOSALS, Outcome, Proposal, ProposalKind,
+    ProposalTrace, counts_towards_stop_list,
 };
 use crate::purpose::Purpose;
 use crate::routine::DreamScope;
@@ -470,7 +471,8 @@ pub fn digest(vault: &Vault, scope: DreamScope, now: &Zoned) -> Result<Digest> {
                 ..Default::default()
             })
             .unwrap_or_default();
-        d.stop_candidates = stop_candidates(&history);
+        let traces = vault.proposal_traces().unwrap_or_default();
+        d.stop_candidates = stop_candidates(&history, &traces);
     }
 
     Ok(d)
@@ -929,7 +931,11 @@ fn birthdays_section(vault: &Vault, today: Date) -> Vec<String> {
     {
         rows.push((next, format!("Their own birthday: {}", next.strftime("%A %-d %B"))));
     }
-    if vault.supports_library()
+    // Keeping in touch proposes a contact's birthday itself, nearer the day. The
+    // month's dream proposing it as well would make two tasks for one birthday.
+    let proposed_elsewhere = vault.keep_in_touch().is_ok_and(|k| k.settings.enabled);
+    if !proposed_elsewhere
+        && vault.supports_library()
         && let Ok(kinds) = vault.kinds()
         && let Some(contacts) = kinds.iter().find(|k| k.slug == "contact")
         && let Ok(items) = vault.items(&crate::store::library::ItemQuery {
@@ -944,12 +950,9 @@ fn birthdays_section(vault: &Vault, today: Date) -> Vec<String> {
                 continue;
             };
             let Some(next) = upcoming_birthday(born, today) else { continue };
-            let last = vault
-                .logs(&crate::store::library::LogQuery::for_item(item.id))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|l| l.date)
-                .max();
+            let logs =
+                vault.logs(&crate::store::library::LogQuery::for_item(item.id)).unwrap_or_default();
+            let last = crate::keepintouch::last_catch_up(&logs).map(|l| l.date);
             let caught_up = match last {
                 Some(day) => format!("last caught up {}", day.strftime("%-d %B %Y")),
                 None => "no catch-up logged".to_string(),
@@ -972,15 +975,7 @@ const CONTACT_SCAN_CAP: u32 = 500;
 /// within [`BIRTHDAY_HORIZON_DAYS`]. A 29 February birthday falls on
 /// 28 February in a year that has no 29th.
 pub fn upcoming_birthday(born: Date, today: Date) -> Option<Date> {
-    let on = |year: i16| {
-        Date::new(year, born.month(), born.day())
-            .or_else(|_| Date::new(year, born.month(), born.day() - 1))
-            .ok()
-    };
-    let this_year = on(today.year())?;
-    let next = if this_year >= today { this_year } else { on(today.year() + 1)? };
-    let horizon = today.checked_add(Span::new().days(BIRTHDAY_HORIZON_DAYS)).ok()?;
-    (next <= horizon).then_some(next)
+    crate::keepintouch::next_on(born, today, BIRTHDAY_HORIZON_DAYS)
 }
 
 /// Proposals made in `[from, to]`, optionally about one run.
@@ -1019,6 +1014,7 @@ fn about_kind_str(kind: AboutKind) -> &'static str {
         AboutKind::Memory => "memory",
         AboutKind::Routine => "routine",
         AboutKind::Goal => "goal",
+        AboutKind::Item => "person",
     }
 }
 
@@ -1095,26 +1091,45 @@ fn capitalise_str(s: &str) -> String {
 /// meeting prep"), because the digest's own outcome section is grouped the
 /// same two ways. A group with fewer than three finished proposals never
 /// qualifies -- "declined once" is not "declined three times running".
-pub fn stop_candidates(outcomes: &[Proposal]) -> Vec<String> {
+///
+/// `traces` are the proposals nobody accepted that have since been deleted --
+/// see [`ProposalTrace`]. They and `outcomes` are one history, in order of when
+/// each was made. What keeping in touch proposes is not part of it: see
+/// [`counts_towards_stop_list`].
+pub fn stop_candidates(outcomes: &[Proposal], traces: &[ProposalTrace]) -> Vec<String> {
+    // (when it was made, what it was, what it was about, went unaccepted).
+    // Traces are only ever left for proposals that count.
+    let mut history: Vec<(jiff::Timestamp, ProposalKind, Option<AboutKind>, bool)> = outcomes
+        .iter()
+        .filter(|p| counts_towards_stop_list(p))
+        .map(|p| {
+            let unaccepted =
+                matches!(p.outcome, Outcome::Declined { .. } | Outcome::Expired { .. });
+            (p.made_at, p.kind, p.about.as_ref().map(|a| a.kind), unaccepted)
+        })
+        .chain(traces.iter().map(|t| (t.made_at, t.kind, t.about, true)))
+        .collect();
+    history.sort_by_key(|(made_at, ..)| *made_at);
+
     let mut out = Vec::new();
     for kind in ProposalKind::ALL {
-        let mut group: Vec<&Proposal> = outcomes.iter().filter(|p| p.kind == kind).collect();
-        group.sort_by_key(|p| p.made_at);
+        let group: Vec<bool> =
+            history.iter().filter(|(_, k, ..)| *k == kind).map(|(.., u)| *u).collect();
         if trailing_stop_streak(&group) {
             out.push(format!("Do not propose {} unless asked.", kind.as_str()));
         }
     }
 
     let mut about_pairs: Vec<(ProposalKind, AboutKind)> =
-        outcomes.iter().filter_map(|p| p.about.as_ref().map(|a| (p.kind, a.kind))).collect();
+        history.iter().filter_map(|(_, k, about, _)| about.map(|a| (*k, a))).collect();
     about_pairs.sort();
     about_pairs.dedup();
     for (kind, about_kind) in about_pairs {
-        let mut group: Vec<&Proposal> = outcomes
+        let group: Vec<bool> = history
             .iter()
-            .filter(|p| p.kind == kind && p.about.as_ref().is_some_and(|a| a.kind == about_kind))
+            .filter(|(_, k, about, _)| *k == kind && *about == Some(about_kind))
+            .map(|(.., u)| *u)
             .collect();
-        group.sort_by_key(|p| p.made_at);
         if trailing_stop_streak(&group) {
             out.push(format!(
                 "Do not propose {} about {} unless asked.",
@@ -1126,19 +1141,12 @@ pub fn stop_candidates(outcomes: &[Proposal]) -> Vec<String> {
     out
 }
 
-/// Whether the most recent three (or more) proposals in `sorted_asc`,
-/// chronological order, were all declined or expired -- an accepted one
-/// anywhere in the last three resets the streak, which is what makes the
-/// rule "three running" rather than "three ever".
-fn trailing_stop_streak(sorted_asc: &[&Proposal]) -> bool {
-    if sorted_asc.len() < 3 {
-        return false;
-    }
-    sorted_asc
-        .iter()
-        .rev()
-        .take(3)
-        .all(|p| matches!(p.outcome, Outcome::Declined { .. } | Outcome::Expired { .. }))
+/// Whether the most recent three (or more) proposals, in chronological order,
+/// all went unaccepted -- an accepted one anywhere in the last three resets the
+/// streak, which is what makes the rule "three running" rather than "three
+/// ever".
+fn trailing_stop_streak(unaccepted_asc: &[bool]) -> bool {
+    unaccepted_asc.len() >= 3 && unaccepted_asc.iter().rev().take(3).all(|u| *u)
 }
 
 /// Read a `Confirmed memories:` section out of a run's final message. See
@@ -1333,7 +1341,7 @@ mod tests {
             proposal(ProposalKind::Block, None, expired()),
             proposal(ProposalKind::Block, None, declined()),
         ];
-        let candidates = stop_candidates(&outcomes);
+        let candidates = stop_candidates(&outcomes, &[]);
         assert!(candidates.contains(&"Do not propose block unless asked.".to_string()));
     }
 
@@ -1343,7 +1351,7 @@ mod tests {
             proposal(ProposalKind::Block, None, declined()),
             proposal(ProposalKind::Block, None, declined()),
         ];
-        assert!(stop_candidates(&outcomes).is_empty());
+        assert!(stop_candidates(&outcomes, &[]).is_empty());
     }
 
     #[test]
@@ -1353,7 +1361,7 @@ mod tests {
             proposal(ProposalKind::Block, None, declined()),
             proposal(ProposalKind::Block, None, accepted()),
         ];
-        assert!(stop_candidates(&outcomes).is_empty());
+        assert!(stop_candidates(&outcomes, &[]).is_empty());
     }
 
     #[test]
@@ -1361,8 +1369,42 @@ mod tests {
         let outcomes: Vec<_> = (0..3)
             .map(|_| proposal(ProposalKind::Task, Some((AboutKind::Goal, "g1")), declined()))
             .collect();
-        let candidates = stop_candidates(&outcomes);
+        let candidates = stop_candidates(&outcomes, &[]);
         assert!(candidates.contains(&"Do not propose task about goal unless asked.".to_string()));
+    }
+
+    #[test]
+    fn a_streak_carries_on_past_the_proposals_that_were_deleted() {
+        // Two gone and one still here is three running. The week they are kept
+        // for is too short a view of a rule that can span several.
+        let trace = |seconds_before: i64| ProposalTrace {
+            kind: ProposalKind::Block,
+            about: None,
+            made_at: now() - jiff::SignedDuration::from_secs(seconds_before),
+        };
+        let here = vec![proposal(ProposalKind::Block, None, declined())];
+        let candidates = stop_candidates(&here, &[trace(2_000_000), trace(1_000_000)]);
+        assert!(candidates.contains(&"Do not propose block unless asked.".to_string()));
+    }
+
+    #[test]
+    fn an_accept_after_the_deleted_ones_still_resets_the_streak() {
+        let trace = |seconds_before: i64| ProposalTrace {
+            kind: ProposalKind::Block,
+            about: None,
+            made_at: now() - jiff::SignedDuration::from_secs(seconds_before),
+        };
+        let here = vec![proposal(ProposalKind::Block, None, accepted())];
+        let traces = [trace(3_000_000), trace(2_000_000), trace(1_000_000)];
+        assert!(stop_candidates(&here, &traces).is_empty());
+    }
+
+    #[test]
+    fn ignoring_people_suggestions_does_not_stop_the_dreams_proposing_tasks() {
+        let outcomes: Vec<_> = (0..3)
+            .map(|_| proposal(ProposalKind::Task, Some((AboutKind::Item, "c1")), expired()))
+            .collect();
+        assert!(stop_candidates(&outcomes, &[]).is_empty());
     }
 
     // ---- parse_confirmed_memory_ids --------------------------------------

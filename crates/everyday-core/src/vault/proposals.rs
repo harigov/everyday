@@ -9,7 +9,8 @@ use crate::agent::MemoryOrigin;
 use crate::error::{Error, Result};
 use crate::id::{BlockId, MemoryId, NoteId, ProposalId, RoutineId, SkillId, TaskId};
 use crate::proposal::{
-    DeclineReason, MAX_PENDING_PROPOSALS, Outcome, Payload, Proposal, ProposalKind, ProposedRecord,
+    DeclineReason, MAX_PENDING_PROPOSALS, Outcome, PROPOSAL_DAYS, Payload, Proposal, ProposalKind,
+    ProposalTrace, ProposedRecord,
 };
 use crate::purpose::Purpose;
 use crate::record::RecordKind;
@@ -104,6 +105,28 @@ impl Vault {
         Ok(expired)
     }
 
+    /// Delete what has been kept long enough: every proposal more than
+    /// [`PROPOSAL_DAYS`] old that was not accepted, whatever state it reached.
+    ///
+    /// Pending ones too, though each now expires inside the same week: one made
+    /// by an earlier build may still be waiting out thirty days. An accepted
+    /// one stays. Mail's draft is its own record and is left where it is, as it
+    /// is when a proposal to send it is declined.
+    pub fn purge_proposals(&self, now: Timestamp) -> Result<Vec<ProposalId>> {
+        self.writable()?;
+        let cutoff = now - jiff::SignedDuration::from_hours(24 * PROPOSAL_DAYS);
+        let gone = self.with_proposals(|p| p.purge_proposals(cutoff))?;
+        for id in &gone {
+            self.wrote(RecordKind::Proposal, *id);
+        }
+        Ok(gone)
+    }
+
+    /// What [`Vault::purge_proposals`] left of what it deleted.
+    pub fn proposal_traces(&self) -> Result<Vec<ProposalTrace>> {
+        self.with_proposals(|p| p.proposal_traces())
+    }
+
     /// Accept a proposal: validate it, check what it refers to still exists,
     /// save the record through the domain's own save, and close it.
     ///
@@ -147,6 +170,18 @@ impl Vault {
         // without touching the proposal at all -- the same door the
         // `SendMail` refusal above leaves it through.
         self.check_edit_shape(&proposal.payload, &edited)?;
+        // Which Ravi is the one thing nobody but the person can answer, so this
+        // too is answered without touching the proposal, and it can be asked
+        // again with the choice made.
+        if edited.is_none()
+            && let Payload::Create { record: ProposedRecord::Log(log) } = &proposal.payload
+            && log.candidates.len() > 1
+        {
+            return Err(Error::Invalid(format!(
+                "this needs to say which {} it was, from its own card",
+                log.asked_as
+            )));
+        }
         // New time on this computer, proposed before it was switched off as a
         // calendar, is not put there now. Left pending rather than closed:
         // switching it back on is the person's to do, and then this stands.
@@ -209,6 +244,14 @@ impl Vault {
             rejected.origin = MemoryOrigin::Rejected;
             rejected.updated_at = now;
             self.save_memory(&rejected)?;
+        }
+        // "Not a contact of mine" lasts longer than the proposal that asked:
+        // otherwise the next time the journal names them it asks again.
+        if let Payload::Create { record: ProposedRecord::Log(log) } = &proposal.payload
+            && log.new_contact.is_some()
+            && !matches!(reason, Some(DeclineReason::NotNow))
+        {
+            self.ignore_name(&log.asked_as)?;
         }
         proposal.close(Outcome::Declined { at: now, reason }, now);
         proposal.seen = true;
@@ -310,6 +353,12 @@ impl Vault {
                 self.check_purpose(b.purpose)?;
             }
             ProposedRecord::Note(n) => self.check_purpose(n.purpose)?,
+            ProposedRecord::Log(l) => {
+                if l.new_contact.is_none() {
+                    self.item(l.log.item_id)
+                        .map_err(|_| "the person this was about has been deleted".to_string())?;
+                }
+            }
             ProposedRecord::Memory(_) | ProposedRecord::Routine(_) | ProposedRecord::Skill(_) => {}
         }
         Ok(())
@@ -343,6 +392,7 @@ impl Vault {
             ProposedRecord::Skill(s) => {
                 self.skills().is_ok_and(|ss| ss.iter().any(|x| x.id == s.id))
             }
+            ProposedRecord::Log(l) => self.log(l.log.id).is_ok(),
         }
     }
 
@@ -371,6 +421,7 @@ impl Vault {
                 .find(|x| x.id == s.id)
                 .map(|x| x.updated_at)
                 .ok_or_else(gone),
+            ProposedRecord::Log(l) => self.log(l.log.id).map(|x| x.updated_at).map_err(|_| gone()),
         }
     }
 
@@ -431,6 +482,7 @@ impl Vault {
                 s.updated_at = now;
                 self.save_skill(s)
             }
+            ProposedRecord::Log(l) => self.accept_catch_up(l, now),
         };
         result.map(|()| id).map_err(|e| e.to_string())
     }
@@ -481,6 +533,7 @@ impl Vault {
                 self.delete_skill(skill_id).map_err(|e| e.to_string())?;
             }
             ProposalKind::Mail => return Err("a mail proposal cannot delete anything".into()),
+            ProposalKind::Log => return Err("a catch-up proposal cannot delete anything".into()),
         }
         Ok(id.to_string())
     }

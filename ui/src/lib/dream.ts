@@ -87,6 +87,7 @@ export const PROPOSAL_KIND_LABELS: Record<ProposalKind, string> = {
   note: 'Notes',
   mail: 'Mail to send',
   skill: 'Skills',
+  log: 'People you were in touch with',
 }
 
 // ── The transcript fold ───────────────────────────────────────────────────

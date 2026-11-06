@@ -23,6 +23,7 @@ use super::{BalanceSnapshot, BankAccount, CategoryKind, MoneyCategory, Txn};
 use crate::error::{Error, Result};
 use crate::id::{BankAccountId, MoneyCategoryId};
 use jiff::civil::Date;
+use jiff::tz::TimeZone;
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -351,8 +352,17 @@ pub fn net_worth(
             next += 1;
         }
         if day == to {
+            // The current balance stands for `to` only if it was already
+            // known by then: for a range wholly in the past, today's balance
+            // is not what the account held on its last day, and the
+            // snapshots carried forward are. A balance with no date (one
+            // kept before snapshots were) is taken as current.
             for account in counted.values() {
-                if let Some(balance) = account.balance {
+                let known_by_then =
+                    account.balance_at.is_none_or(|at| at.to_zoned(TimeZone::UTC).date() <= to);
+                if let Some(balance) = account.balance
+                    && known_by_then
+                {
                     latest.insert(account.id, balance);
                 }
             }
@@ -679,5 +689,35 @@ mod tests {
         ];
         assert_eq!(main_currency(&accounts), "GBP");
         assert_eq!(main_currency(&[]), "USD");
+    }
+
+    #[test]
+    fn a_range_in_the_past_ends_on_its_snapshots_not_on_todays_balance() {
+        let mut cash = BankAccount::manual("Checking", crate::money::AccountKind::Cash, "USD");
+        cash.balance = Some(900_000);
+        cash.balance_at = Some("2026-11-05T12:00:00Z".parse().unwrap());
+        let snapshot = BalanceSnapshot {
+            account_id: cash.id,
+            day: jiff::civil::date(2025, 6, 1),
+            balance: 100_000,
+            available: None,
+        };
+        let from = jiff::civil::date(2025, 1, 1);
+        let to = jiff::civil::date(2025, 6, 30);
+        let points = net_worth(
+            from,
+            to,
+            "USD",
+            std::slice::from_ref(&cash),
+            std::slice::from_ref(&snapshot),
+        );
+        let last = points.last().unwrap();
+        assert_eq!(last.day, to);
+        assert_eq!(last.assets, 100_000, "June 2025 carried forward, not November 2026");
+
+        // A range reaching today still ends on the current balance.
+        let today = jiff::civil::date(2026, 11, 5);
+        let points = net_worth(from, today, "USD", std::slice::from_ref(&cash), &[snapshot]);
+        assert_eq!(points.last().unwrap().assets, 900_000);
     }
 }

@@ -53,6 +53,7 @@
 //!   which can make one payee read as another) dropped, and are cut at a
 //!   length no bank line needs.
 
+use everyday_core::money::text::{currency_code, is_invisible};
 use everyday_core::money::{ImportedTxn, parse_decimal};
 use jiff::civil::Date;
 use serde::{Deserialize, Serialize};
@@ -1258,24 +1259,12 @@ fn amount_of(raw: &str, currency: &str) -> Option<i64> {
     parse_decimal(&swapped, currency).ok()
 }
 
-/// A three-letter code, upper case.
-fn currency_code(text: &str) -> Option<String> {
-    let t = text.trim();
-    (t.len() == 3 && t.bytes().all(|b| b.is_ascii_alphabetic())).then(|| t.to_ascii_uppercase())
-}
-
 /// White space folded, control and invisible formatting characters
 /// dropped, cut at `max` characters.
 fn clean_text(text: &str, max: usize) -> String {
     let folded = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let kept: String = folded.chars().filter(|c| !c.is_control() && !invisible(*c)).collect();
+    let kept: String = folded.chars().filter(|c| !c.is_control() && !is_invisible(*c)).collect();
     clip(&kept, max)
-}
-
-/// Zero-width characters and bidirectional controls, which display as
-/// nothing and can make one payee read as another.
-fn invisible(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
 fn clip(text: &str, max: usize) -> String {
