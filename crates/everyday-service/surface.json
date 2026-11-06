@@ -1461,6 +1461,31 @@
     {
       "args": [
         {
+          "name": "draft",
+          "required": false,
+          "type": "DraftId"
+        },
+        {
+          "name": "copies",
+          "required": true,
+          "type": "MailMessageId[]"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "delete_thread_draft",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "TrackerId"
@@ -1660,6 +1685,26 @@
       "name": "draft_with_ai",
       "orScope": null,
       "returns": "WrittenText",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "copies",
+          "required": true,
+          "type": "MailMessageId[]"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "edit_thread_draft",
+      "orScope": null,
+      "returns": "Draft",
       "scope": "mail",
       "sensitive": false,
       "streams": false

@@ -33,8 +33,9 @@ use crate::service::{Service, blocking};
 use everyday_core::Vault;
 use everyday_core::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use everyday_core::mail::{
-    AttendeeResponse, Body, Category, Draft, DraftCalendarPart, DraftState, InviteMethod, Mailbox,
-    Message, Op, OpKind, OpState, OpTarget, Origin, Thread, UNDO_SEND_MAX_SECONDS, undo_send_delay,
+    AttendeeResponse, Body, Category, Draft, DraftAttachment, DraftCalendarPart, DraftServerCopy,
+    DraftState, InviteMethod, Mailbox, MailboxRole, Message, Op, OpKind, OpState, OpTarget, Origin,
+    Thread, UNDO_SEND_MAX_SECONDS, undo_send_delay,
 };
 use everyday_core::store::mail::{CategoryCount, ThreadFilter, ThreadPage};
 use everyday_mail::{compose, invite, mime};
@@ -214,8 +215,31 @@ const RECENT_ACTIONS_LIMIT: u32 = 5;
 #[serde(rename_all = "camelCase")]
 pub struct ThreadDetail {
     pub thread: Thread,
+    /// Every message but drafts, which are in `drafts`.
     pub messages: Vec<MessageDetail>,
     pub recent_actions: Vec<RecentAction>,
+    #[serde(default)]
+    pub drafts: Vec<ThreadDraft>,
+}
+
+/// A draft in a thread, drawn as one card rather than as mail: the draft this
+/// app keeps, its copies on the server, or both. Each autosave uploads a
+/// fresh copy, and another device or mail program saves its own, so a thread
+/// can hold several copies of what is one draft to the person writing it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadDraft {
+    /// What Edit opens, when this app has the draft: one being written here,
+    /// whether or not it has reached the server yet. `None` for a draft
+    /// another device saved, or old copies nothing here claims.
+    pub draft: Option<Draft>,
+    /// Its copies on the server, oldest first. With no `draft`, the newest
+    /// not flagged `\Deleted` is what the card shows. Deleting the draft
+    /// takes all of them off the server.
+    pub copies: Vec<MessageDetail>,
+    /// Which of `copies` is `draft`'s own last upload. The rest, with a
+    /// `draft`, are older copies autosave left behind.
+    pub own_copy: Option<MailMessageId>,
 }
 
 /// The parts of `body` a person would call attachments
@@ -480,32 +504,10 @@ async fn new_draft(svc: Arc<Service>, _ctx: Ctx, args: NewDraft) -> CommandResul
             if args.in_reply_to.is_some() {
                 draft.in_reply_to = Some(parent_id);
                 draft.subject = compose::reply_subject(&parent.subject);
-                // RFC 5322 §3.6.2: `Reply-To`, when the sender set one, names
-                // where a reply is actually meant to go -- a mailing list, a
-                // ticketing system, a `no-reply@` address whose own
-                // `Reply-To` names a real mailbox -- and takes priority over
-                // `From`, which this ignored entirely until now.
-                draft.to = if parent.reply_to.is_empty() {
-                    vec![parent.from.clone()]
-                } else {
-                    parent.reply_to.clone()
-                };
-                if args.reply_all {
-                    for addr in parent.to.iter().chain(parent.cc.iter()) {
-                        // Checked against `cc` as it fills, not only against
-                        // `to` -- otherwise an address the parent listed in
-                        // both `to` and `cc` was added to this draft's `cc`
-                        // twice, one RCPT TO for one recipient.
-                        let already = draft
-                            .to
-                            .iter()
-                            .chain(draft.cc.iter())
-                            .any(|a| a.email.eq_ignore_ascii_case(&addr.email));
-                        if !already && !own.contains(&addr.email.to_lowercase()) {
-                            draft.cc.push(addr.clone());
-                        }
-                    }
-                }
+                let (to, cc) =
+                    everyday_core::mail::compose::reply_recipients(&parent, &own, args.reply_all);
+                draft.to = to;
+                draft.cc = cc;
             } else {
                 draft.subject = compose::forward_subject(&parent.subject);
             }
@@ -689,6 +691,183 @@ async fn discard_draft(svc: Arc<Service>, _ctx: Ctx, args: DraftRef) -> CommandR
     })
     .await?;
     if let Some(op) = op {
+        svc.notify_outbox(op.account_id);
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadDraftCopies {
+    /// A [`ThreadDraft`]'s copies, as `get_thread` listed them.
+    pub copies: Vec<MailMessageId>,
+}
+
+/// Open a draft another device saved to carry on writing it: the newest copy
+/// not flagged `\Deleted` becomes a draft of this app's, which its next
+/// autosave replaces on the server. The card's other copies go too, but only
+/// those flagged `\Deleted` already -- old autosaves on their way out. A copy
+/// nobody flagged is somebody's draft, and is never deleted for this.
+///
+/// Everything the next autosave uploads in place of the copy has to be here
+/// first, or the copy that had it is replaced by one without it:
+///
+/// - the words, from the HTML, or from the plain text of a draft that has no
+///   HTML (never the snippet, which is the first lines only);
+/// - its attachments, and the pictures pasted into it, which become
+///   attachments, from what sync already stored;
+/// - remote pictures, pointed back at where they came from, since the
+///   addresses sync gave them name the copy about to be deleted.
+///
+/// So a copy whose body, or any of whose parts, has not synced yet is
+/// refused, to be tried again in a moment.
+async fn edit_thread_draft(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ThreadDraftCopies,
+) -> CommandResult<Draft> {
+    let vault = svc.require()?;
+    let now = svc.now();
+    let (draft, ops) = blocking(move || {
+        let mut copies = args
+            .copies
+            .iter()
+            .map(|&id| vault.mail_message(id))
+            .collect::<everyday_core::Result<Vec<_>>>()?;
+        copies.sort_by_key(|m| m.date);
+        let Some(pos) = copies.iter().rposition(|m| !m.flags.deleted) else {
+            return Err(CommandError::new(codes::NOT_FOUND, "that draft has been deleted"));
+        };
+        let newest = copies.remove(pos);
+        let account = vault.account(newest.account_id)?;
+        let mailboxes = vault.mailboxes(account.id)?;
+        let server_copy = filed_in(&vault, &mailboxes, newest.id)?
+            .into_iter()
+            .find(|(m, _)| m.role == MailboxRole::Drafts)
+            .map(|(m, uid)| DraftServerCopy {
+                mailbox: m.remote_name.clone(),
+                uid,
+                message_id: Some(newest.message_id_header.clone()),
+            });
+
+        let still_syncing = || {
+            CommandError::new(codes::CONFLICT, "this draft is still syncing: try again in a moment")
+        };
+        if crate::mailsync::ingest::is_pending(&newest.pack) {
+            return Err(still_syncing());
+        }
+        let body = vault.body(newest.id).map_err(|_| still_syncing())?;
+        let mut attachments = Vec::new();
+        for (index, part) in body.parts.iter().enumerate() {
+            let attached =
+                crate::mailview::is_attachment(part, &body.html_sanitised, body.message_id);
+            let pasted = part.cid.is_some() && part.mime_type.starts_with("image/");
+            if !attached && !pasted {
+                continue;
+            }
+            let Some(blob) = part.blob else { return Err(still_syncing()) };
+            attachments.push(DraftAttachment {
+                blob,
+                filename: part.filename.clone().unwrap_or_else(|| format!("attachment-{index}")),
+                mime_type: part.mime_type.clone(),
+            });
+        }
+        let html = if body.html_sanitised.trim().is_empty() {
+            everyday_core::mail::voice::text_to_html(&body.text)
+        } else {
+            body.html_sanitised.clone()
+        };
+        // A pasted picture's `<img>` goes (it is attached now); a remote one
+        // points where it came from again.
+        let html = compose::externalize_local_refs(&html, |message, token| {
+            let message: MailMessageId = message.parse().ok()?;
+            let body = vault.body(message).ok()?;
+            body.remote_images.into_iter().find(|r| r.token == token).map(|r| r.original_url)
+        });
+
+        let mine = std::iter::once(&account.address)
+            .chain(account.identities.iter().map(|i| &i.address))
+            .any(|a| a.eq_ignore_ascii_case(&newest.from.email));
+        let identity = if mine { newest.from.email.clone() } else { account.address.clone() };
+        let mut draft = Draft::new(account.id, identity, Origin::Person);
+        // Answers the newest message before it: the message's own
+        // `In-Reply-To` is not kept, and a draft is written to the last word.
+        let (_, messages) = vault.thread(newest.thread_id)?;
+        draft.in_reply_to = messages
+            .iter()
+            .filter(|m| !m.flags.draft && m.date <= newest.date && !args.copies.contains(&m.id))
+            .max_by_key(|m| m.date)
+            .map(|m| m.id);
+        draft.to = newest.to.clone();
+        draft.cc = newest.cc.clone();
+        draft.bcc = newest.bcc.clone();
+        draft.subject = newest.subject.clone();
+        draft.body_html = html;
+        draft.attachments = attachments;
+        draft.server_copy = server_copy;
+        draft.created_at = newest.date;
+        draft.updated_at = now;
+        vault.save_draft(&draft)?;
+        let older: Vec<MailMessageId> =
+            copies.iter().filter(|m| m.flags.deleted).map(|m| m.id).collect();
+        let ops = vault.delete_draft_copies(&older, Origin::Person)?;
+        Ok((draft, ops))
+    })
+    .await?;
+    for op in &ops {
+        svc.notify_outbox(op.account_id);
+    }
+    Ok(draft)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteThreadDraft {
+    /// The draft this app keeps, when the card has one.
+    #[serde(default)]
+    pub draft: Option<DraftId>,
+    /// Every copy the card listed, older autosaves included.
+    pub copies: Vec<MailMessageId>,
+}
+
+/// Delete a draft from its thread: the draft this app keeps, as Discard does
+/// in the composer, and every copy of it on the server -- see
+/// [`everyday_core::Vault::delete_draft_copies`]. Only `copies` without a
+/// `draft` takes old copies away and leaves the draft being written.
+async fn delete_thread_draft(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: DeleteThreadDraft,
+) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let ops = blocking(move || {
+        let mut ops = Vec::new();
+        let mut copies = args.copies;
+        if let Some(id) = args.draft {
+            match vault.discard_draft(id) {
+                Ok((draft, op)) => {
+                    ops.extend(op);
+                    // Its own last upload is the discard's to delete.
+                    if let Some(own) = draft.server_copy {
+                        let mailboxes = vault.mailboxes(draft.account_id)?;
+                        copies.retain(|&c| {
+                            !filed_in(&vault, &mailboxes, c).is_ok_and(|filed| {
+                                filed
+                                    .iter()
+                                    .any(|(m, uid)| m.remote_name == own.mailbox && *uid == own.uid)
+                            })
+                        });
+                    }
+                }
+                Err(e) if no_such_draft(&e) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        ops.extend(vault.delete_draft_copies(&copies, Origin::Person)?);
+        Ok(ops)
+    })
+    .await?;
+    for op in &ops {
         svc.notify_outbox(op.account_id);
     }
     Ok(())
@@ -1626,7 +1805,27 @@ async fn get_thread(svc: Arc<Service>, _ctx: Ctx, args: ThreadRef) -> CommandRes
     let vault = svc.require()?;
     blocking(move || {
         let (thread, messages) = vault.thread(args.id)?;
-        let messages = messages
+        let mailboxes = vault.mailboxes(thread.account_id)?;
+        // Every message's filings in one read, not one per message.
+        let mut filings: std::collections::HashMap<MailMessageId, Vec<(&Mailbox, u32)>> =
+            std::collections::HashMap::new();
+        for (_, message, mailbox, uid) in vault.mail_thread_filings(&[args.id])? {
+            if let Some(m) = mailboxes.iter().find(|m| m.id == mailbox) {
+                filings.entry(message).or_default().push((m, uid));
+            }
+        }
+        let mut mail = Vec::with_capacity(messages.len());
+        let mut copies = Vec::new();
+        for message in messages {
+            let filed = filings.remove(&message.id).unwrap_or_default();
+            if message.flags.draft || filed.iter().any(|(m, _)| m.role == MailboxRole::Drafts) {
+                copies.push((message, filed));
+            } else {
+                mail.push(message);
+            }
+        }
+        let drafts = thread_drafts(&vault, &thread, &mail, copies)?;
+        let messages = mail
             .into_iter()
             .map(|message| {
                 let attachments = attachments_for(&vault, &message);
@@ -1638,9 +1837,103 @@ async fn get_thread(svc: Arc<Service>, _ctx: Ctx, args: ThreadRef) -> CommandRes
             .iter()
             .map(RecentAction::from)
             .collect();
-        Ok(ThreadDetail { thread, messages, recent_actions })
+        Ok(ThreadDetail { thread, messages, recent_actions, drafts })
     })
     .await
+}
+
+/// Where `message` is filed, as `(mailbox, uid)`.
+fn filed_in<'a>(
+    vault: &Vault,
+    mailboxes: &'a [Mailbox],
+    message: MailMessageId,
+) -> everyday_core::Result<Vec<(&'a Mailbox, u32)>> {
+    Ok(vault
+        .mail_message_locations(message)?
+        .into_iter()
+        .filter_map(|(id, uid)| mailboxes.iter().find(|m| m.id == id).map(|m| (m, uid)))
+        .collect())
+}
+
+/// `copies` -- a thread's drafts on the server -- and the account's own
+/// drafts, as the cards [`ThreadDraft`] describes.
+///
+/// A copy belongs to the draft whose last upload it is
+/// ([`Draft::server_copy`]). A draft being written gets a card when it
+/// answers a message here or has a copy here; one sent, queued or thrown
+/// away does not, and neither do its copies, which are on their way off the
+/// server. A copy left only in Trash or Spam is a draft thrown away.
+///
+/// A copy no draft claims is another device's draft, or an old autosave this
+/// app's earlier builds left behind. Nothing tells the two apart for certain,
+/// so each such copy is a card of its own, and nothing deletes it but that
+/// card. Only a copy flagged `\Deleted` -- an old autosave on its way out --
+/// joins the thread's one card, if it has exactly one, to go with it.
+fn thread_drafts(
+    vault: &Vault,
+    thread: &Thread,
+    mail: &[Message],
+    copies: Vec<(Message, Vec<(&Mailbox, u32)>)>,
+) -> everyday_core::Result<Vec<ThreadDraft>> {
+    let answered: std::collections::HashSet<MailMessageId> = mail.iter().map(|m| m.id).collect();
+    let own = vault.drafts(thread.account_id)?;
+    let mut cards: Vec<ThreadDraft> = Vec::new();
+    let mut unclaimed = Vec::new();
+    for (message, filed) in copies {
+        if !filed.is_empty() && filed.iter().all(|(m, _)| m.role.empties()) {
+            continue;
+        }
+        let owner = own.iter().find(|d| {
+            d.server_copy.as_ref().is_some_and(|c| {
+                filed.iter().any(|(m, uid)| m.remote_name == c.mailbox && *uid == c.uid)
+            })
+        });
+        let detail = MessageDetail { attachments: attachments_for(vault, &message), message };
+        match owner {
+            Some(d) if !matches!(d.state, DraftState::Editing) => {}
+            Some(d) => {
+                let own_copy = Some(detail.message.id);
+                match cards.iter_mut().find(|c| c.draft.as_ref().is_some_and(|x| x.id == d.id)) {
+                    Some(card) => {
+                        card.copies.push(detail);
+                        card.own_copy = own_copy;
+                    }
+                    None => cards.push(ThreadDraft {
+                        draft: Some(d.clone()),
+                        copies: vec![detail],
+                        own_copy,
+                    }),
+                }
+            }
+            None => unclaimed.push(detail),
+        }
+    }
+    for draft in &own {
+        let here = draft.in_reply_to.is_some_and(|m| answered.contains(&m));
+        let carded = cards.iter().any(|c| c.draft.as_ref().is_some_and(|x| x.id == draft.id));
+        if here && !carded && matches!(draft.state, DraftState::Editing) {
+            cards.push(ThreadDraft {
+                draft: Some(draft.clone()),
+                copies: Vec::new(),
+                own_copy: None,
+            });
+        }
+    }
+    let (flagged, live): (Vec<_>, Vec<_>) =
+        unclaimed.into_iter().partition(|c| c.message.flags.deleted);
+    for copy in live {
+        cards.push(ThreadDraft { draft: None, copies: vec![copy], own_copy: None });
+    }
+    if let [only] = cards.as_mut_slice() {
+        only.copies.extend(flagged);
+    }
+    for card in &mut cards {
+        card.copies.sort_by_key(|c| c.message.date);
+    }
+    cards.sort_by_key(|c| {
+        c.draft.as_ref().map(|d| d.updated_at).or_else(|| c.copies.last().map(|c| c.message.date))
+    });
+    Ok(cards)
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[
@@ -1848,6 +2141,21 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: DraftRef, returns: "void",
         signature: &[("id", "DraftId", true)],
         run: restore_draft,
+    },
+    command! {
+        name: "edit_thread_draft", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        args: ThreadDraftCopies, returns: "Draft",
+        signature: &[("copies", "MailMessageId[]", true)],
+        run: edit_thread_draft,
+    },
+    command! {
+        name: "delete_thread_draft", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &DeleteThreadDraft| a.draft.map(|d| d.to_string()),
+        args: DeleteThreadDraft, returns: "void",
+        signature: &[("draft", "DraftId", false), ("copies", "MailMessageId[]", true)],
+        run: delete_thread_draft,
     },
     command! {
         name: "send_draft", scope: Mail, effect: Write,

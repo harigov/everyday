@@ -741,6 +741,30 @@
       ]
     },
     {
+      "command": "restore_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_thread_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "import_calendar",
       "events": [
         {
@@ -1542,6 +1566,10 @@
     {
       "name": "download_speech_model",
       "reason": "a real ~40MB network download"
+    },
+    {
+      "name": "edit_thread_draft",
+      "reason": "needs a draft's copy synced from a server to carry on writing"
     },
     {
       "name": "enrol_voice",

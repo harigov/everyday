@@ -2094,6 +2094,9 @@ export interface ThreadPage {
  *  -- hand it back as `cursor` for the next page. */
 export interface SearchMailResult {
   threads: Thread[]
+  /** Where each of `threads` is filed, by role. Trash and Spam are only
+   *  searched when the query asks with `in:`. */
+  places: Record<ThreadId, MailboxRole[]>
   next?: string | null
 }
 
@@ -2153,8 +2156,25 @@ export interface RecentAction {
  *  `recentActions` are. */
 export interface ThreadDetail {
   thread: Thread
+  /** Every message but drafts, which are in `drafts`. */
   messages: MailMessageDetail[]
   recentActions: RecentAction[]
+  drafts: ThreadDraft[]
+}
+
+/** A draft in a thread, drawn as one card rather than as mail: the draft this
+ *  app keeps, its copies on the server (each autosave uploads one, another
+ *  device saves its own), or both. */
+export interface ThreadDraft {
+  /** What Edit opens, when this app has the draft. `null` for one another
+   *  device saved, or old copies nothing here claims. */
+  draft: Draft | null
+  /** Its copies on the server, oldest first. Deleting the draft takes all of
+   *  them away; with no `draft`, the newest not `deleted` is what is shown. */
+  copies: MailMessageDetail[]
+  /** Which of `copies` is `draft`'s own last upload; the rest, with a
+   *  `draft`, are older copies autosave left behind. */
+  ownCopy: MailMessageId | null
 }
 
 /** `summarize_thread`'s answer. `summary` is empty when there was nothing

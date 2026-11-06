@@ -26,7 +26,7 @@ use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 use everyday_core::id::{AccountId, ThreadId};
-use everyday_core::mail::{Address, Mailbox, Thread};
+use everyday_core::mail::{Address, Mailbox, MailboxRole, Thread};
 use everyday_core::{Clause, MailQuery, QueryGroup, QueryOp, SearchCursor, Vault};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -54,6 +54,9 @@ fn default_search_limit() -> u32 {
 #[serde(rename_all = "camelCase")]
 pub struct SearchMailResult {
     pub threads: Vec<Thread>,
+    /// Where each of `threads` is filed, by role: a result looks like any
+    /// Inbox row, and one that is not in the Inbox says where it is instead.
+    pub places: std::collections::BTreeMap<ThreadId, Vec<MailboxRole>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
 }
@@ -205,6 +208,13 @@ async fn search_mail(
     let cursor = args.cursor.as_deref().and_then(decode_cursor);
     let limit = args.limit.max(1) as usize;
 
+    // Trash and Spam are left out unless asked for, as every mail program
+    // does: a thread found there looked like one gone missing from the Inbox.
+    let asks_where = query
+        .any_of
+        .iter()
+        .any(|g| g.clauses.iter().any(|c| !c.negate && matches!(c.op, QueryOp::In(_))));
+
     blocking(move || {
         // `resolve_mailbox_names` reads `vault.accounts()` and
         // `vault.mailboxes()`, both of which decrypt -- it belongs inside
@@ -212,25 +222,69 @@ async fn search_mail(
         // every vault read this command makes has to run on the blocking
         // pool, not the async runtime thread `search_mail` itself runs on.
         let query = resolve_mailbox_names(&vault, query);
-        let page = index.search(&query, limit, cursor)?;
+        let roles: std::collections::HashMap<everyday_core::id::MailboxId, MailboxRole> = vault
+            .accounts()
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|a| vault.mailboxes(a.id).unwrap_or_default())
+            .map(|m| (m.id, m.role))
+            .collect();
         let mut seen = HashSet::new();
-        let mut threads = Vec::with_capacity(page.hits.len());
-        for hit in &page.hits {
-            if !seen.insert(hit.thread_key.clone()) {
-                continue; // a later hit in an already-seen thread
+        let mut threads = Vec::with_capacity(limit);
+        let mut places = std::collections::BTreeMap::new();
+        let mut cursor = cursor;
+        // A page left short by what was left out is topped up from the next,
+        // a few times at most.
+        let mut next = None;
+        for _ in 0..SEARCH_TOP_UPS {
+            let page = index.search(&query, limit, cursor.take())?;
+            let mut found = Vec::new();
+            for hit in &page.hits {
+                if !seen.insert(hit.thread_key.clone()) {
+                    continue; // a later hit in an already-seen thread
+                }
+                let Ok(thread_id) = hit.thread_key.parse::<ThreadId>() else { continue };
+                let Ok((thread, _)) = vault.thread(thread_id) else { continue };
+                found.push((thread, hit.date));
             }
-            let Ok(thread_id) = hit.thread_key.parse::<ThreadId>() else { continue };
-            if let Ok((mut thread, _)) = vault.thread(thread_id) {
+            // Where the page's threads are filed, in one read. Unreadable,
+            // a thread is shown without its place rather than failing the page.
+            let ids: Vec<ThreadId> = found.iter().map(|(t, _)| t.id).collect();
+            let mut filed: std::collections::HashMap<ThreadId, Vec<MailboxRole>> =
+                std::collections::HashMap::new();
+            for (thread, _, mailbox, _) in vault.mail_thread_filings(&ids).unwrap_or_default() {
+                if let Some(&role) = roles.get(&mailbox) {
+                    let roles = filed.entry(thread).or_default();
+                    if !roles.contains(&role) {
+                        roles.push(role);
+                    }
+                }
+            }
+            for (mut thread, date) in found {
+                let filed = filed.remove(&thread.id).unwrap_or_default();
+                if !asks_where && !filed.is_empty() && filed.iter().all(|r| r.empties()) {
+                    continue;
+                }
                 // The results run by the date of what matched, so that is what
                 // the row says, as a mailbox's list says the date it runs by.
-                thread.last_date = hit.date;
+                thread.last_date = date;
+                places.insert(thread.id, filed);
                 threads.push(thread);
             }
+            next = page.next;
+            if threads.len() >= limit / 2 || next.is_none() {
+                break;
+            }
+            cursor = next.clone();
         }
-        Ok(SearchMailResult { threads, next: page.next.map(encode_cursor) })
+        Ok(SearchMailResult { threads, places, next: next.map(encode_cursor) })
     })
     .await
 }
+
+/// How many index pages [`search_mail`] reads at most for one page of
+/// results, when Trash and Spam left the first short.
+const SEARCH_TOP_UPS: usize = 4;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -1355,34 +1355,9 @@ fn run_draft_reply(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut draft = Draft::new(account.id, account.address.clone(), origin.clone());
     draft.in_reply_to = Some(message_id);
     draft.subject = compose::reply_subject(&parent.subject);
-    // RFC 5322 §3.6.2: `Reply-To`, when the sender set one, names where a
-    // reply is actually meant to go -- a mailing list, a ticketing system,
-    // a `no-reply@` address whose own `Reply-To` names a real mailbox --
-    // and takes priority over `From`, which this ignored entirely until
-    // now. See `domains::mail::new_draft`'s identical reasoning for a
-    // person's own click on "reply".
-    draft.to = if parent.reply_to.is_empty() {
-        vec![parent.from.clone()]
-    } else {
-        parent.reply_to.clone()
-    };
-    if reply_all {
-        let own = own_addresses(&account);
-        for addr in parent.to.iter().chain(parent.cc.iter()) {
-            // Checked against `cc` as it fills too, not only against `to`:
-            // otherwise an address the parent listed in both `to` and `cc`
-            // was added to this draft's `cc` twice -- one RCPT TO for one
-            // recipient.
-            let already = draft
-                .to
-                .iter()
-                .chain(draft.cc.iter())
-                .any(|a| a.email.eq_ignore_ascii_case(&addr.email));
-            if !already && !own.contains(&addr.email.to_lowercase()) {
-                draft.cc.push(addr.clone());
-            }
-        }
-    }
+    // Who: see `compose::reply_recipients`, shared with a person's own click
+    // on "reply" in `domains::mail::new_draft`.
+    (draft.to, draft.cc) = compose::reply_recipients(&parent, &own_addresses(&account), reply_all);
     draft.body_html = html;
 
     enqueue_gate(ctx, &origin)?;

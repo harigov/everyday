@@ -29,6 +29,7 @@ const {
   inviteIsCancelled,
   applyInviteResponse,
   mergeSearchPage,
+  searchPlace,
   remoteImagesAllowed,
   originPhrase,
   recentActionLine,
@@ -1120,6 +1121,16 @@ assert.deepEqual(sumCategoryCounts([]), [], 'no inboxes, no badges')
     'a toggle since removed is dropped, and a mailbox left with none forgotten',
   )
 }
+
+// Where a search result lives, when it is not the Inbox.
+assert.equal(searchPlace(undefined), null)
+assert.equal(searchPlace(['inbox', 'trash']), null, 'anything still in the Inbox is just mail')
+assert.equal(searchPlace(['trash', 'all']), 'Trash')
+assert.equal(searchPlace(['spam']), 'Spam')
+assert.equal(searchPlace(['sent', 'all']), 'Sent')
+assert.equal(searchPlace(['drafts']), 'Draft')
+assert.equal(searchPlace(['all']), 'Archived')
+assert.equal(searchPlace(['other', 'all']), 'Not in Inbox')
 
 await close()
 console.log('mail: all checks passed')

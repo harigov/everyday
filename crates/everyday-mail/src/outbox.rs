@@ -151,6 +151,19 @@ pub trait Lookups {
     fn remote_image_url(&self, _message: MailMessageId, _token: &str) -> Result<Option<String>> {
         Ok(None)
     }
+
+    /// The `Message-ID` of this draft's last copy on the server, when it is
+    /// known -- what finds that copy again in Gmail's Trash after
+    /// [`delete_located`] has moved it there, to delete it for good.
+    fn draft_server_copy_message_id(&self, _id: DraftId) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Message `id`'s own `Message-ID` header -- the same use, for a draft
+    /// deleted from its thread ([`OpKind::DeleteForever`] from Drafts).
+    fn message_id_header(&self, _id: MailMessageId) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// A place to send built mail, behind a trait for exactly the reason
@@ -214,7 +227,11 @@ pub enum Executed {
     /// fresh copy, when `APPENDUID` said so (see [`MailSession::append`]'s
     /// own docs for when it does not) — what the caller remembers as this
     /// draft's `draft_server_copy` for the *next* `AppendDraft` to delete.
-    Appended { uid: Option<Uid> },
+    /// `message_id` is the fresh copy's own `Message-ID`, `None` when nothing
+    /// was uploaded. `replaced` says the copy it replaced is off the server,
+    /// or that there was none: when that failed, the old copy stays and is
+    /// left for sync to show, rather than forgotten while still there.
+    Appended { uid: Option<Uid>, message_id: Option<String>, replaced: bool },
 }
 
 /// Whether `err` is worth trying again. Exactly
@@ -329,8 +346,10 @@ enum Command {
     MoveTo(String),
     /// Drop the `\Inbox` label: Gmail's archive.
     DropInboxLabel,
-    /// [`MailSession::delete`]: flag `\Deleted` and expunge.
-    Delete,
+    /// [`MailSession::delete`]: flag `\Deleted` and expunge. `expunge_all`
+    /// follows it with a plain `EXPUNGE` on a server without `UIDPLUS`: only
+    /// in a Trash or Spam, where whatever else is flagged was on its way out.
+    Delete { expunge_all: bool },
 }
 
 /// Group a target's locations by mailbox — every [`MailSession`] verb that
@@ -445,8 +464,9 @@ pub fn same_run(a: &OpKind, b: &OpKind) -> bool {
 /// * **Move**: a `MOVE` into the mailbox the op names.
 /// * **DeleteForever**: [`MailSession::delete`] of the copies the op's
 ///   messages have in the mailbox it names, and of no other copy. That
-///   mailbox must still be a Trash or Spam when the op runs, or the op fails
-///   for good; one the vault no longer has took its mail with it, and the op
+///   mailbox must still be a Trash, Spam, Drafts or All Mail when the op
+///   runs, or the op fails for good (the last two only ever for drafts,
+///   which go to Trash on Gmail, see [`delete_located`]); one the vault no longer has took its mail with it, and the op
 ///   is done. On Gmail, deleting from either is how a message is deleted for
 ///   good. Without `UIDPLUS` a plain [`MailSession::expunge`] follows, since
 ///   in a Trash or Spam what else is flagged `\Deleted` was on its way out
@@ -478,7 +498,8 @@ pub async fn execute_relocations<S: MailSession, T: Sender, L: Lookups>(
         Err(e) => return vec![Err(e); ops.len()],
     };
     // A delete without `UIDPLUS` is only done once the `EXPUNGE` after it is.
-    let expunge_after = matches!(command, Command::Delete) && !ctx.session.capabilities().uidplus;
+    let expunge_after = matches!(command, Command::Delete { expunge_all: true })
+        && !ctx.session.capabilities().uidplus;
 
     let mut outcomes: Vec<Option<Result<Executed>>> = vec![None; ops.len()];
     let mut owned: Vec<Vec<Located>> = vec![Vec::new(); ops.len()];
@@ -511,7 +532,7 @@ pub async fn execute_relocations<S: MailSession, T: Sender, L: Lookups>(
                 Command::DropInboxLabel => {
                     ctx.session.store_gmail_labels(&chunk, &[], &inbox_label).await
                 }
-                Command::Delete => ctx.session.delete(&chunk).await,
+                Command::Delete { .. } => ctx.session.delete(&chunk).await,
             };
             if let Err(e) = sent {
                 failure = Some(e);
@@ -530,6 +551,24 @@ pub async fn execute_relocations<S: MailSession, T: Sender, L: Lookups>(
             }
             carried.extend(flagged.into_iter().map(|uid| (mailbox.clone(), uid)));
         }
+    }
+
+    // A draft deleted from Gmail's Drafts or All Mail went to Trash, which
+    // would list its live conversation for 30 days: deleted from there too.
+    if let (OpKind::DeleteForever { .. }, Command::MoveTo(trash), None) =
+        (&first.kind, &command, &failure)
+    {
+        let mut message_ids = Vec::new();
+        for (op, outcome) in ops.iter().zip(&outcomes) {
+            if let (OpKind::DeleteForever { messages, .. }, None) = (&op.kind, outcome) {
+                for &message in messages {
+                    if let Ok(Some(id)) = ctx.lookups.message_id_header(message) {
+                        message_ids.push(id);
+                    }
+                }
+            }
+        }
+        purge_from_trash(ctx, trash, message_ids).await;
     }
 
     outcomes
@@ -556,11 +595,30 @@ fn plan<L: Lookups>(kind: &OpKind, lookups: &L) -> Result<Option<(Command, Sourc
     if let OpKind::DeleteForever { from, .. } = kind {
         return match lookups.mailbox_role(*from)? {
             None => Ok(None),
-            Some(role) if role.empties() => {
-                Ok(Some((Command::Delete, Sources::Only(lookups.mailbox_name(*from)?))))
+            Some(role) if role.empties() => Ok(Some((
+                Command::Delete { expunge_all: true },
+                Sources::Only(lookups.mailbox_name(*from)?),
+            ))),
+            // Drafts thrown away from a thread: copies another device saved,
+            // or old autosaves, from Drafts or (on Gmail, archived there by
+            // an expunge) All Mail -- see `Vault::delete_draft_copies`.
+            // Gmail's Trash, as `delete_located` explains.
+            Some(role @ (MailboxRole::Drafts | MailboxRole::All)) => {
+                let trash = if lookups.is_gmail() {
+                    lookups.special_use(MailboxRole::Trash)?
+                } else {
+                    None
+                };
+                let command = match trash {
+                    Some(trash) => Command::MoveTo(trash),
+                    // Drafts expunged as `delete_located` explains; an All
+                    // Mail off Gmail is no place to expunge for others.
+                    None => Command::Delete { expunge_all: role == MailboxRole::Drafts },
+                };
+                Ok(Some((command, Sources::Only(lookups.mailbox_name(*from)?))))
             }
             Some(_) => Err(MailError::Protocol(format!(
-                "{} is no longer a Trash or Spam, so nothing in it is deleted for good",
+                "{} is no longer a Trash, Spam, Drafts or All Mail, so nothing in it is deleted for good",
                 lookups.mailbox_name(*from)?
             ))),
         };
@@ -866,20 +924,62 @@ async fn remove_drafts_server_copy<S: MailSession, T: Sender, L: Lookups>(
     id: DraftId,
 ) {
     let Ok(Some(copy)) = ctx.lookups.draft_server_copy(id) else { return };
-    if let Err(e) = delete_located(ctx, &copy).await {
+    let message_id = ctx.lookups.draft_server_copy_message_id(id).ok().flatten();
+    if let Err(e) = delete_located(ctx, &copy, message_id.as_deref()).await {
         tracing::warn!(error = %e, draft = %id, "could not remove a draft's stale server copy");
     }
 }
 
-/// `SELECT` `located`'s own mailbox and delete it -- the one place both
-/// [`remove_drafts_server_copy`] and [`discard_draft_op`] reach for
-/// [`MailSession::delete`] from.
+/// Take one copy of a draft off the server: what [`append_draft`] does to the
+/// copy it replaces, and [`remove_drafts_server_copy`] and
+/// [`discard_draft_op`] to the last one.
+///
+/// On Gmail into Trash. A message expunged from Drafts there is, under the
+/// account's default "when expunged" setting, archived into All Mail rather
+/// than deleted, so every autosave's old copy used to pile up as mail of its
+/// own. Trash empties itself after 30 days. Elsewhere it is deleted outright.
 async fn delete_located<S: MailSession, T: Sender, L: Lookups>(
     ctx: &mut ExecContext<'_, S, T, L>,
     located: &Located,
+    message_id: Option<&str>,
 ) -> Result<()> {
     ctx.session.select(&located.mailbox).await?;
-    ctx.session.delete(&UidSet::single(located.uid)).await
+    let uids = UidSet::single(located.uid);
+    if ctx.lookups.is_gmail()
+        && let Some(trash) = ctx.lookups.special_use(MailboxRole::Trash)?
+    {
+        ctx.session.move_to(&uids, &trash).await?;
+        purge_from_trash(ctx, &trash, message_id.into_iter().map(str::to_string).collect()).await;
+        return Ok(());
+    }
+    ctx.session.delete(&uids).await?;
+    // Without `UIDPLUS` the delete only flagged it. In Drafts, what else is
+    // flagged is drafts somebody threw away, so expunging the lot is what
+    // every client there wants -- and a copy left flagged would sync back.
+    if !ctx.session.capabilities().uidplus {
+        ctx.session.expunge().await?;
+    }
+    Ok(())
+}
+
+/// Delete for good what a draft deletion just moved into Gmail's Trash, found
+/// there by `Message-ID`: left in Trash, each copy carried its conversation's
+/// thread id and put a live conversation in the Trash list for 30 days.
+/// Best-effort: the copy is out of Drafts either way, and Trash empties
+/// itself.
+async fn purge_from_trash<S: MailSession, T: Sender, L: Lookups>(
+    ctx: &mut ExecContext<'_, S, T, L>,
+    trash: &str,
+    message_ids: Vec<String>,
+) {
+    for message_id in message_ids {
+        let found = ctx.session.search_message_id(trash, &message_id).await;
+        if let Ok(Some(uid)) = found
+            && let Err(e) = ctx.session.delete(&UidSet::single(uid)).await
+        {
+            tracing::warn!(error = %e, "could not delete a draft's copy from Trash");
+        }
+    }
 }
 
 /// [`OpKind::DiscardDraft`]'s whole job: delete a discarded draft's own
@@ -903,18 +1003,22 @@ async fn discard_draft_op<S: MailSession, T: Sender, L: Lookups>(
         return Ok(());
     }
     let Some(copy) = ctx.lookups.draft_server_copy(id)? else { return Ok(()) };
-    delete_located(ctx, &copy).await
+    let message_id = ctx.lookups.draft_server_copy_message_id(id)?;
+    delete_located(ctx, &copy, message_id.as_deref()).await
 }
 
-/// `APPEND` a fresh copy of the draft to the account's Drafts mailbox,
-/// deleting the previous copy first when this crate has appended one
-/// before. Deletion is `\Deleted` via [`MailSession::store_flags`] rather
-/// than an outright removal — the trait offers no `EXPUNGE` of its own, on
-/// the same reasoning [`MailSession::move_to`]'s fallback path already
-/// accepts: a client that marks and moves on, leaving the actual expunge to
-/// whichever ordinary sync pass owns that mailbox next, never risks
-/// discarding a `\Deleted` message another client marked for its own
-/// reasons and has not gotten around to expunging yet.
+/// `APPEND` a fresh copy of the draft to the account's Drafts mailbox, then
+/// take the previous copy off the server when this crate has appended one
+/// before -- see [`delete_located`]. In that order: deleting first left the
+/// server with no copy at all whenever the upload failed. Only flagging it
+/// `\Deleted` left every autosave's copy on a server that never expunges,
+/// and in All Mail on Gmail, each one synced back as a message of its own.
+/// [`MailSession::delete`] expunges only that uid, never what another
+/// client flagged.
+///
+/// A server without `UIDPLUS` names no uid for the fresh copy, so it is
+/// looked for by its `Message-ID`: without it, the next autosave would have
+/// nothing to replace and the copies would pile up there instead.
 async fn append_draft<S: MailSession, T: Sender, L: Lookups>(
     op: &Op,
     ctx: &mut ExecContext<'_, S, T, L>,
@@ -929,20 +1033,38 @@ async fn append_draft<S: MailSession, T: Sender, L: Lookups>(
     // leave the words on the server with nothing left to remove them. Only
     // ever skipped, never a failure, since nothing is owed to anybody.
     if matches!(draft.state, DraftState::Discarded) {
-        return Ok(Executed::Appended { uid: None });
+        return Ok(Executed::Appended { uid: None, message_id: None, replaced: true });
     }
     let Some(drafts_mailbox) = ctx.lookups.special_use(MailboxRole::Drafts)? else {
         return Err(MailError::Unsupported("a Drafts mailbox"));
     };
 
-    if let Some(old) = ctx.lookups.draft_server_copy(id)? {
-        ctx.session.select(&old.mailbox).await?;
-        ctx.session.store_flags(&UidSet::single(old.uid), Flags::DELETED, Flags::NONE).await?;
-    }
-
     let built = build(&draft, ctx).await?;
-    let uid = ctx.session.append(&drafts_mailbox, &built.raw, Flags::DRAFT).await?;
-    Ok(Executed::Appended { uid })
+    let uid = match ctx.session.append(&drafts_mailbox, &built.raw, Flags::DRAFT).await? {
+        Some(uid) => Some(uid),
+        // Best-effort: not finding it costs one extra copy, as it always did.
+        None => {
+            ctx.session.search_message_id(&drafts_mailbox, &built.message_id).await.ok().flatten()
+        }
+    };
+
+    // Only now the old copy goes: deleted first, a failed upload left the
+    // server with no copy of the draft at all. A copy that will not go is
+    // left where it is, and said so.
+    let replaced = match ctx.lookups.draft_server_copy(id)? {
+        Some(old) => {
+            let old_id = ctx.lookups.draft_server_copy_message_id(id)?;
+            match delete_located(ctx, &old, old_id.as_deref()).await {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(error = %e, draft = %id, "could not remove a draft's previous copy");
+                    false
+                }
+            }
+        }
+        None => true,
+    };
+    Ok(Executed::Appended { uid, message_id: Some(built.message_id), replaced })
 }
 
 async fn build<S: MailSession, T: Sender, L: Lookups>(
@@ -982,6 +1104,9 @@ mod tests {
         /// where which ops a failure reaches depends on which mailbox it
         /// happened in.
         fail_select: Option<(String, MailError)>,
+        /// An `APPEND` answered with no `APPENDUID`, as a server without
+        /// `UIDPLUS` answers.
+        no_append_uid: bool,
     }
 
     impl FakeSession {
@@ -1082,6 +1207,9 @@ mod tests {
             self.take()?;
             self.calls.push(format!("append to {mailbox} ({flags:?})"));
             self.appended.push((mailbox.to_string(), raw.to_vec()));
+            if self.no_append_uid {
+                return Ok(None);
+            }
             Ok(Some(self.appended.len() as u32))
         }
 
@@ -1153,6 +1281,9 @@ mod tests {
         /// thread deleted locally after its op was queued does.
         gone: std::collections::HashSet<ThreadId>,
         message_locations: HashMap<MailMessageId, Vec<Located>>,
+        /// `Message-ID`s by draft (its last copy) and by message.
+        copy_ids: HashMap<DraftId, String>,
+        message_ids: HashMap<MailMessageId, String>,
     }
 
     impl FakeLookups {
@@ -1168,6 +1299,8 @@ mod tests {
                 parents: HashMap::new(),
                 gone: std::collections::HashSet::new(),
                 message_locations: HashMap::new(),
+                copy_ids: HashMap::new(),
+                message_ids: HashMap::new(),
             }
         }
 
@@ -1256,6 +1389,14 @@ mod tests {
 
         fn draft_server_copy(&self, id: DraftId) -> Result<Option<Located>> {
             Ok(self.server_copies.get(&id).cloned())
+        }
+
+        fn draft_server_copy_message_id(&self, id: DraftId) -> Result<Option<String>> {
+            Ok(self.copy_ids.get(&id).cloned())
+        }
+
+        fn message_id_header(&self, id: MailMessageId) -> Result<Option<String>> {
+            Ok(self.message_ids.get(&id).cloned())
         }
 
         fn parent_raw(&self, id: MailMessageId) -> Result<Vec<u8>> {
@@ -2112,12 +2253,135 @@ Original body.\r\n"
         let outcome = execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx)
             .await
             .unwrap();
-        assert!(matches!(outcome, Executed::Appended { uid: Some(_) }));
-        assert!(session.calls.iter().any(|c| c.contains("select Drafts")));
+        assert!(matches!(outcome, Executed::Appended { uid: Some(_), replaced: true, .. }));
+        let at = |prefix: &str| session.calls.iter().position(|c| c.starts_with(prefix));
+        // Expunged, not only flagged: a flagged copy stayed on the server and
+        // synced back as a message of its own, one per autosave. Without
+        // UIDPLUS the delete only flags it, so Drafts is expunged as well.
+        let (append, delete) = (at("append to Drafts").unwrap(), at("delete 41").unwrap());
+        assert!(append < delete, "the fresh copy goes up first: {:?}", session.calls);
+        assert!(at("expunge on Some(\"Drafts\")").is_some(), "{:?}", session.calls);
+    }
+
+    /// The old copy refusing to go leaves the fresh one in place and says so,
+    /// rather than failing the op and uploading a third.
+    #[tokio::test]
+    async fn an_old_copy_that_will_not_go_is_reported_not_retried() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let mut lookups = FakeLookups::new(false)
+            .with_draft(draft)
+            .with_special_use(MailboxRole::Drafts, "Drafts");
+        lookups.server_copies.insert(id, Located { mailbox: "Old Drafts".into(), uid: 41 });
+        let mut session = FakeSession {
+            fail_select: Some(("Old Drafts".into(), MailError::Network("dropped".into()))),
+            ..FakeSession::default()
+        };
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcome = execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx)
+            .await
+            .unwrap();
         assert!(
-            session.calls.iter().any(|c| c.contains("store_flags 41") && c.contains("\\Deleted"))
+            matches!(outcome, Executed::Appended { uid: Some(_), replaced: false, .. }),
+            "{outcome:?}"
         );
-        assert!(session.calls.iter().any(|c| c.contains("append to Drafts")));
+        assert_eq!(session.appended.len(), 1);
+    }
+
+    /// Gmail archives what is expunged from Drafts into All Mail by default,
+    /// so the old copy goes to Trash instead.
+    #[tokio::test]
+    async fn on_gmail_the_previous_copy_goes_to_trash() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let mut lookups = FakeLookups::new(true)
+            .with_draft(draft)
+            .with_special_use(MailboxRole::Drafts, "[Gmail]/Drafts")
+            .with_special_use(MailboxRole::Trash, "[Gmail]/Trash");
+        lookups.server_copies.insert(id, Located { mailbox: "[Gmail]/Drafts".into(), uid: 41 });
+        lookups.copy_ids.insert(id, "<old@example.com>".into());
+        let mut session = FakeSession::gmail();
+        session.found_message_ids.insert("<old@example.com>".into(), 77);
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx).await.unwrap();
+        assert!(
+            session.calls.iter().any(|c| c == "move_to 41 -> [Gmail]/Trash"),
+            "{:?}",
+            session.calls
+        );
+        // And out of Trash, found by its `Message-ID`, or its conversation
+        // would be listed in Trash while the reply is being written.
+        assert!(session.calls.iter().any(|c| c.starts_with("delete 77")), "{:?}", session.calls);
+        assert!(!session.calls.iter().any(|c| c.starts_with("delete 41")), "{:?}", session.calls);
+    }
+
+    /// A draft deleted from its thread on Gmail goes to Trash and then out of
+    /// it; elsewhere it is deleted, with Drafts expunged without UIDPLUS.
+    #[tokio::test]
+    async fn deleting_a_draft_copy_from_drafts() {
+        let account = AccountId::new();
+        let drafts = MailboxId::new();
+        let thread = ThreadId::new();
+        let copy = MailMessageId::new();
+        let lookups = |gmail| {
+            let mut l = FakeLookups::new(gmail)
+                .with_mailbox(drafts, "Drafts", MailboxRole::Drafts)
+                .with_special_use(MailboxRole::Trash, "Trash")
+                .with_message(copy, vec![at("Drafts", 5)]);
+            l.message_ids.insert(copy, "<copy@example.com>".into());
+            l
+        };
+        let sender = FakeSender::default();
+
+        let gmail = lookups(true);
+        let mut session = FakeSession::gmail();
+        session.found_message_ids.insert("<copy@example.com>".into(), 90);
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &gmail };
+        let ran = execute_relocations(&[forever(account, drafts, thread, &[copy])], &mut ctx).await;
+        assert!(ran[0].is_ok(), "{ran:?}");
+        let calls = &session.calls;
+        assert!(calls.iter().any(|c| c == "move_to 5 -> Trash"), "{calls:?}");
+        assert!(calls.iter().any(|c| c.starts_with("delete 90")), "{calls:?}");
+
+        let plain = lookups(false);
+        let mut session = FakeSession::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &plain };
+        let ran = execute_relocations(&[forever(account, drafts, thread, &[copy])], &mut ctx).await;
+        assert!(ran[0].is_ok(), "{ran:?}");
+        let calls = &session.calls;
+        assert!(calls.iter().any(|c| c.starts_with("delete 5")), "{calls:?}");
+        assert!(calls.iter().any(|c| c.starts_with("expunge")), "{calls:?}");
+    }
+
+    /// No `APPENDUID`: the fresh copy is found by its `Message-ID`, so the
+    /// next autosave has a copy to replace.
+    #[tokio::test]
+    async fn a_copy_appended_without_a_uid_is_looked_up() {
+        let account = AccountId::new();
+        let draft = simple_draft(account);
+        let id = draft.id;
+        let lookups = FakeLookups::new(false)
+            .with_draft(draft)
+            .with_special_use(MailboxRole::Drafts, "Drafts");
+        let mut session = FakeSession { no_append_uid: true, ..FakeSession::default() };
+        let sender = FakeSender::default();
+        let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
+
+        let outcome = execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, Executed::Appended { uid: None, .. }), "nothing seeded to find");
+        assert!(
+            session.calls.iter().any(|c| c.starts_with("search_message_id")),
+            "{:?}",
+            session.calls
+        );
     }
 
     #[tokio::test]
@@ -2133,7 +2397,7 @@ Original body.\r\n"
         let mut ctx = ExecContext { session: &mut session, sender: &sender, lookups: &lookups };
 
         execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx).await.unwrap();
-        assert!(!session.calls.iter().any(|c| c.contains("\\Deleted")));
+        assert!(!session.calls.iter().any(|c| c.contains("\\Deleted") || c.starts_with("delete")));
         assert_eq!(session.appended.len(), 1);
     }
 
@@ -2197,7 +2461,7 @@ Original body.\r\n"
         let outcome = execute(&op(account, OpKind::AppendDraft, OpTarget::Draft(id)), &mut ctx)
             .await
             .unwrap();
-        assert!(matches!(outcome, Executed::Appended { uid: None }));
+        assert!(matches!(outcome, Executed::Appended { uid: None, .. }));
         assert!(session.calls.is_empty(), "{:?}", session.calls);
         assert!(session.appended.is_empty());
     }

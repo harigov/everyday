@@ -184,6 +184,8 @@ import {
   mockArchive,
   mockCategoryCounts,
   mockDiscardDraft,
+  mockDeleteThreadDraft,
+  mockEditThreadDraft,
   mockRestoreDraft,
   mockFetchAttachment,
   mockPreviewAttachment,
@@ -7637,6 +7639,13 @@ export const mockInvoke = async <T>(
     case 'restore_draft':
       requireUnlocked()
       mockRestoreDraft(str(args.id))
+      return undefined as T
+    case 'edit_thread_draft':
+      requireUnlocked()
+      return mockEditThreadDraft() as T
+    case 'delete_thread_draft':
+      requireUnlocked()
+      mockDeleteThreadDraft(args.draft ? str(args.draft) : null)
       return undefined as T
     case 'send_draft': {
       requireUnlocked()

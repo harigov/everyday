@@ -1667,6 +1667,9 @@ export const api = {
   saveDraft: (draft: Draft) => call('saveDraft', { draft }),
   discardDraft: (id: DraftId) => call('discardDraft', { id }),
   restoreDraft: (id: DraftId) => call('restoreDraft', { id }),
+  editThreadDraft: (copies: MailMessageId[]) => call('editThreadDraft', { copies }),
+  deleteThreadDraft: (draft: DraftId | null, copies: MailMessageId[]) =>
+    call('deleteThreadDraft', { draft: draft ?? undefined, copies }),
   /** `delaySeconds` is the undo window (5-30s, clamped by the backend);
    *  `sendAt` queues for a specific, possibly distant, moment instead --
    *  "send later". Passing neither uses the backend's own default window. */

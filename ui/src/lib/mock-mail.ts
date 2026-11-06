@@ -17,6 +17,7 @@
 // build's other stand-ins carry -- see `mail-api.ts`.
 
 import type {
+  ThreadDraft,
   AccountId,
   CategoryCount,
   Draft,
@@ -991,11 +992,28 @@ export function mockInboxSenders({
 export function mockGetThread(id: ThreadId): ThreadDetail {
   const thread = seed.threads.find((t) => t.id === id)
   if (!thread) throw new VaultError('notFound', 'no such thread')
-  const messages: MailMessageDetail[] = messagesOf(id).map((message) => ({
+  const all: MailMessageDetail[] = messagesOf(id).map((message) => ({
     ...message,
     attachments: seed.attachments.get(message.id) ?? [],
   }))
-  return { thread, messages, recentActions: seed.recentActions.get(id) ?? [] }
+  // As the real command: a draft's copies on the server are a card, not mail.
+  const messages = all.filter((m) => !m.flags.draft)
+  const copies = all.filter((m) => m.flags.draft)
+  const ids = new Set(messages.map((m) => m.id))
+  const threadDrafts: ThreadDraft[] = drafts
+    .filter((d) => d.state.type === 'editing' && d.inReplyTo && ids.has(d.inReplyTo))
+    .map((draft) => ({ draft, copies: [], ownCopy: null }))
+  if (copies.length > 0) threadDrafts.push({ draft: null, copies, ownCopy: null })
+  return { thread, messages, recentActions: seed.recentActions.get(id) ?? [], drafts: threadDrafts }
+}
+
+/** The mock keeps no server copies, so there is never one to adopt. */
+export function mockEditThreadDraft(): Draft {
+  throw new VaultError('notFound', 'that draft has been deleted')
+}
+
+export function mockDeleteThreadDraft(draft: DraftId | null): void {
+  if (draft) mockDiscardDraft(draft)
 }
 
 /** Fetches one part left `available: false` -- the mock's stand-in for
@@ -1734,7 +1752,7 @@ function addressMatches(list: MailAddress[], needle: string): boolean {
 export function mockSearchMail(
   query: string,
   cursor: string | null | undefined,
-): { threads: Thread[]; next?: string | null } {
+): { threads: Thread[]; places: Record<ThreadId, MailboxRole[]>; next?: string | null } {
   const q = parseSearchQuery(query)
   const empty =
     q.terms.length === 0 && !q.from && !q.to && !q.subject && !q.isUnread && !q.hasAttachment
@@ -1757,7 +1775,9 @@ export function mockSearchMail(
       })
   const start = cursor ? Number(cursor) : 0
   const threads = matches.slice(start, start + 20)
-  return { threads, next: start + 20 < matches.length ? String(start + 20) : null }
+  const inbox: MailboxRole[] = ['inbox']
+  const places = Object.fromEntries(threads.map((t) => [t.id, inbox]))
+  return { threads, places, next: start + 20 < matches.length ? String(start + 20) : null }
 }
 
 export function mockSuggestAddresses(prefix: string): MailAddress[] {

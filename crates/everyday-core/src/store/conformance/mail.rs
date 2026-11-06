@@ -35,6 +35,8 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     draft_round_trips(store);
     a_uidvalidity_reset_forgets_uids_but_keeps_messages(store);
     merge_threads_migrates_messages_and_deletes_the_others(store);
+    a_message_key_finds_its_message_until_it_is_gone(store);
+    merging_a_message_stored_twice_keeps_one_row_filed_in_both(store);
     pending_bodies_finds_only_unfetched_messages_newest_first(store);
     account_delete_cascades_every_mail_row(store);
     category_rules_and_recategorize_round_trip(store);
@@ -728,6 +730,94 @@ fn merge_threads_migrates_messages_and_deletes_the_others(store: &dyn JournalSto
     let page = m.list_threads(mailbox.id, &ThreadFilter::default(), None, 10).unwrap();
     assert_eq!(page.threads.len(), 1, "thread_mailboxes must follow the merge, not just messages");
     assert_eq!(page.threads[0].id, keep);
+
+    cleanup_account(store, account);
+}
+
+/// [`MailStore::message_by_key`]: a key names the first message stored under
+/// it, nothing once that message is gone, and is taken over by the next.
+fn a_message_key_finds_its_message_until_it_is_gone(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&mailbox).unwrap();
+    let first = message(account, ThreadId::new(), "First", "a@example.com", Timestamp::now());
+    let second = message(account, ThreadId::new(), "Second", "a@example.com", Timestamp::now());
+    m.ingest(account, vec![IngestMessage { message: first.clone(), mailbox: mailbox.id, uid: 1 }])
+        .unwrap();
+    m.put_message_keys(account, &[("k".into(), first.id)]).unwrap();
+    assert_eq!(m.message_by_key(account, "k").unwrap(), Some(first.id));
+    assert_eq!(m.message_by_key(AccountId::new(), "k").unwrap(), None, "per account");
+
+    m.put_message_keys(account, &[("k".into(), second.id)]).unwrap();
+    assert_eq!(m.message_by_key(account, "k").unwrap(), Some(first.id), "the first stays");
+
+    m.remove_uids(mailbox.id, &[1]).unwrap();
+    assert_eq!(m.message_by_key(account, "k").unwrap(), None, "gone with its message");
+    m.ingest(account, vec![IngestMessage { message: second.clone(), mailbox: mailbox.id, uid: 2 }])
+        .unwrap();
+    m.put_message_keys(account, &[("k".into(), second.id)]).unwrap();
+    assert_eq!(m.message_by_key(account, "k").unwrap(), Some(second.id));
+
+    assert!(!m.account_keyed(account).unwrap());
+    m.mark_account_keyed(account).unwrap();
+    m.mark_account_keyed(account).unwrap();
+    assert!(m.account_keyed(account).unwrap());
+    let mut seen = 0;
+    m.each_message(account, &mut |_| seen += 1).unwrap();
+    assert_eq!(seen, 1);
+
+    cleanup_account(store, account);
+    assert!(!m.account_keyed(account).unwrap(), "forgotten with the account");
+}
+
+/// [`MailStore::merge_messages`]: the same message stored once per mailbox
+/// becomes one row filed in both, in the kept row's thread, and the other
+/// row's pack address comes back to be marked dead.
+fn merging_a_message_stored_twice_keeps_one_row_filed_in_both(store: &dyn JournalStore) {
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let all = Mailbox::new(account, "All Mail", MailboxRole::All);
+    let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
+    m.put_mailbox(&all).unwrap();
+    m.put_mailbox(&sent).unwrap();
+    let thread = ThreadId::new();
+    let keep = message(account, thread, "Re: plans", "me@example.com", Timestamp::now());
+    let mut twin = keep.clone();
+    twin.id = MailMessageId::new();
+    // Filed in All Mail as well as Sent: that filing goes, not moves.
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: keep.clone(), mailbox: all.id, uid: 10 },
+            IngestMessage { message: twin.clone(), mailbox: sent.id, uid: 3 },
+            IngestMessage { message: twin.clone(), mailbox: all.id, uid: 11 },
+        ],
+    )
+    .unwrap();
+    m.put_message_keys(account, &[("dup".into(), twin.id)]).unwrap();
+    assert_eq!(m.thread(thread).unwrap().0.message_count, 2);
+
+    let removed = m.merge_messages(keep.id, &[twin.id, keep.id]).unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].0, twin.id);
+
+    let (t, messages) = m.thread(thread).unwrap();
+    assert_eq!(t.message_count, 1);
+    assert_eq!(messages[0].id, keep.id);
+    let mut filed = m.message_locations(keep.id).unwrap();
+    filed.sort();
+    let mut want = vec![(all.id, 10), (sent.id, 3)];
+    want.sort();
+    assert_eq!(filed, want, "Sent moved over; All Mail kept its own uid");
+    assert!(m.get_message(twin.id).is_err(), "the other row is gone");
+    assert_eq!(m.message_by_key(account, "dup").unwrap(), Some(keep.id), "its key follows");
+    assert_eq!(
+        m.list_threads(sent.id, &ThreadFilter::default(), None, 10).unwrap().threads.len(),
+        1,
+        "still listed in Sent"
+    );
+    assert!(m.merge_messages(keep.id, &[twin.id]).unwrap().is_empty(), "nothing left to merge");
 
     cleanup_account(store, account);
 }

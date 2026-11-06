@@ -131,6 +131,8 @@ impl AccountStore for SqlStore {
             &account,
         )?;
         tx.execute("DELETE FROM mail_messages WHERE account_id = ?1", &account)?;
+        tx.execute("DELETE FROM mail_message_keys WHERE account_id = ?1", &account)?;
+        tx.execute("DELETE FROM mail_keyed_accounts WHERE account_id = ?1", &account)?;
         tx.execute("DELETE FROM threads WHERE account_id = ?1", &account)?;
         tx.execute("DELETE FROM mailboxes WHERE account_id = ?1", &account)?;
         tx.execute("DELETE FROM drafts WHERE account_id = ?1", &account)?;

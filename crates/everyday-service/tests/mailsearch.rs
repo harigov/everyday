@@ -43,8 +43,19 @@ fn seed_searchable_thread(
     subject: &str,
     body_text: &str,
 ) -> ThreadId {
+    seed_searchable_thread_in(svc, account, subject, body_text, MailboxRole::Inbox)
+}
+
+/// [`seed_searchable_thread`], filed in a mailbox of `role` instead.
+fn seed_searchable_thread_in(
+    svc: &Arc<Service>,
+    account: AccountId,
+    subject: &str,
+    body_text: &str,
+    role: MailboxRole,
+) -> ThreadId {
     let vault = svc.get().unwrap();
-    let mailbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let mailbox = Mailbox::new(account, role.as_str().to_uppercase(), role);
     vault.save_mailbox(&mailbox).unwrap();
 
     let thread_id = ThreadId::new();
@@ -195,6 +206,31 @@ async fn search_mail_resolves_in_mailbox_name_to_its_id() {
     let threads = result["threads"].as_array().unwrap();
     assert_eq!(threads.len(), 1, "{result}");
     assert_eq!(threads[0]["id"], thread_id.to_string());
+}
+
+/// Trash and Spam stay out of a search unless it asks for them, and every
+/// result says where it is filed: a thread found in Trash looked like one gone
+/// missing from the Inbox.
+#[tokio::test]
+async fn trash_and_spam_are_searched_only_when_asked_for() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_searchable_thread(&svc, account, "Kept", "the marmalade figures");
+    let trashed =
+        seed_searchable_thread_in(&svc, account, "Thrown", "marmalade again", MailboxRole::Trash);
+    seed_searchable_thread_in(&svc, account, "Junk", "cheap marmalade", MailboxRole::Spam);
+
+    let result = call(&svc, "search_mail", json!({ "query": "marmalade" })).await;
+    let threads = result["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 1, "{result}");
+    assert_eq!(threads[0]["id"], inbox.to_string());
+    assert_eq!(result["places"][inbox.to_string()], json!(["inbox"]), "{result}");
+
+    let result = call(&svc, "search_mail", json!({ "query": "marmalade in:trash" })).await;
+    let threads = result["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 1, "{result}");
+    assert_eq!(threads[0]["id"], trashed.to_string());
+    assert_eq!(result["places"][trashed.to_string()], json!(["trash"]), "{result}");
 }
 
 /// A name matching no mailbox at all must keep behaving exactly like

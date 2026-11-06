@@ -29,6 +29,53 @@ pub fn forward_subject(subject: &str) -> String {
     prefixed_subject(subject, "Fwd:")
 }
 
+/// Who a reply to `parent` goes to, as `(to, cc)`. `own` is every address of
+/// the account replying, lower-cased.
+///
+/// A reply goes to `Reply-To` when the sender set one (RFC 5322 §3.6.2: a
+/// mailing list, a ticketing system, a `no-reply@` naming a real mailbox),
+/// otherwise to `From`. A reply to your own message carries on with whoever
+/// it went to, as every mail client does: its `To` stay `To` and its `Cc`
+/// stay `Cc`, where answering `From` would have addressed the reply to
+/// yourself. Reply all adds the rest of the parent's recipients to `Cc`.
+///
+/// Your own addresses are left out wherever they were, each address appears
+/// once, and only a message you sent to nobody but yourself is answered to
+/// yourself.
+pub fn reply_recipients(
+    parent: &super::Message,
+    own: &std::collections::HashSet<String>,
+    all: bool,
+) -> (Vec<Address>, Vec<Address>) {
+    let mine = |a: &Address| own.contains(&a.email.to_lowercase());
+    let from_me = mine(&parent.from);
+    let (to, cc): (Vec<&Address>, Vec<&Address>) = if from_me {
+        (parent.to.iter().collect(), if all { parent.cc.iter().collect() } else { Vec::new() })
+    } else {
+        let to = if parent.reply_to.is_empty() {
+            vec![&parent.from]
+        } else {
+            parent.reply_to.iter().collect()
+        };
+        let cc = if all { parent.to.iter().chain(parent.cc.iter()).collect() } else { Vec::new() };
+        (to, cc)
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut keep = |list: Vec<&Address>| -> Vec<Address> {
+        list.into_iter()
+            .filter(|a| !mine(a) && seen.insert(a.email.to_lowercase()))
+            .cloned()
+            .collect()
+    };
+    let to = keep(to);
+    let cc = keep(cc);
+    match (to.is_empty(), cc.is_empty()) {
+        (false, _) => (to, cc),
+        (true, false) => (cc, Vec::new()),
+        (true, true) => (vec![parent.from.clone()], Vec::new()),
+    }
+}
+
 fn prefixed_subject(subject: &str, prefix: &str) -> String {
     let trimmed = subject.trim();
     if trimmed.to_ascii_lowercase().starts_with(&prefix.to_ascii_lowercase()) {
@@ -172,6 +219,99 @@ mod tests {
         assert_eq!(reply_subject("dinner"), "Re: dinner");
         assert_eq!(reply_subject("Re: dinner"), "Re: dinner");
         assert_eq!(reply_subject("re: dinner"), "re: dinner", "an existing prefix is left alone");
+    }
+
+    fn parent(from: &str, to: &[&str], cc: &[&str], reply_to: &[&str]) -> crate::mail::Message {
+        let list = |l: &[&str]| l.iter().map(|a| Address::bare(*a)).collect::<Vec<_>>();
+        crate::mail::Message {
+            id: crate::id::MailMessageId::new(),
+            account_id: crate::id::AccountId::new(),
+            thread_id: crate::id::ThreadId::new(),
+            message_id_header: "<a@example.com>".into(),
+            date: Timestamp::now(),
+            from: Address::bare(from),
+            to: list(to),
+            cc: list(cc),
+            bcc: Vec::new(),
+            reply_to: list(reply_to),
+            subject: "hi".into(),
+            snippet: String::new(),
+            flags: crate::mail::MessageFlags::default(),
+            labels: Vec::new(),
+            has_attachments: false,
+            size: 0,
+            category: None,
+            category_source: crate::mail::CategorySource::Rules,
+            pack: crate::packstore::PackRef {
+                account: "acc".into(),
+                pack: crate::id::PackId::new(),
+                offset: 0,
+                len: 0,
+            },
+            gmail: None,
+            invite: None,
+        }
+    }
+
+    fn emails(list: &[Address]) -> Vec<&str> {
+        list.iter().map(|a| a.email.as_str()).collect()
+    }
+
+    fn me() -> std::collections::HashSet<String> {
+        ["me@example.com".to_string(), "alias@example.com".to_string()].into()
+    }
+
+    #[test]
+    fn reply_all_never_addresses_yourself() {
+        let p = parent(
+            "ann@x.com",
+            &["Me@Example.com", "bob@x.com"],
+            &["alias@example.com", "cat@x.com"],
+            &[],
+        );
+        let (to, cc) = reply_recipients(&p, &me(), true);
+        assert_eq!(emails(&to), ["ann@x.com"]);
+        assert_eq!(emails(&cc), ["bob@x.com", "cat@x.com"]);
+        let (to, cc) = reply_recipients(&p, &me(), false);
+        assert_eq!(emails(&to), ["ann@x.com"]);
+        assert!(cc.is_empty());
+    }
+
+    #[test]
+    fn replying_to_your_own_message_goes_to_whoever_it_went_to() {
+        let p = parent(
+            "me@example.com",
+            &["ann@x.com", "bob@x.com"],
+            &["cat@x.com", "me@example.com"],
+            &[],
+        );
+        let (to, cc) = reply_recipients(&p, &me(), true);
+        assert_eq!(emails(&to), ["ann@x.com", "bob@x.com"]);
+        assert_eq!(emails(&cc), ["cat@x.com"]);
+        let (to, cc) = reply_recipients(&p, &me(), false);
+        assert_eq!(emails(&to), ["ann@x.com", "bob@x.com"]);
+        assert!(cc.is_empty());
+    }
+
+    #[test]
+    fn reply_to_wins_and_each_address_appears_once() {
+        let p = parent("ann@x.com", &["list@x.com", "bob@x.com"], &["BOB@x.com"], &["list@x.com"]);
+        let (to, cc) = reply_recipients(&p, &me(), true);
+        assert_eq!(emails(&to), ["list@x.com"]);
+        assert_eq!(emails(&cc), ["bob@x.com"]);
+    }
+
+    #[test]
+    fn a_note_to_yourself_is_answered_to_yourself() {
+        let p = parent("me@example.com", &["me@example.com"], &[], &[]);
+        let (to, cc) = reply_recipients(&p, &me(), true);
+        assert_eq!(emails(&to), ["me@example.com"]);
+        assert!(cc.is_empty());
+        // Only Cc left once you are taken out: they become who it is to.
+        let p = parent("me@example.com", &["alias@example.com"], &["ann@x.com"], &[]);
+        let (to, cc) = reply_recipients(&p, &me(), true);
+        assert_eq!(emails(&to), ["ann@x.com"]);
+        assert!(cc.is_empty());
     }
 
     #[test]

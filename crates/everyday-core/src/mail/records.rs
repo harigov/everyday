@@ -802,6 +802,11 @@ pub struct DraftAttachment {
 pub struct DraftServerCopy {
     pub mailbox: String,
     pub uid: u32,
+    /// That copy's own `Message-ID`, which finds it again in Gmail's Trash
+    /// once it has been replaced. `None` for a copy recorded before this was
+    /// kept, or one this app did not upload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
 }
 
 /// A `text/calendar` part to attach when this draft is sent — today, always

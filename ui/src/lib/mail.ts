@@ -1260,6 +1260,23 @@ export function mergeSearchPage(existing: readonly Thread[], page: readonly Thre
   return merged
 }
 
+/**
+ * Where a search result lives, when that is not the Inbox -- the word its row
+ * shows, since a result otherwise looks like any Inbox row and one filed
+ * elsewhere read as mail gone missing. `null` for the Inbox, or nothing known.
+ */
+export function searchPlace(roles: readonly MailboxRole[] | undefined): string | null {
+  if (!roles || roles.length === 0 || roles.includes('inbox')) return null
+  if (roles.includes('trash')) return 'Trash'
+  if (roles.includes('spam')) return 'Spam'
+  const only = (role: MailboxRole) =>
+    roles.includes(role) && roles.every((r) => r === role || r === 'all')
+  if (only('drafts')) return 'Draft'
+  if (only('sent')) return 'Sent'
+  if (roles.every((r) => r === 'archive' || r === 'all')) return 'Archived'
+  return 'Not in Inbox'
+}
+
 // ── Refresh: covering what is already on screen ─────────────────────────
 
 /**

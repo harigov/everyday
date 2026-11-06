@@ -898,6 +898,55 @@ async fn refresh_gmail_labels<S: MailSession>(
     Ok(changed_anything)
 }
 
+/// Once per account, before its first pass: key the messages stored before
+/// `Message-ID` keys existed, and merge those stored twice -- see
+/// [`Vault::key_existing_mail`]. Gmail's Sent and All Mail copies of one
+/// message became two rows whenever a sync task that had not seen one met
+/// the other; every one of a thread's sent replies then showed twice.
+///
+/// A decrypting scan of every message the account has, so it runs on the
+/// blocking pool, with what the merge leaves dead taken out of the pack store
+/// and the search index there too.
+pub async fn key_existing_mail(
+    vault: &Arc<Vault>,
+    account: AccountId,
+    packs: &Arc<dyn PackStore>,
+    index: &Arc<dyn MailSearch>,
+    unread_cache: Option<&Arc<crate::mailsync::unread_cache::UnreadCache>>,
+    statuses: &StatusRegistry,
+) {
+    let (vault, packs, index) = (vault.clone(), packs.clone(), index.clone());
+    let merged = tokio::task::spawn_blocking(move || {
+        let removed = vault.key_existing_mail(account)?;
+        if !removed.is_empty() {
+            let refs: Vec<PackRef> = removed.iter().map(|(_, r)| r.clone()).collect();
+            if let Err(e) = packs.mark_dead(&refs) {
+                tracing::warn!(error = %e, "could not mark a merged message's pack frame dead");
+            }
+            let keys: Vec<String> = removed.iter().map(|(id, _)| id.to_string()).collect();
+            if let Err(e) = index.delete(&keys).and_then(|()| index.commit()) {
+                tracing::warn!(error = %e, "could not remove a merged message from the search index");
+            }
+        }
+        Ok::<_, everyday_core::Error>(removed.len())
+    })
+    .await;
+    match merged {
+        Ok(Ok(0)) => {}
+        Ok(Ok(merged)) => {
+            tracing::info!(merged, "merged messages stored twice");
+            if let Some(cache) = unread_cache {
+                cache.invalidate(account);
+            }
+            statuses.mark_changed(account);
+        }
+        // Tried again by the next task; until then a message met in a second
+        // mailbox is still matched by its key if it has one.
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not key this account's stored mail"),
+        Err(e) => tracing::warn!(error = %e, "keying this account's stored mail stopped"),
+    }
+}
+
 /// What [`reap_vanished`] and [`refresh_gmail_labels`] both call once
 /// [`everyday_core::Vault::remove_mail_uids`] has told them which messages
 /// just became genuinely dead -- no mailbox names them any more, not merely

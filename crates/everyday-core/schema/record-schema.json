@@ -1450,6 +1450,13 @@
           "mailbox": {
             "type": "string"
           },
+          "messageId": {
+            "description": "That copy's own `Message-ID`, which finds it again in Gmail's Trash\nonce it has been replaced. `None` for a copy recorded before this was\nkept, or one this app did not upload.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "uid": {
             "format": "uint32",
             "minimum": 0,

@@ -350,6 +350,7 @@ export interface Commands {
   deleteSkill: { args: { id: SkillId }; result: void }
   deleteSpeechModel: { args: { id: string }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
+  deleteThreadDraft: { args: { draft?: DraftId; copies: MailMessageId[] }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
   deleteTransactions: { args: { ids: TxnId[] }; result: void }
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
@@ -371,6 +372,7 @@ export interface Commands {
     }
     result: WrittenText
   }
+  editThreadDraft: { args: { copies: MailMessageId[] }; result: Draft }
   emptyMailbox: { args: { mailbox: MailboxId }; result: number }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
@@ -875,6 +877,7 @@ export const COMMAND_NAMES = {
   deleteSkill: 'delete_skill',
   deleteSpeechModel: 'delete_speech_model',
   deleteTask: 'delete_task',
+  deleteThreadDraft: 'delete_thread_draft',
   deleteTracker: 'delete_tracker',
   deleteTransactions: 'delete_transactions',
   deleteVoiceprint: 'delete_voiceprint',
@@ -884,6 +887,7 @@ export const COMMAND_NAMES = {
   dismissMeetingOffer: 'dismiss_meeting_offer',
   downloadSpeechModel: 'download_speech_model',
   draftWithAi: 'draft_with_ai',
+  editThreadDraft: 'edit_thread_draft',
   emptyMailbox: 'empty_mailbox',
   endExport: 'end_export',
   endImport: 'end_import',
@@ -1248,6 +1252,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_skill',
   'delete_speech_model',
   'delete_task',
+  'delete_thread_draft',
   'delete_tracker',
   'delete_transactions',
   'delete_voiceprint',
@@ -1257,6 +1262,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'dismiss_meeting_offer',
   'download_speech_model',
   'draft_with_ai',
+  'edit_thread_draft',
   'empty_mailbox',
   'end_export',
   'end_import',
@@ -1607,6 +1613,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_skill',
   'delete_speech_model',
   'delete_task',
+  'delete_thread_draft',
   'delete_tracker',
   'delete_transactions',
   'delete_voiceprint',
@@ -1614,6 +1621,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_recording',
   'dismiss_meeting_offer',
   'download_speech_model',
+  'edit_thread_draft',
   'empty_mailbox',
   'enrol_voice',
   'fetch_attachment',
@@ -1790,12 +1798,14 @@ export const CHANGE_KINDS = {
   delete_skill: 'skill',
   delete_speech_model: 'settings',
   delete_task: 'task',
+  delete_thread_draft: 'draft',
   delete_tracker: 'tracker',
   delete_transactions: 'txn',
   delete_voiceprint: 'voiceprint',
   discard_draft: 'draft',
   discard_recording: 'recording',
   download_speech_model: 'settings',
+  edit_thread_draft: 'draft',
   empty_mailbox: 'thread',
   enrol_voice: 'voiceprint',
   fetch_full_article: 'story',
