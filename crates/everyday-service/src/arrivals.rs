@@ -426,48 +426,72 @@ pub struct ReminderEvent {
     pub title: String,
     pub location: String,
     pub start: Timestamp,
+    pub end: Timestamp,
+    /// The day it is on, in its own zone: what an all-day event's notice
+    /// names, since its start is midnight somewhere that need not be here.
+    pub local_date: Date,
     pub all_day: bool,
     pub cancelled: bool,
     /// Minutes before `start` to remind at, largest first -- what
     /// [`EventReminders::for_event`](everyday_core::EventReminders::for_event)
-    /// made of its own alerts and the default.
-    pub at: Vec<u32>,
+    /// made of its own alerts and the default. Negative is during an
+    /// all-day event's day.
+    pub at: Vec<i32>,
 }
 
-/// A reminder whose moment has come: the event, and every one of its
-/// alerts that has come round by now. Usually one; more after the machine
-/// was asleep through an earlier one, in which case one notification says
-/// how long is left and stands for them all.
+impl ReminderEvent {
+    /// When the alert `minutes` before the start goes off.
+    fn alert_at(&self, minutes: i32) -> Timestamp {
+        Timestamp::from_second(self.start.as_second() - i64::from(minutes) * 60)
+            .unwrap_or(self.start)
+    }
+
+    /// What tells one occurrence from another and from itself moved: Google's
+    /// and Graph's ids stay put when a meeting changes time, and a reminder
+    /// sent for Monday says nothing about Thursday.
+    fn occurrence(&self) -> String {
+        format!("{}@{}", self.uid, self.start.as_second())
+    }
+}
+
+/// A reminder whose moment has come, and the moment: the latest of the
+/// event's alerts to have come round, which stands for any earlier one
+/// missed in the same window.
 #[derive(Debug, Clone)]
 pub struct DueReminder {
     pub event: ReminderEvent,
-    pub minutes: Vec<u32>,
+    pub at: Timestamp,
 }
 
-/// The reminders due at `now`: every alert whose moment has passed, of an
-/// event that has not been going on for longer than [`REMIND_LOOKBACK_SECS`].
+/// The reminders due at `now`: an alert whose moment came round within the
+/// last [`REMIND_LATE_SECS`], of an event still to come -- or, all day, still
+/// going on.
 ///
-/// An alert whose moment passed while the app was shut or the machine
-/// asleep still goes out, as long as the event is still ahead: "starts in
-/// five minutes" is worth having late, "started an hour ago" is not. Which
-/// of them were already sent is the caller's to know.
+/// The bound below is what keeps a restart, or the first sync to give a
+/// week of events their alerts, from announcing every alert already passed
+/// at once: a ten-minute warning heard eight minutes late is still worth
+/// having, yesterday's day-before warning is not. Which were already
+/// announced is the caller's to know.
 pub fn due_reminders(events: &[ReminderEvent], now: Timestamp) -> Vec<DueReminder> {
     let now_s = now.as_second();
     let mut out: Vec<DueReminder> = events
         .iter()
         .filter(|event| {
-            !event.cancelled
-                && !event.uid.is_empty()
-                && now_s <= event.start.as_second() + REMIND_LOOKBACK_SECS
+            let still_on = if event.all_day {
+                now_s < event.end.as_second()
+            } else {
+                now_s <= event.start.as_second() + REMIND_LOOKBACK_SECS
+            };
+            !event.cancelled && !event.uid.is_empty() && still_on
         })
         .filter_map(|event| {
-            let minutes: Vec<u32> = event
+            event
                 .at
                 .iter()
-                .copied()
-                .filter(|m| event.start.as_second() - i64::from(*m) * 60 <= now_s)
-                .collect();
-            (!minutes.is_empty()).then(|| DueReminder { event: event.clone(), minutes })
+                .map(|m| event.alert_at(*m))
+                .filter(|at| at.as_second() <= now_s && now_s - at.as_second() <= REMIND_LATE_SECS)
+                .max()
+                .map(|at| DueReminder { event: event.clone(), at })
         })
         .collect();
     out.sort_by_key(|due| (due.event.start, due.event.uid.clone()));
@@ -491,25 +515,49 @@ pub fn reminder_notice(event: &ReminderEvent, now: Timestamp, zone: &TimeZone) -
         .key(format!("event-soon:{}:{}", event.calendar_id, event.uid))
 }
 
+/// One notification standing for more reminders than the stack should hold
+/// at once -- a machine woken just before a morning of meetings.
+pub fn reminders_notice(due: &[DueReminder], now: Timestamp, zone: &TimeZone) -> Notification {
+    let names: Vec<String> = due
+        .iter()
+        .take(FRESH_INDIVIDUAL_CAP)
+        .map(|d| {
+            format!(
+                "{} ({})",
+                excerpt(d.event.title.trim(), 40),
+                when_it_starts(&d.event, now, zone)
+            )
+        })
+        .collect();
+    let mut body = names.join(", ");
+    if due.len() > names.len() {
+        body.push_str(&format!(" and {} more", due.len() - names.len()));
+    }
+    Notification::new(Level::Info, format!("{} events coming up", due.len()))
+        .body(body)
+        .for_user()
+        .key("event-soon:several")
+}
+
 /// "Starting now", "Starts in 10 minutes", "Starts at 3:30 pm",
 /// "Tomorrow at 9:00 am", "Fri 6 Nov at 9:00 am"; "Today" and "Tomorrow"
 /// alone for an all-day event, which has no time to give.
 fn when_it_starts(event: &ReminderEvent, now: Timestamp, zone: &TimeZone) -> String {
     let start = event.start.to_zoned(zone.clone());
     let today = now.to_zoned(zone.clone()).date();
-    let day = match start.date() {
+    let day_name = |d: Date| match d {
         d if d == today => None,
         d if today.tomorrow().ok() == Some(d) => Some("Tomorrow".to_string()),
         d => Some(d.strftime("%a %-d %b").to_string()),
     };
     if event.all_day {
-        return day.unwrap_or_else(|| "Today".to_string());
+        return day_name(event.local_date).unwrap_or_else(|| "Today".to_string());
     }
     let delta = event.start.as_second() - now.as_second();
     // To the nearest minute: a tick 4:59 out says five, not four.
     let minutes = (delta + 30) / 60;
     let clock = start.strftime("%-I:%M %P").to_string();
-    match day {
+    match day_name(start.date()) {
         _ if delta <= 60 => "Starting now".to_string(),
         None if minutes == 1 => "Starts in 1 minute".to_string(),
         None if minutes < 60 => format!("Starts in {minutes} minutes"),
@@ -518,9 +566,27 @@ fn when_it_starts(event: &ReminderEvent, now: Timestamp, zone: &TimeZone) -> Str
     }
 }
 
-/// How far ahead the reminder tick looks for events: as far as the longest
-/// alert an event can carry, and a day more for the zones in between.
+/// How late an alert may still be announced: a minute tick that landed late,
+/// a machine woken a few minutes after the moment -- and the gap between two
+/// of the reminder tick's wider looks ([`REMIND_WIDE_EVERY_SECS`]), which
+/// this must stay longer than or an alert could fall between them.
+const REMIND_LATE_SECS: i64 = 15 * 60;
+
+/// How far ahead the reminder tick looks every minute: two days, enough for
+/// any alert of up to a day before.
+const REMIND_NEAR_DAYS: i64 = 2;
+
+/// How far ahead it looks now and then: as far as the longest alert an
+/// event can carry, and a day more for the zones in between. Every row read
+/// is a row unsealed, so a week of them is read every
+/// [`REMIND_WIDE_EVERY_SECS`] rather than every minute.
 const REMIND_AHEAD_DAYS: i64 = (everyday_core::calendar::MAX_ALERT_MINUTES / (24 * 60)) as i64 + 1;
+const REMIND_WIDE_EVERY_SECS: i64 = 10 * 60;
+
+/// When the reminder tick last looked [`REMIND_AHEAD_DAYS`] ahead, in seconds
+/// of the service's clock. Process-wide like the scheduler's own markers; a
+/// vault switched to looks a week ahead at its first chance regardless.
+static WIDE_LOOK_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
 
 /// One pass of "something on the calendar is coming up".
 ///
@@ -538,16 +604,24 @@ pub fn tick_calendars(svc: &Service, vault: &Vault) {
 }
 
 fn tick_calendars_inner(svc: &Service, vault: &Vault) -> CoreResult<()> {
+    use std::sync::atomic::Ordering;
+
     let settings = vault.agent_settings().map(|s| s.reminders.events).unwrap_or_default();
     let now = svc.now();
     let zone = TimeZone::system();
     let today = now.to_zoned(zone.clone()).date();
+    let last_wide = WIDE_LOOK_AT.load(Ordering::Relaxed);
+    let wide = last_wide == i64::MIN || now.as_second() - last_wide >= REMIND_WIDE_EVERY_SECS;
+    let ahead = if wide { REMIND_AHEAD_DAYS } else { REMIND_NEAR_DAYS };
     let events = vault.events(&EventQuery {
         from: today.checked_sub(jiff::Span::new().days(1)).ok(),
-        to: today.checked_add(jiff::Span::new().days(REMIND_AHEAD_DAYS)).ok(),
+        to: today.checked_add(jiff::Span::new().days(ahead)).ok(),
         visible_only: true,
         ..Default::default()
     })?;
+    if wide {
+        WIDE_LOOK_AT.store(now.as_second(), Ordering::Relaxed);
+    }
     let considered: Vec<ReminderEvent> = events
         .iter()
         .map(|event| ReminderEvent {
@@ -556,22 +630,26 @@ fn tick_calendars_inner(svc: &Service, vault: &Vault) -> CoreResult<()> {
             title: event.title.clone(),
             location: event.location.clone(),
             start: event.start,
+            end: event.end,
+            local_date: event.local_date,
             all_day: event.all_day,
             cancelled: event.status == EventStatus::Cancelled,
             at: settings.for_event(event),
         })
         .filter(|event| !event.at.is_empty())
         .collect();
-    for due in due_reminders(&considered, now) {
-        // Last, as the meeting watcher does: marking an alert seen for a
-        // reason that then skipped it would swallow the real reminder. Every
-        // due alert is marked, so one asleep through two is said once.
-        let mut fresh = false;
-        for minutes in &due.minutes {
-            let key = format!("{}#{minutes}", due.event.uid);
-            fresh |= svc.calendar_reminder_seen(due.event.calendar_id, &key);
-        }
-        if fresh {
+    // Last, as the meeting watcher does: recording an alert as announced for
+    // a reason that then skipped it would swallow the real reminder.
+    let fresh: Vec<DueReminder> = due_reminders(&considered, now)
+        .into_iter()
+        .filter(|due| {
+            svc.calendar_reminder_due(due.event.calendar_id, &due.event.occurrence(), due.at)
+        })
+        .collect();
+    if fresh.len() > FRESH_INDIVIDUAL_CAP {
+        svc.events().notify(reminders_notice(&fresh, now, &zone));
+    } else {
+        for due in &fresh {
             svc.events().notify(reminder_notice(&due.event, now, &zone));
         }
     }
@@ -800,13 +878,15 @@ mod tests {
         assert!(one[0].body.as_deref().unwrap().contains("Work"));
     }
 
-    fn reminding(uid: &str, start: Timestamp, at: &[u32]) -> ReminderEvent {
+    fn reminding(uid: &str, start: Timestamp, at: &[i32]) -> ReminderEvent {
         ReminderEvent {
             calendar_id: CalendarId::new(),
             uid: uid.into(),
             title: "Design sync".into(),
             location: String::new(),
             start,
+            end: ts(start.as_second() + 30 * 60),
+            local_date: start.to_zoned(TimeZone::UTC).date(),
             all_day: false,
             cancelled: false,
             at: at.to_vec(),
@@ -826,17 +906,33 @@ mod tests {
         let due = due_reminders(&[soon, later, begun, cancelled], now);
         assert_eq!(due.len(), 1, "{due:?}");
         assert_eq!(due[0].event.uid, "soon");
-        assert_eq!(due[0].minutes, [10]);
+        assert_eq!(due[0].at, ts(now.as_second() - 5 * 60));
     }
 
-    /// Asleep through the day-before alert and woken inside the hour: both
-    /// are due, and the caller says it once.
+    /// A restart, or the first sync to give a week of events their alerts,
+    /// announces only what came round in the last quarter of an hour -- not
+    /// every day-before alert already passed for tomorrow's meetings.
     #[test]
-    fn every_alert_that_has_come_round_is_due_together() {
+    fn an_alert_long_past_is_not_announced_late() {
         let now = ts(1_700_000_000);
-        let event = reminding("e", ts(now.as_second() + 30 * 60), &[24 * 60, 60, 15]);
-        let due = due_reminders(&[event], now);
-        assert_eq!(due[0].minutes, [24 * 60, 60]);
+        let tomorrow = reminding("t", ts(now.as_second() + 20 * 60 * 60), &[24 * 60]);
+        let within = reminding("w", ts(now.as_second() + 50 * 60), &[60, 15]);
+        let due = due_reminders(&[tomorrow, within], now);
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert_eq!(due[0].event.uid, "w");
+        assert_eq!(due[0].at, ts(now.as_second() - 10 * 60), "the hour's alert, ten minutes late");
+    }
+
+    /// Apple's "on the day, at 9 AM": nine hours into an all-day event.
+    #[test]
+    fn an_all_day_alert_during_its_day_is_due_then() {
+        let now = ts(1_700_000_000);
+        let mut day = reminding("d", ts(now.as_second() - 9 * 60 * 60 + 60), &[-9 * 60]);
+        day.all_day = true;
+        day.end = ts(day.start.as_second() + 24 * 60 * 60);
+        assert!(due_reminders(std::slice::from_ref(&day), now).is_empty(), "a minute early");
+        let due = due_reminders(&[day], ts(now.as_second() + 60));
+        assert_eq!(due.len(), 1);
     }
 
     #[test]
@@ -865,6 +961,7 @@ mod tests {
 
         event.all_day = true;
         event.start = ts(now.as_second() + 2 * 60 * 60);
+        event.local_date = jiff::civil::date(2023, 11, 15);
         assert_eq!(
             reminder_notice(&event, now, &zone).body.as_deref(),
             Some("Tomorrow \u{b7} Room 4")
@@ -936,7 +1033,7 @@ mod tests {
             busy: true,
             series: None,
             own: None,
-            alerts: Vec::new(),
+            alerts: None,
             updated_at: now,
         }
     }
@@ -1012,7 +1109,7 @@ mod tests {
         svc.set_events(Arc::new(sink.clone()));
         let calendar = account_calendar(&vault, "Work");
         let mut own = event_at(calendar.id, "Board", 15 * 60, false);
-        own.alerts = vec![20];
+        own.alerts = Some(vec![20]);
         let plain = event_at(calendar.id, "Lunch", 15 * 60, false);
         seed(&vault, calendar.id, &own);
         seed(&vault, calendar.id, &plain);
@@ -1032,7 +1129,7 @@ mod tests {
         svc.set_events(Arc::new(sink.clone()));
         let calendar = account_calendar(&vault, "Work");
         let mut own = event_at(calendar.id, "Board", 25 * 60, false);
-        own.alerts = vec![30];
+        own.alerts = Some(vec![30]);
         seed(&vault, calendar.id, &own);
         seed(&vault, calendar.id, &event_at(calendar.id, "Lunch", 25 * 60, false));
         remind_events(&vault, everyday_core::EventReminders { own: false, minutes: Some(30) });
@@ -1045,7 +1142,7 @@ mod tests {
         svc.set_events(Arc::new(sink.clone()));
         let calendar = account_calendar(&vault, "Work");
         let mut own = event_at(calendar.id, "Board", 5 * 60, false);
-        own.alerts = vec![10];
+        own.alerts = Some(vec![10]);
         seed(&vault, calendar.id, &own);
         seed(&vault, calendar.id, &event_at(calendar.id, "Lunch", 5 * 60, false));
         remind_events(&vault, everyday_core::EventReminders { own: true, minutes: None });
@@ -1062,16 +1159,93 @@ mod tests {
         let sink = TestSink::default();
         svc.set_events(Arc::new(sink.clone()));
         let calendar = account_calendar(&vault, "Work");
-        let mut flight = event_at(calendar.id, "Flight", 60 * 60, true);
-        flight.alerts = vec![15 * 60];
+        // Its day began nine hours and five minutes ago; its 9 AM alert was
+        // five minutes ago.
+        let began = -(9 * 60 * 60 + 5 * 60);
+        let mut flight = event_at(calendar.id, "Flight", began, true);
+        flight.alerts = Some(vec![-9 * 60]);
         seed(&vault, calendar.id, &flight);
-        seed(&vault, calendar.id, &event_at(calendar.id, "Holiday", 60 * 60, true));
+        seed(&vault, calendar.id, &event_at(calendar.id, "Holiday", began, true));
 
         tick_calendars(&svc, &vault);
 
         let notices = sink.notifications.lock().unwrap();
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert_eq!(notices[0].title, "Flight");
+    }
+
+    /// "No alert" from its calendar is kept: the default is for an event
+    /// whose calendar said nothing.
+    #[test]
+    fn an_event_whose_calendar_says_no_alert_gets_no_default() {
+        let (svc, vault, _dir) = env();
+        let sink = TestSink::default();
+        svc.set_events(Arc::new(sink.clone()));
+        let calendar = account_calendar(&vault, "Work");
+        let mut off = event_at(calendar.id, "Quiet", 5 * 60, false);
+        off.alerts = Some(Vec::new());
+        seed(&vault, calendar.id, &off);
+
+        tick_calendars(&svc, &vault);
+
+        assert!(sink.notifications.lock().unwrap().is_empty());
+    }
+
+    /// The ten-minute reminder went out; the default is then made fifteen.
+    /// The meeting is not announced again for a moment already passed.
+    #[test]
+    fn a_changed_alert_does_not_announce_the_same_meeting_twice() {
+        let (svc, vault, _dir) = env();
+        let sink = TestSink::default();
+        svc.set_events(Arc::new(sink.clone()));
+        let calendar = account_calendar(&vault, "Work");
+        seed(&vault, calendar.id, &event_at(calendar.id, "Design sync", 5 * 60, false));
+
+        tick_calendars(&svc, &vault);
+        remind_events(&vault, everyday_core::EventReminders { own: true, minutes: Some(15) });
+        tick_calendars(&svc, &vault);
+
+        assert_eq!(sink.notifications.lock().unwrap().len(), 1);
+    }
+
+    /// Google keeps an event's id when it moves: a reminder sent for the old
+    /// time says nothing about the new one.
+    #[test]
+    fn a_meeting_moved_after_its_reminder_is_reminded_again() {
+        let (svc, vault, _dir) = env();
+        let sink = TestSink::default();
+        svc.set_events(Arc::new(sink.clone()));
+        let calendar = account_calendar(&vault, "Work");
+        let mut event = event_at(calendar.id, "Design sync", 5 * 60, false);
+        seed(&vault, calendar.id, &event);
+        tick_calendars(&svc, &vault);
+
+        event.start = Timestamp::from_second(event.start.as_second() + 2 * 60).unwrap();
+        event.end = Timestamp::from_second(event.end.as_second() + 2 * 60).unwrap();
+        seed(&vault, calendar.id, &event);
+        tick_calendars(&svc, &vault);
+
+        let notices = sink.notifications.lock().unwrap();
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        assert_eq!(notices[1].body.as_deref(), Some("Starts in 7 minutes"));
+    }
+
+    #[test]
+    fn more_reminders_at_once_than_the_stack_holds_are_one_notice() {
+        let (svc, vault, _dir) = env();
+        let sink = TestSink::default();
+        svc.set_events(Arc::new(sink.clone()));
+        let calendar = account_calendar(&vault, "Work");
+        for (i, title) in ["One", "Two", "Three", "Four"].iter().enumerate() {
+            seed(&vault, calendar.id, &event_at(calendar.id, title, (4 + i as i64) * 60, false));
+        }
+
+        tick_calendars(&svc, &vault);
+
+        let notices = sink.notifications.lock().unwrap();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert_eq!(notices[0].title, "4 events coming up");
+        assert!(notices[0].body.as_deref().unwrap().ends_with("and 1 more"), "{notices:?}");
     }
 
     #[test]

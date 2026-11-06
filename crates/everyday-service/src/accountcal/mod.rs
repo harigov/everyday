@@ -660,7 +660,7 @@ mod tests {
             busy: true,
             series: None,
             own: None,
-            alerts: Vec::new(),
+            alerts: None,
             updated_at: jiff::Timestamp::now(),
         }
     }

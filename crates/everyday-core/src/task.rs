@@ -452,12 +452,13 @@ pub struct ReminderSettings {
 
 /// When a calendar event raises a reminder on the desktop.
 ///
-/// Two sources, so that a meeting is announced the way its calendar says to
-/// and nothing is left silent. An event whose calendar gives it alerts of its
-/// own -- [`crate::calendar::Event::alerts`] -- is announced at those, when
-/// `own` is on. Every other timed event is announced `minutes` before it
-/// starts, unless that is `None`. All-day events only ever get their own:
-/// ten minutes before midnight is nobody's idea of a reminder.
+/// Two sources, so that a meeting is announced the way its calendar says to.
+/// An event whose calendar says what its alerts are --
+/// [`crate::calendar::Event::alerts`], "none" included -- is announced at
+/// those, when `own` is on. A timed event whose calendar says nothing is
+/// announced `minutes` before it starts, unless that is `None`. All-day
+/// events only ever get their own: ten minutes before midnight is nobody's
+/// idea of a reminder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -487,13 +488,23 @@ impl EventReminders {
 
     /// The minutes before its start that `event` is to be announced at,
     /// largest first. Empty for none.
-    pub fn for_event(&self, event: &crate::calendar::Event) -> Vec<u32> {
-        if self.own && !event.alerts.is_empty() {
-            return event.alerts.clone();
-        }
-        match self.minutes {
-            Some(m) if !event.all_day => vec![m.min(crate::calendar::MAX_ALERT_MINUTES)],
-            _ => Vec::new(),
+    ///
+    /// Its own alerts whenever its calendar said anything about them -- an
+    /// empty list included, which is the calendar saying "no alert" -- and
+    /// the default only for an event whose calendar said nothing.
+    pub fn for_event(&self, event: &crate::calendar::Event) -> Vec<i32> {
+        match (&event.alerts, self.own) {
+            (Some(own), true) => own.clone(),
+            _ => match self.minutes {
+                Some(m) if !event.all_day => {
+                    vec![
+                        i32::try_from(m)
+                            .unwrap_or(i32::MAX)
+                            .min(crate::calendar::MAX_ALERT_MINUTES),
+                    ]
+                }
+                _ => Vec::new(),
+            },
         }
     }
 }

@@ -302,7 +302,7 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 
 /**
  * Is somebody looking at this window: in front, *and* used in the last two
- * minutes?
+ * minutes or with the pointer or the focus in one of its frames?
  *
  * What decides between a toast and the notification centre. In front alone
  * is not enough: a window left focused when its person walked away, or took
@@ -313,7 +313,20 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
  * pointer moves.
  */
 function somebodyAtWindow(): boolean {
-  return windowInFront() && Date.now() - lastInput < AWAY_AFTER_MS
+  return windowInFront() && (Date.now() - lastInput < AWAY_AFTER_MS || inAFrame())
+}
+
+/**
+ * Is the pointer over, or the focus inside, one of the window's frames -- a
+ * message's body, an attachment's viewer? Keys, scrolling and the pointer in
+ * a frame never reach this document, so somebody reading a long message
+ * would otherwise count as away after two minutes; the frame element itself
+ * still shows as hovered, or as the focused one, out here.
+ */
+function inAFrame(): boolean {
+  return (
+    document.activeElement?.tagName === 'IFRAME' || document.querySelector('iframe:hover') !== null
+  )
 }
 
 /**

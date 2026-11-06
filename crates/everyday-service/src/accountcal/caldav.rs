@@ -846,22 +846,6 @@ fn events_from_ics(
         });
     }
     let recurring = is_recurring(&parsed);
-    // The resource's alarms, read by the same reader a subscribed feed goes
-    // through rather than by walking calcard's `VALARM` children: one place
-    // decides what counts as an alert. The series' own `VEVENT`'s, for every
-    // occurrence -- an override that moves one meeting keeps its alarms
-    // (Apple and Google both copy them across), and one that changes them is
-    // rare enough not to be worth pairing every occurrence back to its
-    // `VEVENT` for.
-    let alerts = {
-        let read = everyday_core::ics::parse(ics);
-        read.events
-            .iter()
-            .find(|e| e.recurrence_id.is_none())
-            .or_else(|| read.events.first())
-            .map(|e| e.alerts.clone())
-            .unwrap_or_default()
-    };
     let tz: calcard::common::timezone::Tz =
         default_tz.parse().unwrap_or(calcard::common::timezone::Tz::Floating);
     let expanded = parsed.expand_dates(tz, EXPAND_LIMIT);
@@ -944,11 +928,68 @@ fn events_from_ics(
             series: None,
             // Nobody organised it, or this account did: `load`'s own test.
             own: Some(write::owned_by(comp, me)),
-            alerts: alerts.clone(),
+            alerts: alarms_of(&parsed, comp, start, end.max(start), all_day, recurring),
             updated_at: now,
         });
     }
     (out, skipped, recurring)
+}
+
+/// The alerts of one occurrence, from its `VEVENT`'s own `VALARM` children,
+/// by [`everyday_core::calendar::alarm_minutes`] -- the rule a subscribed
+/// feed's alarms go through too. `None` when it has no `VALARM` at all.
+///
+/// The occurrence's own `VEVENT`: an override that moved one meeting of a
+/// series is its own component, with whatever alarms its client wrote.
+fn alarms_of(
+    parsed: &calcard::icalendar::ICalendar,
+    comp: &calcard::icalendar::ICalendarComponent,
+    start: jiff::Timestamp,
+    end: jiff::Timestamp,
+    all_day: bool,
+    recurring: bool,
+) -> Option<Vec<i32>> {
+    use calcard::icalendar::{
+        ICalendarAction, ICalendarComponentType, ICalendarParameterValue, ICalendarProperty,
+        ICalendarRelated, ICalendarValue,
+    };
+    use everyday_core::calendar::{AlarmTrigger, alarm_minutes, tidy_alerts};
+
+    let alarms: Vec<_> = comp
+        .component_ids
+        .iter()
+        .filter_map(|id| parsed.components.get(*id as usize))
+        .filter(|c| c.component_type == ICalendarComponentType::VAlarm)
+        .collect();
+    if alarms.is_empty() {
+        return None;
+    }
+    let minutes = alarms.iter().filter_map(|alarm| {
+        let entry = |name: ICalendarProperty| alarm.entries.iter().find(|e| e.name == name);
+        // No ACTION is a malformed alarm, and the likeliest thing it meant
+        // is to show something -- as the feed reader reads it.
+        let shows = match entry(ICalendarProperty::Action).and_then(|e| e.values.first()) {
+            Some(ICalendarValue::Action(ICalendarAction::Display | ICalendarAction::Audio))
+            | None => true,
+            Some(_) => false,
+        };
+        let trigger_entry = entry(ICalendarProperty::Trigger)?;
+        let trigger = match trigger_entry.values.first()? {
+            ICalendarValue::Duration(d) => AlarmTrigger::Relative {
+                seconds: d.as_seconds(),
+                from_end: trigger_entry
+                    .params
+                    .iter()
+                    .any(|p| p.value == ICalendarParameterValue::Related(ICalendarRelated::End)),
+            },
+            ICalendarValue::PartialDateTime(at) => {
+                AlarmTrigger::Absolute(jiff::Timestamp::from_second(at.to_timestamp()?).ok()?)
+            }
+            _ => return None,
+        };
+        alarm_minutes(shows, trigger, start, end, all_day, recurring)
+    });
+    Some(tidy_alerts(minutes.collect::<Vec<_>>()))
 }
 
 /// Is a recurring resource, last expanded through `expanded_through`, due to
@@ -1273,7 +1314,46 @@ mod tests {
             jiff::Timestamp::now(),
         );
         assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|e| e.alerts == [15]), "{events:?}");
+        assert!(events.iter().all(|e| e.alerts == Some(vec![15])), "{events:?}");
+    }
+
+    /// The same rule as a feed's: an email is no alert this computer gives,
+    /// so "no alert" rather than "nothing said"; Apple's all-day 9 AM is kept;
+    /// no VALARM at all is nothing said.
+    #[test]
+    fn a_resources_alarms_follow_the_feed_readers_rule() {
+        let alerts = |body: &str| {
+            let ics = format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a@example.com\r\n\
+                 {body}SUMMARY:Thing\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+            let (events, _, _) = events_from_ics(
+                &ics,
+                CalendarId::new(),
+                "/cal/a.ics",
+                "UTC",
+                &me(),
+                window,
+                jiff::Timestamp::now(),
+            );
+            events[0].alerts.clone()
+        };
+        let timed = "DTSTART:20260302T090000Z\r\nDTEND:20260302T093000Z\r\n";
+        assert_eq!(alerts(timed), None);
+        assert_eq!(
+            alerts(&format!(
+                "{timed}BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-PT1H\r\nEND:VALARM\r\n"
+            )),
+            Some(vec![])
+        );
+        assert_eq!(
+            alerts(
+                "DTSTART;VALUE=DATE:20260302\r\nDTEND;VALUE=DATE:20260303\r\n\
+                 BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT9H\r\nEND:VALARM\r\n"
+            ),
+            Some(vec![-9 * 60])
+        );
     }
 
     #[test]

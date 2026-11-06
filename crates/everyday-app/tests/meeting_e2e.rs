@@ -534,7 +534,7 @@ fn online_event(calendar_id: CalendarId, offset_secs: i64, attendees: &[String])
         busy: true,
         series: None,
         own: None,
-        alerts: Vec::new(),
+        alerts: None,
         updated_at: now,
     }
 }

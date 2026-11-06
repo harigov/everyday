@@ -1,4 +1,4 @@
-use crate::calendar::{Calendar, Event, EventStatus};
+use crate::calendar::{AlarmTrigger, Calendar, Event, EventStatus, alarm_minutes};
 use crate::id::EventId;
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::TimeZone;
@@ -264,7 +264,8 @@ struct AlarmDraft {
     action: String,
     trigger: Option<Trigger>,
 }
-/// When an alarm goes off, as `TRIGGER` says it.
+/// When an alarm goes off, as `TRIGGER` says it, before the event's zone is
+/// known to turn a moment into an instant.
 #[derive(Debug)]
 enum Trigger {
     /// A duration from the start, or from the end with `RELATED=END`.
@@ -294,27 +295,25 @@ impl AlarmDraft {
         }
     }
 
-    /// Whole minutes before the event's start, or `None` for an alarm that
-    /// tells nobody at this computer anything -- an `EMAIL`, a `PROCEDURE`
-    /// -- or goes off once the event has begun, when a reminder that it is
-    /// coming is too late to be one.
-    fn minutes_before(&self, start: &Moment, end: DateTime) -> Option<u32> {
+    /// [`crate::calendar::alarm_minutes`] for this alarm, on an event running
+    /// `start..end` (instants).
+    fn minutes_before(
+        &self,
+        start: Timestamp,
+        end: Timestamp,
+        all_day: bool,
+        recurring: bool,
+    ) -> Option<i32> {
         // No ACTION is a malformed alarm, and the likeliest thing it meant
         // is to show something.
-        if !matches!(self.action.as_str(), "" | "DISPLAY" | "AUDIO") {
-            return None;
-        }
-        let before = match self.trigger.as_ref()? {
-            Trigger::Relative { offset, from_end: false } => -offset.as_secs(),
-            Trigger::Relative { offset, from_end: true } => {
-                start.at.duration_until(end).as_secs().max(0).saturating_neg() - offset.as_secs()
+        let shows = matches!(self.action.as_str(), "" | "DISPLAY" | "AUDIO");
+        let trigger = match self.trigger.as_ref()? {
+            Trigger::Relative { offset, from_end } => {
+                AlarmTrigger::Relative { seconds: offset.as_secs(), from_end: *from_end }
             }
-            Trigger::Absolute(at) => instant(start)?.as_second() - instant(at)?.as_second(),
+            Trigger::Absolute(at) => AlarmTrigger::Absolute(instant(at)?),
         };
-        if before < 0 {
-            return None;
-        }
-        u32::try_from(before / 60).ok()
+        alarm_minutes(shows, trigger, start, end, all_day, recurring)
     }
 }
 /// The instant a moment names: in its own zone, or the reader's for a
@@ -415,9 +414,17 @@ impl Draft {
         let end = if end < start.at { start.at } else { end };
 
         let tz = start.tz.clone();
-        let alerts = crate::calendar::tidy_alerts(
-            self.alarms.iter().filter_map(|a| a.minutes_before(&start, end)),
-        );
+        // `None` when there was no VALARM at all: the feed said nothing.
+        let alerts = (!self.alarms.is_empty()).then(|| {
+            let from = instant(&start);
+            let to = instant(&Moment { at: end, ..start.clone() });
+            let recurring = self.rrule.is_some() || !self.rdates.is_empty();
+            let minutes = self
+                .alarms
+                .iter()
+                .filter_map(|a| a.minutes_before(from?, to.or(from)?, all_day, recurring));
+            crate::calendar::tidy_alerts(minutes.collect::<Vec<_>>())
+        });
         Some(IcsEvent {
             // `X-EVERYDAY-UID` wins when it is there: it is the id the
             // publisher actually used, and `UID` on one of our own exports is
@@ -763,7 +770,7 @@ pub(super) mod tests {
              BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nDTSTART:19700101T000000Z\r\nEND:VALARM\r\n\
              END:VEVENT");
         assert_eq!(e.start, datetime(2026, 9, 6, 9, 0, 0, 0));
-        assert_eq!(e.alerts, [15], "and its TRIGGER is the event's alert");
+        assert_eq!(e.alerts, Some(vec![15]), "and its TRIGGER is the event's alert");
     }
 
     #[test]
@@ -775,7 +782,11 @@ pub(super) mod tests {
              BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-PT2H\r\nEND:VALARM\r\n\
              BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n\
              END:VEVENT");
-        assert_eq!(e.alerts, [24 * 60, 10], "largest first, the email left out, once each");
+        assert_eq!(
+            e.alerts,
+            Some(vec![24 * 60, 10]),
+            "largest first, the email left out, once each"
+        );
     }
 
     #[test]
@@ -786,7 +797,7 @@ pub(super) mod tests {
              BEGIN:VALARM\r\nACTION:DISPLAY\r\n\
              TRIGGER;VALUE=DATE-TIME:20260906T084500Z\r\nEND:VALARM\r\n\
              END:VEVENT");
-        assert_eq!(e.alerts, [30, 15]);
+        assert_eq!(e.alerts, Some(vec![30, 15]));
     }
 
     #[test]
@@ -795,9 +806,44 @@ pub(super) mod tests {
              BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT5M\r\nEND:VALARM\r\n\
              BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT0S\r\nEND:VALARM\r\n\
              END:VEVENT");
-        assert_eq!(late.alerts, [0], "five minutes in is dropped; at the start is kept");
+        assert_eq!(late.alerts, Some(vec![0]), "five minutes in is dropped; at the start is kept");
         let none = one("BEGIN:VEVENT\r\nUID:b\r\nDTSTART:20260906T090000Z\r\nEND:VEVENT");
-        assert!(none.alerts.is_empty());
+        assert_eq!(none.alerts, None, "no VALARM is the feed saying nothing");
+    }
+
+    /// An email-only alarm is the calendar saying how to be told, and it is
+    /// not by this computer: "no alert", not "nothing said".
+    #[test]
+    fn an_event_whose_only_alarm_is_an_email_has_no_alert_rather_than_none_said() {
+        let e = one("BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260906T090000Z\r\n\
+             BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-PT2H\r\nEND:VALARM\r\nEND:VEVENT");
+        assert_eq!(e.alerts, Some(vec![]));
+    }
+
+    /// Apple's default for an all-day event: "on the day, at 9 AM", nine
+    /// hours after its midnight start.
+    #[test]
+    fn an_all_day_events_alarm_during_its_day_is_kept() {
+        let e = one("BEGIN:VEVENT\r\nUID:a\r\nDTSTART;VALUE=DATE:20260906\r\n\
+             DTEND;VALUE=DATE:20260907\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT9H\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT30H\r\nEND:VALARM\r\nEND:VEVENT");
+        assert_eq!(e.alerts, Some(vec![-9 * 60]), "the day's 9 AM kept; the next day's dropped");
+    }
+
+    /// An absolute moment names one occurrence; on a series it would ring at
+    /// that offset every week.
+    #[test]
+    fn an_absolute_alarm_on_a_series_is_dropped_and_on_a_single_event_kept() {
+        let body = |rule: &str| {
+            format!(
+                "BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260907T090000Z\r\n{rule}\
+                 BEGIN:VALARM\r\nACTION:DISPLAY\r\n\
+                 TRIGGER;VALUE=DATE-TIME:20260907T084500Z\r\nEND:VALARM\r\nEND:VEVENT"
+            )
+        };
+        assert_eq!(one(&body("")).alerts, Some(vec![15]));
+        assert_eq!(one(&body("RRULE:FREQ=WEEKLY;COUNT=3\r\n")).alerts, Some(vec![]));
     }
 
     #[test]
@@ -809,7 +855,7 @@ pub(super) mod tests {
         );
         let (events, _) = events_for(&calendar(), &f, (date(2026, 9, 1), date(2026, 9, 30)), "UTC");
         assert_eq!(events.len(), 3);
-        assert!(events.iter().all(|e| e.alerts == [5]), "{events:?}");
+        assert!(events.iter().all(|e| e.alerts == Some(vec![5])), "{events:?}");
     }
 
     #[test]

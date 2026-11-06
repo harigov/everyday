@@ -255,8 +255,8 @@ struct GraphEvent {
     #[serde(rename = "isOrganizer")]
     is_organizer: Option<bool>,
     /// Graph's one reminder: whether it is on, and how long before.
-    #[serde(rename = "isReminderOn", default)]
-    is_reminder_on: bool,
+    #[serde(rename = "isReminderOn")]
+    is_reminder_on: Option<bool>,
     #[serde(rename = "reminderMinutesBeforeStart")]
     reminder_minutes_before_start: Option<u32>,
 }
@@ -425,9 +425,13 @@ fn to_event(calendar_id: CalendarId, item: &GraphEvent, now: jiff::Timestamp) ->
         busy: !matches!(item.show_as.as_str(), "free" | "workingElsewhere"),
         series: item.series_master_id.clone().or_else(|| item.i_cal_u_id.clone()),
         own: item.is_organizer,
-        alerts: match item.reminder_minutes_before_start {
-            Some(minutes) if item.is_reminder_on => everyday_core::calendar::tidy_alerts([minutes]),
-            _ => Vec::new(),
+        // Said nothing, said off, or said when.
+        alerts: match (item.is_reminder_on, item.reminder_minutes_before_start) {
+            (None, _) => None,
+            (Some(true), Some(minutes)) => {
+                Some(everyday_core::calendar::tidy_alerts(i32::try_from(minutes).ok()))
+            }
+            (Some(_), _) => Some(Vec::new()),
         },
         updated_at: now,
     })
@@ -1042,7 +1046,7 @@ mod tests {
             series_master_id: None,
             i_cal_u_id: None,
             is_organizer: None,
-            is_reminder_on: false,
+            is_reminder_on: None,
             reminder_minutes_before_start: None,
         }
     }
@@ -1058,10 +1062,13 @@ mod tests {
         }))
         .unwrap();
         let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
-        assert_eq!(event.alerts, [15]);
-        item.is_reminder_on = false;
+        assert_eq!(event.alerts, Some(vec![15]));
+        item.is_reminder_on = Some(false);
         let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
-        assert!(event.alerts.is_empty());
+        assert_eq!(event.alerts, Some(vec![]), "switched off is said, and kept");
+        item.is_reminder_on = None;
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, None);
     }
 
     /// The finding this guards: `calendarView` mints a fresh `id` per

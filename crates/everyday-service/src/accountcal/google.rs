@@ -215,7 +215,7 @@ struct GoogleEvent {
     /// that event's own durable id).
     #[serde(rename = "iCalUID")]
     i_cal_uid: Option<String>,
-    /// Absent where Google says nothing, which reads as no alerts of its own.
+    /// Absent where Google says nothing about reminders.
     reminders: Option<GoogleReminders>,
     /// The page's `defaultReminders`, copied here by [`list_events`].
     #[serde(skip)]
@@ -224,14 +224,19 @@ struct GoogleEvent {
 
 impl GoogleEvent {
     /// The minutes before the start this event's popups go off at, as
-    /// [`Event::alerts`] holds them.
-    fn alerts(&self) -> Vec<u32> {
-        let Some(reminders) = &self.reminders else { return Vec::new() };
+    /// [`Event::alerts`] holds them: `None` where Google said nothing about
+    /// reminders, and an empty list for "no notifications" -- including a
+    /// calendar whose defaults it uses having none, or only emails.
+    fn alerts(&self) -> Option<Vec<i32>> {
+        let reminders = self.reminders.as_ref()?;
         let list =
             if reminders.use_default { &self.calendar_reminders } else { &reminders.overrides };
-        everyday_core::calendar::tidy_alerts(
-            list.iter().filter(|r| r.method == "popup").map(|r| r.minutes),
-        )
+        Some(everyday_core::calendar::tidy_alerts(
+            list.iter()
+                .filter(|r| r.method == "popup")
+                .filter_map(|r| i32::try_from(r.minutes).ok())
+                .collect::<Vec<_>>(),
+        ))
     }
 }
 
@@ -1146,7 +1151,7 @@ mod tests {
         item.calendar_reminders =
             vec![popup(10), GoogleReminder { method: "email".into(), minutes: 60 }, popup(30)];
         let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
-        assert_eq!(event.alerts, [30, 10], "the email is not this computer's to show");
+        assert_eq!(event.alerts, Some(vec![30, 10]), "the email is not this computer's to show");
     }
 
     #[test]
@@ -1155,10 +1160,13 @@ mod tests {
         item.reminders = Some(GoogleReminders { use_default: false, overrides: vec![popup(5)] });
         item.calendar_reminders = vec![popup(10)];
         let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
-        assert_eq!(event.alerts, [5]);
+        assert_eq!(event.alerts, Some(vec![5]));
         item.reminders = None;
         let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
-        assert!(event.alerts.is_empty(), "nothing said is no alerts of its own");
+        assert_eq!(event.alerts, None, "nothing said");
+        item.reminders = Some(GoogleReminders { use_default: false, overrides: Vec::new() });
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, Some(vec![]), "\"no notifications\" is said, and kept");
     }
 
     /// The page's `defaultReminders` reach every item on it -- the wire

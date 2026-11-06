@@ -1251,7 +1251,7 @@ export interface ReminderSettings {
 export interface EventReminders {
   /** Use an event's own alerts from its calendar where it has any. */
   own: boolean
-  /** Minutes before an event with none of its own; 0 is as it starts, null is never. */
+  /** Minutes before an event whose calendar says nothing; 0 is as it starts, null is never. */
   minutes: number | null
 }
 
@@ -1578,9 +1578,10 @@ export interface CalendarEvent {
   own?: boolean | null
   /**
    * Minutes before the start the calendar itself asks to be told, largest
-   * first; absent when it gave none. See `EventReminders`.
+   * first (negative: during an all-day event's day). Absent when it said
+   * nothing; empty when it said "no alert". See `EventReminders`.
    */
-  alerts?: number[]
+  alerts?: number[] | null
   updatedAt: string
 }
 

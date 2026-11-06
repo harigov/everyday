@@ -397,7 +397,7 @@ mod tests {
             busy: true,
             series: None,
             own: Some(true),
-            alerts: Vec::new(),
+            alerts: None,
             updated_at: start,
         }
     }

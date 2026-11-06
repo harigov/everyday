@@ -416,7 +416,7 @@ async fn a_slow_model_holds_up_neither_the_tick_nor_the_reminders() {
         busy: true,
         series: None,
         own: None,
-        alerts: Vec::new(),
+        alerts: None,
         updated_at: now,
     };
     vault

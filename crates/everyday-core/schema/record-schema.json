@@ -975,13 +975,15 @@
     "description": "One occurrence of something on a subscribed calendar.\n\nA *occurrence*, not a rule: a weekly stand-up arrives as one `VEVENT`\nwith an `RRULE`, and is stored here as one row per week within the synced\nwindow. That is a deliberate trade — a few hundred rows for a recurring\nmeeting, in exchange for the calendar grid being a date-range index scan\nwith no recurrence engine anywhere near the draw path. See\n[`crate::ics`] for the expansion.",
     "properties": {
       "alerts": {
-        "description": "When the calendar itself asks to be told about this event, in whole\nminutes before it starts: Google's popup reminders (the event's own,\nor the calendar's defaults when it uses those), Graph's one reminder,\nan iCalendar `VALARM` that would show or sound something. Empty when\nthe source gave none, or gave only an email -- the event then gets\nthe default in [`crate::task::EventReminders`], if there is one.\n\nSorted, largest first, without repeats. `#[serde(default)]` so an\n`Event` sealed before this existed still reads, as having none; the\nnext full sync fills it in -- see [`AccountSyncCursor::reads_alerts`].",
+        "description": "When the calendar itself asks to be told about this event, in whole\nminutes before it starts: Google's popup reminders (the event's own,\nor the calendar's defaults when it uses those), Graph's one reminder,\nan iCalendar `VALARM` that would show or sound something. Negative\nonly on an all-day event, for an alert during its day -- Apple's \"on\nthe day, at 9 AM\" is nine hours *after* its midnight start.\n\n`None` when the source said nothing about alerts at all: a feed with\nno `VALARM`, an event synced before this existed. That event gets the\ndefault in [`crate::task::EventReminders`]. `Some` of an empty list is\nthe calendar saying \"no alert\" -- Outlook's reminder switched off,\nGoogle's \"no notifications\", an email-only alarm -- and is kept that\nway rather than handed the default.\n\nSorted, largest first, without repeats. The next full sync after this\nfield existed fills it in -- see [`AccountSyncCursor::reads_alerts`].",
         "items": {
-          "format": "uint32",
-          "minimum": 0,
+          "format": "int32",
           "type": "integer"
         },
-        "type": "array"
+        "type": [
+          "array",
+          "null"
+        ]
       },
       "allDay": {
         "default": false,
