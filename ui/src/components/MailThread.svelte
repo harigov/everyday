@@ -34,6 +34,7 @@
     loadBody,
     MAIL_CARD,
     mockPartUrl,
+    partIdentifier,
     partUrl,
     renderBody,
     type RenderedBody,
@@ -51,6 +52,7 @@
   import { accounts } from '../lib/accounts.svelte'
   import { app, handle } from '../lib/state.svelte'
   import type { MailAttachment, MailMessageDetail, RemoteImageSettings } from '../lib/types'
+  import AttachmentViewer from './AttachmentViewer.svelte'
   import Icon from './Icon.svelte'
   import MailQuickReplies from './MailQuickReplies.svelte'
 
@@ -87,15 +89,15 @@
   }
 
   /** Save a part that is already here, and say so on its chip for a moment.
-   *  `saved` holds the same keys `fetching` does. */
+   *  `saved` holds the same keys `fetching` does. Answers whether it was. */
   let saved = $state<Set<string>>(new Set())
 
-  async function save(message: MailMessageDetail, attachment: MailAttachment) {
-    const identifier = attachment.contentId ?? String(attachment.index)
+  async function save(message: MailMessageDetail, attachment: MailAttachment): Promise<boolean> {
+    const identifier = partIdentifier(attachment)
     const url =
       partUrl(message.id, identifier) ??
       mockPartUrl(attachment.mimeType, `${message.id}:${attachment.index}`)
-    if (!url) return
+    if (!url) return false
     const key = attachmentKey(message.id, attachment.index)
     fetching = new Set([...fetching, key])
     try {
@@ -109,11 +111,29 @@
         saved = new Set([...saved, key])
         setTimeout(() => (saved = new Set([...saved].filter((k) => k !== key))), 2500)
       }
+      return done
     } catch (e) {
       await handle(e)
+      return false
     } finally {
       fetching = new Set([...fetching].filter((k) => k !== key))
     }
+  }
+
+  /** The attachment open in the viewer, by message and place in its parts. */
+  let viewing = $state<{ messageId: string; index: number } | null>(null)
+
+  // Another thread opened while the viewer was up: it goes with the message
+  // it was opened on, and must not come back by itself when that is.
+  $effect(() => {
+    const open = viewing
+    if (open && !messages.some((m) => m.id === open.messageId)) viewing = null
+  })
+
+  /** What the viewer steps through: a message's attachments that are here
+   *  and can be looked at. */
+  function viewable(message: MailMessageDetail): MailAttachment[] {
+    return message.attachments.filter((a) => a.available && a.preview)
   }
 
   type LoadedBody = { html: string; imagesHidden: boolean }
@@ -452,7 +472,32 @@
               {#each message.attachments as a (a.index)}
                 {@const key = attachmentKey(message.id, a.index)}
                 {@const isFetching = fetching.has(key)}
-                {#if a.available}
+                {#if a.available && a.preview}
+                  <!-- Opens it to look at; the arrow beside it saves it, as the
+                       whole chip does for a file that cannot be looked at. -->
+                  <span class="chip split">
+                    <button
+                      class="chip-open"
+                      title="Look at {a.filename || 'this attachment'}"
+                      onclick={() => (viewing = { messageId: message.id, index: a.index })}
+                    >
+                      <Icon name={a.preview === 'image' ? 'image' : 'paperclip'} size={12} />
+                      <span class="chip-name">{a.filename || 'attachment'}</span>
+                      <span class="chip-size">
+                        {saved.has(key) ? 'Saved' : humanBytes(a.size)}
+                      </span>
+                    </button>
+                    <button
+                      class="chip-save"
+                      disabled={isFetching}
+                      aria-label="Save {a.filename || 'this attachment'}"
+                      title="Save {a.filename || 'this attachment'}"
+                      onclick={() => void save(message, a)}
+                    >
+                      <Icon name="download" size={13} />
+                    </button>
+                  </span>
+                {:else if a.available}
                   <button
                     class="chip"
                     disabled={isFetching}
@@ -527,6 +572,21 @@
     </article>
   {/each}
 </div>
+
+{#if viewing}
+  {@const open = viewing}
+  {@const message = messages.find((m) => m.id === open.messageId)}
+  {#if message}
+    <AttachmentViewer
+      {message}
+      attachments={viewable(message)}
+      index={open.index}
+      {dark}
+      onsave={(a: MailAttachment) => save(message, a)}
+      onclose={() => (viewing = null)}
+    />
+  {/if}
+{/if}
 
 <style>
   .thread {
@@ -768,6 +828,34 @@
   }
   .chip-size {
     color: var(--fg-faint);
+  }
+  /* A chip that opens the file, with a save arrow of its own at the end. */
+  .chip.split {
+    padding: 0;
+    gap: 0;
+  }
+  .chip-open,
+  .chip-save {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: inherit;
+    border-radius: 999px;
+  }
+  .chip-open {
+    padding: 3px 4px 3px var(--sp-2);
+  }
+  .chip-save {
+    padding: 3px var(--sp-2) 3px 5px;
+    color: var(--fg-faint);
+  }
+  .chip-open:hover,
+  .chip-save:hover:not(:disabled) {
+    background: var(--bg-active);
+    color: var(--fg);
+  }
+  .chip-save:disabled {
+    opacity: 0.6;
   }
   .chip-download {
     color: var(--journal-accent, var(--accent));

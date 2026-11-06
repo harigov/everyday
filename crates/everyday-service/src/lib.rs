@@ -61,6 +61,7 @@ pub mod jobs;
 pub mod keepintouch;
 pub mod llm;
 pub mod mailai;
+pub mod mailpreview;
 pub mod mailsort;
 pub mod mailsync;
 pub mod mailview;

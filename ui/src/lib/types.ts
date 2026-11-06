@@ -2103,6 +2103,24 @@ export interface MailAttachment {
   /** `false` when this part is over the account's attachment cap and has not
    *  been fetched yet -- what `fetchAttachment` turns `true`. */
   available: boolean
+  /** How the part can be looked at without saving it -- see
+   *  `mailpreview::kind_of`. Absent for one that can only be saved. */
+  preview?: AttachmentPreviewKind | null
+  /** For a film or a recording, the type its bytes are played as -- see
+   *  `mailpreview::media_type`. */
+  previewType?: string | null
+}
+
+/** `image`, `video`, `audio` and `pdf` are drawn by the window from the
+ *  part's own bytes; a `page` is drawn by `previewAttachment` into a
+ *  sandboxed frame -- a web page, Markdown, a CSV, a forwarded message,
+ *  text or an SVG. */
+export type AttachmentPreviewKind = 'image' | 'video' | 'audio' | 'pdf' | 'page'
+
+/** `preview_attachment`'s answer: a complete document under the same CSP a
+ *  rendered message carries. */
+export interface AttachmentPreview {
+  html: string
 }
 
 /** One message, plus the attachments its body names -- metadata only, never

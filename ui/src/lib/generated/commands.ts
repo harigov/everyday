@@ -17,6 +17,7 @@ import type {
   AgentSettings,
   ArchiveManifest,
   Attachment,
+  AttachmentPreview,
   AwaitedSignIn,
   BalanceReport,
   BegunSignIn,
@@ -514,6 +515,10 @@ export interface Commands {
   noteTags: { args: Record<string, never>; result: string[] }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   preparePicture: { args: { blob: string; filename?: string }; result: Attachment }
+  previewAttachment: {
+    args: { messageId: MailMessageId; index: number }
+    result: AttachmentPreview
+  }
   previewMeetingTemplate: { args: { body: string }; result: string }
   profile: { args: Record<string, never>; result: Profile }
   quickAsks: { args: Record<string, never>; result: QuickAskRow[] }
@@ -908,6 +913,7 @@ export const COMMAND_NAMES = {
   noteTags: 'note_tags',
   pollAutoLock: 'poll_auto_lock',
   preparePicture: 'prepare_picture',
+  previewAttachment: 'preview_attachment',
   previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
   quickAsks: 'quick_asks',
@@ -1248,6 +1254,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'note_tags',
   'poll_auto_lock',
   'prepare_picture',
+  'preview_attachment',
   'preview_meeting_template',
   'profile',
   'quick_asks',

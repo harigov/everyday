@@ -21,6 +21,7 @@
 import { api, callCommand, isMock } from './api'
 import type {
   AccountId,
+  AttachmentPreview,
   CategoryCount,
   Draft,
   DraftId,
@@ -81,6 +82,13 @@ export const categoryCounts = (mailbox: MailboxId): Promise<CategoryCount[]> =>
  *  updated, so a chip can flip to available without reloading the thread. */
 export const fetchAttachment = (messageId: MailMessageId, index: number): Promise<MailAttachment> =>
   api.fetchAttachment(messageId, index)
+
+/** One part whose `preview` is `page` -- a web page, Markdown, a CSV, a
+ *  forwarded message, text -- as a document for the viewer's sandboxed frame. */
+export const previewAttachment = (
+  messageId: MailMessageId,
+  index: number,
+): Promise<AttachmentPreview> => api.previewAttachment(messageId, index)
 
 function shellPresent(): boolean {
   return !isMock && '__TAURI_INTERNALS__' in window

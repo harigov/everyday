@@ -14,6 +14,7 @@
 
 import { isMock } from './api'
 import { adaptToPage, looksDesigned, readBody } from './mailbody'
+import type { MailAttachment } from './types'
 
 /** What `<iframe sandbox srcdoc>` needs, whichever world this is running in.
  * Exactly one of `url` and `html` is set:
@@ -109,6 +110,26 @@ export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBo
 export function partUrl(messageId: string, identifier: string): string | null {
   if (isMock) return null
   return `${mailOrigin()}/part/${encodeURIComponent(messageId)}/${encodeURIComponent(identifier)}`
+}
+
+/** What {@link partUrl} addresses `attachment` by: its `Content-ID` when it
+ *  has one, its place in the message's parts otherwise -- `mailview::part`'s
+ *  own rule. */
+export function partIdentifier(attachment: MailAttachment): string {
+  return attachment.contentId ?? String(attachment.index)
+}
+
+/**
+ * The type a film's or a recording's bytes are put in a `blob:` address as,
+ * for the viewer's `<video>` or `<audio>`: the one the backend worked out
+ * (`mailpreview::media_type`), and never anything but a film or a recording.
+ * A `blob:` address belongs to this window's origin, so it must never be
+ * something a browser would run as a page if it were opened as one.
+ */
+export function mediaType(attachment: MailAttachment): string {
+  const family = attachment.preview === 'video' ? 'video/' : 'audio/'
+  const type = attachment.previewType?.trim().toLowerCase() ?? ''
+  return type.startsWith(family) ? type : 'application/octet-stream'
 }
 
 /** A minimal, valid, single-page PDF -- just enough for a real

@@ -263,6 +263,11 @@ export const ICONS = {
     '<path d="M21 15v3.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5V15"/>' +
     '<path d="M8 8.5 12 4.5l4 4"/><path d="M12 4.5V16"/>',
 
+  // The same tray with the arrow coming in: saving an attachment.
+  download:
+    '<path d="M21 15v3.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5V15"/>' +
+    '<path d="M8 12 12 16l4-4"/><path d="M12 16V4.5"/>',
+
   // Two dots over two: the handle you grab to drag a card.
   grip:
     '<circle cx="9.5" cy="6.5" r="1.1"/><circle cx="14.5" cy="6.5" r="1.1"/>' +
