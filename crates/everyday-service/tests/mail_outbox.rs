@@ -29,7 +29,7 @@ use everyday_mail::session::{
     RemoteHeader, RemoteMailbox, Result as SessionResult, SyncCursor, Uid, UidSet,
 };
 use everyday_service::ctx::Ctx;
-use everyday_service::events::{Change, EventSink};
+use everyday_service::events::{Change, EventSink, Notification};
 use everyday_service::outbox::{drain_outbox, release_due_snoozes};
 use everyday_service::{Service, error::CommandError};
 use jiff::{SignedDuration, Timestamp};
@@ -53,11 +53,16 @@ async fn fails(svc: &Arc<Service>, name: &str, args: Value) -> CommandError {
 #[derive(Default)]
 struct Collector {
     changes: Mutex<Vec<Change>>,
+    notices: Mutex<Vec<Notification>>,
 }
 
 impl EventSink for Collector {
     fn changed(&self, change: Change) {
         self.changes.lock().unwrap().push(change);
+    }
+
+    fn notify(&self, notification: Notification) {
+        self.notices.lock().unwrap().push(notification);
     }
 }
 
@@ -244,11 +249,14 @@ struct FakeSender {
     /// `Send` op never reaches here at all, not only that its own state
     /// looks right.
     sent: std::sync::Mutex<u32>,
+    /// The last message handed to [`Sender::send`], sent or not.
+    raw: std::sync::Mutex<Vec<u8>>,
 }
 
 #[allow(async_fn_in_trait)]
 impl Sender for FakeSender {
     async fn send(&self, built: &Built) -> SessionResult<everyday_mail::smtp::SendReceipt> {
+        *self.raw.lock().unwrap() = built.raw.clone();
         if let Some(err) = &self.fail {
             return Err(err.clone());
         }
@@ -1806,4 +1814,338 @@ async fn editing_another_devices_draft_keeps_every_word_and_every_other_draft() 
         .flatten()
         .collect();
     assert_eq!(deleting, vec![stale], "only the flagged old autosave goes");
+}
+
+// ---- a send that fails says why; sending from another account -------------
+
+/// A draft with a recipient and a subject, queued to send and already due.
+async fn queued_send(svc: &Arc<Service>, account: AccountId) -> DraftId {
+    let mut draft = call(svc, "new_draft", json!({ "account": account })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    draft["subject"] = json!("Lunch on Friday");
+    call(svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let id: DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+    make_send_due(svc, id).await;
+    id
+}
+
+async fn make_send_due(svc: &Arc<Service>, id: DraftId) {
+    let sent = call(svc, "send_draft", json!({ "id": id })).await;
+    let op_id: everyday_core::id::OpId = sent["state"]["op"].as_str().unwrap().parse().unwrap();
+    let vault = svc.get().unwrap();
+    let mut op = vault.op(op_id).unwrap();
+    op.not_before = Timestamp::now() - SignedDuration::from_secs(1);
+    vault.update_op(&op).unwrap();
+}
+
+/// What Hari saw: "Sending…", then the draft back, and no word of why.
+#[tokio::test]
+async fn a_send_that_fails_for_good_keeps_why_on_the_draft_and_says_so() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    let collector = Arc::new(Collector::default());
+    svc.set_events(collector.clone());
+    let id = queued_send(&svc, account).await;
+
+    let sender = FakeSender {
+        fail: Some(MailError::Server("550 5.7.1 Relaying denied".into())),
+        ..FakeSender::default()
+    };
+    let mut session = FakeSession::default();
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.failed, 1, "{report:?}");
+
+    let draft = vault_draft(&svc, id);
+    assert_eq!(draft.state, DraftState::Editing);
+    assert_eq!(draft.send_error.as_deref(), Some("550 5.7.1 Relaying denied"));
+    {
+        let notices = collector.notices.lock().unwrap();
+        let notice = notices.iter().find(|n| n.title.starts_with("Not sent")).expect("a notice");
+        assert_eq!(notice.title, "Not sent: Lunch on Friday");
+        assert!(notice.body.as_deref().unwrap().contains("Relaying denied"), "{notice:?}");
+    }
+
+    // Asking again starts clean, and a send that works leaves nothing behind.
+    make_send_due(&svc, id).await;
+    assert_eq!(vault_draft(&svc, id).send_error, None);
+    let report = drain_outbox(&svc, account, &mut session, &FakeSender::default()).await.unwrap();
+    assert_eq!(report.done, 1, "{report:?}");
+    let draft = vault_draft(&svc, id);
+    assert_eq!(draft.state, DraftState::Sent);
+    assert_eq!(draft.send_error, None);
+}
+
+#[tokio::test]
+async fn a_send_being_retried_says_why_and_tells_once_it_has_gone_on_a_while() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let collector = Arc::new(Collector::default());
+    svc.set_events(collector.clone());
+    let id = queued_send(&svc, account).await;
+
+    let sender = FakeSender {
+        fail: Some(MailError::Network("connection timed out".into())),
+        ..FakeSender::default()
+    };
+    let mut session = FakeSession::default();
+    let vault = svc.get().unwrap();
+    for attempt in 1..=6u32 {
+        let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+        assert_eq!(report.retried, 1, "attempt {attempt}: {report:?}");
+        let draft = vault_draft(&svc, id);
+        assert!(matches!(draft.state, DraftState::Queued { .. }), "still on its way");
+        assert_eq!(draft.send_error.as_deref(), Some("network error: connection timed out"));
+        let told = collector
+            .notices
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|n| n.title == "Not sent yet: Lunch on Friday")
+            .count();
+        assert_eq!(told, usize::from(attempt >= 4), "attempt {attempt}");
+        // Due again at once, rather than after the backoff.
+        let DraftState::Queued { op } = draft.state else { unreachable!() };
+        let mut op = vault.op(op).unwrap();
+        op.not_before = Timestamp::now() - SignedDuration::from_secs(1);
+        vault.update_op(&op).unwrap();
+    }
+
+    // Undo is refused (it may have gone out); stopping is not, and leaves the
+    // id that lets a later send ask whether it did.
+    let refused = fails(&svc, "undo_send", json!({ "draftId": id })).await;
+    assert!(refused.message.contains("may have reached the server"), "{}", refused.message);
+    let stopped = call(&svc, "stop_send", json!({ "draftId": id })).await;
+    assert_eq!(stopped["state"]["type"], "editing");
+    assert!(vault_draft(&svc, id).message_id.is_some());
+    let report = drain_outbox(&svc, account, &mut session, &sender).await.unwrap();
+    assert_eq!(report.attempted, 0, "nothing left to try: {report:?}");
+}
+
+#[tokio::test]
+async fn a_send_not_yet_tried_cannot_be_stopped_only_undone() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let id = queued_send(&svc, account).await;
+    let refused = fails(&svc, "stop_send", json!({ "draftId": id })).await;
+    assert!(refused.message.contains("only a send that failed"), "{}", refused.message);
+}
+
+#[tokio::test]
+async fn mail_goes_out_under_the_name_of_the_address_it_is_from() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let mut account = Account::new(Provider::Custom, "me@example.com");
+    account.display_name = "Hari G".into();
+    account.identities.push(everyday_core::account::Identity {
+        name: "Hari at work".into(),
+        address: "hari@work.example".into(),
+        signature_html: String::new(),
+    });
+    let account_id = account.id;
+    vault.save_account(&account).unwrap();
+
+    let mut session = FakeSession::default();
+    let sender = FakeSender::default();
+    queued_send(&svc, account_id).await;
+    drain_outbox(&svc, account_id, &mut session, &sender).await.unwrap();
+    let raw = String::from_utf8_lossy(&sender.raw.lock().unwrap()).to_string();
+    assert!(raw.contains("From: \"Hari G\" <me@example.com>"), "{raw}");
+
+    let mut draft = call(&svc, "new_draft", json!({ "account": account_id })).await;
+    draft["identity"] = json!("hari@work.example");
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    make_send_due(&svc, draft["id"].as_str().unwrap().parse().unwrap()).await;
+    drain_outbox(&svc, account_id, &mut session, &sender).await.unwrap();
+    let raw = String::from_utf8_lossy(&sender.raw.lock().unwrap()).to_string();
+    assert!(raw.contains("From: \"Hari at work\" <hari@work.example>"), "{raw}");
+}
+
+#[tokio::test]
+async fn a_draft_moves_to_another_account_with_what_was_written() {
+    let (svc, _dir) = service();
+    let home = seed_account(&svc);
+    seed_mailbox(&svc, home, "Drafts", MailboxRole::Drafts);
+    let vault = svc.get().unwrap();
+    let mut work = Account::new(Provider::Custom, "me@work.example");
+    work.identities.push(everyday_core::account::Identity {
+        name: "Support".into(),
+        address: "help@work.example".into(),
+        signature_html: String::new(),
+    });
+    let work_id = work.id;
+    vault.save_account(&work).unwrap();
+
+    let mut draft = call(&svc, "new_draft", json!({ "account": home })).await;
+    draft["to"] = json!([{ "name": "", "email": "bob@example.com" }]);
+    draft["subject"] = json!("Quote");
+    call(&svc, "save_draft", json!({ "draft": draft.clone() })).await;
+    let old_id: DraftId = draft["id"].as_str().unwrap().parse().unwrap();
+    // Its autosave reached the home account's server.
+    let mut session = FakeSession::default();
+    drain_outbox(&svc, home, &mut session, &FakeSender::default()).await.unwrap();
+    assert!(vault_draft(&svc, old_id).server_copy.is_some());
+
+    // Written on since the last save: the move carries the window's copy.
+    draft["bodyHtml"] = json!("<p>Here it is.</p>");
+    let refused = fails(
+        &svc,
+        "move_draft",
+        json!({ "draft": draft.clone(), "account": work_id, "identity": "me@example.com" }),
+    )
+    .await;
+    assert!(refused.message.contains("not an address of"), "{}", refused.message);
+
+    let moved = call(
+        &svc,
+        "move_draft",
+        json!({ "draft": draft.clone(), "account": work_id, "identity": "HELP@work.example" }),
+    )
+    .await;
+    let new_id: DraftId = moved["id"].as_str().unwrap().parse().unwrap();
+    assert_ne!(new_id, old_id);
+    let new = vault_draft(&svc, new_id);
+    assert_eq!(new.account_id, work_id);
+    assert_eq!(new.identity, "help@work.example");
+    assert_eq!(new.subject, "Quote");
+    assert_eq!(new.body_html, "<p>Here it is.</p>");
+    assert_eq!(new.to, vec![Address::bare("bob@example.com")]);
+    assert_eq!(new.state, DraftState::Editing);
+    assert!(new.server_copy.is_none());
+
+    // The old one is thrown away, and its copy on the home server with it.
+    assert_eq!(vault_draft(&svc, old_id).state, DraftState::Discarded);
+    let discards: Vec<Op> = vault
+        .due_ops(home, Timestamp::now() + SignedDuration::from_secs(60), 10)
+        .unwrap()
+        .into_iter()
+        .filter(|o| matches!(o.kind, OpKind::DiscardDraft) && o.state == OpState::Pending)
+        .collect();
+    assert_eq!(discards.len(), 1);
+    assert_eq!(discards[0].target, OpTarget::Draft(old_id));
+
+    // One never saved yet has nothing to throw away: what was written moves.
+    let mut fresh = call(&svc, "new_draft", json!({ "account": home })).await;
+    fresh["subject"] = json!("Not saved yet");
+    let moved = call(
+        &svc,
+        "move_draft",
+        json!({ "draft": fresh, "account": work_id, "identity": "me@work.example" }),
+    )
+    .await;
+    let new = vault_draft(&svc, moved["id"].as_str().unwrap().parse().unwrap());
+    assert_eq!((new.account_id, new.subject.as_str()), (work_id, "Not saved yet"));
+
+    // Only a draft still being written moves.
+    let again = fails(
+        &svc,
+        "move_draft",
+        json!({ "draft": draft, "account": work_id, "identity": "me@work.example" }),
+    )
+    .await;
+    assert!(again.message.contains("cannot move"), "{}", again.message);
+}
+
+#[tokio::test]
+async fn the_outbox_holds_what_failed_and_what_is_being_retried_and_scheduled_does_not() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    let mut session = FakeSession::default();
+    // Each drain runs one new draft's autosave and its send, nothing older.
+    let sent = queued_send(&svc, account).await;
+    drain_outbox(&svc, account, &mut session, &FakeSender::default()).await.unwrap();
+    let refused = FakeSender {
+        fail: Some(MailError::Server("550 no such user".into())),
+        ..FakeSender::default()
+    };
+    let failed = queued_send(&svc, account).await;
+    drain_outbox(&svc, account, &mut session, &refused).await.unwrap();
+    let down =
+        FakeSender { fail: Some(MailError::Network("timed out".into())), ..FakeSender::default() };
+    let retrying = queued_send(&svc, account).await;
+    drain_outbox(&svc, account, &mut session, &down).await.unwrap();
+
+    // A send later, never tried, is Scheduled and not in the Outbox.
+    let mut later = call(&svc, "new_draft", json!({ "account": account })).await;
+    later["to"] = json!([{ "name": "", "email": "later@example.com" }]);
+    call(&svc, "save_draft", json!({ "draft": later.clone() })).await;
+    let at = (Timestamp::now() + SignedDuration::from_hours(5)).to_string();
+    call(&svc, "send_draft", json!({ "id": later["id"], "sendAt": at })).await;
+
+    let outbox = call(&svc, "outbox", json!({})).await;
+    let items = outbox.as_array().unwrap();
+    let find = |id: DraftId| items.iter().find(|i| i["draft"]["id"] == id.to_string());
+    assert_eq!(items.len(), 2, "{outbox:#}");
+    assert!(find(sent).is_none());
+    let gave_up = find(failed).expect("the refused one");
+    assert_eq!(gave_up["draft"]["sendError"], "550 no such user");
+    assert!(gave_up.get("nextAttempt").is_none());
+    let trying = find(retrying).expect("the retried one");
+    assert!(trying["nextAttempt"].is_string());
+    assert_eq!(trying["attempts"], 1);
+
+    let scheduled = call(&svc, "scheduled_sends", json!({})).await;
+    let scheduled: Vec<&str> =
+        scheduled.as_array().unwrap().iter().map(|s| s["draft"]["id"].as_str().unwrap()).collect();
+    assert_eq!(scheduled, vec![later["id"].as_str().unwrap()]);
+}
+
+/// The race `/code-review` found: a drain reads a waiting send, the person
+/// stops it, and the drain's own copy used to be written back as InFlight
+/// over Cancelled -- sending what had just been stopped.
+#[tokio::test]
+async fn a_send_stopped_after_a_drain_read_it_is_not_claimed_or_sent() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    let id = queued_send(&svc, account).await;
+    let down =
+        FakeSender { fail: Some(MailError::Network("timed out".into())), ..FakeSender::default() };
+    let mut session = FakeSession::default();
+    drain_outbox(&svc, account, &mut session, &down).await.unwrap();
+
+    let vault = svc.get().unwrap();
+    let later = Timestamp::now() + SignedDuration::from_hours(2);
+    let read: Vec<Op> = vault
+        .due_ops(account, later, 10)
+        .unwrap()
+        .into_iter()
+        .filter(|o| matches!(o.kind, OpKind::Send))
+        .collect();
+    assert_eq!(read.len(), 1, "the drain's copy, Pending");
+
+    call(&svc, "stop_send", json!({ "draftId": id })).await;
+    assert!(vault.claim_ops(&read).unwrap().is_empty(), "stopped wins");
+    assert_eq!(vault.op(read[0].id).unwrap().state, OpState::Cancelled);
+    assert_eq!(vault_draft(&svc, id).state, DraftState::Editing);
+}
+
+#[tokio::test]
+async fn new_settings_bring_waiting_sends_forward_but_leave_one_in_flight() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let vault = svc.get().unwrap();
+    let later = Timestamp::now() + SignedDuration::from_hours(1);
+    let mut waiting =
+        Op::new(account, OpKind::Send, OpTarget::Draft(DraftId::new()), Origin::Person)
+            .not_before(later);
+    waiting.attempts = 3;
+    vault.enqueue_op(&waiting).unwrap();
+    let mut sending =
+        Op::new(account, OpKind::Send, OpTarget::Draft(DraftId::new()), Origin::Person)
+            .not_before(later);
+    sending.attempts = 3;
+    vault.enqueue_op(&sending).unwrap();
+    // A drain claimed this one; the bump must not put it back to Pending.
+    let claimed = vault.claim_ops(&[sending.clone()]).unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    let now = Timestamp::now();
+    assert_eq!(vault.retry_sends_now(account, now).unwrap(), 1);
+    assert!(vault.op(waiting.id).unwrap().not_before <= now);
+    let sending = vault.op(sending.id).unwrap();
+    assert_eq!(sending.state, OpState::InFlight);
+    assert_eq!(sending.not_before, later);
 }

@@ -1676,6 +1676,8 @@ export const api = {
   discardDraft: (id: DraftId) => call('discardDraft', { id }),
   restoreDraft: (id: DraftId) => call('restoreDraft', { id }),
   editThreadDraft: (copies: MailMessageId[]) => call('editThreadDraft', { copies }),
+  moveDraft: (draft: Draft, account: AccountId, identity: string) =>
+    call('moveDraft', { draft, account, identity }),
   deleteThreadDraft: (draft: DraftId | null, copies: MailMessageId[]) =>
     call('deleteThreadDraft', { draft: draft ?? undefined, copies }),
   /** `delaySeconds` is the undo window (5-30s, clamped by the backend);
@@ -1685,6 +1687,8 @@ export const api = {
     call('sendDraft', { id, delaySeconds, sendAt }),
   /** Only valid inside the undo window `sendDraft` opened. */
   undoSend: (draftId: DraftId) => call('undoSend', { draftId }),
+  /** Stops retrying a send that failed and is waiting to be tried again. */
+  stopSend: (draftId: DraftId) => call('stopSend', { draftId }),
   drafts: (account: AccountId) => call('listDrafts', { account }),
 
   // ── Mail: sync ───────────────────────────────────────────────────────
@@ -1909,6 +1913,9 @@ export const api = {
    *  publishes, for the add-account sheet to draw before anybody has typed
    *  an address. */
   accountPresets: () => call('accountPresets', {}),
+  /** Connect to the account's outgoing server and sign in, sending nothing.
+   *  Throws with the server's own words when it refuses. */
+  checkSending: (id: AccountId) => call('checkSending', { id }),
   /** Store or replace a password-authenticated account's credential. */
   saveAccountPassword: (id: AccountId, password: string) =>
     call('saveAccountPassword', { id, password }),

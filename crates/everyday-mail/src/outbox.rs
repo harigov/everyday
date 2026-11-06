@@ -142,6 +142,13 @@ pub trait Lookups {
     /// why this crate never trusts a hostname for it.
     fn message_id_domain(&self) -> String;
 
+    /// The name to put beside `address` in `From:` -- the account's, or the
+    /// identity's that address belongs to. `None` sends the bare address.
+    fn sender_name(&self, address: &str) -> Option<String> {
+        let _ = address;
+        None
+    }
+
     /// The address a proxied remote image in a stored body originally
     /// pointed at -- `token` from that message's own `everyday://mail/img/`
     /// address. What [`compose::externalize_local_refs`] puts back into a
@@ -692,7 +699,10 @@ async fn outgoing<S: MailSession, T: Sender, L: Lookups>(
     }
 
     Ok(Outgoing {
-        from: address(&CoreAddress::bare(draft.identity.clone())),
+        from: address(&match ctx.lookups.sender_name(&draft.identity) {
+            Some(name) => CoreAddress { name, email: draft.identity.clone() },
+            None => CoreAddress::bare(draft.identity.clone()),
+        }),
         to: draft.to.iter().map(address).collect(),
         cc: draft.cc.iter().map(address).collect(),
         bcc: draft.bcc.iter().map(address).collect(),

@@ -928,6 +928,27 @@ pub(crate) async fn queue_send(
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MoveDraft {
+    /// The draft as the compose window has it -- what was written goes with it.
+    pub draft: Draft,
+    pub account: AccountId,
+    pub identity: String,
+}
+
+/// Send a draft from another account: see [`everyday_core::Vault::move_draft`].
+/// Answers with the new draft, which the compose window carries on with.
+async fn move_draft(svc: Arc<Service>, _ctx: Ctx, args: MoveDraft) -> CommandResult<Draft> {
+    let vault = svc.require()?;
+    let (draft, op) =
+        blocking(move || Ok(vault.move_draft(&args.draft, args.account, &args.identity)?)).await?;
+    if let Some(op) = op {
+        svc.notify_outbox(op.account_id);
+    }
+    Ok(draft)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UndoSend {
     pub draft_id: DraftId,
 }
@@ -938,6 +959,13 @@ async fn undo_send(svc: Arc<Service>, _ctx: Ctx, args: UndoSend) -> CommandResul
     let vault = svc.require()?;
     let now = svc.now();
     blocking(move || Ok(vault.undo_send(args.draft_id, now)?)).await
+}
+
+/// Stop retrying a send that keeps failing -- see
+/// [`everyday_core::Vault::stop_send`].
+async fn stop_send(svc: Arc<Service>, _ctx: Ctx, args: UndoSend) -> CommandResult<Draft> {
+    let vault = svc.require()?;
+    blocking(move || Ok(vault.stop_send(args.draft_id)?)).await
 }
 
 #[derive(Deserialize)]
@@ -958,6 +986,22 @@ async fn list_drafts(svc: Arc<Service>, _ctx: Ctx, args: DraftsQuery) -> Command
 pub struct ScheduledSend {
     pub draft: Draft,
     pub send_at: Timestamp,
+}
+
+/// One message in the Outbox: asked to be sent and not gone, because the
+/// server would not take it. See [`outbox`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutboxItem {
+    /// [`Draft::send_error`] says why.
+    pub draft: Draft,
+    /// When it is tried again -- `None` once it has failed for good and is
+    /// back to being written, waiting for the person.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_attempt: Option<Timestamp>,
+    /// Failed attempts so far, for one still being retried; `0` for one that
+    /// failed for good.
+    pub attempts: u32,
 }
 
 #[derive(Deserialize)]
@@ -998,12 +1042,57 @@ async fn scheduled_sends(
             for draft in vault.drafts(account.id)? {
                 let DraftState::Queued { op } = draft.state else { continue };
                 let op = vault.op(op)?;
-                if op.state == OpState::Pending && op.not_before > cutoff {
+                // One already tried is not waiting for a chosen moment but
+                // failing: it is in the Outbox.
+                if op.state == OpState::Pending && op.attempts == 0 && op.not_before > cutoff {
                     out.push(ScheduledSend { send_at: op.not_before, draft });
                 }
             }
         }
         out.sort_by_key(|s| s.send_at);
+        Ok(out)
+    })
+    .await
+}
+
+/// Every message asked to be sent that has not gone because the server would
+/// not take it, newest first: a send failing and waiting to be tried again,
+/// and one that failed for good and came back to be written, with its
+/// [`Draft::send_error`]. What a mail client calls its Outbox. A send in its
+/// undo window, or being sent right now, is not stuck and is not listed.
+async fn outbox(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: ScheduledSendsQuery,
+) -> CommandResult<Vec<OutboxItem>> {
+    let vault = svc.require()?;
+    blocking(move || {
+        let accounts = match args.account {
+            Some(id) => vec![vault.account(id)?],
+            None => vault.accounts()?,
+        };
+        let mut out = Vec::new();
+        for account in accounts.into_iter().filter(|a| a.services.mail) {
+            for draft in vault.open_drafts(account.id)? {
+                match draft.state {
+                    DraftState::Queued { op } => {
+                        let op = vault.op(op)?;
+                        if op.state == OpState::Pending && op.attempts > 0 {
+                            out.push(OutboxItem {
+                                next_attempt: Some(op.not_before),
+                                attempts: op.attempts,
+                                draft,
+                            });
+                        }
+                    }
+                    DraftState::Editing if draft.send_error.is_some() => {
+                        out.push(OutboxItem { draft, next_attempt: None, attempts: 0 });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.sort_by_key(|item| std::cmp::Reverse(item.draft.updated_at));
         Ok(out)
     })
     .await
@@ -1908,7 +1997,18 @@ fn thread_drafts(
             None => unclaimed.push(detail),
         }
     }
-    for draft in &own {
+    // A reply moved to another account to be sent from there is still this
+    // thread's to show. Only drafts still open: the sent and discarded ones
+    // pile up and never get a card.
+    let mut elsewhere = Vec::new();
+    if !answered.is_empty() {
+        for account in vault.accounts()? {
+            if account.id != thread.account_id && account.services.mail {
+                elsewhere.extend(vault.open_drafts(account.id)?);
+            }
+        }
+    }
+    for draft in own.iter().chain(&elsewhere) {
         let here = draft.in_reply_to.is_some_and(|m| answered.contains(&m));
         let carded = cards.iter().any(|c| c.draft.as_ref().is_some_and(|x| x.id == draft.id));
         if here && !carded && matches!(draft.state, DraftState::Editing) {
@@ -2158,6 +2258,14 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: delete_thread_draft,
     },
     command! {
+        name: "move_draft", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &MoveDraft| Some(a.draft.id.to_string()),
+        args: MoveDraft, returns: "Draft",
+        signature: &[("draft", "Draft", true), ("account", "AccountId", true), ("identity", "string", true)],
+        run: move_draft,
+    },
+    command! {
         name: "send_draft", scope: Mail, effect: Write,
         change: Draft/Updated,
         id: |a: &SendDraft| Some(a.id.to_string()),
@@ -2168,6 +2276,14 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("sendAt", "string | null", false),
         ],
         run: send_draft,
+    },
+    command! {
+        name: "stop_send", scope: Mail, effect: Write,
+        change: Draft/Updated,
+        id: |a: &UndoSend| Some(a.draft_id.to_string()),
+        args: UndoSend, returns: "Draft",
+        signature: &[("draftId", "DraftId", true)],
+        run: stop_send,
     },
     command! {
         name: "undo_send", scope: Mail, effect: Write,
@@ -2188,6 +2304,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: ScheduledSendsQuery, returns: "ScheduledSend[]",
         signature: &[("account", "AccountId | null", false)],
         run: scheduled_sends,
+    },
+    command! {
+        name: "outbox", scope: Mail, effect: Read,
+        args: ScheduledSendsQuery, returns: "OutboxItem[]",
+        signature: &[("account", "AccountId | null", false)],
+        run: outbox,
     },
     // ---- calendar invitations ---------------------------------------------
     command! {

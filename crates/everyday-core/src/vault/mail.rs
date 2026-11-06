@@ -332,6 +332,65 @@ impl Vault {
         self.with_mail(|m| m.list_drafts(account))
     }
 
+    /// `account`'s drafts being written or queued to send -- see
+    /// [`MailStore::list_open_drafts`].
+    pub fn open_drafts(&self, account: AccountId) -> Result<Vec<Draft>> {
+        self.with_mail(|m| m.list_open_drafts(account))
+    }
+
+    /// Take `ops` for running: each one still [`OpState::Pending`] *as
+    /// stored* becomes [`OpState::InFlight`], in one write, and comes back;
+    /// one that moved meanwhile -- a send stopped, undone or discarded
+    /// between the drain reading it and now -- is left as it is and not
+    /// returned. Writing the drain's own earlier copy instead put `InFlight`
+    /// over a `Cancelled` and sent what the person had just stopped.
+    pub fn claim_ops(&self, ops: &[Op]) -> Result<Vec<Op>> {
+        self.writable()?;
+        self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut claimed = Vec::with_capacity(ops.len());
+            for op in ops {
+                let mut stored = match mail.get_op(op.id) {
+                    Ok(stored) => stored,
+                    Err(Error::NotFound { .. }) => continue,
+                    Err(e) => return Err(e),
+                };
+                if !matches!(stored.state, OpState::Pending) {
+                    continue;
+                }
+                stored.transition_to(OpState::InFlight)?;
+                mail.update_op(&stored)?;
+                claimed.push(stored);
+            }
+            Ok(claimed)
+        })
+    }
+
+    /// Every `Send` of `account`'s waiting out a retry's backoff, due now:
+    /// what new server settings ask for, since the ones they failed with are
+    /// gone. One write, reading each op as stored, so an op a drain has
+    /// claimed meanwhile is left alone. Returns how many moved.
+    pub fn retry_sends_now(&self, account: AccountId, now: Timestamp) -> Result<usize> {
+        self.writable()?;
+        self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let horizon = now + jiff::SignedDuration::from_hours(24 * 366);
+            let mut moved = 0;
+            for mut op in mail.due_ops(account, horizon, 1_000)? {
+                if matches!(op.kind, OpKind::Send)
+                    && matches!(op.state, OpState::Pending)
+                    && op.attempts > 0
+                    && op.not_before > now
+                {
+                    op.not_before = now;
+                    mail.update_op(&op)?;
+                    moved += 1;
+                }
+            }
+            Ok(moved)
+        })
+    }
+
     pub fn delete_draft(&self, id: DraftId) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.delete_draft(id))
@@ -1076,6 +1135,7 @@ impl Vault {
                 .not_before(not_before);
             mail.enqueue_op(&op)?;
             draft.state = DraftState::Queued { op: op.id };
+            draft.send_error = None;
             draft.touch();
             mail.put_draft(&draft)?;
             Ok((draft, op))
@@ -1177,6 +1237,41 @@ impl Vault {
         Ok(draft)
     }
 
+    /// Stop trying to send a draft whose send has failed and is waiting to be
+    /// tried again, and give it back to be written -- what a person reaches
+    /// for when a send keeps failing. [`Vault::undo_send`] refuses here, and
+    /// rightly: a failed attempt may still have reached the server, so it is
+    /// not an undo. The draft keeps its `message_id`, so sending it again
+    /// first asks the server whether that attempt arrived after all.
+    ///
+    /// Refused unless the draft is queued, its op is still
+    /// [`OpState::Pending`] and has been attempted at least once.
+    pub fn stop_send(&self, draft_id: DraftId) -> Result<Draft> {
+        self.writable()?;
+        let draft = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut draft = mail.get_draft(draft_id)?;
+            let DraftState::Queued { op: op_id } = draft.state else {
+                return Err(Error::Invalid("this draft is not queued to send".into()));
+            };
+            let mut op = mail.get_op(op_id)?;
+            if !matches!(op.state, OpState::Pending) || op.attempts == 0 {
+                return Err(Error::Invalid(
+                    "only a send that failed and is waiting to be tried again can be stopped"
+                        .into(),
+                ));
+            }
+            op.transition_to(OpState::Cancelled)?;
+            mail.update_op(&op)?;
+            draft.state = DraftState::Editing;
+            draft.touch();
+            mail.put_draft(&draft)?;
+            Ok(draft)
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(draft)
+    }
+
     /// Save `draft`, and — when `append` says to — enqueue an
     /// [`OpKind::AppendDraft`] in the same write. The debounce that decides
     /// `append` (no more than once every thirty seconds per draft) is
@@ -1261,6 +1356,99 @@ impl Vault {
             Ok((draft, op))
         })?;
         self.wrote(RecordKind::Draft, draft_id);
+        Ok(result)
+    }
+
+    /// Send `draft` from another account: a fresh draft on `account`, sent as
+    /// `identity`, holding what the person has written (`edited`, the compose
+    /// window's copy), and the old one discarded -- with its
+    /// [`OpKind::DiscardDraft`] when it had a copy on the old account's server.
+    /// Returns the new draft and that op.
+    ///
+    /// A new record rather than the old one re-pointed: the old one's
+    /// [`Draft::server_copy`] lives on the other account's server, and the
+    /// discard is what knows how to take it off there. Refused unless the
+    /// draft is still being written, `account` sends mail, and `identity` is
+    /// one of its addresses.
+    pub fn move_draft(
+        &self,
+        edited: &Draft,
+        account: AccountId,
+        identity: &str,
+    ) -> Result<(Draft, Option<Op>)> {
+        self.writable()?;
+        let target = self.account(account)?;
+        if !target.services.mail {
+            return Err(Error::Invalid(format!("{} does not send mail here", target.address)));
+        }
+        let identity = std::iter::once(&target.address)
+            .chain(target.identities.iter().map(|i| &i.address))
+            .find(|a| a.trim().eq_ignore_ascii_case(identity.trim()))
+            .cloned()
+            .ok_or_else(|| {
+                Error::Invalid(format!("{identity} is not an address of {}", target.address))
+            })?;
+        let old_id = edited.id;
+        let result = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            // A draft never saved yet has no row: only what was written moves.
+            let mut old = match mail.get_draft(old_id) {
+                Ok(old) => old,
+                Err(Error::NotFound { .. }) => {
+                    let mut moved = edited.clone();
+                    moved.id = DraftId::new();
+                    moved.account_id = account;
+                    moved.identity = identity;
+                    moved.server_copy = None;
+                    moved.message_id = None;
+                    moved.send_error = None;
+                    moved.recipients_changed_by = None;
+                    moved.state = DraftState::Editing;
+                    moved.touch();
+                    mail.put_draft(&moved)?;
+                    return Ok((moved, None));
+                }
+                Err(e) => return Err(e),
+            };
+            if !matches!(old.state, DraftState::Editing) {
+                return Err(Error::Invalid(format!(
+                    "a draft in state {:?} cannot move to another account",
+                    old.state
+                )));
+            }
+            let mut moved = Draft::new(account, identity, old.origin.clone());
+            moved.in_reply_to = edited.in_reply_to;
+            moved.to = edited.to.clone();
+            moved.cc = edited.cc.clone();
+            moved.bcc = edited.bcc.clone();
+            moved.subject = edited.subject.clone();
+            moved.body_html = edited.body_html.clone();
+            moved.attachments = edited.attachments.clone();
+            moved.calendar_part = edited.calendar_part.clone();
+            moved.recipients_changed_by = old.recipients_changed_by.clone();
+            moved.created_at = old.created_at;
+            mail.put_draft(&moved)?;
+
+            old.state = DraftState::Discarded;
+            old.touch();
+            mail.put_draft(&old)?;
+            let op = match &old.server_copy {
+                Some(_) => {
+                    let op = Op::new(
+                        old.account_id,
+                        OpKind::DiscardDraft,
+                        OpTarget::Draft(old.id),
+                        old.origin.clone(),
+                    );
+                    mail.enqueue_op(&op)?;
+                    Some(op)
+                }
+                None => None,
+            };
+            Ok((moved, op))
+        })?;
+        self.wrote(RecordKind::Draft, old_id);
+        self.wrote(RecordKind::Draft, result.0.id);
         Ok(result)
     }
 

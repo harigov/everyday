@@ -444,18 +444,45 @@ assert.ok(
 )
 
 {
-  const before = mail.viewingScheduledFor
   const accountId = mail.scheduled[0].draft.accountId
   mail.selectScheduled(accountId)
-  assert.equal(mail.viewingScheduledFor, accountId)
+  assert.deepEqual(mail.sendsView, { list: 'scheduled', account: accountId })
   assert.equal(mail.selectedThread, null, 'selecting Scheduled drops the open thread')
   await mail.selectMailbox(mail.mailboxes.find((m) => m.role === 'inbox').id)
-  assert.equal(
-    mail.viewingScheduledFor,
-    null,
-    'selecting an ordinary mailbox leaves Scheduled behind',
+  assert.equal(mail.sendsView, null, 'selecting an ordinary mailbox leaves Scheduled behind')
+}
+
+// ── The Outbox: what the server would not take ──────────────────────
+{
+  await mail.refreshOutbox()
+  assert.equal(mail.outbox.length, 0, 'nothing refused yet')
+  const accountId = mail.scheduled[0].draft.accountId
+  const draft = await mailApi.newDraft({ account: accountId })
+  const refused = {
+    ...draft,
+    to: [{ name: '', email: 'nobody@refused.example' }],
+    subject: 'Will not go',
+    sendError: '550 5.1.1 Recipient address rejected',
+  }
+  mockMail.mockSaveDraft(refused)
+  await mail.refreshOutbox()
+  assert.deepEqual(
+    mail.outbox.map((i) => [i.draft.id, i.draft.sendError, i.nextAttempt ?? null]),
+    [[draft.id, '550 5.1.1 Recipient address rejected', null]],
   )
-  void before
+  assert.ok(
+    mail.scheduled.every((s) => s.draft.id !== draft.id),
+    'a refused message is not a scheduled one',
+  )
+  mail.selectOutbox(null)
+  assert.deepEqual(mail.sendsView, { list: 'outbox', account: null })
+  assert.equal(mail.showing.view.startsWith('the Outbox'), true)
+  await mail.discardOutbox(mail.outbox[0])
+  assert.equal(mail.outbox.length, 0, 'discarded, gone from the Outbox')
+  await mail.refreshOutbox()
+  assert.equal(mail.outbox.length, 0, 'and stays gone')
+  await mail.selectMailbox(mail.mailboxes.find((m) => m.role === 'inbox').id)
+  assert.equal(mail.sendsView, null)
 }
 
 // ── Inline replies vs. a message filling the reading pane ───────────

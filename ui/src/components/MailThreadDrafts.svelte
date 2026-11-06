@@ -80,6 +80,11 @@
           <Icon name="trash" size={13} /> Delete
         </button>
       </div>
+      {#if card.draft?.sendError}
+        <p class="unsent" title={card.draft.sendError}>
+          Not sent: {card.draft.sendError}
+        </p>
+      {/if}
       {#if stale.length > 0}
         <p class="stale">
           {plural(stale.length, 'older copy', 'older copies')} saved while writing ·
@@ -164,6 +169,16 @@
     gap: var(--sp-2);
   }
   .discard:hover {
+    color: var(--danger);
+  }
+  .unsent {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 0 var(--sp-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
     color: var(--danger);
   }
   .stale {

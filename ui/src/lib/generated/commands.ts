@@ -140,6 +140,7 @@ import type {
   OnScreen,
   Op,
   OpmlImportReport,
+  OutboxItem,
   PartInfo,
   PassReport,
   PersonDue,
@@ -321,6 +322,7 @@ export interface Commands {
   changePassword: { args: { current: string; next: string }; result: void }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
   checkBankLink: { args: { session: string }; result: LinkCheck }
+  checkSending: { args: { id: AccountId }; result: void }
   clearModelKey: { args: { tier: ModelSlot }; result: ModelSettingsView }
   clearPlaidCredentials: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
@@ -558,6 +560,7 @@ export interface Commands {
   moneyMonth: { args: { month: string }; result: MonthSummary }
   moneyNetWorth: { args: { from: string; to: string }; result: NetWorthPoint[] }
   moneyRecurring: { args: Record<string, never>; result: Recurring[] }
+  moveDraft: { args: { draft: Draft; account: AccountId; identity: string }; result: Draft }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
   nameSpeaker: {
     args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }
@@ -597,6 +600,7 @@ export interface Commands {
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   newsletterSenders: { args: { days?: number | null }; result: NewsletterSender[] }
   noteTags: { args: Record<string, never>; result: string[] }
+  outbox: { args: { account?: AccountId | null }; result: OutboxItem[] }
   plaidSetup: { args: Record<string, never>; result: PlaidSetup }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   preparePicture: { args: { blob: string; filename?: string }; result: Attachment }
@@ -801,6 +805,7 @@ export interface Commands {
     result: Job
   }
   status: { args: Record<string, never>; result: VaultStatus }
+  stopSend: { args: { draftId: DraftId }; result: Draft }
   stopSortingOlderMail: { args: { account?: AccountId | null }; result: MailSortingView }
   subscribeAccountCalendar: { args: { account: AccountId; remoteId: string }; result: CalendarInfo }
   subscribeCalendar: { args: { name: string; url: string; color: string }; result: CalendarInfo }
@@ -872,6 +877,7 @@ export const COMMAND_NAMES = {
   changePassword: 'change_password',
   chatLinks: 'chat_links',
   checkBankLink: 'check_bank_link',
+  checkSending: 'check_sending',
   clearModelKey: 'clear_model_key',
   clearPlaidCredentials: 'clear_plaid_credentials',
   collectGarbage: 'collect_garbage',
@@ -1034,6 +1040,7 @@ export const COMMAND_NAMES = {
   moneyMonth: 'money_month',
   moneyNetWorth: 'money_net_worth',
   moneyRecurring: 'money_recurring',
+  moveDraft: 'move_draft',
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
   newBlock: 'new_block',
@@ -1056,6 +1063,7 @@ export const COMMAND_NAMES = {
   newTracker: 'new_tracker',
   newsletterSenders: 'newsletter_senders',
   noteTags: 'note_tags',
+  outbox: 'outbox',
   plaidSetup: 'plaid_setup',
   pollAutoLock: 'poll_auto_lock',
   preparePicture: 'prepare_picture',
@@ -1184,6 +1192,7 @@ export const COMMAND_NAMES = {
   startImport: 'start_import',
   startResearch: 'start_research',
   status: 'status',
+  stopSend: 'stop_send',
   stopSortingOlderMail: 'stop_sorting_older_mail',
   subscribeAccountCalendar: 'subscribe_account_calendar',
   subscribeCalendar: 'subscribe_calendar',
@@ -1262,6 +1271,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'change_password',
   'chat_links',
   'check_bank_link',
+  'check_sending',
   'clear_model_key',
   'clear_plaid_credentials',
   'collect_garbage',
@@ -1424,6 +1434,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'money_month',
   'money_net_worth',
   'money_recurring',
+  'move_draft',
   'move_to_mailbox',
   'name_speaker',
   'new_block',
@@ -1446,6 +1457,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_tracker',
   'newsletter_senders',
   'note_tags',
+  'outbox',
   'plaid_setup',
   'poll_auto_lock',
   'prepare_picture',
@@ -1573,6 +1585,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'start_import',
   'start_research',
   'status',
+  'stop_send',
   'stop_sorting_older_mail',
   'subscribe_account_calendar',
   'subscribe_calendar',
@@ -1639,6 +1652,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_turn',
   'change_password',
   'check_bank_link',
+  'check_sending',
   'clear_model_key',
   'clear_plaid_credentials',
   'collect_garbage',
@@ -1711,6 +1725,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_stories_read',
   'mark_unread',
   'merge_trackers',
+  'move_draft',
   'move_to_mailbox',
   'name_speaker',
   'new_draft',
@@ -1798,6 +1813,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'start_bank_link',
   'start_chat_verification',
   'start_research',
+  'stop_send',
   'stop_sorting_older_mail',
   'subscribe_account_calendar',
   'subscribe_calendar',
@@ -1899,6 +1915,7 @@ export const CHANGE_KINDS = {
   mark_stories_read: 'story',
   mark_unread: 'thread',
   merge_trackers: 'tracker',
+  move_draft: 'draft',
   move_to_mailbox: 'thread',
   name_speaker: 'transcript',
   new_draft: 'draft',
@@ -1973,6 +1990,7 @@ export const CHANGE_KINDS = {
   snooze: 'thread',
   star: 'thread',
   start_research: 'job',
+  stop_send: 'draft',
   subscribe_account_calendar: 'calendar',
   subscribe_calendar: 'calendar',
   sync_bank_links: 'txn',

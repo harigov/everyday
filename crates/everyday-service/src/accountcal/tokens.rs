@@ -296,10 +296,12 @@ pub(crate) async fn mark_needs_sign_in(
     let vault = vault.clone();
     let reason = why.to_string();
     let outcome = blocking(move || {
-        let mut account = vault.account(account_id)?;
-        account.status = AccountStatus::NeedsSignIn { reason };
-        account.updated_at = now;
-        Ok(vault.save_account(&account)?)
+        vault.with_account(account_id, |account| {
+            account.status = AccountStatus::NeedsSignIn { reason };
+            account.updated_at = now;
+            true
+        })?;
+        Ok(())
     })
     .await;
     if let Err(e) = outcome {

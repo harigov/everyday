@@ -39,6 +39,7 @@
     AccountId,
     AgentCallerKind,
     AgentMailAccess,
+    Endpoint,
     Identity,
     MailAi,
     MailCategory,
@@ -142,6 +143,10 @@
     services: { mail: boolean; calendar: boolean }
     capEnabled: boolean
     capMb: number
+    imap: Endpoint
+    smtp: Endpoint
+    /** The sign-in name of a password account; `null` for OAuth. */
+    username: string | null
   }
 
   let draft = $state<Draft | null>(null)
@@ -159,6 +164,9 @@
         capMb: original.attachmentCapBytes
           ? Math.round(original.attachmentCapBytes / 1_048_576)
           : 25,
+        imap: { ...original.imap },
+        smtp: { ...original.smtp },
+        username: original.auth.type === 'password' ? original.auth.username : null,
       }
     }
   })
@@ -186,14 +194,59 @@
           .filter((i) => i.address),
         services: { ...draft.services },
         attachmentCapBytes: draft.capEnabled ? draft.capMb * 1_048_576 : null,
+        imap: { ...draft.imap, port: Number(draft.imap.port) },
+        smtp: { ...draft.smtp, port: Number(draft.smtp.port) },
+        auth:
+          original.auth.type === 'password' && draft.username !== null
+            ? { type: 'password', username: draft.username.trim() || original.address }
+            : original.auth,
       })
       await api.saveAccount(account)
       await accounts.refresh()
       notice = 'Saved.'
+      sendCheck = null
     } catch (e) {
       notice = errorMessage(e)
     } finally {
       saving = false
+    }
+  }
+
+  // ── Servers ──────────────────────────────────────────────────────────
+  //
+  // Saved with the rest of the form. Changing them restarts the account's
+  // sync, clears an error the old ones caused, and tries any send waiting to
+  // be retried again at once (`save_account` in `accounts.rs`).
+
+  /** Does the form say something other than what is saved? Check sending
+   *  reads the saved settings, so it waits for Save. */
+  const serversEdited = $derived.by(() => {
+    if (!draft || !original) return false
+    const same = (a: Endpoint, b: Endpoint) =>
+      a.host.trim() === b.host.trim() && Number(a.port) === b.port && a.security === b.security
+    const username = original.auth.type === 'password' ? original.auth.username : null
+    return (
+      !same(draft.imap, original.imap) ||
+      !same(draft.smtp, original.smtp) ||
+      (draft.username ?? null) !== username
+    )
+  })
+
+  let checkingSend = $state(false)
+  /** What Check sending found: the server's own words when it refused. */
+  let sendCheck = $state<{ ok: boolean; text: string } | null>(null)
+
+  async function checkSending() {
+    if (!original) return
+    checkingSend = true
+    sendCheck = null
+    try {
+      await api.checkSending(original.id)
+      sendCheck = { ok: true, text: `${original.smtp.host} accepted the sign-in.` }
+    } catch (e) {
+      sendCheck = { ok: false, text: errorMessage(e) }
+    } finally {
+      checkingSend = false
     }
   }
 
@@ -533,6 +586,78 @@
         </label>
       </div>
     </section>
+
+    {#if original.auth.type === 'password' && draft.services.mail}
+      <section>
+        <span class="eyebrow">Servers</span>
+        {#each [{ key: 'imap', label: 'Incoming (IMAP)' }, { key: 'smtp', label: 'Outgoing (SMTP)' }] as const as server (server.key)}
+          <div class="server">
+            <div class="grow">
+              <label class="field-label" for="detail-{server.key}-host">{server.label} host</label>
+              <input
+                id="detail-{server.key}-host"
+                class="field"
+                spellcheck="false"
+                bind:value={draft[server.key].host}
+              />
+            </div>
+            <div>
+              <label class="field-label" for="detail-{server.key}-port">Port</label>
+              <input
+                id="detail-{server.key}-port"
+                class="field port"
+                type="number"
+                min="1"
+                max="65535"
+                bind:value={draft[server.key].port}
+              />
+            </div>
+            <div>
+              <label class="field-label" for="detail-{server.key}-sec">Security</label>
+              <select
+                id="detail-{server.key}-sec"
+                class="field"
+                bind:value={draft[server.key].security}
+              >
+                <option value="tls">TLS</option>
+                <option value="startTls">STARTTLS</option>
+              </select>
+            </div>
+          </div>
+        {/each}
+        {#if draft.username !== null}
+          <div>
+            <label class="field-label" for="detail-username">Sign in as</label>
+            <input
+              id="detail-username"
+              class="field"
+              spellcheck="false"
+              autocomplete="username"
+              bind:value={draft.username}
+            />
+          </div>
+        {/if}
+        <p class="hint">
+          Port 465 is TLS and 587 is STARTTLS on most servers. Saving new settings connects again
+          and retries any message waiting to be sent.
+        </p>
+        <div class="row">
+          <button
+            class="btn"
+            disabled={checkingSend || serversEdited}
+            title={serversEdited ? 'Save first: this checks the saved settings' : undefined}
+            onclick={checkSending}
+          >
+            {checkingSend ? 'Checking…' : 'Check sending'}
+          </button>
+          {#if sendCheck}
+            <span class="check-result" class:bad={!sendCheck.ok} role="status"
+              >{sendCheck.text}</span
+            >
+          {/if}
+        </div>
+      </section>
+    {/if}
 
     {#if original.services.calendar}
       <section>
@@ -969,6 +1094,30 @@
 
   .cap-row {
     margin-top: var(--sp-1);
+  }
+
+  .server {
+    display: flex;
+    gap: var(--sp-2);
+    align-items: flex-end;
+  }
+  .server .grow {
+    flex: 1;
+    min-width: 0;
+  }
+  .server .grow .field {
+    width: 100%;
+  }
+  .server .port {
+    width: 6em;
+  }
+  .check-result {
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    overflow-wrap: anywhere;
+  }
+  .check-result.bad {
+    color: var(--danger);
   }
 
   /* The same compact select the goal-target editor draws, sized to its

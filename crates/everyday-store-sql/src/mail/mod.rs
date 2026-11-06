@@ -299,6 +299,15 @@ impl MailStore for SqlStore {
         self.collect(rows, draft_aad)
     }
 
+    fn list_open_drafts(&self, account: AccountId) -> Result<Vec<Draft>> {
+        let rows = self.read().records(
+            "SELECT id, data FROM drafts WHERE account_id = ?1 AND state IN ('editing', 'queued') \
+             ORDER BY updated_us DESC",
+            &vals![account.to_string()],
+        )?;
+        self.collect(rows, draft_aad)
+    }
+
     fn delete_draft(&self, id: DraftId) -> Result<()> {
         self.delete_by_id::<Draft>(id)?;
         Ok(())

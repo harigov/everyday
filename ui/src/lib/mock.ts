@@ -214,6 +214,8 @@ import {
   mockSortOlderMail,
   mockStopSortingOlderMail,
   mockSaveDraft,
+  mockMoveDraft,
+  mockOutbox,
   mockSearchMail,
   mockSendDraft,
   mockSetThreadCategory,
@@ -7076,6 +7078,19 @@ export const mockInvoke = async <T>(
       return structuredClone(found) as T
     }
 
+    case 'check_sending': {
+      requireUnlocked()
+      const account = accounts.find((a) => a.id === args.id)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      // The two mistakes a hand-typed server most often has, standing in for
+      // a server that answers neither.
+      const { host, port, security } = account.smtp
+      if (!host.trim()) throw new VaultError('invalid', 'network error: no outgoing server is set')
+      if (port === 587 && security === 'tls') {
+        throw new VaultError('invalid', 'received corrupt message of type InvalidContentType')
+      }
+      return undefined as T
+    }
     case 'save_account': {
       requireUnlocked()
       const account = args.account as Account
@@ -7520,6 +7535,9 @@ export const mockInvoke = async <T>(
     case 'scheduled_sends':
       requireUnlocked()
       return mockScheduledSends(args.account as string | null | undefined) as T
+    case 'outbox':
+      requireUnlocked()
+      return mockOutbox(args.account as string | null | undefined) as T
     case 'suggest_replies':
       requireUnlocked()
       return (await mockSuggestReplies(str(args.id))) as T
@@ -7669,6 +7687,29 @@ export const mockInvoke = async <T>(
     case 'undo_send':
       requireUnlocked()
       return mockUndoSend(str(args.draftId)) as T
+    case 'stop_send':
+      requireUnlocked()
+      // The mock never retries a send, so there is never one to stop.
+      throw new VaultError(
+        'invalid',
+        'only a send that failed and is waiting to be tried again can be stopped',
+      )
+    case 'move_draft': {
+      requireUnlocked()
+      const account = accounts.find((a) => a.id === args.account)
+      if (!account) throw new VaultError('notFound', 'no such account')
+      const wanted = str(args.identity).trim().toLowerCase()
+      const identity = [account.address, ...account.identities.map((i) => i.address)].find(
+        (a) => a.toLowerCase() === wanted,
+      )
+      if (!identity) {
+        throw new VaultError(
+          'invalid',
+          `${str(args.identity)} is not an address of ${account.address}`,
+        )
+      }
+      return mockMoveDraft(args.draft as Draft, account.id, identity) as T
+    }
 
     case 'allow_remote_images': {
       requireUnlocked()
