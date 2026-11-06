@@ -1621,6 +1621,10 @@ export const api = {
    *  attachment cap, with no blob yet. */
   fetchAttachment: (messageId: MailMessageId, index: number) =>
     call('fetchAttachment', { messageId, index }),
+  /** A part whose `preview` is `page`, drawn as a document for a sandboxed
+   *  frame. */
+  previewAttachment: (messageId: MailMessageId, index: number) =>
+    call('previewAttachment', { messageId, index }),
 
   // ── Mail: batch thread actions ──────────────────────────────────────
   //

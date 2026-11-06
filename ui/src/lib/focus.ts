@@ -29,7 +29,8 @@ export function focusOnMount(node: HTMLElement, enabled: boolean = true) {
  * Tab", which is exactly what a dialog's own container is marked as.
  */
 const TABBABLE =
-  'a[href], area[href], button, input, select, textarea, summary, iframe, ' +
+  'a[href], area[href], button, input, select, textarea, summary, ' +
+  'iframe:not([tabindex^="-"]), ' +
   'audio[controls], video[controls], [contenteditable]:not([contenteditable="false"]), ' +
   '[tabindex]:not([tabindex^="-"])'
 

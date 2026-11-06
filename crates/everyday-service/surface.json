@@ -3979,6 +3979,28 @@
     {
       "args": [
         {
+          "name": "messageId",
+          "required": true,
+          "type": "MailMessageId"
+        },
+        {
+          "name": "index",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "preview_attachment",
+      "orScope": null,
+      "returns": "AttachmentPreview",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "content",
           "required": true,
           "type": "string"

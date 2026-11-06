@@ -18,6 +18,7 @@ import type {
   AgentSettings,
   ArchiveManifest,
   Attachment,
+  AttachmentPreview,
   AwaitedSignIn,
   BalanceReport,
   BankAccount,
@@ -577,6 +578,10 @@ export interface Commands {
   plaidSetup: { args: Record<string, never>; result: PlaidSetup }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   preparePicture: { args: { blob: string; filename?: string }; result: Attachment }
+  previewAttachment: {
+    args: { messageId: MailMessageId; index: number }
+    result: AttachmentPreview
+  }
   previewImport: {
     args: { content: string; format?: ImportFormat | null; currency?: string | null }
     result: ImportPreview
@@ -1009,6 +1014,7 @@ export const COMMAND_NAMES = {
   plaidSetup: 'plaid_setup',
   pollAutoLock: 'poll_auto_lock',
   preparePicture: 'prepare_picture',
+  previewAttachment: 'preview_attachment',
   previewImport: 'preview_import',
   previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
@@ -1381,6 +1387,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'plaid_setup',
   'poll_auto_lock',
   'prepare_picture',
+  'preview_attachment',
   'preview_import',
   'preview_meeting_template',
   'profile',

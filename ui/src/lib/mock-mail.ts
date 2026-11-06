@@ -365,30 +365,44 @@ interface Seeded {
 /** A handful of attachments for a message flagged `hasAttachments` -- an
  *  image (for the thumbnail) and, every third time, a PDF too (for the
  *  preview), one of them left `available: false` every fifth time so the
- *  "Download" path and `mockFetchAttachment` have something to demonstrate. */
+ *  "Download" path and `mockFetchAttachment` have something to demonstrate.
+ *  Every fourth, the pages and the file that only saves; every seventh, a
+ *  recording and a film, which the mock has no bytes for. */
 function attachmentsFor(seed: number): MailAttachment[] {
   const unavailable = seed % 5 === 0
-  const out: MailAttachment[] = [
-    {
-      index: 0,
-      filename: `photo-${1 + (seed % 12)}.jpg`,
-      mimeType: 'image/jpeg',
-      size: 180_000 + seed * 1_200,
-      contentId: null,
-      inline: false,
-      available: !unavailable,
-    },
-  ]
-  if (seed % 3 === 0) {
+  const out: MailAttachment[] = []
+  const add = (
+    filename: string,
+    mimeType: string,
+    size: number,
+    preview: MailAttachment['preview'],
+  ) =>
     out.push({
-      index: 1,
-      filename: 'report.pdf',
-      mimeType: 'application/pdf',
-      size: 640_000 + seed * 3_000,
+      index: out.length,
+      filename,
+      mimeType,
+      size,
       contentId: null,
       inline: false,
       available: !unavailable,
+      ...(preview ? { preview } : {}),
+      ...(preview === 'video' || preview === 'audio' ? { previewType: mimeType } : {}),
     })
+  add(`photo-${1 + (seed % 12)}.jpg`, 'image/jpeg', 180_000 + seed * 1_200, 'image')
+  if (seed % 3 === 0) add('report.pdf', 'application/pdf', 640_000 + seed * 3_000, 'pdf')
+  if (seed % 4 === 1) {
+    add('notes.md', 'text/markdown', 2_400, 'page')
+    add('figures.csv', 'text/csv', 1_100, 'page')
+    add(
+      'budget.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      48_000,
+      null,
+    )
+  }
+  if (seed % 7 === 2) {
+    add('voice-memo.m4a', 'audio/mp4', 820_000, 'audio')
+    add('clip.mp4', 'video/mp4', 4_200_000, 'video')
   }
   return out
 }
@@ -993,6 +1007,35 @@ export function mockFetchAttachment(messageId: MailMessageId, index: number): Ma
   if (!part) throw new VaultError('notFound', 'no such part of this message')
   part.available = true
   return part
+}
+
+/** `preview_attachment`, mocked: a small document per kind of page, close
+ *  enough to what `mailpreview::page` draws to work on the viewer with. */
+export function mockPreviewAttachment(messageId: MailMessageId, index: number): { html: string } {
+  const part = seed.attachments.get(messageId)?.[index]
+  if (!part) throw new VaultError('notFound', 'no such part of this message')
+  if (part.preview !== 'page') {
+    throw new VaultError('invalid', 'this attachment cannot be shown as a page')
+  }
+  const inner = part.filename?.endsWith('.csv')
+    ? '<table class="sheet"><thead><tr><th>Month</th><th>Visits</th><th>Note</th></tr></thead>' +
+      '<tbody><tr><td>January</td><td>1,204</td><td>New site</td></tr>' +
+      '<tr><td>February</td><td>1,388</td><td>Newsletter, "spring"</td></tr>' +
+      '<tr><td>March</td><td>1,921</td><td></td></tr></tbody></table>'
+    : '<div class="doc"><h1>Meeting notes</h1><p>Agreed to move the launch to <strong>May</strong>.</p>' +
+      '<ul><li>Ann drafts the announcement</li><li>Bob checks the budget</li></ul>' +
+      '<pre><code>launch: 2026-05-04</code></pre></div>'
+  const style =
+    'body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.6}' +
+    '.doc{max-width:46em;margin:0 auto}table{border-collapse:collapse;font-size:13px}' +
+    'th,td{border:1px solid rgba(128,128,128,.35);padding:4px 8px;text-align:left}' +
+    'th{background:rgba(128,128,128,.14)}pre{background:rgba(128,128,128,.14);padding:10px 12px}'
+  return {
+    html:
+      `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">` +
+      `<base target="_blank"><style>${style}</style></head><body>${inner}</body></html>`,
+  }
 }
 
 export function mockMessageBodyHtml(messageId: MailMessageId): string {
