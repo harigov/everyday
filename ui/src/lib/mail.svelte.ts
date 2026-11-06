@@ -74,6 +74,7 @@ import type {
   MailMessageDetail,
   MailMessageId,
   MailSyncProgress,
+  OutboxItem,
   ScheduledSend,
   Thread,
   ThreadDetail,
@@ -165,6 +166,9 @@ class MailState {
   /** Which messages in the open thread are expanded, newest first by default. */
   expanded = $state<Set<string>>(new Set())
   composing = $state<Draft | null>(null)
+  /** Which compose sheet is on screen: the id of the draft it opened on. A
+   *  draft moved to another account keeps its sheet (`composingMoved`). */
+  composeKey = $state<string | null>(null)
   /** Is `composing` an inline reply drawn under the open thread's own
    *  messages, rather than filling the reading pane in place of a thread.
    *  A brand-new message (`compose()`) always fills the pane; a reply or
@@ -200,14 +204,15 @@ class MailState {
    *  accounts" row. */
   wantsEmpty = $state<Mailbox | null>(null)
   /**
-   * The account whose Scheduled list `MailView`'s list column is showing in
-   * place of a mailbox's threads, or `null` -- a view state alongside
-   * `selectedMailbox` rather than a third thing layered over it, since
-   * exactly one of the two is ever on screen. Cleared by `selectMailbox`, so
-   * picking any ordinary mailbox -- by click, or by a `g i`/`g d`/`g s`
-   * shortcut -- always leaves it behind.
+   * The list of sends `MailView`'s list column is showing in place of a
+   * mailbox's threads, or `null`: one account's Scheduled, or the Outbox --
+   * one account's, or every account's (`account: null`). A view state
+   * alongside `selectedMailbox` rather than a third thing layered over it,
+   * since exactly one of the two is ever on screen. Cleared by
+   * `selectMailbox`, so picking any ordinary mailbox -- by click, or by a
+   * `g i`/`g d`/`g s` shortcut -- always leaves it behind.
    */
-  viewingScheduledFor = $state<AccountId | null>(null)
+  sendsView = $state<{ list: 'scheduled' | 'outbox'; account: AccountId | null } | null>(null)
   searchQuery = $state('')
   searchResults = $state<Thread[]>([])
   /** Where each search result is filed -- see `searchPlace`. */
@@ -251,6 +256,10 @@ class MailState {
    *  lists. Unscoped by `selectedAccount`: the nav draws one row per
    *  account regardless of which account the mailbox list is filtered to. */
   scheduled = $state<ScheduledSend[]>([])
+  /** Every account's Outbox -- what the server would not take, failing and
+   *  being retried or failed for good -- newest first. What `MailNav`'s
+   *  Outbox rows count and `MailOutbox.svelte` lists. */
+  outbox = $state<OutboxItem[]>([])
 
   /**
    * Which load is current, so a slow one cannot land after a newer one.
@@ -300,7 +309,7 @@ class MailState {
     this.wantsLabel = null
     this.wantsForever = null
     this.wantsEmpty = null
-    this.viewingScheduledFor = null
+    this.sendsView = null
     this.summary = null
     if (this.#undoTimer) clearInterval(this.#undoTimer)
     this.#undoTimer = null
@@ -311,6 +320,8 @@ class MailState {
     this.#liveRefreshTimer = null
     if (this.#openReloadTimer) clearTimeout(this.#openReloadTimer)
     this.#openReloadTimer = null
+    if (this.#outboxRefreshTimer) clearTimeout(this.#outboxRefreshTimer)
+    this.#outboxRefreshTimer = null
     this.#unseenIn = null
     this.mailboxes = []
     this.unifiedMailboxes = []
@@ -322,6 +333,8 @@ class MailState {
     this.syncStatus = []
     this.syncRequested = false
     this.scheduled = []
+    this.outbox = []
+    this.#sent.clear()
     this.clearSearch()
     this.#loaded = false
   }
@@ -381,6 +394,7 @@ class MailState {
       }
       void this.refreshUnreadCounts()
       void this.refreshScheduled()
+      void this.refreshOutbox()
     } catch (e) {
       await handle(e)
     }
@@ -548,9 +562,9 @@ class MailState {
 
   /** The account and mailbox picked in the nav. */
   async selectMailbox(id: MailboxId) {
-    // Leaves the Scheduled list behind, the way picking a thread leaves a
+    // Leaves a list of sends behind, the way picking a thread leaves a
     // search: exactly one of the two is ever the list column's content.
-    this.viewingScheduledFor = null
+    this.sendsView = null
     this.selectedMailbox = id
     this.selectedThread = null
     this.openThread = null
@@ -565,11 +579,19 @@ class MailState {
     await this.refresh()
   }
 
-  /** The Scheduled row picked in the nav -- see `viewingScheduledFor`. */
+  /** The Scheduled row picked in the nav -- see `sendsView`. */
   selectScheduled(accountId: AccountId) {
-    this.viewingScheduledFor = accountId
+    this.sendsView = { list: 'scheduled', account: accountId }
     this.selectedThread = null
     this.openThread = null
+  }
+
+  /** An Outbox row picked in the nav: one account's, or every account's. */
+  selectOutbox(accountId: AccountId | null) {
+    this.sendsView = { list: 'outbox', account: accountId }
+    this.selectedThread = null
+    this.openThread = null
+    void this.refreshOutbox()
   }
 
   setCategory(category: MailCategory | null) {
@@ -1263,7 +1285,7 @@ class MailState {
   /** Trash or Spam, when that is the list on screen -- see `emptiableRole`.
    *  `null` over a search, whose results come from anywhere. */
   get emptiableRole(): 'trash' | 'spam' | null {
-    if (this.viewingScheduledFor !== null || this.searchQuery.trim()) return null
+    if (this.sendsView !== null || this.searchQuery.trim()) return null
     return emptiableRole(this.mailbox)
   }
 
@@ -1546,7 +1568,15 @@ class MailState {
   #show(draft: Draft, inline: boolean) {
     if (this.composing && this.composing.id !== draft.id) this.#park()
     this.composing = draft
+    this.composeKey = draft.id
     this.composeInline = inline
+  }
+
+  /** The draft being written now goes out from another account, as a new
+   *  record (`move_draft`): the same sheet carries on with it, so
+   *  `composeKey` stays as it was. */
+  composingMoved(draft: Draft) {
+    if (this.composing) this.composing = draft
   }
 
   #park() {
@@ -1659,9 +1689,14 @@ class MailState {
   } | null>(null)
   #undoTimer: ReturnType<typeof setInterval> | null = null
 
+  /** Drafts sent from this window, whose outcome -- sent, or into the
+   *  Outbox -- is still to come as a change. */
+  #sent = new Set<DraftId>()
+
   async send(draft: Draft, delaySeconds?: number, sendAt?: string) {
     try {
       await mailApi.sendDraft(draft.id, delaySeconds, sendAt)
+      this.#sent.add(draft.id)
     } catch (e) {
       // The compose sheet is already gone by the time this runs (see
       // `MailCompose.svelte`'s own `send`) -- without this, the backend's
@@ -1797,6 +1832,55 @@ class MailState {
     }
   }
 
+  // ── the Outbox ───────────────────────────────────────────────────
+
+  async refreshOutbox() {
+    try {
+      this.outbox = await mailApi.outbox()
+    } catch (e) {
+      await quietly(e)
+    }
+  }
+
+  /** Open an Outbox message to look at or change. One being retried stops
+   *  first -- undo is refused once a send has been tried, since it may have
+   *  gone out (`stop_send` in `mail.rs`). */
+  async editOutbox(item: OutboxItem) {
+    try {
+      const draft = item.nextAttempt ? await mailApi.stopSend(item.draft.id) : item.draft
+      this.#show(draft, false)
+      void this.refreshOutbox()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /** Send it again now, through the ordinary short undo window. One still
+   *  being retried stops waiting for its next attempt; the draft keeps its
+   *  Message-ID, so the outbox first asks whether an earlier try arrived. */
+  async retryOutbox(item: OutboxItem) {
+    try {
+      const draft = item.nextAttempt ? await mailApi.stopSend(item.draft.id) : item.draft
+      await this.send(draft, 5)
+      void this.refreshOutbox()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /** Throw it away. `discard_draft` cancels a send waiting to be retried
+   *  itself, so there is nothing to stop first. */
+  async discardOutbox(item: OutboxItem) {
+    try {
+      await mailApi.discardDraft(item.draft.id)
+      this.outbox = this.outbox.filter((i) => i.draft.id !== item.draft.id)
+      notify.info('Message discarded', { key: 'mail-outbox-discarded' })
+    } catch (e) {
+      await handle(e)
+      void this.refreshOutbox()
+    }
+  }
+
   // ── search ───────────────────────────────────────────────────────
 
   setSearchQuery(q: string) {
@@ -1866,6 +1950,9 @@ class MailState {
     // So the list, the counts and the status are all asked again, the first
     // two debounced so a burst of passes costs one of each.
     if (changes.some((c) => c.kind === 'thread' && !c.id && !c.ids?.length)) {
+      // A pass is also when sends sent elsewhere, or before this window
+      // opened, have been tried.
+      this.#scheduleOutboxRefresh()
       this.#scheduleLiveRefresh()
       this.#scheduleUnreadRefresh()
       this.#scheduleOpenThreadReload()
@@ -1887,6 +1974,13 @@ class MailState {
         const ids = change.ids?.length ? change.ids : change.id ? [change.id] : []
         if (this.openThread && !ids.some((id) => id === this.composing?.id)) {
           this.#scheduleOpenThreadReload()
+        }
+        if (this.scheduled.some((s) => ids.includes(s.draft.id))) void this.refreshScheduled()
+        // A send failed, failed again, or went -- one sent from here, or one
+        // already in the Outbox. Not every autosave, of which there is one
+        // every few seconds while somebody types.
+        if (ids.some((id) => this.#sent.has(id) || this.outbox.some((i) => i.draft.id === id))) {
+          this.#scheduleOutboxRefresh()
         }
         return true
       },
@@ -1973,6 +2067,15 @@ class MailState {
     this.#openReloadTimer = setTimeout(() => {
       this.#openReloadTimer = null
       void this.#reloadOpenThread()
+    }, LIVE_REFRESH_DEBOUNCE_MS)
+  }
+
+  #outboxRefreshTimer: ReturnType<typeof setTimeout> | null = null
+  #scheduleOutboxRefresh() {
+    if (this.#outboxRefreshTimer) clearTimeout(this.#outboxRefreshTimer)
+    this.#outboxRefreshTimer = setTimeout(() => {
+      this.#outboxRefreshTimer = null
+      void this.refreshOutbox()
     }, LIVE_REFRESH_DEBOUNCE_MS)
   }
 
@@ -2072,13 +2175,19 @@ class MailState {
    */
   get showing(): Showing {
     const draft = seen('draft', this.composing?.id, this.composing?.subject ?? '')
-    // The Scheduled list is mail queued to go out later, not a mailbox: the
-    // account it belongs to is what narrows it.
-    const scheduledFor = this.viewingScheduledFor
-    if (scheduledFor !== null) {
+    // A list of sends is mail on its way out, not a mailbox: the account it
+    // belongs to is what narrows it.
+    const sends = this.sendsView
+    if (sends !== null) {
       return {
-        view: 'the Scheduled list, mail of theirs queued to send later',
-        within: seen('account', scheduledFor, accounts.account(scheduledFor)?.address ?? ''),
+        view:
+          sends.list === 'scheduled'
+            ? 'the Scheduled list, mail of theirs queued to send later'
+            : 'the Outbox, mail of theirs the server would not take: failing and being tried again, or failed and waiting for them',
+        within:
+          sends.account === null
+            ? []
+            : seen('account', sends.account, accounts.account(sends.account)?.address ?? ''),
         open: draft,
       }
     }

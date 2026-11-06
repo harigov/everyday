@@ -753,6 +753,18 @@
       ]
     },
     {
+      "command": "move_draft",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "draft",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "delete_thread_draft",
       "events": [
         {
@@ -1652,6 +1664,10 @@
       "reason": "asks Plaid how a Hosted Link session stands"
     },
     {
+      "name": "check_sending",
+      "reason": "signs in to the account's real outgoing mail server"
+    },
+    {
       "name": "create_event",
       "reason": "writes to an account calendar's server over the network"
     },
@@ -1722,6 +1738,10 @@
     {
       "name": "start_chat_verification",
       "reason": "needs a chat bot signed in to a real Matrix server"
+    },
+    {
+      "name": "stop_send",
+      "reason": "needs a send a mail server refused that is waiting to be tried again"
     },
     {
       "name": "subscribe_account_calendar",

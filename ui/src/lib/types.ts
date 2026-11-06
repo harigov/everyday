@@ -1913,6 +1913,17 @@ export interface ScheduledSend {
   sendAt: string
 }
 
+/** A message in the Outbox: asked to be sent, not gone, because the server
+ *  would not take it. `draft.sendError` says why. */
+export interface OutboxItem {
+  draft: Draft
+  /** When it is tried again; absent once it has failed for good and is back
+   *  to being written, waiting for the person. */
+  nextAttempt?: string | null
+  /** Failed attempts so far, for one still being retried. */
+  attempts: number
+}
+
 export interface MailAddress {
   name: string
   email: string
@@ -2344,6 +2355,10 @@ export interface Draft {
    * means the person's own recipients, unchanged since they last looked.
    */
   recipientsChangedBy?: MailOrigin | null
+  /** Why the last attempt to send this did not go out: set when a send failed
+   *  for good and it came back to being written, and while a queued one is
+   *  being tried again. Cleared when it is queued again or sent. */
+  sendError?: string | null
 }
 
 /** What an [[Op]] asks the account task to do. */

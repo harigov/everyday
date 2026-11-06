@@ -86,6 +86,12 @@ impl LazySmtpSender {
         }
     }
 
+    /// Connect, sign in and say `NOOP` -- everything a send does short of
+    /// sending. What "Check sending" in an account's settings asks.
+    pub async fn check(&self) -> Result<()> {
+        self.connect().await.map(|_| ())
+    }
+
     /// A fresh transport from a freshly resolved credential -- what both the
     /// first connection and the one retry [`Sender::send`] allows itself
     /// after a stale OAuth token both need.

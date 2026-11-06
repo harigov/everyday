@@ -9,7 +9,7 @@
 //! [`crate::account`] for why the two are kept apart.
 
 use super::Vault;
-use super::session::Domain;
+use super::session::{Domain, pick_domain};
 use crate::account::{ACCOUNT_SECRET_OWNER_KIND, Account, AccountSecret};
 use crate::error::{Error, Result};
 use crate::id::AccountId;
@@ -48,6 +48,33 @@ impl Vault {
         self.with_accounts(|a| a.put_account(account))?;
         self.wrote(RecordKind::Account, account.id);
         Ok(())
+    }
+
+    /// Read account `id`, let `f` change it, and save it if `f` says so --
+    /// all under the one write guard, so nothing saved in between is lost.
+    /// What a background status write uses: read-then-save in two steps let
+    /// a sync pass that read the record a moment before Settings saved new
+    /// servers write the old ones straight back.
+    pub fn with_account(
+        &self,
+        id: AccountId,
+        f: impl FnOnce(&mut Account) -> bool,
+    ) -> Result<Account> {
+        self.writable()?;
+        let mut wrote = false;
+        let account = self.write(|u| {
+            let accounts = pick_domain(u.store.as_ref(), Domain::Accounts, |s| s.accounts())?;
+            let mut account = accounts.get_account(id)?;
+            if f(&mut account) {
+                accounts.put_account(&account)?;
+                wrote = true;
+            }
+            Ok(account)
+        })?;
+        if wrote {
+            self.wrote(RecordKind::Account, id);
+        }
+        Ok(account)
     }
 
     /// Delete the account. Its secret and every calendar (and event) it

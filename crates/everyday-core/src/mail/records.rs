@@ -908,6 +908,14 @@ pub struct Draft {
     /// means.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipients_changed_by: Option<Origin>,
+    /// Why the last attempt to send this draft did not go out, in the
+    /// server's (or this app's) own words: set when a `Send` failed for good
+    /// and the draft came back to [`DraftState::Editing`], and while a
+    /// queued one is still being retried; cleared when it is queued again or
+    /// sent. Without it a send that failed only looked like a draft
+    /// reappearing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub send_error: Option<String>,
 }
 
 impl Draft {
@@ -932,6 +940,7 @@ impl Draft {
             created_at: now,
             updated_at: now,
             recipients_changed_by: None,
+            send_error: None,
         }
     }
 }

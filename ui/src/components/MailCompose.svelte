@@ -61,7 +61,14 @@
   import { declineItems, proposals } from '../lib/proposals.svelte'
   import { app } from '../lib/state.svelte'
   import { timeOfDay, toLocalInputValue } from '../lib/format'
-  import type { DeclineReason, Draft, DraftId, ImproveMode, MailAddress } from '../lib/types'
+  import type {
+    AccountView,
+    DeclineReason,
+    Draft,
+    DraftId,
+    ImproveMode,
+    MailAddress,
+  } from '../lib/types'
   import Avatar from './Avatar.svelte'
   import Icon from './Icon.svelte'
 
@@ -171,8 +178,8 @@
    *  they start folded behind its first line -- open when there is nobody to
    *  send to yet, and whenever there is something in them to check first: a
    *  draft anything but the person wrote, recipients anything but the person
-   *  changed, and a Bcc or a second From address, which the line it folds behind
-   *  has no way to flag. */
+   *  changed, and a Bcc, a second From address or another account than the
+   *  thread's, which the line it folds behind has no way to flag. */
   let showFields = $state(
     untrack(
       () =>
@@ -180,6 +187,9 @@
         working.to.length === 0 ||
         working.bcc.length > 0 ||
         (accounts.account(working.accountId)?.address ?? working.identity) !== working.identity ||
+        (placement === 'thread' &&
+          !!mail.openThread &&
+          mail.openThread.thread.accountId !== working.accountId) ||
         working.origin.type !== 'person' ||
         !!working.recipientsChangedBy,
     ),
@@ -250,32 +260,103 @@
       account?.displayName ||
       working.identity,
   )
-  /** Every address this draft can go out from: the account's own and each
-   *  identity's, and whichever it is from now, which may be one since removed.
-   *  One address is no choice, and is not shown as one. */
-  const fromChoices = $derived.by(() => {
-    if (!account) return []
-    const addresses = [account.address, ...account.identities.map((i) => i.address)]
+  /** Every address this draft can go out from, account by account: each
+   *  mail account's own address and its identities', and whichever this one
+   *  is from now, which may be one since removed. One address is no choice,
+   *  and is not shown as one. A draft the assistant proposed sending stays on
+   *  its account: moving makes a new draft, and the proposal names this one. */
+  const fromGroups = $derived.by(() => {
     const seen = new Set<string>()
-    return [...addresses, working.identity].filter((address) => {
-      const key = address.trim().toLowerCase()
-      if (!key || seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-  })
-
-  function setFrom(address: string) {
-    if (!account || address === working.identity) return
-    const before = signatureFor(account, working.identity)
-    working.identity = address
-    const ed = editor
-    if (ed) {
-      const html = ed.getHTML()
-      const swapped = withSignatureSwapped(html, before, signatureFor(account, address))
-      if (swapped !== html) ed.commands.setContent(swapped)
+    const groups: { account: AccountView; addresses: string[] }[] = []
+    for (const a of accounts.list) {
+      if (a.id !== working.accountId && (!a.services.mail || proposal)) continue
+      const here = [a.address, ...a.identities.map((i) => i.address)]
+      if (a.id === working.accountId) here.push(working.identity)
+      const addresses = here.filter((address) => {
+        const key = `${a.id}\n${address.trim().toLowerCase()}`
+        if (!address.trim() || seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      if (addresses.length > 0) groups.push({ account: a, addresses })
     }
-    touch()
+    return groups
+  })
+  const fromCount = $derived(fromGroups.reduce((n, g) => n + g.addresses.length, 0))
+  /** The `<select>`'s value for an address: which account, and which of its
+   *  addresses -- the same address can belong to two accounts. */
+  const fromValue = (accountId: string, address: string) => `${accountId}\n${address}`
+
+  /** While a draft is on its way to another account the sheet is inert: a
+   *  keystroke then would be saved to the record being thrown away. */
+  let moving = $state(false)
+
+  /** The signature in the editor, swapped from `from`'s to `to`'s. Answers
+   *  what the editor held before, to put back. */
+  function swapSignature(
+    from: { account: AccountView; address: string },
+    to: { account: AccountView; address: string },
+  ): string | null {
+    const ed = editor
+    if (!ed) return null
+    const html = ed.getHTML()
+    const swapped = withSignatureSwapped(
+      html,
+      signatureFor(from.account, from.address),
+      signatureFor(to.account, to.address),
+    )
+    if (swapped !== html) ed.commands.setContent(swapped)
+    return html
+  }
+
+  async function setFrom(select: HTMLSelectElement) {
+    const [accountId, address] = select.value.split('\n')
+    if (!account || !accountId || !address) return
+    if (accountId === working.accountId && address === working.identity) return
+    const target = accounts.account(accountId)
+    if (!target) return
+    const from = { account, address: working.identity }
+    if (accountId === working.accountId) {
+      swapSignature(from, { account, address })
+      working.identity = address
+      touch()
+      return
+    }
+    // Another account: a new draft there, carrying what is written, and this
+    // one thrown away with its copy on the old account's server.
+    moving = true
+    const old = working.id
+    let before: string | null = null
+    let moved: Draft | null = null
+    try {
+      // Stored as it stands, so no save of the old one is still on its way
+      // to land after the move throws it away; nothing can be typed until
+      // the move is done.
+      saver.touch(old)
+      if (!(await written())) return
+      saver.forget(old)
+      before = swapSignature(from, { account: target, address })
+      syncBody()
+      moved = await mailApi.moveDraft($state.snapshot(working), accountId, address)
+      working.id = moved.id
+      working.accountId = moved.accountId
+      working.identity = moved.identity
+      working.state = moved.state
+      working.createdAt = moved.createdAt
+      mail.composingMoved(moved)
+      touch()
+    } catch (e) {
+      await handle(e)
+    } finally {
+      if (!moved) {
+        // Still the old draft, from the old address, with its own signature.
+        if (before !== null) editor?.commands.setContent(before)
+        syncBody()
+        saver.touch(old)
+        select.value = fromValue(working.accountId, working.identity)
+      }
+      moving = false
+    }
   }
 
   const writingEnabled = $derived(account?.mailAi?.writing === true)
@@ -987,6 +1068,7 @@
 
 <div
   bind:this={sheetEl}
+  inert={moving}
   class={underThread ? 'thread-compose' : 'pane-compose'}
   role="region"
   aria-label="Compose"
@@ -1107,19 +1189,37 @@
     </div>
   {/snippet}
 
+  {#if working.sendError && working.state.type === 'editing'}
+    <p class="unsent" role="status">
+      <Icon name="alert" size={13} />
+      <span><strong>Not sent.</strong> {working.sendError}</span>
+    </p>
+  {/if}
+
   {#if showFields}
     <div class="fields">
-      {#if fromChoices.length > 1}
+      {#if fromCount > 1}
         <div class="line">
           <span class="label">From</span>
           <select
             class="from"
             aria-label="From"
-            value={working.identity}
-            onchange={(e) => setFrom(e.currentTarget.value)}
+            disabled={moving}
+            value={fromValue(working.accountId, working.identity)}
+            onchange={(e) => void setFrom(e.currentTarget)}
           >
-            {#each fromChoices as address (address)}
-              <option value={address}>{address}</option>
+            {#each fromGroups as group (group.account.id)}
+              {#if fromGroups.length > 1}
+                <optgroup label={group.account.displayName || group.account.address}>
+                  {#each group.addresses as address (address)}
+                    <option value={fromValue(group.account.id, address)}>{address}</option>
+                  {/each}
+                </optgroup>
+              {:else}
+                {#each group.addresses as address (address)}
+                  <option value={fromValue(group.account.id, address)}>{address}</option>
+                {/each}
+              {/if}
             {/each}
           </select>
         </div>
@@ -1801,6 +1901,25 @@
     color: var(--fg);
   }
 
+  /* Why the last send did not go out -- the server's own words. */
+  .unsent {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    margin: 0;
+    padding: var(--sp-1) var(--sp-2);
+    border: 1px solid color-mix(in oklab, var(--danger) 40%, var(--border));
+    border-radius: var(--radius-sm);
+    background: color-mix(in oklab, var(--danger) 6%, transparent);
+    font-size: var(--text-sm);
+    color: var(--fg);
+    overflow-wrap: anywhere;
+  }
+  .unsent :global(svg) {
+    flex: none;
+    align-self: center;
+    color: var(--danger);
+  }
   .ai-prompt {
     display: flex;
     align-items: center;

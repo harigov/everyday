@@ -658,6 +658,23 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "AccountId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "check_sending",
+      "orScope": null,
+      "returns": "void",
+      "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "tier",
           "required": true,
           "type": "ModelSlot"
@@ -3683,6 +3700,36 @@
     {
       "args": [
         {
+          "name": "draft",
+          "required": true,
+          "type": "Draft"
+        },
+        {
+          "name": "account",
+          "required": true,
+          "type": "AccountId"
+        },
+        {
+          "name": "identity",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "move_draft",
+      "orScope": null,
+      "returns": "Draft",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -4092,6 +4139,23 @@
       "orScope": null,
       "returns": "string[]",
       "scope": "notes",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "account",
+          "required": false,
+          "type": "AccountId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "outbox",
+      "orScope": null,
+      "returns": "OutboxItem[]",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },
@@ -6754,6 +6818,26 @@
       "orScope": null,
       "returns": "VaultStatus",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "draftId",
+          "required": true,
+          "type": "DraftId"
+        }
+      ],
+      "changes": {
+        "kind": "draft",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "stop_send",
+      "orScope": null,
+      "returns": "Draft",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

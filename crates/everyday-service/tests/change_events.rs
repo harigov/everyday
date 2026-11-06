@@ -266,6 +266,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("begin_recording", "refuses unless the transcriber's speech kit is genuinely on disk"),
     ("cancel_oauth_sign_in", "OAuth: cancels the sign-in begin_oauth_sign_in above needs"),
     ("check_bank_link", "asks Plaid how a Hosted Link session stands"),
+    ("check_sending", "signs in to the account's real outgoing mail server"),
     ("create_event", "writes to an account calendar's server over the network"),
     ("delete_bank_link", "tells Plaid to forget the bank's sign-in before forgetting it here"),
     ("download_speech_model", "a real ~40MB network download"),
@@ -285,6 +286,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
     ("sort_older_mail", "refuses without a decision model, which would be asked over the network"),
+    ("stop_send", "needs a send a mail server refused that is waiting to be tried again"),
     ("start_bank_link", "asks Plaid for a Hosted Link session"),
     ("start_chat_verification", "needs a chat bot signed in to a real Matrix server"),
     ("subscribe_account_calendar", "fetches a remote account's calendar over the network"),
@@ -640,12 +642,13 @@ async fn every_offline_write_announces_what_was_written_down() {
     let mut draft2 = run(&svc, &h, "new_draft", json!({ "account": mail_account_id.to_string(), "inReplyTo": null, "forwardOf": null, "replyAll": false })).await;
     draft2["to"] = json!([{ "name": "", "email": "someone-else@example.com" }]);
     let draft2_id = draft2["id"].clone();
-    run(&svc, &h, "save_draft", json!({ "draft": draft2 })).await;
+    run(&svc, &h, "save_draft", json!({ "draft": draft2.clone() })).await;
     run(&svc, &h, "discard_draft", json!({ "id": draft2_id })).await;
     run(&svc, &h, "restore_draft", json!({ "id": draft2_id })).await;
     run(&svc, &h, "discard_draft", json!({ "id": draft2_id })).await;
     run(&svc, &h, "restore_draft", json!({ "id": draft2_id })).await;
-    run(&svc, &h, "delete_thread_draft", json!({ "draft": draft2_id, "copies": [] })).await;
+    let moved = run(&svc, &h, "move_draft", json!({ "draft": draft2, "account": mail_account_id.to_string(), "identity": draft2["identity"] })).await;
+    run(&svc, &h, "delete_thread_draft", json!({ "draft": moved["id"], "copies": [] })).await;
 
     // ---- calendars ---------------------------------------------------------
     let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:e1\r\nDTSTART:20260914T140000Z\r\nDTEND:20260914T150000Z\r\nSUMMARY:Test Event\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";

@@ -1690,6 +1690,13 @@
         ],
         "description": "Who last changed `to`, `cc` or `bcc` on this draft *without* the\nperson seeing it happen through compose -- set by `update_draft`\n(`everyday_core::agent::tools::mail`) when the caller is\n`Assistant` or `Mcp` and the call actually touched one of the three,\ncleared by `everyday_service::domains::mail::save_draft` only when\nthat save itself changes one of the three.\n\nClearing on *every* save, which this once did, emptied the field\nbefore anything could read it: compose autosaves while a person\ntypes and flushes once more immediately before sending, so a single\nkeystroke anywhere in the message erased the record of an address\nsomebody else had put on it. A person changing the recipients is\nthe event that genuinely retires the mark, because by then they\nhave looked at the addresses and said what they should be.\n\nWhat lets `send_draft`'s own confirmation card say \"recipients\nchanged by the assistant\" for a draft whose `to`/`cc`/`bcc` an\ninjected instruction inside some other tool's result talked a model\ninto widening -- see `describe_send_draft`'s own docs for the\nfinding this answers. `#[serde(default)]` so a draft sealed before\nthis field existed still decodes, as `None` -- exactly what \"the\nperson's own recipients, unchanged since they last looked\" already\nmeans."
       },
+      "sendError": {
+        "description": "Why the last attempt to send this draft did not go out, in the\nserver's (or this app's) own words: set when a `Send` failed for good\nand the draft came back to [`DraftState::Editing`], and while a\nqueued one is still being retried; cleared when it is queued again or\nsent. Without it a send that failed only looked like a draft\nreappearing.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
       "serverCopy": {
         "anyOf": [
           {

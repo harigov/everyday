@@ -163,18 +163,38 @@ async fn get_account(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandR
 /// before the new setting did anything at all.
 async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> CommandResult<()> {
     let vault = svc.require()?;
-    let account = args.account;
+    let mut account = args.account;
     let account_id = account.id;
     let mail_on = account.services.mail;
-    let signatures_changed = blocking({
+    let now = svc.now();
+    let (signatures_changed, reconnect) = blocking({
         let vault = vault.clone();
         move || {
             check_acknowledgement(&vault, &account)?;
+            for endpoint in [&mut account.imap, &mut account.smtp] {
+                endpoint.host = endpoint.host.trim().to_string();
+            }
+            if let everyday_core::account::AuthMethod::Password { username } = &mut account.auth {
+                *username = username.trim().to_string();
+            }
             let stored = vault.account(account_id).ok();
+            check_servers(&account, stored.as_ref())?;
             account.check_signatures(stored.as_ref())?;
-            let changed = stored.is_some_and(|old| !old.signatures().eq(account.signatures()));
+            let changed =
+                stored.as_ref().is_some_and(|old| !old.signatures().eq(account.signatures()));
+            let reconnect = stored.as_ref().is_some_and(|old| {
+                old.imap != account.imap
+                    || old.smtp != account.smtp
+                    || old.caldav != account.caldav
+                    || old.auth != account.auth
+            });
+            if reconnect {
+                // Whatever was refused was refused with the old settings.
+                account.status = AccountStatus::Ok;
+                account.updated_at = now;
+            }
             vault.save_account(&account)?;
-            Ok(changed)
+            Ok((changed, reconnect))
         }
     })
     .await?;
@@ -185,6 +205,15 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
         svc.mail_replies_cache_clear();
     }
     if mail_on {
+        // A running task holds the settings it started with -- and its
+        // sender the old outgoing server -- so new ones mean a new task.
+        if reconnect {
+            crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
+            // With no task left to be mid-send, sends waiting out a retry's
+            // backoff go at once: what they failed with is gone.
+            let vault = vault.clone();
+            blocking(move || Ok(vault.retry_sends_now(account_id, now)?)).await?;
+        }
         crate::mailsync::wiring::ensure_account_task(&svc, &vault, account_id);
         if let Some(statuses) = svc.mail_statuses() {
             statuses.nudge(account_id);
@@ -193,6 +222,46 @@ async fn save_account(svc: Arc<Service>, _ctx: Ctx, args: SaveAccount) -> Comman
         crate::mailsync::wiring::stop_account_task(&svc, account_id).await;
     }
     Ok(())
+}
+
+/// A server this save changes needs a host and a port. `save_account` trims
+/// hosts first, so a stray space pasted with one is not refused. One left as
+/// it was is not judged here: a Custom account starts with blank ones.
+fn check_servers(account: &Account, stored: Option<&Account>) -> everyday_core::Result<()> {
+    for (what, endpoint, before) in [
+        ("incoming", &account.imap, stored.map(|s| &s.imap)),
+        ("outgoing", &account.smtp, stored.map(|s| &s.smtp)),
+    ] {
+        if before.is_none_or(|b| b == endpoint) {
+            continue;
+        }
+        let host = endpoint.host.trim();
+        if host.is_empty() || host.contains(char::is_whitespace) || endpoint.port == 0 {
+            return Err(everyday_core::Error::Invalid(format!(
+                "the {what} server needs a host name and a port"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Connect to the account's outgoing server and sign in, sending nothing:
+/// `Ok` or the server's own words. A send that keeps failing names why only
+/// after it has been tried; this asks now.
+///
+/// A write, not a read, though it changes no record a person sees: it signs
+/// in to somebody's mail server with their credential on demand, and for an
+/// OAuth account resolving that credential can rotate and store a refresh
+/// token.
+async fn check_sending(svc: Arc<Service>, _ctx: Ctx, args: AccountRef) -> CommandResult<()> {
+    let vault = svc.require()?;
+    let account = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.account(args.id)?)
+    })
+    .await?;
+    let sender = crate::mailsync::sender::LazySmtpSender::new(account, svc.clone(), vault);
+    sender.check().await.map_err(|e| CommandError::new(codes::INVALID, e.to_string()))
 }
 
 /// Refuse an assistant acknowledgement this save gives that does not name
@@ -419,6 +488,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         name: "account_presets", scope: Accounts, effect: Read,
         args: Nothing, returns: "MailProviderInfo[]", signature: &[],
         run: account_presets,
+    },
+    command! {
+        name: "check_sending", scope: Accounts, effect: Write,
+        args: AccountRef, returns: "void",
+        signature: &[("id", "AccountId", true)],
+        run: check_sending,
     },
     command! {
         name: "save_account_password", scope: Accounts, effect: Write,

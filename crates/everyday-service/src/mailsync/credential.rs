@@ -253,9 +253,8 @@ fn persist_rotated_refresh_token(
     vault.save_account_secret(account_id, &secret)
 }
 
-/// The account as the vault holds it *now*, rather than the copy a caller
-/// loaded some time ago -- what every `mark_*` below writes its one change
-/// onto.
+/// Write one status change onto the account as the vault holds it *now*,
+/// under [`Vault::with_account`]'s one write guard.
 ///
 /// # Why not the copy the caller already has
 ///
@@ -266,59 +265,56 @@ fn persist_rotated_refresh_token(
 /// task start: a display name, a mail-AI switch, a sync interval changed in
 /// Settings while the task ran was overwritten on the very next pass, with
 /// nothing to say it had happened. Re-reading by id first means the only
-/// fields these functions ever write are the ones they own.
+/// fields these functions ever write are the ones they own; doing the read
+/// and the write under one guard means a save landing between the two (new
+/// server settings, say) is not written back over either.
 ///
-/// Falls back to the caller's copy if the read fails, which is the old
-/// behaviour, and no worse than it: the status write is best-effort
-/// already, and losing it to a read error would be a status that never
-/// moves at all. The one failure that does *not* fall back is the account
-/// being gone: `None` then, and no write, since saving the stale copy would
-/// bring back an account somebody deleted while its task was mid-pass.
-fn current(vault: &Vault, account: &Account) -> Option<Account> {
-    match vault.account(account.id) {
-        Ok(fresh) => Some(fresh),
-        Err(everyday_core::Error::NotFound { .. }) => None,
-        Err(_) => Some(account.clone()),
-    }
+/// An account gone -- deleted while its task was mid-pass -- is left gone.
+/// The write is best-effort, like every status write here.
+fn update_status(vault: &Vault, account: &Account, f: impl FnOnce(&mut Account) -> bool) {
+    let _ = vault.with_account(account.id, f);
 }
 
 /// Move `account` to [`AccountStatus::NeedsSignIn`] with `reason`, if it is
 /// not there already with the same words -- an idempotent write, since this
 /// is called from a loop that may see the same failure more than once before
 /// something stops asking. Only the status and `updated_at` are written; see
-/// [`current`] for why every other field is the vault's, not `account`'s.
+/// [`update_status`] for why every other field is the vault's, not `account`'s.
 pub fn mark_needs_sign_in(vault: &Vault, account: &Account, reason: &str, now: Timestamp) {
-    let Some(mut account) = current(vault, account) else { return };
-    if matches!(&account.status, AccountStatus::NeedsSignIn { reason: r } if r == reason) {
-        return;
-    }
-    account.status = AccountStatus::NeedsSignIn { reason: reason.to_string() };
-    account.updated_at = now;
-    let _ = vault.save_account(&account);
+    update_status(vault, account, |account| {
+        if matches!(&account.status, AccountStatus::NeedsSignIn { reason: r } if r == reason) {
+            return false;
+        }
+        account.status = AccountStatus::NeedsSignIn { reason: reason.to_string() };
+        account.updated_at = now;
+        true
+    });
 }
 
 /// Move `account` to [`AccountStatus::Error`] with `message` -- a server
 /// that refused or could not be reached for a reason signing in again will
 /// not fix. Named after the calendar's own rule: "a feed that is down is a
-/// state, not a dialog." Writes only the status, on [`current`]'s terms.
+/// state, not a dialog." Writes only the status, on [`update_status`]'s terms.
 pub fn mark_error(vault: &Vault, account: &Account, message: &str, now: Timestamp) {
-    let Some(mut account) = current(vault, account) else { return };
-    if matches!(&account.status, AccountStatus::Error { message: m } if m == message) {
-        return;
-    }
-    account.status = AccountStatus::Error { message: message.to_string() };
-    account.updated_at = now;
-    let _ = vault.save_account(&account);
+    update_status(vault, account, |account| {
+        if matches!(&account.status, AccountStatus::Error { message: m } if m == message) {
+            return false;
+        }
+        account.status = AccountStatus::Error { message: message.to_string() };
+        account.updated_at = now;
+        true
+    });
 }
 
 /// Move `account` back to [`AccountStatus::Ok`] and stamp `last_synced_at`
-/// -- those two and `updated_at`, onto the account as [`current`] reads it.
+/// -- those two and `updated_at`, onto the account as [`update_status`] reads it.
 pub fn mark_ok(vault: &Vault, account: &Account, now: Timestamp) {
-    let Some(mut account) = current(vault, account) else { return };
-    account.status = AccountStatus::Ok;
-    account.last_synced_at = Some(now);
-    account.updated_at = now;
-    let _ = vault.save_account(&account);
+    update_status(vault, account, |account| {
+        account.status = AccountStatus::Ok;
+        account.last_synced_at = Some(now);
+        account.updated_at = now;
+        true
+    });
 }
 
 #[cfg(test)]

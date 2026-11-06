@@ -112,15 +112,25 @@
 
   /** The "All accounts" section's rows, in `unifiedMailboxes`'s own order,
    *  each with the icon its per-account counterpart draws. */
-  const unifiedRows = $derived(
-    mail.unifiedMailboxes.map((box): Row => ({
+  const unifiedRows = $derived.by(() => {
+    const rows = mail.unifiedMailboxes.map((box): Row => ({
       ...rowFor(
         box,
         box.id === unifiedMailboxId('snoozed') ? 'clock' : (ROLE_ICON[box.role] ?? 'inbox'),
       ),
       unified: true,
-    })),
-  )
+    }))
+    // Right after Drafts, and only while something is stuck: mail the server
+    // would not take is the one thing here that needs doing something about.
+    if (mail.outbox.length > 0) {
+      const at = rows.findIndex((r) => r.role === 'drafts')
+      rows.splice(at < 0 ? rows.length : at + 1, 0, {
+        ...outboxRow(null, mail.outbox.length),
+        unified: true,
+      })
+    }
+    return rows
+  })
 
   /** One account's rows: the eight fixed ones (skipping any role the
    *  provider does not send), then Scheduled if it has one, then its
@@ -135,6 +145,8 @@
       // Right after Drafts, and only once there is at least one -- see
       // `mail.scheduled`.
       if (role === 'drafts') {
+        const stuck = mail.outbox.filter((i) => i.draft.accountId === accountId).length
+        if (stuck > 0) fixed.push(outboxRow(accountId, stuck))
         const count = scheduledCountFor(accountId)
         if (count > 0) fixed.push(scheduledRow(accountId, count))
       }
@@ -176,9 +188,22 @@
       label: 'Scheduled',
       icon: 'clock',
       onclick: () => mail.selectScheduled(accountId),
-      sel: mail.viewingScheduledFor === accountId,
+      sel: mail.sendsView?.list === 'scheduled' && mail.sendsView.account === accountId,
       count,
       accountId,
+    }
+  }
+
+  /** One account's Outbox, or every account's (`accountId` null). */
+  function outboxRow(accountId: AccountId | null, count: number): Row {
+    return {
+      id: `outbox:${accountId ?? 'all'}`,
+      label: 'Outbox',
+      icon: 'upload',
+      onclick: () => mail.selectOutbox(accountId),
+      sel: mail.sendsView?.list === 'outbox' && mail.sendsView.account === accountId,
+      count,
+      accountId: accountId ?? '',
     }
   }
 
@@ -190,7 +215,7 @@
       onclick: () => void mail.selectMailbox(box.id),
       // Never shown selected at the same time as the Scheduled row: exactly
       // one of the two is ever the list column's content.
-      sel: mail.viewingScheduledFor === null && mail.selectedMailbox === box.id,
+      sel: mail.sendsView === null && mail.selectedMailbox === box.id,
       count: mail.unreadCounts.get(box.id) ?? 0,
       pseudo,
       role: box.role,
@@ -247,6 +272,9 @@
     const box = row.box
     // Every account at once: nothing here is about one of them, and `in:`
     // names one account's folder, not a role across all of them.
+    if (row.unified && !box) {
+      return tidyMenu([{ label: 'Open', icon: 'inbox', disabled: row.sel, run: row.onclick }])
+    }
     if (row.unified && box) {
       return tidyMenu([
         { label: 'Open', icon: 'inbox', disabled: row.sel, run: row.onclick },
@@ -312,7 +340,7 @@
    * what this does is visible and can be edited rather than being a mode.
    */
   async function searchIn(box: Mailbox) {
-    if (mail.selectedMailbox !== box.id || mail.viewingScheduledFor !== null) {
+    if (mail.selectedMailbox !== box.id || mail.sendsView !== null) {
       await mail.selectMailbox(box.id)
     }
     // The name the server knows it by, which is what `in:` matches -- not
@@ -356,8 +384,7 @@
   /** The account whose folder is open in the list -- always shown unfolded,
    *  so the selected row is never one hidden inside a closed account. */
   const selectedAccount = $derived(
-    mail.mailboxes.find((m) => m.id === mail.selectedMailbox)?.accountId ??
-      mail.viewingScheduledFor,
+    mail.mailboxes.find((m) => m.id === mail.selectedMailbox)?.accountId ?? mail.sendsView?.account,
   )
 
   function accountOpen(id: AccountId): boolean {

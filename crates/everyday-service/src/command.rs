@@ -649,6 +649,9 @@ mod tests {
             "start_bank_link",
             "check_bank_link",
             "cancel_bank_link",
+            // Signs in to an account's outgoing server and sends nothing. A
+            // write for its reach, not for a record anybody draws.
+            "check_sending",
             // Defers the moment the key is dropped. Changes nothing anybody
             // draws.
             "touch",

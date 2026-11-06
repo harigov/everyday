@@ -72,6 +72,7 @@ use everyday_mail::outbox::{
 use everyday_mail::session::{MailError, MailSession};
 
 use crate::error::{CommandError, CommandResult, codes};
+use crate::events::Notification;
 use crate::service::{Service, blocking};
 
 /// How many due ops one [`drain_outbox`] call fetches and runs. Bounded so
@@ -169,12 +170,16 @@ where
                 run.push(next);
             }
         }
-        report.attempted += run.len() as u32;
-
-        for op in &mut run {
-            op.transition_to(OpState::InFlight)?;
+        // Taken as stored, not as read above: a send stopped, undone or
+        // discarded since then stays stopped -- see `Vault::claim_ops`.
+        let run = {
+            let vault = vault.clone();
+            blocking(move || Ok(vault.claim_ops(&run)?)).await?
+        };
+        if run.is_empty() {
+            continue;
         }
-        persist_ops(&vault, &run).await?;
+        report.attempted += run.len() as u32;
 
         let mut ctx = ExecContext { session, sender, lookups: &lookups };
         let outcomes = if run.len() == 1 {
@@ -343,6 +348,7 @@ async fn settle(
             if !std::mem::replace(signed_out, true) {
                 mark_account_needs_sign_in(svc, vault, account, &reason).await;
             }
+            note_send_retry(svc, vault, op).await;
             report.retried += 1;
         }
         Err(err) if is_retryable(&err) => {
@@ -354,6 +360,7 @@ async fn settle(
             op.not_before = svc.now() + backoff;
             op.transition_to(OpState::Pending)?;
             persist_op(vault, op).await?;
+            note_send_retry(svc, vault, op).await;
             report.retried += 1;
         }
         Err(err) => {
@@ -478,8 +485,10 @@ async fn reconcile_stranded_drafts(
         };
         let outcome = match op.state {
             OpState::Done => mark_draft_sent(svc, vault, draft.id).await,
-            OpState::Cancelled | OpState::Failed { permanent: true, .. } => {
-                revert_queued_send(svc, vault, draft.id, op_id).await
+            OpState::Cancelled => revert_queued_send(svc, vault, draft.id, op_id, None).await,
+            OpState::Failed { permanent: true, .. } => {
+                let error = op.last_error.clone().or_else(|| Some("it failed".into()));
+                revert_queued_send(svc, vault, draft.id, op_id, error).await
             }
             // `Pending` and `InFlight` -- genuinely still on its way, the
             // latter already handled by the `InFlight` sweep above this
@@ -548,18 +557,6 @@ async fn already_sent<S: MailSession>(
 }
 
 /// [`persist_op`] for a run of ops, in one trip to the blocking pool.
-async fn persist_ops(vault: &Arc<everyday_core::Vault>, ops: &[Op]) -> CommandResult<()> {
-    let vault = vault.clone();
-    let ops = ops.to_vec();
-    blocking(move || {
-        for op in &ops {
-            vault.update_op(op)?;
-        }
-        Ok(())
-    })
-    .await
-}
-
 async fn persist_op(vault: &Arc<everyday_core::Vault>, op: &Op) -> CommandResult<()> {
     let vault = vault.clone();
     let op = op.clone();
@@ -719,7 +716,7 @@ async fn on_permanent_failure(
             .await
         }
         OpTarget::Draft(id) if matches!(op.kind, OpKind::Send) => {
-            revert_queued_send(svc, vault, id, op.id).await
+            revert_queued_send(svc, vault, id, op.id, op.last_error.clone()).await
         }
         // `AppendDraft`, and a `Message`-targeted op -- nothing in phase 3's
         // command surface enqueues the latter; see the module docs on
@@ -755,12 +752,17 @@ async fn revert_queued_send(
     vault: &Arc<everyday_core::Vault>,
     id: DraftId,
     op_id: OpId,
+    error: Option<String>,
 ) -> CommandResult<()> {
     let vault_for_draft = vault.clone();
-    let thread = blocking(move || {
+    let send_error = error.clone();
+    let (reverted, thread) = blocking(move || {
+        let mut reverted = false;
         let draft = match vault_for_draft.with_draft(id, |d| {
             if matches!(d.state, DraftState::Queued { op: queued } if queued == op_id) {
                 d.state = DraftState::Editing;
+                d.send_error = send_error;
+                reverted = true;
                 true
             } else {
                 false
@@ -773,10 +775,11 @@ async fn revert_queued_send(
                     draft = %id,
                     "a permanently failed send's own draft is already gone; nothing to revert"
                 );
-                return Ok(None);
+                return Ok((None, None));
             }
             Err(e) => return Err(e.into()),
         };
+        let reverted = reverted.then(|| draft.subject.clone());
         // `in_reply_to` alone does not mean this draft answered an
         // invitation -- it is set on every ordinary reply too, since that
         // is also the field the thread view uses to find a message's
@@ -789,14 +792,27 @@ async fn revert_queued_send(
         // thread that later bounces permanently un-answers the invitation
         // locally, even though the organiser already has -- and keeps -- a
         // real acceptance sent days earlier.
-        let Some(parent) = draft.in_reply_to else { return Ok(None) };
+        let Some(parent) = draft.in_reply_to else { return Ok((reverted, None)) };
         if draft.calendar_part.is_none() {
-            return Ok(None);
+            return Ok((reverted, None));
         }
         vault_for_draft.revert_invite_response(parent)?;
-        Ok(vault_for_draft.mail_message(parent).ok().map(|m| m.thread_id))
+        Ok((reverted, vault_for_draft.mail_message(parent).ok().map(|m| m.thread_id)))
     })
     .await?;
+
+    // A send that failed used to look like nothing more than the draft coming
+    // back: the reason was only ever on the op. The draft keeps it now, for
+    // the compose window, and this says so wherever the person is.
+    if let (Some(subject), Some(error)) = (reverted, error) {
+        tracing::warn!(op = %op_id, draft = %id, error = %error, "a send failed for good");
+        svc.events().notify(
+            Notification::warning(format!("Not sent: {}", subject_or_none(&subject)))
+                .body(format!("{error}. It is back in Drafts."))
+                .for_user()
+                .key(format!("mail-send:{id}")),
+        );
+    }
 
     // Best-effort: a client that never learns the RSVP was reverted still
     // has the truthful `Invite::my_response` the moment it next reads the
@@ -813,6 +829,60 @@ async fn revert_queued_send(
         });
     }
     Ok(())
+}
+
+/// After this many failed attempts at a `Send` still being retried, the
+/// person is told: about ten minutes in, past a dropped connection or a
+/// server briefly refusing, and long before the hourly retries go on for
+/// days.
+const SEND_RETRIES_BEFORE_TELLING: u32 = 4;
+
+fn subject_or_none(subject: &str) -> &str {
+    let subject = subject.trim();
+    if subject.is_empty() { "(no subject)" } else { subject }
+}
+
+/// A `Send` that failed and will be tried again: its draft says why (it is
+/// still queued, so nothing else on screen would), and after
+/// [`SEND_RETRIES_BEFORE_TELLING`] attempts a notification does too.
+/// Best-effort, like every follow-up write here.
+async fn note_send_retry(svc: &Arc<Service>, vault: &Arc<everyday_core::Vault>, op: &Op) {
+    let (OpKind::Send, OpTarget::Draft(id)) = (&op.kind, op.target) else { return };
+    let Some(error) = op.last_error.clone() else { return };
+    let vault = vault.clone();
+    let noted = error.clone();
+    let written = blocking(move || {
+        let mut first = false;
+        let draft = vault.with_draft(id, |d| {
+            if d.send_error.as_deref() == Some(noted.as_str()) {
+                return false;
+            }
+            first = d.send_error.is_none();
+            d.send_error = Some(noted);
+            true
+        })?;
+        Ok((draft, first))
+    })
+    .await;
+    let (draft, first) = match written {
+        Ok(draft) => draft,
+        Err(e) => {
+            tracing::warn!(error = %e, draft = %id, "could not note why a send is being retried");
+            return;
+        }
+    };
+    tracing::warn!(op = %op.id, draft = %id, attempts = op.attempts, error = %error, "a send failed and will be retried");
+    // Once, at the threshold -- or the first time one already past it is
+    // noted at all, as a send stuck since before drafts kept the reason is.
+    let past = op.attempts > SEND_RETRIES_BEFORE_TELLING && first;
+    if op.attempts == SEND_RETRIES_BEFORE_TELLING || past {
+        svc.events().notify(
+            Notification::warning(format!("Not sent yet: {}", subject_or_none(&draft.subject)))
+                .body(format!("{error}. It will be tried again."))
+                .for_user()
+                .key(format!("mail-send:{id}")),
+        );
+    }
 }
 
 /// Mark draft `id` [`everyday_core::mail::DraftState::Sent`] and teach the
@@ -832,6 +902,7 @@ async fn mark_draft_sent(
         // `recover_inflight_ops`, a crash-recovered one) must not lose to.
         Ok(vault_for_draft.with_draft(id, |draft| {
             draft.state = DraftState::Sent;
+            draft.send_error = None;
             true
         })?)
     })
@@ -1109,6 +1180,20 @@ impl Lookups for VaultLookups {
             .and_then(|v| v.account(self.account).ok())
             .map(|a| a.address.rsplit('@').next().unwrap_or("localhost").to_string())
             .unwrap_or_else(|| "localhost".to_string())
+    }
+
+    fn sender_name(&self, address: &str) -> Option<String> {
+        let account = self.svc.get()?.account(self.account).ok()?;
+        let name = account
+            .identities
+            .iter()
+            .find(|i| i.address.eq_ignore_ascii_case(address))
+            .map(|i| i.name.clone())
+            .or_else(|| {
+                account.address.eq_ignore_ascii_case(address).then(|| account.display_name.clone())
+            })?;
+        let name = name.trim();
+        (!name.is_empty() && !name.eq_ignore_ascii_case(address)).then(|| name.to_string())
     }
 
     fn remote_image_url(

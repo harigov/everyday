@@ -51,6 +51,7 @@ import type {
   ThreadFilter,
   ThreadId,
   ThreadPage,
+  OutboxItem,
   ScheduledSend,
 } from './types'
 import { VaultError } from './types'
@@ -1382,6 +1383,17 @@ export function mockScheduledSends(account?: AccountId | null): ScheduledSend[] 
   return out.sort((a, b) => a.sendAt.localeCompare(b.sendAt))
 }
 
+/** `outbox` -- the mock never retries a send, so its Outbox is what a server
+ *  refused (`mockSendDraft`'s `refused.example`), newest first. */
+export function mockOutbox(account?: AccountId | null): OutboxItem[] {
+  return drafts
+    .filter(
+      (d) => d.state.type === 'editing' && d.sendError && (!account || d.accountId === account),
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .map((draft) => ({ draft, attempts: 0 }))
+}
+
 export function mockRecategorizeMail(account?: AccountId | null): { changed: number } {
   let changed = 0
   for (const t of seed.threads) {
@@ -1649,15 +1661,50 @@ export function mockSendDraft(id: DraftId, delaySeconds: number, sendAt?: string
   if (!d) throw new VaultError('notFound', 'no such draft')
   const op = nextId('op')
   d.state = { type: 'queued', op }
+  d.sendError = null
   const at = sendAt ?? new Date(Date.now() + delaySeconds * 1000).toISOString()
   const timer = setTimeout(() => {
     sendTimers.delete(id)
     if (d.state.type !== 'queued') return
+    // A recipient at `refused.example` stands in for a server saying no: the
+    // draft comes back, saying why, as the outbox's permanent failure does.
+    const refused = [...d.to, ...d.cc, ...d.bcc].find((a) => a.email.endsWith('@refused.example'))
+    if (refused) {
+      d.state = { type: 'editing' }
+      d.sendError = `550 5.1.1 <${refused.email}>: Recipient address rejected: User unknown`
+      mockRaiseChange({ kind: 'draft', op: 'updated', id: d.id, origin: 'mock-outbox' })
+      return
+    }
     d.state = { type: 'sent' }
+    d.sendError = null
     mockDeliverSent(d)
   }, delaySeconds * 1000)
   sendTimers.set(id, { timer, at, scheduled: delaySeconds > UNDO_WINDOW_MAX_S })
   return d
+}
+
+/** `move_draft`: a new draft on `account`, with what was written; the old one
+ *  thrown away. `identity` is already one of `account`'s addresses. */
+export function mockMoveDraft(edited: Draft, account: AccountId, identity: string): Draft {
+  // Never saved yet: only what was written moves, as `Vault::move_draft` has it.
+  const old = drafts.find((x) => x.id === edited.id) ?? { ...edited }
+  if (old.state.type !== 'editing') {
+    throw new VaultError('invalid', 'a draft that is not being written cannot move')
+  }
+  const now = new Date().toISOString()
+  const moved: Draft = {
+    ...edited,
+    id: nextId('draft'),
+    accountId: account,
+    identity,
+    state: { type: 'editing' },
+    sendError: null,
+    createdAt: old.createdAt,
+    updatedAt: now,
+  }
+  old.state = { type: 'discarded' }
+  drafts.push(moved)
+  return moved
 }
 
 export function mockUndoSend(draftId: DraftId): Draft {

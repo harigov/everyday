@@ -42,6 +42,7 @@ import type {
   ThreadPage,
   ImproveMode,
   ReplySuggestions,
+  OutboxItem,
   ScheduledSend,
   WrittenText,
 } from './types'
@@ -180,6 +181,10 @@ export const restoreDraft = (id: DraftId): Promise<void> => api.restoreDraft(id)
  *  go from the server. */
 export const editThreadDraft = (copies: MailMessageId[]): Promise<Draft> =>
   api.editThreadDraft(copies)
+/** The draft, as written so far, to go from another account as `identity`:
+ *  answers with the new draft there; the old one is thrown away. */
+export const moveDraft = (draft: Draft, account: AccountId, identity: string): Promise<Draft> =>
+  api.moveDraft(draft, account, identity)
 /** A draft deleted from its thread: the draft (as Discard does) and every
  *  copy of it on the server. Copies alone removes old autosaves only. */
 export const deleteThreadDraft = (draft: DraftId | null, copies: MailMessageId[]): Promise<void> =>
@@ -196,6 +201,9 @@ export const sendDraft = (
 ): Promise<Draft> => api.sendDraft(id, delaySeconds, sendAt)
 /** Only valid inside the undo window `sendDraft` opened. */
 export const undoSend = (draftId: DraftId): Promise<Draft> => api.undoSend(draftId)
+/** A send that failed and is waiting to be tried again, stopped and back to
+ *  being written. Undo is refused once a send has been tried. */
+export const stopSend = (draftId: DraftId): Promise<Draft> => api.stopSend(draftId)
 export const listDrafts = (account: AccountId): Promise<Draft[]> => api.drafts(account)
 
 // ── Sync ─────────────────────────────────────────────────────────────
@@ -282,6 +290,11 @@ export const setThreadPriority = (threads: ThreadId[], priority: boolean): Promi
  *  every account's when `account` is omitted. */
 export const scheduledSends = (account?: AccountId | null): Promise<ScheduledSend[]> =>
   callCommand<ScheduledSend[]>('scheduled_sends', { account: account ?? null })
+
+/** The Outbox: every message asked to be sent that the server would not
+ *  take -- failing and being retried, or failed for good -- newest first. */
+export const outbox = (account?: AccountId | null): Promise<OutboxItem[]> =>
+  callCommand<OutboxItem[]>('outbox', { account: account ?? null })
 
 /** Up to three replies to the thread's newest message, in the person's
  *  own voice; empty when the thread does not want one. */

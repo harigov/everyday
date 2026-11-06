@@ -52,6 +52,7 @@
   import MailCompose from './MailCompose.svelte'
   import MailLabelPicker from './MailLabelPicker.svelte'
   import MailScheduled from './MailScheduled.svelte'
+  import MailOutbox from './MailOutbox.svelte'
   import MailSnoozePicker from './MailSnoozePicker.svelte'
   import MailThread from './MailThread.svelte'
   import MailThreadDrafts from './MailThreadDrafts.svelte'
@@ -74,8 +75,12 @@
   const unifiedView = $derived(isUnifiedMailbox(mail.mailbox))
 
   const heading = $derived(
-    mail.viewingScheduledFor
-      ? 'Scheduled'
+    mail.sendsView
+      ? mail.sendsView.list === 'scheduled'
+        ? 'Scheduled'
+        : mail.sendsView.account === null
+          ? 'Outbox, all accounts'
+          : 'Outbox'
       : mail.mailbox
         ? unifiedView && mail.mailbox.id !== unifiedMailboxId('inbox')
           ? // "All inboxes" already says it; "Sent" alone would read as one
@@ -95,11 +100,16 @@
    *  the same count the sidebar row shows -- nothing until that has loaded,
    *  rather than a "0 unread" that is not yet true. */
   const unreadLine = $derived.by(() => {
-    if (mail.viewingScheduledFor) {
-      const waiting = mail.scheduled.filter(
-        (s) => s.draft.accountId === mail.viewingScheduledFor,
-      ).length
+    const sends = mail.sendsView
+    if (sends?.list === 'scheduled') {
+      const waiting = mail.scheduled.filter((s) => s.draft.accountId === sends.account).length
       return waiting > 0 ? `${waiting.toLocaleString()} waiting to send` : ''
+    }
+    if (sends?.list === 'outbox') {
+      const stuck = mail.outbox.filter(
+        (i) => sends.account === null || i.draft.accountId === sends.account,
+      ).length
+      return stuck > 0 ? `${stuck.toLocaleString()} not sent` : ''
     }
     const box = mail.mailbox
     const unread = box ? mail.unreadCounts.get(box.id) : undefined
@@ -148,7 +158,11 @@
    * and is checked first: `selectedMailbox` stays set underneath it.
    */
   const scopeAccount = $derived<AccountId | null>(
-    mail.viewingScheduledFor ?? (mail.mailbox && !unifiedView ? mail.mailbox.accountId : null),
+    mail.sendsView
+      ? mail.sendsView.account
+      : mail.mailbox && !unifiedView
+        ? mail.mailbox.accountId
+        : null,
   )
   const syncScope = $derived<AccountId[]>(
     scopeAccount ? [scopeAccount] : mailAccounts.map((a) => a.id),
@@ -427,7 +441,7 @@
   /** Scrolls an inline reply into view the moment it mounts -- it draws
    *  itself right after the thread's own messages, which may already be
    *  scrolled well past the fold by the time a reply opens under them.
-   *  Paired with `{#key mail.composing.id}` in the template, so opening a
+   *  Paired with `{#key mail.composeKey}` in the template, so opening a
    *  *second* reply into the same thread (send, then reply again) remounts
    *  the element and this runs again, rather than firing only once per
    *  thread. */
@@ -486,8 +500,10 @@
     </button>
   </div>
 
-  {#if mail.viewingScheduledFor}
-    <MailScheduled accountId={mail.viewingScheduledFor} />
+  {#if mail.sendsView?.list === 'scheduled' && mail.sendsView.account}
+    <MailScheduled accountId={mail.sendsView.account} />
+  {:else if mail.sendsView?.list === 'outbox'}
+    <MailOutbox accountId={mail.sendsView.account} />
   {:else}
     {#if showTabs && !mail.searchQuery.trim()}
       <!-- The shared filter bar (app.css's "Filter bars"), as Todo's and the
@@ -701,7 +717,7 @@
          than in a dialog over everything: the list stays in reach beside
          it. Keyed, so a second draft opened over the first is a fresh sheet
          rather than the first one's working copy under another name. -->
-    {#key mail.composing.id}
+    {#key mail.composeKey}
       <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
     {/key}
   {:else if mail.checked.size > 0}
@@ -939,7 +955,7 @@
         <MailThreadDrafts drafts={draftCards} />
       {/if}
       {#if mail.composing && mail.composeInline}
-        {#key mail.composing.id}
+        {#key mail.composeKey}
           <div class="inline-reply" use:scrollIntoViewOnMount>
             <MailCompose
               draft={mail.composing}
@@ -951,11 +967,13 @@
       {/if}
     </div>
   {:else}
-    <EmptyState lead={mail.viewingScheduledFor ? 'Nothing open' : 'Select a thread'}>
+    <EmptyState lead={mail.sendsView ? 'Nothing open' : 'Select a thread'}>
       {#snippet note()}
-        {mail.viewingScheduledFor
+        {mail.sendsView?.list === 'scheduled'
           ? 'Edit, reschedule, send now or cancel a message from the list.'
-          : 'j and k move, Enter opens.'}
+          : mail.sendsView?.list === 'outbox'
+            ? 'Edit, send again or discard a message from the list.'
+            : 'j and k move, Enter opens.'}
       {/snippet}
     </EmptyState>
   {/if}

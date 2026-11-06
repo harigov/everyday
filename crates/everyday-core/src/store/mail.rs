@@ -47,8 +47,8 @@
 use crate::error::Result;
 use crate::id::{AccountId, BlobId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
 use crate::mail::{
-    Body, Category, CategoryRules, CategorySource, ContactBook, Draft, Invite, MailSorting,
-    MailWriting, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
+    Body, Category, CategoryRules, CategorySource, ContactBook, Draft, DraftState, Invite,
+    MailSorting, MailWriting, Mailbox, Message, MessageFlags, Op, RemoteImageSettings, Thread,
 };
 use crate::packstore::PackRef;
 use jiff::Timestamp;
@@ -341,6 +341,21 @@ pub trait MailStore: Send + Sync {
     /// [`crate::library::ItemStatus`] in Rust rather than in a second query
     /// shape.
     fn list_drafts(&self, account: AccountId) -> Result<Vec<Draft>>;
+
+    /// `account`'s drafts still being written or queued to send, most recently
+    /// touched first -- every draft but the sent and discarded ones, which
+    /// pile up (one per message ever sent) and which the Outbox and a
+    /// thread's moved replies never need decrypting. A backend with a state
+    /// column filters there; this default filters [`list_drafts`].
+    ///
+    /// [`list_drafts`]: MailStore::list_drafts
+    fn list_open_drafts(&self, account: AccountId) -> Result<Vec<Draft>> {
+        Ok(self
+            .list_drafts(account)?
+            .into_iter()
+            .filter(|d| matches!(d.state, DraftState::Editing | DraftState::Queued { .. }))
+            .collect())
+    }
 
     fn delete_draft(&self, id: DraftId) -> Result<()>;
 

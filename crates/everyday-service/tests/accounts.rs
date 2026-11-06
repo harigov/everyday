@@ -169,3 +169,69 @@ async fn deleting_an_account_deletes_its_local_pack_files() {
         "the account's pack file must be gone after delete_account, not only its vault rows"
     );
 }
+
+#[tokio::test]
+async fn changing_the_servers_restarts_the_task_clears_the_error_and_retries_sends_now() {
+    use everyday_core::account::{AccountStatus, Endpoint, EndpointSecurity};
+    use everyday_core::mail::{Draft, Op, OpKind, OpState, OpTarget, Origin};
+
+    let (svc, _dir) = service();
+    let mut account = account(true);
+    account.imap = Endpoint::tls("imap.example.com", 993);
+    account.smtp = Endpoint::tls("smtp.wrong.example", 465);
+    let id = account.id;
+    call(&svc, "save_account", json!({ "account": account.clone() })).await;
+
+    // Refused with the old settings: the account says so, and a send waits.
+    let vault = svc.get().unwrap();
+    let mut stored = vault.account(id).unwrap();
+    stored.status = AccountStatus::Error { message: "connection timed out".into() };
+    vault.save_account(&stored).unwrap();
+    let draft = Draft::new(id, "me@example.com", Origin::Person);
+    vault.save_draft_and_append(&draft, false, Origin::Person).unwrap();
+    let later = jiff::Timestamp::now() + jiff::SignedDuration::from_hours(1);
+    let mut op =
+        Op::new(id, OpKind::Send, OpTarget::Draft(draft.id), Origin::Person).not_before(later);
+    op.attempts = 7;
+    vault.enqueue_op(&op).unwrap();
+
+    // A blank host or a space in one is refused, a pasted space around one is not.
+    let mut edited = serde_json::to_value(&stored).unwrap();
+    edited["smtp"] = json!({ "host": "smtp server", "port": 587, "security": "startTls" });
+    let refused = svc.call(Ctx::local(), "save_account", json!({ "account": edited })).await;
+    assert!(refused.unwrap_err().message.contains("outgoing server"));
+
+    let mut edited = serde_json::to_value(&stored).unwrap();
+    edited["smtp"] = json!({ "host": " smtp.gmail.com ", "port": 587, "security": "startTls" });
+    call(&svc, "save_account", json!({ "account": edited })).await;
+
+    let saved = vault.account(id).unwrap();
+    assert_eq!(
+        saved.smtp,
+        Endpoint { host: "smtp.gmail.com".into(), port: 587, security: EndpointSecurity::StartTls }
+    );
+    // Cleared by the save; the restarted task (no password here) then says
+    // what it finds now, never the old refusal.
+    assert!(
+        !matches!(&saved.status, AccountStatus::Error { message } if message == "connection timed out"),
+        "{:?}",
+        saved.status
+    );
+    let op = vault.op(op.id).unwrap();
+    assert_eq!(op.state, OpState::Pending);
+    assert!(op.not_before <= jiff::Timestamp::now(), "due again now, not in an hour");
+    assert!(svc.supervisor().state(&task_key(id)).is_some());
+
+    // Saving something else leaves a status alone. Mail off first, so no
+    // task is there writing statuses of its own.
+    let mut off = vault.account(id).unwrap();
+    off.services.mail = false;
+    call(&svc, "save_account", json!({ "account": off })).await;
+    let mut stored = vault.account(id).unwrap();
+    stored.status = AccountStatus::Error { message: "still down".into() };
+    vault.save_account(&stored).unwrap();
+    let mut renamed = stored.clone();
+    renamed.display_name = "Work".into();
+    call(&svc, "save_account", json!({ "account": renamed })).await;
+    assert!(matches!(vault.account(id).unwrap().status, AccountStatus::Error { .. }));
+}
