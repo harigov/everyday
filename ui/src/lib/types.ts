@@ -55,6 +55,11 @@ export type TemplateId = string
 export type ChatLinkId = string
 export type NewsSourceId = string
 export type StoryId = string
+export type BankLinkId = string
+export type BankAccountId = string
+export type TxnId = string
+export type MoneyCategoryId = string
+export type MoneyRuleId = string
 
 /** A ProseMirror document. Opaque to everything but the editor. */
 export type RichDoc = { type: 'doc'; content?: unknown[] }
@@ -1022,6 +1027,12 @@ export interface Capabilities {
    * the Feed app. Newsletters are offered only when `mail` is true as well.
    */
   news?: boolean
+  /**
+   * Backend implements `money::MoneyStore`, so linked banks, accounts kept
+   * by hand, their transactions, categories and budgets have somewhere to
+   * live. False hides the Money app.
+   */
+  money?: boolean
 }
 
 export interface VaultStatus {
@@ -3257,6 +3268,7 @@ export const ON_SCREEN_APPS = [
   'library',
   'mail',
   'feed',
+  'money',
   'assistant',
   'journal',
   'settings',
@@ -3286,6 +3298,8 @@ export const SHOWN_KINDS = [
   'draft',
   'newsSource',
   'story',
+  'bankAccount',
+  'txn',
 ] as const
 export type ShownKind = (typeof SHOWN_KINDS)[number]
 
@@ -3775,7 +3789,9 @@ export interface ProposalPolicy {
  * asked, with the text, the field and the site -- and `'click'` is a click
  * in the browser after mail was read this turn. `'routine'` is a routine
  * about to be saved with instructions naming an address nobody gave -- its
- * runs would open it unasked. See `agent::tools::mail`'s module docs in the
+ * runs would open it unasked. `'rewrite'` is a money rule, or a change to
+ * more than twenty transactions, after a stranger's words -- a transfer's
+ * memo, a mail -- were read this turn. See `agent::tools::mail`'s module docs in the
  * Rust core, `ConfirmGate` in the service, and the service's `browser`
  * module, for the whole of the reasoning behind each.
  */
@@ -3787,6 +3803,7 @@ export const CONFIRM_KINDS = [
   'type',
   'click',
   'routine',
+  'rewrite',
 ] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 
@@ -4375,4 +4392,327 @@ export interface NewsletterSender {
   name: string
   messages: number
   followed: boolean
+}
+
+// ── Money ────────────────────────────────────────────────────────────────
+//
+// `everyday_core::money`. Every amount is an integer of the currency's minor
+// unit (cents for USD, yen for JPY) -- never a float -- and a transaction's
+// sign is the budgeting one: negative is money out, positive is money in. A
+// liability account's balance is what is owed, positive. See
+// `lib/money.ts` for formatting.
+
+/** Which Plaid the keys and a link belong to. */
+export type PlaidEnvironment = 'sandbox' | 'production'
+
+/** Who a link goes through. Only Plaid, for now. */
+export type LinkProvider = {
+  type: 'plaid'
+  itemId: string
+  institutionId: string
+  environment: PlaidEnvironment
+}
+
+/** One sign-in at one bank (Plaid calls it an Item). */
+export interface BankLink {
+  id: BankLinkId
+  provider: LinkProvider
+  /** The institution's name when linked; the person's from then on. */
+  name: string
+  paused: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** A link with what the sidebar says about it. */
+export interface LinkSummary {
+  link: BankLink
+  lastOk: string | null
+  lastError: string | null
+  /** The bank wants the person to sign in again. */
+  needsLogin: boolean
+  nextAt: string | null
+  accounts: number
+}
+
+export type AccountKind = 'cash' | 'credit' | 'loan' | 'investment' | 'other'
+
+/** One account at a bank, or one kept by hand (`linkId` absent). */
+export interface BankAccount {
+  id: BankAccountId
+  linkId?: BankLinkId | null
+  providerAccountId: string
+  name: string
+  officialName: string
+  /** The last two to four digits. Never the full number. */
+  mask: string
+  kind: AccountKind
+  subtype: string
+  /** ISO 4217, upper case. */
+  currency: string
+  /** Minor units. For credit/loan, what is owed, positive. */
+  balance?: number | null
+  available?: number | null
+  limit?: number | null
+  balanceAt?: string | null
+  hidden: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type TxnOrigin = 'bank' | 'import' | 'manual'
+
+/** Who decided a transaction's category. A person's choice is final. */
+export type CategorizedBy =
+  { by: 'nobody' } | { by: 'bank' } | { by: 'rule'; ruleId: MoneyRuleId } | { by: 'person' }
+
+/** One thing that happened in an account. */
+export interface Txn {
+  id: TxnId
+  accountId: BankAccountId
+  key: string
+  providerId: string
+  /** `YYYY-MM-DD`. */
+  date: string
+  /** Minor units; negative is money out. */
+  amount: number
+  currency: string
+  /** As the bank names them. */
+  payee: string
+  /** The bank's raw line -- may be the sender's own words. */
+  description: string
+  pending: boolean
+  bankCategory: string
+  origin: TxnOrigin
+  category?: MoneyCategoryId | null
+  categorizedBy: CategorizedBy
+  /** The person's name for the payee; empty means the bank's. */
+  payeeOverride: string
+  note: string
+  /** Left out of reports and budgets. */
+  excluded: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+/** Which transactions to list; all filters ANDed. */
+export interface TxnQuery {
+  /** Empty: every account that is not hidden. */
+  accounts?: BankAccountId[]
+  /** `YYYY-MM-DD`, inclusive. */
+  from?: string | null
+  to?: string | null
+  categories?: MoneyCategoryId[]
+  /** Only uncategorised (ORed with `categories`). */
+  uncategorized?: boolean
+  text?: string
+  minAmount?: number | null
+  maxAmount?: number | null
+  /** `true` only excluded, `false` only counted, absent both. */
+  excluded?: boolean | null
+  offset?: number
+  /** 0/absent: 200; at most 1000. */
+  limit?: number
+}
+
+export interface CurrencySum {
+  currency: string
+  amount: number
+}
+
+/** One page of transactions, newest first. */
+export interface TxnPage {
+  txns: Txn[]
+  total: number
+  /** Matching transactions' sum per currency, excluded ones left out. */
+  sums: CurrencySum[]
+  nextOffset?: number | null
+}
+
+/**
+ * A person's change to many transactions. Absent leaves a field alone;
+ * `category: null` clears the category.
+ */
+export interface TxnPatch {
+  category?: MoneyCategoryId | null
+  payeeOverride?: string
+  note?: string
+  excluded?: boolean
+}
+
+/** A transaction typed into a manual account. */
+export interface NewTxn {
+  accountId: BankAccountId
+  date: string
+  amount: number
+  payee: string
+  note?: string
+  category?: MoneyCategoryId | null
+}
+
+/** One line read out of an imported file. */
+export interface ImportedTxn {
+  date: string
+  amount: number
+  payee: string
+  description: string
+  providerId: string
+}
+
+/** What an import did. Not the transfer's `ImportReport`. */
+export interface MoneyImportReport {
+  added: number
+  skipped: number
+  problems: string[]
+}
+
+export type ImportFormat = 'ofx' | 'csv'
+export type DateOrder = 'auto' | 'monthFirst' | 'dayFirst'
+
+/** Which CSV column is which, 0-based. */
+export interface CsvMapping {
+  date: number
+  amount?: number | null
+  debit?: number | null
+  credit?: number | null
+  payee: number
+  description?: number | null
+  /** The amount column counts money out as positive: turn it round. */
+  negate: boolean
+  hasHeader: boolean
+  dateOrder: DateOrder
+}
+
+/** What `preview_import` answers. */
+export interface ImportPreview {
+  format: ImportFormat
+  columns: string[]
+  rows: string[][]
+  mapping?: CsvMapping | null
+  sample: ImportedTxn[]
+  lines: number
+  currency?: string | null
+  problems: string[]
+}
+
+export type CategoryKind = 'expense' | 'income' | 'transfer'
+
+/** A spending or income category, with its monthly budget. */
+export interface MoneyCategory {
+  id: MoneyCategoryId
+  name: string
+  /** The heading it is listed under. Empty for none. */
+  group: string
+  kind: CategoryKind
+  /** Monthly budget, minor units of the main currency, positive. */
+  budget?: number | null
+  color: string
+  archived: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** "Anything from this payee is that." First match wins by order. */
+export interface MoneyRule {
+  id: MoneyRuleId
+  /** Matched case-insensitively against payee and description. */
+  text: string
+  /** Match the whole payee only. */
+  exact: boolean
+  accountId?: BankAccountId | null
+  minAmount?: number | null
+  maxAmount?: number | null
+  category?: MoneyCategoryId | null
+  /** Rename the payee. Empty leaves it. */
+  rename: string
+  exclude: boolean
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+/** What the interface may know about the Plaid keys. Never the secret. */
+export interface PlaidSetup {
+  configured: boolean
+  environment?: PlaidEnvironment | null
+  /** The client id's last four characters. */
+  clientIdHint: string
+}
+
+/** What `start_bank_link` answers: open `url` in the browser, then poll. */
+export interface LinkStart {
+  session: string
+  url: string
+}
+
+/** What `check_bank_link` answers. */
+export type LinkCheck =
+  | { state: 'waiting' }
+  | { state: 'done'; linkId: BankLinkId }
+  | { state: 'failed'; message: string }
+  | { state: 'expired' }
+
+/** What one link's sync did. Not the calendar's `SyncReport`. */
+export interface MoneySyncReport {
+  linkId: BankLinkId
+  added: number
+  updated: number
+  removed: number
+  needsLogin: boolean
+  error: string | null
+}
+
+/** One category's month. `categoryId` null is "no category". */
+export interface CategorySpend {
+  categoryId: MoneyCategoryId | null
+  /** Positive; refunds already taken off. */
+  spent: number
+  budget: number | null
+  count: number
+}
+
+/** One month in one currency. */
+export interface MonthSummary {
+  /** `YYYY-MM`. */
+  month: string
+  currency: string
+  income: number
+  spending: number
+  net: number
+  categories: CategorySpend[]
+  budgeted: number
+  uncategorized: number
+  otherCurrencies: string[]
+}
+
+export interface CashFlowMonth {
+  month: string
+  income: number
+  spending: number
+}
+
+export interface NetWorthPoint {
+  day: string
+  assets: number
+  /** Positive. */
+  liabilities: number
+}
+
+export type Cadence = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
+
+/** Something that repeats: a subscription, rent, a paycheck. */
+export interface Recurring {
+  payee: string
+  accountId: BankAccountId
+  /** The median, signed as transactions are. */
+  amount: number
+  currency: string
+  cadence: Cadence
+  count: number
+  last: string
+  next: string
+  category: MoneyCategoryId | null
 }

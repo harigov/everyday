@@ -543,6 +543,19 @@ class AppState {
   }
 
   /**
+   * Can this vault run Money?
+   *
+   * One capability, as the Feed needs. Nothing in it reads another domain:
+   * an account kept by hand and filled from a bank's file works with no
+   * Plaid keys and no account anywhere, so the app is offered on any backend
+   * that can hold the records, and linking a bank is something it offers
+   * from inside.
+   */
+  get supportsMoney(): boolean {
+    return this.status?.capabilities?.money === true
+  }
+
+  /**
    * Is this section available on the vault that is open?
    *
    * Reads `apps.ts`'s registry rather than a switch of its own: that used to

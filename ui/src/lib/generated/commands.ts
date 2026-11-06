@@ -9,6 +9,7 @@
 import type {
   Account,
   AccountId,
+  AccountKind,
   AccountView,
   AddedItem,
   AgentCallerKind,
@@ -20,6 +21,10 @@ import type {
   AttachmentPreview,
   AwaitedSignIn,
   BalanceReport,
+  BankAccount,
+  BankAccountId,
+  BankLink,
+  BankLinkId,
   BegunSignIn,
   BlockId,
   BlockKind,
@@ -29,6 +34,7 @@ import type {
   CalendarEvent,
   CalendarId,
   CalendarInfo,
+  CashFlowMonth,
   CategoryCount,
   ChatLink,
   ChatLinkId,
@@ -36,6 +42,7 @@ import type {
   Conversation,
   ConversationId,
   ConversationSummary,
+  CsvMapping,
   DeclineReason,
   Draft,
   DraftId,
@@ -56,6 +63,8 @@ import type {
   GoalId,
   GoalQuery,
   ImageResult,
+  ImportFormat,
+  ImportPreview,
   ImportProgress,
   ImportResult,
   ImportUpload,
@@ -76,6 +85,9 @@ import type {
   KindId,
   KindInfo,
   LibraryStats,
+  LinkCheck,
+  LinkStart,
+  LinkSummary,
   LogEntry,
   LogEvent,
   LogId,
@@ -104,7 +116,16 @@ import type {
   ModelSettings,
   ModelSettingsView,
   ModelSlot,
+  MoneyCategory,
+  MoneyCategoryId,
+  MoneyImportReport,
+  MoneyRule,
+  MoneyRuleId,
+  MoneySyncReport,
+  MonthSummary,
+  NetWorthPoint,
   NewSource,
+  NewTxn,
   NewsSource,
   NewsSourceId,
   NewsletterSender,
@@ -119,6 +140,8 @@ import type {
   PartInfo,
   PassReport,
   PersonDue,
+  PlaidEnvironment,
+  PlaidSetup,
   Profile,
   Project,
   ProjectId,
@@ -145,6 +168,7 @@ import type {
   RecordingId,
   RecordingQuery,
   Recurrence,
+  Recurring,
   RefreshReport,
   RemoteCalendarInfo,
   RemoteImageSettings,
@@ -198,6 +222,11 @@ import type {
   TrackerId,
   TrackerKind,
   Transcript,
+  Txn,
+  TxnId,
+  TxnPage,
+  TxnPatch,
+  TxnQuery,
   VaultStatus,
   VerificationAnswer,
   VoiceprintId,
@@ -223,6 +252,7 @@ export interface Commands {
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   activeRecording: { args: Record<string, never>; result: Recording | null }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
+  addManualTransaction: { args: { txn: NewTxn }; result: Txn }
   addNewsSource: { args: { source: NewSource }; result: NewsSource }
   addStoryToLibrary: { args: { id: StoryId }; result: ItemId }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
@@ -240,6 +270,7 @@ export interface Commands {
     result: void
   }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
+  applyMoneyRules: { args: { ruleId?: MoneyRuleId | null }; result: number }
   archive: { args: { threads: ThreadId[] }; result: Op[] }
   attachOauthSignIn: {
     args: { id: AccountId; signInId: string; clientSecret?: string; scopes?: string[] }
@@ -268,6 +299,7 @@ export interface Commands {
   }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
+  cancelBankLink: { args: { session: string }; result: void }
   cancelJob: { args: { id: JobId }; result: Job }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
   cancelSpeechModelDownload: { args: { id: string }; result: void }
@@ -275,14 +307,22 @@ export interface Commands {
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
+  checkBankLink: { args: { session: string }; result: LinkCheck }
   clearModelKey: { args: { tier: ModelSlot }; result: ModelSettingsView }
+  clearPlaidCredentials: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
   createEvent: { args: { calendarId: CalendarId; draft: EventDraft }; result: CalendarEvent | null }
+  createManualAccount: {
+    args: { name: string; kind: AccountKind; currency: string }
+    result: BankAccount
+  }
   declineProposal: { args: { id: ProposalId; reason?: DeclineReason | null }; result: Proposal }
   deleteAccount: { args: { id: AccountId }; result: void }
   deleteAllVoiceprints: { args: Record<string, never>; result: void }
+  deleteBankAccount: { args: { id: BankAccountId }; result: void }
+  deleteBankLink: { args: { id: BankLinkId; keepHistory?: boolean }; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
   deleteBlockSeries: { args: { id: BlockId; scope: SeriesScope }; result: BlockId[] }
   deleteCalendar: { args: { id: CalendarId }; result: void }
@@ -297,6 +337,8 @@ export interface Commands {
   deleteKind: { args: { id: KindId }; result: void }
   deleteLog: { args: { id: LogId }; result: void }
   deleteMemory: { args: { id: MemoryId }; result: void }
+  deleteMoneyCategory: { args: { id: MoneyCategoryId }; result: void }
+  deleteMoneyRule: { args: { id: MoneyRuleId }; result: void }
   deleteNewsSource: { args: { id: NewsSourceId }; result: void }
   deleteNote: { args: { id: NoteId }; result: void }
   deleteProject: { args: { id: ProjectId }; result: void }
@@ -309,6 +351,7 @@ export interface Commands {
   deleteSpeechModel: { args: { id: string }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
+  deleteTransactions: { args: { ids: TxnId[] }; result: void }
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
   discardRecording: { args: { id: RecordingId }; result: void }
@@ -351,6 +394,7 @@ export interface Commands {
   getStory: { args: { id: StoryId }; result: Story }
   getTask: { args: { id: TaskId }; result: Task }
   getThread: { args: { id: ThreadId }; result: ThreadDetail }
+  getTransaction: { args: { id: TxnId }; result: Txn }
   getTranscript: { args: { noteId: NoteId }; result: Transcript | null }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
   imagePreview: { args: { url: string }; result: string }
@@ -360,6 +404,15 @@ export interface Commands {
     result: CalendarInfo
   }
   importOpml: { args: { xml: string }; result: OpmlImportReport }
+  importTransactions: {
+    args: {
+      accountId: BankAccountId
+      content: string
+      format?: ImportFormat | null
+      mapping?: CsvMapping | null
+    }
+    result: MoneyImportReport
+  }
   improveWriting: {
     args: { account: AccountId; text: string; mode: ImproveMode; instruction?: string | null }
     result: WrittenText
@@ -382,6 +435,8 @@ export interface Commands {
   lintMeetingTemplate: { args: { body: string }; result: string[] }
   listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
   listAccounts: { args: Record<string, never>; result: AccountView[] }
+  listBankAccounts: { args: Record<string, never>; result: BankAccount[] }
+  listBankLinks: { args: Record<string, never>; result: LinkSummary[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
@@ -400,6 +455,8 @@ export interface Commands {
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMailboxes: { args: { account: AccountId }; result: Mailbox[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
+  listMoneyCategories: { args: Record<string, never>; result: MoneyCategory[] }
+  listMoneyRules: { args: Record<string, never>; result: MoneyRule[] }
   listNewsSources: { args: Record<string, never>; result: SourceSummary[] }
   listNotes: { args: { query?: NoteQuery }; result: NoteSummary[] }
   listParts: { args: Record<string, never>; result: PartInfo[] }
@@ -436,6 +493,7 @@ export interface Commands {
   }
   listTools: { args: Record<string, never>; result: ToolInfo[] }
   listTrackers: { args: Record<string, never>; result: Tracker[] }
+  listTransactions: { args: { query: TxnQuery }; result: TxnPage }
   listVoiceprints: { args: Record<string, never>; result: VoiceprintInfo[] }
   listWritingAssists: { args: { query?: WritingQuery }; result: WritingAssist[] }
   loadEvent: { args: { id: EventId }; result: EditableEvent }
@@ -474,6 +532,10 @@ export interface Commands {
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
   mergeTrackers: { args: { from: TrackerId; into: TrackerId }; result: number }
   modelSettings: { args: Record<string, never>; result: ModelSettingsView }
+  moneyCashFlow: { args: { end: string; months: number }; result: CashFlowMonth[] }
+  moneyMonth: { args: { month: string }; result: MonthSummary }
+  moneyNetWorth: { args: { from: string; to: string }; result: NetWorthPoint[] }
+  moneyRecurring: { args: Record<string, never>; result: Recurring[] }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
   nameSpeaker: {
     args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }
@@ -513,11 +575,16 @@ export interface Commands {
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   newsletterSenders: { args: { days?: number | null }; result: NewsletterSender[] }
   noteTags: { args: Record<string, never>; result: string[] }
+  plaidSetup: { args: Record<string, never>; result: PlaidSetup }
   pollAutoLock: { args: Record<string, never>; result: boolean }
   preparePicture: { args: { blob: string; filename?: string }; result: Attachment }
   previewAttachment: {
     args: { messageId: MailMessageId; index: number }
     result: AttachmentPreview
+  }
+  previewImport: {
+    args: { content: string; format?: ImportFormat | null; currency?: string | null }
+    result: ImportPreview
   }
   previewMeetingTemplate: { args: { body: string }; result: string }
   profile: { args: Record<string, never>; result: Profile }
@@ -588,6 +655,8 @@ export interface Commands {
   saveAccount: { args: { account: Account }; result: void }
   saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
+  saveBankAccount: { args: { account: BankAccount }; result: void }
+  saveBankLink: { args: { link: BankLink }; result: void }
   saveBlock: { args: { block: TimeBlock }; result: void }
   saveBlockSeries: {
     args: { block: TimeBlock; recurrence?: Recurrence | null }
@@ -611,9 +680,15 @@ export interface Commands {
   saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
   saveModelSettings: { args: { settings: ModelSettings }; result: ModelSettingsView }
+  saveMoneyCategory: { args: { category: MoneyCategory }; result: void }
+  saveMoneyRule: { args: { rule: MoneyRule }; result: void }
   saveNewsSource: { args: { source: NewsSource }; result: void }
   saveNote: { args: { note: Note; expect?: string | null }; result: void }
   saveNoteForce: { args: { note: Note }; result: void }
+  savePlaidCredentials: {
+    args: { clientId: string; secret: string; environment: PlaidEnvironment }
+    result: PlaidSetup
+  }
   saveProfile: { args: { profile: Profile }; result: Profile }
   saveProject: { args: { project: Project }; result: void }
   saveReading: { args: { reading: Reading }; result: void }
@@ -681,6 +756,7 @@ export interface Commands {
   }
   speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
+  startBankLink: { args: { linkId?: BankLinkId | null }; result: LinkStart }
   startChatVerification: { args: { id: ChatLinkId }; result: void }
   startExport: { args: { parts?: string[]; media?: boolean }; result: ExportHandle }
   startImport: { args: { name?: string; bytes: number }; result: ImportUpload }
@@ -696,6 +772,7 @@ export interface Commands {
   suggestReplies: { args: { id: ThreadId }; result: ReplySuggestions }
   summarizeThread: { args: { id: ThreadId }; result: ThreadSummary }
   syncAccount: { args: { id: AccountId }; result: void }
+  syncBankLinks: { args: { linkId?: BankLinkId | null }; result: MoneySyncReport[] }
   syncCalendar: { args: { id: CalendarId }; result: SyncReport }
   syncDueCalendars: { args: { force: boolean }; result: SyncReport[] }
   syncStatus: { args: Record<string, never>; result: MailSyncProgress[] }
@@ -719,6 +796,7 @@ export interface Commands {
   unsnooze: { args: { threads: ThreadId[] }; result: void }
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
   updateEvent: { args: { id: EventId; draft: EventDraft; scope?: EventScope }; result: void }
+  updateTransactions: { args: { ids: TxnId[]; patch: TxnPatch }; result: TxnId[] }
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
   weather: { args: { place?: string | null }; result: WeatherReport }
@@ -732,6 +810,7 @@ export const COMMAND_NAMES = {
   accountPresets: 'account_presets',
   activeRecording: 'active_recording',
   addItem: 'add_item',
+  addManualTransaction: 'add_manual_transaction',
   addNewsSource: 'add_news_source',
   addStoryToLibrary: 'add_story_to_library',
   agentSettings: 'agent_settings',
@@ -740,6 +819,7 @@ export const COMMAND_NAMES = {
   answerJob: 'answer_job',
   appendRecordingChunk: 'append_recording_chunk',
   applyMetadata: 'apply_metadata',
+  applyMoneyRules: 'apply_money_rules',
   archive: 'archive',
   attachOauthSignIn: 'attach_oauth_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
@@ -747,6 +827,7 @@ export const COMMAND_NAMES = {
   beginRecording: 'begin_recording',
   benchmarkSpeechModel: 'benchmark_speech_model',
   calendarProviders: 'calendar_providers',
+  cancelBankLink: 'cancel_bank_link',
   cancelJob: 'cancel_job',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
   cancelSpeechModelDownload: 'cancel_speech_model_download',
@@ -754,14 +835,19 @@ export const COMMAND_NAMES = {
   categoryCounts: 'category_counts',
   changePassword: 'change_password',
   chatLinks: 'chat_links',
+  checkBankLink: 'check_bank_link',
   clearModelKey: 'clear_model_key',
+  clearPlaidCredentials: 'clear_plaid_credentials',
   collectGarbage: 'collect_garbage',
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
   createEvent: 'create_event',
+  createManualAccount: 'create_manual_account',
   declineProposal: 'decline_proposal',
   deleteAccount: 'delete_account',
   deleteAllVoiceprints: 'delete_all_voiceprints',
+  deleteBankAccount: 'delete_bank_account',
+  deleteBankLink: 'delete_bank_link',
   deleteBlock: 'delete_block',
   deleteBlockSeries: 'delete_block_series',
   deleteCalendar: 'delete_calendar',
@@ -776,6 +862,8 @@ export const COMMAND_NAMES = {
   deleteKind: 'delete_kind',
   deleteLog: 'delete_log',
   deleteMemory: 'delete_memory',
+  deleteMoneyCategory: 'delete_money_category',
+  deleteMoneyRule: 'delete_money_rule',
   deleteNewsSource: 'delete_news_source',
   deleteNote: 'delete_note',
   deleteProject: 'delete_project',
@@ -788,6 +876,7 @@ export const COMMAND_NAMES = {
   deleteSpeechModel: 'delete_speech_model',
   deleteTask: 'delete_task',
   deleteTracker: 'delete_tracker',
+  deleteTransactions: 'delete_transactions',
   deleteVoiceprint: 'delete_voiceprint',
   discardDraft: 'discard_draft',
   discardRecording: 'discard_recording',
@@ -818,12 +907,14 @@ export const COMMAND_NAMES = {
   getStory: 'get_story',
   getTask: 'get_task',
   getThread: 'get_thread',
+  getTransaction: 'get_transaction',
   getTranscript: 'get_transcript',
   goalActivity: 'goal_activity',
   imagePreview: 'image_preview',
   imageSearch: 'image_search',
   importCalendar: 'import_calendar',
   importOpml: 'import_opml',
+  importTransactions: 'import_transactions',
   improveWriting: 'improve_writing',
   inboxSenders: 'inbox_senders',
   keepInTouchStatus: 'keep_in_touch_status',
@@ -832,6 +923,8 @@ export const COMMAND_NAMES = {
   lintMeetingTemplate: 'lint_meeting_template',
   listAccountCalendars: 'list_account_calendars',
   listAccounts: 'list_accounts',
+  listBankAccounts: 'list_bank_accounts',
+  listBankLinks: 'list_bank_links',
   listBlocks: 'list_blocks',
   listCalendars: 'list_calendars',
   listCommands: 'list_commands',
@@ -847,6 +940,8 @@ export const COMMAND_NAMES = {
   listLogs: 'list_logs',
   listMailboxes: 'list_mailboxes',
   listMemories: 'list_memories',
+  listMoneyCategories: 'list_money_categories',
+  listMoneyRules: 'list_money_rules',
   listNewsSources: 'list_news_sources',
   listNotes: 'list_notes',
   listParts: 'list_parts',
@@ -867,6 +962,7 @@ export const COMMAND_NAMES = {
   listThreadsAcross: 'list_threads_across',
   listTools: 'list_tools',
   listTrackers: 'list_trackers',
+  listTransactions: 'list_transactions',
   listVoiceprints: 'list_voiceprints',
   listWritingAssists: 'list_writing_assists',
   loadEvent: 'load_event',
@@ -889,6 +985,10 @@ export const COMMAND_NAMES = {
   meetingSettings: 'meeting_settings',
   mergeTrackers: 'merge_trackers',
   modelSettings: 'model_settings',
+  moneyCashFlow: 'money_cash_flow',
+  moneyMonth: 'money_month',
+  moneyNetWorth: 'money_net_worth',
+  moneyRecurring: 'money_recurring',
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
   newBlock: 'new_block',
@@ -911,9 +1011,11 @@ export const COMMAND_NAMES = {
   newTracker: 'new_tracker',
   newsletterSenders: 'newsletter_senders',
   noteTags: 'note_tags',
+  plaidSetup: 'plaid_setup',
   pollAutoLock: 'poll_auto_lock',
   preparePicture: 'prepare_picture',
   previewAttachment: 'preview_attachment',
+  previewImport: 'preview_import',
   previewMeetingTemplate: 'preview_meeting_template',
   profile: 'profile',
   quickAsks: 'quick_asks',
@@ -959,6 +1061,8 @@ export const COMMAND_NAMES = {
   saveAccount: 'save_account',
   saveAccountPassword: 'save_account_password',
   saveAgentSettings: 'save_agent_settings',
+  saveBankAccount: 'save_bank_account',
+  saveBankLink: 'save_bank_link',
   saveBlock: 'save_block',
   saveBlockSeries: 'save_block_series',
   saveCalendar: 'save_calendar',
@@ -979,9 +1083,12 @@ export const COMMAND_NAMES = {
   saveMeetingSettings: 'save_meeting_settings',
   saveMemory: 'save_memory',
   saveModelSettings: 'save_model_settings',
+  saveMoneyCategory: 'save_money_category',
+  saveMoneyRule: 'save_money_rule',
   saveNewsSource: 'save_news_source',
   saveNote: 'save_note',
   saveNoteForce: 'save_note_force',
+  savePlaidCredentials: 'save_plaid_credentials',
   saveProfile: 'save_profile',
   saveProject: 'save_project',
   saveReading: 'save_reading',
@@ -1018,6 +1125,7 @@ export const COMMAND_NAMES = {
   sortOlderMail: 'sort_older_mail',
   speechModels: 'speech_models',
   star: 'star',
+  startBankLink: 'start_bank_link',
   startChatVerification: 'start_chat_verification',
   startExport: 'start_export',
   startImport: 'start_import',
@@ -1030,6 +1138,7 @@ export const COMMAND_NAMES = {
   suggestReplies: 'suggest_replies',
   summarizeThread: 'summarize_thread',
   syncAccount: 'sync_account',
+  syncBankLinks: 'sync_bank_links',
   syncCalendar: 'sync_calendar',
   syncDueCalendars: 'sync_due_calendars',
   syncStatus: 'sync_status',
@@ -1050,6 +1159,7 @@ export const COMMAND_NAMES = {
   unsnooze: 'unsnooze',
   unstar: 'unstar',
   updateEvent: 'update_event',
+  updateTransactions: 'update_transactions',
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
   weather: 'weather',
@@ -1073,6 +1183,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'account_presets',
   'active_recording',
   'add_item',
+  'add_manual_transaction',
   'add_news_source',
   'add_story_to_library',
   'agent_settings',
@@ -1081,6 +1192,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'answer_job',
   'append_recording_chunk',
   'apply_metadata',
+  'apply_money_rules',
   'archive',
   'attach_oauth_sign_in',
   'await_oauth_sign_in',
@@ -1088,6 +1200,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'begin_recording',
   'benchmark_speech_model',
   'calendar_providers',
+  'cancel_bank_link',
   'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
@@ -1095,14 +1208,19 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'category_counts',
   'change_password',
   'chat_links',
+  'check_bank_link',
   'clear_model_key',
+  'clear_plaid_credentials',
   'collect_garbage',
   'confirm_tool_call',
   'conversation_messages',
   'create_event',
+  'create_manual_account',
   'decline_proposal',
   'delete_account',
   'delete_all_voiceprints',
+  'delete_bank_account',
+  'delete_bank_link',
   'delete_block',
   'delete_block_series',
   'delete_calendar',
@@ -1117,6 +1235,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_money_category',
+  'delete_money_rule',
   'delete_news_source',
   'delete_note',
   'delete_project',
@@ -1129,6 +1249,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_speech_model',
   'delete_task',
   'delete_tracker',
+  'delete_transactions',
   'delete_voiceprint',
   'discard_draft',
   'discard_recording',
@@ -1159,12 +1280,14 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_story',
   'get_task',
   'get_thread',
+  'get_transaction',
   'get_transcript',
   'goal_activity',
   'image_preview',
   'image_search',
   'import_calendar',
   'import_opml',
+  'import_transactions',
   'improve_writing',
   'inbox_senders',
   'keep_in_touch_status',
@@ -1173,6 +1296,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lint_meeting_template',
   'list_account_calendars',
   'list_accounts',
+  'list_bank_accounts',
+  'list_bank_links',
   'list_blocks',
   'list_calendars',
   'list_commands',
@@ -1188,6 +1313,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_logs',
   'list_mailboxes',
   'list_memories',
+  'list_money_categories',
+  'list_money_rules',
   'list_news_sources',
   'list_notes',
   'list_parts',
@@ -1208,6 +1335,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_threads_across',
   'list_tools',
   'list_trackers',
+  'list_transactions',
   'list_voiceprints',
   'list_writing_assists',
   'load_event',
@@ -1230,6 +1358,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'meeting_settings',
   'merge_trackers',
   'model_settings',
+  'money_cash_flow',
+  'money_month',
+  'money_net_worth',
+  'money_recurring',
   'move_to_mailbox',
   'name_speaker',
   'new_block',
@@ -1252,9 +1384,11 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_tracker',
   'newsletter_senders',
   'note_tags',
+  'plaid_setup',
   'poll_auto_lock',
   'prepare_picture',
   'preview_attachment',
+  'preview_import',
   'preview_meeting_template',
   'profile',
   'quick_asks',
@@ -1300,6 +1434,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account',
   'save_account_password',
   'save_agent_settings',
+  'save_bank_account',
+  'save_bank_link',
   'save_block',
   'save_block_series',
   'save_calendar',
@@ -1320,9 +1456,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
+  'save_money_category',
+  'save_money_rule',
   'save_news_source',
   'save_note',
   'save_note_force',
+  'save_plaid_credentials',
   'save_profile',
   'save_project',
   'save_reading',
@@ -1358,6 +1497,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'sort_older_mail',
   'speech_models',
   'star',
+  'start_bank_link',
   'start_chat_verification',
   'start_export',
   'start_import',
@@ -1370,6 +1510,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'suggest_replies',
   'summarize_thread',
   'sync_account',
+  'sync_bank_links',
   'sync_calendar',
   'sync_due_calendars',
   'sync_status',
@@ -1390,6 +1531,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'unsnooze',
   'unstar',
   'update_event',
+  'update_transactions',
   'vault_stats',
   'verify_password',
   'weather',
@@ -1407,6 +1549,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'accept_proposal',
   'add_item',
+  'add_manual_transaction',
   'add_news_source',
   'add_story_to_library',
   'allow_remote_images',
@@ -1414,22 +1557,29 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'answer_job',
   'append_recording_chunk',
   'apply_metadata',
+  'apply_money_rules',
   'archive',
   'attach_oauth_sign_in',
   'begin_oauth_sign_in',
   'begin_recording',
+  'cancel_bank_link',
   'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
   'cancel_turn',
   'change_password',
+  'check_bank_link',
   'clear_model_key',
+  'clear_plaid_credentials',
   'collect_garbage',
   'confirm_tool_call',
   'create_event',
+  'create_manual_account',
   'decline_proposal',
   'delete_account',
   'delete_all_voiceprints',
+  'delete_bank_account',
+  'delete_bank_link',
   'delete_block',
   'delete_block_series',
   'delete_calendar',
@@ -1444,6 +1594,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_kind',
   'delete_log',
   'delete_memory',
+  'delete_money_category',
+  'delete_money_rule',
   'delete_news_source',
   'delete_note',
   'delete_project',
@@ -1456,6 +1608,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_speech_model',
   'delete_task',
   'delete_tracker',
+  'delete_transactions',
   'delete_voiceprint',
   'discard_draft',
   'discard_recording',
@@ -1470,6 +1623,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'flush',
   'import_calendar',
   'import_opml',
+  'import_transactions',
   'label',
   'lock',
   'log_reading',
@@ -1502,6 +1656,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account',
   'save_account_password',
   'save_agent_settings',
+  'save_bank_account',
+  'save_bank_link',
   'save_block',
   'save_block_series',
   'save_calendar',
@@ -1522,9 +1678,12 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
+  'save_money_category',
+  'save_money_rule',
   'save_news_source',
   'save_note',
   'save_note_force',
+  'save_plaid_credentials',
   'save_profile',
   'save_project',
   'save_reading',
@@ -1556,12 +1715,14 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'snooze',
   'sort_older_mail',
   'star',
+  'start_bank_link',
   'start_chat_verification',
   'start_research',
   'stop_sorting_older_mail',
   'subscribe_account_calendar',
   'subscribe_calendar',
   'sync_account',
+  'sync_bank_links',
   'sync_calendar',
   'sync_due_calendars',
   'touch',
@@ -1572,6 +1733,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'unsnooze',
   'unstar',
   'update_event',
+  'update_transactions',
   'verify_password',
 ])
 
@@ -1579,11 +1741,13 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 export const CHANGE_KINDS = {
   accept_proposal: 'proposal',
   add_item: 'item',
+  add_manual_transaction: 'txn',
   add_news_source: 'newsSource',
   add_story_to_library: 'item',
   allow_remote_images: 'settings',
   answer_job: 'job',
   apply_metadata: 'item',
+  apply_money_rules: 'txn',
   archive: 'thread',
   attach_oauth_sign_in: 'account',
   begin_recording: 'recording',
@@ -1591,10 +1755,14 @@ export const CHANGE_KINDS = {
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
   clear_model_key: 'settings',
+  clear_plaid_credentials: 'settings',
   create_event: 'event',
+  create_manual_account: 'bankAccount',
   decline_proposal: 'proposal',
   delete_account: 'account',
   delete_all_voiceprints: 'voiceprint',
+  delete_bank_account: 'bankAccount',
+  delete_bank_link: 'bankLink',
   delete_block: 'block',
   delete_block_series: 'block',
   delete_calendar: 'calendar',
@@ -1609,6 +1777,8 @@ export const CHANGE_KINDS = {
   delete_kind: 'shelf',
   delete_log: 'log',
   delete_memory: 'memory',
+  delete_money_category: 'moneyCategory',
+  delete_money_rule: 'moneyRule',
   delete_news_source: 'newsSource',
   delete_note: 'note',
   delete_project: 'project',
@@ -1621,6 +1791,7 @@ export const CHANGE_KINDS = {
   delete_speech_model: 'settings',
   delete_task: 'task',
   delete_tracker: 'tracker',
+  delete_transactions: 'txn',
   delete_voiceprint: 'voiceprint',
   discard_draft: 'draft',
   discard_recording: 'recording',
@@ -1631,6 +1802,7 @@ export const CHANGE_KINDS = {
   finish_recording: 'recording',
   import_calendar: 'calendar',
   import_opml: 'newsSource',
+  import_transactions: 'txn',
   label: 'thread',
   log_reading: 'reading',
   mark_all_stories_read: 'story',
@@ -1654,6 +1826,8 @@ export const CHANGE_KINDS = {
   save_account: 'account',
   save_account_password: 'account',
   save_agent_settings: 'settings',
+  save_bank_account: 'bankAccount',
+  save_bank_link: 'bankLink',
   save_block: 'block',
   save_block_series: 'block',
   save_calendar: 'calendar',
@@ -1674,9 +1848,12 @@ export const CHANGE_KINDS = {
   save_meeting_settings: 'settings',
   save_memory: 'memory',
   save_model_settings: 'settings',
+  save_money_category: 'moneyCategory',
+  save_money_rule: 'moneyRule',
   save_news_source: 'newsSource',
   save_note: 'note',
   save_note_force: 'note',
+  save_plaid_credentials: 'settings',
   save_profile: 'settings',
   save_project: 'project',
   save_reading: 'reading',
@@ -1708,6 +1885,7 @@ export const CHANGE_KINDS = {
   start_research: 'job',
   subscribe_account_calendar: 'calendar',
   subscribe_calendar: 'calendar',
+  sync_bank_links: 'txn',
   sync_calendar: 'event',
   sync_due_calendars: 'event',
   trash: 'thread',
@@ -1716,6 +1894,7 @@ export const CHANGE_KINDS = {
   unsnooze: 'thread',
   unstar: 'thread',
   update_event: 'event',
+  update_transactions: 'txn',
 } as const
 
 /**

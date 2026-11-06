@@ -70,6 +70,11 @@ fn all_kinds() -> Vec<Kind> {
         Kind::Voiceprint,
         Kind::NewsSource,
         Kind::Story,
+        Kind::BankLink,
+        Kind::BankAccount,
+        Kind::Txn,
+        Kind::MoneyCategory,
+        Kind::MoneyRule,
         Kind::Settings,
         Kind::BackgroundTask,
     ]
@@ -115,6 +120,11 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::Voiceprint
         | Kind::NewsSource
         | Kind::Story
+        | Kind::BankLink
+        | Kind::BankAccount
+        | Kind::Txn
+        | Kind::MoneyCategory
+        | Kind::MoneyRule
         | Kind::Settings
         | Kind::BackgroundTask => {}
     }
@@ -152,6 +162,7 @@ fn capabilities_baseline() -> Capabilities {
         mail: false,
         meetings: false,
         news: false,
+        money: false,
     }
 }
 
@@ -181,6 +192,7 @@ fn capabilities_all_true() -> Capabilities {
         mail: true,
         meetings: true,
         news: true,
+        money: true,
     }
 }
 

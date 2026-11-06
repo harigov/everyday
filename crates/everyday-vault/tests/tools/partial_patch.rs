@@ -83,6 +83,10 @@ fn every_update_tool_is_covered_by_a_partial_patch_test() {
         // `an_update_names_only_what_changes_and_a_new_rule_means_the_series`,
         // beside the fake server it needs to load the event from.
         "update_event",
+        // Checked in `tools/money.rs`'s
+        // `update_transactions_touches_only_the_named_field`, beside the
+        // linked bank and accounts it needs seeded.
+        "update_transactions",
     ];
     for tool in tools::catalog() {
         if tool.name.starts_with("update_") {

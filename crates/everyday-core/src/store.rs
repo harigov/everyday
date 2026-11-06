@@ -36,6 +36,7 @@ use crate::store::jobs::JobStore;
 use crate::store::library::LibraryStore;
 use crate::store::mail::MailStore;
 use crate::store::meetings::MeetingStore;
+use crate::store::money::MoneyStore;
 use crate::store::news::NewsStore;
 use crate::store::notes::NoteStore;
 use crate::store::proposals::ProposalStore;
@@ -199,6 +200,14 @@ pub struct Capabilities {
     /// offers newsletters only when `mail` is true as well.
     #[serde(default)]
     pub news: bool,
+    /// Backend implements [`money::MoneyStore`], so linked banks, accounts
+    /// kept by hand, their transactions, categories and budgets have
+    /// somewhere to live.
+    ///
+    /// False hides the Money app and the assistant's money tools: nothing
+    /// in it reads another domain's records.
+    #[serde(default)]
+    pub money: bool,
 }
 
 /// The facts about a backend that [`Capabilities`]' domain flags cannot
@@ -556,6 +565,7 @@ pub trait JournalStore: Send + Sync {
             mail: self.mail().is_some(),
             meetings: self.meetings().is_some(),
             news: self.news().is_some(),
+            money: self.money().is_some(),
         }
     }
 
@@ -720,6 +730,14 @@ pub trait JournalStore: Send + Sync {
     /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`news`](crate::store::news) for the rules an implementation keeps.
     fn news(&self) -> Option<&dyn NewsStore> {
+        None
+    }
+
+    /// Storage for Money, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`money`](crate::store::money) for the rules an implementation keeps.
+    fn money(&self) -> Option<&dyn MoneyStore> {
         None
     }
 
@@ -1117,6 +1135,7 @@ pub mod jobs;
 pub mod library;
 pub mod mail;
 pub mod meetings;
+pub mod money;
 pub mod news;
 pub mod notes;
 pub mod proposals;

@@ -68,6 +68,35 @@
       "title": "Cancel job"
     },
     {
+      "domain": "money",
+      "effect": "write",
+      "name": "categorize_transactions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "category_id": {
+            "description": "The category, from list_money_categories, or \"none\" to take them out of any category.",
+            "type": "string"
+          },
+          "ids": {
+            "description": "Transaction ids, from find_transactions. At most 200.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids",
+          "category_id"
+        ],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "Categorize transactions"
+    },
+    {
       "domain": "agent",
       "effect": "write",
       "name": "confirm_memory",
@@ -346,6 +375,47 @@
       "scope": "library",
       "sensitivity": "ordinary",
       "title": "Create item"
+    },
+    {
+      "domain": "money",
+      "effect": "write",
+      "name": "create_money_rule",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "description": "Only in this account, from list_bank_accounts.",
+            "type": "string"
+          },
+          "category_id": {
+            "description": "Put matches in this category, from list_money_categories.",
+            "type": "string"
+          },
+          "exact": {
+            "description": "Match the whole payee rather than any part of it.",
+            "type": "boolean"
+          },
+          "exclude": {
+            "description": "Leave matches out of budgets and totals.",
+            "type": "boolean"
+          },
+          "rename": {
+            "description": "Show matches under this payee name instead of the bank's.",
+            "type": "string"
+          },
+          "text": {
+            "description": "What to match, case-insensitively: any part of the bank's payee or description, or with exact the whole payee. At least 3 characters unless exact.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "Create money rule"
     },
     {
       "domain": "notes",
@@ -1171,6 +1241,57 @@
       "title": "Find address"
     },
     {
+      "domain": "money",
+      "effect": "read",
+      "name": "find_transactions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "description": "Only this account. From list_bank_accounts.",
+            "type": "string"
+          },
+          "category_id": {
+            "description": "Only this category, from list_money_categories, or \"none\" for transactions with no category.",
+            "type": "string"
+          },
+          "from": {
+            "description": "On or after this day. Defaults to 30 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "max_amount": {
+            "description": "Only amounts at or below this, signed as min_amount. Spending of 100 or more is \"-100\".",
+            "type": "string"
+          },
+          "min_amount": {
+            "description": "Only amounts at or above this, as a signed decimal string in the account's currency (the main currency without account_id). Money out is negative: \"100\" means 100 or more coming in.",
+            "type": "string"
+          },
+          "offset": {
+            "description": "Skip this many, to read the next page: a next_offset.",
+            "type": "integer"
+          },
+          "text": {
+            "description": "Words to look for, case-insensitively, in the payee, the bank's description and the person's note.",
+            "type": "string"
+          },
+          "to": {
+            "description": "On or before this day. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "Find transactions"
+    },
+    {
       "domain": "news",
       "effect": "write",
       "name": "follow_source",
@@ -1432,6 +1553,20 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "List accounts"
+    },
+    {
+      "domain": "money",
+      "effect": "read",
+      "name": "list_bank_accounts",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "List bank accounts"
     },
     {
       "domain": "calendars",
@@ -1707,6 +1842,20 @@
       "title": "List memories"
     },
     {
+      "domain": "money",
+      "effect": "read",
+      "name": "list_money_categories",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "List money categories"
+    },
+    {
       "domain": "news",
       "effect": "read",
       "name": "list_news_sources",
@@ -1855,6 +2004,25 @@
       "scope": "trackers",
       "sensitivity": "ordinary",
       "title": "List readings"
+    },
+    {
+      "domain": "money",
+      "effect": "read",
+      "name": "list_recurring",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "List recurring"
     },
     {
       "domain": "purpose",
@@ -2705,6 +2873,32 @@
       "title": "Send draft"
     },
     {
+      "domain": "money",
+      "effect": "write",
+      "name": "set_budget",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "description": "The monthly budget as a decimal string in the main currency, e.g. \"400\" or \"400.00\"; \"none\" removes it.",
+            "type": "string"
+          },
+          "category_id": {
+            "description": "An expense category, from list_money_categories.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category_id",
+          "amount"
+        ],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "Set budget"
+    },
+    {
       "domain": "purpose",
       "effect": "write",
       "name": "set_purpose",
@@ -2861,6 +3055,29 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Snooze thread"
+    },
+    {
+      "domain": "money",
+      "effect": "read",
+      "name": "spending_summary",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "month": {
+            "description": "The month, as YYYY-MM, e.g. 2026-09. Defaults to this month.",
+            "type": "string"
+          },
+          "months": {
+            "description": "Also give income and spending for this many months ending with `month`, oldest first, for a trend. At most 24.",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "Spending summary"
     },
     {
       "domain": "mail",
@@ -3855,6 +4072,42 @@
       "scope": "tasks",
       "sensitivity": "ordinary",
       "title": "Update time block"
+    },
+    {
+      "domain": "money",
+      "effect": "write",
+      "name": "update_transactions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "excluded": {
+            "description": "True leaves them out of budgets and totals (a reversed charge, a transfer they do not want counted); false counts them again.",
+            "type": "boolean"
+          },
+          "ids": {
+            "description": "Transaction ids, from find_transactions. At most 200.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "note": {
+            "description": "The person's note on them. An empty string clears it.",
+            "type": "string"
+          },
+          "payee": {
+            "description": "The person's own name for the payee, shown instead of the bank's. An empty string goes back to the bank's.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "type": "object"
+      },
+      "scope": "money",
+      "sensitivity": "ordinary",
+      "title": "Update transactions"
     },
     {
       "domain": "journals",

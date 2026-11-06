@@ -85,6 +85,26 @@
     {
       "args": [
         {
+          "name": "txn",
+          "required": true,
+          "type": "NewTxn"
+        }
+      ],
+      "changes": {
+        "kind": "txn",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "add_manual_transaction",
+      "orScope": null,
+      "returns": "Txn",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "source",
           "required": true,
           "type": "NewSource"
@@ -280,6 +300,26 @@
     {
       "args": [
         {
+          "name": "ruleId",
+          "required": false,
+          "type": "MoneyRuleId | null"
+        }
+      ],
+      "changes": {
+        "kind": "txn",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "apply_money_rules",
+      "orScope": null,
+      "returns": "number",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -457,6 +497,23 @@
     {
       "args": [
         {
+          "name": "session",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "cancel_bank_link",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "JobId"
@@ -584,6 +641,23 @@
     {
       "args": [
         {
+          "name": "session",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "check_bank_link",
+      "orScope": null,
+      "returns": "LinkCheck",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "tier",
           "required": true,
           "type": "ModelSlot"
@@ -599,6 +673,20 @@
       "returns": "ModelSettingsView",
       "scope": "agent",
       "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "destructive",
+      "name": "clear_plaid_credentials",
+      "orScope": null,
+      "returns": "void",
+      "scope": "all",
+      "sensitive": true,
       "streams": false
     },
     {
@@ -684,6 +772,36 @@
     {
       "args": [
         {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "required": true,
+          "type": "AccountKind"
+        },
+        {
+          "name": "currency",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "bankAccount",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "create_manual_account",
+      "orScope": null,
+      "returns": "BankAccount",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "ProposalId"
@@ -737,6 +855,51 @@
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "BankAccountId"
+        }
+      ],
+      "changes": {
+        "kind": "bankAccount",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_bank_account",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "BankLinkId"
+        },
+        {
+          "name": "keepHistory",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "bankLink",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_bank_link",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -1040,6 +1203,46 @@
         {
           "name": "id",
           "required": true,
+          "type": "MoneyCategoryId"
+        }
+      ],
+      "changes": {
+        "kind": "moneyCategory",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_money_category",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "MoneyRuleId"
+        }
+      ],
+      "changes": {
+        "kind": "moneyRule",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_money_rule",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "NewsSourceId"
         }
       ],
@@ -1272,6 +1475,26 @@
       "orScope": null,
       "returns": "number",
       "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "TxnId[]"
+        }
+      ],
+      "changes": {
+        "kind": "txn",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_transactions",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -1840,6 +2063,23 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "TxnId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_transaction",
+      "orScope": null,
+      "returns": "Txn",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "noteId",
           "required": true,
           "type": "NoteId"
@@ -1962,6 +2202,41 @@
       "orScope": null,
       "returns": "OpmlImportReport",
       "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "accountId",
+          "required": true,
+          "type": "BankAccountId"
+        },
+        {
+          "name": "content",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "format",
+          "required": false,
+          "type": "ImportFormat | null"
+        },
+        {
+          "name": "mapping",
+          "required": false,
+          "type": "CsvMapping | null"
+        }
+      ],
+      "changes": {
+        "kind": "txn",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "import_transactions",
+      "orScope": null,
+      "returns": "MoneyImportReport",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -2133,6 +2408,28 @@
       "orScope": null,
       "returns": "AccountView[]",
       "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_bank_accounts",
+      "orScope": null,
+      "returns": "BankAccount[]",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_bank_links",
+      "orScope": null,
+      "returns": "LinkSummary[]",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -2363,6 +2660,28 @@
       "orScope": null,
       "returns": "Memory[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_money_categories",
+      "orScope": null,
+      "returns": "MoneyCategory[]",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_money_rules",
+      "orScope": null,
+      "returns": "MoneyRule[]",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -2667,6 +2986,23 @@
       "orScope": null,
       "returns": "Tracker[]",
       "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "TxnQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_transactions",
+      "orScope": null,
+      "returns": "TxnPage",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -3112,6 +3448,78 @@
     {
       "args": [
         {
+          "name": "end",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "months",
+          "required": true,
+          "type": "number"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "money_cash_flow",
+      "orScope": null,
+      "returns": "CashFlowMonth[]",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "month",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "money_month",
+      "orScope": null,
+      "returns": "MonthSummary",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "money_net_worth",
+      "orScope": null,
+      "returns": "NetWorthPoint[]",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "money_recurring",
+      "orScope": null,
+      "returns": "Recurring[]",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -3527,6 +3935,17 @@
     {
       "args": [],
       "changes": null,
+      "effect": "read",
+      "name": "plaid_setup",
+      "orScope": null,
+      "returns": "PlaidSetup",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
       "effect": "write",
       "name": "poll_auto_lock",
       "orScope": null,
@@ -3576,6 +3995,33 @@
       "orScope": null,
       "returns": "AttachmentPreview",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "content",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "format",
+          "required": false,
+          "type": "ImportFormat | null"
+        },
+        {
+          "name": "currency",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "preview_import",
+      "orScope": null,
+      "returns": "ImportPreview",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -4468,6 +4914,46 @@
     {
       "args": [
         {
+          "name": "account",
+          "required": true,
+          "type": "BankAccount"
+        }
+      ],
+      "changes": {
+        "kind": "bankAccount",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_bank_account",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "link",
+          "required": true,
+          "type": "BankLink"
+        }
+      ],
+      "changes": {
+        "kind": "bankLink",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_bank_link",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "block",
           "required": true,
           "type": "TimeBlock"
@@ -4883,6 +5369,46 @@
     {
       "args": [
         {
+          "name": "category",
+          "required": true,
+          "type": "MoneyCategory"
+        }
+      ],
+      "changes": {
+        "kind": "moneyCategory",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_money_category",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "rule",
+          "required": true,
+          "type": "MoneyRule"
+        }
+      ],
+      "changes": {
+        "kind": "moneyRule",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_money_rule",
+      "orScope": null,
+      "returns": "void",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "source",
           "required": true,
           "type": "NewsSource"
@@ -4943,6 +5469,36 @@
       "returns": "void",
       "scope": "notes",
       "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "clientId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "secret",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "environment",
+          "required": true,
+          "type": "PlaidEnvironment"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_plaid_credentials",
+      "orScope": null,
+      "returns": "PlaidSetup",
+      "scope": "all",
+      "sensitive": true,
       "streams": false
     },
     {
@@ -5766,6 +6322,23 @@
     {
       "args": [
         {
+          "name": "linkId",
+          "required": false,
+          "type": "BankLinkId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "start_bank_link",
+      "orScope": null,
+      "returns": "LinkStart",
+      "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "ChatLinkId"
@@ -6007,6 +6580,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "linkId",
+          "required": false,
+          "type": "BankLinkId | null"
+        }
+      ],
+      "changes": {
+        "kind": "txn",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "sync_bank_links",
+      "orScope": null,
+      "returns": "MoneySyncReport[]",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },
@@ -6353,6 +6946,31 @@
       "orScope": null,
       "returns": "void",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "TxnId[]"
+        },
+        {
+          "name": "patch",
+          "required": true,
+          "type": "TxnPatch"
+        }
+      ],
+      "changes": {
+        "kind": "txn",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "update_transactions",
+      "orScope": null,
+      "returns": "TxnId[]",
+      "scope": "money",
       "sensitive": false,
       "streams": false
     },

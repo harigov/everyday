@@ -8,6 +8,22 @@
 import type {
   Account,
   AccountId,
+  AccountKind,
+  BankAccount,
+  BankAccountId,
+  BankLink,
+  BankLinkId,
+  CsvMapping,
+  ImportFormat,
+  MoneyCategory,
+  MoneyCategoryId,
+  MoneyRule,
+  MoneyRuleId,
+  NewTxn,
+  PlaidEnvironment,
+  TxnId,
+  TxnPatch,
+  TxnQuery,
   DeclineReason,
   AgentCallerKind,
   AgentEvent,
@@ -1740,6 +1756,81 @@ export const api = {
   exportOpml: () => call('exportOpml', {}),
   /** Who sent newsletters to this vault's inboxes over the last `days`. */
   newsletterSenders: (days: number) => call('newsletterSenders', { days }),
+
+  // ── Money ──────────────────────────────────────────────────────────
+  //
+  // Linked banks, accounts kept by hand, their transactions, categories,
+  // budgets and rules -- see `docs/plans/money.md`. Available only when
+  // `status.capabilities.money` is true. Named as the commands are, since
+  // nothing here needs a friendlier word than the wire's own. Amounts are
+  // integers of minor units throughout.
+  //
+  // The Plaid secret crosses once, in `savePlaidCredentials`, and nothing
+  // answers it back: `plaidSetup` says whether keys are set, which
+  // environment, and the client id's last four characters. A bank sign-in
+  // is an opaque `session` and Plaid's page address; no token of any kind
+  // reaches this side.
+
+  plaidSetup: () => call('plaidSetup', {}),
+  savePlaidCredentials: (clientId: string, secret: string, environment: PlaidEnvironment) =>
+    call('savePlaidCredentials', { clientId, secret, environment }),
+  clearPlaidCredentials: () => call('clearPlaidCredentials', {}),
+
+  /** Begin a Hosted Link sign-in -- or, with `linkId`, sign in to that bank again. */
+  startBankLink: (linkId: BankLinkId | null = null) => call('startBankLink', { linkId }),
+  /** Ask how a sign-in is going; `waiting` until the person finishes in the browser. */
+  checkBankLink: (session: string) => call('checkBankLink', { session }),
+  cancelBankLink: (session: string) => call('cancelBankLink', { session }),
+  listBankLinks: () => call('listBankLinks', {}),
+  /** Name, paused and order only; the provider half is kept as stored. */
+  saveBankLink: (link: BankLink) => call('saveBankLink', { link }),
+  /** Disconnect. `keepHistory` keeps the accounts and their transactions, as manual ones. */
+  deleteBankLink: (id: BankLinkId, keepHistory: boolean) =>
+    call('deleteBankLink', { id, keepHistory }),
+  /** Sync one bank, or every bank when `null`. */
+  syncBankLinks: (linkId: BankLinkId | null = null) => call('syncBankLinks', { linkId }),
+
+  listBankAccounts: () => call('listBankAccounts', {}),
+  saveBankAccount: (account: BankAccount) => call('saveBankAccount', { account }),
+  createManualAccount: (name: string, kind: AccountKind, currency: string) =>
+    call('createManualAccount', { name, kind, currency }),
+  /** An account kept by hand only; a bank's is refused. */
+  deleteBankAccount: (id: BankAccountId) => call('deleteBankAccount', { id }),
+
+  listTransactions: (query: TxnQuery) => call('listTransactions', { query }),
+  getTransaction: (id: TxnId) => call('getTransaction', { id }),
+  /** A person's change to many at once; answers the ids that changed. */
+  updateTransactions: (ids: TxnId[], patch: TxnPatch) => call('updateTransactions', { ids, patch }),
+  addManualTransaction: (txn: NewTxn) => call('addManualTransaction', { txn }),
+  /** Imported or typed-in only; a bank's is refused. */
+  deleteTransactions: (ids: TxnId[]) => call('deleteTransactions', { ids }),
+  previewImport: (
+    content: string,
+    format: ImportFormat | null = null,
+    currency: string | null = null,
+  ) => call('previewImport', { content, format, currency }),
+  importTransactions: (
+    accountId: BankAccountId,
+    content: string,
+    format: ImportFormat | null = null,
+    mapping: CsvMapping | null = null,
+  ) => call('importTransactions', { accountId, content, format, mapping }),
+
+  listMoneyCategories: () => call('listMoneyCategories', {}),
+  saveMoneyCategory: (category: MoneyCategory) => call('saveMoneyCategory', { category }),
+  deleteMoneyCategory: (id: MoneyCategoryId) => call('deleteMoneyCategory', { id }),
+  listMoneyRules: () => call('listMoneyRules', {}),
+  saveMoneyRule: (rule: MoneyRule) => call('saveMoneyRule', { rule }),
+  deleteMoneyRule: (id: MoneyRuleId) => call('deleteMoneyRule', { id }),
+  /** Run the rules -- or one -- over everything still open; answers how many changed. */
+  applyMoneyRules: (ruleId: MoneyRuleId | null = null) => call('applyMoneyRules', { ruleId }),
+
+  /** One month (`YYYY-MM`) against its budgets, in the main currency. */
+  moneyMonth: (month: string) => call('moneyMonth', { month }),
+  /** Income and spending for `months` months ending with `end`'s, oldest first. */
+  moneyCashFlow: (end: string, months: number) => call('moneyCashFlow', { end, months }),
+  moneyNetWorth: (from: string, to: string) => call('moneyNetWorth', { from, to }),
+  moneyRecurring: () => call('moneyRecurring', {}),
 
   // ── Accounts ───────────────────────────────────────────────────────
   //

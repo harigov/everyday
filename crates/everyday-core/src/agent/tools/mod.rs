@@ -115,6 +115,7 @@ mod library;
 pub(crate) mod mail;
 mod meetings;
 mod memory;
+mod money;
 mod news;
 mod notes;
 mod proposals;
@@ -199,13 +200,17 @@ pub enum Domain {
     /// The Feed: what somebody follows, and the stories it brings -- see
     /// `agent::tools::news`.
     News,
+    /// Money: accounts, transactions, categories and budgets -- see
+    /// `agent::tools::money`. Never a credential: no tool here reads the
+    /// Plaid keys or a link's token, and none could.
+    Money,
 }
 
 impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 13] = [
+    pub const ALL: [Domain; 14] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -219,6 +224,7 @@ impl Domain {
         Domain::Mail,
         Domain::Meetings,
         Domain::News,
+        Domain::Money,
     ];
 
     /// Can this vault serve the domain, and may a model be shown it at all?
@@ -240,6 +246,7 @@ impl Domain {
                 Domain::Mail => vault.supports_mail() && vault.supports_accounts(),
                 Domain::Meetings => vault.supports_meetings(),
                 Domain::News => vault.supports_news(),
+                Domain::Money => vault.supports_money(),
             }
     }
 
@@ -294,7 +301,17 @@ impl Domain {
             // model under `untrusted_text` for the same reason; but nothing
             // here discloses anything about the person beyond what they
             // follow, and summarising what arrived is the point.
-            | Domain::News => Sensitivity::Ordinary,
+            | Domain::News
+            // What somebody earns and spends is as private as anything here,
+            // but it is not the risk `Secret` exists for: the assistant is
+            // specifically for "what did I spend on food" and "can I afford
+            // this", and no tool returns a credential or an account number
+            // (masks only). Its risk is handled the mail way: every money
+            // read taints the turn, so a fetch after one asks first, and a
+            // transaction's description -- often the sender's own words --
+            // reaches the model as untrusted text. See `agent::tools::money`
+            // and the service's `ConfirmGate`.
+            | Domain::Money => Sensitivity::Ordinary,
         }
     }
 }
@@ -337,6 +354,11 @@ impl TryFrom<RecordKind> for Domain {
                 Ok(Domain::Meetings)
             }
             RecordKind::NewsSource | RecordKind::Story => Ok(Domain::News),
+            RecordKind::BankLink
+            | RecordKind::BankAccount
+            | RecordKind::Txn
+            | RecordKind::MoneyCategory
+            | RecordKind::MoneyRule => Ok(Domain::Money),
             // Proposed work, not a domain a tool list is offered for.
             RecordKind::Proposal => Err(()),
             // No tools read writing help yet. The feedback pass that will is
@@ -1256,6 +1278,7 @@ fn all() -> &'static [Tool] {
             mail::TOOLS,
             meetings::TOOLS,
             news::TOOLS,
+            money::TOOLS,
         ]
         .concat()
     })
@@ -1612,6 +1635,11 @@ mod tests {
             (RecordKind::Voiceprint, Domain::Meetings),
             (RecordKind::NewsSource, Domain::News),
             (RecordKind::Story, Domain::News),
+            (RecordKind::BankLink, Domain::Money),
+            (RecordKind::BankAccount, Domain::Money),
+            (RecordKind::Txn, Domain::Money),
+            (RecordKind::MoneyCategory, Domain::Money),
+            (RecordKind::MoneyRule, Domain::Money),
         ] {
             assert_eq!(Domain::try_from(kind), Ok(domain), "{kind:?}");
         }

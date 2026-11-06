@@ -39,6 +39,8 @@ import { mailboxDisplayName, mailboxHasTabs, unifiedMailboxId } from './mail'
 import { mail } from './mail.svelte'
 import { mailwrite } from './mailwrite.svelte'
 import { menu } from './menu.svelte'
+import { thisMonth } from './money'
+import { money } from './money.svelte'
 import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
@@ -239,6 +241,14 @@ function timeToPaint(hit: Binding) {
   })
 }
 
+/**
+ * Is Money on a pane that is about one month -- where the arrows step it?
+ * Not the account and rule lists, which have no month to step.
+ */
+function monthly(): boolean {
+  return money.view !== 'accounts' && money.view !== 'rules'
+}
+
 /** Move the journal's selection by `step` rows through the loaded list. */
 function stepEntry(step: 1 | -1) {
   const rows = app.entries
@@ -270,6 +280,7 @@ export const GROUPS = [
   'Library',
   'Mail',
   'Feed',
+  'Money',
   'Overview',
   'Assistant',
   'Vault',
@@ -356,6 +367,15 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('feed'),
     run: () => app.setSection('feed'),
+  },
+  {
+    // `b` for bank: `m` is Mail's, and `$` is a shifted key on most layouts
+    // and on none at all on some.
+    keys: 'g b',
+    label: 'Money',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('money'),
+    run: () => app.setSection('money'),
   },
   {
     keys: 'g o',
@@ -1078,6 +1098,78 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => feed.openAdd(),
   },
 
+  // ── Money ───────────────────────────────────────────────────────────
+  //
+  // The Feed's shape where the two agree: `j` and `k` through the list,
+  // Escape back out of the detail, `r` to ask the network. The arrows step
+  // the month, as they step the calendar's week, and `t` comes back to this
+  // one, as it comes back to today there. `c` is "Start the next thing" for
+  // every app (`apps.ts`), said again under this app's heading so the help
+  // sheet lists it where somebody looks.
+  {
+    keys: 'j',
+    label: 'The transaction below',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && money.view === 'transactions',
+    run: () => void money.move(1),
+  },
+  {
+    keys: 'k',
+    label: 'The transaction above',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && money.view === 'transactions',
+    run: () => void money.move(-1),
+  },
+  {
+    keys: 'x',
+    label: 'Tick the transaction',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && money.view === 'transactions' && !!money.openId,
+    run: () => money.toggleSelect(money.openId!),
+  },
+  {
+    keys: 'Escape',
+    label: 'Close the transaction',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && !!money.openId,
+    run: () => money.open(null),
+  },
+  {
+    keys: 'ArrowLeft',
+    label: 'The month before',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && monthly(),
+    run: () => void money.shiftMonth(-1),
+  },
+  {
+    keys: 'ArrowRight',
+    label: 'The month after',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && monthly(),
+    run: () => void money.shiftMonth(1),
+  },
+  {
+    keys: 't',
+    label: 'This month',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && monthly(),
+    run: () => void money.setMonth(thisMonth()),
+  },
+  {
+    keys: 'r',
+    label: 'Sync banks',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')() && money.links.length > 0,
+    run: () => void money.syncNow(),
+  },
+  {
+    keys: 'c',
+    label: 'Add a transaction',
+    group: 'Money',
+    when: () => anywhere() && inApp('money')(),
+    run: () => money.create(),
+  },
+
   // ── Quick actions ───────────────────────────────────────────────────
   //
   // The rows the tray offers as well, and the ones that have no shortcut at
@@ -1274,6 +1366,33 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => void feed.refresh(),
   },
   {
+    id: 'money:sync',
+    label: 'Sync banks',
+    group: 'Money',
+    keywords: ['bank', 'transactions', 'plaid', 'update', 'refresh', 'money'],
+    icon: 'refresh',
+    tray: true,
+    // The Feed's refresh, for the same reason: nothing to look at until you
+    // choose to.
+    raise: false,
+    when: () => app.screen === 'main' && app.supportsMoney,
+    run: () => void money.syncNow(),
+  },
+  {
+    // Palette-only: it opens a page in the browser, which is a thing to
+    // choose with the window in front, not from a menu bar in passing.
+    label: 'Connect a bank',
+    group: 'Money',
+    keywords: ['link', 'plaid', 'account', 'bank', 'money'],
+    icon: 'landmark',
+    when: () => app.screen === 'main' && app.supportsMoney,
+    run: async () => {
+      if (!(await app.goTo('money'))) return
+      money.setView('accounts')
+      await money.connectBank()
+    },
+  },
+  {
     id: 'assistant:runs',
     label: 'What the assistant did',
     group: 'Assistant',
@@ -1435,6 +1554,7 @@ function create() {
     library,
     mail,
     feed,
+    money,
     overview,
     assistant,
     agent,

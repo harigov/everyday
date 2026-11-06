@@ -47,10 +47,10 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Nine apps, one vault
+## Ten apps, one vault
 
 A bar down the left edge switches between **Overview**, **Notes**, **Todo**,
-**Calendar**, **Library**, **Mail**, **Feed**, **Assistant** and **Journal**
+**Calendar**, **Library**, **Mail**, **Feed**, **Money**, **Assistant** and **Journal**
 (`Ctrl/Cmd J` cycles); right-clicking one of them offers what that app can
 start from a standing stop — the same actions the tray offers, from the same
 registration. They share a vault, a password and a lock; they share nothing
@@ -62,7 +62,7 @@ point of both.
 The order is the order of a day rather than the order they were built in. The
 Overview is first because it is the page you arrive at and it is now made of
 whatever cards its owner put on it; the journal is last because it is the one
-app you go to on purpose, with something already in mind to write. The six in
+app you go to on purpose, with something already in mind to write. The ones in
 between are the ones you dip into all day.
 
 The bar sits outside the sidebar because it is not any one app's navigation:
@@ -1074,6 +1074,61 @@ asks first, as reading a page does. A morning digest needs nothing new: it is
 a routine. "Every weekday at seven, read what is new in my Feed and leave me a
 note with the five worth my time." And everything you follow leaves as OPML,
 which every other reader opens.
+
+## Money
+
+Your bank accounts, what went through them, and what you meant to spend —
+in the vault, sealed like everything else. Two ways in:
+
+- **Linked through Plaid, with your own keys.** Settings → Money takes a
+  Plaid client id and secret, the way Settings → Models takes an API key;
+  Plaid's free "Personal use" plan covers ten bank logins. **Connect a
+  bank** opens Plaid's own sign-in page in your browser — Hosted Link — and
+  the app waits for it to finish. No Plaid code runs in the application's
+  window, and nothing has to be registered with Plaid: no redirect address,
+  no webhook, no server.
+- **Kept by hand**, filled from the file every bank offers: OFX or QFX
+  ("Download for Quicken") or CSV, with a preview that guesses which column
+  is which and lets you correct it. Importing the same statement twice, or
+  two that overlap, adds nothing twice.
+
+**Every amount is an integer** of the currency's smallest unit — cents,
+yen, fils — never a float, and money out is negative. A transaction has two
+halves: what the bank says, which every sync may rewrite, and what you said
+— its category, a note, your name for the payee, whether it counts — which
+nothing but you ever changes. A pending charge that posts under a new id
+takes your half with it. Categories come first from you, then from your
+rules ("anything from this payee is Groceries"), then from the bank's own
+label mapped onto a starter set, so a newly linked bank arrives mostly
+sorted.
+
+**Budgets** are a monthly amount per spending category. The month view
+says what each has used; Reports draws cash flow over a year, spending by
+category, and net worth from the daily balances sync records — as bars and
+a line, never a doughnut. What repeats — rent, a paycheck, the
+subscriptions you forgot — is found from the transactions themselves.
+
+**The keys never come back out.** The Plaid secret and each bank's access
+token are sealed secrets, not records: no command, export, assistant tool
+or MCP client can read them, Settings shows only the last four characters
+of the client id, and they are sent to Plaid's own API host for their
+environment — a constant, not a setting — over a connection that follows no
+redirects. What is in the clear in the database is only what an index needs:
+which account a transaction is in, its date, and a keyed hash of the bank's
+id for it. Never an amount, a payee or a name.
+
+**Sync lives in the service**, one supervised task like the Feed's: every
+six hours, backing off after a failure, stopped while the vault is locked.
+A bank that wants you to sign in again says so in the sidebar, and **Sign in
+again** goes through the same page. Nothing in the app can move money.
+
+The assistant can read your accounts, find transactions and say how a month
+went against its budgets; it can categorise, set a budget and make a rule.
+Reading money marks the turn the way reading mail does, so a web request
+after it asks first, and a bank's description of a transaction — often the
+sender's own words, in a transfer — reaches it marked as somebody else's
+writing. It cannot see a key or a full account number, delete what a bank
+sent, or disconnect a bank. Everything leaves as CSV.
 
 ## Notifications
 

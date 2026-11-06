@@ -69,6 +69,11 @@ const KINDS = [
   'draft',
   'newsSource',
   'story',
+  'bankLink',
+  'bankAccount',
+  'txn',
+  'moneyCategory',
+  'moneyRule',
   'recording',
   'voiceprint',
   'transcript',
@@ -115,6 +120,15 @@ assert.deepEqual(targetsFor(['transcript']), [])
 // the list" -- so there is no applier, and the whole store is what reloads.
 assert.deepEqual(targetsFor(['newsSource', 'story']), ['feed'])
 assert.deepEqual(targetsFor(['story'], true), ['feed'], 'the Overview does not redraw for news')
+
+// A bank's sync, a category renamed, a rule added: all one store's, which
+// reloads what it has on screen. A sync raises its `txn` changes for a whole
+// delta, so they collapse to one reload, and the Overview's charts -- which
+// count hours and habits, not money -- are not dragged along.
+assert.deepEqual(targetsFor(['bankLink', 'bankAccount', 'txn', 'moneyCategory', 'moneyRule']), [
+  'money',
+])
+assert.deepEqual(targetsFor(['txn', 'txn', 'txn'], true), ['money'], 'a sync is one reload')
 
 // A job moving -- queued, running, a new progress line, done -- reloads the
 // jobs store alone, and does not drag the routines with it: the two are

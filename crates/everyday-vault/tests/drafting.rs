@@ -310,6 +310,14 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "unfollow_source",
     "mark_stories_read",
     "save_story",
+    // How the person sorts and budgets their money is theirs to decide: a
+    // category set by hand is final, so a dream setting one would be a
+    // guess that no rule could ever correct. None is one of the kinds a
+    // dream may propose.
+    "categorize_transactions",
+    "update_transactions",
+    "set_budget",
+    "create_money_rule",
 ];
 
 /// The two tools that write a real `Draft` while drafting and gain a linked

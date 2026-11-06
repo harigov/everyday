@@ -16,6 +16,7 @@ import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
+import { money } from './money.svelte'
 import { notes } from './notes.svelte'
 import type { Showing } from './onscreen'
 import { overview } from './overview.svelte'
@@ -24,7 +25,7 @@ import { app } from './state.svelte'
 import { todo } from './todo.svelte'
 import type { OnScreenApp } from './types'
 
-const deps: AppDeps = { app, notes, todo, calendar, library, mail, feed, overview }
+const deps: AppDeps = { app, notes, todo, calendar, library, mail, feed, money, overview }
 
 /** Each Settings tab, as the model is told it. Not the drawn labels, which
  *  live with their icons in `SettingsView.svelte`; these only need to say
@@ -43,6 +44,7 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   proposals: 'the proposals waiting for them to accept or decline',
   skills: "the assistant's skills",
   chat: 'the Chat tab, where the assistant is reached from a chat app',
+  money: 'the Money tab, where the keys for linking banks through Plaid are kept',
   meetings: 'the Meetings tab',
   keepintouch: 'the Keeping in touch tab, how often to keep up with people',
   data: 'the Data tab, import and export',

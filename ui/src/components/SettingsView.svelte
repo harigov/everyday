@@ -66,6 +66,7 @@
   import MailWritingPanel from './MailWritingPanel.svelte'
   import MeetingsPanel from './MeetingsPanel.svelte'
   import ModelsPanel from './ModelsPanel.svelte'
+  import MoneySettingsPanel from './MoneySettingsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
@@ -206,6 +207,10 @@
     // -- bot accounts on a server the person runs, much as Accounts holds
     // mailboxes.
     { id: 'chat', label: 'Chat', icon: 'globe' },
+    // The Plaid keys a person brings to link banks. Its own tab rather than
+    // under Accounts, which holds mailboxes: a bank is not signed in to here,
+    // only the keys that let Money ask Plaid to sign one in.
+    { id: 'money', label: 'Money', icon: 'wallet' },
     { id: 'meetings', label: 'Meetings', icon: 'mic' },
     // Beside Meetings: another thing the app does with your days on its own,
     // reading the Library's Contacts shelf rather than a calendar.
@@ -245,6 +250,7 @@
       .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
       .filter((t) => t.id !== 'meetings' || meetings.supported)
+      .filter((t) => t.id !== 'money' || app.supportsMoney)
       .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
       .filter((t) => t.id !== 'writing' || (agent.supported && app.supportsMail)),
@@ -413,6 +419,8 @@
       <SkillsPanel />
     {:else if tab === 'chat'}
       <ChatLinksPanel />
+    {:else if tab === 'money'}
+      <MoneySettingsPanel />
     {:else if tab === 'meetings'}
       <MeetingsPanel />
     {:else if tab === 'keepintouch'}

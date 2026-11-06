@@ -168,6 +168,44 @@ fn news_domain_aad_labels_are_pinned() {
     assert_eq!(everyday_core::news::NEWS_KEY_LABEL, "everyday.news.key.v1");
 }
 
+// ---- money ----------------------------------------------------------------
+
+#[test]
+fn money_domain_aad_labels_are_pinned() {
+    assert_eq!(
+        store::money::bank_link_aad(id::<BankLinkId>()),
+        b"everyday.bank_link.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::money::link_state_aad(id::<BankLinkId>()),
+        b"everyday.bank_link_state.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::money::bank_account_aad(id::<BankAccountId>()),
+        b"everyday.bank_account.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::money::balance_aad(id::<BankAccountId>(), jiff::civil::date(2026, 11, 5)),
+        b"everyday.balance.v1:01234567-89ab-cdef-0123-456789abcdef:2026-11-05".to_vec()
+    );
+    assert_eq!(
+        store::money::txn_aad(id::<TxnId>()),
+        b"everyday.txn.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::money::money_category_aad(id::<MoneyCategoryId>()),
+        b"everyday.money_category.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::money::money_rule_aad(id::<MoneyRuleId>()),
+        b"everyday.money_rule.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(everyday_core::money::MONEY_KEY_LABEL, "everyday.money.key.v1");
+    assert_eq!(everyday_core::money::PLAID_KEYS_OWNER_KIND, "plaid-keys");
+    assert_eq!(everyday_core::money::PLAID_KEYS_OWNER_ID, "vault");
+    assert_eq!(everyday_core::money::BANK_LINK_SECRET_OWNER_KIND, "bank_link");
+}
+
 // ---- mail -----------------------------------------------------------------
 
 #[test]

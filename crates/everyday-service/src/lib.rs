@@ -69,6 +69,7 @@ pub mod mailvoice;
 pub mod mailwrite;
 pub mod maps;
 pub mod meeting;
+pub mod money;
 pub mod news;
 pub mod outbox;
 pub mod pictures;

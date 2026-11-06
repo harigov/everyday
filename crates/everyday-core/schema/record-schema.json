@@ -698,6 +698,222 @@
     "title": "Message",
     "type": "object"
   },
+  "BankAccount": {
+    "$defs": {
+      "AccountKind": {
+        "description": "What kind of money an account holds.",
+        "oneOf": [
+          {
+            "enum": [
+              "credit",
+              "loan",
+              "other"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "cash",
+            "description": "Checking, savings, cash management: Plaid's `depository`.",
+            "type": "string"
+          },
+          {
+            "const": "investment",
+            "description": "Brokerage, retirement. Balances only: holdings are not read.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One account at a bank, or one kept by hand.",
+    "properties": {
+      "available": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "balance": {
+        "description": "What the bank says the balance is, in minor units. For a liability,\nwhat is owed, positive. `None` until anything has said.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "balanceAt": {
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "currency": {
+        "description": "ISO 4217, upper case.",
+        "type": "string"
+      },
+      "hidden": {
+        "default": false,
+        "description": "Left out of lists, totals and reports. Its transactions stay.",
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/AccountKind",
+        "default": "cash"
+      },
+      "limit": {
+        "description": "A credit card's limit.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "linkId": {
+        "description": "The link it came through. `None` for an account kept by hand, which\nis where imported files go -- and what a linked account becomes when\nits bank is disconnected but its history kept.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "mask": {
+        "default": "",
+        "description": "The last two to four digits, as the bank gives them. Never the full\nnumber: no provider sends it here, and nothing asks for it.",
+        "type": "string"
+      },
+      "name": {
+        "description": "What the person calls it. The bank's name when it arrived; a sync\nnever writes it after that.",
+        "type": "string"
+      },
+      "officialName": {
+        "default": "",
+        "description": "What the bank calls it. Rewritten by sync.",
+        "type": "string"
+      },
+      "providerAccountId": {
+        "default": "",
+        "description": "The provider's id for it (Plaid's `account_id`). Empty for a manual\naccount. Sealed, like every provider id.",
+        "type": "string"
+      },
+      "sortOrder": {
+        "default": 0,
+        "format": "int64",
+        "type": "integer"
+      },
+      "subtype": {
+        "default": "",
+        "description": "The bank's own word: \"checking\", \"savings\", \"credit card\".",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "currency",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "BankAccount",
+    "type": "object"
+  },
+  "BankLink": {
+    "$defs": {
+      "LinkProvider": {
+        "description": "Who a link goes through.",
+        "oneOf": [
+          {
+            "description": "Plaid. `item_id` is Plaid's name for the sign-in; the access token\nthat reaches it is a sealed secret, never here.",
+            "properties": {
+              "environment": {
+                "$ref": "#/$defs/PlaidEnvironment"
+              },
+              "institutionId": {
+                "default": "",
+                "type": "string"
+              },
+              "itemId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "plaid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "itemId",
+              "environment"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "PlaidEnvironment": {
+        "description": "Which Plaid the credentials and a link belong to. A sandbox item cannot\nbe reached with production keys, so a link remembers which it was made\nin, and sync refuses to send it to the other.",
+        "enum": [
+          "sandbox",
+          "production"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One sign-in at one bank, through an aggregator: what Plaid calls an Item.\nIt brings one or more [`BankAccount`]s.",
+    "properties": {
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "description": "What the sidebar calls it. The institution's name when it was linked,\nand the person's from then on: a sync never writes it.",
+        "type": "string"
+      },
+      "paused": {
+        "default": false,
+        "description": "Stop syncing. The access token is kept; turning it back on resumes\nfrom where the cursor was.",
+        "type": "boolean"
+      },
+      "provider": {
+        "$ref": "#/$defs/LinkProvider"
+      },
+      "sortOrder": {
+        "default": 0,
+        "format": "int64",
+        "type": "integer"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "provider",
+      "name",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "BankLink",
+    "type": "object"
+  },
   "Calendar": {
     "$defs": {
       "AccountCalendarSource": {
@@ -3684,6 +3900,166 @@
       "updatedAt"
     ],
     "title": "Memory",
+    "type": "object"
+  },
+  "MoneyCategory": {
+    "$defs": {
+      "CategoryKind": {
+        "description": "What a category counts as.",
+        "oneOf": [
+          {
+            "enum": [
+              "expense",
+              "income"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "transfer",
+            "description": "Money moving between the person's own accounts -- a card payment, a\ntransfer to savings. Counted as neither spending nor income.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "What a person calls a kind of spending or income, and what they mean to\nspend on it each month.",
+    "properties": {
+      "archived": {
+        "default": false,
+        "description": "Hidden from pickers; what it already labels keeps the label.",
+        "type": "boolean"
+      },
+      "budget": {
+        "description": "The monthly budget, in minor units of the vault's main currency, as a\npositive number. `None` is no budget. Only an expense category has one.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "color": {
+        "default": "",
+        "description": "A colour token from the interface's palette. Empty is the default.",
+        "type": "string"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "group": {
+        "default": "",
+        "description": "The heading it is listed under: \"Food\", \"Home\". Empty is none.",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/CategoryKind",
+        "default": "expense"
+      },
+      "name": {
+        "type": "string"
+      },
+      "sortOrder": {
+        "default": 0,
+        "format": "int64",
+        "type": "integer"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "MoneyCategory",
+    "type": "object"
+  },
+  "MoneyRule": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "\"Anything from this payee is that\": applied to every transaction that\narrives whose category is still open, first match wins by `sort_order`.",
+    "properties": {
+      "accountId": {
+        "description": "Only in this account.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "category": {
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "exact": {
+        "default": false,
+        "description": "Match the whole payee rather than any part of payee or description.",
+        "type": "boolean"
+      },
+      "exclude": {
+        "default": false,
+        "description": "Leave matches out of reports.",
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "maxAmount": {
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "minAmount": {
+        "description": "Only amounts in this signed range, minor units, inclusive.",
+        "format": "int64",
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "rename": {
+        "default": "",
+        "description": "Rename the payee. Empty leaves it.",
+        "type": "string"
+      },
+      "sortOrder": {
+        "default": 0,
+        "format": "int64",
+        "type": "integer"
+      },
+      "text": {
+        "description": "Matched case-insensitively against the bank's payee and description.\nNever empty.",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "text",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "MoneyRule",
     "type": "object"
   },
   "NewsSource": {
@@ -9277,6 +9653,197 @@
       "updatedAt"
     ],
     "title": "Transcript",
+    "type": "object"
+  },
+  "Txn": {
+    "$defs": {
+      "CategorizedBy": {
+        "description": "Who decided a transaction's category, which decides who may change it.\n\nA person's choice is final: no rule, sync or suggestion overwrites it. A\nrule's or the bank's is a default that a later rule may improve on.",
+        "oneOf": [
+          {
+            "description": "Nobody: it has no category.",
+            "properties": {
+              "by": {
+                "const": "nobody",
+                "type": "string"
+              }
+            },
+            "required": [
+              "by"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Mapped from the bank's own category -- see [`defaults::for_bank_category`].",
+            "properties": {
+              "by": {
+                "const": "bank",
+                "type": "string"
+              }
+            },
+            "required": [
+              "by"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A rule matched it.",
+            "properties": {
+              "by": {
+                "const": "rule",
+                "type": "string"
+              },
+              "ruleId": {
+                "format": "uuid",
+                "type": "string"
+              }
+            },
+            "required": [
+              "by",
+              "ruleId"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The person chose it.",
+            "properties": {
+              "by": {
+                "const": "person",
+                "type": "string"
+              }
+            },
+            "required": [
+              "by"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TxnOrigin": {
+        "description": "Where a transaction came from.",
+        "oneOf": [
+          {
+            "const": "bank",
+            "description": "Synced from the bank. Can be excluded, never deleted: the next sync\nwould bring it back.",
+            "type": "string"
+          },
+          {
+            "const": "import",
+            "description": "Read from an OFX, QFX or CSV file.",
+            "type": "string"
+          },
+          {
+            "const": "manual",
+            "description": "Typed in.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One thing that happened in an account.",
+    "properties": {
+      "accountId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "amount": {
+        "description": "Minor units. Negative is money out, positive money in.",
+        "format": "int64",
+        "type": "integer"
+      },
+      "bankCategory": {
+        "default": "",
+        "description": "The bank's own category, e.g. Plaid's `FOOD_AND_DRINK` /\n`FOOD_AND_DRINK_RESTAURANT` joined with `/`. Empty when it gave none.",
+        "type": "string"
+      },
+      "categorizedBy": {
+        "$ref": "#/$defs/CategorizedBy",
+        "default": {
+          "by": "nobody"
+        }
+      },
+      "category": {
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "currency": {
+        "description": "ISO 4217, upper case.",
+        "type": "string"
+      },
+      "date": {
+        "description": "When it posted -- or for a pending one, when it was authorised.",
+        "format": "date",
+        "type": "string"
+      },
+      "description": {
+        "default": "",
+        "description": "The bank's raw line. Written by whoever sent the money as often as by\nthe bank -- a transfer's memo is the sender's words -- so it is\nuntrusted text wherever a model reads it.",
+        "type": "string"
+      },
+      "excluded": {
+        "default": false,
+        "description": "Left out of reports and budgets: a refund that was reversed, a\ntransfer the person does not want counted.",
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "key": {
+        "description": "The dedupe key: a keyed hash (see `Vault::money_key`) of the\nprovider's transaction id, or of an imported line's fingerprint.\nUnique per account. In the clear, which is why it is keyed.",
+        "type": "string"
+      },
+      "note": {
+        "default": "",
+        "type": "string"
+      },
+      "origin": {
+        "$ref": "#/$defs/TxnOrigin",
+        "default": "bank"
+      },
+      "payee": {
+        "default": "",
+        "description": "Who it was with, as the bank names them (Plaid's `merchant_name`,\nelse a cleaned `name`).",
+        "type": "string"
+      },
+      "payeeOverride": {
+        "default": "",
+        "description": "What the person calls the payee. Empty means the bank's.",
+        "type": "string"
+      },
+      "pending": {
+        "default": false,
+        "type": "boolean"
+      },
+      "providerId": {
+        "default": "",
+        "description": "Plaid's `transaction_id`, or the file's own id (OFX `FITID`). Empty\nfor a manual entry. Sealed.",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "accountId",
+      "key",
+      "date",
+      "amount",
+      "currency",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Txn",
     "type": "object"
   },
   "VoiceprintInfo": {

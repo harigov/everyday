@@ -86,6 +86,8 @@ const UNTITLED: Record<ShownKind, string> = {
   draft: 'A new message',
   newsSource: 'A source',
   story: 'An untitled story',
+  bankAccount: 'A bank account',
+  txn: 'A transaction',
 }
 
 /** The most `send_message` will carry of each list -- the service reads no

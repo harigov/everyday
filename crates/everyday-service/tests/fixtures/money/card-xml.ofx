@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<?OFX OFXHEADER="200" VERSION="220" SECURITY="NONE" OLDFILEUID="NONE" NEWFILEUID="NONE"?>
+<OFX>
+  <SIGNONMSGSRSV1>
+    <SONRS>
+      <STATUS>
+        <CODE>0</CODE>
+        <SEVERITY>INFO</SEVERITY>
+      </STATUS>
+      <DTSERVER>20261102083000</DTSERVER>
+      <LANGUAGE>ENG</LANGUAGE>
+    </SONRS>
+  </SIGNONMSGSRSV1>
+  <CREDITCARDMSGSRSV1>
+    <CCSTMTTRNRS>
+      <TRNUID>0</TRNUID>
+      <STATUS>
+        <CODE>0</CODE>
+        <SEVERITY>INFO</SEVERITY>
+      </STATUS>
+      <CCSTMTRS>
+        <CURDEF>CAD</CURDEF>
+        <CCACCTFROM>
+          <ACCTID>4500000000001234</ACCTID>
+        </CCACCTFROM>
+        <BANKTRANLIST>
+          <DTSTART>20261001000000</DTSTART>
+          <DTEND>20261031235959</DTEND>
+          <STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20261004000000</DTPOSTED>
+            <TRNAMT>-23.45</TRNAMT>
+            <FITID>CC-0001</FITID>
+            <NAME>TIM HORTONS #4410</NAME>
+            <MEMO>TORONTO ON</MEMO>
+          </STMTTRN>
+          <STMTTRN>
+            <TRNTYPE>CREDIT</TRNTYPE>
+            <DTPOSTED>20261012000000</DTPOSTED>
+            <TRNAMT>500.00</TRNAMT>
+            <FITID>CC-0002</FITID>
+            <NAME>PAYMENT - THANK YOU</NAME>
+          </STMTTRN>
+          <STMTTRN>
+            <TRNTYPE>CREDIT</TRNTYPE>
+            <DTPOSTED>20261019000000</DTPOSTED>
+            <TRNAMT>12.00</TRNAMT>
+            <FITID>CC-0003</FITID>
+            <NAME>Caf&#233; Olimpico &amp; Co</NAME>
+            <MEMO>REFUND</MEMO>
+          </STMTTRN>
+          <STMTTRN>
+            <TRNTYPE>DEBIT</TRNTYPE>
+            <DTPOSTED>20261029000000</DTPOSTED>
+            <TRNAMT>-1,204.99</TRNAMT>
+            <FITID>CC-0004</FITID>
+            <NAME>BEST BUY #0912</NAME>
+            <MEMO/>
+          </STMTTRN>
+        </BANKTRANLIST>
+        <LEDGERBAL>
+          <BALAMT>-716.44</BALAMT>
+          <DTASOF>20261031</DTASOF>
+        </LEDGERBAL>
+      </CCSTMTRS>
+    </CCSTMTTRNRS>
+  </CREDITCARDMSGSRSV1>
+</OFX>

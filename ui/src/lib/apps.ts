@@ -37,6 +37,7 @@ import type { notes as notesSingleton } from './notes.svelte'
 import type { calendar as calendarSingleton } from './calendar.svelte'
 import type { mail as mailSingleton } from './mail.svelte'
 import type { feed as feedSingleton } from './feed.svelte'
+import type { money as moneySingleton } from './money.svelte'
 import type { overview as overviewSingleton } from './overview.svelte'
 import type { assistant as assistantSingleton } from './assistant.svelte'
 import type { agent as agentSingleton } from './agent.svelte'
@@ -49,6 +50,7 @@ type NotesLike = typeof notesSingleton
 type CalendarLike = typeof calendarSingleton
 type MailLike = typeof mailSingleton
 type FeedLike = typeof feedSingleton
+type MoneyLike = typeof moneySingleton
 type OverviewLike = typeof overviewSingleton
 type AssistantLike = typeof assistantSingleton
 type AgentLike = typeof agentSingleton
@@ -67,6 +69,7 @@ export const APP_ORDER = [
   'library',
   'mail',
   'feed',
+  'money',
   'assistant',
   'journal',
 ] as const
@@ -82,6 +85,7 @@ export interface AppDeps {
   library: LibraryLike
   mail: MailLike
   feed: FeedLike
+  money: MoneyLike
   overview: OverviewLike
 }
 
@@ -108,6 +112,7 @@ export interface AccentDeps {
   todo: TodoLike
   library: LibraryLike
   feed: FeedLike
+  money: MoneyLike
 }
 
 /** What `shortcuts.svelte.ts`'s "start the next thing" needs from every
@@ -120,6 +125,7 @@ export interface CreateDeps {
   library: LibraryLike
   mail: MailLike
   feed: FeedLike
+  money: MoneyLike
   overview: OverviewLike
   assistant: AssistantLike
   /** The conversation, which is what the Assistant app starts a new one of. */
@@ -252,6 +258,29 @@ export const APPS: Record<Section, AppModule> = {
       query: d.feed.query,
       set: (q) => d.feed.setQuery(q),
     }),
+  },
+  money: {
+    section: 'money',
+    label: 'Money',
+    icon: 'wallet',
+    supported: (app) => app.supportsMoney,
+    accent: (d) => d.money.accent,
+    // A transaction typed into an account kept by hand, where there is one;
+    // with no account at all, the Accounts pane, where a bank is connected
+    // or an account started. See `money.create`.
+    create: (d) => d.money.create(),
+    onScreen: (d) => d.money.showing,
+    // Only the transactions are searched. Typing from the overview takes the
+    // list along with it (see `money.setQuery`); the budget, the reports and
+    // the account and rule lists have nothing for a payee search to narrow.
+    search: (d) =>
+      d.money.view === 'transactions' || d.money.view === 'overview'
+        ? {
+            placeholder: 'Search transactions',
+            query: d.money.query,
+            set: (q) => d.money.setQuery(q),
+          }
+        : null,
   },
   assistant: {
     section: 'assistant',

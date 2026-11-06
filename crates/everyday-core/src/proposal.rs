@@ -190,7 +190,12 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::Job
             | RecordKind::NewsSource
             | RecordKind::Story
-            | RecordKind::WritingAssist => Err(()),
+            | RecordKind::WritingAssist
+            | RecordKind::BankLink
+            | RecordKind::BankAccount
+            | RecordKind::Txn
+            | RecordKind::MoneyCategory
+            | RecordKind::MoneyRule => Err(()),
         }
     }
 }
@@ -459,7 +464,12 @@ impl TryFrom<RecordKind> for AboutKind {
             | RecordKind::Job
             | RecordKind::NewsSource
             | RecordKind::Story
-            | RecordKind::WritingAssist => Err(()),
+            | RecordKind::WritingAssist
+            | RecordKind::BankLink
+            | RecordKind::BankAccount
+            | RecordKind::Txn
+            | RecordKind::MoneyCategory
+            | RecordKind::MoneyRule => Err(()),
         }
     }
 }

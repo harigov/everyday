@@ -57,6 +57,18 @@
 //! listed and then refused. A gate whose refusal explains how to get past it
 //! is not a gate.
 //!
+//! # Money needs asking for by name
+//!
+//! A token is issued with [`Scope::All`] unless its owner narrows it, and
+//! most were minted before Money existed. What somebody earns and spends is
+//! not something a token minted for a coding agent should start reading one
+//! release later, so the money tools are offered -- listed and callable --
+//! only to a token whose scopes name `money` itself. `All` still covers
+//! every other domain, as it always has, and still covers Money for the
+//! owner's own window, CLI and paired copies of this application; it is
+//! only somebody else's model, here, that has to be given it explicitly.
+//! See [`Ctx::names`].
+//!
 //! # Outward tools over MCP
 //!
 //! `send_draft` -- the one tool in the catalogue with
@@ -356,6 +368,7 @@ impl everyday_mcp::Host for VaultHost {
             // switches permit: `send_draft` absent unless some account has
             // turned MCP send on, per `docs/plans/mail.md`'s phase 5.
             let args = json!({ "caller": mcp_caller(&ctx) });
+            let money_ctx = ctx.clone();
             let value = service.call(ctx, "list_tools", args).await.map_err(host_error)?;
             let tools: Vec<WireTool> = serde_json::from_value(value).map_err(|e| HostError {
                 code: "internal".to_string(),
@@ -374,6 +387,9 @@ impl everyday_mcp::Host for VaultHost {
                 // filtered on above -- see the module doc's "Outward tools
                 // over MCP".
                 .filter(|t| allow_destructive || t.effect != "destructive")
+                // Money only for a token that names it -- see the module
+                // doc's "Money needs asking for by name".
+                .filter(|t| money_allowed(&money_ctx, &t.name))
                 .map(|t| ToolDef {
                     name: t.name,
                     title: t.title,
@@ -402,6 +418,15 @@ impl everyday_mcp::Host for VaultHost {
             // through `Service::call` just to ask a question this process
             // can answer from `everyday_core::agent::tools` alone, and the
             // answer is the same one `tools()` would have filtered on.
+            if !money_allowed(&ctx, &name) {
+                return Err(HostError {
+                    code: "forbidden".to_string(),
+                    message: format!(
+                        "{name} reads or changes Money, and this connection's token was not \
+                         given the money scope"
+                    ),
+                });
+            }
             if !allow_destructive
                 && everyday_core::agent::tools::find(&name)
                     .is_some_and(|t| t.effect == Effect::Destructive)
@@ -444,6 +469,16 @@ impl everyday_mcp::Host for VaultHost {
 }
 
 /// The `caller` field `everyday_service::domains::meta::WireCaller`
+/// May this caller see or run `tool`? Every tool outside Money, yes; a money
+/// tool only when the token names [`Scope::Money`] itself rather than
+/// holding it through [`Scope::All`]. See the module doc's "Money needs
+/// asking for by name".
+fn money_allowed(ctx: &Ctx, tool: &str) -> bool {
+    let is_money = everyday_core::agent::tools::find(tool)
+        .is_some_and(|t| t.domain == everyday_core::agent::tools::Domain::Money);
+    !is_money || ctx.names(Scope::Money)
+}
+
 /// deserialises -- minted here, server-side, from the [`Ctx`] this
 /// [`VaultHost`] was built with, which is itself built by
 /// [`crate::auth::Registry::authenticate`] from the request's own bearer

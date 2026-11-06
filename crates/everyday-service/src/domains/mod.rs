@@ -26,6 +26,7 @@ pub mod mailwrite;
 pub mod meetings;
 pub mod meta;
 pub mod models;
+pub mod money;
 pub mod news;
 pub mod newsmail;
 pub mod notes;
@@ -84,6 +85,7 @@ pub fn catalog() -> &'static [&'static Command] {
             mailwrite::COMMANDS,
             news::COMMANDS,
             newsmail::COMMANDS,
+            money::COMMANDS,
             meetings::COMMANDS,
             notes::COMMANDS,
             trackers::COMMANDS,

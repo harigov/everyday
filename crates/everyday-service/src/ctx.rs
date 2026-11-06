@@ -113,6 +113,16 @@ pub enum Scope {
     /// Fetching news puts requests on the network, but only to addresses the
     /// person chose, so it does not need [`Scope::Web`] as well.
     News,
+    /// Money: linked banks, accounts, transactions, categories, budgets, and
+    /// the Plaid keys that link them.
+    ///
+    /// Its own scope, never a corner of another: what somebody earns and
+    /// spends is as private as anything in the vault, and a client that may
+    /// read a calendar or a reading list has no business inheriting it.
+    /// Holding it lets a client *set* the Plaid keys and connect a bank;
+    /// nothing under it, or any other scope, hands a key or a bank token
+    /// back out.
+    Money,
     /// Searching the web and fetching a picture. Its own scope because it is
     /// the one capability that puts a request on the network, and a client
     /// that only wants to read a shelf has no business asking for it.
@@ -160,6 +170,7 @@ impl Scope {
             Scope::Quick => "quick",
             Scope::Meetings => "meetings",
             Scope::News => "news",
+            Scope::Money => "money",
             Scope::Web => "web",
             Scope::Admin => "admin",
             Scope::Any => "any",
@@ -185,6 +196,7 @@ impl Scope {
         Scope::Quick,
         Scope::Meetings,
         Scope::News,
+        Scope::Money,
         Scope::Web,
         Scope::Admin,
     ];
@@ -275,6 +287,20 @@ impl Ctx {
         self.scopes.iter().any(|s| *s == Scope::All || *s == scope)
     }
 
+    /// Was `scope` granted *by name* -- not merely covered by [`Scope::All`]?
+    ///
+    /// For the one place a broad grant should not be enough: somebody
+    /// else's model reaching Money over MCP. An MCP token is issued with
+    /// `All` unless its owner narrows it, and most were issued before Money
+    /// existed; a token minted to let a coding agent file tasks must not
+    /// wake up one release later able to read every bank transaction. So
+    /// `everyday-server::mcp` offers money tools only to a token that names
+    /// `money` itself. The window, the CLI and a paired copy of this
+    /// application are the owner's own and keep `All`'s meaning.
+    pub fn names(&self, scope: Scope) -> bool {
+        self.scopes.contains(&scope)
+    }
+
     pub fn require(&self, scope: Scope) -> CommandResult<()> {
         if self.holds(scope) {
             Ok(())
@@ -301,6 +327,15 @@ mod tests {
         assert!(reader.holds(Scope::Library));
         assert!(!reader.holds(Scope::Journals));
         assert_eq!(reader.require(Scope::Journals).unwrap_err().code, "forbidden");
+    }
+
+    #[test]
+    fn all_covers_money_but_does_not_name_it() {
+        let everything = Ctx::local();
+        assert!(everything.holds(Scope::Money));
+        assert!(!everything.names(Scope::Money));
+        let named = Ctx { scopes: vec![Scope::Tasks, Scope::Money], ..Ctx::local() };
+        assert!(named.names(Scope::Money));
     }
 
     #[test]

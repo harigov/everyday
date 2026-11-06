@@ -204,6 +204,17 @@ pub enum Kind {
     /// A story in the Feed. A refresh raises one with no id, meaning
     /// "reload the list", as a mail sync pass does for threads.
     Story,
+    /// A linked bank. Its sync state is not announced on its own: a sync
+    /// that changed anything raises [`Kind::Txn`].
+    BankLink,
+    /// An account a bank brought, or one kept by hand.
+    BankAccount,
+    /// A transaction. A sync raises one with no id, meaning "reload".
+    Txn,
+    /// A spending or income category, with its budget.
+    MoneyCategory,
+    /// A rule that sorts transactions as they arrive.
+    MoneyRule,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
     /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --
@@ -264,6 +275,11 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Voiceprint => Ok(RecordKind::Voiceprint),
             Kind::NewsSource => Ok(RecordKind::NewsSource),
             Kind::Story => Ok(RecordKind::Story),
+            Kind::BankLink => Ok(RecordKind::BankLink),
+            Kind::BankAccount => Ok(RecordKind::BankAccount),
+            Kind::Txn => Ok(RecordKind::Txn),
+            Kind::MoneyCategory => Ok(RecordKind::MoneyCategory),
+            Kind::MoneyRule => Ok(RecordKind::MoneyRule),
             // Not a record: the vault's own settings.
             Kind::Settings => Err(()),
             // Not a record: a supervisor task's status.
@@ -313,6 +329,11 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::Voiceprint => Ok(Kind::Voiceprint),
             RecordKind::NewsSource => Ok(Kind::NewsSource),
             RecordKind::Story => Ok(Kind::Story),
+            RecordKind::BankLink => Ok(Kind::BankLink),
+            RecordKind::BankAccount => Ok(Kind::BankAccount),
+            RecordKind::Txn => Ok(Kind::Txn),
+            RecordKind::MoneyCategory => Ok(Kind::MoneyCategory),
+            RecordKind::MoneyRule => Ok(Kind::MoneyRule),
             // Folded into `Kind::Thread` -- see this impl's docs.
             RecordKind::MailMessage | RecordKind::Op => Err(()),
             // Folded into `Kind::Conversation` -- see this impl's docs.
@@ -495,7 +516,7 @@ mod tests {
     //! the docs on those impls name.
     use super::*;
 
-    const RECORD_KINDS: [Kind; 30] = [
+    const RECORD_KINDS: [Kind; 35] = [
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
@@ -526,13 +547,18 @@ mod tests {
         Kind::Voiceprint,
         Kind::NewsSource,
         Kind::Story,
+        Kind::BankLink,
+        Kind::BankAccount,
+        Kind::Txn,
+        Kind::MoneyCategory,
+        Kind::MoneyRule,
     ];
 
     #[test]
     fn every_record_backed_change_kind_round_trips_through_record_kind() {
         for kind in RECORD_KINDS {
             let record = RecordKind::try_from(kind).unwrap_or_else(|()| {
-                panic!("{kind:?} is one of the 30 record-backed kinds and should convert")
+                panic!("{kind:?} is one of the 35 record-backed kinds and should convert")
             });
             assert_eq!(Kind::try_from(record), Ok(kind), "{kind:?}");
         }

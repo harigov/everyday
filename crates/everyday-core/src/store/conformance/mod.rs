@@ -33,6 +33,7 @@ mod journal;
 mod library;
 mod mail;
 mod meetings;
+mod money;
 mod news;
 mod notes;
 mod proposals;
@@ -50,6 +51,7 @@ pub use jobs::run_job_suite;
 pub use library::run_library_suite;
 pub use mail::run_mail_suite;
 pub use meetings::run_meeting_suite;
+pub use money::run_money_suite;
 pub use news::run_news_suite;
 pub use notes::run_note_suite;
 pub use proposals::run_proposal_suite;
@@ -255,6 +257,12 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.news() {
         Some(_) => run_news_suite(store),
         None => eprintln!("backend {name:?} stores no feed; skipping the news suite"),
+    }
+
+    // And Money, which reads nothing of any other domain's.
+    match store.money() {
+        Some(_) => run_money_suite(store),
+        None => eprintln!("backend {name:?} stores no money; skipping the money suite"),
     }
 
     journal::cleanup(store);

@@ -11,6 +11,7 @@ mod jobs;
 mod journals;
 mod library;
 mod memory;
+mod money;
 mod news;
 mod notes;
 mod partial_patch;
