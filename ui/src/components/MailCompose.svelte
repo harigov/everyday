@@ -362,6 +362,70 @@
     touch()
   }
 
+  /** `email` taken out of `from` and put at the end of `to`: a chip dragged
+   *  between To, Cc and Bcc, or moved from its menu. Already in `to`, it is
+   *  only taken out of `from`. */
+  function moveAddress(from: 'to' | 'cc' | 'bcc', to: 'to' | 'cc' | 'bcc', email: string) {
+    if (from === to) return
+    const address = working[from].find((a) => a.email === email)
+    if (!address) return
+    working[from] = working[from].filter((a) => a.email !== email)
+    const lower = email.trim().toLowerCase()
+    if (!working[to].some((a) => a.email.trim().toLowerCase() === lower)) {
+      working[to] = [...working[to], address]
+    }
+    if (to !== 'to') showCcBcc = true
+    touch()
+  }
+
+  /** The chip being dragged, while it is. Not read from `dataTransfer`,
+   *  which a drag only lets a drop see. */
+  let dragging = $state<{ field: 'to' | 'cc' | 'bcc'; email: string } | null>(null)
+  /** The row a dragged chip is over, which says it will land there. */
+  let dropInto = $state<'to' | 'cc' | 'bcc' | null>(null)
+
+  function onChipDragStart(e: DragEvent, field: 'to' | 'cc' | 'bcc', email: string) {
+    dragging = { field, email }
+    // Somewhere to drop it: Cc and Bcc show while a chip is in the air.
+    showCcBcc = true
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', email)
+    }
+  }
+
+  function onRowDragOver(e: DragEvent, field: 'to' | 'cc' | 'bcc') {
+    if (!dragging || dragging.field === field) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    dropInto = field
+  }
+
+  function onRowDrop(e: DragEvent, field: 'to' | 'cc' | 'bcc') {
+    if (!dragging) return
+    e.preventDefault()
+    moveAddress(dragging.field, field, dragging.email)
+    dragging = null
+    dropInto = null
+  }
+
+  function onChipDragEnd() {
+    dragging = null
+    dropInto = null
+  }
+
+  function chipMenu(e: MouseEvent, field: 'to' | 'cc' | 'bcc', email: string) {
+    menu.show(
+      e,
+      (['to', 'cc', 'bcc'] as const)
+        .filter((other) => other !== field)
+        .map((other) => ({
+          label: `Move to ${FIELD_LABELS[other]}`,
+          run: () => moveAddress(field, other, email),
+        })),
+    )
+  }
+
   /** Enter (or a comma) on a bare address turns typed text into a chip
    *  without waiting for a suggestion to be clicked. Several pasted at once
    *  -- `a@x.com, b@y.com` -- become a chip each; one written as
@@ -965,11 +1029,31 @@
 
   {#snippet addressRow(field: 'to' | 'cc' | 'bcc')}
     {@const label = FIELD_LABELS[field]}
-    <div class="line address">
+    <div
+      class="line address"
+      class:drop-into={dropInto === field}
+      role="group"
+      aria-label={label}
+      ondragover={(e) => onRowDragOver(e, field)}
+      ondragleave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null) && dropInto === field) {
+          dropInto = null
+        }
+      }}
+      ondrop={(e) => onRowDrop(e, field)}
+    >
       <span class="label">{label}</span>
       <div class="chips">
         {#each working[field] as a (a.email)}
-          <span class="chip" title={a.email}
+          <span
+            class="chip"
+            class:lifted={dragging?.field === field && dragging.email === a.email}
+            title={`${a.email} · drag to To, Cc or Bcc, or right-click to move`}
+            role="listitem"
+            draggable="true"
+            ondragstart={(e) => onChipDragStart(e, field, a.email)}
+            ondragend={onChipDragEnd}
+            oncontextmenu={(e) => chipMenu(e, field, a.email)}
             >{a.name || a.email}<button
               aria-label={`Remove ${a.name || a.email}`}
               onclick={() => removeAddress(field, a.email)}><Icon name="close" size={10} /></button
@@ -1431,6 +1515,17 @@
     border-radius: 999px;
     background: var(--bg-hover);
     font-size: var(--text-sm);
+  }
+  .chip[draggable='true'] {
+    cursor: grab;
+  }
+  .chip.lifted {
+    opacity: 0.45;
+  }
+  /* The line a dragged chip will land on. */
+  .line.address.drop-into {
+    background: var(--bg-hover);
+    box-shadow: inset 2px 0 0 var(--journal-accent, var(--accent));
   }
   .chip button {
     display: grid;

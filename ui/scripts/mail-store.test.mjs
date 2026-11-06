@@ -324,6 +324,17 @@ assert.equal(
   pass()
   await reload()
   assert.equal(mail.openThread.messages.length, count, 'a server copy of a draft stays out of it')
+  assert.ok(
+    mail.openThread.drafts.some((d) => d.copies.some((c) => c.id === draftCopy.id)),
+    'and is drawn as a draft instead',
+  )
+  // Deleting it from its card takes it out of the thread at once.
+  const card = mail.openThread.drafts.find((d) => d.copies.some((c) => c.id === draftCopy.id))
+  await mail.deleteThreadDraft(card)
+  assert.ok(
+    !mail.openThread.drafts.some((d) => d.copies.some((c) => c.id === draftCopy.id)),
+    'a deleted draft leaves the thread',
+  )
   assert.ok(!mail.expanded.has(draftCopy.id))
 
   // An older answer arriving last is not drawn over a newer one.

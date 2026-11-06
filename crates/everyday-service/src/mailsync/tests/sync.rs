@@ -1759,3 +1759,157 @@ async fn never_connects(
 ) -> SessionResult<FakeMailSession> {
     panic!("must not attempt a connection once the credential itself is refused")
 }
+
+/// Gmail files a sent message in Sent and All Mail at once. A sync task that
+/// met it in one and a later task that met it in the other used to store it
+/// twice -- every sent reply drawn twice in its thread -- because only the
+/// running task's memory was asked. The vault's `Message-ID` key is asked
+/// too, and outlives the task.
+#[tokio::test]
+async fn a_message_met_again_by_a_fresh_sync_task_is_not_stored_twice() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let raw = raw_message(
+        "me@example.com",
+        None,
+        "a@example.com",
+        "My reply",
+        "01 Jan 2024 10:00:00 +0000",
+        "x",
+    );
+    let meta = || Some(GmailMeta { thrid: 9, msgid: 9, labels: vec!["\\Sent".into()] });
+    server.lock().unwrap().append("All Mail", raw.clone(), flags_seen(), meta());
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    // Sent, met by another task (`TestEnv::sync` starts each with nothing
+    // remembered, as a restarted account task does).
+    server.lock().unwrap().append("Sent", raw, flags_seen(), meta());
+    env.sync(&mut session).await;
+
+    let rows = env.vault.mailboxes(env.account_id).unwrap();
+    let sent = rows.iter().find(|m| m.role == MailboxRole::Sent).unwrap().id;
+    let all = rows.iter().find(|m| m.role == MailboxRole::All).unwrap().id;
+    let threads = env.vault.list_threads(sent, &ThreadFilter::default(), None, 10).unwrap().threads;
+    assert_eq!(threads.len(), 1);
+    let (_, messages) = env.vault.thread(threads[0].id).unwrap();
+    assert_eq!(messages.len(), 1, "one message, not one per mailbox");
+    let mut filed: Vec<_> = env
+        .vault
+        .mail_message_locations(messages[0].id)
+        .unwrap()
+        .into_iter()
+        .map(|(mailbox, _)| mailbox)
+        .collect();
+    filed.sort();
+    let mut both = vec![sent, all];
+    both.sort();
+    assert_eq!(filed, both, "filed in both mailboxes");
+}
+
+/// What earlier syncs stored twice is merged once, the first time an account's
+/// sync starts with keys: filings move to the row kept, the other row goes,
+/// and its pack frame is marked dead and its search entry dropped.
+#[tokio::test]
+async fn messages_already_stored_twice_are_merged_once() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let raw = raw_message(
+        "me@example.com",
+        None,
+        "a@example.com",
+        "My reply",
+        "01 Jan 2024 10:00:00 +0000",
+        "x",
+    );
+    let meta = || Some(GmailMeta { thrid: 9, msgid: 9, labels: vec!["\\Sent".into()] });
+    server.lock().unwrap().append("All Mail", raw, flags_seen(), meta());
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    // The second row an older build stored, filed in Sent.
+    let rows = env.vault.mailboxes(env.account_id).unwrap();
+    let sent = rows.iter().find(|m| m.role == MailboxRole::Sent).unwrap().id;
+    let all = rows.iter().find(|m| m.role == MailboxRole::All).unwrap().id;
+    let threads = env.vault.list_threads(all, &ThreadFilter::default(), None, 10).unwrap().threads;
+    let (_, messages) = env.vault.thread(threads[0].id).unwrap();
+    let original = messages[0].clone();
+    let mut twin = original.clone();
+    twin.id = everyday_core::id::MailMessageId::new();
+    env.vault
+        .ingest_mail(
+            env.account_id,
+            vec![everyday_core::store::mail::IngestMessage {
+                message: twin.clone(),
+                mailbox: sent,
+                uid: 1,
+            }],
+        )
+        .unwrap();
+    assert_eq!(env.vault.thread(threads[0].id).unwrap().1.len(), 2, "stored twice, as before");
+
+    let ctx = env.ctx();
+    passes::key_existing_mail(
+        ctx.vault,
+        ctx.account_id,
+        &ctx.packs,
+        &ctx.index,
+        ctx.unread_cache.as_ref(),
+        ctx.statuses,
+    )
+    .await;
+
+    let (_, messages) = env.vault.thread(threads[0].id).unwrap();
+    assert_eq!(messages.len(), 1, "merged");
+    assert_eq!(messages[0].id, original.id, "the row downloaded first is kept");
+    let filed: Vec<_> = env
+        .vault
+        .mail_message_locations(original.id)
+        .unwrap()
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect();
+    assert!(filed.contains(&sent) && filed.contains(&all), "{filed:?}");
+
+    // Done once: a second start scans nothing and changes nothing.
+    let again = env.vault.key_existing_mail(env.account_id).unwrap();
+    assert!(again.is_empty());
+}
+
+/// A client that keeps one `Message-ID` across a draft's saves, or for the
+/// message sent from it: the later one, met by another task, is a message of
+/// its own, not folded into the first by its key.
+#[tokio::test]
+async fn a_reused_message_id_on_a_different_message_is_not_folded_by_its_key() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let first = raw_message(
+        "same@example.com",
+        None,
+        "me@example.com",
+        "Plan",
+        "01 Jan 2024 10:00:00 +0000",
+        "first",
+    );
+    let later = raw_message(
+        "same@example.com",
+        None,
+        "me@example.com",
+        "Plan",
+        "01 Jan 2024 11:00:00 +0000",
+        "the finished version, a good deal longer than the first",
+    );
+    server.lock().unwrap().append("INBOX", first, flags_seen(), None);
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    server.lock().unwrap().append("INBOX", later, flags_seen(), None);
+    env.sync(&mut session).await;
+
+    let rows = env.vault.mailboxes(env.account_id).unwrap();
+    let inbox = rows.iter().find(|m| m.role == MailboxRole::Inbox).unwrap().id;
+    assert_eq!(env.vault.mail_uid_set(inbox).unwrap().len(), 2);
+    let threads =
+        env.vault.list_threads(inbox, &ThreadFilter::default(), None, 10).unwrap().threads;
+    let messages: usize = threads.iter().map(|t| env.vault.thread(t.id).unwrap().1.len()).sum();
+    assert_eq!(messages, 2, "two messages, not one row filed twice");
+}

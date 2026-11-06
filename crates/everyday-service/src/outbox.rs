@@ -212,15 +212,21 @@ async fn forget_deleted(
         return;
     }
     let vault = vault.clone();
-    let (packs, index) = (svc.packs(), svc.mail_index());
     let removed = blocking(move || {
         let mut by_mailbox: std::collections::BTreeMap<MailboxId, Vec<u32>> =
             std::collections::BTreeMap::new();
         for (from, messages) in deleted {
+            // A draft deleted from Drafts or All Mail is gone from both: on
+            // Gmail one message is filed in each, and Trash, where it went,
+            // comes back with the next sync of Trash.
+            let a_draft = matches!(
+                vault.mailbox(from).map(|m| m.role),
+                Ok(MailboxRole::Drafts | MailboxRole::All)
+            );
             for message in messages {
                 for (mailbox, uid) in vault.mail_message_locations(message)? {
-                    if mailbox == from {
-                        by_mailbox.entry(from).or_default().push(uid);
+                    if mailbox == from || a_draft {
+                        by_mailbox.entry(mailbox).or_default().push(uid);
                     }
                 }
             }
@@ -232,16 +238,24 @@ async fn forget_deleted(
         Ok(removed)
     })
     .await;
-    let removed = match removed {
-        Ok(removed) => removed,
+    match removed {
+        Ok(removed) => forget_removed(svc, &removed),
         Err(e) => {
             tracing::warn!(error = %e, "deleted for good, but could not take it out of the vault yet");
-            return;
         }
-    };
+    }
+}
+
+/// What [`Vault::remove_mail_uids`](everyday_core::Vault::remove_mail_uids)
+/// made dead, out of the pack store and the search index too.
+fn forget_removed(
+    svc: &Arc<Service>,
+    removed: &[(MailMessageId, everyday_core::packstore::PackRef)],
+) {
     if removed.is_empty() {
         return;
     }
+    let (packs, index) = (svc.packs(), svc.mail_index());
     if let Some(packs) = packs {
         let refs: Vec<_> = removed.iter().map(|(_, r)| r.clone()).collect();
         if let Err(e) = packs.mark_dead(&refs) {
@@ -600,15 +614,21 @@ async fn on_success(
             }
             mark_draft_sent(svc, vault, id).await
         }
-        Executed::Appended { uid: Some(uid) } => {
+        Executed::Appended { uid, message_id, replaced } => {
             let OpTarget::Draft(id) = op.target else { return Ok(()) };
-            let Some(drafts_mailbox) =
-                special_use(vault, op.account_id, MailboxRole::Drafts).await?
-            else {
-                return Ok(()); // nothing to remember without a mailbox name to pair the uid with
-            };
+            let drafts_mailbox = special_use(vault, op.account_id, MailboxRole::Drafts).await?;
             let vault = vault.clone();
-            blocking(move || {
+            let removed = blocking(move || {
+                // The copy just uploaded, when it can be named. Without
+                // `APPENDUID` (and not found by its `Message-ID`) it cannot,
+                // and the next `AppendDraft` finds nothing to replace: an
+                // extra copy on such a server, never a wrong deletion.
+                let fresh = match (uid, drafts_mailbox) {
+                    (Some(uid), Some(mailbox)) => {
+                        Some(everyday_core::mail::DraftServerCopy { mailbox, uid, message_id })
+                    }
+                    _ => None,
+                };
                 // `Vault::with_draft`, not a bare read-modify-save: only
                 // `server_copy` is this write's business, but `AppendDraft`
                 // runs on the account task's own schedule, entirely
@@ -617,15 +637,31 @@ async fn on_success(
                 // used to be able to win with a draft whose `server_copy`
                 // was still the *previous* value -- see `Vault::with_draft`'s
                 // own docs.
+                let mut gone = None;
                 let draft = vault.with_draft(id, |draft| {
-                    draft.server_copy =
-                        Some(everyday_core::mail::DraftServerCopy { mailbox: drafts_mailbox, uid });
+                    if replaced {
+                        gone = std::mem::replace(&mut draft.server_copy, fresh.clone());
+                    } else if fresh.is_some() {
+                        // The old copy would not go: still on the server, no
+                        // longer this draft's, left for sync to show.
+                        draft.server_copy = fresh.clone();
+                    }
                     true
                 })?;
+                // The copy this one replaced is off the server already; out of
+                // the thread now, not at the next sync of Drafts.
+                let fresh_uid = fresh.as_ref().map(|f| f.uid);
+                let removed = match gone.filter(|old| Some(old.uid) != fresh_uid) {
+                    Some(old) => forget_copy(&vault, draft.account_id, &old).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "could not forget a draft's replaced copy");
+                        Vec::new()
+                    }),
+                    None => Vec::new(),
+                };
                 // Thrown away while the upload was on its way: too late for
                 // `append_draft` to refuse, and `Vault::discard_draft` found no
                 // copy to delete yet. There is one now.
-                if matches!(draft.state, DraftState::Discarded) {
+                if matches!(draft.state, DraftState::Discarded) && draft.server_copy.is_some() {
                     vault.enqueue_op(&Op::new(
                         draft.account_id,
                         OpKind::DiscardDraft,
@@ -633,15 +669,12 @@ async fn on_success(
                         draft.origin,
                     ))?;
                 }
-                Ok(())
+                Ok(removed)
             })
-            .await
+            .await?;
+            forget_removed(svc, &removed);
+            Ok(())
         }
-        // No `APPENDUID`: this crate cannot name the fresh copy's uid, so
-        // the next `AppendDraft` will not find a `draft_server_copy` either
-        // and simply writes another one -- a harmless extra copy on a
-        // server old enough to lack UIDPLUS, not a wrong deletion.
-        Executed::Appended { uid: None } => Ok(()),
     }
 }
 
@@ -810,6 +843,21 @@ async fn mark_draft_sent(
         contacts.persist_if_dirty(vault);
     }
     Ok(())
+}
+
+/// Take one of a draft's own server copies out of the vault, by the mailbox
+/// name and uid the draft remembered it under.
+fn forget_copy(
+    vault: &everyday_core::Vault,
+    account: AccountId,
+    copy: &everyday_core::mail::DraftServerCopy,
+) -> everyday_core::Result<Vec<(MailMessageId, everyday_core::packstore::PackRef)>> {
+    let Some(mailbox) =
+        vault.mailboxes(account)?.into_iter().find(|m| m.remote_name == copy.mailbox)
+    else {
+        return Ok(Vec::new());
+    };
+    vault.remove_mail_uids(mailbox.id, &[copy.uid])
 }
 
 async fn special_use(
@@ -1016,6 +1064,23 @@ impl Lookups for VaultLookups {
         let vault = self.vault().map_err(lookup_err)?;
         let draft = vault.draft(id).map_err(vault_err)?;
         Ok(draft.server_copy.map(|c| Located { mailbox: c.mailbox, uid: c.uid }))
+    }
+
+    fn draft_server_copy_message_id(
+        &self,
+        id: DraftId,
+    ) -> everyday_mail::session::Result<Option<String>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        let draft = vault.draft(id).map_err(vault_err)?;
+        Ok(draft.server_copy.and_then(|c| c.message_id))
+    }
+
+    fn message_id_header(
+        &self,
+        id: MailMessageId,
+    ) -> everyday_mail::session::Result<Option<String>> {
+        let vault = self.vault().map_err(lookup_err)?;
+        Ok(vault.mail_message(id).ok().map(|m| m.message_id_header))
     }
 
     /// Reads the parent's genuine raw bytes out of the pack store --

@@ -441,6 +441,118 @@ impl MailStore for SqlStore {
         Ok(Some(self.unseal(&message_aad(mid), &row.bytes(1)?)?))
     }
 
+    fn thread_filings(
+        &self,
+        threads: &[ThreadId],
+    ) -> Result<Vec<(ThreadId, MailMessageId, MailboxId, u32)>> {
+        let invalid = |e: String| everyday_core::error::Error::Invalid(e);
+        let mut out = Vec::new();
+        for chunk in threads.chunks(write::IN_CHUNK) {
+            let holes = (1..=chunk.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(", ");
+            let args: Vec<Value> = chunk.iter().map(|t| Value::Text(t.to_string())).collect();
+            let rows = self.read().query(
+                &format!(
+                    "SELECT m.thread_id, mm.message_id, mm.mailbox_id, mm.uid \
+                     FROM message_mailboxes mm JOIN mail_messages m ON m.id = mm.message_id \
+                     WHERE m.thread_id IN ({holes})"
+                ),
+                &args,
+            )?;
+            for r in rows {
+                out.push((
+                    r.text(0)?.parse().map_err(|e: <ThreadId as std::str::FromStr>::Err| {
+                        invalid(e.to_string())
+                    })?,
+                    r.text(1)?.parse().map_err(
+                        |e: <MailMessageId as std::str::FromStr>::Err| invalid(e.to_string()),
+                    )?,
+                    r.text(2)?.parse().map_err(|e: <MailboxId as std::str::FromStr>::Err| {
+                        invalid(e.to_string())
+                    })?,
+                    r.i64(3)? as u32,
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    fn message_by_key(&self, account: AccountId, key: &str) -> Result<Option<MailMessageId>> {
+        let row = self.read().query_opt(
+            "SELECT k.message_id FROM mail_message_keys k \
+             JOIN mail_messages m ON m.id = k.message_id \
+             WHERE k.account_id = ?1 AND k.key = ?2",
+            &vals![account.to_string(), key.to_string()],
+        )?;
+        row.map(|r| {
+            r.text(0)?.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                everyday_core::error::Error::Invalid(e.to_string())
+            })
+        })
+        .transpose()
+    }
+
+    fn put_message_keys(&self, account: AccountId, keys: &[(String, MailMessageId)]) -> Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let account = account.to_string();
+        let mut conn = self.write();
+        let mut tx = conn.begin()?;
+        for (key, message) in keys {
+            // A key left naming a message since deleted is taken over.
+            tx.execute(
+                "INSERT INTO mail_message_keys (account_id, key, message_id) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (account_id, key) DO UPDATE SET message_id = ?3 \
+                 WHERE NOT EXISTS (SELECT 1 FROM mail_messages m \
+                                   WHERE m.id = mail_message_keys.message_id)",
+                &vals![account.clone(), key.clone(), message.to_string()],
+            )?;
+        }
+        tx.commit()
+    }
+
+    fn account_keyed(&self, account: AccountId) -> Result<bool> {
+        Ok(self
+            .read()
+            .query_opt(
+                "SELECT 1 FROM mail_keyed_accounts WHERE account_id = ?1",
+                &vals![account.to_string()],
+            )?
+            .is_some())
+    }
+
+    fn mark_account_keyed(&self, account: AccountId) -> Result<()> {
+        self.write().execute(
+            "INSERT INTO mail_keyed_accounts (account_id) VALUES (?1) \
+             ON CONFLICT (account_id) DO NOTHING",
+            &vals![account.to_string()],
+        )?;
+        Ok(())
+    }
+
+    fn each_message(&self, account: AccountId, each: &mut dyn FnMut(Message)) -> Result<()> {
+        let rows = self.read().records(
+            "SELECT id, data FROM mail_messages WHERE account_id = ?1",
+            &vals![account.to_string()],
+        )?;
+        for (id, data) in rows {
+            let mid: MailMessageId =
+                id.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                    everyday_core::error::Error::Invalid(e.to_string())
+                })?;
+            each(self.unseal(&message_aad(mid), &data)?);
+        }
+        Ok(())
+    }
+
+    fn merge_messages(
+        &self,
+        keep: MailMessageId,
+        others: &[MailMessageId],
+    ) -> Result<Vec<(MailMessageId, PackRef)>> {
+        write::merge_messages(self, keep, others)
+    }
+
     fn message_by_message_id_header(
         &self,
         account: AccountId,

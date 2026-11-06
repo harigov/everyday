@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 24;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -112,6 +112,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v21(d),
         v22(d),
         v23(d),
+        v24(d),
     ]
 }
 
@@ -1693,6 +1694,34 @@ fn v23(d: Dialect) -> Vec<String> {
                  data        {blob} NOT NULL
              )"
         ),
+    ]
+}
+
+/// Version 24: finding a message already stored by its `Message-ID`.
+///
+/// Sync matched a message seen in a second mailbox (Gmail's Sent and All
+/// Mail are the same message) only against what the running sync task had
+/// seen itself, so a mailbox read again by a fresh task stored every message
+/// in it a second time. `Message-ID` is sealed in the row, so `key` is a
+/// keyed hash of it (see `Vault::mail_message_key`): stable for one vault,
+/// telling nothing to anyone without its key. `mail_keyed_accounts` names the
+/// accounts whose existing messages have been keyed and their duplicates
+/// merged, which happens once.
+fn v24(_d: Dialect) -> Vec<String> {
+    vec![
+        "CREATE TABLE IF NOT EXISTS mail_message_keys (
+             account_id  TEXT NOT NULL,
+             key         TEXT NOT NULL,
+             message_id  TEXT NOT NULL,
+             PRIMARY KEY (account_id, key)
+         )"
+        .to_string(),
+        "CREATE INDEX IF NOT EXISTS mail_message_keys_by_message ON mail_message_keys (message_id)"
+            .to_string(),
+        "CREATE TABLE IF NOT EXISTS mail_keyed_accounts (
+             account_id  TEXT PRIMARY KEY NOT NULL
+         )"
+        .to_string(),
     ]
 }
 

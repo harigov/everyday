@@ -103,7 +103,92 @@ impl Vault {
 
     pub fn ingest_mail(&self, account: AccountId, messages: Vec<IngestMessage>) -> Result<()> {
         self.writable()?;
-        self.with_mail(|m| m.ingest(account, messages))
+        let key = self.derive_subkey(MAIL_MESSAGE_KEY_LABEL)?;
+        let keys: Vec<(String, MailMessageId)> = messages
+            .iter()
+            .filter(|i| keyable(&i.message.message_id_header))
+            .map(|i| (message_key(&key, &i.message.message_id_header), i.message.id))
+            .collect();
+        self.with_mail(|m| {
+            m.ingest(account, messages)?;
+            m.put_message_keys(account, &keys)
+        })
+    }
+
+    /// The keyed hash a `Message-ID` is found by -- BLAKE3 keyed under a
+    /// subkey of this vault's own, hex. Keyed for the reason `news_key` is:
+    /// the clear column it lives in cannot be checked against a list of known
+    /// ids. See the `mail_message_keys` table (schema v24).
+    pub fn mail_message_key(&self, message_id_header: &str) -> Result<String> {
+        Ok(message_key(&self.derive_subkey(MAIL_MESSAGE_KEY_LABEL)?, message_id_header))
+    }
+
+    /// The message already stored in `account` under this `Message-ID`, if
+    /// any -- what sync asks before storing a message it has not seen this
+    /// run, so a message filed in a second mailbox stays one row. `None` for
+    /// a message with no `Message-ID` of its own (its stand-in, `uid:N`,
+    /// names nothing outside one mailbox).
+    pub fn mail_message_by_header(
+        &self,
+        account: AccountId,
+        message_id_header: &str,
+    ) -> Result<Option<MailMessageId>> {
+        if !keyable(message_id_header) {
+            return Ok(None);
+        }
+        let key = self.mail_message_key(message_id_header)?;
+        self.with_mail(|m| m.message_by_key(account, &key))
+    }
+
+    /// Key `account`'s messages stored before keys existed, once, merging
+    /// every message stored more than once on the way -- the same
+    /// `Message-ID`, date and size: Gmail's Sent and All Mail copies of one
+    /// message, stored twice when a sync task that had not seen the first
+    /// met the second. Returns the rows merged away with their pack
+    /// addresses, for the caller to mark dead and take out of the search
+    /// index. Nothing, and no scan, once done.
+    pub fn key_existing_mail(&self, account: AccountId) -> Result<Vec<(MailMessageId, PackRef)>> {
+        self.writable()?;
+        if self.with_mail(|m| m.account_keyed(account))? {
+            return Ok(Vec::new());
+        }
+        let key = self.derive_subkey(MAIL_MESSAGE_KEY_LABEL)?;
+        // Per key: (id, date, size, has its raw bytes).
+        let mut by_key: std::collections::HashMap<
+            String,
+            Vec<(MailMessageId, Timestamp, u64, bool)>,
+        > = std::collections::HashMap::new();
+        self.with_mail(|m| {
+            m.each_message(account, &mut |message| {
+                if keyable(&message.message_id_header) {
+                    by_key
+                        .entry(message_key(&key, &message.message_id_header))
+                        .or_default()
+                        .push((message.id, message.date, message.size, message.pack.len > 0));
+                }
+            })
+        })?;
+        let mut removed = Vec::new();
+        let mut keys = Vec::with_capacity(by_key.len());
+        for (k, mut rows) in by_key {
+            // The one kept: downloaded already, then the first stored.
+            rows.sort_by_key(|(id, _, _, has_pack)| (!*has_pack, *id));
+            let (keep, date, size, _) = rows[0];
+            let same: Vec<MailMessageId> = rows[1..]
+                .iter()
+                .filter(|(_, d, s, _)| *d == date && *s == size)
+                .map(|(id, ..)| *id)
+                .collect();
+            if !same.is_empty() {
+                removed.extend(self.with_mail(|m| m.merge_messages(keep, &same))?);
+            }
+            keys.push((k, keep));
+        }
+        self.with_mail(|m| {
+            m.put_message_keys(account, &keys)?;
+            m.mark_account_keyed(account)
+        })?;
+        Ok(removed)
     }
 
     // ---- flag / label changes, and removal -----------------------------------
@@ -390,6 +475,14 @@ impl Vault {
     /// target against.
     pub fn mail_message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>> {
         self.with_mail(|m| m.message_locations(id))
+    }
+
+    /// See [`MailStore::thread_filings`].
+    pub fn mail_thread_filings(
+        &self,
+        threads: &[ThreadId],
+    ) -> Result<Vec<(ThreadId, MailMessageId, MailboxId, u32)>> {
+        self.with_mail(|m| m.thread_filings(threads))
     }
 
     pub fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>> {
@@ -827,6 +920,73 @@ impl Vault {
         Ok(ops)
     }
 
+    /// Take copies of a draft off the server: what deleting a draft from its
+    /// thread does to the copies another device saved, or old autosaves. One
+    /// [`OpKind::DeleteForever`] per thread and mailbox, from the account's
+    /// Drafts where a copy is filed there and its All Mail otherwise (Gmail
+    /// keeps an archived old copy there), which the outbox sends to Gmail's
+    /// Trash or deletes elsewhere. A message that is no draft, or is filed in
+    /// neither, is left alone.
+    ///
+    /// Nothing is hidden first, unlike [`Vault::delete_forever`]: the thread
+    /// stays in Drafts with whatever draft it keeps, and the copies leave the
+    /// vault once the server has them gone.
+    pub fn delete_draft_copies(
+        &self,
+        messages: &[MailMessageId],
+        origin: Origin,
+    ) -> Result<Vec<Op>> {
+        self.writable()?;
+        let ops = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut by_place: std::collections::BTreeMap<
+                (AccountId, ThreadId, MailboxId),
+                Vec<MailMessageId>,
+            > = std::collections::BTreeMap::new();
+            for &id in messages {
+                let message: Message = mail.get_message(id)?;
+                let mailboxes = mail.list_mailboxes(message.account_id)?;
+                let filed: Vec<&Mailbox> = mail
+                    .message_locations(id)?
+                    .into_iter()
+                    .filter_map(|(mailbox, _)| mailboxes.iter().find(|m| m.id == mailbox))
+                    .collect();
+                let in_drafts = filed.iter().any(|m| m.role == MailboxRole::Drafts);
+                if !message.flags.draft && !in_drafts {
+                    continue;
+                }
+                let from = filed
+                    .iter()
+                    .find(|m| m.role == MailboxRole::Drafts)
+                    .or_else(|| filed.iter().find(|m| m.role == MailboxRole::All));
+                if let Some(from) = from {
+                    by_place
+                        .entry((message.account_id, message.thread_id, from.id))
+                        .or_default()
+                        .push(id);
+                }
+            }
+            let mut ops = Vec::with_capacity(by_place.len());
+            for ((account, thread, from), messages) in by_place {
+                let op = Op::new(
+                    account,
+                    OpKind::DeleteForever { from, messages },
+                    OpTarget::Thread(thread),
+                    origin.clone(),
+                );
+                mail.enqueue_op(&op)?;
+                ops.push(op);
+            }
+            Ok(ops)
+        })?;
+        for op in &ops {
+            if let OpTarget::Thread(thread) = op.target {
+                self.wrote(RecordKind::Thread, thread);
+            }
+        }
+        Ok(ops)
+    }
+
     /// Delete for good every thread listed in `mailbox`, which must be a
     /// Trash or Spam ([`Error::Invalid`] otherwise) -- "Empty Trash". One
     /// [`OpKind::DeleteForever`] per thread, so the outbox sends them the way
@@ -1138,6 +1298,19 @@ enum Inverse {
     /// match in [`Vault::revert_thread_op`] is total without a wildcard
     /// hiding a future [`OpKind`] this function has not been taught yet.
     None,
+}
+
+/// The subkey [`Vault::mail_message_key`] hashes under.
+const MAIL_MESSAGE_KEY_LABEL: &str = "everyday.mail.message-id.v1";
+
+/// Is this a real `Message-ID`, rather than the `uid:N` stand-in sync gives a
+/// message that has none -- which names nothing outside its own mailbox?
+fn keyable(message_id_header: &str) -> bool {
+    !message_id_header.is_empty() && !message_id_header.starts_with("uid:")
+}
+
+fn message_key(key: &crate::crypto::SecretKey, message_id_header: &str) -> String {
+    blake3::keyed_hash(key.expose(), message_id_header.as_bytes()).to_hex()[..32].to_string()
 }
 
 fn inverse_of(kind: &OpKind) -> Inverse {

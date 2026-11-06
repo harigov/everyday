@@ -17,14 +17,16 @@
 //!
 //! So [`ThreadIndex`] also carries a cheap, in-memory map of every message
 //! this sync attempt has already resolved, keyed by `Message-ID`, and
-//! [`resolve_header`] checks *that* first, for free, before ever asking the
-//! vault -- which is what makes the Sent/All-Mail overlap cost nothing
-//! extra when (the ordinary case) both are synced in the same run. The
-//! expensive vault scan is reserved for exactly the case the store method's
-//! own docs describe: `force_db_rematch` is `true` only for the one
+//! [`resolve_header`] checks *that* first, for free. A miss then asks the
+//! vault's keyed index ([`everyday_core::Vault::mail_message_by_header`],
+//! one indexed lookup, schema v24), which outlives the task: before it, a
+//! mailbox read again by a fresh task -- after an error, a restart, or a
+//! pass that briefly saw it empty -- stored every message in it a second
+//! time, and on Gmail that was each sent message, once from Sent and once
+//! from All Mail. The expensive scan is kept for what the store method's own
+//! docs describe: `force_db_rematch` is `true` only for the one
 //! `sync_headers` call right after a mailbox's `UIDVALIDITY` has changed,
-//! where every uid in it needs rematching and there is no in-memory answer
-//! to fall back on for a message this run has not touched yet.
+//! for a message stored before keys existed and not yet keyed.
 //!
 //! # Threading
 //!
@@ -131,13 +133,31 @@ pub fn resolve_header(
         // reused from whatever this run happened to cache earlier -- see
         // [`ThreadIndex::seen_by_message_id`]'s own docs for why a cached
         // copy would go stale exactly here.
-        let existing_id = threads.seen_by_message_id.get(id).copied();
-        let existing = match existing_id {
+        // Then the vault's key for it, which outlives this run: a mailbox read
+        // again by a fresh task (after an error, a restart, or a mailbox that
+        // briefly looked empty) found nothing in this run's memory and stored
+        // every message in it a second time. Only the same message, though --
+        // same date and size, as `Vault::key_existing_mail` asks: a client
+        // that keeps one `Message-ID` across a draft's saves, or for the sent
+        // message, must not have the later one folded into the first.
+        let date = parsed.date.unwrap_or(header.internal_date);
+        let existing = match threads.seen_by_message_id.get(id).copied() {
             Some(mid) => vault.mail_message(mid).ok(),
-            None if force_db_rematch => {
-                vault.message_by_message_id_header(account_id, id).ok().flatten()
+            None => {
+                let keyed = vault
+                    .mail_message_by_header(account_id, id)
+                    .ok()
+                    .flatten()
+                    .and_then(|mid| vault.mail_message(mid).ok())
+                    .filter(|m| m.date == date && m.size == u64::from(header.size));
+                match keyed {
+                    Some(found) => Some(found),
+                    None if force_db_rematch => {
+                        vault.message_by_message_id_header(account_id, id).ok().flatten()
+                    }
+                    None => None,
+                }
             }
-            None => None,
         };
         if let Some(mut existing) = existing {
             // Already stored, under some (mailbox, uid) -- possibly this

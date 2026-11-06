@@ -332,8 +332,22 @@ impl MailSession for ImapSession {
         // What is on the server right now, diffed against what the caller
         // already has: this is the "UID SEARCH diff" the module docs
         // promise, standing in for QRESYNC's `VANISHED`.
-        let present: std::collections::HashSet<Uid> =
+        let mut present: std::collections::HashSet<Uid> =
             session.uid_search("ALL").await.map_err(classify)?;
+        // No uids from a mailbox `SELECT` said holds mail is the server
+        // stumbling, not every message gone: taken at its word, everything
+        // known here was dropped and fetched again the next pass, stored a
+        // second time where another mailbox held the same message (Gmail's
+        // Sent beside All Mail). Asked once more, then left to the next pass.
+        if listing_stumbled(&present, state.exists, known_uids) {
+            present = session.uid_search("ALL").await.map_err(classify)?;
+            if listing_stumbled(&present, state.exists, known_uids) {
+                return Err(MailError::Network(format!(
+                    "the server listed none of the {} messages it says this mailbox holds",
+                    state.exists
+                )));
+            }
+        }
         let present: UidSet = present.into_iter().collect();
         let mut new_uids = UidSet::new();
         for uid in present.iter() {
@@ -682,6 +696,13 @@ pub async fn connect(
     credential: Credential,
 ) -> Result<ImapSession> {
     connect_with(host, port, security, credential, Verifier::Platform).await
+}
+
+/// Did `UID SEARCH ALL` answer with nothing for a mailbox that `SELECT` said
+/// holds `exists` messages, some of which this client already knows? That is
+/// the server stumbling, not every message gone -- see `changes_since`.
+fn listing_stumbled(present: &std::collections::HashSet<Uid>, exists: u32, known: &UidSet) -> bool {
+    present.is_empty() && exists > 0 && !known.is_empty()
 }
 
 /// As [`connect`], but trusts whatever certificate the server presents,
@@ -1482,6 +1503,17 @@ mod tests {
         );
         assert!(!wants_enable_condstore(false, true));
         assert!(!wants_enable_condstore(false, false));
+    }
+
+    #[test]
+    fn an_empty_listing_of_a_mailbox_holding_mail_is_not_believed() {
+        let none = std::collections::HashSet::new();
+        let known: UidSet = [1, 2].into_iter().collect();
+        assert!(listing_stumbled(&none, 2, &known), "SELECT said two, SEARCH said none");
+        assert!(!listing_stumbled(&none, 0, &known), "emptied: believed");
+        assert!(!listing_stumbled(&none, 2, &UidSet::new()), "nothing known to lose");
+        let some: std::collections::HashSet<Uid> = [2].into_iter().collect();
+        assert!(!listing_stumbled(&some, 2, &known), "one expunged: believed");
     }
 
     #[test]

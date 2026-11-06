@@ -416,8 +416,53 @@ pub trait MailStore: Send + Sync {
     /// with two pairs; a plain IMAP message ordinarily answers with one.
     fn message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>>;
 
+    /// Every `(thread, message, mailbox, uid)` filing of every message in
+    /// `threads`, in one read -- what opening a thread and a page of search
+    /// results ask, rather than [`MailStore::message_locations`] once per
+    /// message.
+    fn thread_filings(
+        &self,
+        threads: &[ThreadId],
+    ) -> Result<Vec<(ThreadId, MailMessageId, MailboxId, u32)>>;
+
     /// The message filed as `uid` in `mailbox`, or `None`.
     fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>>;
+
+    /// The message `key` names in `account` -- a keyed hash of a
+    /// `Message-ID`, see `Vault::mail_message_key` -- or `None`, also for a
+    /// key whose message is gone. What sync asks before storing a message it
+    /// has not seen this run: the same message filed in a second mailbox
+    /// (Gmail's Sent and All Mail) must be one row, whatever task saw it
+    /// first.
+    fn message_by_key(&self, account: AccountId, key: &str) -> Result<Option<MailMessageId>>;
+
+    /// Remember which message each key names. A key already naming a live
+    /// message keeps it: the first row stored is the one.
+    fn put_message_keys(&self, account: AccountId, keys: &[(String, MailMessageId)]) -> Result<()>;
+
+    /// Have `account`'s messages stored before keys existed been keyed (and
+    /// their duplicates merged)? See [`MailStore::mark_account_keyed`].
+    fn account_keyed(&self, account: AccountId) -> Result<bool>;
+
+    /// Say `account`'s existing messages are keyed, so it is done once.
+    fn mark_account_keyed(&self, account: AccountId) -> Result<()>;
+
+    /// Call `each` with every message `account` has stored, one at a time --
+    /// what keying the existing ones reads. A full, decrypting scan.
+    fn each_message(&self, account: AccountId, each: &mut dyn FnMut(Message)) -> Result<()>;
+
+    /// Fold `others` into `keep`, which is the same message stored more than
+    /// once: each of their mailbox filings moves to `keep` (or goes, where
+    /// `keep` is filed there already), they and their bodies are deleted, and
+    /// every thread involved is recomputed. Returns the rows deleted with the
+    /// pack address each was stored under, as
+    /// [`MailStore::remove_uids`] does, for the caller to mark dead and take
+    /// out of the search index.
+    fn merge_messages(
+        &self,
+        keep: MailMessageId,
+        others: &[MailMessageId],
+    ) -> Result<Vec<(MailMessageId, PackRef)>>;
 
     /// The message in `account` whose `Message-ID` header is
     /// `message_id_header`, or `None`. What rematching after a

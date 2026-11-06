@@ -291,8 +291,11 @@ fn a_bookkeeping_only_write_leaves_the_send_fingerprint_stable() {
         // always makes on any write at all.
         vault
             .with_draft(draft.id, |d| {
-                d.server_copy =
-                    Some(everyday_core::mail::DraftServerCopy { mailbox: "Drafts".into(), uid: 7 });
+                d.server_copy = Some(everyday_core::mail::DraftServerCopy {
+                    mailbox: "Drafts".into(),
+                    uid: 7,
+                    message_id: None,
+                });
                 d.message_id = Some("<abc123@example.com>".into());
                 d.updated_at = jiff::Timestamp::now();
                 true

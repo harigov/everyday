@@ -175,6 +175,15 @@ export const saveDraft = (draft: Draft): Promise<void> => api.saveDraft(draft)
 export const discardDraft = (id: DraftId): Promise<void> => api.discardDraft(id)
 /** Undoes `discardDraft`: the same record, back to being written. */
 export const restoreDraft = (id: DraftId): Promise<void> => api.restoreDraft(id)
+/** A draft in a thread that this app does not keep yet (another device's, or
+ *  old autosaves), made one of its own to carry on writing. The older copies
+ *  go from the server. */
+export const editThreadDraft = (copies: MailMessageId[]): Promise<Draft> =>
+  api.editThreadDraft(copies)
+/** A draft deleted from its thread: the draft (as Discard does) and every
+ *  copy of it on the server. Copies alone removes old autosaves only. */
+export const deleteThreadDraft = (draft: DraftId | null, copies: MailMessageId[]): Promise<void> =>
+  api.deleteThreadDraft(draft, copies)
 /** `delaySeconds` is the undo window (5-30s, clamped by the backend);
  *  `sendAt` queues for a specific, possibly distant, moment instead --
  *  "send later" -- and wins over `delaySeconds` when both are given, per

@@ -749,11 +749,86 @@ fn remove_uids_tx(
         // gone -- an `EXPUNGE`d message, or the last Gmail label removed.
         tx.execute(&format!("DELETE FROM bodies WHERE message_id IN ({holes})"), &args)?;
         tx.execute(&format!("DELETE FROM mail_messages WHERE id IN ({holes})"), &args)?;
+        tx.execute(&format!("DELETE FROM mail_message_keys WHERE message_id IN ({holes})"), &args)?;
     }
 
     for thread_id in orphan_threads {
         recompute_thread(store, tx, thread_id, &[])?;
     }
+    Ok(removed)
+}
+
+/// See [`everyday_core::store::mail::MailStore::merge_messages`].
+pub(super) fn merge_messages(
+    store: &SqlStore,
+    keep: MailMessageId,
+    others: &[MailMessageId],
+) -> Result<Vec<(MailMessageId, PackRef)>> {
+    let others: Vec<String> =
+        others.iter().filter(|o| **o != keep).map(ToString::to_string).collect();
+    if others.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keep_s = keep.to_string();
+    let parse_thread = |text: String| -> Result<ThreadId> {
+        text.parse()
+            .map_err(|e: <ThreadId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))
+    };
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    let Some(row) =
+        tx.query_opt("SELECT thread_id FROM mail_messages WHERE id = ?1", &vals![keep_s.clone()])?
+    else {
+        return Ok(Vec::new()); // gone since the caller looked: nothing to fold into
+    };
+    let mut threads = BTreeSet::from([parse_thread(row.text(0)?)?]);
+    let mut removed = Vec::with_capacity(others.len());
+    for other in others {
+        let Some(row) = tx.query_opt(
+            "SELECT thread_id, account_id, pack_id, pack_offset, pack_len FROM mail_messages \
+             WHERE id = ?1",
+            &vals![other.clone()],
+        )?
+        else {
+            continue;
+        };
+        threads.insert(parse_thread(row.text(0)?)?);
+        let pack: PackId = row
+            .text(2)?
+            .parse()
+            .map_err(|e: <PackId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
+        let pack = PackRef {
+            account: row.text(1)?,
+            pack,
+            offset: row.i64(3)? as u64,
+            len: row.i64(4)? as u32,
+        };
+        // A mailbox both are filed in keeps `keep`'s filing; the rest move.
+        tx.execute(
+            "DELETE FROM message_mailboxes WHERE message_id = ?1 AND mailbox_id IN \
+             (SELECT mailbox_id FROM message_mailboxes WHERE message_id = ?2)",
+            &vals![other.clone(), keep_s.clone()],
+        )?;
+        tx.execute(
+            "UPDATE message_mailboxes SET message_id = ?1 WHERE message_id = ?2",
+            &vals![keep_s.clone(), other.clone()],
+        )?;
+        tx.execute(
+            "UPDATE mail_message_keys SET message_id = ?1 WHERE message_id = ?2",
+            &vals![keep_s.clone(), other.clone()],
+        )?;
+        tx.execute("DELETE FROM bodies WHERE message_id = ?1", &vals![other.clone()])?;
+        tx.execute("DELETE FROM mail_messages WHERE id = ?1", &vals![other.clone()])?;
+        let id: MailMessageId =
+            other.parse().map_err(|e: <MailMessageId as std::str::FromStr>::Err| {
+                Error::Invalid(e.to_string())
+            })?;
+        removed.push((id, pack));
+    }
+    for thread in threads {
+        recompute_thread(store, tx.as_mut(), thread, &[])?;
+    }
+    tx.commit()?;
     Ok(removed)
 }
 

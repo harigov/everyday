@@ -172,6 +172,16 @@ where
         return Err(unavailable("the mail search index is not open"));
     };
     let statuses = svc.mail_statuses().unwrap_or_default();
+    // Before connecting, so a long first scan leaves no session idling.
+    passes::key_existing_mail(
+        &vault,
+        account_id,
+        &packs,
+        &index,
+        svc.mail_unread_cache().as_ref(),
+        &statuses,
+    )
+    .await;
     statuses.set_phase(account_id, Phase::Connecting, 0, 0);
 
     let credential = match credential::resolve(&svc, &vault, &account).await {

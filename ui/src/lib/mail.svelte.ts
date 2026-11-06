@@ -20,7 +20,7 @@
 import * as mailApi from './mail-api'
 import { accounts } from './accounts.svelte'
 import { registerApply, type ChangeWithIds } from './live-apply'
-import { windowInFront } from './notify.svelte'
+import { notify, windowInFront } from './notify.svelte'
 import { proposals } from './proposals.svelte'
 import {
   CATEGORY_TABS,
@@ -69,12 +69,15 @@ import type {
   DraftId,
   Mailbox,
   MailboxId,
+  MailboxRole,
   MailCategory,
+  MailMessageDetail,
   MailMessageId,
   MailSyncProgress,
   ScheduledSend,
   Thread,
   ThreadDetail,
+  ThreadDraft,
   ThreadFilter,
   ThreadId,
   ThreadPage,
@@ -207,6 +210,8 @@ class MailState {
   viewingScheduledFor = $state<AccountId | null>(null)
   searchQuery = $state('')
   searchResults = $state<Thread[]>([])
+  /** Where each search result is filed -- see `searchPlace`. */
+  searchPlaces = $state.raw<Record<ThreadId, MailboxRole[]>>({})
   searchCursor = $state<string | null>(null)
   searching = $state(false)
   /** (p) TODO: `summarize_thread`'s answer for the open thread, dismissible --
@@ -808,6 +813,13 @@ class MailState {
       this.expanded = newest ? new Set([newest.id]) : new Set()
       if (detail.thread.unreadCount > 0) void this.markRead(id)
       void this.#prefetchNeighbours(id)
+      // Nothing but a draft, as a thread opened from Drafts often is: open it
+      // to write, as clicking a draft does in any mail program.
+      const only = detail.drafts.length === 1 ? detail.drafts[0] : null
+      if (detail.messages.length === 0 && only?.draft && !this.composing) {
+        this.openInlineDraft(only.draft)
+        return
+      }
       void this.#openAutoDraftIfAny(detail)
     } catch (e) {
       await handle(e)
@@ -1562,8 +1574,61 @@ class MailState {
   }
 
   closeCompose() {
+    const wasInline = this.composeInline
     this.composing = null
     this.composeInline = false
+    // A reply put down is a draft card in its thread now, and one sent or
+    // thrown away is not. This window's own writes never come back as change
+    // events, so the thread is read again here. The close button has waited
+    // for the last save already.
+    if (wasInline && this.openThread) void this.#reloadOpenThread()
+  }
+
+  /**
+   * Carry on writing a draft from its card in the thread. One this app keeps
+   * opens as it is; another device's, or old copies nobody claims, becomes
+   * one of this app's first (`editThreadDraft`), and its older copies go.
+   */
+  async editThreadDraft(card: ThreadDraft) {
+    try {
+      const draft = card.draft ?? (await mailApi.editThreadDraft(card.copies.map((c) => c.id)))
+      this.openInlineDraft(draft)
+      if (!card.draft) void this.#reloadOpenThread()
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /**
+   * Delete a draft from its card: the draft and every copy of it on the
+   * server, or only `copies` -- old autosaves -- leaving the draft itself.
+   * Gone from the thread at once; read again if the backend refused.
+   */
+  async deleteThreadDraft(card: ThreadDraft, copies: MailMessageDetail[] = card.copies) {
+    const draft = copies === card.copies ? card.draft : null
+    const open = this.openThread
+    if (draft && this.composing?.id === draft.id) this.closeCompose()
+    if (open) {
+      const gone = new Set(copies.map((c) => c.id))
+      const drafts = open.drafts.flatMap((d) => {
+        if (d !== card) return [d]
+        if (draft) return []
+        const left = d.copies.filter((c) => !gone.has(c.id))
+        return d.draft || left.length > 0 ? [{ ...d, copies: left }] : []
+      })
+      this.#openVersion++
+      this.openThread = { ...open, drafts }
+    }
+    try {
+      await mailApi.deleteThreadDraft(
+        draft?.id ?? null,
+        copies.map((c) => c.id),
+      )
+      if (draft || !card.draft) notify.info('Draft deleted', { key: 'mail-draft-deleted' })
+    } catch (e) {
+      await handle(e)
+      void this.#reloadOpenThread()
+    }
   }
 
   /**
@@ -1752,6 +1817,7 @@ class MailState {
       const result = await mailApi.searchMail(q)
       if (this.searchQuery === q) {
         this.searchResults = result.threads
+        this.searchPlaces = result.places ?? {}
         this.searchCursor = result.next ?? null
       }
     } catch (e) {
@@ -1772,6 +1838,7 @@ class MailState {
       const result = await mailApi.searchMail(q, null, this.searchCursor)
       if (this.searchQuery === q) {
         this.searchResults = mergeSearchPage(this.searchResults, result.threads)
+        this.searchPlaces = { ...this.searchPlaces, ...(result.places ?? {}) }
         this.searchCursor = result.next ?? null
       }
     } catch (e) {
@@ -1812,7 +1879,17 @@ class MailState {
       // not something this window should clobber mid-keystroke. Handled as
       // "nothing to do" rather than falling through to `RELOAD.mail`, which
       // would otherwise reload the thread list for every autosave tick.
-      skip: (change) => change.kind === 'draft',
+      skip: (change) => {
+        if (change.kind !== 'draft') return false
+        // A draft put down, sent or thrown away elsewhere changes the open
+        // thread's draft cards. Not one still being written here: that is
+        // every autosave.
+        const ids = change.ids?.length ? change.ids : change.id ? [change.id] : []
+        if (this.openThread && !ids.some((id) => id === this.composing?.id)) {
+          this.#scheduleOpenThreadReload()
+        }
+        return true
+      },
       onDeleted: (id) => {
         // Finding 5: a thread deleted from another window or by the
         // assistant must not stay open here just because nothing removed it
@@ -1929,11 +2006,8 @@ class MailState {
   /**
    * A fresh copy of the open thread. What somebody has opened and closed stays
    * as it is, and what has arrived since opens, as the newest message does when
-   * a thread is opened.
-   *
-   * A copy of a draft on the server is no arrival: it is the words being typed
-   * in the composer below, uploaded by autosave, and each upload has a new id.
-   * It is kept out of a thread already open.
+   * a thread is opened. Drafts are never among `messages`: each autosave's copy
+   * is in `drafts`, drawn as the one card it is.
    */
   #showNewer(detail: ThreadDetail) {
     const had = this.openThread?.thread.id === detail.thread.id ? this.openThread : null
@@ -1942,8 +2016,8 @@ class MailState {
       return
     }
     const known = new Set(had.messages.map((m) => m.id))
-    const messages = detail.messages.filter((m) => known.has(m.id) || !m.flags.draft)
-    this.openThread = { ...detail, messages }
+    const messages = detail.messages
+    this.openThread = detail
     const arrived = messages.filter((m) => !known.has(m.id))
     if (arrived.length === 0) return
     this.expanded = new Set([...this.expanded, ...arrived.map((m) => m.id)])

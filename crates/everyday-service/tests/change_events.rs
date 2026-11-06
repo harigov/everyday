@@ -268,6 +268,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("create_event", "writes to an account calendar's server over the network"),
     ("delete_bank_link", "tells Plaid to forget the bank's sign-in before forgetting it here"),
     ("download_speech_model", "a real ~40MB network download"),
+    ("edit_thread_draft", "needs a draft's copy synced from a server to carry on writing"),
     ("enrol_voice", "needs the speech/voice model kit to embed real audio"),
     ("fetch_attachment", "needs a message's raw bytes from a real synced pack"),
     ("fetch_full_article", "fetches the page a story links to over the network"),
@@ -642,6 +643,8 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "discard_draft", json!({ "id": draft2_id })).await;
     run(&svc, &h, "restore_draft", json!({ "id": draft2_id })).await;
     run(&svc, &h, "discard_draft", json!({ "id": draft2_id })).await;
+    run(&svc, &h, "restore_draft", json!({ "id": draft2_id })).await;
+    run(&svc, &h, "delete_thread_draft", json!({ "draft": draft2_id, "copies": [] })).await;
 
     // ---- calendars ---------------------------------------------------------
     let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:e1\r\nDTSTART:20260914T140000Z\r\nDTEND:20260914T150000Z\r\nSUMMARY:Test Event\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";

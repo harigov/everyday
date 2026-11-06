@@ -1672,3 +1672,138 @@ async fn a_crash_between_an_ops_terminal_state_and_its_draft_write_is_reconciled
         "a permanently failed op's own draft must not be stuck Queued forever"
     );
 }
+
+// ---- drafts in a thread -------------------------------------------------------
+
+/// A draft's copy on the server, in `thread`, filed in `mailbox` at `uid`. A
+/// `body` makes it a synced one; `deleted` flags it `\Deleted`, as an old
+/// autosave is.
+fn draft_copy(
+    svc: &Arc<Service>,
+    account: AccountId,
+    thread_id: ThreadId,
+    mailbox: MailboxId,
+    uid: u32,
+    deleted: bool,
+    body: Option<&str>,
+) -> MailMessageId {
+    let vault = svc.get().unwrap();
+    let id = MailMessageId::new();
+    let message = Message {
+        id,
+        account_id: account,
+        thread_id,
+        message_id_header: format!("<{id}@example.com>"),
+        date: Timestamp::now(),
+        from: Address::bare("me@example.com"),
+        to: vec![Address::bare("ann@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: "Re: plans".into(),
+        snippet: "The first line".into(),
+        flags: MessageFlags { draft: true, deleted, ..MessageFlags::default() },
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: PackRef {
+            account: account.to_string(),
+            pack: PackId::new(),
+            offset: 0,
+            len: if body.is_some() { 64 } else { 0 },
+        },
+        gmail: None,
+        invite: None,
+    };
+    vault.ingest_mail(account, vec![IngestMessage { message, mailbox, uid }]).unwrap();
+    if let Some(text) = body {
+        vault
+            .save_body(&everyday_core::mail::Body {
+                message_id: id,
+                html_sanitised: String::new(),
+                text: text.to_string(),
+                quoted_ranges: Vec::new(),
+                signature_range: None,
+                parts: Vec::new(),
+                remote_images: Vec::new(),
+            })
+            .unwrap();
+    }
+    id
+}
+
+/// Drafts are cards, not mail. Two drafts no draft of this app's claims -- a
+/// phone's and the web's, say -- are two cards, never one, so deleting or
+/// editing one never touches the other. A copy flagged `\Deleted` is shown in
+/// neither.
+#[tokio::test]
+async fn drafts_nobody_here_claims_are_a_card_each() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let drafts = seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    let thread = seed_message(&svc, account, inbox, 1);
+    let phone = draft_copy(&svc, account, thread, drafts, 1, false, None);
+    let web = draft_copy(&svc, account, thread, drafts, 2, false, None);
+    draft_copy(&svc, account, thread, drafts, 3, true, None);
+
+    let detail = call(&svc, "get_thread", json!({ "id": thread.to_string() })).await;
+    assert_eq!(detail["messages"].as_array().unwrap().len(), 1, "drafts are not mail");
+    let cards = detail["drafts"].as_array().unwrap();
+    assert_eq!(cards.len(), 2, "{detail}");
+    let copies: Vec<Vec<String>> = cards
+        .iter()
+        .map(|c| c["copies"].as_array().unwrap().iter().map(|m| m["id"].to_string()).collect())
+        .collect();
+    assert!(copies.iter().all(|c| c.len() == 1), "{copies:?}");
+    let all: Vec<String> = copies.concat();
+    assert!(all.contains(&json!(phone.to_string()).to_string()));
+    assert!(all.contains(&json!(web.to_string()).to_string()));
+}
+
+/// Carrying on with another device's draft takes its whole text, from the
+/// plain text when it has no HTML, and refuses one whose body has not
+/// synced. Only old autosaves flagged `\Deleted` are taken off the server
+/// with it; anybody's draft that nobody flagged stays.
+#[tokio::test]
+async fn editing_another_devices_draft_keeps_every_word_and_every_other_draft() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let drafts = seed_mailbox(&svc, account, "Drafts", MailboxRole::Drafts);
+    let thread = seed_message(&svc, account, inbox, 1);
+
+    let pending = draft_copy(&svc, account, thread, drafts, 1, false, None);
+    let refused =
+        fails(&svc, "edit_thread_draft", json!({ "copies": [pending.to_string()] })).await;
+    assert_eq!(refused.code, "conflict", "{refused:?}");
+
+    let long = "The first line\n\nand everything after it, which the snippet never had.";
+    let other = draft_copy(&svc, account, thread, drafts, 2, false, None);
+    let stale = draft_copy(&svc, account, thread, drafts, 3, true, Some("old"));
+    let synced = draft_copy(&svc, account, thread, drafts, 4, false, Some(long));
+    let draft = call(
+        &svc,
+        "edit_thread_draft",
+        json!({ "copies": [other.to_string(), stale.to_string(), synced.to_string()] }),
+    )
+    .await;
+    let html = draft["bodyHtml"].as_str().unwrap();
+    assert!(html.contains("which the snippet never had"), "{html}");
+    assert_eq!(draft["serverCopy"]["uid"], 4);
+
+    let vault = svc.get().unwrap();
+    let deleting: Vec<MailMessageId> = vault
+        .ops_for_thread(thread, 10)
+        .unwrap()
+        .into_iter()
+        .filter_map(|op| match op.kind {
+            OpKind::DeleteForever { messages, .. } => Some(messages),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(deleting, vec![stale], "only the flagged old autosave goes");
+}

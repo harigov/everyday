@@ -25,6 +25,7 @@
     threadRowDate,
     unifiedMailboxId,
     weekdayAndTime,
+    searchPlace,
     withDateSections,
     type ListRow,
     type MailOnly,
@@ -53,6 +54,7 @@
   import MailScheduled from './MailScheduled.svelte'
   import MailSnoozePicker from './MailSnoozePicker.svelte'
   import MailThread from './MailThread.svelte'
+  import MailThreadDrafts from './MailThreadDrafts.svelte'
   import PaneResizer from './PaneResizer.svelte'
   import VirtualList from './VirtualList.svelte'
 
@@ -224,6 +226,11 @@
   /** (p) TODO: `summarize_thread` stays out of reach until the account's
    *  own `mailAi.summaries` switch is on -- see `mail-api.ts`'s TODO(p). */
   const canSummarize = $derived(openAccount?.mailAi?.summaries === true)
+  /** The open thread's drafts, but the one being written below, which is the
+   *  composer itself rather than a card. */
+  const draftCards = $derived(
+    (mail.openThread?.drafts ?? []).filter((d) => !d.draft || d.draft.id !== mail.composing?.id),
+  )
 
   function categoryMoveItems(ids: ThreadId[], current: MailCategory | null): MenuItem[] {
     return CATEGORY_TABS.map((tab) => ({
@@ -661,6 +668,10 @@
       {#if sorted}
         <span class="sorted" title="Sorted as {sorted.name}">{sorted.name}</span>
       {/if}
+      {#if mail.searchQuery.trim()}
+        {@const place = searchPlace(mail.searchPlaces[t.id])}
+        {#if place}<span class="sorted place" title="Where this conversation is">{place}</span>{/if}
+      {/if}
     </span>
     <span class="side">
       {#if t.category === 'priority'}
@@ -924,6 +935,9 @@
     {/if}
     <div class="scroll">
       <MailThread messages={open.messages} expanded={mail.expanded} />
+      {#if draftCards.length > 0}
+        <MailThreadDrafts drafts={draftCards} />
+      {/if}
       {#if mail.composing && mail.composeInline}
         {#key mail.composing.id}
           <div class="inline-reply" use:scrollIntoViewOnMount>
