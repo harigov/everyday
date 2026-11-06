@@ -57,7 +57,7 @@
 //! listed and then refused. A gate whose refusal explains how to get past it
 //! is not a gate.
 //!
-//! # Money needs asking for by name
+//! # Money and Screen time need asking for by name
 //!
 //! A token is issued with [`Scope::All`] unless its owner narrows it, and
 //! most were minted before Money existed. What somebody earns and spends is
@@ -68,6 +68,13 @@
 //! owner's own window, CLI and paired copies of this application; it is
 //! only somebody else's model, here, that has to be given it explicitly.
 //! See [`Ctx::names`].
+//!
+//! Screen time is the second domain held to that, for the same reason
+//! from the other direction: which apps and sites somebody spent each day
+//! on is their browsing history, and a token minted for a coding agent
+//! before Screen time existed must not wake up able to read it. The tools
+//! are offered only to a token that names `screentime`. [`by_name`] is the
+//! one list of such domains, so a third is one line there.
 //!
 //! # Outward tools over MCP
 //!
@@ -144,7 +151,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
-use everyday_core::agent::tools::Effect;
+use everyday_core::agent::tools::{Domain, Effect};
 use everyday_mcp::{HostError, Outcome, ToolDef};
 use everyday_service::{CommandError, CommandResult, Ctx, EventSink, Scope, Service};
 use futures::stream::Stream;
@@ -368,7 +375,7 @@ impl everyday_mcp::Host for VaultHost {
             // switches permit: `send_draft` absent unless some account has
             // turned MCP send on, per `docs/plans/mail.md`'s phase 5.
             let args = json!({ "caller": mcp_caller(&ctx) });
-            let money_ctx = ctx.clone();
+            let named_ctx = ctx.clone();
             let value = service.call(ctx, "list_tools", args).await.map_err(host_error)?;
             let tools: Vec<WireTool> = serde_json::from_value(value).map_err(|e| HostError {
                 code: "internal".to_string(),
@@ -387,9 +394,10 @@ impl everyday_mcp::Host for VaultHost {
                 // filtered on above -- see the module doc's "Outward tools
                 // over MCP".
                 .filter(|t| allow_destructive || t.effect != "destructive")
-                // Money only for a token that names it -- see the module
-                // doc's "Money needs asking for by name".
-                .filter(|t| money_allowed(&money_ctx, &t.name))
+                // Money and Screen time only for a token that names them --
+                // see the module doc's "Money and Screen time need asking
+                // for by name".
+                .filter(|t| named_if_needed(&named_ctx, &t.name).is_ok())
                 .map(|t| ToolDef {
                     name: t.name,
                     title: t.title,
@@ -418,12 +426,13 @@ impl everyday_mcp::Host for VaultHost {
             // through `Service::call` just to ask a question this process
             // can answer from `everyday_core::agent::tools` alone, and the
             // answer is the same one `tools()` would have filtered on.
-            if !money_allowed(&ctx, &name) {
+            if let Err((what, scope)) = named_if_needed(&ctx, &name) {
                 return Err(HostError {
                     code: "forbidden".to_string(),
                     message: format!(
-                        "{name} reads or changes Money, and this connection's token was not \
-                         given the money scope"
+                        "{name} reads or changes {what}, and this connection's token was not \
+                         given the {} scope",
+                        scope.as_str()
                     ),
                 });
             }
@@ -468,17 +477,30 @@ impl everyday_mcp::Host for VaultHost {
     }
 }
 
-/// The `caller` field `everyday_service::domains::meta::WireCaller`
-/// May this caller see or run `tool`? Every tool outside Money, yes; a money
-/// tool only when the token names [`Scope::Money`] itself rather than
-/// holding it through [`Scope::All`]. See the module doc's "Money needs
-/// asking for by name".
-fn money_allowed(ctx: &Ctx, tool: &str) -> bool {
-    let is_money = everyday_core::agent::tools::find(tool)
-        .is_some_and(|t| t.domain == everyday_core::agent::tools::Domain::Money);
-    !is_money || ctx.names(Scope::Money)
+/// The domains whose tools a token reaches only by naming their scope, not
+/// through [`Scope::All`]: what each is called in a refusal, and the scope
+/// it has to name. See the module doc's "Money and Screen time need asking
+/// for by name".
+fn by_name(domain: Domain) -> Option<(&'static str, Scope)> {
+    match domain {
+        Domain::Money => Some(("Money", Scope::Money)),
+        Domain::ScreenTime => Some(("Screen time", Scope::ScreenTime)),
+        _ => None,
+    }
 }
 
+/// May this caller see or run `tool`? Every tool outside [`by_name`]'s
+/// domains, yes; one inside them only when the token names that domain's
+/// scope itself. Refused with what the domain is called and the scope it
+/// would have needed, for the message.
+fn named_if_needed(ctx: &Ctx, tool: &str) -> Result<(), (&'static str, Scope)> {
+    match everyday_core::agent::tools::find(tool).and_then(|t| by_name(t.domain)) {
+        Some((what, scope)) if !ctx.names(scope) => Err((what, scope)),
+        _ => Ok(()),
+    }
+}
+
+/// The `caller` field `everyday_service::domains::meta::WireCaller`
 /// deserialises -- minted here, server-side, from the [`Ctx`] this
 /// [`VaultHost`] was built with, which is itself built by
 /// [`crate::auth::Registry::authenticate`] from the request's own bearer
@@ -824,4 +846,48 @@ pub async fn start(
     let running = crate::spawn_server(listener, router, None, server as Arc<dyn EventSink>)?;
     tracing::info!(address = %running.address, "serving MCP");
     Ok(running)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use everyday_core::agent::tools::catalog;
+    use everyday_service::Caller;
+
+    fn token(scopes: Vec<Scope>) -> Ctx {
+        Ctx { caller: Caller::Device("mcp:test".into()), scopes, proved_at: None, request_id: None }
+    }
+
+    fn a_tool_of(domain: Domain) -> &'static str {
+        catalog()
+            .iter()
+            .find(|t| t.domain == domain)
+            .unwrap_or_else(|| panic!("no {domain:?} tool to test with"))
+            .name
+    }
+
+    /// `All` reaches every domain but the two that have to be named, and
+    /// naming one of them reaches that one and not the other. See the
+    /// module doc's "Money and Screen time need asking for by name".
+    #[test]
+    fn money_and_screen_time_are_reached_only_by_naming_them() {
+        let money = a_tool_of(Domain::Money);
+        let screen = a_tool_of(Domain::ScreenTime);
+        let journal = a_tool_of(Domain::Journals);
+
+        let everything = token(vec![Scope::All]);
+        assert!(named_if_needed(&everything, journal).is_ok());
+        assert_eq!(named_if_needed(&everything, money), Err(("Money", Scope::Money)));
+        assert_eq!(named_if_needed(&everything, screen), Err(("Screen time", Scope::ScreenTime)));
+
+        let screen_only = token(vec![Scope::ScreenTime]);
+        assert!(named_if_needed(&screen_only, screen).is_ok());
+        assert!(named_if_needed(&screen_only, money).is_err());
+
+        let both = token(vec![Scope::All, Scope::Money, Scope::ScreenTime]);
+        assert!(named_if_needed(&both, money).is_ok() && named_if_needed(&both, screen).is_ok());
+
+        // A name the catalogue does not know is nobody's to gate here.
+        assert!(named_if_needed(&everything, "no_such_tool").is_ok());
+    }
 }

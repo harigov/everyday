@@ -16,6 +16,7 @@ mod news;
 mod notes;
 mod partial_patch;
 mod purpose;
+mod screentime;
 mod tasks;
 mod time;
 mod trackers;

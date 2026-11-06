@@ -380,7 +380,12 @@ export interface Target {
  * `finished` is library items finished (or re-read), on one shelf or all.
  */
 export type TrackerSource =
-  { type: 'manual' } | { type: 'time' } | { type: 'finished'; kindId?: KindId | null }
+  | { type: 'manual' }
+  | { type: 'time' }
+  | { type: 'finished'; kindId?: KindId | null }
+  /** Minutes of screen time a day: all of it, one category's, or one app's
+   *  or site's by its item key (`site:youtube.com`). */
+  | { type: 'screenTime'; category?: ScreenCategoryId | null; item?: string | null }
 
 /**
  * A thing you have decided to record.
@@ -1033,6 +1038,8 @@ export interface Capabilities {
    * live. False hides the Money app.
    */
   money?: boolean
+  /** The Screen time app: heartbeats and reports. */
+  screentime?: boolean
 }
 
 export interface VaultStatus {
@@ -3305,6 +3312,7 @@ export const ON_SCREEN_APPS = [
   'mail',
   'feed',
   'money',
+  'screentime',
   'assistant',
   'journal',
   'settings',
@@ -4751,4 +4759,223 @@ export interface Recurring {
   last: string
   next: string
   category: MoneyCategoryId | null
+}
+
+// ---- Screen time ---------------------------------------------------------
+//
+// Mirrors `everyday_core::screentime`. See `docs/plans/screentime.md`.
+
+export type ScreenSpanId = string
+export type ScreenAppId = string
+export type ScreenCategoryId = string
+
+/** What a span is of: a desktop app, or a website in a browser. */
+export type SpanKind = 'app' | 'site'
+
+/** A person's label for one app or site, by its item key
+ *  (`app:firefox`, `site:youtube.com`). */
+export interface ScreenApp {
+  id: ScreenAppId
+  key: string
+  kind: SpanKind
+  /** Empty keeps the collector's name. */
+  name: string
+  /** Absent falls back to the suggested category, unless `uncategorized`. */
+  category?: ScreenCategoryId | null
+  uncategorized: boolean
+  /** Left out of every total. */
+  ignored: boolean
+  /** Sites only: count each host under this domain separately. */
+  split: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ScreenCategory {
+  id: ScreenCategoryId
+  name: string
+  /** `#rrggbb`, or empty for the default. */
+  color: string
+  /** The starter category this began as (`work`, `social`, ...), or empty. */
+  builtin: string
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ScreenTimeSettings {
+  /** 1..60. Collectors stop counting after this long without input. */
+  idleMinutes: number
+  keepTitles: boolean
+  /** Clear titles from spans older than this many days; the time itself is
+   *  kept. 0 keeps titles as long as the spans. */
+  titleDays: number
+  /** App ids that are browsers, beyond the ones already known. */
+  browsers: string[]
+}
+
+export interface ScreenQuery {
+  /** First day, `YYYY-MM-DD`, inclusive. */
+  from: string
+  /** Last day, `YYYY-MM-DD`, inclusive. */
+  to: string
+  /** IANA zone; empty is the vault's system zone. */
+  tz: string
+  /** Empty is every device. */
+  devices: string[]
+  category?: ScreenCategoryId | null
+  item?: string | null
+}
+
+export interface ScreenItem {
+  key: string
+  kind: SpanKind
+  name: string
+  category: ScreenCategoryId | null
+  /** `category` is a suggestion, not the person's choice. */
+  suggested: boolean
+  secs: number
+  /** A browser's own time, no site claimed -- "Firefox (other)". */
+  browserRest: boolean
+  appId: ScreenAppId | null
+}
+
+export interface ScreenCategoryTotal {
+  category: ScreenCategoryId | null
+  secs: number
+}
+
+export interface ScreenDayTotal {
+  date: string
+  secs: number
+  categories: ScreenCategoryTotal[]
+}
+
+export interface ScreenDeviceTotal {
+  device: string
+  secs: number
+}
+
+export interface ScreenReport {
+  from: string
+  to: string
+  totalSecs: number
+  items: ScreenItem[]
+  categories: ScreenCategoryTotal[]
+  /** Every day of the range, empty ones included. */
+  days: ScreenDayTotal[]
+  /** 24 numbers: seconds in each wall-clock hour, summed over the range. */
+  hours: number[]
+  devices: ScreenDeviceTotal[]
+  previousTotalSecs: number
+}
+
+export interface TimelineRun {
+  start: string
+  end: string
+  key: string
+  kind: SpanKind
+  name: string
+  category: ScreenCategoryId | null
+  device: string
+  /** Empty when titles are not kept. */
+  title: string
+}
+
+export interface ScreenTimeline {
+  date: string
+  runs: TimelineRun[]
+}
+
+export interface ScreenAppRow {
+  key: string
+  kind: SpanKind
+  defaultName: string
+  label: ScreenApp | null
+  suggested: ScreenCategoryId | null
+  /** Hosts seen under a site's domain, most used first. */
+  hosts: string[]
+  /** Seconds in the last 30 days. */
+  recentSecs: number
+  lastSeen: string | null
+}
+
+export interface ScreenDevice {
+  device: string
+  collectors: string[]
+  lastSeen: string
+}
+
+export interface IngestReport {
+  accepted: number
+  rejected: number
+  spans: number
+}
+
+/** This machine's collector, as the shell reports it (`screentime_status`).
+ *  Not a vault record: each machine has its own. */
+export interface ScreenTimeStatus {
+  /** Is this computer recording its screen time? */
+  tracking: boolean
+  /** What this machine is called in reports. */
+  device: string
+  /** How focus is watched here: `gnome`, `kde`, `wlroots`, `x11`,
+   *  `windows`, `macos` or `unsupported`. */
+  backend: string
+  /** A sentence about the backend when something is off, else empty. */
+  note: string
+  /** GNOME only: the Shell extension that does the watching there. */
+  extension: ScreenExtensionStatus | null
+  /** Where browser extensions send heartbeats (`http://127.0.0.1:7399`),
+   *  when that listener is up. */
+  listening: string | null
+  /** When this machine's own heartbeats last reached the vault. */
+  lastSent: string | null
+  /** The last failure sending them, if the latest attempt failed. */
+  lastError: string | null
+  /** Collectors (browser extensions, the GNOME extension) heard from on
+   *  this machine's listener, most recent first. */
+  clients: ScreenClient[]
+}
+
+export interface ScreenExtensionStatus {
+  installed: boolean
+  enabled: boolean
+  /** Heard from in the last two minutes. */
+  active: boolean
+  /** Installed and enabled but not running: GNOME loads a new extension at
+   *  the next login. */
+  needsLogin: boolean
+}
+
+export interface ScreenClient {
+  /** The collector's name as it reports itself: `chrome`, `firefox`,
+   *  `gnome`. */
+  collector: string
+  lastSeen: string
+}
+
+/** What a browser extension is set up with, shown once. */
+export interface BrowserConnection {
+  /** One string to paste into the extension: endpoint, token and device. */
+  code: string
+  endpoint: string
+  device: string
+}
+
+/** One observation or run a collector sends (`record_screen_time`). */
+export interface Heartbeat {
+  kind: SpanKind
+  app: string
+  name?: string
+  host?: string
+  title?: string
+  start: string
+  end?: string | null
+}
+
+/** What a collector is told when it connects. */
+export interface CollectorConfig {
+  idleMinutes: number
+  keepTitles: boolean
 }

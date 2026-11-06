@@ -75,6 +75,9 @@ fn all_kinds() -> Vec<Kind> {
         Kind::Txn,
         Kind::MoneyCategory,
         Kind::MoneyRule,
+        Kind::ScreenApp,
+        Kind::ScreenCategory,
+        Kind::ScreenSpan,
         Kind::Settings,
         Kind::BackgroundTask,
     ]
@@ -125,6 +128,9 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::Txn
         | Kind::MoneyCategory
         | Kind::MoneyRule
+        | Kind::ScreenApp
+        | Kind::ScreenCategory
+        | Kind::ScreenSpan
         | Kind::Settings
         | Kind::BackgroundTask => {}
     }
@@ -163,6 +169,7 @@ fn capabilities_baseline() -> Capabilities {
         meetings: false,
         news: false,
         money: false,
+        screentime: false,
     }
 }
 
@@ -193,6 +200,7 @@ fn capabilities_all_true() -> Capabilities {
         meetings: true,
         news: true,
         money: true,
+        screentime: true,
     }
 }
 

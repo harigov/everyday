@@ -215,6 +215,14 @@ pub enum Kind {
     MoneyCategory,
     /// A rule that sorts transactions as they arrive.
     MoneyRule,
+    /// A person's label for an app or a site in Screen time.
+    ScreenApp,
+    /// A category screen time is filed under.
+    ScreenCategory,
+    /// Screen time was recorded or forgotten. Never with an id: heartbeats
+    /// arrive every half minute from every collector, and what a listener
+    /// does about any of them is reload what it shows.
+    ScreenSpan,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
     /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --
@@ -280,6 +288,11 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Txn => Ok(RecordKind::Txn),
             Kind::MoneyCategory => Ok(RecordKind::MoneyCategory),
             Kind::MoneyRule => Ok(RecordKind::MoneyRule),
+            Kind::ScreenApp => Ok(RecordKind::ScreenApp),
+            Kind::ScreenCategory => Ok(RecordKind::ScreenCategory),
+            // Not a record kind: spans are written by the thousand and
+            // never one at a time by a person.
+            Kind::ScreenSpan => Err(()),
             // Not a record: the vault's own settings.
             Kind::Settings => Err(()),
             // Not a record: a supervisor task's status.
@@ -334,6 +347,8 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::Txn => Ok(Kind::Txn),
             RecordKind::MoneyCategory => Ok(Kind::MoneyCategory),
             RecordKind::MoneyRule => Ok(Kind::MoneyRule),
+            RecordKind::ScreenApp => Ok(Kind::ScreenApp),
+            RecordKind::ScreenCategory => Ok(Kind::ScreenCategory),
             // Folded into `Kind::Thread` -- see this impl's docs.
             RecordKind::MailMessage | RecordKind::Op => Err(()),
             // Folded into `Kind::Conversation` -- see this impl's docs.
@@ -516,7 +531,7 @@ mod tests {
     //! the docs on those impls name.
     use super::*;
 
-    const RECORD_KINDS: [Kind; 35] = [
+    const RECORD_KINDS: [Kind; 37] = [
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
@@ -552,6 +567,8 @@ mod tests {
         Kind::Txn,
         Kind::MoneyCategory,
         Kind::MoneyRule,
+        Kind::ScreenApp,
+        Kind::ScreenCategory,
     ];
 
     #[test]

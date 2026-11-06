@@ -186,8 +186,10 @@ impl Vault {
     ///
     /// Computed rather than stored, from records the vault already keeps:
     /// time blocks for [`TrackerSource::Time`], the library's log for
-    /// [`TrackerSource::Finished`]. One grouped query per source however
-    /// many trackers share it, so a page with five of them costs two scans.
+    /// [`TrackerSource::Finished`], screen time's spans for
+    /// [`TrackerSource::ScreenTime`]. One grouped query per source however
+    /// many trackers share it, so a page with five of them costs two scans --
+    /// except screen time, which asks once per tracker (see `screen_days`).
     ///
     /// Nothing derived was ticked on a journal's page, beside an entry, or
     /// at a known minute, so a query that asks for any of those gets none --
@@ -242,6 +244,36 @@ impl Vault {
             derived.iter().filter(|t| matches!(t.source, TrackerSource::Finished { .. })).collect();
         if !finished.is_empty() && self.supports_library() {
             out.extend(self.finished_days(&finished, window)?);
+        }
+        let screen: Vec<&Tracker> = derived
+            .iter()
+            .filter(|t| matches!(t.source, TrackerSource::ScreenTime { .. }))
+            .collect();
+        if !screen.is_empty() && self.supports_screen_time() {
+            out.extend(self.screen_days(&screen, window)?);
+        }
+        Ok(out)
+    }
+
+    /// Minutes of screen time per day, for each tracker's own choice of all
+    /// of it, one category, or one app or site.
+    ///
+    /// One read per tracker rather than one for all: each asks a different
+    /// question of the same spans, and a page holds one or two of these.
+    /// Counted in this machine's time zone, as every other derived reading
+    /// is dated by the day it fell on here.
+    fn screen_days(&self, trackers: &[&Tracker], window: PurposeWindow) -> Result<Vec<TrackerDay>> {
+        let mut out = Vec::new();
+        for tracker in trackers {
+            let TrackerSource::ScreenTime { category, item } = &tracker.source else { continue };
+            let by_day =
+                self.screen_minutes_by_day(window.from, window.to, *category, item.as_deref())?;
+            out.extend(
+                by_day
+                    .into_iter()
+                    .filter(|(_, minutes)| *minutes > 0.0)
+                    .map(|(date, minutes)| derived_day(tracker.id, date, minutes)),
+            );
         }
         Ok(out)
     }

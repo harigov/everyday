@@ -2892,6 +2892,32 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "description": "Minutes of screen time per day, from the Screen time app: every app\nand site when both are `None`, else one category's, or one app's or\nsite's by its item key (`site:youtube.com`, see\n[`crate::screentime::item_key`]). Counted in this machine's time\nzone.\n\nBy key rather than by label id: a label can be reset or deleted, a\nkey is what the app or site *is*, so the goal keeps counting whatever\nhappens to its label. A category that is deleted leaves the tracker\ncounting nothing -- `Vault::delete_screen_category` refuses while one\nmeasures it.\n\n\"Under an hour of social a day\" is a max target on one of these.",
+            "properties": {
+              "category": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "item": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "screenTime",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         ]
       }
@@ -8259,6 +8285,164 @@
     "title": "RoutineRun",
     "type": "object"
   },
+  "ScreenApp": {
+    "$defs": {
+      "SpanKind": {
+        "description": "What a span is of.",
+        "oneOf": [
+          {
+            "const": "app",
+            "description": "A desktop application had focus.",
+            "type": "string"
+          },
+          {
+            "const": "site",
+            "description": "A website was the active tab of the focused browser window.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "A person's word about one app or site: what to call it, which category\nit belongs to, whether to count it at all.\n\nOne per key at most. Nothing needs one: an app nobody labelled is shown\nunder the name its collector gave and the category [`defaults`]\nsuggests.",
+    "properties": {
+      "category": {
+        "description": "`None` falls back to the suggested category, if any; see\n[`ScreenApp::uncategorized`] for saying \"none\" on purpose.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "ignored": {
+        "default": false,
+        "description": "Left out of every total: a lock screen, a launcher, a desktop.",
+        "type": "boolean"
+      },
+      "key": {
+        "description": "The item this labels -- see the module doc's \"Item keys\".",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/SpanKind"
+      },
+      "name": {
+        "default": "",
+        "description": "The person's name for it. Empty keeps the collector's.",
+        "type": "string"
+      },
+      "split": {
+        "default": false,
+        "description": "Sites only, on a registrable domain's key: count each host under it\nas its own site (`mail.google.com`, `docs.google.com`) rather than\ntogether.",
+        "type": "boolean"
+      },
+      "uncategorized": {
+        "default": false,
+        "description": "The person said this has no category, so no suggestion applies.",
+        "type": "boolean"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "key",
+      "kind",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "ScreenApp",
+    "type": "object"
+  },
+  "ScreenCategory": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "What a person calls a kind of screen time: Work, Social, Entertainment.",
+    "properties": {
+      "builtin": {
+        "default": "",
+        "description": "Which starter category this began as (`work`, `social`, ...), so a\nsuggestion from [`defaults`] can find it after a rename. Empty for\none the person made.",
+        "type": "string"
+      },
+      "color": {
+        "default": "",
+        "description": "A hex colour (`#2563eb`). Empty is the default.",
+        "type": "string"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "sortOrder": {
+        "default": 0,
+        "format": "int64",
+        "type": "integer"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "ScreenCategory",
+    "type": "object"
+  },
+  "ScreenTimeSettings": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The vault's own screen-time settings. Per machine settings -- whether\nthis computer tracks, what it is called -- are the shell's, not these.",
+    "properties": {
+      "browsers": {
+        "default": [],
+        "description": "App ids, beyond [`defaults::is_browser`]'s, that are browsers.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "idleMinutes": {
+        "default": 3,
+        "description": "Minutes without input after which a collector stops counting. Read by\ncollectors when they connect. 1 to 60.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "keepTitles": {
+        "default": true,
+        "description": "Keep window and tab titles. Off drops them on arrival.",
+        "type": "boolean"
+      },
+      "titleDays": {
+        "default": 0,
+        "description": "Clear window and tab titles from spans older than this many days.\n0 keeps them for as long as the spans.\n\nTitles, not spans: the time itself is what reports and goal trackers\nare drawn from -- a tracker's readings are worked out from spans,\nnever stored -- so deleting old spans would rewrite every old day as\nempty and every max target as met. A title is the part worth\nforgetting: a message's subject, a page's name.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "title": "ScreenTimeSettings",
+    "type": "object"
+  },
   "Skill": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "A process the assistant was given for a certain kind of request. See the\nmodule docs' \"Skills, and progressive disclosure\".",
@@ -9358,6 +9542,32 @@
               },
               "type": {
                 "const": "finished",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Minutes of screen time per day, from the Screen time app: every app\nand site when both are `None`, else one category's, or one app's or\nsite's by its item key (`site:youtube.com`, see\n[`crate::screentime::item_key`]). Counted in this machine's time\nzone.\n\nBy key rather than by label id: a label can be reset or deleted, a\nkey is what the app or site *is*, so the goal keeps counting whatever\nhappens to its label. A category that is deleted leaves the tracker\ncounting nothing -- `Vault::delete_screen_category` refuses while one\nmeasures it.\n\n\"Under an hour of social a day\" is a max target on one of these.",
+            "properties": {
+              "category": {
+                "format": "uuid",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "item": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "screenTime",
                 "type": "string"
               }
             },

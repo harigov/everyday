@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Every Day Screen time</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header>
+        <h1>Screen time</h1>
+        <p class="lede">
+          Tells Every Day which website had your attention: the active tab of
+          the focused window, while you are not idle. Nothing else.
+        </p>
+      </header>
+
+      <section
+        class="card"
+        id="connected"
+        hidden
+        aria-labelledby="connected-title"
+      >
+        <h2 id="connected-title">Connected</h2>
+        <p class="live" id="live" role="status" aria-live="polite"></p>
+        <dl class="facts">
+          <dt>Sending to</dt>
+          <dd id="dest"></dd>
+          <dt>This computer</dt>
+          <dd id="device"></dd>
+          <dt>Browser</dt>
+          <dd id="browser"></dd>
+          <dt>Last sent</dt>
+          <dd id="last-sent"></dd>
+          <dt>Waiting to be sent</dt>
+          <dd id="queued"></dd>
+          <dt>Tab titles</dt>
+          <dd id="titles"></dd>
+          <dt>Idle after</dt>
+          <dd id="idle"></dd>
+        </dl>
+        <p class="problem" id="last-error" role="alert" hidden></p>
+        <div class="actions">
+          <button type="button" id="send">Send now</button>
+          <button type="button" id="disconnect" class="quiet">
+            Disconnect
+          </button>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="connect-title">
+        <h2 id="connect-title">Connect to Every Day</h2>
+        <ol class="steps">
+          <li>In Every Day, open <strong>Settings → Screen time</strong>.</li>
+          <li>Choose <strong>Connect a browser</strong> and copy the code.</li>
+          <li>Paste it here and choose <strong>Connect</strong>.</li>
+        </ol>
+        <form id="connect-form" novalidate>
+          <label for="code">Connection code</label>
+          <textarea
+            id="code"
+            name="code"
+            rows="3"
+            spellcheck="false"
+            autocomplete="off"
+            placeholder="everyday-screentime:…"
+            aria-describedby="connect-error"
+          ></textarea>
+          <p class="problem" id="connect-error" role="alert" hidden></p>
+          <div class="actions">
+            <button type="submit" id="connect" class="primary">Connect</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="what-title">
+        <h2 id="what-title">What is sent</h2>
+        <ul class="plain">
+          <li>
+            The site's address without the page (<code>github.com</code>, not
+            the repository), the tab's title unless Every Day is set not to keep
+            titles, when you started and stopped looking, and the browser's
+            name.
+          </li>
+          <li>
+            Only to the address in the connection code: the app on this
+            computer, or your own sharing server.
+          </li>
+        </ul>
+        <h2>What is not</h2>
+        <ul class="plain">
+          <li>
+            Full addresses, page contents, keystrokes, history or screenshots.
+          </li>
+          <li>
+            Tabs in windows that are not focused, or anything while you are idle
+            or locked.
+          </li>
+          <li>Private windows, browser pages and extension pages.</li>
+        </ul>
+      </section>
+    </main>
+    <script src="lib.js"></script>
+    <script src="ui.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

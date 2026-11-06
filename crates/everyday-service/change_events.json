@@ -1129,6 +1129,102 @@
       ]
     },
     {
+      "command": "record_screen_time",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "screenSpan",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_screen_category",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "screenCategory",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_screen_app",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "screenApp",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_screen_time_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "forget_screen_item",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "screenSpan",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_screen_time",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "screenSpan",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_screen_app",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "screenApp",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_screen_category",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "screenCategory",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_meeting_settings",
       "events": [
         {

@@ -105,7 +105,7 @@ impl Portable for TrackersPart {
                 tracker.default_value.to_string(),
                 targets_text(&tracker.targets),
                 tracker.scale_max.to_string(),
-                source_text(tracker.source),
+                source_text(&tracker.source),
                 tracker.on_calendar.to_string(),
                 doc::purpose_text(tracker.purpose.as_ref()),
                 tracker.archived.to_string(),
@@ -377,9 +377,16 @@ fn parse_targets(text: &str) -> Vec<Target> {
         .collect()
 }
 
-fn source_text(source: TrackerSource) -> String {
+fn source_text(source: &TrackerSource) -> String {
     match source {
         TrackerSource::Finished { kind_id: Some(kind) } => format!("finished {kind}"),
+        // What it counts after the word, as JSON: an app id is a file name
+        // on some platforms and may hold a space, so a space-separated form
+        // could not be read back.
+        TrackerSource::ScreenTime { category, item } => {
+            let what = serde_json::json!({ "category": category, "item": item });
+            format!("screenTime {what}")
+        }
         other => other.as_str().to_string(),
     }
 }
@@ -391,6 +398,17 @@ fn parse_source(text: &str) -> TrackerSource {
     match text.split_once(' ').map_or((text, ""), |(a, b)| (a, b.trim())) {
         ("time", _) => TrackerSource::Time,
         ("finished", kind) => TrackerSource::Finished { kind_id: KindId::parse(kind).ok() },
+        ("screenTime", what) => {
+            #[derive(serde::Deserialize, Default)]
+            struct What {
+                #[serde(default)]
+                category: Option<everyday_core::ScreenCategoryId>,
+                #[serde(default)]
+                item: Option<String>,
+            }
+            let what: What = serde_json::from_str(what).unwrap_or_default();
+            TrackerSource::ScreenTime { category: what.category, item: what.item }
+        }
         _ => TrackerSource::Manual,
     }
 }
@@ -437,8 +455,13 @@ mod tests {
             TrackerSource::Time,
             TrackerSource::Finished { kind_id: None },
             TrackerSource::Finished { kind_id: Some(kind) },
+            TrackerSource::ScreenTime { category: None, item: None },
+            TrackerSource::ScreenTime {
+                category: Some(everyday_core::ScreenCategoryId::new()),
+                item: Some("app:my app.exe".into()),
+            },
         ] {
-            assert_eq!(parse_source(&source_text(source)), source);
+            assert_eq!(parse_source(&source_text(&source)), source);
         }
         assert_eq!(parse_source(""), TrackerSource::Manual);
     }

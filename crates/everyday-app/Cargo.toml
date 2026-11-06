@@ -26,9 +26,16 @@ everyday-vault.workspace = true
 everyday-service = { workspace = true, features = ["speech"] }
 everyday-server.workspace = true
 everyday-chat.workspace = true
+# This machine's screen time: which app has focus, idle, locked. See
+# `src/screentime.rs`.
+everyday-focus.workspace = true
 # Chunks of an archive arrive from the service base64'd inside JSON; the
-# shell decodes them straight into the file the user picked.
+# shell decodes them straight into the file the user picked. Also the
+# browser extension's screen-time connection code (`src/screentime.rs`).
 base64 = "0.22"
+# This machine's default name in screen time, from its hostname. Already in
+# the build through `everyday-mail`.
+gethostname = "1.1"
 # `tray-icon` is not a default feature: it pulls in muda and the platform
 # status-item APIs, and an app without a tray should not carry them. See
 # `src/tray.rs`. On Linux it also wants libayatana-appindicator at runtime,

@@ -302,6 +302,7 @@ fn kinds_of(part: &str) -> &'static [Kind] {
         "assistant" => &[Kind::Conversation, Kind::Routine, Kind::Memory],
         "feed" => &[Kind::NewsSource, Kind::Story],
         "money" => &[Kind::BankAccount, Kind::Txn, Kind::MoneyCategory, Kind::MoneyRule],
+        "screentime" => &[Kind::ScreenApp, Kind::ScreenCategory, Kind::ScreenSpan],
         _ => &[Kind::Settings],
     }
 }

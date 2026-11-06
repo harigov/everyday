@@ -400,7 +400,7 @@ pub struct TargetProgress {
 /// Derived readings are never stored, so they cannot go stale when a block
 /// is moved or a finish date corrected, and they cannot be written: the
 /// vault refuses a reading against a derived tracker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum TrackerSource {
@@ -422,6 +422,25 @@ pub enum TrackerSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind_id: Option<KindId>,
     },
+    /// Minutes of screen time per day, from the Screen time app: every app
+    /// and site when both are `None`, else one category's, or one app's or
+    /// site's by its item key (`site:youtube.com`, see
+    /// [`crate::screentime::item_key`]). Counted in this machine's time
+    /// zone.
+    ///
+    /// By key rather than by label id: a label can be reset or deleted, a
+    /// key is what the app or site *is*, so the goal keeps counting whatever
+    /// happens to its label. A category that is deleted leaves the tracker
+    /// counting nothing -- `Vault::delete_screen_category` refuses while one
+    /// measures it.
+    ///
+    /// "Under an hour of social a day" is a max target on one of these.
+    ScreenTime {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<crate::id::ScreenCategoryId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item: Option<String>,
+    },
 }
 
 impl TrackerSource {
@@ -434,6 +453,7 @@ impl TrackerSource {
             TrackerSource::Manual => "manual",
             TrackerSource::Time => "time",
             TrackerSource::Finished { .. } => "finished",
+            TrackerSource::ScreenTime { .. } => "screenTime",
         }
     }
 }
@@ -779,7 +799,7 @@ impl Tracker {
             self.on_calendar = false;
         }
         match self.source {
-            TrackerSource::Time => self.unit = "min".into(),
+            TrackerSource::Time | TrackerSource::ScreenTime { .. } => self.unit = "min".into(),
             TrackerSource::Finished { .. } => self.unit = String::new(),
             TrackerSource::Manual => {}
         }
@@ -1129,8 +1149,9 @@ mod tests {
             TrackerSource::Manual,
             TrackerSource::Time,
             TrackerSource::Finished { kind_id: Some(kind) },
+            TrackerSource::ScreenTime { category: None, item: Some("site:youtube.com".into()) },
         ] {
-            let json = serde_json::to_value(source).unwrap();
+            let json = serde_json::to_value(&source).unwrap();
             assert_eq!(serde_json::from_value::<TrackerSource>(json).unwrap(), source);
         }
         assert_eq!(

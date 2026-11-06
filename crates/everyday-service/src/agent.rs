@@ -1942,10 +1942,21 @@ fn trimmed_page(page: &Value) -> Value {
 /// exactly what an address composed afterwards could carry away. A money
 /// write hands back only ids and the names of categories, and arms nothing.
 /// See `everyday_core::agent::tools::money`.
+///
+/// Screen time's too, for the same two reasons. Its app and site names
+/// arrive from collectors holding a write-only heartbeats token -- one the
+/// design expects might leak from a browser profile -- so a name can be
+/// anybody's words; and what it answers is a day's browsing, which an
+/// address composed afterwards could carry away.
 fn reads_strangers_words(name: &str) -> bool {
     tools::find(name).is_some_and(|t| {
-        matches!(t.domain, tools::Domain::Mail | tools::Domain::News | tools::Domain::Money)
-            && t.effect == Effect::Read
+        matches!(
+            t.domain,
+            tools::Domain::Mail
+                | tools::Domain::News
+                | tools::Domain::Money
+                | tools::Domain::ScreenTime
+        ) && t.effect == Effect::Read
     })
 }
 
@@ -2088,7 +2099,12 @@ impl JobTools {
         // gets nothing from and could leak most through: a page it read
         // could ask it to look up the person's transactions and put the
         // figures into its next search. So a job is not handed Money at all.
-        if self.job && tool.domain == tools::Domain::Money {
+        //
+        // Screen time for the same reason: which sites somebody spends their
+        // day on is a browsing history, worth nothing to a question about the
+        // web and exactly what a page that wanted to profile them would ask
+        // to have put into a search address.
+        if self.job && matches!(tool.domain, tools::Domain::Money | tools::Domain::ScreenTime) {
             return false;
         }
         if tool.domain != tools::Domain::Jobs {
@@ -3805,6 +3821,8 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
                 tools::Domain::Meetings => Kind::Note,
                 tools::Domain::News => Kind::Story,
                 tools::Domain::Money => Kind::Txn,
+                // Read-only: the match covers the type, not the tools.
+                tools::Domain::ScreenTime => Kind::ScreenApp,
             },
         };
         add(kind, &entry.ids);
@@ -6061,6 +6079,7 @@ mod tests {
         assert!(reads_strangers_words("find_transactions"));
         assert!(reads_strangers_words("read_thread"), "mail's reads still do");
         assert!(reads_strangers_words("list_stories"), "and the Feed's");
+        assert!(reads_strangers_words("screen_time"), "and screen time's");
         assert!(!reads_strangers_words("categorize_transactions"));
         assert!(!reads_strangers_words("list_tasks"), "the person's own records do not");
         assert!(!reads_strangers_words("no_such_tool"));
@@ -6803,13 +6822,18 @@ mod tests {
     }
 
     #[test]
-    fn a_job_is_offered_everything_but_the_job_tools_and_money() {
+    fn a_job_is_offered_everything_but_the_job_tools_money_and_screen_time() {
         let job = JobTools { unattended: true, job: true, ..rail() };
         assert!(job_tools_offered(job).is_empty(), "no job starts, inspects or cancels jobs");
 
         let everything_else = tools::catalog()
             .iter()
-            .filter(|t| !matches!(t.domain, tools::Domain::Jobs | tools::Domain::Money))
+            .filter(|t| {
+                !matches!(
+                    t.domain,
+                    tools::Domain::Jobs | tools::Domain::Money | tools::Domain::ScreenTime
+                )
+            })
             .count();
         let offered = tools::catalog().iter().filter(|t| job.offers(t)).count();
         assert_eq!(offered, everything_else, "the rest of the catalogue is its, as a routine's is");
@@ -6827,6 +6851,13 @@ mod tests {
                 .filter(|t| t.domain == tools::Domain::Money)
                 .all(|t| rail().offers(t)),
             "a conversation still is"
+        );
+        assert!(
+            tools::catalog()
+                .iter()
+                .filter(|t| t.domain == tools::Domain::ScreenTime)
+                .all(|t| !job.offers(t) && rail().offers(t)),
+            "nor its browsing history, which a conversation is still handed"
         );
     }
 

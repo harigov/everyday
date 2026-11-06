@@ -108,6 +108,12 @@ pub enum RecordKind {
     /// A rule that sorts transactions as they arrive -- see
     /// [`crate::money::MoneyRule`].
     MoneyRule,
+    /// A person's label for an app or a site -- see
+    /// [`crate::screentime::ScreenApp`].
+    ScreenApp,
+    /// A category screen time is filed under -- see
+    /// [`crate::screentime::ScreenCategory`].
+    ScreenCategory,
 }
 
 impl RecordKind {
@@ -163,6 +169,8 @@ impl RecordKind {
             RecordKind::Txn => "txn",
             RecordKind::MoneyCategory => "money_category",
             RecordKind::MoneyRule => "money_rule",
+            RecordKind::ScreenApp => "screen_app",
+            RecordKind::ScreenCategory => "screen_category",
         }
     }
 
@@ -214,7 +222,9 @@ impl RecordKind {
             | RecordKind::BankAccount
             | RecordKind::Txn
             | RecordKind::MoneyCategory
-            | RecordKind::MoneyRule => None,
+            | RecordKind::MoneyRule
+            | RecordKind::ScreenApp
+            | RecordKind::ScreenCategory => None,
         }
     }
 
@@ -267,7 +277,9 @@ impl RecordKind {
             | RecordKind::BankAccount
             | RecordKind::Txn
             | RecordKind::MoneyCategory
-            | RecordKind::MoneyRule => None,
+            | RecordKind::MoneyRule
+            | RecordKind::ScreenApp
+            | RecordKind::ScreenCategory => None,
         }
     }
 
@@ -325,6 +337,8 @@ impl RecordKind {
             RecordKind::Txn => "txn",
             RecordKind::MoneyCategory => "money_category",
             RecordKind::MoneyRule => "money_rule",
+            RecordKind::ScreenApp => "screen_app",
+            RecordKind::ScreenCategory => "screen_category",
         }
     }
 }
@@ -783,6 +797,28 @@ impl RecordDescriptor for crate::money::MoneyRule {
     }
 }
 
+impl RecordDescriptor for crate::screentime::ScreenApp {
+    const KIND: RecordKind = RecordKind::ScreenApp;
+    type Id = crate::id::ScreenAppId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::screentime::screen_app_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::screentime::ScreenCategory {
+    const KIND: RecordKind = RecordKind::ScreenCategory;
+    type Id = crate::id::ScreenCategoryId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::screentime::screen_category_aad(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ties [`RecordKind::aad_word`] to every [`RecordDescriptor::aad`],
@@ -852,6 +888,8 @@ mod tests {
         check::<crate::money::Txn>(id());
         check::<crate::money::MoneyCategory>(id());
         check::<crate::money::MoneyRule>(id());
+        check::<crate::screentime::ScreenApp>(id());
+        check::<crate::screentime::ScreenCategory>(id());
     }
 
     #[test]
@@ -869,7 +907,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 40] = [
+    const ALL: [RecordKind; 42] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -910,5 +948,7 @@ mod tests {
         RecordKind::Txn,
         RecordKind::MoneyCategory,
         RecordKind::MoneyRule,
+        RecordKind::ScreenApp,
+        RecordKind::ScreenCategory,
     ];
 }

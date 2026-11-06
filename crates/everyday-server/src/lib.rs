@@ -44,6 +44,7 @@ pub mod client;
 pub mod mcp;
 pub mod pairing;
 pub mod routes;
+pub mod screentime;
 pub mod sse;
 pub mod tls;
 

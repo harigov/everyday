@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Every Day Screen time",
+  "short_name": "Screen time",
+  "version": "0.1.0",
+  "description": "Tells the Every Day app which website had your attention: the active tab of the focused window, while you are not idle.",
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["lib.js", "background.js"]
+  },
+  "permissions": ["tabs", "idle", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "optional_host_permissions": ["https://*/*"],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_title": "Screen time",
+    "default_popup": "popup.html"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "screentime@everyday.journal",
+      "strict_min_version": "121.0"
+    }
+  }
+}

@@ -116,6 +116,7 @@ pub mod richtext;
 pub mod routine;
 #[cfg(feature = "schema")]
 pub mod schema;
+pub mod screentime;
 pub mod search;
 pub mod store;
 pub mod task;
@@ -145,8 +146,8 @@ pub use id::{
     DraftId, EntryId, EventId, GoalId, ItemId, JobId, JournalId, KindId, LogId, MailMessageId,
     MailboxId, MemoryId, MessageId, MoneyCategoryId, MoneyRuleId, NewsSourceId, NoteId, OpId,
     PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
-    SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId, VoiceprintId,
-    WritingId,
+    ScreenAppId, ScreenCategoryId, ScreenSpanId, SkillId, StoryId, TaskId, TemplateId, ThreadId,
+    TrackerId, TranscriptId, TxnId, VoiceprintId, WritingId,
 };
 pub use job::{Job, JobKind, JobOutput, JobStatus};
 pub use library::{
@@ -190,6 +191,10 @@ pub use routine::{
     Delivered, DeliveredTo, Delivery, DreamScope, Due, Outcome, Routine, RoutineKind, RoutineRun,
     Trigger, Weekday,
 };
+pub use screentime::{
+    Heartbeat, HeartbeatBatch, IngestReport, ScreenApp, ScreenCategory, ScreenQuery, ScreenReport,
+    ScreenSpan, ScreenTimeSettings, SpanKind,
+};
 pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
@@ -203,6 +208,7 @@ pub use store::notes::{NoteQuery, NoteSort, NoteStore};
 pub use store::proposals::{ProposalQuery, ProposalStore};
 pub use store::purpose::{GoalQuery, PurposeStore, PurposeWindow};
 pub use store::routines::RunQuery;
+pub use store::screentime::ScreenTimeStore;
 pub use store::tasks::{BlockQuery, ParentScope, ProjectScope, TaskQuery, TaskSort, TaskStore};
 pub use store::trackers::{ReadingQuery, TrackerDay, TrackerStore};
 pub use store::writing::{WritingQuery, WritingStore};

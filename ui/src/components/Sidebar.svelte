@@ -15,6 +15,7 @@
   import MailNav from './MailNav.svelte'
   import FeedNav from './FeedNav.svelte'
   import MoneyNav from './MoneyNav.svelte'
+  import ScreenTimeNav from './ScreenTimeNav.svelte'
   import AssistantNav from './AssistantNav.svelte'
   import NotesNav from './NotesNav.svelte'
   import PaneResizer from './PaneResizer.svelte'
@@ -187,6 +188,8 @@
     <FeedNav />
   {:else if app.section === 'money'}
     <MoneyNav />
+  {:else if app.section === 'screentime'}
+    <ScreenTimeNav />
   {:else}
     <nav class="scroll side-nav">
       <button

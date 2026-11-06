@@ -143,6 +143,7 @@ pub static PARTS: &[&dyn Portable] = &[
     &parts::library::LIBRARY,
     &parts::news::NEWS,
     &parts::money::MONEY,
+    &parts::screentime::SCREENTIME,
     &parts::trackers::TRACKERS,
     &parts::purpose::PURPOSE,
     &parts::assistant::ASSISTANT,

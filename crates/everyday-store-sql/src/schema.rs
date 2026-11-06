@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -113,6 +113,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v22(d),
         v23(d),
         v24(d),
+        v25(d),
     ]
 }
 
@@ -1722,6 +1723,71 @@ fn v24(_d: Dialect) -> Vec<String> {
              account_id  TEXT PRIMARY KEY NOT NULL
          )"
         .to_string(),
+    ]
+}
+
+/// Version 25: Screen time -- which app or site had somebody's attention,
+/// on which machine, and when; the labels a person gives apps and sites; the
+/// categories those are filed under; and the settings. See
+/// `docs/plans/screentime.md` and `everyday_core::screentime`.
+///
+/// Additive. Four tables:
+///
+/// - `screen_spans`: one unbroken run of one app or site. Not a record kind
+///   -- written by the thousand a day, never edited -- but sealed the same
+///   way, under its own id. In the clear: the *stream*, a keyed hash of the
+///   device and the collector that sent it (so a stream's last span is one
+///   indexed lookup, and the column cannot be matched against a machine's
+///   name), and when the run started and ended. Never the device, the app,
+///   the host or the title. `(stream, end_us)` answers "where did this
+///   collector leave off"; `(start_us)` and `(end_us)` answer a range, which
+///   asks for every span starting before its end and ending after its
+///   start; `(end_us)` is also what the sweep that clears old titles reads
+///   by.
+/// - `screen_apps`: a person's label for one app or site. Only the two
+///   timestamps are clear; the key it labels -- which *is* the app's id or
+///   the site's domain -- is sealed, so the vault finds a label by key after
+///   decrypting the list, which is a few hundred rows at most.
+/// - `screen_categories`: their order and timestamps.
+/// - `screen_settings`: a singleton on `meeting_settings`' shape.
+fn v25(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_spans (
+                 id        TEXT    PRIMARY KEY NOT NULL,
+                 stream    TEXT    NOT NULL,
+                 start_us  {int} NOT NULL,
+                 end_us    {int} NOT NULL,
+                 data      {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS screen_spans_by_stream ON screen_spans (stream, end_us)".into(),
+        "CREATE INDEX IF NOT EXISTS screen_spans_by_end ON screen_spans (end_us)".into(),
+        "CREATE INDEX IF NOT EXISTS screen_spans_by_start ON screen_spans (start_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_apps (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_categories (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
     ]
 }
 

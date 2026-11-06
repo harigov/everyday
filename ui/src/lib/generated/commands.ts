@@ -39,6 +39,7 @@ import type {
   ChatLink,
   ChatLinkId,
   ChatLinkView,
+  CollectorConfig,
   Conversation,
   ConversationId,
   ConversationSummary,
@@ -62,6 +63,7 @@ import type {
   GoalActivity,
   GoalId,
   GoalQuery,
+  Heartbeat,
   ImageResult,
   ImportFormat,
   ImportPreview,
@@ -70,6 +72,7 @@ import type {
   ImportUpload,
   ImproveMode,
   InboxSender,
+  IngestReport,
   Item,
   ItemId,
   ItemQuery,
@@ -183,6 +186,16 @@ import type {
   RoutineRunId,
   RunQuery,
   ScheduledSend,
+  ScreenApp,
+  ScreenAppId,
+  ScreenAppRow,
+  ScreenCategory,
+  ScreenCategoryId,
+  ScreenDevice,
+  ScreenQuery,
+  ScreenReport,
+  ScreenTimeSettings,
+  ScreenTimeline,
   SearchHit,
   SearchKind,
   SearchMailResult,
@@ -347,6 +360,9 @@ export interface Commands {
   deleteRole: { args: { id: RoleId }; result: void }
   deleteRoutine: { args: { id: RoutineId }; result: void }
   deleteRun: { args: { id: RoutineRunId }; result: void }
+  deleteScreenApp: { args: { id: ScreenAppId }; result: void }
+  deleteScreenCategory: { args: { id: ScreenCategoryId }; result: void }
+  deleteScreenTime: { args: { from: string; to: string }; result: number }
   deleteSkill: { args: { id: SkillId }; result: void }
   deleteSpeechModel: { args: { id: string }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
@@ -383,6 +399,7 @@ export interface Commands {
   fetchImage: { args: { url: string }; result: string }
   finishRecording: { args: { id: RecordingId }; result: Recording }
   flush: { args: Record<string, never>; result: void }
+  forgetScreenItem: { args: { key: string }; result: number }
   getAccount: { args: { id: AccountId }; result: AccountView }
   getEntry: { args: { id: EntryId }; result: Entry }
   getEvent: { args: { id: EventId }; result: CalendarEvent }
@@ -471,6 +488,9 @@ export interface Commands {
   listRoles: { args: Record<string, never>; result: RoleInfo[] }
   listRoutines: { args: Record<string, never>; result: RoutineInfo[] }
   listRuns: { args: { query?: RunQuery }; result: RoutineRun[] }
+  listScreenApps: { args: Record<string, never>; result: ScreenAppRow[] }
+  listScreenCategories: { args: Record<string, never>; result: ScreenCategory[] }
+  listScreenDevices: { args: Record<string, never>; result: ScreenDevice[] }
   listSkills: { args: Record<string, never>; result: Skill[] }
   listStories: { args: { query: StoryQuery }; result: StoryPage }
   listTags: { args: Record<string, never>; result: string[] }
@@ -629,6 +649,10 @@ export interface Commands {
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
   recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
+  recordScreenTime: {
+    args: { device: string; collector: string; beats: Heartbeat[] }
+    result: IngestReport
+  }
   refreshNews: { args: { source?: NewsSourceId | null }; result: RefreshReport[] }
   removeChatLink: { args: { id: ChatLinkId }; result: void }
   respondToInvite: {
@@ -696,12 +720,22 @@ export interface Commands {
   saveReading: { args: { reading: Reading }; result: void }
   saveRole: { args: { role: Role }; result: void }
   saveRoutine: { args: { routine: Routine }; result: Routine }
+  saveScreenApp: { args: { app: ScreenApp }; result: void }
+  saveScreenCategory: { args: { category: ScreenCategory }; result: void }
+  saveScreenTimeSettings: { args: { settings: ScreenTimeSettings }; result: void }
   saveSkill: { args: { skill: Skill }; result: Skill }
   saveStories: { args: { ids: StoryId[]; saved: boolean }; result: void }
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
   scheduledSends: { args: { account?: AccountId | null }; result: ScheduledSend[] }
+  screenTimeCollector: { args: Record<string, never>; result: CollectorConfig }
+  screenTimeReport: { args: { query: ScreenQuery }; result: ScreenReport }
+  screenTimeSettings: { args: Record<string, never>; result: ScreenTimeSettings }
+  screenTimeTimeline: {
+    args: { date: string; tz: string; devices?: string[] }
+    result: ScreenTimeline
+  }
   search: {
     args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
@@ -874,6 +908,9 @@ export const COMMAND_NAMES = {
   deleteRole: 'delete_role',
   deleteRoutine: 'delete_routine',
   deleteRun: 'delete_run',
+  deleteScreenApp: 'delete_screen_app',
+  deleteScreenCategory: 'delete_screen_category',
+  deleteScreenTime: 'delete_screen_time',
   deleteSkill: 'delete_skill',
   deleteSpeechModel: 'delete_speech_model',
   deleteTask: 'delete_task',
@@ -898,6 +935,7 @@ export const COMMAND_NAMES = {
   fetchImage: 'fetch_image',
   finishRecording: 'finish_recording',
   flush: 'flush',
+  forgetScreenItem: 'forget_screen_item',
   getAccount: 'get_account',
   getEntry: 'get_entry',
   getEvent: 'get_event',
@@ -958,6 +996,9 @@ export const COMMAND_NAMES = {
   listRoles: 'list_roles',
   listRoutines: 'list_routines',
   listRuns: 'list_runs',
+  listScreenApps: 'list_screen_apps',
+  listScreenCategories: 'list_screen_categories',
+  listScreenDevices: 'list_screen_devices',
   listSkills: 'list_skills',
   listStories: 'list_stories',
   listTags: 'list_tags',
@@ -1049,6 +1090,7 @@ export const COMMAND_NAMES = {
   readImport: 'read_import',
   rebuildMailIndex: 'rebuild_mail_index',
   recategorizeMail: 'recategorize_mail',
+  recordScreenTime: 'record_screen_time',
   refreshNews: 'refresh_news',
   removeChatLink: 'remove_chat_link',
   respondToInvite: 'respond_to_invite',
@@ -1098,12 +1140,19 @@ export const COMMAND_NAMES = {
   saveReading: 'save_reading',
   saveRole: 'save_role',
   saveRoutine: 'save_routine',
+  saveScreenApp: 'save_screen_app',
+  saveScreenCategory: 'save_screen_category',
+  saveScreenTimeSettings: 'save_screen_time_settings',
   saveSkill: 'save_skill',
   saveStories: 'save_stories',
   saveTask: 'save_task',
   saveTasks: 'save_tasks',
   saveTracker: 'save_tracker',
   scheduledSends: 'scheduled_sends',
+  screenTimeCollector: 'screen_time_collector',
+  screenTimeReport: 'screen_time_report',
+  screenTimeSettings: 'screen_time_settings',
+  screenTimeTimeline: 'screen_time_timeline',
   search: 'search',
   searchMail: 'search_mail',
   searchSources: 'search_sources',
@@ -1249,6 +1298,9 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_role',
   'delete_routine',
   'delete_run',
+  'delete_screen_app',
+  'delete_screen_category',
+  'delete_screen_time',
   'delete_skill',
   'delete_speech_model',
   'delete_task',
@@ -1273,6 +1325,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'fetch_image',
   'finish_recording',
   'flush',
+  'forget_screen_item',
   'get_account',
   'get_entry',
   'get_event',
@@ -1333,6 +1386,9 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_roles',
   'list_routines',
   'list_runs',
+  'list_screen_apps',
+  'list_screen_categories',
+  'list_screen_devices',
   'list_skills',
   'list_stories',
   'list_tags',
@@ -1424,6 +1480,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'read_import',
   'rebuild_mail_index',
   'recategorize_mail',
+  'record_screen_time',
   'refresh_news',
   'remove_chat_link',
   'respond_to_invite',
@@ -1473,12 +1530,19 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_reading',
   'save_role',
   'save_routine',
+  'save_screen_app',
+  'save_screen_category',
+  'save_screen_time_settings',
   'save_skill',
   'save_stories',
   'save_task',
   'save_tasks',
   'save_tracker',
   'scheduled_sends',
+  'screen_time_collector',
+  'screen_time_report',
+  'screen_time_settings',
+  'screen_time_timeline',
   'search',
   'search_mail',
   'search_sources',
@@ -1610,6 +1674,9 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_role',
   'delete_routine',
   'delete_run',
+  'delete_screen_app',
+  'delete_screen_category',
+  'delete_screen_time',
   'delete_skill',
   'delete_speech_model',
   'delete_task',
@@ -1629,6 +1696,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'fetch_image',
   'finish_recording',
   'flush',
+  'forget_screen_item',
   'import_calendar',
   'import_opml',
   'import_transactions',
@@ -1650,6 +1718,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'prepare_picture',
   'rebuild_mail_index',
   'recategorize_mail',
+  'record_screen_time',
   'refresh_news',
   'remove_chat_link',
   'respond_to_invite',
@@ -1697,6 +1766,9 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_reading',
   'save_role',
   'save_routine',
+  'save_screen_app',
+  'save_screen_category',
+  'save_screen_time_settings',
   'save_skill',
   'save_stories',
   'save_task',
@@ -1795,6 +1867,9 @@ export const CHANGE_KINDS = {
   delete_role: 'role',
   delete_routine: 'routine',
   delete_run: 'routineRun',
+  delete_screen_app: 'screenApp',
+  delete_screen_category: 'screenCategory',
+  delete_screen_time: 'screenSpan',
   delete_skill: 'skill',
   delete_speech_model: 'settings',
   delete_task: 'task',
@@ -1810,6 +1885,7 @@ export const CHANGE_KINDS = {
   enrol_voice: 'voiceprint',
   fetch_full_article: 'story',
   finish_recording: 'recording',
+  forget_screen_item: 'screenSpan',
   import_calendar: 'calendar',
   import_opml: 'newsSource',
   import_transactions: 'txn',
@@ -1826,6 +1902,7 @@ export const CHANGE_KINDS = {
   move_to_mailbox: 'thread',
   name_speaker: 'transcript',
   new_draft: 'draft',
+  record_screen_time: 'screenSpan',
   refresh_news: 'story',
   remove_chat_link: 'settings',
   restore_draft: 'draft',
@@ -1869,6 +1946,9 @@ export const CHANGE_KINDS = {
   save_reading: 'reading',
   save_role: 'role',
   save_routine: 'routine',
+  save_screen_app: 'screenApp',
+  save_screen_category: 'screenCategory',
+  save_screen_time_settings: 'settings',
   save_skill: 'skill',
   save_stories: 'story',
   save_task: 'task',

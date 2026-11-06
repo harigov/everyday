@@ -24,6 +24,8 @@
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
   import { library } from '../lib/library.svelte'
+  import { screentime } from '../lib/screentime.svelte'
+  import { rowName } from '../lib/screentime'
   import { targets } from '../lib/targets.svelte'
   import { tracking } from '../lib/tracking.svelte'
   import { describeProgress, isManual } from '../lib/tracker'
@@ -188,8 +190,30 @@
       : [],
   )
 
+  /** The apps and sites a goal can be measured by: the most used, by key. */
+  const screenItems = $derived(
+    app.supportsScreenTime
+      ? [...screentime.apps]
+          .filter((r) => !r.label?.ignored)
+          .sort((a, b) => b.recentSecs - a.recentSecs)
+          .slice(0, 15)
+      : [],
+  )
+
+  /** A screen-time measure's source: `screen`, `screen:cat:<id>`, `screen:item:<key>`. */
+  function screenSource(m: string): Extract<Tracker['source'], { type: 'screenTime' }> {
+    if (m.startsWith('screen:cat:')) {
+      return { type: 'screenTime', category: m.slice('screen:cat:'.length) }
+    }
+    if (m.startsWith('screen:item:')) {
+      return { type: 'screenTime', item: m.slice('screen:item:'.length) }
+    }
+    return { type: 'screenTime' }
+  }
+
   function startAdding() {
     if (library.kinds.length === 0) void library.refreshKinds()
+    if (app.supportsScreenTime) void screentime.ensureLabels()
     adding = {
       measure: 'time',
       name: '',
@@ -203,6 +227,8 @@
     const m = adding?.measure ?? 'time'
     if (m === 'time') return { kind: 'amount', unit: 'min', source: { type: 'time' } }
     if (m.startsWith('finished:')) return { kind: 'amount', unit: '', source: { type: 'finished' } }
+    if (m === 'screen' || m.startsWith('screen:'))
+      return { kind: 'amount', unit: 'min', source: screenSource(m) }
     if (m.startsWith('tracker:')) {
       const t = tracking.tracker(m.slice('tracker:'.length))
       if (t) return t
@@ -263,6 +289,20 @@
         name = shelf ? shelfWords(shelf) : 'Things finished'
         source = { type: 'finished', kindId }
         icon = 'trophy'
+      } else if (form.measure === 'screen' || form.measure.startsWith('screen:cat:')) {
+        const category = screentime.categoryOf(form.measure.slice('screen:cat:'.length) || null)
+        name = category ? `Screen time: ${category.name}` : 'Screen time'
+        source = screenSource(form.measure)
+        icon = 'stopwatch'
+      } else if (form.measure.startsWith('screen:item:')) {
+        // An app or site is measured by its key, so resetting or deleting
+        // its label never changes what the goal counts.
+        const key = form.measure.slice('screen:item:'.length)
+        const row = screentime.apps.find((r) => r.key === key)
+        if (!row) return
+        name = `Time on ${rowName(row)}`
+        source = { type: 'screenTime', item: key }
+        icon = 'stopwatch'
       } else {
         name = form.name.trim()
       }
@@ -271,7 +311,12 @@
       await tracking.saveTracker({
         ...$state.snapshot(made),
         icon,
-        unit: form.measure === 'new' ? form.unit.trim() : made.unit,
+        unit:
+          form.measure === 'new'
+            ? form.unit.trim()
+            : form.measure.startsWith('screen')
+              ? 'min'
+              : made.unit,
         source,
         purpose: filed,
         targets: draft,
@@ -559,6 +604,15 @@
             <option value="finished:{shelf.id}">{shelfWords(shelf)}</option>
           {/each}
           <option value="finished:">Anything finished, on any shelf</option>
+          {#if app.supportsScreenTime}
+            <option value="screen">Screen time (all)</option>
+            {#each screentime.categories as c (c.id)}
+              <option value="screen:cat:{c.id}">Screen time: {c.name}</option>
+            {/each}
+            {#each screenItems as r (r.key)}
+              <option value="screen:item:{r.key}">Screen time on {rowName(r)}</option>
+            {/each}
+          {/if}
           {#each reusable as t (t.id)}
             <option value="tracker:{t.id}">{t.name}</option>
           {/each}

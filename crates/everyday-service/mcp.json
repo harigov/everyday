@@ -2754,6 +2754,45 @@
       "title": "Save story"
     },
     {
+      "domain": "screentime",
+      "effect": "read",
+      "name": "screen_time",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "by_device": {
+            "description": "Also split the total by computer. Only when they ask about one machine.",
+            "type": "boolean"
+          },
+          "category": {
+            "description": "Only this screen time category, by name (e.g. \"Social\", \"Work\"), or \"uncategorized\" for apps and sites in none.",
+            "type": "string"
+          },
+          "from": {
+            "description": "First day, inclusive. Defaults to `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "item": {
+            "description": "Only this app or site: its key as an earlier answer gave it (app:firefox, site:youtube.com), its name as shown (\"YouTube\"), or a web address.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most apps and sites to list. Defaults to 10, capped at 200.",
+            "type": "integer"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to today. At most 400 days in all. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "screentime",
+      "sensitivity": "ordinary",
+      "title": "Screen time"
+    },
+    {
       "domain": "journals",
       "effect": "read",
       "name": "search",
@@ -2973,10 +3012,11 @@
             "type": "number"
           },
           "measure": {
-            "description": "When there is no tracker_id, what to count: 'time' is minutes of logged time filed under the goal or role; 'finished' is things finished off a shelf (a re-read counts); 'new' makes a tracker recorded by hand, named by `name`.",
+            "description": "When there is no tracker_id, what to count: 'time' is minutes of logged time filed under the goal or role; 'finished' is things finished off a shelf (a re-read counts); 'screen' is minutes of screen time from the Screen time app, all of it or narrowed by `screen_category` or `screen_item`; 'new' makes a tracker recorded by hand, named by `name`.",
             "enum": [
               "time",
               "finished",
+              "screen",
               "new"
             ],
             "type": "string"
@@ -3006,6 +3046,14 @@
           },
           "role_id": {
             "description": "Or under this role directly. From list_roles.",
+            "type": "string"
+          },
+          "screen_category": {
+            "description": "For 'screen': only this screen time category, by name, e.g. 'Social'.",
+            "type": "string"
+          },
+          "screen_item": {
+            "description": "For 'screen': only this app or site, as screen_time names it (app:firefox, site:youtube.com) or by its name or web address.",
             "type": "string"
           },
           "shelf_id": {

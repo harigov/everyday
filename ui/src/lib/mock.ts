@@ -179,6 +179,7 @@ import {
   mockStoryForLibrary,
 } from './mock-feed'
 import { mockMoney } from './mock-money'
+import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
@@ -4464,6 +4465,7 @@ function status(): VaultStatus {
           mail: true,
           news: true,
           money: true,
+          screentime: true,
           jobs: true,
         }
       : undefined,
@@ -4537,6 +4539,11 @@ function derivedDays(q: ReadingQuery): TrackerDay[] {
         )
         byDay.set(b.localDate, (byDay.get(b.localDate) ?? 0) + minutes)
       }
+    } else if (t.source.type === 'screenTime') {
+      // Minutes of screen time a day, from `mock-screentime.ts`'s spans --
+      // all of it, one category's, or one app's or site's by its key.
+      const minutes = mockScreenMinutes(q.from, q.to, t.source.category, t.source.item)
+      for (const [date, value] of minutes) byDay.set(date, Math.round(value))
     } else {
       const kindId = t.source.kindId ?? null
       for (const log of logs) {
@@ -5931,7 +5938,8 @@ export const mockInvoke = async <T>(
       if (t.source && t.source.type !== 'manual') {
         t.kind = 'amount'
         t.onCalendar = false
-        t.unit = t.source.type === 'time' ? 'min' : ''
+        // Screen time is counted in minutes too.
+        t.unit = t.source.type === 'time' || t.source.type === 'screenTime' ? 'min' : ''
       }
       t.targets = (t.targets ?? []).filter((x) => x.min != null || x.max != null)
       const at = trackers.findIndex((x) => x.id === t.id)
@@ -7805,6 +7813,37 @@ export const mockInvoke = async <T>(
     case 'mock_money_link_outcome':
       requireUnlocked()
       return mockMoney(cmd, args) as T
+
+    // ── Screen time -- docs/plans/screentime.md ─────────────────────────
+    //
+    // `mock-screentime.ts` holds thirty days of two machines' spans, the
+    // labels and the categories, and narrows its own arguments. The vault's
+    // commands want it open; the shell's `screentime_*` do not -- they are
+    // this computer's, answered whether or not a vault is unlocked.
+
+    case 'record_screen_time':
+    case 'screen_time_collector':
+    case 'screen_time_report':
+    case 'screen_time_timeline':
+    case 'list_screen_apps':
+    case 'save_screen_app':
+    case 'delete_screen_app':
+    case 'list_screen_categories':
+    case 'save_screen_category':
+    case 'delete_screen_category':
+    case 'list_screen_devices':
+    case 'screen_time_settings':
+    case 'save_screen_time_settings':
+    case 'forget_screen_item':
+    case 'delete_screen_time':
+      requireUnlocked()
+      return mockScreenTime(cmd, args) as T
+    case 'screentime_status':
+    case 'screentime_set_tracking':
+    case 'screentime_set_device':
+    case 'screentime_install_gnome_extension':
+    case 'screentime_connect_browser':
+      return mockScreenTime(cmd, args) as T
 
     // An Articles item on the library's shelf, made the way the library's
     // own `add_item` makes one. The mock library has no Articles shelf until

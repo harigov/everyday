@@ -121,6 +121,7 @@ mod notes;
 mod proposals;
 mod purpose;
 mod routines;
+mod screentime;
 mod skills;
 mod tasks;
 mod time;
@@ -204,13 +205,16 @@ pub enum Domain {
     /// `agent::tools::money`. Never a credential: no tool here reads the
     /// Plaid keys or a link's token, and none could.
     Money,
+    /// Screen time: how long went on which apps and sites -- see
+    /// `agent::tools::screentime`. Read-only, and never a window title.
+    ScreenTime,
 }
 
 impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 14] = [
+    pub const ALL: [Domain; 15] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -225,6 +229,7 @@ impl Domain {
         Domain::Meetings,
         Domain::News,
         Domain::Money,
+        Domain::ScreenTime,
     ];
 
     /// Can this vault serve the domain, and may a model be shown it at all?
@@ -247,6 +252,7 @@ impl Domain {
                 Domain::Meetings => vault.supports_meetings(),
                 Domain::News => vault.supports_news(),
                 Domain::Money => vault.supports_money(),
+                Domain::ScreenTime => vault.supports_screen_time(),
             }
     }
 
@@ -311,7 +317,12 @@ impl Domain {
             // transaction's description -- often the sender's own words --
             // reaches the model as untrusted text. See `agent::tools::money`
             // and the service's `ConfirmGate`.
-            | Domain::Money => Sensitivity::Ordinary,
+            | Domain::Money
+            // Which apps and sites, for how long: private, but the person's
+            // own and the point of asking. No tool returns a window title --
+            // the one part a stranger writes (a page's or a message's) -- so
+            // nothing here is untrusted text.
+            | Domain::ScreenTime => Sensitivity::Ordinary,
         }
     }
 }
@@ -359,6 +370,7 @@ impl TryFrom<RecordKind> for Domain {
             | RecordKind::Txn
             | RecordKind::MoneyCategory
             | RecordKind::MoneyRule => Ok(Domain::Money),
+            RecordKind::ScreenApp | RecordKind::ScreenCategory => Ok(Domain::ScreenTime),
             // Proposed work, not a domain a tool list is offered for.
             RecordKind::Proposal => Err(()),
             // No tools read writing help yet. The feedback pass that will is
@@ -1279,6 +1291,7 @@ fn all() -> &'static [Tool] {
             meetings::TOOLS,
             news::TOOLS,
             money::TOOLS,
+            screentime::TOOLS,
         ]
         .concat()
     })
@@ -1640,6 +1653,8 @@ mod tests {
             (RecordKind::Txn, Domain::Money),
             (RecordKind::MoneyCategory, Domain::Money),
             (RecordKind::MoneyRule, Domain::Money),
+            (RecordKind::ScreenApp, Domain::ScreenTime),
+            (RecordKind::ScreenCategory, Domain::ScreenTime),
         ] {
             assert_eq!(Domain::try_from(kind), Ok(domain), "{kind:?}");
         }

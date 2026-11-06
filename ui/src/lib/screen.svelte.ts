@@ -21,11 +21,23 @@ import { notes } from './notes.svelte'
 import type { Showing } from './onscreen'
 import { overview } from './overview.svelte'
 import { panels, type SettingsTab } from './panels.svelte'
+import { screentime } from './screentime.svelte'
 import { app } from './state.svelte'
 import { todo } from './todo.svelte'
 import type { OnScreenApp } from './types'
 
-const deps: AppDeps = { app, notes, todo, calendar, library, mail, feed, money, overview }
+const deps: AppDeps = {
+  app,
+  notes,
+  todo,
+  calendar,
+  library,
+  mail,
+  feed,
+  money,
+  screentime,
+  overview,
+}
 
 /** Each Settings tab, as the model is told it. Not the drawn labels, which
  *  live with their icons in `SettingsView.svelte`; these only need to say
@@ -45,6 +57,8 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   skills: "the assistant's skills",
   chat: 'the Chat tab, where the assistant is reached from a chat app',
   money: 'the Money tab, where the keys for linking banks through Plaid are kept',
+  screentime:
+    'the Screen time tab, whether this computer records which app or site is in use, and how',
   meetings: 'the Meetings tab',
   keepintouch: 'the Keeping in touch tab, how often to keep up with people',
   data: 'the Data tab, import and export',

@@ -185,9 +185,11 @@ pub(super) static TOOLS: &[Tool] = &[
                     one_of(
                         "When there is no tracker_id, what to count: 'time' is minutes of \
                          logged time filed under the goal or role; 'finished' is things \
-                         finished off a shelf (a re-read counts); 'new' makes a tracker \
-                         recorded by hand, named by `name`.",
-                        &["time", "finished", "new"]
+                         finished off a shelf (a re-read counts); 'screen' is minutes of \
+                         screen time from the Screen time app, all of it or narrowed by \
+                         `screen_category` or `screen_item`; 'new' makes a tracker recorded \
+                         by hand, named by `name`.",
+                        &["time", "finished", "screen", "new"]
                     )
                 ),
                 ("goal_id", text("File the tracker under this goal. From list_goals.")),
@@ -195,6 +197,17 @@ pub(super) static TOOLS: &[Tool] = &[
                 (
                     "shelf_id",
                     text("For 'finished': which shelf. From list_shelves. Omit for every shelf.")
+                ),
+                (
+                    "screen_category",
+                    text("For 'screen': only this screen time category, by name, e.g. 'Social'.")
+                ),
+                (
+                    "screen_item",
+                    text(
+                        "For 'screen': only this app or site, as screen_time names it \
+                         (app:firefox, site:youtube.com) or by its name or web address."
+                    )
                 ),
                 ("name", text("For 'new': what is being recorded, e.g. 'TV'.")),
                 ("unit", text("For 'new': the unit, e.g. 'min', 'pages'. Empty for a count.")),
@@ -227,12 +240,14 @@ pub(super) static TOOLS: &[Tool] = &[
          and so how a goal is measured: 'between 1 and 2 hours of piano a week' is \
          measure 'time', goal_id of the piano goal, per week, min 60, max 120; \
          'twelve books this year' is measure 'finished' on the books shelf, per year, \
-         min 12; 'no more than an hour of TV a day' is measure 'new', name 'TV', unit \
-         'min', per day, max 60. Time is always in minutes. A tracker holds one target \
-         per period and tally, so setting one again replaces it \u{2014} and a measure \
-         that already has a tracker (time on the same goal, the same shelf, a tracker \
-         of the same name) reuses it rather than making another. Give min, max or \
-         both. Passing goal_id or role_id with an existing tracker also files it there.",
+         min 12; 'under an hour of social media a day' is measure 'screen', \
+         screen_category 'Social', per day, max 60; 'no more than an hour of TV a day' \
+         is measure 'new', name 'TV', unit 'min', per day, max 60. Time is always in \
+         minutes. A tracker holds one target per period and tally, so setting one again \
+         replaces it \u{2014} and a measure that already has a tracker (time on the same \
+         goal, the same shelf, the same screen time, a tracker of the same name) reuses \
+         it rather than making another. Give min, max or both. Passing goal_id or \
+         role_id with an existing tracker also files it there.",
         run_set_target
     ),
 ];
@@ -624,6 +639,11 @@ fn existing_for(
             let wanted = TrackerSource::Finished { kind_id: args.opt_id("shelf_id", "shelf")? };
             live.into_iter().find(|t| t.source == wanted && t.purpose == purpose)
         }
+        // Without a label for its app, no tracker can be counting it yet.
+        "screen" => match screen_source(ctx, args, false)? {
+            Some((wanted, _)) => live.into_iter().find(|t| t.source == wanted),
+            None => None,
+        },
         "new" => {
             let name = args.opt_str("name").map(str::trim).unwrap_or_default();
             live.into_iter()
@@ -676,6 +696,14 @@ fn new_tracker(
             t.icon = "trophy".into();
             t
         }
+        "screen" => {
+            let (source, name) = screen_source(ctx, args, true)?
+                .ok_or_else(|| args.bad("could not label that app or site to measure it"))?;
+            let mut t = Tracker::new(name, TrackerKind::Amount);
+            t.source = source;
+            t.icon = "eye".into();
+            t
+        }
         "new" => {
             let name = args.opt_str("name").map(str::trim).unwrap_or_default();
             if name.is_empty() {
@@ -692,11 +720,115 @@ fn new_tracker(
             t
         }
         other => {
-            return Err(args.bad(format!("`measure` must be time, finished or new, not {other:?}")));
+            return Err(
+                args.bad(format!("`measure` must be time, finished, screen or new, not {other:?}"))
+            );
         }
     };
     tracker.purpose = purpose;
     Ok(tracker)
+}
+
+/// The screen-time source `screen_category` and `screen_item` describe, and
+/// the name a new tracker for it gets.
+///
+/// A source names an app or a site by its item key. Without `make`, an item
+/// never seen and never labelled answers `None`: there is no tracker for
+/// something that was never there to count.
+fn screen_source(
+    ctx: &ToolContext<'_>,
+    args: &Args<'_>,
+    make: bool,
+) -> Result<Option<(TrackerSource, String)>> {
+    let category = match args.opt_str("screen_category").map(str::trim) {
+        None => None,
+        Some(wanted) => {
+            let found = ctx
+                .vault
+                .screen_categories()?
+                .into_iter()
+                .find(|c| c.name.trim().eq_ignore_ascii_case(wanted));
+            match found {
+                Some(c) => Some((c.id, c.name)),
+                None => {
+                    return Err(args.bad(format!(
+                        "there is no screen time category called {wanted:?}; screen_time \
+                         lists them under categories"
+                    )));
+                }
+            }
+        }
+    };
+    let item = match args.opt_str("screen_item").map(str::trim) {
+        None => None,
+        Some(wanted) => {
+            // One read of the list labels are edited in: every app and site
+            // used lately, and every labelled one, used or not.
+            let rows = ctx.vault.screen_apps()?;
+            let key = screen_item_key(args, &rows, wanted)?;
+            // The source holds the key, not a label: a label can be reset
+            // or deleted, and the goal must go on counting the same thing.
+            let row = rows.iter().find(|r| r.key == key);
+            if row.is_none() && !make {
+                return Ok(None);
+            }
+            let name = row
+                .map(|r| match &r.label {
+                    Some(label) if !label.name.trim().is_empty() => label.name.clone(),
+                    _ => r.default_name.clone(),
+                })
+                .unwrap_or_else(|| crate::screentime::key_text(&key).to_string());
+            Some((key, name))
+        }
+    };
+    let name = match (&category, &item) {
+        (_, Some((_, item))) => format!("Screen time: {item}"),
+        (Some((_, category)), None) => format!("Screen time: {category}"),
+        (None, None) => "Screen time".to_string(),
+    };
+    let source = TrackerSource::ScreenTime {
+        category: category.map(|(id, _)| id),
+        item: item.map(|(key, _)| key),
+    };
+    Ok(Some((source, name)))
+}
+
+/// The item key `screen_item` names: a key as given, the name or key text
+/// of an app or site used lately or labelled, or a web address.
+fn screen_item_key(
+    args: &Args<'_>,
+    rows: &[crate::screentime::ScreenAppRow],
+    wanted: &str,
+) -> Result<String> {
+    let lowered = wanted.to_lowercase();
+    if lowered.starts_with("app:") {
+        return Ok(lowered);
+    }
+    if let Some(rest) = lowered.strip_prefix("site:") {
+        // A host is its own item only when its domain is split -- which is
+        // when the list has a row for it. Otherwise it is its domain.
+        let host = crate::screentime::domain::normalize_host(rest);
+        let own = format!("site:{host}");
+        if rows.iter().any(|r| r.key == own) {
+            return Ok(own);
+        }
+        return Ok(format!("site:{}", crate::screentime::domain::registrable(&host)));
+    }
+    let found = rows.iter().find(|r| {
+        r.label.as_ref().is_some_and(|l| l.name.trim().to_lowercase() == lowered)
+            || r.default_name.trim().to_lowercase() == lowered
+            || crate::screentime::key_text(&r.key) == lowered
+    });
+    if let Some(row) = found {
+        return Ok(row.key.clone());
+    }
+    if wanted.contains('.') && !wanted.contains(char::is_whitespace) {
+        return Ok(format!("site:{}", crate::screentime::domain::registrable(wanted)));
+    }
+    Err(args.bad(format!(
+        "no app or site called {wanted:?} has screen time lately; give its key, like \
+         app:firefox or site:youtube.com"
+    )))
 }
 
 fn run_list_readings(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {

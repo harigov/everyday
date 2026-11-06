@@ -51,6 +51,10 @@ export type SettingsTab =
   | 'chat'
   // The Plaid keys a person brings for Money -- see `docs/plans/money.md`.
   | 'money'
+  // This computer's screen time -- whether it records, what it is called,
+  // the GNOME and browser extensions -- and the vault's retention. See
+  // `docs/plans/screentime.md`.
+  | 'screentime'
   | 'meetings'
   // Settings for the Contacts shelf's catch-ups -- see KeepInTouchPanel.
   | 'keepintouch'

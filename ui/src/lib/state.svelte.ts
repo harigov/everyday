@@ -556,6 +556,17 @@ class AppState {
   }
 
   /**
+   * Can this vault keep screen time?
+   *
+   * One capability, as Money's. Whether *this computer* records any is a
+   * separate question the shell answers (`screentime_status`): a vault can
+   * show what a laptop recorded to a window that records nothing itself.
+   */
+  get supportsScreenTime(): boolean {
+    return this.status?.capabilities?.screentime === true
+  }
+
+  /**
    * Is this section available on the vault that is open?
    *
    * Reads `apps.ts`'s registry rather than a switch of its own: that used to

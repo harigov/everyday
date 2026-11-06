@@ -21,6 +21,10 @@
 //! socket -- the operating system already said who is on the other end.
 //! `X-Everyday-Protocol` always; a mismatch is refused rather than attempted.
 //! `X-Everyday-Request` on a write, which is what makes a retry safe.
+//!
+//! The two screen-time routes are the exception: a heartbeats token and
+//! nothing else, because the collectors that call them are not built from
+//! this workspace. See `crate::screentime`.
 
 use axum::extract::{ConnectInfo, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -146,6 +150,12 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/news/body/{story}", get(get_news_body))
         .route("/v1/news/img/{story}/{token}", get(get_news_image))
         .route("/v1/events", get(events))
+        // The two routes collectors speak to, for a machine with no copy of
+        // this application running: a heartbeats token, no protocol header,
+        // and a body that must name its device. Their handlers are shared
+        // with the shell's loopback listener -- see `crate::screentime`.
+        .route("/v1/screentime/hello", get(crate::screentime::shared_hello))
+        .route("/v1/screentime/heartbeats", post(crate::screentime::shared_heartbeats))
         // What an extractor that buffers -- `Json`, `Bytes` -- may take when a
         // route says nothing. It does not govern a raw `Body`, which is why
         // `call`, `stream` and `put_blob` can still take up to their own
@@ -175,97 +185,102 @@ impl From<CommandError> for Failure {
 
 impl IntoResponse for Failure {
     fn into_response(self) -> Response {
-        use everyday_service::error::codes;
-        let status = match self.0.code.as_str() {
-            // This server's own codes, from `auth.rs` and `client.rs` --
-            // `bad_password` joins `unauthorized` here because both say the
-            // same thing about a credential: it did not check out.
-            "unauthorized" | codes::BAD_PASSWORD => StatusCode::UNAUTHORIZED,
-            codes::FORBIDDEN => StatusCode::FORBIDDEN,
-            // Concurrency limits, not authentication: `busy` is `everyday-service`'s
-            // own transfer-slot ceiling, the same shape as a pairing code's
-            // attempt limit. `rate_limited` joins them: the assistant or an
-            // MCP client asked for more mail ops than its per-turn or
-            // per-minute budget allows, the same "slow down" answer as the
-            // other two.
-            "too_many_attempts" | codes::BUSY | codes::RATE_LIMITED => {
-                StatusCode::TOO_MANY_REQUESTS
-            }
-            // Malformed input, whether the shape came from JSON that would
-            // not deserialise or from a vault descriptor naming a backend or
-            // a cipher this build has never heard of.
-            // `invalid_client` joins them: a wrong client id or secret is a
-            // malformed request in the same sense a bad backend name is --
-            // the fix is the caller's, not a retry.
-            "bad_code"
-            | codes::INVALID
-            | codes::UNKNOWN_BACKEND
-            | codes::UNKNOWN_CIPHER
-            | codes::INVALID_CLIENT => StatusCode::BAD_REQUEST,
-            codes::UNKNOWN_COMMAND | codes::UNKNOWN_TOOL | codes::NOT_FOUND => {
-                StatusCode::NOT_FOUND
-            }
-            // `already_initialised` is a conflict for the same reason a
-            // stale save is: the thing this call assumed did not exist,
-            // does. `retry` joins it because the answer is the same one a
-            // conflict gets -- ask again, deliberately, with a fresh id.
-            codes::CONFLICT | codes::ALREADY_INITIALISED | codes::RETRY => StatusCode::CONFLICT,
-            codes::TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
-            // A version older or newer than this build understands.
-            // `unsupported_version` is a vault's on-disk format saying the
-            // same thing `protocol` says about the wire: upgrade the build
-            // rather than retry the call.
-            "protocol" | codes::UNSUPPORTED_VERSION => StatusCode::UPGRADE_REQUIRED,
-            // Understood, but this vault or this input cannot honour it --
-            // `not_an_image` is the same shape as `unsupported`: a caller
-            // that gave a well-formed request pointed at the wrong thing.
-            // `invalid_grant` says the same thing about an account that
-            // `locked` says about a vault: understood, cannot be honoured
-            // as it stands, and there is a specific known step -- sign in
-            // again -- that fixes it.
-            // `no_location` says the same thing about `weather` (the
-            // command) that `invalid_grant` says about an account: a
-            // specific, known step -- adding a location in Settings → About
-            // You -- fixes it.
-            codes::LOCKED
-            | codes::NO_VAULT
-            | codes::UNSUPPORTED
-            | codes::CONFIRM_REQUIRED
-            | codes::NOT_AN_IMAGE
-            | codes::NO_LOCATION
-            | codes::INVALID_GRANT => StatusCode::UNPROCESSABLE_ENTITY,
-            // Another copy of this process holds the write claim. Distinct
-            // from `conflict`'s optimistic-concurrency meaning -- nothing
-            // about the record changed, the vault itself is spoken for --
-            // which is what the WebDAV status name actually means.
-            codes::VAULT_IN_USE => StatusCode::LOCKED,
-            // A request this server could not carry out because something
-            // beyond it did not answer, or answered with something that
-            // could not be used: the web, or the model behind the assistant
-            // and the quick model, whichever endpoint a person configured.
-            // `provider` joins them: the OAuth endpoint on the other end of
-            // the socket answered with something other than a token or one
-            // of the two named failures above, which is exactly the shape
-            // of "something beyond this server did not behave".
-            codes::NETWORK | codes::AGENT | codes::QUICK | codes::UNREADABLE | codes::PROVIDER => {
-                StatusCode::BAD_GATEWAY
-            }
-            // Nobody's browser came back inside the sign-in's own window.
-            codes::TIMED_OUT => StatusCode::REQUEST_TIMEOUT,
-            // The flow this call named was withdrawn -- `cancel_oauth_sign_in`
-            // -- and, unlike `not_found`, once existed and will not answer
-            // again under the same id.
-            codes::CANCELLED => StatusCode::GONE,
-            // Everything left is this side's own failure to make sense of
-            // its own data or finish its own work: `decrypt_failed` is
-            // ciphertext that does not check out against the key that
-            // opened it, which is a corruption question rather than a
-            // caller's mistake; `internal`, `panic`, `io`, `serde` and
-            // `backend` are this process failing at something with no
-            // caller-facing shape at all.
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, Json(self.0)).into_response()
+        (status_for(&self.0.code), Json(self.0)).into_response()
+    }
+}
+
+/// The status a command error's code is answered with.
+///
+/// Its own function rather than the body of [`Failure`]'s `into_response`
+/// so the screen-time ingest routes (see `crate::screentime`) answer every
+/// code the way every other route does, and differ only where their
+/// contract says so.
+pub(crate) fn status_for(code: &str) -> StatusCode {
+    use everyday_service::error::codes;
+    match code {
+        // This server's own codes, from `auth.rs` and `client.rs` --
+        // `bad_password` joins `unauthorized` here because both say the
+        // same thing about a credential: it did not check out.
+        "unauthorized" | codes::BAD_PASSWORD => StatusCode::UNAUTHORIZED,
+        codes::FORBIDDEN => StatusCode::FORBIDDEN,
+        // Concurrency limits, not authentication: `busy` is `everyday-service`'s
+        // own transfer-slot ceiling, the same shape as a pairing code's
+        // attempt limit. `rate_limited` joins them: the assistant or an
+        // MCP client asked for more mail ops than its per-turn or
+        // per-minute budget allows, the same "slow down" answer as the
+        // other two.
+        "too_many_attempts" | codes::BUSY | codes::RATE_LIMITED => StatusCode::TOO_MANY_REQUESTS,
+        // Malformed input, whether the shape came from JSON that would
+        // not deserialise or from a vault descriptor naming a backend or
+        // a cipher this build has never heard of.
+        // `invalid_client` joins them: a wrong client id or secret is a
+        // malformed request in the same sense a bad backend name is --
+        // the fix is the caller's, not a retry.
+        "bad_code"
+        | codes::INVALID
+        | codes::UNKNOWN_BACKEND
+        | codes::UNKNOWN_CIPHER
+        | codes::INVALID_CLIENT => StatusCode::BAD_REQUEST,
+        codes::UNKNOWN_COMMAND | codes::UNKNOWN_TOOL | codes::NOT_FOUND => StatusCode::NOT_FOUND,
+        // `already_initialised` is a conflict for the same reason a
+        // stale save is: the thing this call assumed did not exist,
+        // does. `retry` joins it because the answer is the same one a
+        // conflict gets -- ask again, deliberately, with a fresh id.
+        codes::CONFLICT | codes::ALREADY_INITIALISED | codes::RETRY => StatusCode::CONFLICT,
+        codes::TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
+        // A version older or newer than this build understands.
+        // `unsupported_version` is a vault's on-disk format saying the
+        // same thing `protocol` says about the wire: upgrade the build
+        // rather than retry the call.
+        "protocol" | codes::UNSUPPORTED_VERSION => StatusCode::UPGRADE_REQUIRED,
+        // Understood, but this vault or this input cannot honour it --
+        // `not_an_image` is the same shape as `unsupported`: a caller
+        // that gave a well-formed request pointed at the wrong thing.
+        // `invalid_grant` says the same thing about an account that
+        // `locked` says about a vault: understood, cannot be honoured
+        // as it stands, and there is a specific known step -- sign in
+        // again -- that fixes it.
+        // `no_location` says the same thing about `weather` (the
+        // command) that `invalid_grant` says about an account: a
+        // specific, known step -- adding a location in Settings → About
+        // You -- fixes it.
+        codes::LOCKED
+        | codes::NO_VAULT
+        | codes::UNSUPPORTED
+        | codes::CONFIRM_REQUIRED
+        | codes::NOT_AN_IMAGE
+        | codes::NO_LOCATION
+        | codes::INVALID_GRANT => StatusCode::UNPROCESSABLE_ENTITY,
+        // Another copy of this process holds the write claim. Distinct
+        // from `conflict`'s optimistic-concurrency meaning -- nothing
+        // about the record changed, the vault itself is spoken for --
+        // which is what the WebDAV status name actually means.
+        codes::VAULT_IN_USE => StatusCode::LOCKED,
+        // A request this server could not carry out because something
+        // beyond it did not answer, or answered with something that
+        // could not be used: the web, or the model behind the assistant
+        // and the quick model, whichever endpoint a person configured.
+        // `provider` joins them: the OAuth endpoint on the other end of
+        // the socket answered with something other than a token or one
+        // of the two named failures above, which is exactly the shape
+        // of "something beyond this server did not behave".
+        codes::NETWORK | codes::AGENT | codes::QUICK | codes::UNREADABLE | codes::PROVIDER => {
+            StatusCode::BAD_GATEWAY
+        }
+        // Nobody's browser came back inside the sign-in's own window.
+        codes::TIMED_OUT => StatusCode::REQUEST_TIMEOUT,
+        // The flow this call named was withdrawn -- `cancel_oauth_sign_in`
+        // -- and, unlike `not_found`, once existed and will not answer
+        // again under the same id.
+        codes::CANCELLED => StatusCode::GONE,
+        // Everything left is this side's own failure to make sense of
+        // its own data or finish its own work: `decrypt_failed` is
+        // ciphertext that does not check out against the key that
+        // opened it, which is a corruption question rather than a
+        // caller's mistake; `internal`, `panic`, `io`, `serde` and
+        // `backend` are this process failing at something with no
+        // caller-facing shape at all.
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
@@ -434,9 +449,17 @@ fn derives_a_key(name: &str) -> bool {
 /// the limit was hit or the client went away only through a type from
 /// `http-body-util`, which this crate does not depend on -- and the two want
 /// different answers.
-async fn read_body(body: axum::body::Body, limit: usize) -> Result<Vec<u8>, Failure> {
+///
+/// Answers a [`CommandError`] rather than a [`Failure`] so the screen-time
+/// ingest routes in `crate::screentime`, which answer some codes their own
+/// way, read their bodies through this too; `?` turns it into a `Failure`
+/// everywhere else.
+pub(crate) async fn read_body(
+    body: axum::body::Body,
+    limit: usize,
+) -> Result<Vec<u8>, CommandError> {
     use futures::StreamExt;
-    let too_large = || Failure::from(CommandError::new("too_large", "that request is too large"));
+    let too_large = || CommandError::new("too_large", "that request is too large");
     // A declared length past the limit is refused without reading a byte.
     let declared = axum::body::HttpBody::size_hint(&body).lower();
     if declared > limit as u64 {

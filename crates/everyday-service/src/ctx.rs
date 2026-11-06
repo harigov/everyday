@@ -123,6 +123,21 @@ pub enum Scope {
     /// nothing under it, or any other scope, hands a key or a bank token
     /// back out.
     Money,
+    /// Screen time: the reports, the labels and categories, the settings,
+    /// and forgetting what was recorded.
+    ///
+    /// Its own scope, never a corner of another: which apps and sites
+    /// somebody spends their day on is a browsing history, and a client that
+    /// may read a reading list has no business inheriting it.
+    ScreenTime,
+    /// Sending heartbeats and nothing else: what a collector -- the browser
+    /// extension, the GNOME Shell extension, another machine's shell -- is
+    /// issued.
+    ///
+    /// Write-only on purpose. A token that leaks from a browser profile can
+    /// add made-up usage and read nothing; [`Scope::ScreenTime`] does not
+    /// imply it is needed, and holding it does not imply `ScreenTime`.
+    Heartbeats,
     /// Searching the web and fetching a picture. Its own scope because it is
     /// the one capability that puts a request on the network, and a client
     /// that only wants to read a shelf has no business asking for it.
@@ -171,6 +186,8 @@ impl Scope {
             Scope::Meetings => "meetings",
             Scope::News => "news",
             Scope::Money => "money",
+            Scope::ScreenTime => "screentime",
+            Scope::Heartbeats => "heartbeats",
             Scope::Web => "web",
             Scope::Admin => "admin",
             Scope::Any => "any",
@@ -197,6 +214,8 @@ impl Scope {
         Scope::Meetings,
         Scope::News,
         Scope::Money,
+        Scope::ScreenTime,
+        Scope::Heartbeats,
         Scope::Web,
         Scope::Admin,
     ];
