@@ -172,6 +172,14 @@ pub fn parse(text: &str) -> IcsCalendar {
                 if component == "VEVENT" && stack.iter().all(|c| c == "VCALENDAR") {
                     current = Some(Draft::default());
                 }
+                // An alarm of the event under construction, and only of it:
+                // a VALARM anywhere else (a VTODO's) is somebody else's.
+                if component == "VALARM"
+                    && stack.last().map(String::as_str) == Some("VEVENT")
+                    && let Some(draft) = current.as_mut()
+                {
+                    draft.alarm = Some(AlarmDraft::default());
+                }
                 stack.push(component);
                 continue;
             }
@@ -182,6 +190,12 @@ pub fn parse(text: &str) -> IcsCalendar {
                     && let Some(event) = draft.finish()
                 {
                     out.events.push(event);
+                }
+                if component == "VALARM"
+                    && let Some(draft) = current.as_mut()
+                    && let Some(alarm) = draft.alarm.take()
+                {
+                    draft.alarms.push(alarm);
                 }
                 stack.pop();
                 continue;
@@ -196,6 +210,12 @@ pub fn parse(text: &str) -> IcsCalendar {
             && in_event
         {
             draft.apply(&line);
+            continue;
+        }
+        if let Some(alarm) = current.as_mut().and_then(|d| d.alarm.as_mut())
+            && stack.last().map(String::as_str) == Some("VALARM")
+        {
+            alarm.apply(&line);
             continue;
         }
         if stack.last().map(String::as_str) == Some("VCALENDAR") {
@@ -234,6 +254,77 @@ struct Draft {
     /// these two fields `None`, exactly as the extension mechanism intends.
     everyday_uid: Option<String>,
     everyday_tz: Option<String>,
+    /// The `VALARM`s read so far, and the one being read.
+    alarms: Vec<AlarmDraft>,
+    alarm: Option<AlarmDraft>,
+}
+/// A `VALARM` being assembled: what it does and when.
+#[derive(Debug, Default)]
+struct AlarmDraft {
+    action: String,
+    trigger: Option<Trigger>,
+}
+/// When an alarm goes off, as `TRIGGER` says it.
+#[derive(Debug)]
+enum Trigger {
+    /// A duration from the start, or from the end with `RELATED=END`.
+    /// Negative is before.
+    Relative { offset: SignedDuration, from_end: bool },
+    /// `TRIGGER;VALUE=DATE-TIME:...`, a moment of its own.
+    Absolute(Moment),
+}
+impl AlarmDraft {
+    fn apply(&mut self, line: &Line<'_>) {
+        match line.name.as_str() {
+            "ACTION" => self.action = line.value.trim().to_ascii_uppercase(),
+            "TRIGGER" => {
+                let value = line.value.trim();
+                self.trigger = if line.param("VALUE") == Some("DATE-TIME")
+                    || value.starts_with(|c: char| c.is_ascii_digit())
+                {
+                    parse_moment(line, value).map(Trigger::Absolute)
+                } else {
+                    parse_duration(value).map(|offset| Trigger::Relative {
+                        offset,
+                        from_end: line.param("RELATED") == Some("END"),
+                    })
+                };
+            }
+            _ => {}
+        }
+    }
+
+    /// Whole minutes before the event's start, or `None` for an alarm that
+    /// tells nobody at this computer anything -- an `EMAIL`, a `PROCEDURE`
+    /// -- or goes off once the event has begun, when a reminder that it is
+    /// coming is too late to be one.
+    fn minutes_before(&self, start: &Moment, end: DateTime) -> Option<u32> {
+        // No ACTION is a malformed alarm, and the likeliest thing it meant
+        // is to show something.
+        if !matches!(self.action.as_str(), "" | "DISPLAY" | "AUDIO") {
+            return None;
+        }
+        let before = match self.trigger.as_ref()? {
+            Trigger::Relative { offset, from_end: false } => -offset.as_secs(),
+            Trigger::Relative { offset, from_end: true } => {
+                start.at.duration_until(end).as_secs().max(0).saturating_neg() - offset.as_secs()
+            }
+            Trigger::Absolute(at) => instant(start)?.as_second() - instant(at)?.as_second(),
+        };
+        if before < 0 {
+            return None;
+        }
+        u32::try_from(before / 60).ok()
+    }
+}
+/// The instant a moment names: in its own zone, or the reader's for a
+/// floating time.
+fn instant(m: &Moment) -> Option<Timestamp> {
+    let zone = match m.tz.as_deref() {
+        Some(name) => TimeZone::get(name).ok()?,
+        None => TimeZone::system(),
+    };
+    m.at.to_zoned(zone).ok().map(|z| z.timestamp())
 }
 impl Draft {
     fn apply(&mut self, line: &Line<'_>) {
@@ -324,6 +415,9 @@ impl Draft {
         let end = if end < start.at { start.at } else { end };
 
         let tz = start.tz.clone();
+        let alerts = crate::calendar::tidy_alerts(
+            self.alarms.iter().filter_map(|a| a.minutes_before(&start, end)),
+        );
         Some(IcsEvent {
             // `X-EVERYDAY-UID` wins when it is there: it is the id the
             // publisher actually used, and `UID` on one of our own exports is
@@ -356,6 +450,7 @@ impl Draft {
             exdates: self.exdates.into_iter().map(|m| m.at).collect(),
             recurrence_id: self.recurrence_id.map(|m| m.at),
             sequence: self.sequence,
+            alerts,
         })
     }
 }
@@ -579,6 +674,7 @@ fn materialise(
         // fallback already recovers it, the same way it does for CalDAV.
         series: None,
         own: None,
+        alerts: source.alerts.clone(),
         updated_at: Timestamp::now(),
     })
 }
@@ -667,6 +763,53 @@ pub(super) mod tests {
              BEGIN:VALARM\r\nTRIGGER:-PT15M\r\nDTSTART:19700101T000000Z\r\nEND:VALARM\r\n\
              END:VEVENT");
         assert_eq!(e.start, datetime(2026, 9, 6, 9, 0, 0, 0));
+        assert_eq!(e.alerts, [15], "and its TRIGGER is the event's alert");
+    }
+
+    #[test]
+    fn alarms_that_show_or_sound_become_alerts_and_emails_do_not() {
+        let e = one("BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260906T090000Z\r\n\
+             DTEND:20260906T100000Z\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:AUDIO\r\nTRIGGER;RELATED=START:-P1D\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-PT2H\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nEND:VALARM\r\n\
+             END:VEVENT");
+        assert_eq!(e.alerts, [24 * 60, 10], "largest first, the email left out, once each");
+    }
+
+    #[test]
+    fn an_alarm_from_the_end_or_at_a_moment_is_counted_from_the_start() {
+        let e = one("BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260906T090000Z\r\n\
+             DTEND:20260906T100000Z\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER;RELATED=END:-PT90M\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\n\
+             TRIGGER;VALUE=DATE-TIME:20260906T084500Z\r\nEND:VALARM\r\n\
+             END:VEVENT");
+        assert_eq!(e.alerts, [30, 15]);
+    }
+
+    #[test]
+    fn an_alarm_after_the_start_is_no_reminder_and_none_is_none() {
+        let late = one("BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260906T090000Z\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT5M\r\nEND:VALARM\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT0S\r\nEND:VALARM\r\n\
+             END:VEVENT");
+        assert_eq!(late.alerts, [0], "five minutes in is dropped; at the start is kept");
+        let none = one("BEGIN:VEVENT\r\nUID:b\r\nDTSTART:20260906T090000Z\r\nEND:VEVENT");
+        assert!(none.alerts.is_empty());
+    }
+
+    #[test]
+    fn every_occurrence_of_a_series_carries_its_alerts() {
+        let f = feed(
+            "BEGIN:VEVENT\r\nUID:weekly\r\nDTSTART:20260907T090000Z\r\n\
+             RRULE:FREQ=WEEKLY;COUNT=3\r\n\
+             BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT5M\r\nEND:VALARM\r\nEND:VEVENT",
+        );
+        let (events, _) = events_for(&calendar(), &f, (date(2026, 9, 1), date(2026, 9, 30)), "UTC");
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.alerts == [5]), "{events:?}");
     }
 
     #[test]

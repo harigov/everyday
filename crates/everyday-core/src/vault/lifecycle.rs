@@ -209,6 +209,13 @@ impl Vault {
         {
             tracing::warn!(error = %e, "could not move account calendars to their own refresh interval");
         }
+        // Best-effort too: a calendar whose old cursor stays only goes on
+        // without its events' own alerts, and the next unlock tries again.
+        if self.is_writable()
+            && let Err(e) = self.carry_over_alert_resync()
+        {
+            tracing::warn!(error = %e, "could not ask account calendars to read their alerts");
+        }
         Ok(())
     }
 

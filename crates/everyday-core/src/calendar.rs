@@ -227,6 +227,15 @@ pub struct AccountSyncCursor {
     /// the event was created or last edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expanded_through: Option<Date>,
+    /// Written by a sync that reads [`Event::alerts`] -- every sync since
+    /// they existed, which sets it in [`crate::vault::Vault::sync_account_calendar`]
+    /// rather than in each adapter. A cursor without it was left by an older
+    /// sync whose events have no alerts and whose token would only ever
+    /// re-list what changed since, so unlock throws such a cursor away once
+    /// and the next sync lists the whole window again. See
+    /// `Vault::carry_over_alert_resync`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_alerts: bool,
 }
 
 impl AccountSyncCursor {
@@ -712,7 +721,34 @@ pub struct Event {
     /// still reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
+    /// When the calendar itself asks to be told about this event, in whole
+    /// minutes before it starts: Google's popup reminders (the event's own,
+    /// or the calendar's defaults when it uses those), Graph's one reminder,
+    /// an iCalendar `VALARM` that would show or sound something. Empty when
+    /// the source gave none, or gave only an email -- the event then gets
+    /// the default in [`crate::task::EventReminders`], if there is one.
+    ///
+    /// Sorted, largest first, without repeats. `#[serde(default)]` so an
+    /// `Event` sealed before this existed still reads, as having none; the
+    /// next full sync fills it in -- see [`AccountSyncCursor::reads_alerts`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alerts: Vec<u32>,
     pub updated_at: Timestamp,
+}
+
+/// The longest ahead an alert is kept: a week. Anything further is not a
+/// reminder that a meeting is coming but a calendar of its own, and the
+/// reminder pass would have to read a month of events every minute to find
+/// it.
+pub const MAX_ALERT_MINUTES: u32 = 7 * 24 * 60;
+
+/// Tidy a source's alert minutes into what [`Event::alerts`] holds: within
+/// [`MAX_ALERT_MINUTES`], largest first, each once.
+pub fn tidy_alerts(minutes: impl IntoIterator<Item = u32>) -> Vec<u32> {
+    let mut out: Vec<u32> = minutes.into_iter().filter(|m| *m <= MAX_ALERT_MINUTES).collect();
+    out.sort_unstable_by(|a, b| b.cmp(a));
+    out.dedup();
+    out
 }
 
 impl Event {
@@ -1242,6 +1278,7 @@ mod tests {
             busy: false,
             series: None,
             own: None,
+            alerts: Vec::new(),
             updated_at: Timestamp::now(),
         };
         // The bug this guards: a week query keyed on the start day alone,

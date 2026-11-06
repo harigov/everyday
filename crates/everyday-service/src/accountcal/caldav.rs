@@ -550,7 +550,9 @@ pub async fn sync(
     // somebody happened to edit it again.
     let token =
         next_sync_token(new_token, calendar.account_sync.token.clone(), !failed_hrefs.is_empty());
-    let cursor = AccountSyncCursor { token, etags, recurring_hrefs, expanded_through };
+    // `reads_alerts` is `Vault::sync_account_calendar`'s to set.
+    let cursor =
+        AccountSyncCursor { token, etags, recurring_hrefs, expanded_through, reads_alerts: false };
 
     let vault_for_write = vault.clone();
     let id = calendar.id;
@@ -844,6 +846,22 @@ fn events_from_ics(
         });
     }
     let recurring = is_recurring(&parsed);
+    // The resource's alarms, read by the same reader a subscribed feed goes
+    // through rather than by walking calcard's `VALARM` children: one place
+    // decides what counts as an alert. The series' own `VEVENT`'s, for every
+    // occurrence -- an override that moves one meeting keeps its alarms
+    // (Apple and Google both copy them across), and one that changes them is
+    // rare enough not to be worth pairing every occurrence back to its
+    // `VEVENT` for.
+    let alerts = {
+        let read = everyday_core::ics::parse(ics);
+        read.events
+            .iter()
+            .find(|e| e.recurrence_id.is_none())
+            .or_else(|| read.events.first())
+            .map(|e| e.alerts.clone())
+            .unwrap_or_default()
+    };
     let tz: calcard::common::timezone::Tz =
         default_tz.parse().unwrap_or(calcard::common::timezone::Tz::Floating);
     let expanded = parsed.expand_dates(tz, EXPAND_LIMIT);
@@ -926,6 +944,7 @@ fn events_from_ics(
             series: None,
             // Nobody organised it, or this account did: `load`'s own test.
             own: Some(write::owned_by(comp, me)),
+            alerts: alerts.clone(),
             updated_at: now,
         });
     }
@@ -1232,6 +1251,29 @@ mod tests {
         assert_eq!(own(""), Some(true), "nobody organised it");
         assert_eq!(own("ORGANIZER:mailto:Me@Example.com\r\n"), Some(true));
         assert_eq!(own("ORGANIZER;CN=Priya:mailto:priya@example.com\r\n"), Some(false));
+    }
+
+    /// Apple writes its alerts as `VALARM`s inside the event; every
+    /// occurrence of a series stored from the resource carries them.
+    #[test]
+    fn a_resources_alarms_are_every_occurrences_alerts() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:w@example.com\r\n\
+                   DTSTART:20260302T090000Z\r\nDTEND:20260302T093000Z\r\n\
+                   RRULE:FREQ=DAILY;COUNT=2\r\nSUMMARY:Standup\r\n\
+                   BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n\
+                   END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+        let (events, _, _) = events_from_ics(
+            ics,
+            CalendarId::new(),
+            "/cal/w.ics",
+            "UTC",
+            &me(),
+            window,
+            jiff::Timestamp::now(),
+        );
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.alerts == [15]), "{events:?}");
     }
 
     #[test]

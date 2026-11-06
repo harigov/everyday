@@ -739,6 +739,10 @@
               "null"
             ]
           },
+          "readsAlerts": {
+            "description": "Written by a sync that reads [`Event::alerts`] -- every sync since\nthey existed, which sets it in [`crate::vault::Vault::sync_account_calendar`]\nrather than in each adapter. A cursor without it was left by an older\nsync whose events have no alerts and whose token would only ever\nre-list what changed since, so unlock throws such a cursor away once\nand the next sync lists the whole window again. See\n`Vault::carry_over_alert_resync`.",
+            "type": "boolean"
+          },
           "recurringHrefs": {
             "default": [],
             "description": "CalDAV only: which of `etags`' hrefs hold a recurring `VEVENT`\n(`RRULE` or `RDATE`) -- see `accountcal::caldav`'s doc on \"Re-\nexpanding a recurring event as the window moves\" for why this has to\nbe remembered rather than reread from the resource each time: an\nunchanged etag means the multiget below is skipped entirely, so\nnothing else would tell a later sync which unchanged resources still\nneed re-expanding once the window has moved on. Always empty for\nGoogle and Graph, whose own APIs expand recurrence for this\napplication and leave nothing here to track.",
@@ -970,6 +974,15 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "One occurrence of something on a subscribed calendar.\n\nA *occurrence*, not a rule: a weekly stand-up arrives as one `VEVENT`\nwith an `RRULE`, and is stored here as one row per week within the synced\nwindow. That is a deliberate trade — a few hundred rows for a recurring\nmeeting, in exchange for the calendar grid being a date-range index scan\nwith no recurrence engine anywhere near the draw path. See\n[`crate::ics`] for the expansion.",
     "properties": {
+      "alerts": {
+        "description": "When the calendar itself asks to be told about this event, in whole\nminutes before it starts: Google's popup reminders (the event's own,\nor the calendar's defaults when it uses those), Graph's one reminder,\nan iCalendar `VALARM` that would show or sound something. Empty when\nthe source gave none, or gave only an email -- the event then gets\nthe default in [`crate::task::EventReminders`], if there is one.\n\nSorted, largest first, without repeats. `#[serde(default)]` so an\n`Event` sealed before this existed still reads, as having none; the\nnext full sync fills it in -- see [`AccountSyncCursor::reads_alerts`].",
+        "items": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
       "allDay": {
         "default": false,
         "type": "boolean"

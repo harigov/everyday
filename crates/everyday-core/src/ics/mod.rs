@@ -108,6 +108,9 @@ pub struct IcsEvent {
     /// with the same `UID`.
     pub recurrence_id: Option<DateTime>,
     pub sequence: i64,
+    /// Minutes before the start its `VALARM`s ask to be told, as
+    /// [`crate::calendar::Event::alerts`] holds them.
+    pub alerts: Vec<u32>,
 }
 
 impl IcsEvent {

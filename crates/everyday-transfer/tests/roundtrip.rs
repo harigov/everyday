@@ -124,6 +124,7 @@ fn fill(vault: &Vault) {
         busy: true,
         series: None,
         own: None,
+        alerts: Vec::new(),
         updated_at: event_start,
     };
 

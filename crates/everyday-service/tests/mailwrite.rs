@@ -274,6 +274,7 @@ fn event(calendar: CalendarId, title: &str, start: Timestamp, end: Timestamp) ->
         busy: true,
         series: None,
         own: Some(true),
+        alerts: Vec::new(),
         updated_at: start,
     }
 }

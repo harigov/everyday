@@ -1243,6 +1243,16 @@ export interface ReminderSettings {
   yours: ReminderTo
   /** What the assistant's own tasks come back with. */
   assistants: ReminderTo
+  /** Calendar events. Absent while it is the default: own alerts, and ten minutes. */
+  events?: EventReminders
+}
+
+/** When a calendar event raises a reminder on the desktop. */
+export interface EventReminders {
+  /** Use an event's own alerts from its calendar where it has any. */
+  own: boolean
+  /** Minutes before an event with none of its own; 0 is as it starts, null is never. */
+  minutes: number | null
 }
 
 /** What a block of time was spent on. */
@@ -1566,6 +1576,11 @@ export interface CalendarEvent {
    * the source does not say. Somebody else's is not offered as movable.
    */
   own?: boolean | null
+  /**
+   * Minutes before the start the calendar itself asks to be told, largest
+   * first; absent when it gave none. See `EventReminders`.
+   */
+  alerts?: number[]
   updatedAt: string
 }
 
