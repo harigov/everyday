@@ -94,12 +94,21 @@ use lol_html::{RewriteStrSettings, element, rewrite_str, text};
 /// absolute against that address first -- before anything is proxied, so
 /// `/img/a.png` becomes a picture the Feed can fetch and not a reference the
 /// sandboxed frame would resolve against nothing.
+///
+/// `offline` is for a document drawn on its own, with nothing to fetch from:
+/// a file attached to a message ([`Rewrite::offline`]). Every reference out
+/// of it becomes nothing -- a remote address, a `cid:` (which would name the
+/// message's parts, not the file's), and this application's own addresses --
+/// and a picture left with no source is taken out. Only an inline raster
+/// image's `data:` address is left for the allow-list to judge, as it is in a
+/// message (see the module docs on what becomes of those).
 #[derive(Debug, Clone)]
 pub struct Rewrite {
     pub message_id: String,
     pub scheme: String,
     pub route: String,
     pub base_url: Option<String>,
+    pub offline: bool,
 }
 
 impl Rewrite {
@@ -110,7 +119,14 @@ impl Rewrite {
             scheme: "everyday".to_string(),
             route: "mail".to_string(),
             base_url: None,
+            offline: false,
         }
+    }
+
+    /// A document with nowhere to fetch anything from -- see the type's own
+    /// docs on `offline`.
+    pub fn offline() -> Self {
+        Self { offline: true, ..Self::new(String::new()) }
     }
 
     /// A story in the Feed: `everyday://news/...`, with relative addresses
@@ -314,6 +330,19 @@ impl Shared {
         let trimmed = resolved.as_deref().unwrap_or(url).trim();
         let lower = trimmed.to_ascii_lowercase();
 
+        // An inline raster image carries its own bytes and fetches nothing.
+        // SVG is not on the list: an SVG document can carry script and its
+        // own references.
+        const INLINE: [&str; 4] =
+            ["data:image/png", "data:image/gif", "data:image/jpeg", "data:image/webp"];
+        if self.rewrite.offline {
+            return if INLINE.iter().any(|p| lower.starts_with(p)) {
+                trimmed.to_string()
+            } else {
+                String::new()
+            };
+        }
+
         if let Some(rest) = lower.strip_prefix("cid:") {
             let content_id = trimmed[trimmed.len() - rest.len()..].trim();
             return format!(
@@ -344,11 +373,6 @@ impl Shared {
             return trimmed.to_string();
         }
 
-        // An inline raster image carries its own bytes and fetches nothing.
-        // SVG is not on the list: an SVG document can carry script and its
-        // own references.
-        const INLINE: [&str; 4] =
-            ["data:image/png", "data:image/gif", "data:image/jpeg", "data:image/webp"];
         if INLINE.iter().any(|p| lower.starts_with(p)) {
             return trimmed.to_string();
         }
@@ -421,6 +445,10 @@ fn rewrite_dangerous_refs(
                 // fetch in agreement with what the link actually says.
                 let decoded = crate::entities::decode_entities(&src);
                 let replacement = shared.borrow_mut().classify(&decoded);
+                if replacement.is_empty() && shared.borrow().rewrite.offline {
+                    el.remove();
+                    return Ok(());
+                }
                 el.set_attribute("src", &replacement)?;
             }
             Ok(())
@@ -1653,6 +1681,26 @@ mod tests {
 
     fn story(base: Option<&str>) -> Rewrite {
         Rewrite::news("story-1", base.map(str::to_string))
+    }
+
+    #[test]
+    fn an_offline_document_keeps_only_the_pictures_it_carries() {
+        let out = sanitize(
+            r#"<p>Hi</p><img src="https://cdn.example.com/a.png" width="200">
+            <img src="cid:logo@x"><img src="everyday://mail/img/m/abc">
+            <img src="everyday://mail/part/m/1"><img src="data:image/png;base64,iVBORw0KGgo=">
+            <div style="background: url(https://cdn.example.com/b.png)">x</div>
+            <table background="https://cdn.example.com/c.png"><tr><td>y</td></tr></table>"#,
+            &Rewrite::offline(),
+        );
+        assert!(out.remote_images.is_empty(), "{:?}", out.remote_images);
+        assert!(!out.html.contains("example.com"), "{}", out.html);
+        assert!(!out.html.contains("everyday:"), "{}", out.html);
+        assert!(!out.html.contains("cid:"), "{}", out.html);
+        // The four with somewhere to fetch from are gone; the `data:` one is
+        // left to the allow-list, as in a message.
+        assert_eq!(out.html.matches("<img").count(), 1, "{}", out.html);
+        assert!(out.html.contains("<p>Hi</p>"), "{}", out.html);
     }
 
     #[test]

@@ -132,6 +132,30 @@ pub struct MailAttachment {
     /// `false` when this part is over the account's attachment cap and has
     /// not been fetched yet -- what `fetch_attachment` exists to turn `true`.
     pub available: bool,
+    /// How the part can be looked at without saving it, when it can -- see
+    /// [`crate::mailpreview::kind_of`]. Absent for one that can only be saved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview: Option<crate::mailpreview::PreviewKind>,
+    /// For a film or a recording, the type its bytes are played as -- see
+    /// [`crate::mailpreview::media_type`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_type: Option<String>,
+}
+
+impl MailAttachment {
+    fn of(index: usize, part: &everyday_core::mail::PartRef) -> Self {
+        MailAttachment {
+            index,
+            filename: part.filename.clone(),
+            mime_type: part.mime_type.clone(),
+            size: part.size,
+            inline: part.cid.is_some(),
+            content_id: part.cid.clone(),
+            available: part.blob.is_some(),
+            preview: crate::mailpreview::kind_of(part),
+            preview_type: crate::mailpreview::media_type(part),
+        }
+    }
 }
 
 /// One message, plus the attachments its stored [`Body`] names -- parts
@@ -218,15 +242,7 @@ fn attachments_of(body: &Body) -> Vec<MailAttachment> {
         .filter(|(_, part)| {
             crate::mailview::is_attachment(part, &body.html_sanitised, body.message_id)
         })
-        .map(|(index, part)| MailAttachment {
-            index,
-            filename: part.filename.clone(),
-            mime_type: part.mime_type.clone(),
-            size: part.size,
-            inline: part.cid.is_some(),
-            content_id: part.cid.clone(),
-            available: part.blob.is_some(),
-        })
+        .map(|(index, part)| MailAttachment::of(index, part))
         .collect()
 }
 
@@ -1569,16 +1585,39 @@ async fn fetch_attachment(
         body.parts[args.index].blob = Some(blob);
         vault.save_body(&body)?;
 
-        let stored = &body.parts[args.index];
-        Ok(MailAttachment {
-            index: args.index,
-            filename: stored.filename.clone(),
-            mime_type: stored.mime_type.clone(),
-            size: stored.size,
-            inline: stored.cid.is_some(),
-            content_id: stored.cid.clone(),
-            available: true,
-        })
+        Ok(MailAttachment::of(args.index, &body.parts[args.index]))
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewAttachment {
+    pub message_id: MailMessageId,
+    pub index: usize,
+}
+
+/// An attachment drawn as a page, for the viewer's sandboxed frame.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentPreview {
+    /// A complete document, under the same CSP as a rendered message.
+    pub html: String,
+}
+
+/// Part `args.index` of `args.message_id` as a page -- a web page, Markdown, a
+/// CSV, a forwarded message, text -- for one whose `preview` says
+/// [`crate::mailpreview::PreviewKind::Page`]. A picture, a film or a PDF is
+/// never asked for here: the window draws those from the part's own bytes.
+async fn preview_attachment(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: PreviewAttachment,
+) -> CommandResult<AttachmentPreview> {
+    let vault = svc.require()?;
+    blocking(move || {
+        let html = crate::mailpreview::page(&vault, args.message_id, args.index)?;
+        Ok(AttachmentPreview { html })
     })
     .await
 }
@@ -1660,6 +1699,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: FetchAttachment, returns: "MailAttachment",
         signature: &[("messageId", "MailMessageId", true), ("index", "number", true)],
         run: fetch_attachment,
+    },
+    command! {
+        name: "preview_attachment", scope: Mail, effect: Read,
+        args: PreviewAttachment, returns: "AttachmentPreview",
+        signature: &[("messageId", "MailMessageId", true), ("index", "number", true)],
+        run: preview_attachment,
     },
     // ---- batch thread actions --------------------------------------------
     command! {

@@ -33,6 +33,7 @@
     "@tiptap/extension-typography": "^3.31.3",
     "@tiptap/extension-underline": "^3.31.3",
     "@tiptap/starter-kit": "^3.31.3",
+    "pdfjs-dist": "6.5.438",
     "three": "^0.186.1",
     "virtua": "0.51.3"
   },

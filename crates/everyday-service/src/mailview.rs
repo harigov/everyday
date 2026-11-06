@@ -186,23 +186,28 @@ pub fn body_document(
         body.html_sanitised.clone()
     };
 
-    let html = format!(
+    Ok(BodyDocument { html: page(&inner, ""), images_hidden })
+}
+
+/// `inner` -- markup already safe to draw: sanitised, or built here from
+/// escaped text -- in the complete document every rendered body is: the
+/// [`CSP`] meta tag, [`BASE_STYLE`], and links that leave for a new window.
+/// `style` is added after the base style, for a caller drawing something
+/// that is not a message (`crate::mailpreview`'s attachments).
+pub(crate) fn page(inner: &str, style: &str) -> String {
+    format!(
         "<!DOCTYPE html>\n\
          <html>\n\
          <head>\n\
          <meta charset=\"utf-8\">\n\
          <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\n\
          <base target=\"_blank\">\n\
-         <style>{style}</style>\n\
+         <style>{BASE_STYLE}{style}</style>\n\
          </head>\n\
          <body>\n{inner}\n</body>\n\
          </html>\n",
         csp = escape_attribute(CSP),
-        style = BASE_STYLE,
-        inner = inner,
-    );
-
-    Ok(BodyDocument { html, images_hidden })
+    )
 }
 
 /// A plain-text message: escaped, linkified, and with `Body::quoted_ranges`
@@ -306,7 +311,7 @@ fn char_boundary_at_or_before(s: &str, at: usize) -> usize {
 /// a clicked link's new tab an `Opener` reference back into this
 /// application, or leaked a `Referer` naming it, purely because the message
 /// happened to be plain text rather than HTML.
-fn linkify(text: &str) -> String {
+pub(crate) fn linkify(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut at_boundary = true;
     let mut rest = text;
@@ -332,7 +337,7 @@ fn linkify(text: &str) -> String {
     out
 }
 
-fn escape_html(s: &str) -> String {
+pub(crate) fn escape_html(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         escape_char(ch, &mut out);
