@@ -66,6 +66,7 @@ pub(super) fn sample_event(cal: CalendarId, uid: &str, from: Date, to: Date) -> 
         busy: true,
         series: None,
         own: None,
+        alerts: None,
         updated_at: Timestamp::now(),
     }
 }

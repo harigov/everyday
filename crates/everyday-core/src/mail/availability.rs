@@ -397,6 +397,7 @@ mod tests {
             busy: true,
             series: None,
             own: Some(true),
+            alerts: None,
             updated_at: start,
         }
     }

@@ -550,7 +550,9 @@ pub async fn sync(
     // somebody happened to edit it again.
     let token =
         next_sync_token(new_token, calendar.account_sync.token.clone(), !failed_hrefs.is_empty());
-    let cursor = AccountSyncCursor { token, etags, recurring_hrefs, expanded_through };
+    // `reads_alerts` is `Vault::sync_account_calendar`'s to set.
+    let cursor =
+        AccountSyncCursor { token, etags, recurring_hrefs, expanded_through, reads_alerts: false };
 
     let vault_for_write = vault.clone();
     let id = calendar.id;
@@ -926,10 +928,68 @@ fn events_from_ics(
             series: None,
             // Nobody organised it, or this account did: `load`'s own test.
             own: Some(write::owned_by(comp, me)),
+            alerts: alarms_of(&parsed, comp, start, end.max(start), all_day, recurring),
             updated_at: now,
         });
     }
     (out, skipped, recurring)
+}
+
+/// The alerts of one occurrence, from its `VEVENT`'s own `VALARM` children,
+/// by [`everyday_core::calendar::alarm_minutes`] -- the rule a subscribed
+/// feed's alarms go through too. `None` when it has no `VALARM` at all.
+///
+/// The occurrence's own `VEVENT`: an override that moved one meeting of a
+/// series is its own component, with whatever alarms its client wrote.
+fn alarms_of(
+    parsed: &calcard::icalendar::ICalendar,
+    comp: &calcard::icalendar::ICalendarComponent,
+    start: jiff::Timestamp,
+    end: jiff::Timestamp,
+    all_day: bool,
+    recurring: bool,
+) -> Option<Vec<i32>> {
+    use calcard::icalendar::{
+        ICalendarAction, ICalendarComponentType, ICalendarParameterValue, ICalendarProperty,
+        ICalendarRelated, ICalendarValue,
+    };
+    use everyday_core::calendar::{AlarmTrigger, alarm_minutes, tidy_alerts};
+
+    let alarms: Vec<_> = comp
+        .component_ids
+        .iter()
+        .filter_map(|id| parsed.components.get(*id as usize))
+        .filter(|c| c.component_type == ICalendarComponentType::VAlarm)
+        .collect();
+    if alarms.is_empty() {
+        return None;
+    }
+    let minutes = alarms.iter().filter_map(|alarm| {
+        let entry = |name: ICalendarProperty| alarm.entries.iter().find(|e| e.name == name);
+        // No ACTION is a malformed alarm, and the likeliest thing it meant
+        // is to show something -- as the feed reader reads it.
+        let shows = match entry(ICalendarProperty::Action).and_then(|e| e.values.first()) {
+            Some(ICalendarValue::Action(ICalendarAction::Display | ICalendarAction::Audio))
+            | None => true,
+            Some(_) => false,
+        };
+        let trigger_entry = entry(ICalendarProperty::Trigger)?;
+        let trigger = match trigger_entry.values.first()? {
+            ICalendarValue::Duration(d) => AlarmTrigger::Relative {
+                seconds: d.as_seconds(),
+                from_end: trigger_entry
+                    .params
+                    .iter()
+                    .any(|p| p.value == ICalendarParameterValue::Related(ICalendarRelated::End)),
+            },
+            ICalendarValue::PartialDateTime(at) => {
+                AlarmTrigger::Absolute(jiff::Timestamp::from_second(at.to_timestamp()?).ok()?)
+            }
+            _ => return None,
+        };
+        alarm_minutes(shows, trigger, start, end, all_day, recurring)
+    });
+    Some(tidy_alerts(minutes.collect::<Vec<_>>()))
 }
 
 /// Is a recurring resource, last expanded through `expanded_through`, due to
@@ -1232,6 +1292,68 @@ mod tests {
         assert_eq!(own(""), Some(true), "nobody organised it");
         assert_eq!(own("ORGANIZER:mailto:Me@Example.com\r\n"), Some(true));
         assert_eq!(own("ORGANIZER;CN=Priya:mailto:priya@example.com\r\n"), Some(false));
+    }
+
+    /// Apple writes its alerts as `VALARM`s inside the event; every
+    /// occurrence of a series stored from the resource carries them.
+    #[test]
+    fn a_resources_alarms_are_every_occurrences_alerts() {
+        let ics = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:w@example.com\r\n\
+                   DTSTART:20260302T090000Z\r\nDTEND:20260302T093000Z\r\n\
+                   RRULE:FREQ=DAILY;COUNT=2\r\nSUMMARY:Standup\r\n\
+                   BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n\
+                   END:VEVENT\r\nEND:VCALENDAR\r\n";
+        let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+        let (events, _, _) = events_from_ics(
+            ics,
+            CalendarId::new(),
+            "/cal/w.ics",
+            "UTC",
+            &me(),
+            window,
+            jiff::Timestamp::now(),
+        );
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.alerts == Some(vec![15])), "{events:?}");
+    }
+
+    /// The same rule as a feed's: an email is no alert this computer gives,
+    /// so "no alert" rather than "nothing said"; Apple's all-day 9 AM is kept;
+    /// no VALARM at all is nothing said.
+    #[test]
+    fn a_resources_alarms_follow_the_feed_readers_rule() {
+        let alerts = |body: &str| {
+            let ics = format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:a@example.com\r\n\
+                 {body}SUMMARY:Thing\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let window = (jiff::civil::date(2020, 1, 1), jiff::civil::date(2030, 1, 1));
+            let (events, _, _) = events_from_ics(
+                &ics,
+                CalendarId::new(),
+                "/cal/a.ics",
+                "UTC",
+                &me(),
+                window,
+                jiff::Timestamp::now(),
+            );
+            events[0].alerts.clone()
+        };
+        let timed = "DTSTART:20260302T090000Z\r\nDTEND:20260302T093000Z\r\n";
+        assert_eq!(alerts(timed), None);
+        assert_eq!(
+            alerts(&format!(
+                "{timed}BEGIN:VALARM\r\nACTION:EMAIL\r\nTRIGGER:-PT1H\r\nEND:VALARM\r\n"
+            )),
+            Some(vec![])
+        );
+        assert_eq!(
+            alerts(
+                "DTSTART;VALUE=DATE:20260302\r\nDTEND;VALUE=DATE:20260303\r\n\
+                 BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:PT9H\r\nEND:VALARM\r\n"
+            ),
+            Some(vec![-9 * 60])
+        );
     }
 
     #[test]

@@ -153,6 +153,30 @@ struct EventsResponse {
     /// [`writable_role`].
     #[serde(rename = "accessRole")]
     access_role: Option<String>,
+    /// The calendar's own reminders for this account, which an event with
+    /// `reminders.useDefault` means. Repeated on every page, like
+    /// `accessRole`; [`list_events`] copies it onto each item, so that
+    /// [`to_event`] can read an event's alerts from the event alone.
+    #[serde(rename = "defaultReminders", default)]
+    default_reminders: Vec<GoogleReminder>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GoogleReminder {
+    /// `popup` or `email`. Only a popup is something this computer shows.
+    #[serde(default)]
+    method: String,
+    #[serde(default)]
+    minutes: u32,
+}
+
+/// An event's `reminders`: the calendar's defaults, or its own list.
+#[derive(Debug, Default, Deserialize)]
+struct GoogleReminders {
+    #[serde(rename = "useDefault", default)]
+    use_default: bool,
+    #[serde(default)]
+    overrides: Vec<GoogleReminder>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -191,6 +215,29 @@ struct GoogleEvent {
     /// that event's own durable id).
     #[serde(rename = "iCalUID")]
     i_cal_uid: Option<String>,
+    /// Absent where Google says nothing about reminders.
+    reminders: Option<GoogleReminders>,
+    /// The page's `defaultReminders`, copied here by [`list_events`].
+    #[serde(skip)]
+    calendar_reminders: Vec<GoogleReminder>,
+}
+
+impl GoogleEvent {
+    /// The minutes before the start this event's popups go off at, as
+    /// [`Event::alerts`] holds them: `None` where Google said nothing about
+    /// reminders, and an empty list for "no notifications" -- including a
+    /// calendar whose defaults it uses having none, or only emails.
+    fn alerts(&self) -> Option<Vec<i32>> {
+        let reminders = self.reminders.as_ref()?;
+        let list =
+            if reminders.use_default { &self.calendar_reminders } else { &reminders.overrides };
+        Some(everyday_core::calendar::tidy_alerts(
+            list.iter()
+                .filter(|r| r.method == "popup")
+                .filter_map(|r| i32::try_from(r.minutes).ok())
+                .collect::<Vec<_>>(),
+        ))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -366,9 +413,12 @@ async fn list_events(
             url.push_str(&format!("&pageToken={pt}"));
         }
         let bytes = get_bytes(&url, token).await?;
-        let page: EventsResponse = serde_json::from_slice(&bytes).map_err(|e| {
+        let mut page: EventsResponse = serde_json::from_slice(&bytes).map_err(|e| {
             CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
         })?;
+        for item in &mut page.items {
+            item.calendar_reminders = page.default_reminders.clone();
+        }
         items.extend(page.items);
         if page.next_sync_token.is_some() {
             next_sync_token = page.next_sync_token;
@@ -445,6 +495,7 @@ fn to_event(
         series: item.recurring_event_id.clone().or_else(|| item.i_cal_uid.clone()),
         // Nobody organised it, or this account did -- `load`'s own test.
         own: Some(item.organizer.as_ref().is_none_or(|o| o.is_self == Some(true))),
+        alerts: item.alerts(),
         updated_at: now,
     })
 }
@@ -1084,7 +1135,51 @@ mod tests {
             html_link: String::new(),
             recurring_event_id: None,
             i_cal_uid: None,
+            reminders: None,
+            calendar_reminders: Vec::new(),
         }
+    }
+
+    fn popup(minutes: u32) -> GoogleReminder {
+        GoogleReminder { method: "popup".into(), minutes }
+    }
+
+    #[test]
+    fn an_event_on_the_calendars_defaults_takes_the_calendars_popups() {
+        let mut item = bare_google_event("a");
+        item.reminders = Some(GoogleReminders { use_default: true, overrides: Vec::new() });
+        item.calendar_reminders =
+            vec![popup(10), GoogleReminder { method: "email".into(), minutes: 60 }, popup(30)];
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, Some(vec![30, 10]), "the email is not this computer's to show");
+    }
+
+    #[test]
+    fn an_event_with_its_own_reminders_ignores_the_defaults() {
+        let mut item = bare_google_event("a");
+        item.reminders = Some(GoogleReminders { use_default: false, overrides: vec![popup(5)] });
+        item.calendar_reminders = vec![popup(10)];
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, Some(vec![5]));
+        item.reminders = None;
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, None, "nothing said");
+        item.reminders = Some(GoogleReminders { use_default: false, overrides: Vec::new() });
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, Some(vec![]), "\"no notifications\" is said, and kept");
+    }
+
+    /// The page's `defaultReminders` reach every item on it -- the wire
+    /// shape, through the paging loop.
+    #[test]
+    fn default_reminders_are_read_off_the_page() {
+        let page: EventsResponse = serde_json::from_value(serde_json::json!({
+            "items": [{ "id": "x", "reminders": { "useDefault": true } }],
+            "defaultReminders": [{ "method": "popup", "minutes": 15 }],
+        }))
+        .unwrap();
+        assert_eq!(page.default_reminders[0].minutes, 15);
+        assert!(page.items[0].reminders.as_ref().unwrap().use_default);
     }
 
     /// The finding this guards: `singleEvents=true` mints a fresh `id` per

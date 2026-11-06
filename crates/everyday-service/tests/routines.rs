@@ -1044,6 +1044,7 @@ fn a_meeting(svc: &Arc<Service>, minutes: i64, title: &str) -> everyday_core::Ev
         busy: true,
         series: None,
         own: None,
+        alerts: None,
         updated_at: jiff::Timestamp::now(),
     };
     // Through the store rather than a vault method: writing events wholesale

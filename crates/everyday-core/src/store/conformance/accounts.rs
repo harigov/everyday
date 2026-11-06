@@ -132,6 +132,7 @@ fn stub_event(calendar: crate::id::CalendarId) -> crate::calendar::Event {
         busy: true,
         series: None,
         own: None,
+        alerts: None,
         updated_at: Timestamp::now(),
     }
 }

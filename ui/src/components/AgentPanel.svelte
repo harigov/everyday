@@ -35,7 +35,13 @@
   import { panels } from '../lib/panels.svelte'
   import { PROPOSAL_KINDS } from '../lib/types'
   import type { Painter } from '../lib/companion-scene'
-  import type { AgentSettings, ProposalKind, ReminderSettings, ReminderTo } from '../lib/types'
+  import type {
+    AgentSettings,
+    EventReminders,
+    ProposalKind,
+    ReminderSettings,
+    ReminderTo,
+  } from '../lib/types'
   import Companion from './Companion.svelte'
   import Icon from './Icon.svelte'
   import MailActionsList from './MailActionsList.svelte'
@@ -46,6 +52,33 @@
 
   /** What the service assumes while a vault has never said: see `ReminderSettings`. */
   const DEFAULT_REMINDERS: ReminderSettings = { yours: 'desktop', assistants: 'chat' }
+  /** Likewise, for calendar events: see `EventReminders`. */
+  const DEFAULT_EVENT_REMINDERS: EventReminders = { own: true, minutes: 10 }
+  /** `''` stands for never, which a `<select>` cannot hold as `null`. */
+  const EVENT_MINUTES: { value: string; label: string }[] = [
+    { value: '', label: 'Never' },
+    { value: '0', label: 'As they start' },
+    { value: '5', label: '5 minutes before' },
+    { value: '10', label: '10 minutes before' },
+    { value: '15', label: '15 minutes before' },
+    { value: '30', label: '30 minutes before' },
+    { value: '60', label: '1 hour before' },
+  ]
+  const eventReminders = $derived(draft?.reminders?.events ?? DEFAULT_EVENT_REMINDERS)
+  /** The choices, and the saved one if it is not among them -- set elsewhere. */
+  const eventMinuteChoices = $derived.by(() => {
+    const saved = eventReminders.minutes === null ? '' : String(eventReminders.minutes)
+    return EVENT_MINUTES.some((c) => c.value === saved)
+      ? EVENT_MINUTES
+      : [...EVENT_MINUTES, { value: saved, label: `${saved} minutes before` }]
+  })
+  function setEventReminders(change: Partial<EventReminders>) {
+    if (!draft) return
+    draft.reminders = {
+      ...(draft.reminders ?? DEFAULT_REMINDERS),
+      events: { ...eventReminders, ...change },
+    }
+  }
   const REMINDER_TO: { value: ReminderTo; label: string }[] = [
     { value: 'desktop', label: 'This computer' },
     { value: 'chat', label: 'Your chat' },
@@ -569,7 +602,34 @@
         >
           {#each REMINDER_TO as to (to)}<option value={to.value}>{to.label}</option>{/each}
         </select>
+        <label for="remind-events">Calendar events</label>
+        <select
+          id="remind-events"
+          class="field"
+          value={eventReminders.minutes === null ? '' : String(eventReminders.minutes)}
+          onchange={(e) => {
+            const v = e.currentTarget.value
+            setEventReminders({ minutes: v === '' ? null : Number(v) })
+          }}
+        >
+          {#each eventMinuteChoices as c (c.value)}<option value={c.value}>{c.label}</option>{/each}
+        </select>
       </div>
+      <label class="toggle">
+        <input
+          type="checkbox"
+          checked={eventReminders.own}
+          onchange={(e) => setEventReminders({ own: e.currentTarget.checked })}
+        />
+        <span>
+          <b>Use each event's own alerts</b>
+          <small>
+            An event whose calendar gives it alerts — Google's notifications, Outlook's reminder,
+            Apple's alerts — is announced at those; every other timed event at the time chosen
+            above. All-day events are only announced at their own.
+          </small>
+        </span>
+      </label>
       <p class="hint">
         Your chat is the one under Chat in these settings. When it is not connected, a reminder
         comes to this computer instead, so none is lost. A task you hand to the assistant is done by

@@ -984,10 +984,11 @@ impl Service {
         self.meetings.offer_seen(calendar, uid)
     }
 
-    /// Mark `(calendar, uid)` as already reminded, and say whether this was
-    /// the first time. See [`crate::runtime::meeting::MeetingRuntime::reminder_seen`].
-    pub fn calendar_reminder_seen(&self, calendar: CalendarId, uid: &str) -> bool {
-        self.meetings.reminder_seen(calendar, uid)
+    /// Record a reminder of `(calendar, key)` for an alert due `at`, and say
+    /// whether it is news. See
+    /// [`crate::runtime::meeting::MeetingRuntime::reminder_due`].
+    pub fn calendar_reminder_due(&self, calendar: CalendarId, key: &str, at: Timestamp) -> bool {
+        self.meetings.reminder_due(calendar, key, at)
     }
 
     /// Record that `id` had a chunk appended just now, in this process.

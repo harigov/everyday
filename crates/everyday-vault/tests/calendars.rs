@@ -376,6 +376,59 @@ fn unlocking_moves_an_account_calendar_off_the_old_hourly_refresh() {
     );
 }
 
+/// An account calendar last synced before events carried their alerts has
+/// its cursor thrown away at unlock, once, so the next sync lists everything
+/// again; one synced since keeps its cursor.
+#[test]
+fn unlocking_asks_a_calendar_synced_before_alerts_to_list_everything_again() {
+    use everyday_core::AccountId;
+    use everyday_core::account::Provider;
+    use everyday_core::calendar::{AccountCalendarSource, AccountSyncCursor, Calendar};
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = VaultConfig {
+        name: "Test".into(),
+        backend: "sqlite".into(),
+        settings: Default::default(),
+        password: Some("pw".into()),
+        kdf: everyday_core::crypto::KdfParams::insecure_fast(),
+        auto_lock_seconds: 900,
+        forget_key_seconds: 0,
+    };
+    let vault = create(dir.path(), config).unwrap();
+    let account = |name: &str| {
+        Calendar::from_account(
+            AccountId::new(),
+            Provider::Google,
+            AccountCalendarSource::Google,
+            name,
+            name,
+        )
+    };
+
+    // As an older sync left it: a token, and no word of alerts.
+    let mut old = account("old");
+    old.account_sync = AccountSyncCursor { token: Some("t-1".into()), ..Default::default() };
+    vault.save_calendar(&old).unwrap();
+    let synced = account("synced");
+    vault.save_calendar(&synced).unwrap();
+    vault
+        .sync_account_calendar(
+            synced.id,
+            &[],
+            &[],
+            AccountSyncCursor { token: Some("t-2".into()), ..Default::default() },
+        )
+        .unwrap();
+    assert!(vault.calendar(synced.id).unwrap().account_sync.reads_alerts, "a sync now says so");
+
+    vault.lock();
+    vault.unlock(Some("pw")).unwrap();
+
+    assert_eq!(vault.calendar(old.id).unwrap().account_sync, AccountSyncCursor::default());
+    assert_eq!(vault.calendar(synced.id).unwrap().account_sync.token.as_deref(), Some("t-2"));
+}
+
 #[test]
 fn a_sync_says_how_many_events_it_took_away() {
     use everyday_core::AccountId;

@@ -201,6 +201,7 @@ mod tests {
             busy: true,
             series: None,
             own: None,
+            alerts: None,
             updated_at: Timestamp::now(),
         }
     }

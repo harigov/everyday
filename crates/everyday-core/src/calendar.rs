@@ -227,6 +227,15 @@ pub struct AccountSyncCursor {
     /// the event was created or last edited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expanded_through: Option<Date>,
+    /// Written by a sync that reads [`Event::alerts`] -- every sync since
+    /// they existed, which sets it in [`crate::vault::Vault::sync_account_calendar`]
+    /// rather than in each adapter. A cursor without it was left by an older
+    /// sync whose events have no alerts and whose token would only ever
+    /// re-list what changed since, so unlock throws such a cursor away once
+    /// and the next sync lists the whole window again. See
+    /// `Vault::carry_over_alert_resync`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_alerts: bool,
 }
 
 impl AccountSyncCursor {
@@ -712,7 +721,86 @@ pub struct Event {
     /// still reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub own: Option<bool>,
+    /// When the calendar itself asks to be told about this event, in whole
+    /// minutes before it starts: Google's popup reminders (the event's own,
+    /// or the calendar's defaults when it uses those), Graph's one reminder,
+    /// an iCalendar `VALARM` that would show or sound something. Negative
+    /// only on an all-day event, for an alert during its day -- Apple's "on
+    /// the day, at 9 AM" is nine hours *after* its midnight start.
+    ///
+    /// `None` when the source said nothing about alerts at all: a feed with
+    /// no `VALARM`, an event synced before this existed. That event gets the
+    /// default in [`crate::task::EventReminders`]. `Some` of an empty list is
+    /// the calendar saying "no alert" -- Outlook's reminder switched off,
+    /// Google's "no notifications", an email-only alarm -- and is kept that
+    /// way rather than handed the default.
+    ///
+    /// Sorted, largest first, without repeats. The next full sync after this
+    /// field existed fills it in -- see [`AccountSyncCursor::reads_alerts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alerts: Option<Vec<i32>>,
     pub updated_at: Timestamp,
+}
+
+/// The longest ahead an alert is kept: a week. Anything further is not a
+/// reminder that a meeting is coming but a calendar of its own.
+pub const MAX_ALERT_MINUTES: i32 = 7 * 24 * 60;
+
+/// Tidy a source's alert minutes into what [`Event::alerts`] holds: within
+/// [`MAX_ALERT_MINUTES`] either way, largest first, each once.
+pub fn tidy_alerts(minutes: impl IntoIterator<Item = i32>) -> Vec<i32> {
+    let mut out: Vec<i32> = minutes.into_iter().filter(|m| m.abs() <= MAX_ALERT_MINUTES).collect();
+    out.sort_unstable_by(|a, b| b.cmp(a));
+    out.dedup();
+    out
+}
+
+/// When an alarm goes off, as an iCalendar `TRIGGER` says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlarmTrigger {
+    /// Seconds from the start, or from the end (`RELATED=END`). Negative is
+    /// before.
+    Relative { seconds: i64, from_end: bool },
+    /// A moment of its own (`VALUE=DATE-TIME`).
+    Absolute(Timestamp),
+}
+
+/// The whole minutes before its start that an iCalendar alarm on an event
+/// running `start..end` asks to be told, as [`Event::alerts`] holds them --
+/// or `None` for one that is not a reminder this computer can give.
+///
+/// The one rule for every `VALARM`, whichever parser read it (a subscribed
+/// feed's, or CalDAV's calcard):
+///
+/// - only one that shows or sounds something counts (`shows`): an `EMAIL`
+///   or a `PROCEDURE` is somebody else's to send;
+/// - one after a timed event has begun is too late to say it is coming, so
+///   is dropped; on an all-day event it may fall anywhere in its day;
+/// - an absolute moment names one occurrence, so on a recurring series --
+///   where every occurrence is stored with the series' alerts -- it is
+///   dropped rather than repeated weekly at that offset.
+pub fn alarm_minutes(
+    shows: bool,
+    trigger: AlarmTrigger,
+    start: Timestamp,
+    end: Timestamp,
+    all_day: bool,
+    recurring: bool,
+) -> Option<i32> {
+    if !shows {
+        return None;
+    }
+    let length = (end.as_second() - start.as_second()).max(0);
+    let before = match trigger {
+        AlarmTrigger::Relative { seconds, from_end: false } => -seconds,
+        AlarmTrigger::Relative { seconds, from_end: true } => -length - seconds,
+        AlarmTrigger::Absolute(_) if recurring => return None,
+        AlarmTrigger::Absolute(at) => start.as_second() - at.as_second(),
+    };
+    if before < 0 && !(all_day && -before < length) {
+        return None;
+    }
+    i32::try_from(before / 60).ok()
 }
 
 impl Event {
@@ -1242,6 +1330,7 @@ mod tests {
             busy: false,
             series: None,
             own: None,
+            alerts: None,
             updated_at: Timestamp::now(),
         };
         // The bug this guards: a week query keyed on the start day alone,

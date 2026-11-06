@@ -32,12 +32,17 @@
 //!
 //! # Who is asked, and when
 //!
-//! See [`gate`]. [`Offer::Off`] never offers. Meeting notes that have never
-//! been set up (no transcriber chosen) *do* offer, with `ready: false`, so
-//! the interface can turn the offer into "Set up meeting notes" -- the
-//! moment somebody is looking at a meeting is the moment they can see what
-//! the feature is for. Meeting notes somebody set up and then turned off
-//! offer nothing: that is an answer, and asking again would ignore it.
+//! See [`gate`]. [`Offer::Off`] ("Never") is the one way to stop offers.
+//! Meeting notes that are not ready -- never set up, switched off, or with a
+//! transcriber that does not work -- *do* offer, with `ready: false`, so the
+//! interface can turn the offer into "Set up meeting notes": the moment
+//! somebody is looking at a meeting is the moment they can see what the
+//! feature is for.
+//!
+//! Switched-off notes used to offer nothing, and that was a trap: the switch
+//! cannot be ticked until the transcriber works, so somebody who picked a
+//! transcriber whose key was refused had every offer silenced without ever
+//! having said no to one.
 //!
 //! # Reaching somebody who is not looking at the window
 //!
@@ -89,10 +94,9 @@ pub(crate) struct Gate {
 
 /// Whether to offer, and whether an offer could be acted on.
 ///
-/// `offers` is false for [`Offer::Off`], and for meeting notes somebody set
-/// up (a transcriber is chosen) and then turned off; it is true when they
-/// are on, *and* when they have never been set up, because that offer is how
-/// the person finds out the feature exists. `ready` needs the switch on and
+/// `offers` is false for [`Offer::Off`] and nothing else: an offer that is
+/// not `ready` is how the person finds out the feature exists, or that it
+/// is not working. `ready` needs the switch on and
 /// the transcriber usable -- [`crate::domains::meetings::view`], the same
 /// check `begin` refuses a recording by, which reads keys and may look at
 /// the model files on disk. That costs something, so the watcher's tick asks
@@ -105,7 +109,7 @@ pub(crate) fn gate(vault: &Vault, settings: &MeetingSettings) -> CoreResult<Gate
 
 /// [`gate`]'s `offers`, which needs nothing but the settings.
 fn wants_offers(settings: &MeetingSettings) -> bool {
-    settings.offer != Offer::Off && (settings.enabled || settings.transcriber.is_none())
+    settings.offer != Offer::Off
 }
 
 /// [`gate`]'s `ready`, the expensive half.
@@ -449,6 +453,7 @@ mod tests {
             busy: true,
             series: None,
             own: None,
+            alerts: None,
             updated_at: now,
         }
     }
@@ -548,13 +553,16 @@ mod tests {
         assert!(!offers[0].automatic);
     }
 
+    /// A transcriber chosen but the switch off -- what a refused key leaves
+    /// behind, since the switch cannot be ticked until the transcriber works
+    /// -- still offers, as a prompt to finish setting up. Only "Never" is no.
     #[test]
-    fn meeting_notes_set_up_and_then_turned_off_offer_nothing() {
+    fn meeting_notes_switched_off_still_offer_but_not_ready() {
         let (svc, vault, _dir) = env();
         let sink = TestSink::default();
         svc.set_events(Arc::new(sink.clone()));
         vault
-            .save_meeting_settings(&MeetingSettings { enabled: false, ..set_up(Offer::Ask) })
+            .save_meeting_settings(&MeetingSettings { enabled: false, ..set_up(Offer::Always) })
             .unwrap();
         let calendar = account_calendar(&vault);
         let event = online_event(calendar.id, 0);
@@ -562,7 +570,10 @@ mod tests {
 
         tick(&svc, &vault);
 
-        assert!(sink.offers.lock().unwrap().is_empty());
+        let offers = sink.offers.lock().unwrap();
+        assert_eq!(offers.len(), 1);
+        assert!(!offers[0].ready);
+        assert!(!offers[0].automatic);
     }
 
     #[test]

@@ -443,6 +443,76 @@ pub struct ReminderSettings {
     /// while they were elsewhere.
     #[serde(default = "ReminderSettings::default_assistants")]
     pub assistants: ReminderTo,
+    /// Calendar events: when to be told one is coming. Left out of the
+    /// record while it is the default, so a vault that never changed it
+    /// reads exactly as it did before this existed.
+    #[serde(default, skip_serializing_if = "EventReminders::is_default")]
+    pub events: EventReminders,
+}
+
+/// When a calendar event raises a reminder on the desktop.
+///
+/// Two sources, so that a meeting is announced the way its calendar says to.
+/// An event whose calendar says what its alerts are --
+/// [`crate::calendar::Event::alerts`], "none" included -- is announced at
+/// those, when `own` is on. A timed event whose calendar says nothing is
+/// announced `minutes` before it starts, unless that is `None`. All-day
+/// events only ever get their own: ten minutes before midnight is nobody's
+/// idea of a reminder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct EventReminders {
+    /// Use an event's own alerts from its calendar where it has any.
+    #[serde(default = "EventReminders::default_own")]
+    pub own: bool,
+    /// Minutes before an event with no alerts of its own; 0 is as it starts,
+    /// `None` is never.
+    #[serde(default = "EventReminders::default_minutes")]
+    pub minutes: Option<u32>,
+}
+
+impl EventReminders {
+    fn default_own() -> bool {
+        true
+    }
+
+    /// Ten minutes: what the reminder said before it could be changed.
+    fn default_minutes() -> Option<u32> {
+        Some(10)
+    }
+
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The minutes before its start that `event` is to be announced at,
+    /// largest first. Empty for none.
+    ///
+    /// Its own alerts whenever its calendar said anything about them -- an
+    /// empty list included, which is the calendar saying "no alert" -- and
+    /// the default only for an event whose calendar said nothing.
+    pub fn for_event(&self, event: &crate::calendar::Event) -> Vec<i32> {
+        match (&event.alerts, self.own) {
+            (Some(own), true) => own.clone(),
+            _ => match self.minutes {
+                Some(m) if !event.all_day => {
+                    vec![
+                        i32::try_from(m)
+                            .unwrap_or(i32::MAX)
+                            .min(crate::calendar::MAX_ALERT_MINUTES),
+                    ]
+                }
+                _ => Vec::new(),
+            },
+        }
+    }
+}
+
+impl Default for EventReminders {
+    fn default() -> Self {
+        Self { own: Self::default_own(), minutes: Self::default_minutes() }
+    }
 }
 
 impl ReminderSettings {
@@ -465,7 +535,11 @@ impl ReminderSettings {
 
 impl Default for ReminderSettings {
     fn default() -> Self {
-        Self { yours: Self::default_yours(), assistants: Self::default_assistants() }
+        Self {
+            yours: Self::default_yours(),
+            assistants: Self::default_assistants(),
+            events: EventReminders::default(),
+        }
     }
 }
 

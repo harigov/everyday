@@ -645,12 +645,20 @@ async fn mic_started(app: &AppHandle, app_name: Option<String>) {
         },
         // Locked, no vault open, a remote that is away: no offer, and no
         // fuss -- the person has not asked for anything.
+        // Logged at info, as is the settings' no below: the journal shows the
+        // microphone being noticed, and an offer that then never comes has
+        // to say why there too.
         Err(e) => {
-            tracing::debug!(error = %e, "no microphone offer: the service did not answer");
+            tracing::info!(error = %e, "no microphone offer: the service did not answer");
             return;
         }
     };
     if !now.offers || !now.mic_offer {
+        tracing::info!(
+            offers = now.offers,
+            mic_offer = now.mic_offer,
+            "no microphone offer: turned off in Settings, Meetings"
+        );
         return;
     }
     // The answer took a moment, and the world moved: somebody may have

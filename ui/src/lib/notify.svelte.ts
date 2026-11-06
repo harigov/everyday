@@ -140,7 +140,7 @@ class Notifications {
     // `osUsable` means "worth trying", not "granted". Delivery reports back
     // whether it actually happened, and a message that did not get out falls
     // back to a toast below. Nothing is lost to an unanswered prompt.
-    const channel = channelFor(spec, { focused: windowInFront(), osReady: osUsable })
+    const channel = channelFor(spec, { focused: somebodyAtWindow(), osReady: osUsable })
 
     if (channel === 'toast') return this.#show(spec)
 
@@ -282,6 +282,51 @@ class Notifications {
 /** Is the window in front of the user? */
 export function windowInFront(): boolean {
   return document.visibilityState === 'visible' && document.hasFocus()
+}
+
+/**
+ * How long without a key, a click, a scroll or the pointer moving before a
+ * window in front stops counting as watched.
+ */
+const AWAY_AFTER_MS = 2 * 60 * 1000
+
+/** When this window last saw somebody use it. */
+let lastInput = Date.now()
+// Guarded on the method rather than on `window`: the store tests stand in a
+// bare object for it.
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  for (const type of ['keydown', 'pointerdown', 'pointermove', 'wheel'] as const) {
+    window.addEventListener(type, () => (lastInput = Date.now()), { capture: true, passive: true })
+  }
+}
+
+/**
+ * Is somebody looking at this window: in front, *and* used in the last two
+ * minutes or with the pointer or the focus in one of its frames?
+ *
+ * What decides between a toast and the notification centre. In front alone
+ * is not enough: a window left focused when its person walked away, or took
+ * a call on their phone, stays focused, and "Design sync starts in 10
+ * minutes" became a toast that sat in an empty room for five seconds. Only
+ * here, not in `windowInFront`: mail marks a thread read when the window is
+ * in front, and it is asked again when the window comes back, not when the
+ * pointer moves.
+ */
+function somebodyAtWindow(): boolean {
+  return windowInFront() && (Date.now() - lastInput < AWAY_AFTER_MS || inAFrame())
+}
+
+/**
+ * Is the pointer over, or the focus inside, one of the window's frames -- a
+ * message's body, an attachment's viewer? Keys, scrolling and the pointer in
+ * a frame never reach this document, so somebody reading a long message
+ * would otherwise count as away after two minutes; the frame element itself
+ * still shows as hovered, or as the focused one, out here.
+ */
+function inAFrame(): boolean {
+  return (
+    document.activeElement?.tagName === 'IFRAME' || document.querySelector('iframe:hover') !== null
+  )
 }
 
 /**

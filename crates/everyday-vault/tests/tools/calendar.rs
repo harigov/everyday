@@ -95,6 +95,7 @@ fn a_synced_event(vault: &everyday_core::Vault, calendar: &Calendar, guests: &[&
         busy: true,
         series: None,
         own: None,
+        alerts: None,
         updated_at: start,
     };
     vault
