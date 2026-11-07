@@ -65,8 +65,12 @@ impl Vault {
 
     // ---- settings ---------------------------------------------------------
 
+    /// The starter template comes back up to date if it was never edited --
+    /// see [`crate::meeting::template::upgrade_starter`].
     pub fn meeting_settings(&self) -> Result<MeetingSettings> {
-        self.with_meetings(|m| m.meeting_settings())
+        let mut settings = self.with_meetings(|m| m.meeting_settings())?;
+        crate::meeting::template::upgrade_starter(&mut settings.templates);
+        Ok(settings)
     }
 
     pub fn save_meeting_settings(&self, settings: &MeetingSettings) -> Result<()> {

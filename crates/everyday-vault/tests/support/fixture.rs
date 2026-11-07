@@ -375,6 +375,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         status: EventStatus::Confirmed,
         organizer: "organizer@example.com".into(),
         attendees: vec!["attendee@example.com".into()],
+        guests: Vec::new(),
         url: String::new(),
         busy: true,
         series: None,

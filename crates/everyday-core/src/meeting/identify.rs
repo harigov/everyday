@@ -23,6 +23,9 @@ pub struct Candidate {
     /// As the calendar gave it: "Priya Raman <priya@x.com>", or just an address.
     pub attendee: String,
     pub voiceprint: Option<Voiceprint>,
+    /// They said they would not come. Only a lean: see
+    /// [`name_clusters`]'s one-left-over rule.
+    pub declined: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,11 +46,23 @@ pub struct Params {
     pub cluster_threshold: f32,
     /// Cosine similarity at or above which a cluster is a known voice.
     pub match_threshold: f32,
+    /// The most distinct voices there should be: how many people besides
+    /// the owner were invited. Clusters past it are merged, most alike
+    /// first, below `cluster_threshold` if need be -- a five-person call
+    /// never has twenty-five voices on it, however a compressed line makes
+    /// them sound -- but never below `cap_floor`. `None` when there was no
+    /// invite to count.
+    pub max_voices: Option<usize>,
+    /// The least alike two clusters can be and still be merged to meet
+    /// `max_voices`. Below it they are plainly two people -- somebody
+    /// joined who was not on the invite, or the invite named a group --
+    /// and are left apart for `people::tidy` to label honestly.
+    pub cap_floor: f32,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Self { cluster_threshold: 0.55, match_threshold: 0.62 }
+        Self { cluster_threshold: 0.55, match_threshold: 0.62, max_voices: None, cap_floor: 0.3 }
     }
 }
 
@@ -110,6 +125,9 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
     let has_embedding = |pos: usize| !turns[pos].embedding.is_empty();
 
     let mut mergeable: Vec<Vec<usize>> = Vec::new();
+    // Beside `mergeable`: whether the cluster was made by merging below
+    // `cluster_threshold`, which may have put two voices in it.
+    let mut mixed: Vec<bool> = Vec::new();
     let mut settled: Vec<Vec<usize>> = Vec::new();
     let mut orphans: Vec<usize> = Vec::new();
 
@@ -160,6 +178,57 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
         }
     }
 
+    mixed.resize(mergeable.len(), false);
+
+    // 3b. No more voices than there are people who could be speaking.
+    //     First a hint group with no embedding at all -- a few short turns
+    //     the recogniser labelled within one request -- joins whichever
+    //     embedded cluster it sits nearest in time; it has no sound to
+    //     compare, so it cannot pull two voices together. Then embedded
+    //     clusters merge on, most alike first, under the threshold if need
+    //     be, but never under `cap_floor`. Hint groups with nothing
+    //     embedded anywhere are left as they are -- there is nothing to say
+    //     which of them belong together, and `people::tidy` settles them
+    //     after the transcript has been read.
+    if let Some(max) = params.max_voices.filter(|&m| m > 0) {
+        while !mergeable.is_empty() && !settled.is_empty() && mergeable.len() + settled.len() > max
+        {
+            let smallest = (0..settled.len()).min_by_key(|&i| settled[i].len()).unwrap_or(0);
+            let group = settled.remove(smallest);
+            let nearest = (0..mergeable.len())
+                .min_by_key(|&ci| {
+                    group
+                        .iter()
+                        .flat_map(|&p| mergeable[ci].iter().map(move |&q| p.abs_diff(q)))
+                        .min()
+                        .unwrap_or(usize::MAX)
+                })
+                .unwrap_or(0);
+            mergeable[nearest].extend(group);
+        }
+        while mergeable.len() >= 2 && mergeable.len() + settled.len() > max {
+            let mut best: Option<(usize, usize, f32)> = None;
+            for i in 0..mergeable.len() {
+                for j in (i + 1)..mergeable.len() {
+                    if let Some(score) =
+                        avg_pairwise_similarity(&mergeable[i], &mergeable[j], turns)
+                        && best.is_none_or(|(_, _, current)| score > current)
+                    {
+                        best = Some((i, j, score));
+                    }
+                }
+            }
+            let Some((i, j, score)) = best else { break };
+            if score < params.cap_floor {
+                break;
+            }
+            let removed = mergeable.remove(j);
+            mixed.remove(j);
+            mergeable[i].extend(removed);
+            mixed[i] = true;
+        }
+    }
+
     let mut final_clusters: Vec<Vec<usize>> = mergeable;
     final_clusters.extend(settled);
 
@@ -197,7 +266,16 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
     let centroids: Vec<Vec<f32>> =
         final_clusters.iter().map(|members| centroid_of(members, turns)).collect();
 
-    name_clusters(&final_clusters, &centroids, candidates, params)
+    let mut clusters = name_clusters(&final_clusters, &centroids, candidates, params);
+    // A cluster merged below the threshold may be two people: it can still
+    // be matched against a voiceprint, but its centroid must never become
+    // one, or naming it would teach one person's voiceprint another's.
+    for (cluster, &mixed) in clusters.iter_mut().zip(&mixed) {
+        if mixed {
+            cluster.centroid.clear();
+        }
+    }
+    clusters
 }
 
 fn avg_pairwise_similarity(a: &[usize], b: &[usize], turns: &[Turn]) -> Option<f32> {
@@ -312,13 +390,21 @@ fn name_clusters(
         candidate_used[cand_idx] = true;
     }
 
-    // The one-left-over inference: exactly one usable attendee unmatched,
-    // and exactly one cluster still unnamed.
+    // The one-left-over inference: exactly one cluster still unnamed, and
+    // exactly one usable attendee unmatched -- or, of several unmatched,
+    // exactly one who did not decline. Either way it is a guess, and is
+    // marked `Inferred`, because somebody who declined can still turn up.
     let unmatched: Vec<usize> = usable.iter().copied().filter(|&i| !candidate_used[i]).collect();
+    let coming: Vec<usize> =
+        unmatched.iter().copied().filter(|&i| !candidates[i].declined).collect();
     let unnamed: Vec<usize> =
         (0..final_clusters.len()).filter(|&i| attribution[i].is_none()).collect();
-    if unmatched.len() == 1 && unnamed.len() == 1 {
-        let cand_idx = unmatched[0];
+    let left_over = match (unmatched.len(), coming.len()) {
+        (1, _) => Some(unmatched[0]),
+        (_, 1) => Some(coming[0]),
+        _ => None,
+    };
+    if let (Some(cand_idx), 1) = (left_over, unnamed.len()) {
         let ci = unnamed[0];
         let candidate = &candidates[cand_idx];
         let (name, addr) = parse_attendee(&candidate.attendee);
@@ -534,14 +620,17 @@ mod tests {
             Candidate {
                 attendee: "Alice <alice@x.com>".into(),
                 voiceprint: Some(voiceprint("Alice", a.clone())),
+                declined: false,
             },
             Candidate {
                 attendee: "Bob <bob@x.com>".into(),
                 voiceprint: Some(voiceprint("Bob", b.clone())),
+                declined: false,
             },
             Candidate {
                 attendee: "Carol <carol@x.com>".into(),
                 voiceprint: Some(voiceprint("Carol", c.clone())),
+                declined: false,
             },
         ];
 
@@ -584,6 +673,7 @@ mod tests {
         let candidates = vec![Candidate {
             attendee: "Alice <alice@x.com>".into(),
             voiceprint: Some(voiceprint("Alice", a.clone())),
+            declined: false,
         }];
         let clusters = identify(&turns, &candidates, Params::default());
         let matched: Vec<&Cluster> =
@@ -647,10 +737,11 @@ mod tests {
             Candidate {
                 attendee: "Alice <alice@x.com>".into(),
                 voiceprint: Some(voiceprint("Alice", a.clone())),
+                declined: false,
             },
             // Dev has no voiceprint at all: the only attendee left over
             // once Alice is matched, for the only cluster left unnamed.
-            Candidate { attendee: "Dev <dev@x.com>".into(), voiceprint: None },
+            Candidate { attendee: "Dev <dev@x.com>".into(), voiceprint: None, declined: false },
         ];
         let clusters = identify(&turns, &candidates, Params::default());
         assert_eq!(clusters.len(), 2, "{clusters:#?}");
@@ -670,11 +761,102 @@ mod tests {
         // Neither Dev nor Eve has a voiceprint, and there is no matched
         // cluster to eliminate down to one -- both clusters stay Unknown.
         let candidates = vec![
-            Candidate { attendee: "Dev <dev@x.com>".into(), voiceprint: None },
-            Candidate { attendee: "Eve <eve@x.com>".into(), voiceprint: None },
+            Candidate { attendee: "Dev <dev@x.com>".into(), voiceprint: None, declined: false },
+            Candidate { attendee: "Eve <eve@x.com>".into(), voiceprint: None, declined: false },
         ];
         let clusters = identify(&turns, &candidates, Params::default());
         assert!(clusters.iter().all(|c| matches!(c.how, Attribution::Unknown)), "{clusters:#?}");
+    }
+
+    /// The bug that prompted the cap: a compressed line makes one person
+    /// sound like several, and a five-person call came back with
+    /// twenty-five voices. Two people, each heard in two ways only half
+    /// alike (cosine 0.5, under the 0.55 threshold), with two people
+    /// invited, are two clusters -- the right two -- and neither keeps a
+    /// centroid that might be two voices.
+    #[test]
+    fn never_more_voices_than_people_invited() {
+        let v = |hot: &[usize]| {
+            let mut x = vec![0.0f32; DIM];
+            for &h in hot {
+                x[h] = 1.0;
+            }
+            normalise(&x)
+        };
+        let shapes = [v(&[0, 1]), v(&[0, 2]), v(&[4, 5]), v(&[4, 6])];
+        let turns: Vec<Turn> = (0..12).map(|i| turn(i, shapes[i % 4].clone())).collect();
+        let uncapped = identify(&turns, &[], Params::default());
+        assert_eq!(uncapped.len(), 4, "{uncapped:#?}");
+        let capped = identify(&turns, &[], Params { max_voices: Some(2), ..Params::default() });
+        assert_eq!(capped.len(), 2, "{capped:#?}");
+        let mut groups: Vec<Vec<usize>> =
+            capped.iter().map(|c| c.turns.iter().map(|t| t % 4 / 2).collect()).collect();
+        for g in &mut groups {
+            g.dedup();
+        }
+        assert!(groups.iter().all(|g| g.len() == 1), "each cluster is one person: {capped:#?}");
+        assert!(capped.iter().all(|c| c.centroid.is_empty()), "{capped:#?}");
+    }
+
+    /// Voices that sound nothing alike are not forced together, invite or
+    /// not: that is somebody who was not on it.
+    #[test]
+    fn plainly_different_voices_are_never_forced_together() {
+        let mut rng = Lcg(31);
+        let turns: Vec<Turn> =
+            (0..8).map(|i| turn(i, noisy(&base_vector(i % 4 * 2), &mut rng, 0.02))).collect();
+        let capped = identify(&turns, &[], Params { max_voices: Some(2), ..Params::default() });
+        assert_eq!(capped.len(), 4, "{capped:#?}");
+    }
+
+    /// Embedded voices are kept apart even when short, unembedded hint
+    /// groups alone outnumber the cap: those fold in first, by time.
+    #[test]
+    fn short_hint_groups_fold_in_before_voices_are_merged() {
+        let mut rng = Lcg(9);
+        let mut turns = Vec::new();
+        for i in 0..12 {
+            turns.push(if i % 3 == 2 {
+                hinted_turn(i, i as u32, "A", Vec::new())
+            } else {
+                turn(i, noisy(&base_vector(i % 3 * 3), &mut rng, 0.02))
+            });
+        }
+        let clusters = identify(&turns, &[], Params { max_voices: Some(2), ..Params::default() });
+        assert_eq!(clusters.len(), 2, "{clusters:#?}");
+        assert!(clusters.iter().all(|c| !c.centroid.is_empty()), "nothing was force-merged");
+    }
+
+    /// Per-chunk hint groups with one short, unembedded turn each are
+    /// folded into the nearest embedded voice once over the cap.
+    #[test]
+    fn unembedded_hint_groups_over_the_cap_join_the_nearest_voice() {
+        let mut rng = Lcg(8);
+        let a = base_vector(0);
+        let turns = vec![
+            turn(0, noisy(&a, &mut rng, 0.02)),
+            hinted_turn(1, 2, "B", Vec::new()),
+            turn(2, noisy(&a, &mut rng, 0.02)),
+            hinted_turn(3, 3, "B", Vec::new()),
+        ];
+        let clusters = identify(&turns, &[], Params { max_voices: Some(1), ..Params::default() });
+        assert_eq!(clusters.len(), 1, "{clusters:#?}");
+        assert_eq!(clusters[0].turns, vec![0, 1, 2, 3]);
+    }
+
+    /// Two unmatched attendees and one voice: the one who did not decline
+    /// is the guess.
+    #[test]
+    fn the_inference_rule_leans_on_who_declined() {
+        let mut rng = Lcg(12);
+        let turns = vec![turn(0, noisy(&base_vector(0), &mut rng, 0.02))];
+        let candidates = vec![
+            Candidate { attendee: "Dev <dev@x.com>".into(), voiceprint: None, declined: true },
+            Candidate { attendee: "Eve <eve@x.com>".into(), voiceprint: None, declined: false },
+        ];
+        let clusters = identify(&turns, &candidates, Params::default());
+        assert_eq!(clusters[0].label, "Eve", "{clusters:#?}");
+        assert_eq!(clusters[0].how, Attribution::Inferred);
     }
 
     #[test]
@@ -684,8 +866,11 @@ mod tests {
         let turns = vec![turn(0, noisy(&a, &mut rng, 0.02)), turn(1, noisy(&a, &mut rng, 0.02))];
         let mut owner_vp = voiceprint("Me", a.clone());
         owner_vp.is_owner = true;
-        let candidates =
-            vec![Candidate { attendee: "Me <me@x.com>".into(), voiceprint: Some(owner_vp) }];
+        let candidates = vec![Candidate {
+            attendee: "Me <me@x.com>".into(),
+            voiceprint: Some(owner_vp),
+            declined: false,
+        }];
         let clusters = identify(&turns, &candidates, Params::default());
         assert_eq!(clusters.len(), 1);
         assert!(matches!(clusters[0].how, Attribution::Unknown), "{:#?}", clusters[0]);
@@ -706,10 +891,12 @@ mod tests {
             Candidate {
                 attendee: "Stranger <s@x.com>".into(),
                 voiceprint: Some(voiceprint("Stranger", unrelated_one)),
+                declined: false,
             },
             Candidate {
                 attendee: "Other <o@x.com>".into(),
                 voiceprint: Some(voiceprint("Other", unrelated_two)),
+                declined: false,
             },
         ];
         let clusters = identify(&turns, &candidates, Params::default());

@@ -22,6 +22,13 @@ pub struct Facts {
     pub ended_at: Option<Timestamp>,
     /// Labels of everybody who actually spoke, in order of first speech.
     pub present: Vec<String>,
+    /// The addresses of those of them who have one -- a voiceprint's
+    /// "Bob" is still the invitee "Bob Lee" by address.
+    pub present_emails: Vec<String>,
+    /// Everybody invited apart from the owner -- see
+    /// [`super::people::invitees`]. Read by [`details_block`] to say who was
+    /// invited but not heard.
+    pub invitees: Vec<super::people::Invitee>,
     /// IANA zone to write times in.
     pub tz: String,
 }
@@ -47,6 +54,34 @@ pub fn starter() -> NoteTemplate {
 }
 
 const STARTER_BODY: &str = "\
+## Summary
+Two to four sentences: what this meeting was for, what was settled and what \
+happens next. Concrete, and without listing who attended.
+
+## Key points
+Bullets, one line each: the substance of the discussion -- facts, numbers, \
+options weighed and the reasons given.
+
+## Decisions
+Bullets. Only what was actually agreed, and who agreed it where that matters.
+
+## Action items
+A table, one row per action, with all of one person's rows together. Owner is \
+\"Unassigned\" when nobody took it on; Due only if a date was said, else blank.
+
+| Owner | Action | Due |
+|---|---|---|
+
+## Open questions
+Bullets. What was raised and left unsettled, and who follows up if anyone said.
+";
+
+/// What [`STARTER_BODY`] used to be, before September's notes showed it
+/// repeating the title and every name the details block already gives, and
+/// listing action items as checkboxes nobody could scan. A vault whose
+/// starter template still reads exactly this was never edited, so
+/// [`upgrade_starter`] may swap it for the current one.
+const OLD_STARTER_BODIES: &[&str] = &["\
 # {{title}}
 {{date}}, {{start}}\u{2013}{{end}} \u{b7} {{present}}
 
@@ -61,7 +96,20 @@ Bullets. Only what was actually agreed, with who agreed it.
 
 ## Open questions
 Bullets. What was raised and left unsettled.
-";
+"];
+
+/// Bring the starter template up to date wherever it was never edited:
+/// same id, and a body that is word for word an earlier starter's. One
+/// somebody changed is theirs, and is left alone.
+pub fn upgrade_starter(templates: &mut [NoteTemplate]) {
+    for t in templates.iter_mut() {
+        if t.id == TemplateId(STARTER_TEMPLATE_UUID)
+            && OLD_STARTER_BODIES.contains(&t.body.as_str())
+        {
+            t.body = STARTER_BODY.to_string();
+        }
+    }
+}
 
 /// Replace every known placeholder. Unknown `{{…}}` are left alone.
 pub fn fill(body: &str, facts: &Facts) -> String {
@@ -261,12 +309,34 @@ pub fn details_block(facts: &Facts) -> String {
         if !event.organizer.is_empty() {
             lines.push(format!("- **Organizer:** {}", display_name(&event.organizer)));
         }
-        if !event.attendees.is_empty() {
-            lines.push(format!("- **Invited:** {}", attendees_display(&event.attendees)));
-        }
     }
     if !facts.present.is_empty() {
         lines.push(format!("- **Spoke:** {}", facts.present.join(", ")));
+    }
+    // Each name once: whoever spoke is on the line above, so this one is
+    // only the rest of the invite, with their answer where it says
+    // something the reader cannot see -- that they declined, or might come.
+    if !facts.invitees.is_empty() {
+        let rest: Vec<String> = facts
+            .invitees
+            .iter()
+            .filter(|i| {
+                !facts.present.iter().any(|p| i.answers_to(p, None))
+                    && !facts.present_emails.iter().any(|e| i.answers_to("", Some(e)))
+            })
+            .map(|i| match i.answer() {
+                a @ ("declined" | "maybe" | "no answer") => format!("{} ({a})", i.name),
+                _ => i.name.clone(),
+            })
+            .collect();
+        if !rest.is_empty() {
+            let heading = if facts.present.is_empty() { "Invited" } else { "Also invited" };
+            lines.push(format!("- **{heading}:** {}", rest.join(", ")));
+        }
+    } else if let Some(event) = &facts.event
+        && !event.attendees.is_empty()
+    {
+        lines.push(format!("- **Invited:** {}", attendees_display(&event.attendees)));
     }
     if let Some(event) = &facts.event
         && !event.join_url.is_empty()
@@ -338,6 +408,7 @@ mod tests {
                     "bob@example.com".into(),
                     "Just A Name".into(),
                 ],
+                guests: Vec::new(),
                 join_url: "https://meet.google.com/abc-defg-hij".into(),
                 calendar_name: "Work".into(),
                 series: None,
@@ -345,6 +416,8 @@ mod tests {
             started_at: None,
             ended_at: None,
             present: vec!["Priya Raman".into(), "Bob".into()],
+            present_emails: Vec::new(),
+            invitees: Vec::new(),
             tz: "Europe/London".into(),
         }
     }
@@ -358,7 +431,7 @@ mod tests {
 
     #[test]
     fn every_known_placeholder_is_filled() {
-        let filled = fill(&starter().body, &facts());
+        let filled = fill(OLD_STARTER_BODIES[0], &facts());
         assert!(!filled.contains("{{"), "{filled}");
         assert!(filled.contains("# Design sync"));
         assert!(filled.contains("16 September 2026"));
@@ -366,7 +439,7 @@ mod tests {
         assert!(filled.contains("15:45"));
         assert!(filled.contains("Priya Raman, Bob"));
 
-        // The starter template has no {{duration}}, but the placeholder itself works.
+        // That template has no {{duration}}, but the placeholder itself works.
         assert_eq!(fill("{{duration}}", &facts()), "45 min");
     }
 
@@ -403,6 +476,8 @@ mod tests {
             started_at: Some("2026-09-16T09:00:00Z".parse().unwrap()),
             ended_at: Some("2026-09-16T09:20:00Z".parse().unwrap()),
             present: vec!["Someone".into()],
+            present_emails: Vec::new(),
+            invitees: Vec::new(),
             tz: String::new(),
         };
         let out = fill("{{date}} {{start}}-{{end}} {{duration}}", &f);
@@ -460,6 +535,8 @@ mod tests {
             started_at: Some("2026-09-16T09:00:00Z".parse().unwrap()),
             ended_at: None,
             present: Vec::new(),
+            present_emails: Vec::new(),
+            invitees: Vec::new(),
             tz: String::new(),
         };
         let block = details_block(&f);
@@ -473,6 +550,56 @@ mod tests {
         assert!(issues.iter().any(|i| i.contains("oops")), "{issues:?}");
         assert!(issues.iter().any(|i| i.contains("Unbalanced")), "{issues:?}");
         assert!(issues.iter().any(|i| i.contains("no headings")), "{issues:?}");
+    }
+
+    #[test]
+    fn details_name_each_person_once_with_the_answers_worth_saying() {
+        use crate::mail::AttendeeResponse;
+        use crate::meeting::people::Invitee;
+        let invitee = |name: &str, response| Invitee {
+            name: name.into(),
+            email: None,
+            response,
+            organizer: false,
+        };
+        let mut f = facts();
+        f.present_emails = vec!["bob@example.com".into()];
+        f.invitees = vec![
+            invitee("Priya Raman", Some(AttendeeResponse::Accepted)),
+            Invitee {
+                email: Some("bob@example.com".into()),
+                ..invitee("Bob Lee", Some(AttendeeResponse::Accepted))
+            },
+            invitee("Dev Patel", Some(AttendeeResponse::Declined)),
+            invitee("Eve Ng", Some(AttendeeResponse::Accepted)),
+        ];
+        let block = details_block(&f);
+        assert!(block.contains("- **Spoke:** Priya Raman, Bob\n"), "{block}");
+        assert!(block.contains("- **Also invited:** Dev Patel (declined), Eve Ng"), "{block}");
+        assert!(!block.contains("**Invited:**"), "{block}");
+    }
+
+    #[test]
+    fn an_unedited_starter_is_upgraded_and_an_edited_one_is_not() {
+        let old = NoteTemplate { body: OLD_STARTER_BODIES[0].to_string(), ..starter() };
+        let edited = NoteTemplate { body: "## Mine\n".into(), ..starter() };
+        let other = NoteTemplate {
+            id: TemplateId::new(),
+            body: OLD_STARTER_BODIES[0].to_string(),
+            name: "Copy".into(),
+        };
+        let mut templates = vec![old, edited, other];
+        upgrade_starter(&mut templates);
+        assert_eq!(templates[0].body, STARTER_BODY);
+        assert_eq!(templates[1].body, "## Mine\n");
+        assert_eq!(templates[2].body, OLD_STARTER_BODIES[0], "only the starter's own id");
+    }
+
+    #[test]
+    fn the_starter_asks_for_action_items_as_a_table() {
+        let body = starter().body;
+        assert!(body.contains("| Owner | Action | Due |"), "{body}");
+        assert!(!body.contains("{{present}}"), "names are in the details block already");
     }
 
     #[test]

@@ -516,7 +516,7 @@ fn guests(entries: &[Value]) -> Vec<Attendee> {
         .collect()
 }
 
-fn response(status: &str) -> Option<AttendeeResponse> {
+pub(super) fn response(status: &str) -> Option<AttendeeResponse> {
     match status {
         "accepted" => Some(AttendeeResponse::Accepted),
         "tentative" => Some(AttendeeResponse::Tentative),
@@ -866,6 +866,7 @@ mod tests {
             status: EventStatus::Confirmed,
             organizer: String::new(),
             attendees: Vec::new(),
+            guests: Vec::new(),
             url: String::new(),
             busy: true,
             series: None,

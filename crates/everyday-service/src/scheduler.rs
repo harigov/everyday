@@ -1631,6 +1631,7 @@ mod tests {
             tz: "UTC".into(),
             organizer: String::new(),
             attendees: strings(attendees),
+            guests: Vec::new(),
             join_url: String::new(),
             calendar_name: "Work".into(),
             series: None,

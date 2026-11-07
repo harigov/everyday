@@ -63,8 +63,9 @@ impl Vault {
     }
 
     /// Throw away the sync cursor of every account calendar last synced
-    /// before events carried their alerts, so the next sync lists the whole
-    /// window again and fills [`Event::alerts`] in. Without it a Google or
+    /// before events carried their alerts and their guests' answers, so the
+    /// next sync lists the whole window again and fills [`Event::alerts`]
+    /// and [`Event::guests`] in. Without it a Google or
     /// Graph token, or a CalDAV etag list, only ever re-lists what changed,
     /// and a weekly meeting nobody touches would never get its alerts.
     ///
@@ -79,7 +80,7 @@ impl Vault {
         }
         for mut calendar in self.calendars()? {
             if matches!(calendar.origin, CalendarOrigin::Account { .. })
-                && !calendar.account_sync.reads_alerts
+                && !(calendar.account_sync.reads_alerts && calendar.account_sync.reads_guests)
                 && !calendar.account_sync.is_empty()
             {
                 calendar.account_sync = AccountSyncCursor::default();
@@ -401,7 +402,8 @@ impl Vault {
         for event in upsert {
             self.wrote(RecordKind::Event, event.id);
         }
-        calendar.account_sync = AccountSyncCursor { reads_alerts: true, ..cursor };
+        calendar.account_sync =
+            AccountSyncCursor { reads_alerts: true, reads_guests: true, ..cursor };
         calendar.mark_synced();
         self.with_calendars(|c| c.put_calendar(&calendar))?;
         self.wrote(RecordKind::Calendar, id);

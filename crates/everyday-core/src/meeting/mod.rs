@@ -21,6 +21,7 @@ pub mod detect;
 pub mod filing;
 pub mod identify;
 pub mod merge;
+pub mod people;
 pub mod prompt;
 pub mod template;
 
@@ -81,6 +82,12 @@ pub struct EventRef {
     pub organizer: String,
     #[serde(default)]
     pub attendees: Vec<String>,
+    /// Copied from [`Event::guests`]: everybody invited, by address, with
+    /// their answer. Empty for a recording made before it existed, or of
+    /// an event whose calendar had not been synced since; `attendees` is
+    /// then all there is to go on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guests: Vec<crate::calendar::Attendee>,
     /// The join link, if one was found. See [`detect::join_link`].
     #[serde(default)]
     pub join_url: String,
@@ -104,6 +111,7 @@ impl EventRef {
             tz: event.tz.clone(),
             organizer: event.organizer.clone(),
             attendees: event.attendees.clone(),
+            guests: event.guests.clone(),
             join_url: detect::join_link(event).unwrap_or_default(),
             calendar_name: calendar_name.to_string(),
             series: event.series.clone(),

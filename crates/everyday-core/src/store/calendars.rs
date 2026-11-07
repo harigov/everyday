@@ -197,6 +197,7 @@ mod tests {
             status: EventStatus::Confirmed,
             organizer: String::new(),
             attendees: Vec::new(),
+            guests: Vec::new(),
             url: String::new(),
             busy: true,
             series: None,

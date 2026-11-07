@@ -429,6 +429,7 @@ async fn run_once(
         tz: "UTC".into(),
         organizer: "you@example.com".into(),
         attendees: built.attendees.clone(),
+        guests: Vec::new(),
         join_url: String::new(),
         calendar_name: "Work".into(),
         series: None,

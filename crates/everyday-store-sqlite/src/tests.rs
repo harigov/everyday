@@ -395,6 +395,7 @@ fn an_event(calendar_id: everyday_core::CalendarId, title: &str, location: &str)
         status: everyday_core::EventStatus::Confirmed,
         organizer: String::new(),
         attendees: Vec::new(),
+        guests: Vec::new(),
         url: String::new(),
         busy: true,
         series: None,

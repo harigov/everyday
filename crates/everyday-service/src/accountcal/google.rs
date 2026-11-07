@@ -63,8 +63,8 @@ use std::sync::Arc;
 use everyday_core::Vault;
 use everyday_core::account::Account;
 use everyday_core::calendar::{
-    AccountCalendarSource, AccountSyncCursor, Calendar, CalendarOrigin, Event, EventDraft,
-    EventStatus, SyncReport,
+    AccountCalendarSource, AccountSyncCursor, Attendee, Calendar, CalendarOrigin, Event,
+    EventDraft, EventStatus, SyncReport,
 };
 use everyday_core::id::CalendarId;
 use serde::Deserialize;
@@ -259,11 +259,30 @@ struct GoogleAttendee {
     /// [`Event::own`] is read from.
     #[serde(rename = "self")]
     is_self: Option<bool>,
+    /// `accepted`, `declined`, `tentative` or `needsAction`.
+    #[serde(rename = "responseStatus", default)]
+    response_status: String,
+    /// A room or other bookable resource, not a person.
+    #[serde(default)]
+    resource: bool,
 }
 
 impl GoogleAttendee {
     fn label(&self) -> String {
         self.display_name.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| self.email.clone())
+    }
+
+    /// As [`Event::guests`] holds it; `None` for a room.
+    fn guest(&self) -> Option<Attendee> {
+        if self.resource || self.email.trim().is_empty() {
+            return None;
+        }
+        let response = write::response(&self.response_status);
+        Some(Attendee {
+            email: self.email.trim().to_string(),
+            name: self.display_name.clone().unwrap_or_default().trim().to_string(),
+            response,
+        })
     }
 }
 
@@ -490,6 +509,7 @@ fn to_event(
         },
         organizer: item.organizer.as_ref().map(GoogleAttendee::label).unwrap_or_default(),
         attendees: item.attendees.iter().map(GoogleAttendee::label).collect(),
+        guests: item.attendees.iter().filter_map(GoogleAttendee::guest).collect(),
         url: item.html_link.clone(),
         busy: item.transparency != "transparent",
         series: item.recurring_event_id.clone().or_else(|| item.i_cal_uid.clone()),
@@ -800,6 +820,7 @@ mod tests {
     use axum::extract::Query;
     use axum::response::IntoResponse;
     use axum::routing::get;
+    use everyday_core::mail::AttendeeResponse;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -1227,10 +1248,44 @@ mod tests {
             email: "priya@example.com".into(),
             display_name: Some("Priya Raman".into()),
             is_self,
+            response_status: String::new(),
+            resource: false,
         };
         item.organizer = Some(organizer(None));
         assert_eq!(read(&item), Some(false), "somebody else did");
         item.organizer = Some(organizer(Some(true)));
         assert_eq!(read(&item), Some(true), "this account did");
+    }
+
+    /// Guests keep their address and answer; a room is not a guest.
+    #[test]
+    fn attendees_become_guests_with_their_answers_and_rooms_are_left_out() {
+        let item: GoogleEvent = serde_json::from_value(serde_json::json!({
+            "id": "evt-1",
+            "summary": "Design sync",
+            "start": { "dateTime": "2026-11-05T15:00:00Z" },
+            "end": { "dateTime": "2026-11-05T15:30:00Z" },
+            "attendees": [
+                { "email": "priya@example.com", "displayName": "Priya Raman",
+                  "responseStatus": "accepted" },
+                { "email": "bob@example.com", "responseStatus": "declined" },
+                { "email": "dev@example.com", "responseStatus": "needsAction" },
+                { "email": "c_123@resource.calendar.google.com",
+                  "displayName": "Room 4", "resource": true, "responseStatus": "accepted" }
+            ]
+        }))
+        .unwrap();
+        let event = to_event(CalendarId::new(), &item, "UTC", jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.attendees.len(), 4, "the names are as they were");
+        let guests: Vec<(&str, &str, Option<AttendeeResponse>)> =
+            event.guests.iter().map(|g| (g.email.as_str(), g.name.as_str(), g.response)).collect();
+        assert_eq!(
+            guests,
+            vec![
+                ("priya@example.com", "Priya Raman", Some(AttendeeResponse::Accepted)),
+                ("bob@example.com", "", Some(AttendeeResponse::Declined)),
+                ("dev@example.com", "", Some(AttendeeResponse::NeedsAction)),
+            ]
+        );
     }
 }

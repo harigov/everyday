@@ -91,6 +91,7 @@ fn a_synced_event(vault: &everyday_core::Vault, calendar: &Calendar, guests: &[&
         status: EventStatus::Confirmed,
         organizer: "me@gmail.com".into(),
         attendees: guests.iter().map(|g| g.to_string()).collect(),
+        guests: Vec::new(),
         url: String::new(),
         busy: true,
         series: None,

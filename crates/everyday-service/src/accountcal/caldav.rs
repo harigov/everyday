@@ -550,9 +550,9 @@ pub async fn sync(
     // somebody happened to edit it again.
     let token =
         next_sync_token(new_token, calendar.account_sync.token.clone(), !failed_hrefs.is_empty());
-    // `reads_alerts` is `Vault::sync_account_calendar`'s to set.
+    // `reads_alerts` and `reads_guests` are `Vault::sync_account_calendar`'s to set.
     let cursor =
-        AccountSyncCursor { token, etags, recurring_hrefs, expanded_through, reads_alerts: false };
+        AccountSyncCursor { token, etags, recurring_hrefs, expanded_through, ..Default::default() };
 
     let vault_for_write = vault.clone();
     let id = calendar.id;
@@ -915,6 +915,7 @@ fn events_from_ics(
                 .map(|s| s.trim_start_matches("mailto:").to_string())
                 .unwrap_or_default(),
             attendees: attendees_of(comp),
+            guests: write::guests_of(comp),
             url: text_property(comp, calcard::icalendar::ICalendarProperty::Url).unwrap_or_default(),
             busy: !matches!(
                 comp.entries.iter().find(|e| e.name == calcard::icalendar::ICalendarProperty::Transp),

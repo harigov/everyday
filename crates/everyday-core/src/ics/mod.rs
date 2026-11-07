@@ -79,6 +79,9 @@ pub struct IcsEvent {
     /// Everybody else invited, as the feed gives them: a name where there is
     /// one, an address where there is not.
     pub attendees: Vec<String>,
+    /// The same people by address, with their `PARTSTAT`; rooms left out.
+    /// See [`crate::calendar::Event::guests`].
+    pub guests: Vec<crate::calendar::Attendee>,
     pub url: String,
     pub status: EventStatus,
     pub all_day: bool,

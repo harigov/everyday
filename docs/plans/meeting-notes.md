@@ -122,6 +122,57 @@ section and the plan disagree, this section wins:
   vault takes every offer down, tray and notifications included, since each
   names a meeting.
 
+## Note quality, revisited (Nov 2026)
+
+A real five-person call came back with twenty-five "Unknown" speakers, a
+summary that kept repeating who was there, checkbox action items, no tags
+and the calendar's title word for word. What changed, and where this section
+and the plan disagree, this section wins:
+
+- **The invite is the whole list of who can be speaking.** Events now keep
+  `guests` (address, name, RSVP; rooms and `CUTYPE=GROUP` lists left out)
+  from Google, Graph, CalDAV and subscribed feeds, and recordings copy them.
+  `people::invitees` drops the owner by account address *or* profile name.
+  `identify` aims for no more voices than invitees (`Params::max_voices`):
+  short hint groups with no embedding fold into the nearest voice first,
+  then clusters merge, most alike first, under the threshold if need be --
+  but never under `cap_floor` (0.3), where two clusters are plainly two
+  people (somebody not on the invite, or an invite to a list). A cluster
+  merged under the threshold keeps no centroid, so naming it can never
+  teach a voiceprint someone else's voice. A declined invitee is only a
+  lean in the one-left-over rule, never a reason to rule them out.
+- **The model names what the audio could not.** Before summarising, the
+  pipeline asks the medium model who each unnamed label is, from what was
+  said (people addressing each other, introductions). Only names on the
+  invite are taken, only at high or medium confidence, never the owner's,
+  and only for voices left `Unknown`. Answers are pinned to the labels the
+  model was shown before anything is renamed. Several labels can turn out
+  to be one person, or `same_as` each other (only between voices that were
+  both unnamed; never folded into the owner). Names match an invitee by
+  whole name or address, and by first name only when one invitee has it.
+  The result is `Inferred` ("guessed" in the interface). Whatever stays
+  unnamed is renumbered. If it still outnumbers the room left on the
+  invite, it folds into one "Others", with no centroid. A failed request
+  leaves the voices as they were.
+- **The summary is told the transcript is noisy.** Misheard words, names
+  and numbers, and speaker labels that can be wrong. Unclear specifics are
+  marked "(unclear)" rather than guessed, unnamed voices never own an action
+  ("Unassigned"), and attendees are not listed again in prose. A people
+  block (who spoke, how sure the naming is, who was invited and not heard,
+  with RSVPs) goes in with every request.
+- **The starter template changed.** No title or `{{present}}` line (the
+  details block already has them), a Key points section, and action items as
+  an `Owner | Action | Due` table with one person's rows together. A vault
+  whose starter is word for word the old one is upgraded when settings are
+  read; an edited one is left alone. The details block names each person
+  once: "Spoke", then "Also invited" with RSVPs worth saying.
+- **Titles and tags.** The title is the calendar's plus a three-to-eight-word
+  topic from the model ("Weekly sync: Pricing page slips to May"), or the
+  date when that fails. Every note is tagged `meeting`. Once a meeting
+  turns out to repeat -- a finished recording of the same series, at a
+  different time -- its name becomes a tag (`weekly-sync`) on the new note
+  and on the earlier ones, so the first week is found too.
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it

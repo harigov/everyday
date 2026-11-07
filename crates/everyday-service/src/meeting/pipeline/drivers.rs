@@ -321,7 +321,7 @@ pub(crate) async fn do_summarise_and_write(
 
     // Recomputed rather than loaded -- see `do_identify`'s doc for why
     // nothing is persisted between the two stages.
-    let identified = identify_stage(
+    let mut identified = identify_stage(
         vault,
         source,
         &recording,
@@ -331,7 +331,6 @@ pub(crate) async fn do_summarise_and_write(
         kit,
     )
     .await?;
-    let mut transcript = build_transcript(&recording, &identified, &settings);
 
     let tz = {
         let vault = vault.clone();
@@ -341,7 +340,6 @@ pub(crate) async fn do_summarise_and_write(
         })
         .await?
     };
-    let facts = facts_for(&recording, &identified, &tz);
     let template = settings.template(Some(recording.template_id));
     let loopback = {
         let vault = vault.clone();
@@ -356,26 +354,37 @@ pub(crate) async fn do_summarise_and_write(
         .summary_budget
         .unwrap_or_else(|| everyday_core::meeting::prompt::default_budget(loopback));
 
+    // Names first, so the summary is written about people rather than
+    // "Unknown 3".
+    resolve_speakers(summariser, &mut identified, budget).await;
+    let mut transcript = build_transcript(&recording, &identified, &settings);
+    let facts = facts_for(&recording, &identified, &tz);
+
     let answer = summarise_stage(summariser, &transcript, &template.body, &facts, budget).await?;
     let details = everyday_core::meeting::template::details_block(&facts);
     let body = if details.is_empty() { answer } else { format!("{details}\n\n{answer}") };
 
-    let title = facts.title.clone();
-    let title = if title.trim().is_empty() {
-        format!("Call on {}", recording.started_at.strftime("%-d %B %Y"))
-    } else {
-        title
+    let date = {
+        let zone = jiff::tz::TimeZone::get(&facts.tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let at = recording.event.as_ref().map_or(recording.started_at, |e| e.start);
+        at.to_zoned(zone).strftime("%-d %B %Y").to_string()
     };
+    let title = title_for(summariser, &facts.title, &body, &date).await;
+    let meeting = if facts.title.trim().is_empty() { title.clone() } else { facts.title.clone() };
 
     let note = Note::written(title.clone(), &body);
     let note_id = note.id;
-    let purpose = {
+    let (purpose, (tags, retagged)) = {
         let vault = vault.clone();
-        let event = recording.event.clone();
-        blocking(move || Ok(purpose_for(&vault, event.as_ref()))).await?
+        let recording = recording.clone();
+        blocking(move || {
+            Ok((purpose_for(&vault, recording.event.as_ref()), tags_for(&vault, &recording)))
+        })
+        .await?
     };
     let mut note = note;
     note.purpose = purpose;
+    note.tags = tags;
 
     transcript.note_id = note_id;
     transcript.segments.sort_by_key(|s| s.start_ms);
@@ -431,6 +440,11 @@ pub(crate) async fn do_summarise_and_write(
     let mut change = Change::new(Kind::Note, Op::Created);
     change.id = Some(note_id.to_string());
     events.changed(change);
+    for id in retagged {
+        let mut change = Change::new(Kind::Note, Op::Updated);
+        change.id = Some(id.to_string());
+        events.changed(change);
+    }
     let mut rec_change = Change::new(Kind::Recording, Op::Updated);
     rec_change.id = Some(id.to_string());
     events.changed(rec_change);
@@ -439,7 +453,7 @@ pub(crate) async fn do_summarise_and_write(
     events.changed(t_change);
 
     events.notify(
-        Notification::new(crate::events::Level::Info, format!("Notes from {title} are ready"))
+        Notification::new(crate::events::Level::Info, format!("Notes from {meeting} are ready"))
             .for_user()
             .key(format!("meeting:{id}")),
     );

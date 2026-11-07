@@ -393,6 +393,7 @@ mod tests {
             status: EventStatus::Confirmed,
             organizer: String::new(),
             attendees: Vec::new(),
+            guests: Vec::new(),
             url: "https://calendar.example.com/event".to_string(),
             busy: true,
             series: None,

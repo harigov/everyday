@@ -59,8 +59,8 @@ use std::sync::Arc;
 use everyday_core::Vault;
 use everyday_core::account::Account;
 use everyday_core::calendar::{
-    AccountCalendarSource, AccountSyncCursor, Calendar, CalendarOrigin, Event, EventStatus,
-    SyncReport,
+    AccountCalendarSource, AccountSyncCursor, Attendee, Calendar, CalendarOrigin, Event,
+    EventStatus, SyncReport,
 };
 use everyday_core::id::CalendarId;
 use serde::Deserialize;
@@ -279,6 +279,18 @@ struct GraphWhen {
 struct GraphAttendeeWrap {
     #[serde(rename = "emailAddress")]
     email_address: GraphEmailAddress,
+    /// `required`, `optional` or `resource` -- a room.
+    #[serde(rename = "type", default)]
+    kind: String,
+    status: Option<GraphResponseStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphResponseStatus {
+    /// `none`, `organizer`, `tentativelyAccepted`, `accepted`, `declined`
+    /// or `notResponded`.
+    #[serde(default)]
+    response: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -296,6 +308,20 @@ impl GraphAttendeeWrap {
         } else {
             self.email_address.address.clone()
         }
+    }
+
+    /// As [`Event::guests`] holds it; `None` for a room.
+    fn guest(&self) -> Option<Attendee> {
+        let email = self.email_address.address.trim();
+        if self.kind == "resource" || email.is_empty() {
+            return None;
+        }
+        let response = self.status.as_ref().and_then(|s| write::response(&s.response));
+        Some(Attendee {
+            email: email.to_string(),
+            name: self.email_address.name.trim().to_string(),
+            response,
+        })
     }
 }
 
@@ -421,6 +447,7 @@ fn to_event(calendar_id: CalendarId, item: &GraphEvent, now: jiff::Timestamp) ->
         status: EventStatus::Confirmed,
         organizer: item.organizer.as_ref().map(GraphAttendeeWrap::label).unwrap_or_default(),
         attendees: item.attendees.iter().map(GraphAttendeeWrap::label).collect(),
+        guests: item.attendees.iter().filter_map(GraphAttendeeWrap::guest).collect(),
         url: item.web_link.clone(),
         busy: !matches!(item.show_as.as_str(), "free" | "workingElsewhere"),
         series: item.series_master_id.clone().or_else(|| item.i_cal_u_id.clone()),
@@ -640,6 +667,7 @@ mod write;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everyday_core::mail::AttendeeResponse;
 
     #[test]
     fn windows_zone_names_resolve_through_the_shared_table() {
@@ -1069,6 +1097,38 @@ mod tests {
         item.is_reminder_on = None;
         let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
         assert_eq!(event.alerts, None);
+    }
+
+    /// Guests keep their address and answer; a room is not a guest.
+    #[test]
+    fn attendees_become_guests_with_their_answers_and_rooms_are_left_out() {
+        let item: GraphEvent = serde_json::from_value(serde_json::json!({
+            "id": "a",
+            "start": { "dateTime": "2026-09-16T09:00:00.0000000", "timeZone": "UTC" },
+            "end": { "dateTime": "2026-09-16T09:30:00.0000000", "timeZone": "UTC" },
+            "attendees": [
+                { "type": "required", "status": { "response": "accepted" },
+                  "emailAddress": { "name": "Priya Raman", "address": "priya@example.com" } },
+                { "type": "optional", "status": { "response": "tentativelyAccepted" },
+                  "emailAddress": { "name": "", "address": "bob@example.com" } },
+                { "type": "required", "status": { "response": "declined" },
+                  "emailAddress": { "name": "Dev", "address": "dev@example.com" } },
+                { "type": "resource", "status": { "response": "accepted" },
+                  "emailAddress": { "name": "Room 4", "address": "room4@example.com" } }
+            ]
+        }))
+        .unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        let guests: Vec<(&str, Option<AttendeeResponse>)> =
+            event.guests.iter().map(|g| (g.email.as_str(), g.response)).collect();
+        assert_eq!(
+            guests,
+            vec![
+                ("priya@example.com", Some(AttendeeResponse::Accepted)),
+                ("bob@example.com", Some(AttendeeResponse::Tentative)),
+                ("dev@example.com", Some(AttendeeResponse::Declined)),
+            ]
+        );
     }
 
     /// The finding this guards: `calendarView` mints a fresh `id` per

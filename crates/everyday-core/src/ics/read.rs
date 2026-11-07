@@ -1,5 +1,6 @@
-use crate::calendar::{AlarmTrigger, Calendar, Event, EventStatus, alarm_minutes};
+use crate::calendar::{AlarmTrigger, Attendee, Calendar, Event, EventStatus, alarm_minutes};
 use crate::id::EventId;
+use crate::mail::AttendeeResponse;
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
@@ -228,6 +229,39 @@ pub fn parse(text: &str) -> IcsCalendar {
     }
     out
 }
+/// One `ATTENDEE` line as an [`Event::guests`] entry: the `mailto:` address,
+/// `CN` and `PARTSTAT`. `None` for a line with no address; for a room or
+/// other resource (`CUTYPE`), which is booked rather than invited; and for a
+/// group, which is any number of people rather than one.
+fn guest_of(line: &Line) -> Option<Attendee> {
+    if line.param("CUTYPE").is_some_and(|t| {
+        ["ROOM", "RESOURCE", "GROUP"].iter().any(|kind| t.eq_ignore_ascii_case(kind))
+    }) {
+        return None;
+    }
+    let value = line.value.trim();
+    let email = value
+        .strip_prefix("mailto:")
+        .or_else(|| value.strip_prefix("MAILTO:"))
+        .unwrap_or(value)
+        .trim();
+    if !email.contains('@') {
+        return None;
+    }
+    let response = line.param("PARTSTAT").and_then(|p| match p.to_ascii_uppercase().as_str() {
+        "ACCEPTED" => Some(AttendeeResponse::Accepted),
+        "DECLINED" => Some(AttendeeResponse::Declined),
+        "TENTATIVE" => Some(AttendeeResponse::Tentative),
+        "NEEDS-ACTION" => Some(AttendeeResponse::NeedsAction),
+        _ => None,
+    });
+    Some(Attendee {
+        email: email.to_string(),
+        name: line.param("CN").map(|cn| unescape(cn).trim().to_string()).unwrap_or_default(),
+        response,
+    })
+}
+
 /// A `VEVENT` being assembled.
 #[derive(Debug, Default)]
 struct Draft {
@@ -237,6 +271,7 @@ struct Draft {
     location: String,
     organizer: String,
     attendees: Vec<String>,
+    guests: Vec<Attendee>,
     url: String,
     status: Option<EventStatus>,
     transparent: bool,
@@ -365,6 +400,11 @@ impl Draft {
                 if !who.is_empty() && !self.attendees.iter().any(|a| a.eq_ignore_ascii_case(&who)) {
                     self.attendees.push(who);
                 }
+                if let Some(guest) = guest_of(line)
+                    && !self.guests.iter().any(|g| g.key() == guest.key())
+                {
+                    self.guests.push(guest);
+                }
             }
             "STATUS" => {
                 self.status = match line.value.trim().to_ascii_uppercase().as_str() {
@@ -444,6 +484,7 @@ impl Draft {
             location: self.location,
             organizer: self.organizer,
             attendees: self.attendees,
+            guests: self.guests,
             url: self.url,
             status: self.status.unwrap_or_default(),
             all_day,
@@ -674,6 +715,7 @@ fn materialise(
         status: source.status,
         organizer: source.organizer.clone(),
         attendees: source.attendees.clone(),
+        guests: source.guests.clone(),
         url: source.url.clone(),
         busy: source.busy && source.status != EventStatus::Cancelled,
         // Not set: this `uid` already carries the series' own base (see the
@@ -1046,6 +1088,31 @@ pub(super) mod tests {
             event.attendees,
             vec!["Sam Weatherby".to_string(), "noname@example.com".to_string()],
             "a name where there is one, an address where there is not, and each person once"
+        );
+    }
+
+    #[test]
+    fn guests_keep_their_address_and_answer_and_rooms_are_left_out() {
+        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:m1\r\n\
+             DTSTART:20260914T140000Z\r\nDTEND:20260914T150000Z\r\nSUMMARY:Review\r\n\
+             ATTENDEE;CN=Sam Weatherby;PARTSTAT=ACCEPTED:mailto:sam@example.com\r\n\
+             ATTENDEE;PARTSTAT=DECLINED:mailto:noname@example.com\r\n\
+             ATTENDEE;CUTYPE=ROOM;CN=Room 4;PARTSTAT=ACCEPTED:mailto:room4@example.com\r\n\
+             ATTENDEE;CUTYPE=GROUP;CN=Eng;PARTSTAT=ACCEPTED:mailto:eng@example.com\r\n\
+             ATTENDEE;CN=Sam again;PARTSTAT=ACCEPTED:mailto:SAM@example.com\r\n\
+             END:VEVENT\r\nEND:VCALENDAR";
+        let parsed = parse(ics);
+        let guests: Vec<(&str, &str, Option<AttendeeResponse>)> = parsed.events[0]
+            .guests
+            .iter()
+            .map(|g| (g.email.as_str(), g.name.as_str(), g.response))
+            .collect();
+        assert_eq!(
+            guests,
+            vec![
+                ("sam@example.com", "Sam Weatherby", Some(AttendeeResponse::Accepted)),
+                ("noname@example.com", "", Some(AttendeeResponse::Declined)),
+            ]
         );
     }
 
