@@ -2194,6 +2194,9 @@ export interface ThreadDetail {
   messages: MailMessageDetail[]
   recentActions: RecentAction[]
   drafts: ThreadDraft[]
+  /** Replies to this thread queued or sent from here whose sent copy has not
+   *  been stored yet, oldest first -- drawn as the messages they will be. */
+  sending?: Draft[]
 }
 
 /** A draft in a thread, drawn as one card rather than as mail: the draft this
@@ -4312,6 +4315,8 @@ export type SourceKind =
   | { type: 'web'; url: string }
   | { type: 'hackerNews'; list: HnList; minPoints: number }
   | { type: 'mail'; sender: string }
+  /** Every newsletter in Mail, but for senders followed on their own. */
+  | { type: 'newsletters' }
 
 /** How long a source's stories are kept, in days. */
 export interface Retention {
@@ -4422,6 +4427,7 @@ export type NewSource =
   | { type: 'web'; url: string; title?: string; folder?: string }
   | { type: 'hackerNews'; list: HnList; minPoints?: number; folder?: string }
   | { type: 'mail'; sender: string; title?: string; folder?: string }
+  | { type: 'newsletters'; folder?: string }
 
 /** A feed found at an address somebody pasted. */
 export interface FoundFeed {

@@ -190,15 +190,26 @@ pub enum SourceKind {
         /// The sender's address, lower-cased.
         sender: String,
     },
+    /// Every newsletter arriving in Mail -- whatever Mail files under
+    /// Newsletters, from anybody -- except a sender followed as a
+    /// [`SourceKind::Mail`] source of their own, whose issues are that
+    /// source's. Fetches nothing, as `Mail` does not.
+    Newsletters,
 }
 
 impl SourceKind {
+    /// Reads mail rather than the web: a sender's newsletters, or all of them.
+    pub fn is_mail(&self) -> bool {
+        matches!(self, SourceKind::Mail { .. } | SourceKind::Newsletters)
+    }
+
     /// The word the interface and the assistant use for this kind.
     pub fn as_str(&self) -> &'static str {
         match self {
             SourceKind::Web { .. } => "web",
             SourceKind::HackerNews { .. } => "hackerNews",
             SourceKind::Mail { .. } => "mail",
+            SourceKind::Newsletters => "newsletters",
         }
     }
 }

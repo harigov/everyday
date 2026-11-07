@@ -148,6 +148,18 @@
     else problem = 'That could not be followed.'
   }
 
+  /** Every newsletter at once -- the `newsletters` source -- followed. */
+  const allFollowed = $derived(feed.sources.some((s) => s.source.kind.type === 'newsletters'))
+
+  async function followAll() {
+    if (following) return
+    following = '*'
+    problem = null
+    const added = await feed.addSource({ type: 'newsletters', folder: folder.trim() || undefined })
+    following = null
+    if (!added) problem = 'That could not be followed.'
+  }
+
   function choose(next: Tab) {
     tab = next
     problem = null
@@ -401,6 +413,26 @@
       points at them, so reading one here marks it read there. A source can be set to keep its
       issues out of the inbox in its settings.
     </p>
+
+    <ul class="senders">
+      <li class="sender">
+        <span class="who">
+          <b>All newsletters</b>
+          <small>Everything Mail files under Newsletters, but for senders followed below</small>
+        </span>
+        {#if allFollowed}
+          <span class="hint following"><Icon name="tick" size={14} /> Following</span>
+        {:else}
+          <button
+            class="btn btn-outline"
+            disabled={following !== null}
+            onclick={() => void followAll()}
+          >
+            {following === '*' ? 'Following…' : 'Follow'}
+          </button>
+        {/if}
+      </li>
+    </ul>
 
     {#if loadingSenders && senders === null}
       <p class="hint none">Looking through your mail…</p>

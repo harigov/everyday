@@ -37,6 +37,7 @@ import {
   needsSyntheticSnoozedMailbox,
   neighbourThread,
   onlyPhrase,
+  openOnArrival,
   parseOnlyPref,
   promoteGmailInbox,
   refreshLimit,
@@ -108,6 +109,15 @@ const onlyPref = pref(
   serializeOnlyPref,
 )
 
+/** The inbox tab last picked -- kept across mailboxes and restarts, so
+ *  coming back to an inbox shows Priority again rather than All. Absent
+ *  means All; a key that is no longer a tab reads as All too. */
+const categoryPref = pref<MailCategory | null>(
+  'everyday.mail.category',
+  (raw) => CATEGORY_TABS.find((t) => t.key === raw)?.key ?? null,
+  null,
+)
+
 /** `markMailboxRead`'s page, and the most it does in one go. */
 const MARK_PAGE = 200
 const MARK_CAP = 2000
@@ -132,7 +142,10 @@ class MailState {
 
   selectedAccount = $state<AccountScope>(null)
   selectedMailbox = $state<MailboxId | null>(null)
-  category = $state<MailCategory | null>(null)
+  /** The inbox tab picked, `null` for All. Left alone by a mailbox with no
+   *  tabs -- `#filter` and the rest only read it where `mailboxHasTabs` --
+   *  so going to Sent and back finds the same tab still picked. */
+  category = $state<MailCategory | null>(categoryPref.get())
   /** Which of the list's "show only" toggles each mailbox was left on --
    *  per mailbox, so Unread in the Inbox does not empty Sent, and kept across
    *  restarts, like the sidebar's own fold. See `only`. */
@@ -295,7 +308,7 @@ class MailState {
     this.#generation += 1
     this.selectedAccount = null
     this.selectedMailbox = null
-    this.category = null
+    this.category = categoryPref.get()
     this.#lingering.clear()
     this.#putBack.clear()
     this.selectedThread = null
@@ -569,10 +582,9 @@ class MailState {
     this.selectedThread = null
     this.openThread = null
     this.clearChecked()
-    // Finding 1: only the inbox has tabs to have set this from, so a
-    // category chosen there must not go on filtering a mailbox with no tab
-    // strip to clear it from. The unified Inbox is an inbox, and keeps it.
-    if (!mailboxHasTabs(this.#findMailbox(id))) this.category = null
+    // `category` is kept even for a mailbox with no tabs: every reader of
+    // it checks `mailboxHasTabs` first (Finding 1), so it filters nothing
+    // there, and the next inbox opens on the tab last picked.
     this.#lingering.clear()
     this.#putBack.clear()
     void this.refreshCategoryCounts()
@@ -596,6 +608,7 @@ class MailState {
 
   setCategory(category: MailCategory | null) {
     this.category = category
+    categoryPref.set(category)
     this.#lingering.clear()
     this.#putBack.clear()
     this.clearChecked()
@@ -829,10 +842,10 @@ class MailState {
       // this thread must not be shown, marked read or prefetched around.
       if (this.selectedThread !== id) return
       this.openThread = detail
-      // The newest message starts expanded; every earlier one collapsed to
-      // its one-line summary, as the plan asks.
-      const newest = detail.messages.at(-1)
-      this.expanded = newest ? new Set([newest.id]) : new Set()
+      // The newest message starts expanded, and so does every one not yet
+      // read -- read before this open marks them so -- lest one in the
+      // middle hide in a collapsed summary line; the rest collapse.
+      this.expanded = openOnArrival(detail.messages)
       if (detail.thread.unreadCount > 0) void this.markRead(id)
       void this.#prefetchNeighbours(id)
       // Nothing but a draft, as a thread opened from Drafts often is: open it
@@ -1707,6 +1720,10 @@ class MailState {
       return
     }
     this.closeCompose()
+    // A reply shows in its thread from now, as it is going (`sending`), not
+    // only once the server's copy has synced. The sheet closed before the
+    // send was asked for, so the read it did then still had it as a draft.
+    if (this.openThread) void this.#reloadOpenThread()
     if (this.#undoTimer) clearInterval(this.#undoTimer)
     const at = sendAt ? new Date(sendAt).getTime() : Date.now() + (delaySeconds ?? 0) * 1000
     const scheduled = Boolean(sendAt)
@@ -1756,6 +1773,8 @@ class MailState {
         reverted.inReplyTo != null &&
           (this.openThread?.messages.some((m) => m.id === reverted.inReplyTo) ?? false),
       )
+      // Being written again, not on its way: out of the thread's `sending`.
+      if (this.openThread) void this.#reloadOpenThread()
       // Only a scheduled send was ever in `scheduled` to begin with -- see
       // `send`'s own note -- but asking unconditionally costs one cheap,
       // already-debounced-by-nothing-else read rather than a second flag

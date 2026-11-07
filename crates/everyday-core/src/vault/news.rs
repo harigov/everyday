@@ -282,7 +282,7 @@ fn validate_source(source: &NewsSource) -> Result<()> {
                 ));
             }
         }
-        SourceKind::HackerNews { .. } => {}
+        SourceKind::HackerNews { .. } | SourceKind::Newsletters => {}
         SourceKind::Mail { sender, .. } => {
             if !sender.contains('@') {
                 return Err(Error::Invalid(

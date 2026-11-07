@@ -758,6 +758,50 @@ fn remove_uids_tx(
     Ok(removed)
 }
 
+/// See [`everyday_core::store::mail::MailStore::recount_draft_unread`].
+///
+/// Finds them by the clear columns alone: a thread holding a draft not
+/// flagged `\Seen` whose stored count is not what [`recompute_thread`] would
+/// now make it. Once per account: `mail_draft_recounted_accounts` (schema
+/// v26) remembers it was done, in the same write, and nothing is scanned
+/// again.
+pub(super) fn recount_draft_unread(store: &SqlStore, account: AccountId) -> Result<usize> {
+    let mut conn = store.write();
+    let mut tx = conn.begin()?;
+    if tx
+        .query_opt(
+            "SELECT 1 FROM mail_draft_recounted_accounts WHERE account_id = ?1",
+            &vals![account.to_string()],
+        )?
+        .is_some()
+    {
+        return Ok(0);
+    }
+    let rows = tx.query(
+        "SELECT t.id FROM threads t \
+         WHERE t.account_id = ?1 \
+           AND t.id IN (SELECT thread_id FROM mail_messages \
+                        WHERE account_id = ?1 AND flags & 9 = 8) \
+           AND t.unread != (SELECT COUNT(*) FROM mail_messages m \
+                            WHERE m.thread_id = t.id AND m.flags & 9 = 0)",
+        &vals![account.to_string()],
+    )?;
+    for row in &rows {
+        let thread: ThreadId = row
+            .text(0)?
+            .parse()
+            .map_err(|e: <ThreadId as std::str::FromStr>::Err| Error::Invalid(e.to_string()))?;
+        recompute_thread(store, tx.as_mut(), thread, &[])?;
+    }
+    tx.execute(
+        "INSERT INTO mail_draft_recounted_accounts (account_id) VALUES (?1) \
+         ON CONFLICT (account_id) DO NOTHING",
+        &vals![account.to_string()],
+    )?;
+    tx.commit()?;
+    Ok(rows.len())
+}
+
 /// See [`everyday_core::store::mail::MailStore::merge_messages`].
 pub(super) fn merge_messages(
     store: &SqlStore,
@@ -971,8 +1015,11 @@ pub(super) fn recompute_thread(
     thread_id: ThreadId,
     hints: &[&Message],
 ) -> Result<()> {
+    // Unread is neither `SEEN` nor `DRAFT` (`MessageFlags::bits`): a draft
+    // on the server seldom carries `\Seen`, and is not mail anybody has
+    // still to read -- it used to make its thread's row look unread.
     let agg = tx.query_opt(
-        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
+        "SELECT COUNT(*), COALESCE(SUM(CASE WHEN flags & 9 = 0 THEN 1 ELSE 0 END), 0), \
          COALESCE(MAX(date_us), 0), \
          (SELECT category FROM mail_messages WHERE thread_id = ?1 ORDER BY date_us DESC, id DESC LIMIT 1), \
          COALESCE(MAX(CASE WHEN flags & 4 != 0 THEN 1 ELSE 0 END), 0), \
@@ -1235,7 +1282,7 @@ fn recompute_thread_mailboxes(tx: &mut dyn Sql, thread_id: ThreadId) -> Result<(
     // person -- or the assistant, or a routine -- already asked to have it
     // hidden. See that function's own docs for the whole design.
     let rows = tx.query(
-        "SELECT mm.mailbox_id, COALESCE(SUM(CASE WHEN m.flags & 1 = 0 THEN 1 ELSE 0 END), 0), \
+        "SELECT mm.mailbox_id, COALESCE(SUM(CASE WHEN m.flags & 9 = 0 THEN 1 ELSE 0 END), 0), \
          COALESCE(MAX(m.date_us), 0), mb.role \
          FROM message_mailboxes mm JOIN mail_messages m ON m.id = mm.message_id \
          LEFT JOIN mailboxes mb ON mb.id = mm.mailbox_id \

@@ -4229,6 +4229,19 @@
               "sender"
             ],
             "type": "object"
+          },
+          {
+            "description": "Every newsletter arriving in Mail -- whatever Mail files under\nNewsletters, from anybody -- except a sender followed as a\n[`SourceKind::Mail`] source of their own, whose issues are that\nsource's. Fetches nothing, as `Mail` does not.",
+            "properties": {
+              "type": {
+                "const": "newsletters",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         ]
       }

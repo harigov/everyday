@@ -1346,6 +1346,73 @@ fn a_version_18_database_fills_in_the_starred_and_attachment_columns() {
     check();
 }
 
+/// A draft on the server seldom carries `\Seen`, and used to make its thread
+/// look unread. It is not counted now, and a count stored before that is put
+/// right once, by `recount_draft_unread`.
+#[test]
+fn a_draft_does_not_make_its_thread_unread() {
+    let dir = tempfile::tempdir().unwrap();
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let drafts = Mailbox::new(account, "Drafts", MailboxRole::Drafts);
+    let thread = ThreadId::new();
+    let message = |subject: &str, flags: MessageFlags| Message {
+        id: MailMessageId::new(),
+        account_id: account,
+        thread_id: thread,
+        message_id_header: format!("<{subject}@example.com>"),
+        date: jiff::Timestamp::now(),
+        from: Address::new("Somebody", "somebody@example.com"),
+        to: vec![Address::bare("me@example.com")],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        reply_to: Vec::new(),
+        subject: subject.into(),
+        snippet: String::new(),
+        flags,
+        labels: Vec::new(),
+        has_attachments: false,
+        size: 128,
+        category: None,
+        category_source: CategorySource::Rules,
+        pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+        gmail: None,
+        invite: None,
+    };
+    let read = message("read", MessageFlags { seen: true, ..Default::default() });
+    let draft = message("draft", MessageFlags { draft: true, ..Default::default() });
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    store.put_mailbox(&inbox).unwrap();
+    store.put_mailbox(&drafts).unwrap();
+    store
+        .ingest(
+            account,
+            vec![
+                IngestMessage { message: read, mailbox: inbox.id, uid: 1 },
+                IngestMessage { message: draft, mailbox: drafts.id, uid: 1 },
+            ],
+        )
+        .unwrap();
+    let unread = |store: &dyn MailStore| -> (u32, u64) {
+        let (t, _) = store.thread(thread).unwrap();
+        let counts = store.unread_counts(account).unwrap();
+        (t.unread_count, counts.iter().map(|(_, n)| n).sum())
+    };
+    assert_eq!(unread(&store), (0, 0), "the draft was counted as unread");
+
+    // As a count stored before drafts were left out reads.
+    let stale = || {
+        raw(dir.path())
+            .execute_batch("UPDATE threads SET unread = 1; UPDATE thread_mailboxes SET unread = 1;")
+            .unwrap()
+    };
+    stale();
+    assert_eq!(store.recount_draft_unread(account).unwrap(), 1);
+    assert_eq!(unread(&store), (0, 0));
+    stale();
+    assert_eq!(store.recount_draft_unread(account).unwrap(), 0, "done once, then not scanned");
+}
+
 #[test]
 fn deleting_an_account_leaves_no_row_in_any_account_keyed_mail_table() {
     let dir = tempfile::tempdir().unwrap();

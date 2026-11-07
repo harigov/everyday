@@ -15,7 +15,9 @@ import assert from 'node:assert/strict'
 import { load, stubBrowser } from './harness.mjs'
 
 // A localStorage that remembers, for the one check that the chip is kept.
-const stored = new Map()
+// Every newsletter is taken as followed once already, so the seed's four
+// sources stay four until the check at the end that it is followed unasked.
+const stored = new Map([['everyday.feed.newsletters', 'followed']])
 const opened = []
 
 stubBrowser({
@@ -479,6 +481,23 @@ assert.equal(feed.stories.length, 0)
 assert.equal(feed.selected, null)
 assert.equal(feed.query, '')
 assert.equal(feed.filter, 'all', 'but not the chip, which is chrome')
+await feed.flush()
+
+// ── every newsletter, followed once unasked ──────────────────────────
+
+stored.delete('everyday.feed.newsletters')
+await feed.start()
+await feed.following
+const newsletters = feed.sources.filter((s) => s.source.kind.type === 'newsletters')
+assert.equal(newsletters.length, 1, 'the Feed follows every newsletter in Mail the first time')
+assert.equal(stored.get('everyday.feed.newsletters'), 'followed')
+await feed.deleteSource(newsletters[0].source.id)
+await feed.start()
+await feed.following
+assert.ok(
+  !feed.sources.some((s) => s.source.kind.type === 'newsletters'),
+  'and, once unfollowed, does not follow it again',
+)
 await feed.flush()
 
 await close()

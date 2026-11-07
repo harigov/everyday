@@ -39,6 +39,15 @@
 >   own `<title>` and not the page's `<link title="Atom">`.
 > - **Following a newsletter files the sender under Newsletters in Mail**, as
 >   planned, but never over a per-sender correction the person already made.
+> - **Nov 2026: every newsletter, without following each sender.** Hari found
+>   nothing from Mail in the Feed: a sender had to be followed one by one, and
+>   none was. `SourceKind::Newsletters` reads whatever Mail files under
+>   Newsletters (Trash and Spam left out), except a sender followed as a
+>   `Mail` source of their own. The Feed follows it once, unasked, the first
+>   time it opens with a mail account (`everyday.feed.newsletters`, a
+>   per-device pref: the vault has nowhere for a news setting), and not again
+>   once unfollowed. A message is one story whichever source found it first,
+>   so a sender followed later starts from their next issue.
 > - **The refresher starts on every unlock**, whether or not anything is
 >   followed. Unlocking therefore raises one `backgroundTask` change, now in
 >   `change_events.json`.

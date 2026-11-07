@@ -69,7 +69,7 @@ export function isWebUrl(url: string): boolean {
 /** The page a source belongs to, for "Open site". Empty for mail, which has none. */
 export function siteOf(source: NewsSource): string {
   const kind = source.kind
-  if (kind.type === 'mail') return ''
+  if (kind.type === 'mail' || kind.type === 'newsletters') return ''
   const own = source.siteUrl.trim()
   if (isWebUrl(own)) return own
   if (kind.type === 'hackerNews') return 'https://news.ycombinator.com'
@@ -94,6 +94,7 @@ export function sourceLabel(source: NewsSource): string {
   const kind = source.kind
   if (kind.type === 'hackerNews') return HN_LIST_LABELS[kind.list]
   if (kind.type === 'mail') return kind.sender
+  if (kind.type === 'newsletters') return 'Newsletters'
   return hostOf(kind.url) || kind.url
 }
 
@@ -164,7 +165,7 @@ export function isHackerNews(source: NewsSource | undefined | null): boolean {
 /** What the confirmation before unfollowing says is lost, and what is not. */
 export function unfollowDetail(source: NewsSource): string {
   const kept =
-    source.kind.type === 'mail'
+    source.kind.type === 'mail' || source.kind.type === 'newsletters'
       ? 'The messages stay in Mail.'
       : 'Anything you added to the Library stays there.'
   return `Its stories are removed from this device, saved ones included. ${kept}`

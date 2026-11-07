@@ -54,6 +54,7 @@ const {
   refreshLimit,
   visibleThreadList,
   neighbourThread,
+  openOnArrival,
   isBlankDraft,
   threadRange,
   categoryTabCount,
@@ -740,6 +741,28 @@ assert.equal(
   'th-1',
   'a stale id from a different list falls back to the first row',
 )
+
+// ── Opening a thread: the newest message and every unread one expanded ──
+
+{
+  const msg = (id, seen) => ({ id, flags: { seen } })
+  assert.deepEqual(
+    [...openOnArrival([msg('a', true), msg('b', false), msg('c', true), msg('d', true)])].sort(),
+    ['b', 'd'],
+    'an unread message in the middle opens alongside the newest',
+  )
+  assert.deepEqual(
+    [...openOnArrival([msg('a', false), msg('b', false)])].sort(),
+    ['a', 'b'],
+    'every unread one, the newest among them',
+  )
+  assert.deepEqual(
+    [...openOnArrival([msg('a', true), msg('b', true)])],
+    ['b'],
+    'all read: just the newest',
+  )
+  assert.deepEqual([...openOnArrival([])], [], 'no messages: nothing open')
+}
 
 // ── Finding 4: a patch or a removal applies to every list a row is in ───
 //

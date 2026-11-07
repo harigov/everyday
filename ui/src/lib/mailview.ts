@@ -192,6 +192,23 @@ function mockDocument(inner: string): string {
 }
 
 /**
+ * A reply as it was written, for the thread to show while its sent copy is
+ * still on the way: the person's own HTML from the compose sheet, in the same
+ * sandboxed frame as a message. Pictures pasted into it are this app's own
+ * blob addresses; nothing else loads.
+ */
+export function draftDocument(inner: string): string {
+  return (
+    `<!DOCTYPE html><html><head><meta charset="utf-8">` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src everyday: http://everyday.localhost data: blob:; style-src 'unsafe-inline'">` +
+    `<base target="_blank">` +
+    `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.6}` +
+    `img{max-width:100%;height:auto}</style>` +
+    `</head><body>${inner}</body></html>`
+  )
+}
+
+/**
  * The quoted part of a reply or forward -- `splitQuoted`'s `quoted`, the
  * parent's own sanitised HTML under an "On … wrote:" line -- as a document
  * for the compose sheet's own sandboxed frame.

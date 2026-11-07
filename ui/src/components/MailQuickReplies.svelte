@@ -205,14 +205,14 @@
     font-size: var(--text-xs);
     color: var(--fg-faint);
   }
-  /* Pills, like the Reply/Reply all/Forward buttons they sit beside, but
+  /* Pills the height of the `.btn-sm` Reply/Reply all/Forward beside them, but
      filled with a tint of the accent rather than outlined: a suggestion
      reads as the assistant's, an action as the person's own. */
   .qr-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 34px;
+    height: 28px;
     padding: 0 var(--sp-3);
     border: 1px solid transparent;
     border-radius: 999px;
@@ -243,7 +243,7 @@
      "something is broken", while `suggest_replies` is still thinking. */
   .qr-placeholder {
     width: 92px;
-    height: 34px;
+    height: 28px;
     border-style: dashed;
     background: linear-gradient(
       100deg,

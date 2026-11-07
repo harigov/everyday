@@ -18,6 +18,7 @@
 //      itself: the service's refresher does that whether or not anybody is
 //      looking, and tells this store by a change event (`live.svelte.ts`).
 
+import { accounts } from './accounts.svelte'
 import { api, callCommand, isMock } from './api'
 import { filterStories, groupFolders, sortStories } from './feed'
 import { applyBodyTheme, bodyDocument } from './mailview'
@@ -84,6 +85,20 @@ const filterPref = pref<FeedFilter>(
   'everyday.feed.filter',
   (raw) => FEED_FILTERS.find((f) => f === raw) ?? 'unread',
   'unread',
+)
+
+/**
+ * Whether every newsletter in Mail has been followed for somebody once,
+ * unasked -- so the Feed shows what Mail files under Newsletters without a
+ * trip through Add source, and a person who then unfollows it is not
+ * followed again. Kept here rather than in the vault, which has nowhere for
+ * a news setting: another device may offer it once more.
+ */
+const newslettersPref = pref<boolean>(
+  'everyday.feed.newsletters',
+  (raw) => raw === 'followed',
+  false,
+  () => 'followed',
 )
 
 /** Does `a` come before `b` in a newest-first list? The service's own order. */
@@ -210,6 +225,33 @@ class FeedState {
     if (!app.supportsNews) return
     await this.#loadSources(false)
     await this.#load(false)
+    // After the list, not before it: following reads a month of mail.
+    this.following = this.#followNewslettersOnce()
+  }
+
+  /** The follow `start` began, if it did -- for a test to wait on. */
+  following: Promise<void> | null = null
+
+  /** Follow every newsletter in Mail, the first time there is mail to read
+   *  them from -- see `newslettersPref`. Quietly: nothing is selected, and a
+   *  failure is tried again the next time the Feed opens. `add_news_source`
+   *  reads the first issues before it answers, so nothing else is fetched. */
+  async #followNewslettersOnce(): Promise<void> {
+    if (newslettersPref.get() || !this.mailAvailable) return
+    if (this.sources.some((s) => s.source.kind.type === 'newsletters')) {
+      newslettersPref.set(true)
+      return
+    }
+    await accounts.load()
+    if (!accounts.list.some((a) => a.services.mail)) return
+    try {
+      await api.addNewsSource({ type: 'newsletters' })
+      newslettersPref.set(true)
+      await this.#loadSources(true)
+      await this.#load(false)
+    } catch (e) {
+      await quietly(e)
+    }
   }
 
   /**

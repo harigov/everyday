@@ -687,14 +687,23 @@ async fn outgoing<S: MailSession, T: Sender, L: Lookups>(
         None => (None, Vec::new()),
     };
 
+    // A picture pasted into the message goes inline, where it was put; every
+    // other attachment as a file. The same bytes attached as a file *and*
+    // pasted are two entries with one blob, and the compose sheet keeps the
+    // pasted one last: that one goes inline, the others as files.
+    let blobs: Vec<String> = draft.attachments.iter().map(|a| a.blob.to_string()).collect();
+    let (html, inlined) = compose::inline_pictures(&draft.body_html, &blobs);
+    let last_of: std::collections::HashMap<&String, usize> =
+        blobs.iter().enumerate().map(|(i, blob)| (blob, i)).collect();
     let mut attachments = Vec::with_capacity(draft.attachments.len());
-    for a in &draft.attachments {
+    for (i, (a, blob)) in draft.attachments.iter().zip(&blobs).enumerate() {
         let bytes = ctx.lookups.attachment_bytes(a.blob)?;
+        let inline = inlined.contains(blob) && last_of.get(blob) == Some(&i);
         attachments.push(OutgoingAttachment {
             filename: a.filename.clone(),
             content_type: a.mime_type.clone(),
             bytes,
-            inline_cid: None,
+            inline_cid: inline.then(|| compose::picture_cid(blob)),
         });
     }
 
@@ -710,7 +719,7 @@ async fn outgoing<S: MailSession, T: Sender, L: Lookups>(
         subject: draft.subject.clone(),
         // A quoted parent's images point at this app until here -- see
         // `externalize_local_refs`.
-        html: compose::externalize_local_refs(&draft.body_html, |message, token| {
+        html: compose::externalize_local_refs(&html, |message, token| {
             let message = message.parse().ok()?;
             ctx.lookups.remote_image_url(message, token).ok().flatten()
         }),

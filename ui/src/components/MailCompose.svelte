@@ -53,6 +53,8 @@
   import { mailwrite } from '../lib/mailwrite.svelte'
   import { quoteDocument } from '../lib/mailview'
   import { MarkdownClipboard } from '../lib/markdown-clipboard'
+  import { ListAfterBreak } from '../lib/list-after-break'
+  import { MailPicture, picturesIn } from '../lib/mail-picture'
   import { Signature, signatureRange } from '../lib/signature'
   import { mail } from '../lib/mail.svelte'
   import { notify } from '../lib/notify.svelte'
@@ -65,6 +67,7 @@
     AccountView,
     DeclineReason,
     Draft,
+    DraftAttachment,
     DraftId,
     ImproveMode,
     MailAddress,
@@ -644,10 +647,28 @@
         // headings and no boxes to tick, so those arrive as a bold line and
         // as `[x]`.
         MarkdownClipboard.configure({ taskLists: false, headings: 0 }),
+        ListAfterBreak,
+        MailPicture,
       ],
       // Only the person's own part -- see `quotedHtml`.
       content: initialBody.own,
-      editorProps: { attributes: { class: 'ed-content', spellcheck: 'true' } },
+      editorProps: {
+        attributes: { class: 'ed-content', spellcheck: 'true' },
+        // A picture pasted or dropped goes where it was put; any other file
+        // is attached. Text is left to the editor (and `MarkdownClipboard`).
+        // Words come first: a spreadsheet or a document copies a picture of
+        // what was copied alongside its text, and the text is what was meant.
+        handlePaste: (_view, event) => {
+          const data = event.clipboardData
+          if (data?.getData('text/plain').trim()) return false
+          return addFiles(Array.from(data?.files ?? []))
+        },
+        handleDrop: (view, event, _slice, moved) => {
+          if (moved) return false
+          const at = view.posAtCoords({ left: event.clientX, top: event.clientY })?.pos
+          return addFiles(Array.from(event.dataTransfer?.files ?? []), at)
+        },
+      },
       // Reply, Reply all, Forward -- and any draft that already has its
       // recipients -- open straight into the body: a fresh reply on the
       // empty first line above the folded quote, so typing can start at
@@ -656,11 +677,15 @@
       // send it to yet, leaves focus to the To field instead.
       autofocus: underThread || (working.to.length > 0 && !afterWords) ? 'start' : false,
       onCreate: ({ editor: created }) => {
+        inlineBlobs = new Set(picturesIn(created.state.doc).keys())
         if (!afterWords) return
         const signature = signatureRange(created.state.doc)
         created.commands.focus(signature && signature.from > 0 ? signature.from - 1 : 'end')
       },
-      onUpdate: () => touch(),
+      onUpdate: ({ editor: updated }) => {
+        syncPictures(updated.state.doc)
+        touch()
+      },
     })
     editor = ed
     return () => {
@@ -806,7 +831,114 @@
 
   // ── attachments ──────────────────────────────────────────────────
 
+  /** The blobs of the pictures in the message itself. Each has an entry of
+   *  its own among `working.attachments` -- so the backend has its bytes, and
+   *  nothing sweeps them away as unreferenced -- which is not drawn as a chip. */
+  let inlineBlobs = $state<Set<string>>(new Set())
+
+  /**
+   * Which entries of `attachments` are pictures' own: the last with each
+   * picture's blob. Blobs are named by their bytes, so a file attached with
+   * the paperclip and the same picture pasted share one; the file's entry
+   * comes first and stays a chip, and the backend sends the last one inline
+   * (`outbox::outgoing`).
+   */
+  function pictureEntries(attachments: readonly DraftAttachment[]): Set<number> {
+    const last = new Map<string, number>()
+    attachments.forEach((a, i) => {
+      if (inlineBlobs.has(a.blob)) last.set(a.blob, i)
+    })
+    return new Set(last.values())
+  }
+
+  /** The chips, with where each sits in `working.attachments`. */
+  const fileAttachments = $derived.by(() => {
+    const pictures = pictureEntries(working.attachments)
+    return working.attachments
+      .map((attachment, index) => ({ attachment, index }))
+      .filter(({ index }) => !pictures.has(index))
+  })
+
+  /** Keep `working.attachments` in step with the pictures in `doc`: one
+   *  taken out of the message loses its entry (a file of the same bytes
+   *  stays), and one put back (an undo, a paste of a copied one) gets one. */
+  function syncPictures(doc: Parameters<typeof picturesIn>[0]) {
+    const pictures = picturesIn(doc)
+    const own = pictureEntries(working.attachments)
+    const kept = working.attachments.filter((a, i) => !own.has(i) || pictures.has(a.blob))
+    const missing = [...pictures.values()]
+      .filter((p) => !inlineBlobs.has(p.blob) || !kept.some((a) => a.blob === p.blob))
+      .map((p) => ({ blob: p.blob, filename: p.filename, mimeType: p.mime || 'image/png' }))
+    if (kept.length !== working.attachments.length || missing.length > 0) {
+      working.attachments = [...kept, ...missing]
+    }
+    const same =
+      pictures.size === inlineBlobs.size && [...pictures.keys()].every((b) => inlineBlobs.has(b))
+    if (!same) inlineBlobs = new Set(pictures.keys())
+  }
+
+  /** Is there a file being dragged over the sheet -- what lights it up. */
+  let dropping = $state(false)
+
+  function carriesFiles(e: DragEvent): boolean {
+    return e.dataTransfer?.types.includes('Files') ?? false
+  }
+
+  /** Files dropped on the sheet but not into the words -- on the address
+   *  fields, the subject, the foot: pictures go in at the caret, and the rest
+   *  are attached, as dropped into the words. */
+  function onSheetDrop(e: DragEvent) {
+    dropping = false
+    if (e.defaultPrevented || !carriesFiles(e)) return
+    e.preventDefault()
+    addFiles(Array.from(e.dataTransfer?.files ?? []))
+  }
+
+  /**
+   * Store `files`, putting each picture into the message -- at `at`, a
+   * position in the editor, or the caret -- and attaching everything else.
+   * Answers whether there was anything to take, so a paste or a drop of
+   * text is left to the editor.
+   */
+  function addFiles(files: File[], at?: number): boolean {
+    if (files.length === 0) return false
+    void (async () => {
+      let place = at
+      const others: File[] = []
+      for (const file of files) {
+        if (!file.type.startsWith('image/') || !editor) {
+          others.push(file)
+          continue
+        }
+        try {
+          const blob = await api.putBlob(new Uint8Array(await file.arrayBuffer()))
+          const attrs = { blob, mime: file.type, filename: file.name || 'picture' }
+          // Gone while it was being stored: kept as an attachment instead,
+          // so nothing pasted is lost.
+          if (!editor) {
+            working.attachments = [
+              ...working.attachments,
+              { blob, filename: attrs.filename, mimeType: attrs.mime },
+            ]
+            continue
+          }
+          editor.chain().focus().insertPicture(attrs, place).run()
+          // The next one after it, not in front of it.
+          if (place !== undefined) place += 1
+        } catch (e) {
+          await handle(e)
+        }
+      }
+      if (others.length > 0) await attachFiles(others)
+    })()
+    return true
+  }
+
   async function onFiles(files: FileList | null) {
+    if (files) await attachFiles(Array.from(files))
+  }
+
+  async function attachFiles(files: File[]) {
     if (!files) return
     // The same blob-upload path notes and journal entries use --
     // `api.putBlob` -- producing the real `DraftAttachment` shape
@@ -814,18 +946,24 @@
     // carry: a draft's attachment is a blob, a filename and a MIME type,
     // nothing else, because `mail-builder` is what turns it into a MIME
     // part on the way out.
-    for (const file of Array.from(files)) {
+    for (const file of files) {
       const blob = await api.putBlob(new Uint8Array(await file.arrayBuffer()))
+      // In front of the pictures' own entries, which stay last -- see
+      // `pictureEntries`.
+      const own = pictureEntries(working.attachments)
       working.attachments = [
-        ...working.attachments,
+        ...working.attachments.filter((_, i) => !own.has(i)),
         { blob, filename: file.name, mimeType: file.type || 'application/octet-stream' },
+        ...working.attachments.filter((_, i) => own.has(i)),
       ]
     }
     touch()
   }
 
-  function removeAttachment(blob: string) {
-    working.attachments = working.attachments.filter((a) => a.blob !== blob)
+  /** Take off the chip at `index` in `working.attachments`, and no other
+   *  entry with its blob: a picture in the words keeps its own. */
+  function removeAttachment(index: number) {
+    working.attachments = working.attachments.filter((_, i) => i !== index)
     touch()
   }
 
@@ -836,9 +974,10 @@
   // `onclose()` runs, and a toast whose state lived here would never draw a
   // frame.
 
-  /** Seconds the undo banner stays open. Mirrors the plan's "five to thirty
-   *  seconds" outbox window; the middle of that range. */
-  const UNDO_WINDOW_S = 8
+  /** Seconds the undo banner stays open: the short end of the plan's "five
+   *  to thirty seconds" outbox window (`undo_send_delay` clamps to it), so a
+   *  message is on its way and in the thread soon after Send. */
+  const UNDO_WINDOW_S = 5
 
   /** The error `written` is showing, if it is. */
   let unsavedNotice = 0
@@ -1070,8 +1209,18 @@
   bind:this={sheetEl}
   inert={moving}
   class={underThread ? 'thread-compose' : 'pane-compose'}
+  class:dropping
   role="region"
   aria-label="Compose"
+  ondragover={(e) => {
+    if (!carriesFiles(e)) return
+    e.preventDefault()
+    dropping = true
+  }}
+  ondragleave={(e) => {
+    if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) dropping = false
+  }}
+  ondrop={onSheetDrop}
 >
   {#if underThread && account}
     <span class="own-avatar">
@@ -1317,11 +1466,11 @@
     {/if}
   </div>
 
-  {#if working.attachments.length > 0}
+  {#if fileAttachments.length > 0}
     <div class="attachments">
-      {#each working.attachments as a (a.blob)}
+      {#each fileAttachments as { attachment: a, index } (index)}
         <span class="chip"
-          >{a.filename}<button onclick={() => removeAttachment(a.blob)}
+          >{a.filename}<button onclick={() => removeAttachment(index)}
             ><Icon name="close" size={10} /></button
           ></span
         >
@@ -1338,7 +1487,7 @@
            app offers, because a proposal answered from in here is still
            answered through `proposals.accept`/`decline` and not `mail.send`. -->
       <button
-        class="send"
+        class="btn btn-primary btn-sm"
         title={`Send (${keyName('mod+Enter')})`}
         disabled={proposalBusy}
         onclick={() => void acceptProposal()}
@@ -1346,7 +1495,7 @@
         Send
       </button>
       <button
-        class="quiet"
+        class="btn btn-outline btn-sm"
         disabled={proposalBusy}
         data-menu-trigger
         aria-haspopup="menu"
@@ -1356,19 +1505,23 @@
         Decline
       </button>
     {:else}
-      <button class="send" title={`Send (${keyName('mod+Enter')})`} onclick={() => void send()}>
+      <button
+        class="btn btn-primary btn-sm"
+        title={`Send (${keyName('mod+Enter')})`}
+        onclick={() => void send()}
+      >
         Send
       </button>
       <div class="later-wrap">
         <button
-          class="quiet"
+          class="btn btn-outline btn-sm"
           aria-expanded={sendingLater}
           onclick={() => {
             sendingLater = !sendingLater
             pickingDateTime = false
           }}
         >
-          Send later
+          <Icon name="clock" size={14} /> Send later
         </button>
         {#if sendingLater}
           <div
@@ -1382,7 +1535,9 @@
                 bind:value={sendAt}
                 min={toLocalInputValue(new Date())}
               />
-              <button class="quiet" onclick={() => void sendLater()}>Schedule</button>
+              <button class="btn btn-primary btn-sm" onclick={() => void sendLater()}>
+                Schedule
+              </button>
             {:else}
               {#each sendLaterChoices() as choice (choice.key)}
                 <button role="menuitem" onclick={() => void send(choice.at.toISOString())}>
@@ -1469,6 +1624,11 @@
   /* The next message in the thread it answers: no box, a hairline above, and
      its text on the same line as the messages' names and bodies, the writer's
      avatar in the gutter they keep theirs in. */
+  /* A file held over the sheet: somewhere to let go of it. */
+  .dropping {
+    outline: 2px dashed color-mix(in oklab, var(--accent) 60%, transparent);
+    outline-offset: -2px;
+  }
   .thread-compose {
     --gutter: calc(40px + var(--sp-3) + var(--sp-1));
     position: relative;
@@ -1773,6 +1933,18 @@
   .prose :global(table) {
     margin: var(--sp-2) 0;
   }
+  /* A picture pasted into the message: as wide as the words at most, and
+     outlined when picked, so Delete visibly has something to take. */
+  .prose :global(img[data-blob]) {
+    max-width: 100%;
+    height: auto;
+    vertical-align: bottom;
+    border-radius: var(--radius-sm);
+  }
+  .prose :global(img[data-blob].ProseMirror-selectednode) {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
   .prose :global(td p),
   .prose :global(th p) {
     margin: 0;
@@ -1834,34 +2006,8 @@
   .foot {
     display: flex;
     align-items: center;
-    gap: var(--sp-3);
+    gap: var(--sp-2);
     padding-top: var(--sp-2);
-  }
-  /* The words: Send the one bright thing in the row, the rest stepping back. */
-  .send,
-  .quiet {
-    padding: 4px 0;
-    font-size: var(--text-base);
-    white-space: nowrap;
-    transition: color var(--fast) var(--ease);
-  }
-  .send {
-    font-weight: 650;
-    color: var(--fg);
-  }
-  .send:hover:not(:disabled) {
-    color: var(--journal-accent, var(--accent));
-  }
-  .quiet {
-    font-weight: 500;
-    color: var(--fg-faint);
-  }
-  .quiet:hover:not(:disabled) {
-    color: var(--fg);
-  }
-  .send:disabled,
-  .quiet:disabled {
-    opacity: 0.5;
   }
   /* The tools, to the far end of the row. */
   .foot .spacer {
@@ -2011,6 +2157,9 @@
   .later-pop .when {
     color: var(--fg-faint);
     font-size: var(--text-xs);
+  }
+  .later-pop .btn {
+    margin-top: var(--sp-1);
   }
   .later-pop input[type='datetime-local'] {
     margin-bottom: var(--sp-1);

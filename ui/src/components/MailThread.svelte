@@ -31,6 +31,7 @@
   import {
     applyPlatformOrigin,
     bodyDocument,
+    draftDocument,
     loadBody,
     MAIL_CARD,
     mockPartUrl,
@@ -51,7 +52,8 @@
   import { isoDate } from '../lib/time'
   import { accounts } from '../lib/accounts.svelte'
   import { app, handle } from '../lib/state.svelte'
-  import type { MailAttachment, MailMessageDetail, RemoteImageSettings } from '../lib/types'
+  import { splitQuoted } from '../lib/mailwrite'
+  import type { Draft, MailAttachment, MailMessageDetail, RemoteImageSettings } from '../lib/types'
   import AttachmentViewer from './AttachmentViewer.svelte'
   import Icon from './Icon.svelte'
   import MailQuickReplies from './MailQuickReplies.svelte'
@@ -59,8 +61,40 @@
   interface Props {
     messages: MailMessageDetail[]
     expanded: Set<string>
+    /** Replies on their way, or sent and not synced back yet: drawn open
+     *  after the messages, as the messages they are about to be. */
+    sending?: Draft[]
   }
-  let { messages, expanded }: Props = $props()
+  let { messages, expanded, sending = [] }: Props = $props()
+
+  /** What a reply on its way says about itself. */
+  function sendingWord(draft: Draft): string {
+    if (draft.state.type === 'sent') return 'Sent'
+    return draft.sendError ? 'Trying again…' : 'Sending…'
+  }
+
+  /** A reply's own words, as the frame draws them: without the quote under
+   *  them, which the message it answers is already above to read. */
+  function sendingBody(draft: Draft): RenderedBody {
+    return renderBody(draftDocument(splitQuoted(draft.bodyHtml).own), {
+      dark,
+      showHistory: false,
+      subject: draft.subject,
+      imagesHidden: false,
+    })
+  }
+
+  /** A reply's attachments that are files, not pictures in its words. */
+  function sendingFiles(draft: Draft): Draft['attachments'] {
+    // A picture's own entry is the last with its blob; one before it is the
+    // same bytes attached as a file as well (`MailCompose`'s `pictureEntries`).
+    const last = new Map<string, number>()
+    draft.attachments.forEach((a, i) => {
+      if (draft.bodyHtml.includes(`data-blob="${a.blob}"`)) last.set(a.blob, i)
+    })
+    const pictures = new Set(last.values())
+    return draft.attachments.filter((_, i) => !pictures.has(i))
+  }
 
   /** Fetching state for a part left `available: false` -- keyed by
    *  `${messageId}:${index}`, so two chips never share one spinner. */
@@ -549,29 +583,79 @@
            above still has all three, and a row of pills between the
            message and the answer to it would only be in the way. Hidden
            rather than taken out: `MailQuickReplies` holds the suggestions
-           the model already wrote, and would ask it all over again. -->
-      {#if isOpen && isLast}
-        <div class="actions" hidden={mail.composeInline}>
-          <button class="btn btn-outline" onclick={() => mail.reply(message.id, false)}>
-            <Icon name="reply" size={15} /> Reply
-          </button>
-          <button class="btn btn-outline" onclick={() => mail.reply(message.id, true)}>
-            <Icon name="reply-all" size={15} /> Reply all
-          </button>
-          <button class="btn btn-outline" onclick={() => mail.forward(message.id)}>
-            <Icon name="forward" size={15} /> Forward
-          </button>
-          <!-- Quick replies and "Write with AI…", in the same row as the
-               three above rather than a block of their own -- renders
-               nothing when writing help is off for this account, the
-               newest message is the account's own, or there is simply
-               nothing to suggest. -->
-          <MailQuickReplies {message} />
-        </div>
+           the model already wrote, and would ask it all over again. Under
+           the replies on their way instead, when there are any. -->
+      {#if isOpen && isLast && sending.length === 0}
+        {@render actions(message, true)}
       {/if}
     </article>
   {/each}
+  {#each sending as draft (draft.id)}
+    {@const view = sendingBody(draft)}
+    {@const files = sendingFiles(draft)}
+    <article class="message open sending">
+      <div class="head">
+        <div class="toggle" title={draft.identity}>
+          <span class="from">Me</span>
+          <span class="addr">{draft.identity}</span>
+          <span class="to">
+            to {peopleLine([...draft.to, ...draft.cc], accounts.ownAddresses(draft.accountId)) ||
+              'undisclosed recipients'}
+          </span>
+          <span class="state" class:sent={draft.state.type === 'sent'}>{sendingWord(draft)}</span>
+          <span class="date" title={messageDateLabel(draft.updatedAt)}>
+            {threadListDate(draft.updatedAt)}
+          </span>
+        </div>
+      </div>
+      <div class="body">
+        <div class="frame-wrap" use:autoSize={view}>
+          <iframe
+            title={draft.subject || 'Reply'}
+            sandbox="allow-popups allow-popups-to-escape-sandbox"
+            srcdoc={view.html}
+          ></iframe>
+        </div>
+        {#if files.length > 0}
+          <div class="chips">
+            {#each files as a, i (i)}
+              <span class="chip">
+                <Icon name="paperclip" size={12} />
+                <span class="chip-name">{a.filename || 'attachment'}</span>
+              </span>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    </article>
+  {/each}
+  {#if sending.length > 0}
+    {@const last = messages.at(-1)}
+    <!-- Without quick replies: the newest message is the reply on its way,
+         and the one before it is answered already. -->
+    {#if last}{@render actions(last, false)}{/if}
+  {/if}
 </div>
+
+{#snippet actions(message: MailMessageDetail, quick: boolean)}
+  <div class="actions" hidden={mail.composeInline}>
+    <button class="btn btn-outline btn-sm" onclick={() => mail.reply(message.id, false)}>
+      <Icon name="reply" size={14} /> Reply
+    </button>
+    <button class="btn btn-outline btn-sm" onclick={() => mail.reply(message.id, true)}>
+      <Icon name="reply-all" size={14} /> Reply all
+    </button>
+    <button class="btn btn-outline btn-sm" onclick={() => mail.forward(message.id)}>
+      <Icon name="forward" size={14} /> Forward
+    </button>
+    <!-- Quick replies and "Write with AI…", in the same row as the
+           three above rather than a block of their own -- renders
+           nothing when writing help is off for this account, the
+           newest message is the account's own, or there is simply
+           nothing to suggest. -->
+    {#if quick}<MailQuickReplies {message} />{/if}
+  </div>
+{/snippet}
 
 {#if viewing}
   {@const open = viewing}
@@ -696,6 +780,21 @@
     font-weight: 500;
     color: var(--fg-subtle);
   }
+  /* A reply on its way: the same card as a message, with a word beside the
+     time to say where it is. */
+  .message.sending .toggle {
+    padding-right: var(--sp-4);
+  }
+  .state {
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--fg-subtle);
+  }
+  .state.sent {
+    color: var(--journal-accent, var(--accent));
+  }
+
   /* Out of the way until someone wants the full addresses. */
   .more {
     flex: none;

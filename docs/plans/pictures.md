@@ -91,7 +91,7 @@ photo sent "as a file" (`m.file` with an image type) counts.
   tool's result, so this needs the picture sent as a message of its own, or
   described by a separate call, and mail's access gate in front of it.
 - PDFs and other documents.
-- Tauri's own drag-and-drop is switched on (`dragDropEnabled`), which may keep
-  a file dropped from the desktop from reaching the page's `drop` event on
-  some platforms, as it may for the editor. The paperclip and paste do not
-  depend on it.
+- Nov 2026: Tauri's own drag-and-drop (`dragDropEnabled`) is switched off, so
+  a file dropped from the desktop reaches the page's `drop` event -- mail's
+  compose sheet wanted it. Nothing listened for Tauri's drop events. A drop
+  onto the composer here is still untried in the real app.

@@ -220,6 +220,12 @@ pub struct ThreadDetail {
     pub recent_actions: Vec<RecentAction>,
     #[serde(default)]
     pub drafts: Vec<ThreadDraft>,
+    /// Replies to this thread sent from here, or on their way, whose sent
+    /// copy has not been stored yet: what the thread shows in the meantime,
+    /// so a reply appears the moment Send is pressed rather than when the
+    /// server's copy next syncs. See [`sending_replies`].
+    #[serde(default)]
+    pub sending: Vec<Draft>,
 }
 
 /// A draft in a thread, drawn as one card rather than as mail: the draft this
@@ -758,6 +764,7 @@ async fn edit_thread_draft(
         }
         let body = vault.body(newest.id).map_err(|_| still_syncing())?;
         let mut attachments = Vec::new();
+        let mut pasted_pictures = Vec::new();
         for (index, part) in body.parts.iter().enumerate() {
             let attached =
                 crate::mailview::is_attachment(part, &body.html_sanitised, body.message_id);
@@ -766,19 +773,30 @@ async fn edit_thread_draft(
                 continue;
             }
             let Some(blob) = part.blob else { return Err(still_syncing()) };
-            attachments.push(DraftAttachment {
-                blob,
-                filename: part.filename.clone().unwrap_or_else(|| format!("attachment-{index}")),
-                mime_type: part.mime_type.clone(),
-            });
+            let filename = part.filename.clone().unwrap_or_else(|| format!("attachment-{index}"));
+            if let (true, Some(cid)) = (pasted, part.cid.as_deref()) {
+                pasted_pictures.push(compose::PastedPicture {
+                    content_id: cid,
+                    blob: blob.to_string(),
+                    mime_type: &part.mime_type,
+                    filename: part.filename.as_deref().unwrap_or("picture"),
+                });
+            }
+            attachments.push(DraftAttachment { blob, filename, mime_type: part.mime_type.clone() });
         }
         let html = if body.html_sanitised.trim().is_empty() {
             everyday_core::mail::voice::text_to_html(&body.text)
         } else {
-            body.html_sanitised.clone()
+            // A picture pasted into the words stays in them, as the editor's
+            // own -- see `compose::adopt_pictures`.
+            compose::adopt_pictures(
+                &body.html_sanitised,
+                &body.message_id.to_string(),
+                &pasted_pictures,
+            )
         };
-        // A pasted picture's `<img>` goes (it is attached now); a remote one
-        // points where it came from again.
+        // A pasted picture this could not put back goes (it is attached now);
+        // a remote one points where it came from again.
         let html = compose::externalize_local_refs(&html, |message, token| {
             let message: MailMessageId = message.parse().ok()?;
             let body = vault.body(message).ok()?;
@@ -1036,15 +1054,12 @@ async fn scheduled_sends(
             Some(id) => vec![vault.account(id)?],
             None => vault.accounts()?,
         };
-        let cutoff = now + jiff::SignedDuration::from_secs(i64::from(UNDO_SEND_MAX_SECONDS));
         let mut out = Vec::new();
         for account in accounts.into_iter().filter(|a| a.services.mail) {
             for draft in vault.drafts(account.id)? {
                 let DraftState::Queued { op } = draft.state else { continue };
                 let op = vault.op(op)?;
-                // One already tried is not waiting for a chosen moment but
-                // failing: it is in the Outbox.
-                if op.state == OpState::Pending && op.attempts == 0 && op.not_before > cutoff {
+                if waits_for_its_moment(&op, now) {
                     out.push(ScheduledSend { send_at: op.not_before, draft });
                 }
             }
@@ -1913,7 +1928,9 @@ async fn get_thread(svc: Arc<Service>, _ctx: Ctx, args: ThreadRef) -> CommandRes
                 mail.push(message);
             }
         }
-        let drafts = thread_drafts(&vault, &thread, &mail, copies)?;
+        let own = vault.drafts(thread.account_id)?;
+        let sending = sending_replies(&vault, &own, &mail, svc.now())?;
+        let drafts = thread_drafts(&vault, &thread, &mail, copies, &own)?;
         let messages = mail
             .into_iter()
             .map(|message| {
@@ -1926,9 +1943,70 @@ async fn get_thread(svc: Arc<Service>, _ctx: Ctx, args: ThreadRef) -> CommandRes
             .iter()
             .map(RecentAction::from)
             .collect();
-        Ok(ThreadDetail { thread, messages, recent_actions, drafts })
+        Ok(ThreadDetail { thread, messages, recent_actions, drafts, sending })
     })
     .await
+}
+
+/// Is this send waiting for a moment somebody chose -- a send later -- rather
+/// than in its undo window, being sent, or failing? One already tried is not
+/// waiting but failing: it is in the Outbox.
+fn waits_for_its_moment(op: &Op, now: jiff::Timestamp) -> bool {
+    let cutoff = now + jiff::SignedDuration::from_secs(i64::from(UNDO_SEND_MAX_SECONDS));
+    op.state == OpState::Pending && op.attempts == 0 && op.not_before > cutoff
+}
+
+/// [`waits_for_its_moment`], by the op's id. An op that is gone counts as
+/// waiting, so nothing claims to be on its way that is not.
+fn scheduled(vault: &Vault, op: OpId, now: jiff::Timestamp) -> everyday_core::Result<bool> {
+    match vault.op(op) {
+        Ok(op) => Ok(waits_for_its_moment(&op, now)),
+        Err(everyday_core::Error::NotFound { .. }) => Ok(true),
+        Err(e) => Err(e),
+    }
+}
+
+/// How long a sent reply is shown in its thread while its copy has not come
+/// back from the server. Longer than any sync takes; short enough that a
+/// copy that never arrives -- filed somewhere this app does not read -- does
+/// not stay forever.
+const SENDING_SHOWN_FOR: jiff::SignedDuration = jiff::SignedDuration::from_hours(24);
+
+/// The account's drafts that answer a message in `mail` and are queued or
+/// sent, but whose sent copy is not stored yet -- found by the `Message-ID`
+/// the send gave it ([`Draft::message_id`]). Oldest first.
+///
+/// Only the thread's own account: a reply sent from another one arrives
+/// there, and is shown once it has.
+fn sending_replies(
+    vault: &Vault,
+    own: &[Draft],
+    mail: &[Message],
+    now: jiff::Timestamp,
+) -> everyday_core::Result<Vec<Draft>> {
+    let answered: std::collections::HashSet<MailMessageId> = mail.iter().map(|m| m.id).collect();
+    let mut sending = Vec::new();
+    for draft in own {
+        let here = draft.in_reply_to.is_some_and(|m| answered.contains(&m));
+        let shown = match draft.state {
+            // Not one sent later: that is waiting for its moment, in
+            // Scheduled, not going out now.
+            DraftState::Queued { op } => !scheduled(vault, op, now)?,
+            DraftState::Sent => now.duration_since(draft.updated_at) < SENDING_SHOWN_FOR,
+            _ => false,
+        };
+        if !here || !shown {
+            continue;
+        }
+        if let Some(id) = &draft.message_id
+            && vault.mail_message_by_header(draft.account_id, id)?.is_some()
+        {
+            continue;
+        }
+        sending.push(draft.clone());
+    }
+    sending.sort_by_key(|d| d.updated_at);
+    Ok(sending)
 }
 
 /// Where `message` is filed, as `(mailbox, uid)`.
@@ -1963,9 +2041,9 @@ fn thread_drafts(
     thread: &Thread,
     mail: &[Message],
     copies: Vec<(Message, Vec<(&Mailbox, u32)>)>,
+    own: &[Draft],
 ) -> everyday_core::Result<Vec<ThreadDraft>> {
     let answered: std::collections::HashSet<MailMessageId> = mail.iter().map(|m| m.id).collect();
-    let own = vault.drafts(thread.account_id)?;
     let mut cards: Vec<ThreadDraft> = Vec::new();
     let mut unclaimed = Vec::new();
     for (message, filed) in copies {

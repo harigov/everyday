@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -114,6 +114,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v23(d),
         v24(d),
         v25(d),
+        v26(),
     ]
 }
 
@@ -1788,6 +1789,19 @@ fn v25(d: Dialect) -> Vec<String> {
                  data        {blob} NOT NULL
              )"
         ),
+    ]
+}
+
+/// Version 26: the accounts whose thread unread counts have been recomputed
+/// since a draft stopped counting as unread (`recount_draft_unread` in
+/// `mail::write`), so the scan that finds them runs once, as
+/// `mail_keyed_accounts` makes [`v24`]'s keying run once. Additive.
+fn v26() -> Vec<String> {
+    vec![
+        "CREATE TABLE IF NOT EXISTS mail_draft_recounted_accounts (
+             account_id  TEXT PRIMARY KEY NOT NULL
+         )"
+        .to_string(),
     ]
 }
 

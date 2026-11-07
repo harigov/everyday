@@ -950,7 +950,7 @@
       </div>
     {/if}
     <div class="scroll">
-      <MailThread messages={open.messages} expanded={mail.expanded} />
+      <MailThread messages={open.messages} expanded={mail.expanded} sending={open.sending} />
       {#if draftCards.length > 0}
         <MailThreadDrafts drafts={draftCards} />
       {/if}
