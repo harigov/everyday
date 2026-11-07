@@ -736,7 +736,7 @@ fn response_of(entry: &ICalendarEntry) -> Option<AttendeeResponse> {
 
 /// Everybody on `comp`'s `ATTENDEE` lines, as [`Event::guests`] holds them:
 /// address, name and answer. A `CUTYPE` of `ROOM` or `RESOURCE` is a thing
-/// booked, not a person, and is left out.
+/// booked, and `GROUP` any number of people, so both are left out.
 ///
 /// [`Event::guests`]: everyday_core::calendar::Event::guests
 pub(super) fn guests_of(comp: &ICalendarComponent) -> Vec<Attendee> {
@@ -748,7 +748,9 @@ pub(super) fn guests_of(comp: &ICalendarComponent) -> Vec<Attendee> {
             !matches!(
                 entry.parameter(&ICalendarParameterName::Cutype),
                 Some(ICalendarParameterValue::Cutype(
-                    ICalendarUserTypes::Room | ICalendarUserTypes::Resource
+                    ICalendarUserTypes::Room
+                        | ICalendarUserTypes::Resource
+                        | ICalendarUserTypes::Group
                 ))
             )
         })

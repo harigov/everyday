@@ -273,6 +273,7 @@ async fn preview_meeting_template(
         started_at: Some(now),
         ended_at: Some(now),
         present: present_in_order(&transcript),
+        present_emails: transcript.speakers.iter().filter_map(|s| s.email.clone()).collect(),
         invitees: Vec::new(),
         tz,
     };
@@ -334,6 +335,7 @@ async fn rewrite_meeting_note(
         started_at: recording.as_ref().map(|r| r.started_at),
         ended_at: recording.as_ref().and_then(|r| r.ended_at),
         present: present_in_order(&transcript),
+        present_emails: transcript.speakers.iter().filter_map(|s| s.email.clone()).collect(),
         invitees,
         tz: recording
             .as_ref()

@@ -22,6 +22,9 @@ pub struct Facts {
     pub ended_at: Option<Timestamp>,
     /// Labels of everybody who actually spoke, in order of first speech.
     pub present: Vec<String>,
+    /// The addresses of those of them who have one -- a voiceprint's
+    /// "Bob" is still the invitee "Bob Lee" by address.
+    pub present_emails: Vec<String>,
     /// Everybody invited apart from the owner -- see
     /// [`super::people::invitees`]. Read by [`details_block`] to say who was
     /// invited but not heard.
@@ -317,7 +320,10 @@ pub fn details_block(facts: &Facts) -> String {
         let rest: Vec<String> = facts
             .invitees
             .iter()
-            .filter(|i| !facts.present.iter().any(|p| i.answers_to(p, None)))
+            .filter(|i| {
+                !facts.present.iter().any(|p| i.answers_to(p, None))
+                    && !facts.present_emails.iter().any(|e| i.answers_to("", Some(e)))
+            })
             .map(|i| match i.answer() {
                 a @ ("declined" | "maybe" | "no answer") => format!("{} ({a})", i.name),
                 _ => i.name.clone(),
@@ -410,6 +416,7 @@ mod tests {
             started_at: None,
             ended_at: None,
             present: vec!["Priya Raman".into(), "Bob".into()],
+            present_emails: Vec::new(),
             invitees: Vec::new(),
             tz: "Europe/London".into(),
         }
@@ -469,6 +476,7 @@ mod tests {
             started_at: Some("2026-09-16T09:00:00Z".parse().unwrap()),
             ended_at: Some("2026-09-16T09:20:00Z".parse().unwrap()),
             present: vec!["Someone".into()],
+            present_emails: Vec::new(),
             invitees: Vec::new(),
             tz: String::new(),
         };
@@ -527,6 +535,7 @@ mod tests {
             started_at: Some("2026-09-16T09:00:00Z".parse().unwrap()),
             ended_at: None,
             present: Vec::new(),
+            present_emails: Vec::new(),
             invitees: Vec::new(),
             tz: String::new(),
         };
@@ -554,9 +563,13 @@ mod tests {
             organizer: false,
         };
         let mut f = facts();
+        f.present_emails = vec!["bob@example.com".into()];
         f.invitees = vec![
             invitee("Priya Raman", Some(AttendeeResponse::Accepted)),
-            invitee("Bob Lee", Some(AttendeeResponse::Accepted)),
+            Invitee {
+                email: Some("bob@example.com".into()),
+                ..invitee("Bob Lee", Some(AttendeeResponse::Accepted))
+            },
             invitee("Dev Patel", Some(AttendeeResponse::Declined)),
             invitee("Eve Ng", Some(AttendeeResponse::Accepted)),
         ];

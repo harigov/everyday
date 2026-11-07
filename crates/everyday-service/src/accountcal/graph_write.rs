@@ -575,7 +575,7 @@ fn guests(entries: &[Value]) -> Vec<Attendee> {
         .collect()
 }
 
-fn response(answer: &str) -> Option<AttendeeResponse> {
+pub(super) fn response(answer: &str) -> Option<AttendeeResponse> {
     match answer {
         "accepted" | "organizer" => Some(AttendeeResponse::Accepted),
         "tentativelyAccepted" => Some(AttendeeResponse::Tentative),

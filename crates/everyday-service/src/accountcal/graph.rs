@@ -63,7 +63,6 @@ use everyday_core::calendar::{
     EventStatus, SyncReport,
 };
 use everyday_core::id::CalendarId;
-use everyday_core::mail::AttendeeResponse;
 use serde::Deserialize;
 use tokio::time::sleep;
 
@@ -317,13 +316,7 @@ impl GraphAttendeeWrap {
         if self.kind == "resource" || email.is_empty() {
             return None;
         }
-        let response = match self.status.as_ref().map(|s| s.response.as_str()) {
-            Some("accepted" | "organizer") => Some(AttendeeResponse::Accepted),
-            Some("tentativelyAccepted") => Some(AttendeeResponse::Tentative),
-            Some("declined") => Some(AttendeeResponse::Declined),
-            Some("notResponded" | "none") => Some(AttendeeResponse::NeedsAction),
-            _ => None,
-        };
+        let response = self.status.as_ref().and_then(|s| write::response(&s.response));
         Some(Attendee {
             email: email.to_string(),
             name: self.email_address.name.trim().to_string(),
@@ -674,6 +667,7 @@ mod write;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use everyday_core::mail::AttendeeResponse;
 
     #[test]
     fn windows_zone_names_resolve_through_the_shared_table() {

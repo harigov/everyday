@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use everyday_core::meeting::Stage;
 use everyday_core::meeting::identify::{self, Candidate, Turn};
 use everyday_core::meeting::people::{self, Invitee};
 use everyday_core::meeting::template::Facts;
@@ -7,7 +8,7 @@ use everyday_core::meeting::{
     Attribution, ChunkMeta, EventRef, MeetingSettings, Recording, Segment, Speaker, Track,
     TrackSegment, Transcript, Voiceprint,
 };
-use everyday_core::{RecordingId, Vault};
+use everyday_core::{NoteId, RecordingId, Vault};
 use jiff::Timestamp;
 
 use crate::error::CommandResult;
@@ -596,17 +597,16 @@ fn facts_from(
     tz: &str,
 ) -> Facts {
     let mut present = Vec::new();
+    let mut present_emails = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for seg in segments {
-        if seen.insert(seg.speaker) {
-            let label = speakers
-                .iter()
-                .find(|s| s.key == seg.speaker)
-                .map(|s| s.label.clone())
-                .unwrap_or_default();
-            if !label.is_empty() {
-                present.push(label);
+        if seen.insert(seg.speaker)
+            && let Some(speaker) = speakers.iter().find(|s| s.key == seg.speaker)
+        {
+            if !speaker.label.is_empty() {
+                present.push(speaker.label.clone());
             }
+            present_emails.extend(speaker.email.clone());
         }
     }
     Facts {
@@ -619,6 +619,7 @@ fn facts_from(
         started_at: Some(recording.started_at),
         ended_at: recording.ended_at,
         present,
+        present_emails,
         invitees: Vec::new(),
         tz: recording
             .event
@@ -694,28 +695,66 @@ pub(crate) async fn title_for(
 }
 
 /// Tags for a meeting note: `meeting` on every one, so all of them are one
-/// click away, and the meeting's own name as a tag once it has happened
-/// before -- a weekly meeting's notes, together. A one-off meeting gets no
-/// tag of its own; it would only crowd the list.
-pub(crate) fn tags_for(vault: &Vault, recording: &Recording) -> Vec<String> {
+/// click away, and the meeting's own name once it turns out to repeat -- a
+/// weekly meeting's notes, together. A one-off meeting gets no tag of its
+/// own; it would only crowd the list.
+///
+/// "Repeats" means an earlier recording of the same series, finished into
+/// a note, of a *different* occurrence: two recordings of one meeting (a
+/// restart halfway through) are not a series. The first time that is true,
+/// the earlier notes are tagged as well, so the tag finds every week, the
+/// first included. Returns the tags and the ids of earlier notes it
+/// changed. Only the most recent finished recordings on the calendar are
+/// looked at: a series that has not met in that long has its tag already.
+pub(crate) fn tags_for(vault: &Vault, recording: &Recording) -> (Vec<String>, Vec<NoteId>) {
+    use everyday_core::meeting::detect::series_key_of;
     let mut tags = vec!["meeting".to_string()];
-    let Some(event) = &recording.event else { return tags };
-    let key = everyday_core::meeting::detect::series_key_of(&event.uid, event.series.as_deref());
-    let repeats = vault
+    let Some(event) = &recording.event else { return (tags, Vec::new()) };
+    let slug = slug_of(&event.title);
+    if slug.is_empty() || slug == "meeting" {
+        return (tags, Vec::new());
+    }
+    let key = series_key_of(&event.uid, event.series.as_deref());
+    let earlier: Vec<NoteId> = vault
         .recordings(&everyday_core::RecordingQuery {
+            stages: vec![Stage::Done.as_str().to_string()],
             calendar_id: Some(event.calendar_id),
+            limit: Some(200),
             ..Default::default()
         })
         .unwrap_or_default()
-        .iter()
+        .into_iter()
         .filter(|r| r.id != recording.id)
-        .filter_map(|r| r.event.as_ref())
-        .any(|e| everyday_core::meeting::detect::series_key_of(&e.uid, e.series.as_deref()) == key);
-    let slug = slug_of(&event.title);
-    if repeats && !slug.is_empty() && slug != "meeting" {
-        tags.push(slug);
+        .filter(|r| {
+            r.event.as_ref().is_some_and(|e| {
+                e.start != event.start && series_key_of(&e.uid, e.series.as_deref()) == key
+            })
+        })
+        .filter_map(|r| r.note_id)
+        .collect();
+    if earlier.is_empty() {
+        return (tags, Vec::new());
     }
-    tags
+    let mut changed = Vec::new();
+    for id in earlier {
+        let Ok(mut note) = vault.note(id) else { continue };
+        if note.tags.contains(&slug) {
+            continue;
+        }
+        // Against the copy just read, so an edit made in the meantime is
+        // never overwritten -- it just goes without the tag.
+        let read_at = note.updated_at;
+        note.tags.push(slug.clone());
+        note.updated_at = Timestamp::now();
+        match vault.save_note(&note, Some(read_at)) {
+            Ok(()) => changed.push(id),
+            Err(e) => {
+                tracing::warn!(note = %id, error = %e, "meeting pipeline: could not tag an earlier note")
+            }
+        }
+    }
+    tags.push(slug);
+    (tags, changed)
 }
 
 /// "Weekly Sync (Eng)" → "weekly-sync-eng".

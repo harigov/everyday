@@ -67,7 +67,6 @@ use everyday_core::calendar::{
     EventDraft, EventStatus, SyncReport,
 };
 use everyday_core::id::CalendarId;
-use everyday_core::mail::AttendeeResponse;
 use serde::Deserialize;
 use tokio::time::sleep;
 
@@ -278,13 +277,7 @@ impl GoogleAttendee {
         if self.resource || self.email.trim().is_empty() {
             return None;
         }
-        let response = match self.response_status.as_str() {
-            "accepted" => Some(AttendeeResponse::Accepted),
-            "declined" => Some(AttendeeResponse::Declined),
-            "tentative" => Some(AttendeeResponse::Tentative),
-            "needsAction" => Some(AttendeeResponse::NeedsAction),
-            _ => None,
-        };
+        let response = write::response(&self.response_status);
         Some(Attendee {
             email: self.email.trim().to_string(),
             name: self.display_name.clone().unwrap_or_default().trim().to_string(),
@@ -827,6 +820,7 @@ mod tests {
     use axum::extract::Query;
     use axum::response::IntoResponse;
     use axum::routing::get;
+    use everyday_core::mail::AttendeeResponse;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicU32, Ordering};
 

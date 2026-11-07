@@ -230,13 +230,13 @@ pub fn parse(text: &str) -> IcsCalendar {
     out
 }
 /// One `ATTENDEE` line as an [`Event::guests`] entry: the `mailto:` address,
-/// `CN` and `PARTSTAT`. `None` for a line with no address, and for a room or
-/// other resource (`CUTYPE`), which is booked rather than invited.
+/// `CN` and `PARTSTAT`. `None` for a line with no address; for a room or
+/// other resource (`CUTYPE`), which is booked rather than invited; and for a
+/// group, which is any number of people rather than one.
 fn guest_of(line: &Line) -> Option<Attendee> {
-    if line
-        .param("CUTYPE")
-        .is_some_and(|t| t.eq_ignore_ascii_case("ROOM") || t.eq_ignore_ascii_case("RESOURCE"))
-    {
+    if line.param("CUTYPE").is_some_and(|t| {
+        ["ROOM", "RESOURCE", "GROUP"].iter().any(|kind| t.eq_ignore_ascii_case(kind))
+    }) {
         return None;
     }
     let value = line.value.trim();
@@ -1098,6 +1098,7 @@ pub(super) mod tests {
              ATTENDEE;CN=Sam Weatherby;PARTSTAT=ACCEPTED:mailto:sam@example.com\r\n\
              ATTENDEE;PARTSTAT=DECLINED:mailto:noname@example.com\r\n\
              ATTENDEE;CUTYPE=ROOM;CN=Room 4;PARTSTAT=ACCEPTED:mailto:room4@example.com\r\n\
+             ATTENDEE;CUTYPE=GROUP;CN=Eng;PARTSTAT=ACCEPTED:mailto:eng@example.com\r\n\
              ATTENDEE;CN=Sam again;PARTSTAT=ACCEPTED:mailto:SAM@example.com\r\n\
              END:VEVENT\r\nEND:VCALENDAR";
         let parsed = parse(ics);

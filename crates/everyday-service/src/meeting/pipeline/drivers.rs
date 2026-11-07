@@ -374,7 +374,7 @@ pub(crate) async fn do_summarise_and_write(
 
     let note = Note::written(title.clone(), &body);
     let note_id = note.id;
-    let (purpose, tags) = {
+    let (purpose, (tags, retagged)) = {
         let vault = vault.clone();
         let recording = recording.clone();
         blocking(move || {
@@ -440,6 +440,11 @@ pub(crate) async fn do_summarise_and_write(
     let mut change = Change::new(Kind::Note, Op::Created);
     change.id = Some(note_id.to_string());
     events.changed(change);
+    for id in retagged {
+        let mut change = Change::new(Kind::Note, Op::Updated);
+        change.id = Some(id.to_string());
+        events.changed(change);
+    }
     let mut rec_change = Change::new(Kind::Recording, Op::Updated);
     rec_change.id = Some(id.to_string());
     events.changed(rec_change);

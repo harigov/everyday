@@ -697,6 +697,57 @@ async fn without_local_speech_the_other_end_stays_others() {
     assert_eq!(labels, vec!["Others"]);
 }
 
+/// A meeting that repeats is tagged with its name -- the earlier notes too,
+/// once the second one shows it is a series -- but a second recording of
+/// the same occurrence is not a series.
+#[tokio::test]
+async fn a_repeating_meeting_tags_every_note_with_its_name() {
+    let (_dir, vault) = test_vault();
+    let settings = vault.meeting_settings().unwrap();
+    let event = event_with(vec!["Priya Raman <priya@x.com>"]);
+
+    let first_note = everyday_core::Note::written("Design sync", "earlier");
+    vault.save_note(&first_note, None).unwrap();
+    let mut first = Recording::new("Design sync", Some(event.clone()), settings.template(None).id);
+    first.stage = Stage::Done;
+    first.note_id = Some(first_note.id);
+    vault.save_recording(&first).unwrap();
+
+    let write = |start: &str| {
+        let mut e = event.clone();
+        e.start = start.parse().unwrap();
+        let mut r = Recording::new("Design sync", Some(e), settings.template(None).id);
+        r.stage = Stage::Summarising;
+        r.partial.push(TrackSegment {
+            track: Track::Mic,
+            start_ms: 0,
+            end_ms: 1_000,
+            text: "hello".into(),
+            speaker_hint: None,
+            hint_scope: 0,
+        });
+        vault.save_recording(&r).unwrap();
+        r.id
+    };
+    let audio = Arc::new(FakeAudio::new());
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let events = Arc::new(crate::events::Silent);
+
+    // The same occurrence again: not a series.
+    let again = write("2026-09-16T14:00:00Z");
+    do_summarise_and_write(&vault, &source, again, &FakeSummariser, events.as_ref()).await.unwrap();
+    let note = vault.note(vault.recording(again).unwrap().note_id.unwrap()).unwrap();
+    assert_eq!(note.tags, vec!["meeting".to_string()]);
+    assert!(vault.note(first_note.id).unwrap().tags.is_empty());
+
+    // A week later: a series, and the first week's note is tagged too.
+    let next = write("2026-09-23T14:00:00Z");
+    do_summarise_and_write(&vault, &source, next, &FakeSummariser, events.as_ref()).await.unwrap();
+    let note = vault.note(vault.recording(next).unwrap().note_id.unwrap()).unwrap();
+    assert_eq!(note.tags, vec!["meeting".to_string(), "design-sync".to_string()]);
+    assert_eq!(vault.note(first_note.id).unwrap().tags, vec!["design-sync".to_string()]);
+}
+
 /// When the model cannot help, the voices still never outnumber the invite.
 #[tokio::test]
 async fn without_the_model_too_many_voices_fold_into_others() {

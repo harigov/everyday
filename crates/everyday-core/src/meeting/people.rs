@@ -60,8 +60,9 @@ impl Invitee {
         }
     }
 
-    /// Is `label` (a speaker's label) this person? By whole name, or by a
-    /// voiceprint's shorter one ("Priya" for "Priya Raman").
+    /// Is `label` (a speaker's label) this person? By address, or by their
+    /// whole name -- never by first name alone, which would take the owner
+    /// "Hari" for an invitee "Hari Kumar", or one Sam for another.
     pub fn answers_to(&self, label: &str, email: Option<&str>) -> bool {
         if let (Some(mine), Some(theirs)) = (&self.email, email)
             && mine.eq_ignore_ascii_case(theirs)
@@ -69,13 +70,26 @@ impl Invitee {
             return true;
         }
         let label = label.trim();
-        !label.is_empty()
-            && (self.name.eq_ignore_ascii_case(label)
-                || self
-                    .name
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|f| f.eq_ignore_ascii_case(label)))
+        !label.is_empty() && self.name.eq_ignore_ascii_case(label)
+    }
+}
+
+/// The invitee a name the model gave belongs to: by whole name or address,
+/// else by first name when exactly one invitee has it.
+fn invitee_named<'a>(invitees: &'a [Invitee], name: &str) -> Option<&'a Invitee> {
+    let name = name.trim();
+    if let Some(person) = invitees.iter().find(|i| {
+        i.name.eq_ignore_ascii_case(name)
+            || i.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(name))
+    }) {
+        return Some(person);
+    }
+    let first = |n: &str| n.split_whitespace().next().map(str::to_lowercase);
+    let wanted = first(name)?;
+    let mut matching = invitees.iter().filter(|i| first(&i.name).as_deref() == Some(&wanted));
+    match (matching.next(), matching.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
     }
 }
 
@@ -378,11 +392,12 @@ pub fn parse_resolutions(answer: &str) -> Vec<Resolution> {
             list.iter()
                 .filter_map(|v| {
                     let label = text(v, "label")?;
-                    let confidence = match text(v, "confidence").as_deref() {
-                        Some("high") => Confidence::High,
-                        Some("medium") => Confidence::Medium,
-                        _ => Confidence::Low,
-                    };
+                    let confidence =
+                        match text(v, "confidence").map(|c| c.to_ascii_lowercase()).as_deref() {
+                            Some("high") => Confidence::High,
+                            Some("medium") => Confidence::Medium,
+                            _ => Confidence::Low,
+                        };
                     Some(Resolution {
                         label,
                         name: text(v, "name"),
@@ -397,43 +412,67 @@ pub fn parse_resolutions(answer: &str) -> Vec<Resolution> {
 
 /// Take the model's answers back: a name only when it is somebody on the
 /// invite and the model was at least fairly sure, `same_as` only between
-/// two voices that were both unnamed. Speakers that turn out to be one
-/// person are folded into one, keeping the first one's key.
+/// two voices that were both unnamed when the model was asked. Speakers
+/// that turn out to be one person are folded into one, keeping the first
+/// one's key.
+///
+/// Every answer is pinned to a speaker by the label the model was shown
+/// before anything is renamed, so "Unknown 2 is the same as Unknown 1"
+/// still finds Unknown 1 after it has become "Priya Raman".
 ///
 /// Only [`Attribution::Unknown`] voices are ever renamed -- a voiceprint
 /// match, the owner and a name somebody typed are not the model's to
 /// overrule -- but an unnamed voice found to be somebody already named is
-/// folded into them.
+/// folded into them. Never into the owner: theirs is the microphone.
 pub fn apply(
     speakers: &mut Vec<Speaker>,
     segments: &mut [Segment],
     invitees: &[Invitee],
     resolutions: &[Resolution],
 ) {
-    let key_of = |speakers: &[Speaker], label: &str| {
-        speakers.iter().find(|s| s.label.eq_ignore_ascii_case(label.trim())).map(|s| s.key)
+    let unnamed_at_start: HashSet<u16> = unnamed(speakers).iter().map(|s| s.key).collect();
+    let key_of = |label: &str| {
+        speakers
+            .iter()
+            .find(|s| s.label.eq_ignore_ascii_case(label.trim()))
+            .map(|s| s.key)
+            .filter(|k| unnamed_at_start.contains(k))
+    };
+    let pinned: Vec<(u16, Option<u16>, &Resolution)> = resolutions
+        .iter()
+        .filter(|r| r.confidence != Confidence::Low)
+        .filter_map(|r| Some((key_of(&r.label)?, r.same_as.as_deref().and_then(key_of), r)))
+        .collect();
+
+    // Where each key went when it was folded into another.
+    let mut moved: BTreeMap<u16, u16> = BTreeMap::new();
+    let follow = |moved: &BTreeMap<u16, u16>, mut key: u16| {
+        while let Some(&next) = moved.get(&key) {
+            key = next;
+        }
+        key
     };
     let is_unknown = |speakers: &[Speaker], key: u16| {
         speakers.iter().any(|s| s.key == key && matches!(s.how, Attribution::Unknown))
     };
 
     // Names first.
-    for r in resolutions {
-        if r.confidence == Confidence::Low {
-            continue;
-        }
-        let (Some(name), Some(key)) = (&r.name, key_of(speakers, &r.label)) else { continue };
+    for (from, _, r) in &pinned {
+        let Some(name) = &r.name else { continue };
+        let key = follow(&moved, *from);
         if !is_unknown(speakers, key) {
             continue;
         }
-        let Some(person) = invitees.iter().find(|i| i.answers_to(name, None)) else { continue };
+        let Some(person) = invitee_named(invitees, name) else { continue };
         // Somebody already speaking under that name: fold into them.
         if let Some(existing) = speakers
             .iter()
-            .find(|s| s.key != key && person.answers_to(&s.label, s.email.as_deref()))
+            .filter(|s| s.key != key && !matches!(s.how, Attribution::Owner))
+            .find(|s| person.answers_to(&s.label, s.email.as_deref()))
             .map(|s| s.key)
         {
             merge(speakers, segments, key, existing);
+            moved.insert(key, existing);
             continue;
         }
         if let Some(s) = speakers.iter_mut().find(|s| s.key == key) {
@@ -443,22 +482,30 @@ pub fn apply(
         }
     }
 
-    // Then voices that are each other, where neither got a name.
-    for r in resolutions {
-        if r.confidence == Confidence::Low {
+    // Then voices that are each other: whichever is still unnamed joins
+    // the other.
+    for (from, same_as, _) in &pinned {
+        let Some(other) = same_as else { continue };
+        let (a, b) = (follow(&moved, *from), follow(&moved, *other));
+        if a == b {
             continue;
         }
-        let Some(other) = &r.same_as else { continue };
-        let (Some(from), Some(into)) = (key_of(speakers, &r.label), key_of(speakers, other)) else {
+        let (gone, kept) = if is_unknown(speakers, a) {
+            (a, b)
+        } else if is_unknown(speakers, b) {
+            (b, a)
+        } else {
             continue;
         };
-        if from != into && is_unknown(speakers, from) {
-            merge(speakers, segments, from, into);
-        }
+        merge(speakers, segments, gone, kept);
+        moved.insert(gone, kept);
     }
 }
 
 /// Fold speaker `from` into `into`: its lines become `into`'s, and it goes.
+/// If both carried a centroid, the one left may now hold two voices, so it
+/// keeps none -- naming it must not teach anyone's voiceprint the wrong
+/// voice.
 fn merge(speakers: &mut Vec<Speaker>, segments: &mut [Segment], from: u16, into: u16) {
     for seg in segments.iter_mut() {
         if seg.speaker == from {
@@ -466,11 +513,14 @@ fn merge(speakers: &mut Vec<Speaker>, segments: &mut [Segment], from: u16, into:
         }
     }
     let gone = speakers.iter().position(|s| s.key == from).map(|i| speakers.remove(i));
-    if let (Some(gone), Some(kept)) = (gone, speakers.iter_mut().find(|s| s.key == into))
-        && kept.centroid.is_empty()
-    {
-        kept.centroid = gone.centroid;
-        kept.embedding_model = gone.embedding_model;
+    if let (Some(gone), Some(kept)) = (gone, speakers.iter_mut().find(|s| s.key == into)) {
+        if kept.centroid.is_empty() {
+            kept.centroid = gone.centroid;
+            kept.embedding_model = gone.embedding_model;
+        } else if !gone.centroid.is_empty() {
+            kept.centroid.clear();
+            kept.embedding_model.clear();
+        }
     }
 }
 
@@ -510,6 +560,9 @@ pub fn tidy(speakers: &mut Vec<Speaker>, segments: &mut [Segment], invited: Opti
             }
             if let Some(s) = speakers.iter_mut().find(|s| s.key == into) {
                 s.label = OTHERS.to_string();
+                // Several voices, whatever `merge` kept.
+                s.centroid.clear();
+                s.embedding_model.clear();
             }
             return;
         }
@@ -717,6 +770,86 @@ mod tests {
         assert_eq!(speakers[1].label, "Others");
         let people = invitees(&event(Vec::new(), &["Priya Raman", "Bob"]), &owner());
         assert!(resolve_request(&people, "Hari G", &speakers, &segs, 1000).is_none());
+    }
+
+    #[test]
+    fn same_as_follows_a_label_that_was_just_named_and_never_reaches_the_owner() {
+        let people = invitees(
+            &event(vec![guest("priya@x.com", "Priya Raman", AttendeeResponse::Accepted)], &[]),
+            &owner(),
+        );
+        let mut speakers = vec![
+            speaker(0, "Hari G", Attribution::Owner),
+            speaker(1, "Unknown 1", Attribution::Unknown),
+            speaker(2, "Unknown 2", Attribution::Unknown),
+            speaker(3, "Unknown 3", Attribution::Unknown),
+        ];
+        let mut segs: Vec<Segment> = (0..4).map(|k| seg(k as u64, k, "words")).collect();
+        let r = |label: &str, name: Option<&str>, same_as: Option<&str>| Resolution {
+            label: label.into(),
+            name: name.map(String::from),
+            same_as: same_as.map(String::from),
+            confidence: Confidence::Medium,
+        };
+        apply(
+            &mut speakers,
+            &mut segs,
+            &people,
+            &[
+                r("Unknown 1", Some("Priya Raman"), None),
+                r("Unknown 2", None, Some("Unknown 1")),
+                r("Unknown 3", None, Some("Hari G")),
+            ],
+        );
+        let labels: Vec<&str> = speakers.iter().map(|s| s.label.as_str()).collect();
+        assert_eq!(labels, vec!["Hari G", "Priya Raman", "Unknown 3"]);
+        let keys: Vec<u16> = segs.iter().map(|s| s.speaker).collect();
+        assert_eq!(keys, vec![0, 1, 1, 3]);
+    }
+
+    #[test]
+    fn a_first_name_never_folds_a_voice_into_someone_else() {
+        let me = Owner { addresses: HashSet::new(), name: "Hari".into() };
+        let people = invitees(
+            &event(vec![guest("hk@x.com", "Hari Kumar", AttendeeResponse::Accepted)], &[]),
+            &me,
+        );
+        assert_eq!(people.len(), 1, "a different Hari is still invited");
+        let mut speakers = vec![
+            speaker(0, "Hari", Attribution::Owner),
+            speaker(1, "Unknown 1", Attribution::Unknown),
+        ];
+        let mut segs = vec![seg(0, 0, "a"), seg(1, 1, "b")];
+        let named = Resolution {
+            label: "Unknown 1".into(),
+            name: Some("Hari Kumar".into()),
+            same_as: None,
+            confidence: Confidence::High,
+        };
+        apply(&mut speakers, &mut segs, &people, &[named]);
+        assert_eq!(speakers[1].label, "Hari Kumar");
+        assert_eq!(segs[1].speaker, 1);
+        assert!(!people[0].answers_to("Hari", None));
+    }
+
+    #[test]
+    fn merging_two_voices_keeps_neither_centroid() {
+        let mut a = speaker(1, "Unknown 1", Attribution::Unknown);
+        a.centroid = vec![1.0, 0.0];
+        let mut b = speaker(2, "Unknown 2", Attribution::Unknown);
+        b.centroid = vec![0.0, 1.0];
+        let mut speakers = vec![a, b];
+        let mut segs = vec![seg(0, 1, "a"), seg(1, 2, "b")];
+        merge(&mut speakers, &mut segs, 2, 1);
+        assert!(speakers[0].centroid.is_empty());
+    }
+
+    #[test]
+    fn confidence_is_read_whatever_its_case() {
+        let r = parse_resolutions(
+            r#"{"speakers": [{"label": "Unknown 1", "name": "Bob", "confidence": "High"}]}"#,
+        );
+        assert_eq!(r[0].confidence, Confidence::High);
     }
 
     #[test]

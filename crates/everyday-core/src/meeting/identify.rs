@@ -46,17 +46,23 @@ pub struct Params {
     pub cluster_threshold: f32,
     /// Cosine similarity at or above which a cluster is a known voice.
     pub match_threshold: f32,
-    /// The most distinct voices there can be: how many people besides the
-    /// owner were invited. Clusters past it are merged, most alike first,
-    /// below `cluster_threshold` if need be -- a five-person call never has
-    /// twenty-five voices on it, however a compressed line makes them
-    /// sound. `None` when there was no invite to count.
+    /// The most distinct voices there should be: how many people besides
+    /// the owner were invited. Clusters past it are merged, most alike
+    /// first, below `cluster_threshold` if need be -- a five-person call
+    /// never has twenty-five voices on it, however a compressed line makes
+    /// them sound -- but never below `cap_floor`. `None` when there was no
+    /// invite to count.
     pub max_voices: Option<usize>,
+    /// The least alike two clusters can be and still be merged to meet
+    /// `max_voices`. Below it they are plainly two people -- somebody
+    /// joined who was not on the invite, or the invite named a group --
+    /// and are left apart for `people::tidy` to label honestly.
+    pub cap_floor: f32,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Self { cluster_threshold: 0.55, match_threshold: 0.62, max_voices: None }
+        Self { cluster_threshold: 0.55, match_threshold: 0.62, max_voices: None, cap_floor: 0.3 }
     }
 }
 
@@ -119,6 +125,9 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
     let has_embedding = |pos: usize| !turns[pos].embedding.is_empty();
 
     let mut mergeable: Vec<Vec<usize>> = Vec::new();
+    // Beside `mergeable`: whether the cluster was made by merging below
+    // `cluster_threshold`, which may have put two voices in it.
+    let mut mixed: Vec<bool> = Vec::new();
     let mut settled: Vec<Vec<usize>> = Vec::new();
     let mut orphans: Vec<usize> = Vec::new();
 
@@ -169,30 +178,19 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
         }
     }
 
+    mixed.resize(mergeable.len(), false);
+
     // 3b. No more voices than there are people who could be speaking.
-    //     Embedded clusters merge on, most alike first, whatever the
-    //     threshold says; then a hint group that has no embedding at all
-    //     joins whichever embedded cluster it sits nearest in time. Hint
-    //     groups with nothing embedded anywhere are left as they are --
-    //     there is nothing to say which of them belong together, and
-    //     `people::tidy` settles them after the transcript has been read.
+    //     First a hint group with no embedding at all -- a few short turns
+    //     the recogniser labelled within one request -- joins whichever
+    //     embedded cluster it sits nearest in time; it has no sound to
+    //     compare, so it cannot pull two voices together. Then embedded
+    //     clusters merge on, most alike first, under the threshold if need
+    //     be, but never under `cap_floor`. Hint groups with nothing
+    //     embedded anywhere are left as they are -- there is nothing to say
+    //     which of them belong together, and `people::tidy` settles them
+    //     after the transcript has been read.
     if let Some(max) = params.max_voices.filter(|&m| m > 0) {
-        while mergeable.len() >= 2 && mergeable.len() + settled.len() > max {
-            let mut best: Option<(usize, usize, f32)> = None;
-            for i in 0..mergeable.len() {
-                for j in (i + 1)..mergeable.len() {
-                    if let Some(score) =
-                        avg_pairwise_similarity(&mergeable[i], &mergeable[j], turns)
-                        && best.is_none_or(|(_, _, current)| score > current)
-                    {
-                        best = Some((i, j, score));
-                    }
-                }
-            }
-            let Some((i, j, _)) = best else { break };
-            let removed = mergeable.remove(j);
-            mergeable[i].extend(removed);
-        }
         while !mergeable.is_empty() && !settled.is_empty() && mergeable.len() + settled.len() > max
         {
             let smallest = (0..settled.len()).min_by_key(|&i| settled[i].len()).unwrap_or(0);
@@ -207,6 +205,27 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
                 })
                 .unwrap_or(0);
             mergeable[nearest].extend(group);
+        }
+        while mergeable.len() >= 2 && mergeable.len() + settled.len() > max {
+            let mut best: Option<(usize, usize, f32)> = None;
+            for i in 0..mergeable.len() {
+                for j in (i + 1)..mergeable.len() {
+                    if let Some(score) =
+                        avg_pairwise_similarity(&mergeable[i], &mergeable[j], turns)
+                        && best.is_none_or(|(_, _, current)| score > current)
+                    {
+                        best = Some((i, j, score));
+                    }
+                }
+            }
+            let Some((i, j, score)) = best else { break };
+            if score < params.cap_floor {
+                break;
+            }
+            let removed = mergeable.remove(j);
+            mixed.remove(j);
+            mergeable[i].extend(removed);
+            mixed[i] = true;
         }
     }
 
@@ -247,7 +266,16 @@ pub fn identify(turns: &[Turn], candidates: &[Candidate], params: Params) -> Vec
     let centroids: Vec<Vec<f32>> =
         final_clusters.iter().map(|members| centroid_of(members, turns)).collect();
 
-    name_clusters(&final_clusters, &centroids, candidates, params)
+    let mut clusters = name_clusters(&final_clusters, &centroids, candidates, params);
+    // A cluster merged below the threshold may be two people: it can still
+    // be matched against a voiceprint, but its centroid must never become
+    // one, or naming it would teach one person's voiceprint another's.
+    for (cluster, &mixed) in clusters.iter_mut().zip(&mixed) {
+        if mixed {
+            cluster.centroid.clear();
+        }
+    }
+    clusters
 }
 
 fn avg_pairwise_similarity(a: &[usize], b: &[usize], turns: &[Turn]) -> Option<f32> {
@@ -742,20 +770,61 @@ mod tests {
 
     /// The bug that prompted the cap: a compressed line makes one person
     /// sound like several, and a five-person call came back with
-    /// twenty-five voices. Twelve turns that are four voices, slightly
-    /// smeared, with only two people invited, are at most two clusters.
+    /// twenty-five voices. Two people, each heard in two ways only half
+    /// alike (cosine 0.5, under the 0.55 threshold), with two people
+    /// invited, are two clusters -- the right two -- and neither keeps a
+    /// centroid that might be two voices.
     #[test]
     fn never_more_voices_than_people_invited() {
-        let mut rng = Lcg(31);
-        let turns: Vec<Turn> =
-            (0..12).map(|i| turn(i, noisy(&base_vector(i % 4 * 2), &mut rng, 0.02))).collect();
+        let v = |hot: &[usize]| {
+            let mut x = vec![0.0f32; DIM];
+            for &h in hot {
+                x[h] = 1.0;
+            }
+            normalise(&x)
+        };
+        let shapes = [v(&[0, 1]), v(&[0, 2]), v(&[4, 5]), v(&[4, 6])];
+        let turns: Vec<Turn> = (0..12).map(|i| turn(i, shapes[i % 4].clone())).collect();
         let uncapped = identify(&turns, &[], Params::default());
         assert_eq!(uncapped.len(), 4, "{uncapped:#?}");
         let capped = identify(&turns, &[], Params { max_voices: Some(2), ..Params::default() });
         assert_eq!(capped.len(), 2, "{capped:#?}");
-        let mut all: Vec<usize> = capped.iter().flat_map(|c| c.turns.clone()).collect();
-        all.sort_unstable();
-        assert_eq!(all, (0..12).collect::<Vec<_>>());
+        let mut groups: Vec<Vec<usize>> =
+            capped.iter().map(|c| c.turns.iter().map(|t| t % 4 / 2).collect()).collect();
+        for g in &mut groups {
+            g.dedup();
+        }
+        assert!(groups.iter().all(|g| g.len() == 1), "each cluster is one person: {capped:#?}");
+        assert!(capped.iter().all(|c| c.centroid.is_empty()), "{capped:#?}");
+    }
+
+    /// Voices that sound nothing alike are not forced together, invite or
+    /// not: that is somebody who was not on it.
+    #[test]
+    fn plainly_different_voices_are_never_forced_together() {
+        let mut rng = Lcg(31);
+        let turns: Vec<Turn> =
+            (0..8).map(|i| turn(i, noisy(&base_vector(i % 4 * 2), &mut rng, 0.02))).collect();
+        let capped = identify(&turns, &[], Params { max_voices: Some(2), ..Params::default() });
+        assert_eq!(capped.len(), 4, "{capped:#?}");
+    }
+
+    /// Embedded voices are kept apart even when short, unembedded hint
+    /// groups alone outnumber the cap: those fold in first, by time.
+    #[test]
+    fn short_hint_groups_fold_in_before_voices_are_merged() {
+        let mut rng = Lcg(9);
+        let mut turns = Vec::new();
+        for i in 0..12 {
+            turns.push(if i % 3 == 2 {
+                hinted_turn(i, i as u32, "A", Vec::new())
+            } else {
+                turn(i, noisy(&base_vector(i % 3 * 3), &mut rng, 0.02))
+            });
+        }
+        let clusters = identify(&turns, &[], Params { max_voices: Some(2), ..Params::default() });
+        assert_eq!(clusters.len(), 2, "{clusters:#?}");
+        assert!(clusters.iter().all(|c| !c.centroid.is_empty()), "nothing was force-merged");
     }
 
     /// Per-chunk hint groups with one short, unembedded turn each are
