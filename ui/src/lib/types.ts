@@ -1586,6 +1586,8 @@ export interface CalendarEvent {
   organizer: string
   /** Everybody else invited, as the feed gives them: a name, or an address. */
   attendees?: string[]
+  /** The same people by address, with their answer; rooms left out. */
+  guests?: Attendee[]
   url: string
   /** False for a "free" or cancelled event, which should not read as a clash. */
   busy: boolean
@@ -4065,6 +4067,8 @@ export interface EventRef {
   tz: string
   organizer: string
   attendees: string[]
+  /** Copied from the event's own `guests`. */
+  guests?: Attendee[]
   joinUrl: string
   calendarName: string
   /** A durable series id, for sources whose per-occurrence `uid` is not. */

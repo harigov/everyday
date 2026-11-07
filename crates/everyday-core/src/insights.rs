@@ -835,6 +835,7 @@ mod tests {
             status: EventStatus::Confirmed,
             organizer: String::new(),
             attendees: attendees.iter().map(|a| a.to_string()).collect(),
+            guests: Vec::new(),
             url: String::new(),
             busy: true,
             series: None,

@@ -83,25 +83,58 @@ fn split_long_line(line: &str, budget: u32) -> Vec<String> {
     out
 }
 
-const SUMMARISE_RULES: &str = "\
-You are writing meeting notes from a transcript, using the template you are \
-given.
+/// What every summarising request is told about the material it is reading
+/// -- shared by [`summarise`] and [`combine`], which see the same noise.
+const ABOUT_THE_TRANSCRIPT: &str = "\
+About the transcript:
+- It came from automatic speech recognition, not a person. Expect misheard \
+  words, wrong homophones, garbled names, numbers and product names, \
+  sentences cut in half, and filler. Read through the noise: correct an \
+  obvious mishearing from context and from how names are spelled in the \
+  people list, and quietly drop what cannot be made sense of.
+- Speaker labels can be wrong, and one person can appear under more than one \
+  label. A label such as \"Unknown 1\" or \"Others\" is a voice nobody could \
+  put a name to: never present it as a person's name, and never give it an \
+  action item -- say \"someone\" in prose, and \"Unassigned\" as an owner.
+- Where something that matters is unclear -- an amount, a date, who agreed, \
+  who owns a task -- say so in a few words, \"(unclear)\", rather than guess. \
+  Never build a decision or an action item on a fragment you cannot make \
+  sense of.";
 
-Rules:
-- Keep every heading from the template, in the order it appears.
-- Write nothing outside those headings.
+/// How the note should read -- shared by [`summarise`] and [`combine`].
+const HOW_TO_WRITE: &str = "\
+How to write:
+- Keep every heading from the template, in the order it appears, and write \
+  nothing outside those headings.
 - The text under each heading in the template is an instruction to you, not \
-  content to keep: replace it with what actually happened.
-- Attribute what was said or decided using the names as they appear in the \
-  transcript.
-- Never invent a name, a decision, or a date that was not said.
+  content to keep: replace it with what actually happened. Where it shows a \
+  table, write a Markdown table with exactly those columns.
+- The note already lists who attended. Do not list attendees again, and do \
+  not open sentences with who was present; name a person only where it \
+  matters -- who decided something, who owns something, whose view differed.
+- Be specific and concrete: the actual numbers, dates, names of systems, \
+  customers and documents, and the reasons given. No filler (\"the team \
+  discussed\", \"a productive conversation\"), and no repeating the same \
+  point under two headings.
+- Use people's names as the people list spells them; the person who \
+  recorded the call by their name too.
+- Never invent a name, a decision, a number or a date that was not said.
 - If a heading has nothing to say, write \"Nothing recorded.\" under it.
 - Output Markdown only: no code fences, and no commentary before or after \
   the note.";
 
 /// The request for one piece (or the whole call). `part` is `Some((n, of))`
-/// when the call was split.
-pub fn summarise(filled_template: &str, lines: &str, part: Option<(usize, usize)>) -> Request {
+/// when the call was split. `people` is [`people_block`]'s, or empty.
+pub fn summarise(
+    filled_template: &str,
+    people: &str,
+    lines: &str,
+    part: Option<(usize, usize)>,
+) -> Request {
+    let system = format!(
+        "You are writing meeting notes from a transcript, using the template you are \
+         given.\n\n{ABOUT_THE_TRANSCRIPT}\n\n{HOW_TO_WRITE}"
+    );
     let mut user = String::new();
     if let Some((n, of)) = part {
         user.push_str(&format!(
@@ -110,40 +143,150 @@ pub fn summarise(filled_template: &str, lines: &str, part: Option<(usize, usize)
              part's answer into one note, so do not worry about what came before or after.\n\n"
         ));
     }
+    if !people.is_empty() {
+        user.push_str(people);
+        user.push_str("\n\n");
+    }
     user.push_str("Template:\n\n");
     user.push_str(filled_template);
     user.push_str("\n\nTranscript:\n\n");
     user.push_str(lines);
-    Request { system: SUMMARISE_RULES.to_string(), user }
+    Request { system, user }
 }
 
-const COMBINE_RULES: &str = "\
-You are merging several partial meeting notes into one final note. Each part \
-was written from a different stretch of the same call's transcript, using \
-the same template.
-
-Rules:
-- Keep every heading from the template, in the order it appears.
-- Write nothing outside those headings.
-- Combine what each part says under a heading into one account. Do not \
-  repeat a decision or an action item that more than one part recorded.
-- Never invent a name, a decision, or a date that is not in one of the \
-  parts.
-- If every part left a heading with nothing recorded, write \"Nothing \
-  recorded.\" under it.
-- Output Markdown only: no code fences, and no commentary before or after \
-  the note.";
-
 /// The request that merges the per-piece answers into one note.
-pub fn combine(filled_template: &str, partials: &[String]) -> Request {
+pub fn combine(filled_template: &str, people: &str, partials: &[String]) -> Request {
+    let system = format!(
+        "You are merging several partial meeting notes into one final note. Each part \
+         was written from a different stretch of the same call's transcript, using the \
+         same template.\n\n\
+         Combine what each part says under a heading into one account. Do not repeat a \
+         decision or an action item that more than one part recorded; merge tables into \
+         one table, keeping one person's rows together. If every part left a heading \
+         with nothing recorded, write \"Nothing recorded.\" under it.\n\n\
+         {ABOUT_THE_TRANSCRIPT}\n\n{HOW_TO_WRITE}"
+    );
     let mut user = String::new();
+    if !people.is_empty() {
+        user.push_str(people);
+        user.push_str("\n\n");
+    }
     user.push_str("Template:\n\n");
     user.push_str(filled_template);
     for (i, partial) in partials.iter().enumerate() {
         user.push_str(&format!("\n\nPart {} of {}:\n\n", i + 1, partials.len()));
         user.push_str(partial);
     }
-    Request { system: COMBINE_RULES.to_string(), user }
+    Request { system, user }
+}
+
+/// Who was on the call, for the summarising model: the person recording,
+/// every voice heard and how sure the naming of it is, and everybody
+/// invited who was not heard, with their answer. Empty when there is
+/// nobody to say anything about.
+pub fn people_block(transcript: &Transcript, invitees: &[super::people::Invitee]) -> String {
+    use super::Attribution;
+
+    let mut spoke: Vec<u16> = Vec::new();
+    for seg in &transcript.segments {
+        if !spoke.contains(&seg.speaker) {
+            spoke.push(seg.speaker);
+        }
+    }
+    let mut lines = Vec::new();
+    for key in &spoke {
+        let Some(s) = transcript.speaker(*key) else { continue };
+        let how = match s.how {
+            Attribution::Owner => "the person who recorded this call; certain",
+            Attribution::Named => "named by hand; certain",
+            Attribution::Matched { .. } => "recognised by voice; fairly sure",
+            Attribution::Inferred => "worked out from the invite and what was said; may be wrong",
+            Attribution::Unknown => "a voice nobody could put a name to",
+        };
+        let answer = invitees
+            .iter()
+            .find(|i| i.answers_to(&s.label, s.email.as_deref()))
+            .map(|i| i.answer())
+            .filter(|a| !a.is_empty())
+            .map(|a| format!("{a}; "))
+            .unwrap_or_default();
+        lines.push(format!("- {} -- {answer}spoke ({how})", s.label));
+    }
+    for person in invitees {
+        let heard = spoke
+            .iter()
+            .filter_map(|k| transcript.speaker(*k))
+            .any(|s| person.answers_to(&s.label, s.email.as_deref()));
+        if heard {
+            continue;
+        }
+        let answer = person.answer();
+        if answer.is_empty() {
+            lines.push(format!("- {} -- invited; not heard", person.name));
+        } else {
+            lines.push(format!("- {} -- {answer}; not heard", person.name));
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "People (from the calendar invite and the audio; someone not heard may still have \
+         been there, listening or under an unnamed label):\n{}",
+        lines.join("\n")
+    )
+}
+
+const TITLE_RULES: &str = "\
+You name meeting notes. Given a meeting's calendar title and its notes, \
+write a short title of three to eight words for what this particular \
+meeting was about -- its main topic or outcome -- so that notes from a \
+meeting that repeats every week can be told apart. Not the calendar title \
+again, no date, no people's names unless they are the subject, no quotes, \
+no trailing full stop. Answer with the title alone.";
+
+/// The request for [`title_of`]'s topic: what this meeting, as opposed to
+/// every other one with the same name, was about.
+pub fn title_request(event_title: &str, note: &str) -> Request {
+    let mut user = format!("Calendar title: {event_title}\n\nNotes:\n\n");
+    user.push_str(&crate::model::truncate_on_char_boundary(note, 12_000));
+    Request { system: TITLE_RULES.to_string(), user }
+}
+
+/// The topic the model answered with, tidied, or `None` when it said
+/// nothing usable.
+pub fn clean_title(answer: &str) -> Option<String> {
+    let line = answer.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line
+        .trim_start_matches(['#', '*', '-'])
+        .trim()
+        .trim_start_matches("Title:")
+        .trim()
+        .trim_matches(['"', '\'', '*', '`', '\u{201c}', '\u{201d}'])
+        .trim_end_matches('.')
+        .trim();
+    let words = line.split_whitespace().count();
+    if line.is_empty() || words > 14 {
+        return None;
+    }
+    Some(crate::model::truncate_on_char_boundary(line, 120))
+}
+
+/// The note's title: the calendar's, then what this meeting was about,
+/// so a weekly meeting does not write the same title every week. Without a
+/// topic the date tells them apart instead. A topic that already says
+/// everything the calendar title does stands alone.
+pub fn title_of(event_title: &str, topic: Option<&str>, date: &str) -> String {
+    let event_title = event_title.trim();
+    match topic.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(topic) if event_title.is_empty() => topic.to_string(),
+        Some(topic) if topic.to_lowercase().contains(&event_title.to_lowercase()) => {
+            topic.to_string()
+        }
+        Some(topic) => format!("{event_title}: {topic}"),
+        None if event_title.is_empty() => format!("Call on {date}"),
+        None => format!("{event_title}, {date}"),
+    }
 }
 
 /// Hints for a transcriber: event title and attendee names, so names are
@@ -288,24 +431,88 @@ mod tests {
 
     #[test]
     fn summarise_carries_the_template_and_transcript_and_says_which_part() {
-        let req = summarise("# T\n## Summary\n...", "[00:00] A: hi\n", Some((2, 3)));
+        let req = summarise("# T\n## Summary\n...", "", "[00:00] A: hi\n", Some((2, 3)));
         assert!(req.system.contains("Keep every heading"));
+        assert!(req.system.contains("speech recognition"));
         assert!(req.user.contains("part 2 of 3"));
         assert!(req.user.contains("# T"));
         assert!(req.user.contains("[00:00] A: hi"));
 
-        let whole = summarise("# T", "lines", None);
+        let whole = summarise("# T", "People:\n- Priya", "lines", None);
         assert!(!whole.user.contains("part"));
+        assert!(whole.user.starts_with("People:\n- Priya"));
     }
 
     #[test]
     fn combine_lists_every_partial_against_the_template() {
-        let req = combine("# T\n## Summary", &["first answer".into(), "second answer".into()]);
+        let req = combine("# T\n## Summary", "", &["first answer".into(), "second answer".into()]);
         assert!(req.user.contains("Part 1 of 2"));
         assert!(req.user.contains("first answer"));
         assert!(req.user.contains("Part 2 of 2"));
         assert!(req.user.contains("second answer"));
         assert!(req.system.to_lowercase().contains("repeat"));
+    }
+
+    #[test]
+    fn a_title_is_the_calendars_and_the_topic_or_the_date() {
+        assert_eq!(
+            title_of("Weekly sync", Some("Pricing page slips to May"), "6 November"),
+            "Weekly sync: Pricing page slips to May"
+        );
+        assert_eq!(
+            title_of("Acme review", Some("Acme review of discount tiers"), "6 November"),
+            "Acme review of discount tiers"
+        );
+        assert_eq!(title_of("Weekly sync", None, "6 November"), "Weekly sync, 6 November");
+        assert_eq!(title_of("", None, "6 November"), "Call on 6 November");
+        assert_eq!(title_of("", Some("Hiring plan"), "6 November"), "Hiring plan");
+    }
+
+    #[test]
+    fn a_topic_is_tidied_or_refused() {
+        assert_eq!(
+            clean_title("\"Pricing page slips to May.\"\n").as_deref(),
+            Some("Pricing page slips to May")
+        );
+        assert_eq!(clean_title("Title: Q4 hiring plan").as_deref(), Some("Q4 hiring plan"));
+        assert_eq!(clean_title("**Q4 hiring**").as_deref(), Some("Q4 hiring"));
+        assert_eq!(clean_title("   \n"), None);
+        assert_eq!(clean_title(&"word ".repeat(30)), None);
+    }
+
+    #[test]
+    fn the_people_block_says_who_spoke_how_sure_and_who_was_not_heard() {
+        use crate::mail::AttendeeResponse;
+        use crate::meeting::people::Invitee;
+        let mut t = transcript_of(&[("Hari", "hi"), ("Priya Raman", "hello"), ("Unknown 1", "yo")]);
+        for s in &mut t.speakers {
+            s.how = match s.label.as_str() {
+                "Hari" => Attribution::Owner,
+                "Priya Raman" => Attribution::Inferred,
+                _ => Attribution::Unknown,
+            };
+        }
+        let invitee = |name: &str, response| Invitee {
+            name: name.into(),
+            email: None,
+            response: Some(response),
+            organizer: false,
+        };
+        let block = people_block(
+            &t,
+            &[
+                invitee("Priya Raman", AttendeeResponse::Accepted),
+                invitee("Dev Patel", AttendeeResponse::Declined),
+            ],
+        );
+        assert!(
+            block.contains("- Hari -- spoke (the person who recorded this call; certain)"),
+            "{block}"
+        );
+        assert!(block.contains("- Priya Raman -- accepted; spoke (worked out"), "{block}");
+        assert!(block.contains("- Unknown 1 -- spoke (a voice nobody"), "{block}");
+        assert!(block.contains("- Dev Patel -- declined; not heard"), "{block}");
+        assert_eq!(people_block(&transcript_of(&[]), &[]), "");
     }
 
     #[test]

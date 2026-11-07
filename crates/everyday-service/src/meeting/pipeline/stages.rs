@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use everyday_core::meeting::identify::{self, Candidate, Turn};
+use everyday_core::meeting::people::{self, Invitee};
 use everyday_core::meeting::template::Facts;
 use everyday_core::meeting::{
     Attribution, ChunkMeta, EventRef, MeetingSettings, Recording, Segment, Speaker, Track,
@@ -163,55 +164,56 @@ pub(crate) fn read_range(
 /// the plan's "skip < 1 s".
 const MIN_EMBED_MS: u64 = 1_000;
 
-/// Owner and attendee addresses this vault already knows are *not* somebody
-/// else on the call: every configured mail account's own address and
-/// identities. Best-effort -- an account read failure just means nothing is
-/// excluded here, which [`identify::identify`]'s own owner-voiceprint
-/// exclusion still backs up whenever the owner also has a voiceprint on
-/// file. See this module's doc on "excluding owner addresses" for why this
-/// is the closest available answer: nothing in the vault names the owner's
-/// own address more directly than the accounts they have signed in with.
-fn owner_addresses(vault: &Vault) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
+/// Who the owner is, as [`people::invitees`] needs it to leave them off the
+/// invite: every configured mail account's own address and identities, and
+/// the profile's name. Best-effort -- an account read failure just means no
+/// address is excluded here, which [`identify::identify`]'s own
+/// owner-voiceprint exclusion still backs up whenever the owner also has a
+/// voiceprint on file. See this module's doc on "excluding owner addresses"
+/// for why this is the closest available answer: nothing in the vault names
+/// the owner's own address more directly than the accounts they have signed
+/// in with.
+pub(crate) fn owner_of(vault: &Vault) -> people::Owner {
+    let mut addresses = std::collections::HashSet::new();
     if let Ok(accounts) = vault.accounts() {
         for account in accounts {
-            out.insert(account.address.to_ascii_lowercase());
+            addresses.insert(account.address.to_ascii_lowercase());
             for identity in account.identities {
-                out.insert(identity.address.to_ascii_lowercase());
+                addresses.insert(identity.address.to_ascii_lowercase());
             }
         }
     }
-    out
+    let profile = vault.profile().unwrap_or_default();
+    let name = format!("{} {}", profile.first_name.trim(), profile.last_name.trim());
+    people::Owner { addresses, name: name.trim().to_string() }
 }
 
-/// The event's attendees as [`Candidate`]s, excluding the owner's own
-/// addresses, with a matching voiceprint attached when `voiceprints_on` and
-/// one exists -- matched by email first, then by name, and only among
-/// voiceprints whose `model` is this session's embedding model (a voiceprint
-/// from a different model is never comparable -- see
+/// Everybody on `event`'s invite but the owner -- see [`people::invitees`].
+pub(crate) fn invitees_of(event: Option<&EventRef>, owner: &people::Owner) -> Vec<Invitee> {
+    event.map(|e| people::invitees(e, owner)).unwrap_or_default()
+}
+
+/// The invitees as [`Candidate`]s, with a matching voiceprint attached when
+/// `voiceprints_on` and one exists -- matched by email first, then by name,
+/// and only among voiceprints whose `model` is this session's embedding
+/// model (a voiceprint from a different model is never comparable -- see
 /// [`Voiceprint::model`](everyday_core::meeting::Voiceprint::model)).
 pub(crate) fn candidates_for(
-    event: Option<&EventRef>,
+    invitees: &[Invitee],
     voiceprints: &[Voiceprint],
     voiceprints_on: bool,
     embedding_model: &str,
-    owner: &std::collections::HashSet<String>,
 ) -> Vec<Candidate> {
-    let Some(event) = event else { return Vec::new() };
-    event
-        .attendees
+    invitees
         .iter()
-        .filter(|a| {
-            let (_, email) = identify::parse_attendee(a);
-            !email.is_some_and(|e| owner.contains(&e))
-        })
-        .map(|attendee| {
+        .map(|person| {
+            let attendee = person.attendee();
             let voiceprint = if voiceprints_on {
-                find_voiceprint(attendee, voiceprints, embedding_model)
+                find_voiceprint(&attendee, voiceprints, embedding_model)
             } else {
                 None
             };
-            Candidate { attendee: attendee.clone(), voiceprint }
+            Candidate { attendee, voiceprint, declined: person.declined() }
         })
         .collect()
 }
@@ -298,10 +300,14 @@ fn overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> u64 {
 
 /// What one call to [`identify_stage`] settles: the owner's speaker record
 /// (if the mic ever spoke), the other speakers, and every segment attributed
-/// to one of them, in time order.
+/// to one of them, in time order -- with the invite they were matched
+/// against, which [`resolve_speakers`] and the note both read again.
 pub(crate) struct Identified {
     pub(crate) speakers: Vec<Speaker>,
     pub(crate) segments: Vec<Segment>,
+    pub(crate) invitees: Vec<Invitee>,
+    /// The owner's label, as the mic track's lines carry it.
+    pub(crate) owner_label: String,
 }
 
 /// Echo removal, mic → owner, system → turns → clusters → speakers, per the
@@ -357,23 +363,18 @@ pub(crate) async fn identify_stage(
     }
 
     let voiceprints_on = settings.voiceprints;
-    let owner_addrs = {
+    let invitees = {
         let vault = vault.clone();
-        blocking(move || Ok(owner_addresses(&vault))).await?
+        let event = recording.event.clone();
+        blocking(move || Ok(invitees_of(event.as_ref(), &owner_of(&vault)))).await?
     };
     let candidates = {
         let vault = vault.clone();
-        let event = recording.event.clone();
+        let invitees = invitees.clone();
         let embedding_model = embedding_model.to_string();
         blocking(move || {
             let voiceprints = vault.voiceprints()?;
-            Ok(candidates_for(
-                event.as_ref(),
-                &voiceprints,
-                voiceprints_on,
-                &embedding_model,
-                &owner_addrs,
-            ))
+            Ok(candidates_for(&invitees, &voiceprints, voiceprints_on, &embedding_model))
         })
         .await?
     };
@@ -407,7 +408,13 @@ pub(crate) async fn identify_stage(
         });
     }
 
-    let mut clusters = identify::identify(&turns, &candidates, identify::Params::default());
+    // Nobody on the other end can be anyone but an invitee, so there are
+    // never more distinct voices than invitees -- see `Params::max_voices`.
+    let params = identify::Params {
+        max_voices: (!invitees.is_empty()).then_some(invitees.len()),
+        ..identify::Params::default()
+    };
+    let mut clusters = identify::identify(&turns, &candidates, params);
 
     // Without local speech, every system segment is one undifferentiated
     // turn set (no embeddings, no hints), so `identify` always produces at
@@ -419,21 +426,21 @@ pub(crate) async fn identify_stage(
         && clusters.len() == 1
         && matches!(clusters[0].how, Attribution::Unknown)
     {
-        clusters[0].label = "Others".to_string();
+        clusters[0].label = people::OTHERS.to_string();
     }
 
     let voiceprints_used = voiceprints_on;
+    let label = {
+        let vault = vault.clone();
+        blocking(move || Ok(owner_label(&vault))).await?
+    };
     let (owner_speaker, next_key) = if mic.is_empty() {
         (None, 0u16)
     } else {
-        let label = {
-            let vault = vault.clone();
-            blocking(move || Ok(owner_label(&vault))).await?
-        };
         (
             Some(Speaker {
                 key: 0,
-                label,
+                label: label.clone(),
                 email: None,
                 voiceprint_id: None,
                 how: Attribution::Owner,
@@ -492,7 +499,52 @@ pub(crate) async fn identify_stage(
     }
     segments.sort_by_key(|s| s.start_ms);
 
-    Ok(Identified { speakers, segments })
+    // Unnamed voices numbered afresh. Not yet folded down to what the
+    // invite has room for: the model reads them as the audio split them,
+    // which is what lets it say two labels are one person -- see
+    // `resolve_speakers`, which has the last word.
+    people::tidy(&mut speakers, &mut segments, None);
+
+    Ok(Identified { speakers, segments, invitees, owner_label: label })
+}
+
+/// Ask the model to put names to the voices the audio could not, from what
+/// was said -- see [`people`]. Only ever an improvement: a failed request
+/// or an answer that does not parse leaves the voices as they were, and is
+/// logged rather than failing the note, which is worth writing either way.
+pub(crate) async fn resolve_speakers(
+    summariser: &dyn Summariser,
+    identified: &mut Identified,
+    budget: u32,
+) {
+    let Some(req) = people::resolve_request(
+        &identified.invitees,
+        &identified.owner_label,
+        &identified.speakers,
+        &identified.segments,
+        budget,
+    ) else {
+        return;
+    };
+    match summariser.ask(&req.system, &req.user).await {
+        Ok(answer) => {
+            let resolutions = people::parse_resolutions(&answer);
+            people::apply(
+                &mut identified.speakers,
+                &mut identified.segments,
+                &identified.invitees,
+                &resolutions,
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e.message,
+                "meeting pipeline: could not ask who the unnamed voices were; keeping them unnamed"
+            );
+        }
+    }
+    let invited = (!identified.invitees.is_empty()).then_some(identified.invitees.len());
+    people::tidy(&mut identified.speakers, &mut identified.segments, invited);
 }
 
 async fn embed_segment(
@@ -532,12 +584,22 @@ async fn embed_segment(
 /// Build [`Facts`] for the template: title, event, timing, `present` in
 /// order of first speech, and the timezone to write times in.
 pub(crate) fn facts_for(recording: &Recording, identified: &Identified, tz: &str) -> Facts {
+    let mut facts = facts_from(recording, &identified.speakers, &identified.segments, tz);
+    facts.invitees = identified.invitees.clone();
+    facts
+}
+
+fn facts_from(
+    recording: &Recording,
+    speakers: &[Speaker],
+    segments: &[Segment],
+    tz: &str,
+) -> Facts {
     let mut present = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for seg in &identified.segments {
+    for seg in segments {
         if seen.insert(seg.speaker) {
-            let label = identified
-                .speakers
+            let label = speakers
                 .iter()
                 .find(|s| s.key == seg.speaker)
                 .map(|s| s.label.clone())
@@ -557,6 +619,7 @@ pub(crate) fn facts_for(recording: &Recording, identified: &Identified, tz: &str
         started_at: Some(recording.started_at),
         ended_at: recording.ended_at,
         present,
+        invitees: Vec::new(),
         tz: recording
             .event
             .as_ref()
@@ -582,18 +645,19 @@ pub(crate) async fn summarise_stage(
 ) -> CommandResult<String> {
     let filled = everyday_core::meeting::template::fill(template_body, facts);
     let pieces = everyday_core::meeting::prompt::pieces(transcript, budget);
+    let people = everyday_core::meeting::prompt::people_block(transcript, &facts.invitees);
 
     let mut answers = Vec::with_capacity(pieces.len());
     let n = pieces.len();
     for (i, piece) in pieces.iter().enumerate() {
         let part = if n > 1 { Some((i + 1, n)) } else { None };
-        let req = everyday_core::meeting::prompt::summarise(&filled, piece, part);
+        let req = everyday_core::meeting::prompt::summarise(&filled, &people, piece, part);
         let answer = summariser.ask(&req.system, &req.user).await?;
         answers.push(answer);
     }
 
     let combined = if answers.len() > 1 {
-        let req = everyday_core::meeting::prompt::combine(&filled, &answers);
+        let req = everyday_core::meeting::prompt::combine(&filled, &people, &answers);
         summariser.ask(&req.system, &req.user).await?
     } else {
         answers.into_iter().next().unwrap_or_default()
@@ -605,6 +669,68 @@ pub(crate) async fn summarise_stage(
 // ============================================================================
 // Writing
 // ============================================================================
+
+/// The note's title: the calendar's and what this meeting was about -- see
+/// [`prompt::title_of`]. A failed request falls back to the date, never to
+/// failing the note.
+///
+/// [`prompt::title_of`]: everyday_core::meeting::prompt::title_of
+pub(crate) async fn title_for(
+    summariser: &dyn Summariser,
+    event_title: &str,
+    note: &str,
+    date: &str,
+) -> String {
+    use everyday_core::meeting::prompt;
+    let req = prompt::title_request(event_title, note);
+    let topic = match summariser.ask(&req.system, &req.user).await {
+        Ok(answer) => prompt::clean_title(&answer),
+        Err(e) => {
+            tracing::warn!(error = %e.message, "meeting pipeline: could not title the note");
+            None
+        }
+    };
+    prompt::title_of(event_title, topic.as_deref(), date)
+}
+
+/// Tags for a meeting note: `meeting` on every one, so all of them are one
+/// click away, and the meeting's own name as a tag once it has happened
+/// before -- a weekly meeting's notes, together. A one-off meeting gets no
+/// tag of its own; it would only crowd the list.
+pub(crate) fn tags_for(vault: &Vault, recording: &Recording) -> Vec<String> {
+    let mut tags = vec!["meeting".to_string()];
+    let Some(event) = &recording.event else { return tags };
+    let key = everyday_core::meeting::detect::series_key_of(&event.uid, event.series.as_deref());
+    let repeats = vault
+        .recordings(&everyday_core::RecordingQuery {
+            calendar_id: Some(event.calendar_id),
+            ..Default::default()
+        })
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| r.id != recording.id)
+        .filter_map(|r| r.event.as_ref())
+        .any(|e| everyday_core::meeting::detect::series_key_of(&e.uid, e.series.as_deref()) == key);
+    let slug = slug_of(&event.title);
+    if repeats && !slug.is_empty() && slug != "meeting" {
+        tags.push(slug);
+    }
+    tags
+}
+
+/// "Weekly Sync (Eng)" → "weekly-sync-eng".
+fn slug_of(title: &str) -> String {
+    let mut out = String::new();
+    for c in title.trim().chars() {
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_end_matches('-');
+    out.chars().take(40).collect::<String>().trim_end_matches('-').to_string()
+}
 
 /// Purpose for a meeting note: the calendar's own role, or none. Delegates
 /// to `everyday_core::meeting::filing::purpose_for`, now that it has landed.

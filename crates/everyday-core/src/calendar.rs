@@ -236,6 +236,11 @@ pub struct AccountSyncCursor {
     /// `Vault::carry_over_alert_resync`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reads_alerts: bool,
+    /// The same, for [`Event::guests`]: written by every sync since events
+    /// carried their guests' answers, and a cursor without it is thrown away
+    /// once at unlock so the whole window is listed again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reads_guests: bool,
 }
 
 impl AccountSyncCursor {
@@ -685,6 +690,18 @@ pub struct Event {
     /// question, and until this existed the answer was one name.
     #[serde(default)]
     pub attendees: Vec<String>,
+    /// The same people with what [`Event::attendees`] drops: each one's
+    /// address beside the name, and their answer where the source gives it
+    /// (Google's `responseStatus`, Graph's `status`, `PARTSTAT`). Rooms and
+    /// other resources are left out -- they are on the invite, not in the
+    /// meeting.
+    ///
+    /// Meeting notes read this to know who could have been speaking, and
+    /// who said they would not be there. Empty for an event synced before
+    /// it existed, and for a source that names nobody; the next full sync
+    /// fills it in -- see [`AccountSyncCursor::reads_guests`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guests: Vec<Attendee>,
     /// A link the feed offered — the meeting room, the fixture page.
     #[serde(default)]
     pub url: String,
@@ -1326,6 +1343,7 @@ mod tests {
             status: EventStatus::Confirmed,
             organizer: String::new(),
             attendees: Vec::new(),
+            guests: Vec::new(),
             url: String::new(),
             busy: false,
             series: None,

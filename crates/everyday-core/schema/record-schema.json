@@ -959,6 +959,10 @@
             "description": "Written by a sync that reads [`Event::alerts`] -- every sync since\nthey existed, which sets it in [`crate::vault::Vault::sync_account_calendar`]\nrather than in each adapter. A cursor without it was left by an older\nsync whose events have no alerts and whose token would only ever\nre-list what changed since, so unlock throws such a cursor away once\nand the next sync lists the whole window again. See\n`Vault::carry_over_alert_resync`.",
             "type": "boolean"
           },
+          "readsGuests": {
+            "description": "The same, for [`Event::guests`]: written by every sync since events\ncarried their guests' answers, and a cursor without it is thrown away\nonce at unlock so the whole window is listed again.",
+            "type": "boolean"
+          },
           "recurringHrefs": {
             "default": [],
             "description": "CalDAV only: which of `etags`' hrefs hold a recurring `VEVENT`\n(`RRULE` or `RDATE`) -- see `accountcal::caldav`'s doc on \"Re-\nexpanding a recurring event as the window moves\" for why this has to\nbe remembered rather than reread from the resource each time: an\nunchanged etag means the multiget below is skipped entirely, so\nnothing else would tell a later sync which unchanged resources still\nneed re-expanding once the window has moved on. Always empty for\nGoogle and Graph, whose own APIs expand recurrence for this\napplication and leave nothing here to track.",
@@ -1165,6 +1169,42 @@
   },
   "CalendarEvent": {
     "$defs": {
+      "Attendee": {
+        "description": "One person on an event's guest list, by address.\n\nThe address is what a server invites; the name is only what to call\nthem. `response` is where their answer stands, when the server says --\nit is read, never written: answering is the guest's business, not the\norganiser's.",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "response": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AttendeeResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "type": "object"
+      },
+      "AttendeeResponse": {
+        "description": "One attendee's own answer, `PARTSTAT`'s four values this application\ntracks. iCalendar also defines `DELEGATED`, `COMPLETED`, `IN-PROCESS` and\n`FAILED` — none of them a state a meeting attendee's own RSVP is ever in\npractice, so `everyday_mail::invite::parse_invite` folds all four into\n[`AttendeeResponse::NeedsAction`] rather than growing this enum for a\nvalue the interface has no button for.",
+        "enum": [
+          "accepted",
+          "tentative",
+          "declined",
+          "needsAction"
+        ],
+        "type": "string"
+      },
       "EventStatus": {
         "description": "Whether the organiser has committed to an event happening.",
         "oneOf": [
@@ -1233,6 +1273,13 @@
       "endDate": {
         "format": "date",
         "type": "string"
+      },
+      "guests": {
+        "description": "The same people with what [`Event::attendees`] drops: each one's\naddress beside the name, and their answer where the source gives it\n(Google's `responseStatus`, Graph's `status`, `PARTSTAT`). Rooms and\nother resources are left out -- they are on the invite, not in the\nmeeting.\n\nMeeting notes read this to know who could have been speaking, and\nwho said they would not be there. Empty for an event synced before\nit existed, and for a source that names nobody; the next full sync\nfills it in -- see [`AccountSyncCursor::reads_guests`].",
+        "items": {
+          "$ref": "#/$defs/Attendee"
+        },
+        "type": "array"
       },
       "id": {
         "format": "uuid",
@@ -7459,6 +7506,42 @@
   },
   "Recording": {
     "$defs": {
+      "Attendee": {
+        "description": "One person on an event's guest list, by address.\n\nThe address is what a server invites; the name is only what to call\nthem. `response` is where their answer stands, when the server says --\nit is read, never written: answering is the guest's business, not the\norganiser's.",
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "response": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AttendeeResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "type": "object"
+      },
+      "AttendeeResponse": {
+        "description": "One attendee's own answer, `PARTSTAT`'s four values this application\ntracks. iCalendar also defines `DELEGATED`, `COMPLETED`, `IN-PROCESS` and\n`FAILED` — none of them a state a meeting attendee's own RSVP is ever in\npractice, so `everyday_mail::invite::parse_invite` folds all four into\n[`AttendeeResponse::NeedsAction`] rather than growing this enum for a\nvalue the interface has no button for.",
+        "enum": [
+          "accepted",
+          "tentative",
+          "declined",
+          "needsAction"
+        ],
+        "type": "string"
+      },
       "ChunkMeta": {
         "description": "One spooled chunk of one track.",
         "properties": {
@@ -7519,6 +7602,13 @@
           "end": {
             "format": "date-time",
             "type": "string"
+          },
+          "guests": {
+            "description": "Copied from [`Event::guests`]: everybody invited, by address, with\ntheir answer. Empty for a recording made before it existed, or of\nan event whose calendar had not been synced since; `attendees` is\nthen all there is to go on.",
+            "items": {
+              "$ref": "#/$defs/Attendee"
+            },
+            "type": "array"
           },
           "joinUrl": {
             "default": "",

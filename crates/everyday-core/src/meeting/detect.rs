@@ -264,6 +264,7 @@ mod tests {
             status: EventStatus::Confirmed,
             organizer: "Alice <alice@example.com>".into(),
             attendees: vec!["Bob <bob@example.com>".into()],
+            guests: Vec::new(),
             url: String::new(),
             busy: true,
             series: None,

@@ -530,6 +530,7 @@ fn online_event(calendar_id: CalendarId, offset_secs: i64, attendees: &[String])
         status: EventStatus::Confirmed,
         organizer: "You <you@example.com>".into(),
         attendees: attendees.to_vec(),
+        guests: Vec::new(),
         url: String::new(),
         busy: true,
         series: None,

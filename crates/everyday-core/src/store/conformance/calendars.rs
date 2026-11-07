@@ -62,6 +62,7 @@ pub(super) fn sample_event(cal: CalendarId, uid: &str, from: Date, to: Date) -> 
         status: EventStatus::Confirmed,
         organizer: String::new(),
         attendees: Vec::new(),
+        guests: Vec::new(),
         url: String::new(),
         busy: true,
         series: None,

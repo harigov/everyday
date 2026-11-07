@@ -273,6 +273,7 @@ async fn preview_meeting_template(
         started_at: Some(now),
         ended_at: Some(now),
         present: present_in_order(&transcript),
+        invitees: Vec::new(),
         tz,
     };
 
@@ -314,6 +315,12 @@ async fn rewrite_meeting_note(
         }
     })
     .await?;
+    let invitees = {
+        let vault = vault.clone();
+        let event = recording.as_ref().and_then(|r| r.event.clone());
+        blocking(move || Ok(pipeline::invitees_of(event.as_ref(), &pipeline::owner_of(&vault))))
+            .await?
+    };
 
     let (tz_fallback, budget) = tz_and_budget(&vault, &settings).await?;
     let template = settings.template(Some(template_id));
@@ -327,6 +334,7 @@ async fn rewrite_meeting_note(
         started_at: recording.as_ref().map(|r| r.started_at),
         ended_at: recording.as_ref().and_then(|r| r.ended_at),
         present: present_in_order(&transcript),
+        invitees,
         tz: recording
             .as_ref()
             .and_then(|r| r.event.as_ref().map(|e| e.tz.clone()))

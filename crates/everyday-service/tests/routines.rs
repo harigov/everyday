@@ -1040,6 +1040,7 @@ fn a_meeting(svc: &Arc<Service>, minutes: i64, title: &str) -> everyday_core::Ev
         status: everyday_core::EventStatus::Confirmed,
         organizer: "Priya Raman".into(),
         attendees: vec!["Sam Weatherby".into()],
+        guests: Vec::new(),
         url: String::new(),
         busy: true,
         series: None,

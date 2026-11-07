@@ -412,6 +412,7 @@ async fn a_slow_model_holds_up_neither_the_tick_nor_the_reminders() {
         status: everyday_core::calendar::EventStatus::Confirmed,
         organizer: String::new(),
         attendees: Vec::new(),
+        guests: Vec::new(),
         url: String::new(),
         busy: true,
         series: None,

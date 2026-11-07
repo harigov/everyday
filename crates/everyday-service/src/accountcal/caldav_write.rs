@@ -734,6 +734,35 @@ fn response_of(entry: &ICalendarEntry) -> Option<AttendeeResponse> {
     }
 }
 
+/// Everybody on `comp`'s `ATTENDEE` lines, as [`Event::guests`] holds them:
+/// address, name and answer. A `CUTYPE` of `ROOM` or `RESOURCE` is a thing
+/// booked, not a person, and is left out.
+///
+/// [`Event::guests`]: everyday_core::calendar::Event::guests
+pub(super) fn guests_of(comp: &ICalendarComponent) -> Vec<Attendee> {
+    use calcard::icalendar::ICalendarUserTypes;
+    comp.entries
+        .iter()
+        .filter(|entry| entry.name == ICalendarProperty::Attendee)
+        .filter(|entry| {
+            !matches!(
+                entry.parameter(&ICalendarParameterName::Cutype),
+                Some(ICalendarParameterValue::Cutype(
+                    ICalendarUserTypes::Room | ICalendarUserTypes::Resource
+                ))
+            )
+        })
+        .filter_map(|entry| {
+            let email = address_of(entry)?;
+            Some(Attendee {
+                email,
+                name: cn_of(entry).unwrap_or_default(),
+                response: response_of(entry),
+            })
+        })
+        .collect()
+}
+
 /// Is this component this account's to change? Yes when nobody organised it
 /// -- a plain event on somebody's own calendar -- or this account did.
 pub(super) fn owned_by(comp: &ICalendarComponent, me: &Me) -> bool {

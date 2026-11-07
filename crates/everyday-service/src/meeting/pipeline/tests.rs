@@ -186,6 +186,7 @@ fn event_with(attendees: Vec<&str>) -> EventRef {
         tz: "Europe/London".into(),
         organizer: String::new(),
         attendees: attendees.into_iter().map(String::from).collect(),
+        guests: Vec::new(),
         join_url: String::new(),
         calendar_name: "Work".into(),
         series: None,
@@ -195,16 +196,18 @@ fn event_with(attendees: Vec<&str>) -> EventRef {
 #[test]
 fn candidates_exclude_the_owners_own_address() {
     let event = event_with(vec!["Priya Raman <priya@x.com>", "me@example.com"]);
-    let mut owner = std::collections::HashSet::new();
-    owner.insert("me@example.com".to_string());
-    let candidates = candidates_for(Some(&event), &[], false, "model", &owner);
+    let mut owner = everyday_core::meeting::people::Owner::default();
+    owner.addresses.insert("me@example.com".to_string());
+    let invitees = invitees_of(Some(&event), &owner);
+    let candidates = candidates_for(&invitees, &[], false, "model");
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].attendee, "Priya Raman <priya@x.com>");
 }
 
 #[test]
 fn no_event_means_no_candidates() {
-    assert!(candidates_for(None, &[], false, "model", &Default::default()).is_empty());
+    assert!(invitees_of(None, &Default::default()).is_empty());
+    assert!(candidates_for(&[], &[], false, "model").is_empty());
 }
 
 fn voiceprint(name: &str, email: Option<&str>, model: &str) -> Voiceprint {
@@ -327,6 +330,7 @@ fn seed_recording(
         tz: "Europe/London".into(),
         organizer: String::new(),
         attendees: vec!["Priya Raman <priya@example.com>".into()],
+        guests: Vec::new(),
         join_url: String::new(),
         calendar_name: "Work".into(),
         series: None,
@@ -534,6 +538,198 @@ async fn a_calendars_role_becomes_the_notes_purpose() {
     let recording = vault.recording(id).unwrap();
     let note = vault.note(recording.note_id.unwrap()).unwrap();
     assert_eq!(note.purpose, Some(everyday_core::Purpose::Role { id: role }));
+}
+
+/// Answers each of the pipeline's requests the way a model would, and keeps
+/// what it was asked.
+struct ScriptedSummariser {
+    asked: Mutex<Vec<(String, String)>>,
+}
+
+impl Summariser for ScriptedSummariser {
+    fn ask<'a>(
+        &'a self,
+        system: &'a str,
+        user: &'a str,
+    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+        self.asked.lock().unwrap().push((system.to_string(), user.to_string()));
+        let answer = if system.contains("who is speaking") {
+            // Odd labels are Priya, even ones Bob, and one guess at a
+            // stranger the invite does not have.
+            let mut list = Vec::new();
+            for n in 1..=24 {
+                let name = if n % 2 == 1 { "Priya Raman" } else { "Bob Lee" };
+                list.push(format!(
+                    r#"{{"label": "Unknown {n}", "name": "{name}", "confidence": "high"}}"#
+                ));
+            }
+            list.push(r#"{"label": "Unknown 3", "name": "Zed", "confidence": "high"}"#.into());
+            format!(r#"{{"speakers": [{}]}}"#, list.join(","))
+        } else if system.contains("You name meeting notes") {
+            "Pricing page slips to May.".to_string()
+        } else {
+            "## Summary\nThe pricing page moves to May.\n\n## Key points\n- Ready.\n\n\
+             ## Decisions\n- May.\n\n## Action items\n| Owner | Action | Due |\n|---|---|---|\n\
+             | Priya Raman | Ship it | |\n\n## Open questions\nNothing recorded.\n"
+                .to_string()
+        };
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+/// The note that prompted this: five people invited, and the audio split
+/// the four on the other end into one voice per thirty-second chunk --
+/// twenty-four "Unknown"s. The invite caps how many there can be, the model
+/// names them from what was said, and the note comes out titled for what
+/// was discussed and tagged as a meeting.
+#[tokio::test]
+async fn a_five_person_call_split_into_many_voices_comes_back_as_the_people_invited() {
+    use everyday_core::calendar::Attendee;
+    use everyday_core::mail::AttendeeResponse;
+
+    let (_dir, vault) = test_vault();
+    let mut settings = vault.meeting_settings().unwrap();
+    settings.voiceprints = false;
+    vault.save_meeting_settings(&settings).unwrap();
+
+    let guest = |email: &str, name: &str, response| Attendee {
+        email: email.into(),
+        name: name.into(),
+        response: Some(response),
+    };
+    let mut event = event_with(Vec::new());
+    event.guests = vec![
+        guest("priya@x.com", "Priya Raman", AttendeeResponse::Accepted),
+        guest("bob@x.com", "Bob Lee", AttendeeResponse::Accepted),
+        guest("dev@x.com", "Dev Patel", AttendeeResponse::Declined),
+        guest("eve@x.com", "", AttendeeResponse::NeedsAction),
+    ];
+    let mut recording = Recording::new("Design sync", Some(event), settings.template(None).id);
+    recording.stage = Stage::Summarising;
+    for chunk in 0..12u32 {
+        let at = u64::from(chunk) * 30_000;
+        for (i, hint) in ["A", "B"].into_iter().enumerate() {
+            recording.partial.push(TrackSegment {
+                track: Track::System,
+                start_ms: at + i as u64 * 10_000,
+                end_ms: at + i as u64 * 10_000 + 5_000,
+                text: format!("point {chunk}{hint} about the pricing page"),
+                speaker_hint: Some(hint.into()),
+                hint_scope: chunk,
+            });
+        }
+        recording.partial.push(TrackSegment {
+            track: Track::Mic,
+            start_ms: at + 22_000,
+            end_ms: at + 25_000,
+            text: format!("my own reply {chunk}"),
+            speaker_hint: None,
+            hint_scope: chunk,
+        });
+    }
+    vault.save_recording(&recording).unwrap();
+
+    let audio = Arc::new(FakeAudio::new());
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let summariser = ScriptedSummariser { asked: Mutex::new(Vec::new()) };
+    let events = Arc::new(crate::events::Silent);
+    do_summarise_and_write(&vault, &source, recording.id, &summariser, events.as_ref())
+        .await
+        .unwrap();
+
+    let recording = vault.recording(recording.id).unwrap();
+    let note_id = recording.note_id.unwrap();
+    let transcript = vault.transcript_for_note(note_id).unwrap().unwrap();
+    let labels: Vec<&str> = transcript.speakers.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, vec!["You", "Priya Raman", "Bob Lee"], "{:#?}", transcript.speakers);
+
+    let asked = summariser.asked.lock().unwrap();
+    let resolve = &asked.iter().find(|(system, _)| system.contains("who is speaking")).unwrap().1;
+    assert!(resolve.contains("- Dev Patel (declined)"), "{resolve}");
+    assert!(resolve.contains("- Eve (no answer)"), "{resolve}");
+    assert!(resolve.contains("Unknown 24"), "the model reads the voices as the audio split them");
+    let summary =
+        &asked.iter().find(|(system, _)| system.contains("writing meeting notes")).unwrap().1;
+    assert!(summary.contains("- Dev Patel -- declined; not heard"), "{summary}");
+    assert!(!summary.contains("Unknown"), "{summary}");
+
+    let note = vault.note(note_id).unwrap();
+    assert_eq!(note.title, "Design sync: Pricing page slips to May");
+    assert_eq!(note.tags, vec!["meeting".to_string()]);
+    let body = note.body.to_markdown();
+    assert!(body.contains("**Spoke:** Priya Raman, Bob Lee, You"), "{body}");
+    assert!(body.contains("**Also invited:** Dev Patel (declined), Eve (no answer)"), "{body}");
+    assert_eq!(body.matches("Priya Raman").count(), 2, "spoke once, owns one action: {body}");
+}
+
+/// Without local speech, everybody on the other end is one undifferentiated
+/// voice, "Others", and stays that through the naming pass.
+#[cfg(not(feature = "speech"))]
+#[tokio::test]
+async fn without_local_speech_the_other_end_stays_others() {
+    let (_dir, vault) = test_vault();
+    let settings = vault.meeting_settings().unwrap();
+    let mut recording = Recording::new(
+        "Design sync",
+        Some(event_with(vec!["Priya Raman <priya@x.com>", "Bob Lee <bob@x.com>"])),
+        settings.template(None).id,
+    );
+    recording.stage = Stage::Summarising;
+    recording.partial.push(TrackSegment {
+        track: Track::System,
+        start_ms: 0,
+        end_ms: 5_000,
+        text: "words".into(),
+        speaker_hint: None,
+        hint_scope: 0,
+    });
+    vault.save_recording(&recording).unwrap();
+
+    let audio = Arc::new(FakeAudio::new());
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let events = Arc::new(crate::events::Silent);
+    do_summarise_and_write(&vault, &source, recording.id, &FakeSummariser, events.as_ref())
+        .await
+        .unwrap();
+    let recording = vault.recording(recording.id).unwrap();
+    let transcript = vault.transcript_for_note(recording.note_id.unwrap()).unwrap().unwrap();
+    let labels: Vec<&str> = transcript.speakers.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, vec!["Others"]);
+}
+
+/// When the model cannot help, the voices still never outnumber the invite.
+#[tokio::test]
+async fn without_the_model_too_many_voices_fold_into_others() {
+    let (_dir, vault) = test_vault();
+    let settings = vault.meeting_settings().unwrap();
+    let mut recording = Recording::new(
+        "Design sync",
+        Some(event_with(vec!["Priya Raman <priya@x.com>", "Bob Lee <bob@x.com>"])),
+        settings.template(None).id,
+    );
+    recording.stage = Stage::Summarising;
+    for chunk in 0..6u32 {
+        recording.partial.push(TrackSegment {
+            track: Track::System,
+            start_ms: u64::from(chunk) * 30_000,
+            end_ms: u64::from(chunk) * 30_000 + 5_000,
+            text: format!("words {chunk}"),
+            speaker_hint: Some("A".into()),
+            hint_scope: chunk,
+        });
+    }
+    vault.save_recording(&recording).unwrap();
+
+    let audio = Arc::new(FakeAudio::new());
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let events = Arc::new(crate::events::Silent);
+    do_summarise_and_write(&vault, &source, recording.id, &FakeSummariser, events.as_ref())
+        .await
+        .unwrap();
+    let recording = vault.recording(recording.id).unwrap();
+    let transcript = vault.transcript_for_note(recording.note_id.unwrap()).unwrap().unwrap();
+    let labels: Vec<&str> = transcript.speakers.iter().map(|s| s.label.as_str()).collect();
+    assert_eq!(labels, vec!["Others"], "{:#?}", transcript.speakers);
 }
 
 /// Wraps [`transcribe_stage`] the way [`do_transcribe`] does, minus the
