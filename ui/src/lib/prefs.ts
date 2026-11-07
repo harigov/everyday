@@ -25,6 +25,7 @@ export type PrefKey =
   | 'everyday.library.enrich'
   | 'everyday.feed.filter'
   | 'everyday.feed.folders.closed'
+  | 'everyday.feed.newsletters'
   | 'everyday.money.view'
   | 'everyday.screentime.view'
   | 'everyday.screentime.range'
@@ -38,6 +39,7 @@ export type PrefKey =
   | 'everyday.sidebar.folded'
   | 'everyday.mail.accounts.open'
   | 'everyday.mail.list.only'
+  | 'everyday.mail.category'
   | 'everyday:assistant-open'
   | 'everyday:assistant-width'
 

@@ -24,6 +24,7 @@ import type {
   MailAddress,
   MailCategory,
   MailInvite,
+  MailMessage,
   MailOrigin,
   MailSyncProgress,
   OpKind,
@@ -1335,6 +1336,16 @@ export function emptiableRole(
   box: Pick<Mailbox, 'role'> | null | undefined,
 ): 'trash' | 'spam' | null {
   return box?.role === 'trash' || box?.role === 'spam' ? box.role : null
+}
+
+/** Which of a thread's messages start expanded when it is opened: the
+ *  newest, and every one not yet read -- an unread reply in the middle of a
+ *  long thread must not hide behind its one-line summary. */
+export function openOnArrival(messages: readonly Pick<MailMessage, 'id' | 'flags'>[]): Set<string> {
+  const open = new Set(messages.filter((m) => !m.flags.seen).map((m) => m.id))
+  const newest = messages.at(-1)
+  if (newest) open.add(newest.id)
+  return open
 }
 
 /** The next or previous thread in `list`, `step` positions from

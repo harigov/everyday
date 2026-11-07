@@ -306,7 +306,7 @@ fn host_of(kind: &SourceKind) -> String {
             .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
             .unwrap_or_default(),
         SourceKind::HackerNews { .. } => HN_HOST.to_string(),
-        SourceKind::Mail { .. } => "<mail>".to_string(),
+        SourceKind::Mail { .. } | SourceKind::Newsletters => "<mail>".to_string(),
     }
 }
 
@@ -502,7 +502,7 @@ async fn attempt(
             let stored = store(vault, source, payload, now).await?;
             Ok(settle(vault, source, state, stored, Hints::default()).await)
         }
-        SourceKind::Mail { .. } => {
+        SourceKind::Mail { .. } | SourceKind::Newsletters => {
             let inserted =
                 newsletters::refresh(svc, vault, source, state).await.map_err(|message| {
                     FetchError { message: http::strip_url(&message), hints: Hints::default() }

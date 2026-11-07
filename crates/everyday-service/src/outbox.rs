@@ -609,7 +609,14 @@ async fn on_success(
                 // failure.
                 tracing::warn!(op = %op.id, error = %note, "sent, but the Sent copy was not appended");
             }
-            mark_draft_sent(svc, vault, id).await
+            mark_draft_sent(svc, vault, id).await?;
+            // The thread shows the reply from its draft until the server's
+            // copy is stored (`get_thread`'s `sending`); a pass now fetches
+            // that copy rather than leaving it for the next poll.
+            if let Some(statuses) = svc.mail_statuses() {
+                statuses.nudge(op.account_id);
+            }
+            Ok(())
         }
         Executed::Appended { uid, message_id, replaced } => {
             let OpTarget::Draft(id) = op.target else { return Ok(()) };

@@ -642,7 +642,11 @@ fn collapse_blank_lines(text: &str) -> String {
 }
 
 /// Plain text to the HTML a draft body holds: every character escaped, a
-/// blank line starting a new `<p>`, a single newline a `<br>`.
+/// blank line starting a new `<p>`, a single newline a `<br>` -- except two or
+/// more lines in a row starting `- `, `* ` or `• `, which are a `<ul>`, and
+/// starting `1. `, `2. `..., an `<ol>` that starts where they do: a list a
+/// model writes is a list, not a column of hyphens. One such line alone --
+/// "- Hari" under "Thanks!", a footnote's "* " -- stays as written.
 pub fn text_to_html(text: &str) -> String {
     if text.trim().is_empty() {
         return String::new();
@@ -663,14 +667,105 @@ pub fn text_to_html(text: &str) -> String {
         blocks.push(current);
     }
 
-    blocks
-        .into_iter()
-        .map(|block| {
-            let joined = block.iter().map(|l| escape_html(l)).collect::<Vec<_>>().join("<br>");
-            format!("<p>{joined}</p>")
-        })
-        .collect::<Vec<_>>()
-        .join("")
+    let mut out = String::new();
+    for block in blocks {
+        let items: Vec<Option<ListItem>> = block.iter().map(|l| list_item(l)).collect();
+        let kind = |i: usize| items.get(i).and_then(|item| item.as_ref()).map(|item| item.ordered);
+        // A run of lines of one kind: plain lines one `<p>`, list items one
+        // list, and a list item with no neighbour of its kind a plain line.
+        let mut run: Vec<Line> = Vec::new();
+        for (i, line) in block.iter().enumerate() {
+            let this = match (&items[i], kind(i)) {
+                (Some(item), Some(ordered))
+                    if (i > 0 && kind(i - 1) == Some(ordered)) || kind(i + 1) == Some(ordered) =>
+                {
+                    Line::Item(item.clone())
+                }
+                _ => Line::Plain(line),
+            };
+            if run.last().is_some_and(|last| !last.same_run(&this)) {
+                push_run(&mut out, &run);
+                run.clear();
+            }
+            run.push(this);
+        }
+        push_run(&mut out, &run);
+    }
+    out
+}
+
+/// A line [`list_item`] read as one.
+#[derive(Clone)]
+struct ListItem {
+    ordered: bool,
+    /// Its number, for a numbered one.
+    number: u32,
+    words: String,
+}
+
+enum Line<'a> {
+    Plain(&'a str),
+    Item(ListItem),
+}
+
+impl Line<'_> {
+    fn same_run(&self, other: &Line<'_>) -> bool {
+        match (self, other) {
+            (Line::Plain(_), Line::Plain(_)) => true,
+            (Line::Item(a), Line::Item(b)) => a.ordered == b.ordered,
+            _ => false,
+        }
+    }
+}
+
+/// `line` as a list item, or `None` for a line that is not one.
+fn list_item(line: &str) -> Option<ListItem> {
+    let trimmed = line.trim_start();
+    for marker in ["- ", "* ", "• "] {
+        if let Some(rest) = trimmed.strip_prefix(marker) {
+            return Some(ListItem { ordered: false, number: 0, words: rest.trim_start().into() });
+        }
+    }
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    if (1..=3).contains(&digits) {
+        let rest = &trimmed[digits..];
+        if let Some(rest) = rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") ")) {
+            let number = trimmed[..digits].parse().unwrap_or(1);
+            return Some(ListItem { ordered: true, number, words: rest.trim_start().into() });
+        }
+    }
+    None
+}
+
+/// One run of [`text_to_html`]'s lines, all plain or all items of one list.
+fn push_run(out: &mut String, run: &[Line<'_>]) {
+    match run.first() {
+        None => {}
+        Some(Line::Plain(_)) => {
+            let lines: Vec<String> = run
+                .iter()
+                .filter_map(|l| match l {
+                    Line::Plain(text) => Some(escape_html(text)),
+                    Line::Item(_) => None,
+                })
+                .collect();
+            out.push_str(&format!("<p>{}</p>", lines.join("<br>")));
+        }
+        Some(Line::Item(first)) => {
+            let open = match (first.ordered, first.number) {
+                (false, _) => "<ul>".to_string(),
+                (true, 0 | 1) => "<ol>".to_string(),
+                (true, n) => format!(r#"<ol start="{n}">"#),
+            };
+            out.push_str(&open);
+            for line in run {
+                if let Line::Item(item) = line {
+                    out.push_str(&format!("<li><p>{}</p></li>", escape_html(&item.words)));
+                }
+            }
+            out.push_str(if first.ordered { "</ol>" } else { "</ul>" });
+        }
+    }
 }
 
 fn escape_html(s: &str) -> String {
@@ -1340,6 +1435,33 @@ mod tests {
         assert_eq!(
             text_to_html("Line one\nLine two\n\nSecond para"),
             "<p>Line one<br>Line two</p><p>Second para</p>"
+        );
+    }
+
+    #[test]
+    fn text_to_html_turns_dashed_and_numbered_lines_into_lists() {
+        assert_eq!(
+            text_to_html("Two things:\n- the venue\n* the date\nThanks"),
+            "<p>Two things:</p><ul><li><p>the venue</p></li><li><p>the date</p></li></ul>\
+             <p>Thanks</p>"
+        );
+        assert_eq!(
+            text_to_html("1. first\n2) second"),
+            "<ol><li><p>first</p></li><li><p>second</p></li></ol>"
+        );
+        assert_eq!(
+            text_to_html("Not a list -- 2024. Nor -this"),
+            "<p>Not a list -- 2024. Nor -this</p>"
+        );
+    }
+
+    #[test]
+    fn text_to_html_keeps_a_lone_marker_line_and_where_a_numbered_list_starts() {
+        assert_eq!(text_to_html("Thanks!\n- Hari"), "<p>Thanks!<br>- Hari</p>");
+        assert_eq!(text_to_html("* prices exclude tax"), "<p>* prices exclude tax</p>");
+        assert_eq!(
+            text_to_html("3. Order food\n4. Book a cab"),
+            r#"<ol start="3"><li><p>Order food</p></li><li><p>Book a cab</p></li></ol>"#
         );
     }
 

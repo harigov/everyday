@@ -531,3 +531,64 @@ async fn following_a_sender_files_their_mail_as_newsletters_unless_they_were_pin
     let rules = w.vault.category_rules(w.account).unwrap();
     assert_eq!(rules.for_sender(DIGEST), Some(Category::Priority));
 }
+
+/// Following every newsletter at once: whatever Mail files under Newsletters,
+/// from anybody, but not a sender followed as a source of their own, nor mail
+/// that is not a newsletter, nor what sits in Trash.
+#[tokio::test]
+async fn following_all_newsletters_takes_every_newsletter_but_a_followed_senders() {
+    let w = world();
+    let weekly = w.seed(Mail::news(48, "Issue 1"));
+    let digest = w.seed(Mail { from: DIGEST, name: "The Digest", ..Mail::news(30, "Digest 9") });
+    let followed = w.seed(Mail { from: "own@example.com", ..Mail::news(20, "Theirs") });
+    let lunch = w.seed(Mail {
+        from: "bob@example.com",
+        category: Some(Category::Important),
+        ..Mail::news(10, "Lunch?")
+    });
+    let thrown = w.seed_in(w.trash, Mail::news(5, "Binned"));
+
+    w.follow("own@example.com", false);
+    let all = NewsSource::new(SourceKind::Newsletters, "Newsletters");
+    w.vault.save_news_source(&all).unwrap();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 2);
+
+    let got = mail_ids(&w.stories(&all));
+    assert_eq!(got, [Some(digest.id), Some(weekly.id)], "newest first");
+    for left in [followed.id, lunch.id, thrown.id] {
+        assert!(!got.contains(&Some(left)));
+    }
+    let digest_story = &w.stories(&all)[0];
+    assert_eq!(digest_story.author, "The Digest", "each issue says who it is from");
+}
+
+#[tokio::test]
+async fn all_newsletters_is_followed_once() {
+    let w = world();
+    let add = json!({ "source": { "type": "newsletters" } });
+    let added = w.svc.call(Ctx::local(), "add_news_source", add.clone()).await.unwrap();
+    assert_eq!(added["kind"]["type"], "newsletters");
+    assert_eq!(added["title"], "Newsletters");
+    let again = w.svc.call(Ctx::local(), "add_news_source", add).await.unwrap_err();
+    assert_eq!(again.code, codes::INVALID, "{again:?}");
+}
+
+/// A message filed under Newsletters after a newer one was already turned
+/// into a story -- sorted late, or moved there by hand -- is still found.
+#[tokio::test]
+async fn a_newsletter_sorted_late_is_still_found() {
+    let w = world();
+    let late = w.seed(Mail { category: None, ..Mail::news(10, "Sorted late") });
+    let early = w.seed(Mail { from: DIGEST, ..Mail::news(5, "Sorted at once") });
+    let all = NewsSource::new(SourceKind::Newsletters, "Newsletters");
+    w.vault.save_news_source(&all).unwrap();
+    let mut state = FetchState::new(all.id);
+    assert_eq!(w.turn(&all, &mut state).await, 1);
+    assert_eq!(state.watermark, Some(early.date), "past the one not yet sorted");
+
+    w.vault.set_mail_message_category(late.id, Category::Newsletter).unwrap();
+    assert_eq!(w.turn(&all, &mut state).await, 1, "found behind the watermark");
+    assert_eq!(mail_ids(&w.stories(&all)), [Some(early.id), Some(late.id)]);
+    assert_eq!(w.turn(&all, &mut state).await, 0, "and only once");
+}

@@ -76,6 +76,12 @@ pub enum NewSource {
         #[serde(default)]
         folder: Option<String>,
     },
+    /// Every newsletter in Mail at once -- see [`SourceKind::Newsletters`].
+    #[serde(rename_all = "camelCase")]
+    Newsletters {
+        #[serde(default)]
+        folder: Option<String>,
+    },
 }
 
 /// What an OPML import did.
@@ -240,6 +246,19 @@ async fn add_news_source(
             refuse_duplicate(&existing, &kind)?;
             let title = clean(title).unwrap_or(sender);
             let mut source = NewsSource::new(kind, title);
+            source.folder = folder.map(|f| f.trim().to_string()).unwrap_or_default();
+            source
+        }
+        NewSource::Newsletters { folder } => {
+            if !vault.supports_mail() {
+                return Err(CommandError::new(
+                    codes::UNSUPPORTED,
+                    "newsletters are read from Mail, and this vault does not keep any",
+                ));
+            }
+            let kind = SourceKind::Newsletters;
+            refuse_duplicate(&existing, &kind)?;
+            let mut source = NewsSource::new(kind, "Newsletters");
             source.folder = folder.map(|f| f.trim().to_string()).unwrap_or_default();
             source
         }
@@ -710,6 +729,7 @@ fn refuse_duplicate(existing: &[NewsSource], kind: &SourceKind) -> CommandResult
         (SourceKind::Mail { sender: a }, SourceKind::Mail { sender: b }) => {
             a.eq_ignore_ascii_case(b)
         }
+        (SourceKind::Newsletters, SourceKind::Newsletters) => true,
         _ => false,
     });
     if followed {
@@ -717,6 +737,7 @@ fn refuse_duplicate(existing: &[NewsSource], kind: &SourceKind) -> CommandResult
             SourceKind::Web { .. } => "that feed",
             SourceKind::HackerNews { .. } => "that Hacker News list",
             SourceKind::Mail { .. } => "that sender's newsletter",
+            SourceKind::Newsletters => "your newsletters",
         };
         return Err(CommandError::new(codes::INVALID, format!("you already follow {what}")));
     }

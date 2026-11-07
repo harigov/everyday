@@ -1015,12 +1015,18 @@ fn strip_css_comments(css: &str) -> String {
 /// as an address in `html`. The whole address is what is looked for, because the
 /// id alone is a stranger's string and could turn up in the message's words.
 pub fn references_part(html: &str, message_id: &str, content_id: &str) -> bool {
-    let address = format!("/part/{}/{}", path_segment(message_id), path_segment(content_id));
+    let address = part_address(message_id, content_id);
     html.match_indices(&address).any(|(at, _)| {
         // Not an id that merely starts the same way.
         !html[at + address.len()..]
             .starts_with(|c: char| c.is_ascii_alphanumeric() || "@._-+%".contains(c))
     })
+}
+
+/// The path [`Shared::classify`] writes a `cid:` reference as, after the
+/// scheme and route: `/part/{message id}/{content id}`, each percent-encoded.
+pub fn part_address(message_id: &str, content_id: &str) -> String {
+    format!("/part/{}/{}", path_segment(message_id), path_segment(content_id))
 }
 
 /// Percent-encodes everything but the characters a message or content id is

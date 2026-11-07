@@ -218,6 +218,16 @@ button {
   border-color: var(--border-strong);
 }
 
+/* A size down, for a row of them under something that is the point -- a
+   message's Reply/Forward row, the Send row of a draft -- where full-size
+   pills read as a second toolbar. */
+.btn-sm {
+  gap: 6px;
+  height: 28px;
+  padding: 0 var(--sp-3);
+  font-size: var(--text-sm);
+}
+
 .field {
   width: 100%;
   height: 38px;

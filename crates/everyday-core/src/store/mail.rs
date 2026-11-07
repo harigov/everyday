@@ -479,6 +479,11 @@ pub trait MailStore: Send + Sync {
         others: &[MailMessageId],
     ) -> Result<Vec<(MailMessageId, PackRef)>>;
 
+    /// Recompute every thread of `account` whose unread count still counts
+    /// a draft, as counts did before drafts were left out of them, once per
+    /// account: a second call does nothing. Returns how many were.
+    fn recount_draft_unread(&self, account: AccountId) -> Result<usize>;
+
     /// The message in `account` whose `Message-ID` header is
     /// `message_id_header`, or `None`. What rematching after a
     /// `UIDVALIDITY` reset uses instead of trusting the uids the server

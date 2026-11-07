@@ -191,6 +191,13 @@ impl Vault {
         Ok(removed)
     }
 
+    /// Threads whose unread count still counts a draft, recomputed -- see
+    /// [`MailStore::recount_draft_unread`]. Returns how many there were.
+    pub fn recount_draft_unread(&self, account: AccountId) -> Result<usize> {
+        self.writable()?;
+        self.with_mail(|m| m.recount_draft_unread(account))
+    }
+
     // ---- flag / label changes, and removal -----------------------------------
 
     pub fn update_message_flags(

@@ -50,7 +50,7 @@
 
   const kind = original.kind
   const isWeb = kind.type === 'web'
-  const isMail = kind.type === 'mail'
+  const isMail = kind.type === 'mail' || kind.type === 'newsletters'
 
   /** Where it comes from, in words, so the dialog says what it is about. */
   const following =
@@ -58,9 +58,11 @@
       ? kind.url
       : kind.type === 'mail'
         ? `Newsletters from ${kind.sender}, read in Mail`
-        : kind.minPoints > 0
-          ? `Hacker News, above ${kind.minPoints} points`
-          : 'Hacker News'
+        : kind.type === 'newsletters'
+          ? 'Every newsletter in Mail, but for senders you follow on their own'
+          : kind.minPoints > 0
+            ? `Hacker News, above ${kind.minPoints} points`
+            : 'Hacker News'
 
   const folders = $derived(folderNames(feed.sources))
 

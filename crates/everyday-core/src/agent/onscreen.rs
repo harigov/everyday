@@ -675,6 +675,7 @@ fn source_noun(kind: &crate::news::SourceKind) -> &'static str {
         crate::news::SourceKind::Web { .. } => "web feed",
         crate::news::SourceKind::HackerNews { .. } => "Hacker News",
         crate::news::SourceKind::Mail { .. } => "newsletter",
+        crate::news::SourceKind::Newsletters => "newsletters",
     }
 }
 

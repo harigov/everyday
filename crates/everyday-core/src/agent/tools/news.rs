@@ -245,6 +245,7 @@ fn kind_word(kind: &SourceKind) -> &'static str {
         SourceKind::Web { .. } => "web",
         SourceKind::HackerNews { .. } => "hacker_news",
         SourceKind::Mail { .. } => "newsletter",
+        SourceKind::Newsletters => "newsletters",
     }
 }
 
@@ -272,6 +273,7 @@ fn source_json(summary: &SourceSummary) -> Value {
         SourceKind::Mail { sender } => {
             m.insert("sender".into(), json!(sender));
         }
+        SourceKind::Newsletters => {}
     }
     if !source.folder.trim().is_empty() {
         m.insert("folder".into(), json!(source.folder.trim()));
@@ -280,7 +282,7 @@ fn source_json(summary: &SourceSummary) -> Value {
         "paused"
     } else if summary.last_error.is_some() {
         "failing"
-    } else if summary.last_ok.is_some() || matches!(source.kind, SourceKind::Mail { .. }) {
+    } else if summary.last_ok.is_some() || source.kind.is_mail() {
         "ok"
     } else {
         "not fetched yet"
@@ -552,6 +554,7 @@ fn default_title(kind: &SourceKind) -> String {
             }
         }
         SourceKind::Mail { sender } => sender.clone(),
+        SourceKind::Newsletters => "Newsletters".to_string(),
     }
 }
 
@@ -594,7 +597,7 @@ fn describe_unfollow_source(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<St
     if saved > 0 {
         out.push_str(&format!(", including {saved} you saved"));
     }
-    if matches!(summary.source.kind, SourceKind::Mail { .. }) {
+    if summary.source.kind.is_mail() {
         out.push_str(" (the emails stay in your mail)");
     }
     Some(out)
@@ -691,7 +694,7 @@ fn mark_listed(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
 /// Everything unread in one source up to a time.
 fn mark_through(ctx: &ToolContext<'_>, args: &Args<'_>, id: NewsSourceId) -> Result<Value> {
     let source = find_source(ctx, id)?;
-    if matches!(source.kind, SourceKind::Mail { .. }) {
+    if source.kind.is_mail() {
         let mut out = marked(&[]);
         out["note"] = json!(
             "This source is a newsletter in the person's mail. Its stories' read state is \

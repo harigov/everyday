@@ -632,6 +632,21 @@ function build(input: NewSource, order: number, now: string): NewsSource {
         updatedAt: now,
       })
     }
+    case 'newsletters': {
+      if (sources.some((s) => s.kind.type === 'newsletters')) {
+        throw new VaultError('invalid', 'You already follow your newsletters.')
+      }
+      return source({
+        id: nextId('src'),
+        kind: { type: 'newsletters' },
+        title: 'Newsletters',
+        folder,
+        images: false,
+        sortOrder: order,
+        createdAt: now,
+        updatedAt: now,
+      })
+    }
   }
 }
 
@@ -740,7 +755,7 @@ function addFresh(src: NewsSource, hoursAgo: number): Story {
     comments: hn ? 40 + n * 11 : null,
     discussionUrl: hn ? hnItem(41_300_000 + seq) : '',
     // A newsletter issue points at the message it is.
-    mailMessage: src.kind.type === 'mail' ? nextId('msg') : null,
+    mailMessage: src.kind.type === 'mail' || src.kind.type === 'newsletters' ? nextId('msg') : null,
     hasBody: !hn,
   })
   stories.push(made)

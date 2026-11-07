@@ -33,6 +33,7 @@
 //! `Cargo.toml` — so the `reqwest` client behind the `http` feature is
 //! never even compiled in; belt and braces.)
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use css_inline::InlineOptions;
@@ -456,6 +457,99 @@ fn escape_html(s: &str) -> String {
     out
 }
 
+/// The attribute the compose sheet marks a picture pasted or dropped into a
+/// message with: the blob its bytes were stored as. Its `src` is this app's
+/// own address for that blob, which means nothing anywhere else.
+const PICTURE_BLOB: &str = "data-blob";
+
+/// The `Content-ID` a pasted picture's part goes out under, `blob` being the
+/// blob it was stored as.
+pub fn picture_cid(blob: &str) -> String {
+    format!("{blob}@everyday")
+}
+
+/// Point a draft's pasted pictures at the parts that will carry them.
+///
+/// Each `<img data-blob>` whose blob is one of `blobs` -- the draft's own
+/// attachments -- gets `src="cid:…"` ([`picture_cid`]) in place of this
+/// app's address, and the caller sends that attachment inline under that
+/// `Content-ID` rather than as a file. One whose blob is not among them has
+/// nothing to carry it, and goes rather than arriving broken. Returns the
+/// HTML and the blobs it now refers to.
+pub fn inline_pictures(html: &str, blobs: &[String]) -> (String, BTreeSet<String>) {
+    use lol_html::{RewriteStrSettings, element, rewrite_str};
+
+    if !html.contains(PICTURE_BLOB) {
+        return (html.to_string(), BTreeSet::new());
+    }
+    let used = std::cell::RefCell::new(BTreeSet::new());
+    let selector = format!("img[{PICTURE_BLOB}]");
+    let settings = RewriteStrSettings::new().append_element_content_handler(element!(
+        selector.as_str(),
+        |el| {
+            let blob = el.get_attribute(PICTURE_BLOB).unwrap_or_default();
+            if blobs.contains(&blob) {
+                el.set_attribute("src", &format!("cid:{}", picture_cid(&blob)))?;
+                el.remove_attribute(PICTURE_BLOB);
+                used.borrow_mut().insert(blob);
+            } else {
+                el.remove();
+            }
+            Ok(())
+        }
+    ));
+    match rewrite_str(html, settings) {
+        Ok(out) => (out, used.into_inner()),
+        // Nothing this crate wrote fails to parse; sent as it is, the
+        // pictures are the one thing broken.
+        Err(_) => (html.to_string(), BTreeSet::new()),
+    }
+}
+
+/// A picture pasted into a stored message, for [`adopt_pictures`].
+pub struct PastedPicture<'a> {
+    /// The `Content-ID` its `<img>` named.
+    pub content_id: &'a str,
+    /// The blob its bytes are stored as.
+    pub blob: String,
+    pub mime_type: &'a str,
+    pub filename: &'a str,
+}
+
+/// The way back from [`inline_pictures`], for a draft carried on from its
+/// copy on the server: each `<img>` its sanitised body draws from this app's
+/// `mail/part/…` address for one of `pictures` becomes the compose sheet's
+/// own `<img data-blob>` again, so the picture stays where it was in the
+/// words rather than turning into a file beside them. `message_id` is the
+/// stored message's id, as the sanitised addresses carry it.
+pub fn adopt_pictures(html: &str, message_id: &str, pictures: &[PastedPicture<'_>]) -> String {
+    use lol_html::{RewriteStrSettings, element, rewrite_str};
+
+    if pictures.is_empty() || !html.contains(LOCAL_MAIL_REF) {
+        return html.to_string();
+    }
+    let addresses: Vec<(String, &PastedPicture<'_>)> = pictures
+        .iter()
+        .map(|p| (crate::sanitize::part_address(message_id, p.content_id), p))
+        .collect();
+    let settings =
+        RewriteStrSettings::new().append_element_content_handler(element!("img[src]", |el| {
+            let src = el.get_attribute("src").unwrap_or_default();
+            let src = src.trim();
+            let found = addresses
+                .iter()
+                .find(|(address, _)| src.starts_with(LOCAL_MAIL_REF) && src.ends_with(address));
+            if let Some((_, picture)) = found {
+                el.remove_attribute("src");
+                el.set_attribute(PICTURE_BLOB, &picture.blob)?;
+                el.set_attribute("data-mime", picture.mime_type)?;
+                el.set_attribute("alt", picture.filename)?;
+            }
+            Ok(())
+        }));
+    rewrite_str(html, settings).unwrap_or_else(|_| html.to_string())
+}
+
 /// The prefix [`crate::sanitize`] gives every image it rewrites in a stored
 /// body -- a proxied remote image (`mail/img/…`) or a `cid:` part of that
 /// message (`mail/part/…`).
@@ -621,6 +715,34 @@ mod tests {
             calendar: None,
             message_id: None,
         }
+    }
+
+    #[test]
+    fn a_stored_drafts_pasted_picture_comes_back_as_the_editors_own() {
+        let html = r#"<p>Look <img src="everyday://mail/part/m-1/b1@everyday"></p>
+            <img src="everyday://mail/part/m-1/other@x">"#;
+        let picture = PastedPicture {
+            content_id: "b1@everyday",
+            blob: "b1".into(),
+            mime_type: "image/png",
+            filename: "shot.png",
+        };
+        let out = adopt_pictures(html, "m-1", &[picture]);
+        assert!(out.contains(r#"data-blob="b1""#), "{out}");
+        assert!(out.contains(r#"alt="shot.png""#), "{out}");
+        assert!(!out.contains("part/m-1/b1"), "{out}");
+        assert!(out.contains("other@x"), "a picture not among them is left alone: {out}");
+    }
+
+    #[test]
+    fn pasted_pictures_point_at_their_inline_parts() {
+        let html = r#"<p>Look <img src="everyday://localhost/b1" data-blob="b1" alt="">
+            <img src="everyday://localhost/gone" data-blob="gone"></p>"#;
+        let (out, used) = inline_pictures(html, &["b1".to_string(), "other".to_string()]);
+        assert!(out.contains(r#"src="cid:b1@everyday""#), "{out}");
+        assert!(!out.contains("data-blob") && !out.contains("everyday://"), "{out}");
+        assert_eq!(used.into_iter().collect::<Vec<_>>(), vec!["b1".to_string()]);
+        assert_eq!(inline_pictures("<p>hi</p>", &[]).0, "<p>hi</p>");
     }
 
     #[test]

@@ -2149,3 +2149,58 @@ async fn new_settings_bring_waiting_sends_forward_but_leave_one_in_flight() {
     assert_eq!(sending.state, OpState::InFlight);
     assert_eq!(sending.not_before, later);
 }
+
+/// A reply shows in its thread from the moment it is sent -- queued inside
+/// its undo window, then sent -- until the server's copy, found by the
+/// `Message-ID` the send gave it, is stored; then the copy is what shows.
+#[tokio::test]
+async fn a_sent_reply_shows_in_its_thread_until_its_copy_arrives() {
+    let (svc, _dir) = service();
+    let account = seed_account(&svc);
+    let inbox = seed_mailbox(&svc, account, "INBOX", MailboxRole::Inbox);
+    let sent = seed_mailbox(&svc, account, "Sent", MailboxRole::Sent);
+    let thread = ThreadId::new();
+    let parent = seed_in_thread(&svc, account, thread, inbox, 1);
+    let vault = svc.get().unwrap();
+    let reply_to_parent = || {
+        let mut reply = Draft::new(account, "me@example.com", Origin::Person);
+        reply.in_reply_to = Some(parent);
+        reply.to = vec![Address::bare("sender@example.com")];
+        vault.save_draft(&reply).unwrap();
+        reply.id
+    };
+    let reply_id = reply_to_parent();
+    let later = reply_to_parent();
+    call(&svc, "send_draft", json!({ "id": reply_id })).await;
+    let monday = Timestamp::now() + SignedDuration::from_hours(72);
+    call(&svc, "send_draft", json!({ "id": later, "sendAt": monday })).await;
+    let mut reply = vault.draft(reply_id).unwrap();
+    let sending = |detail: &Value| -> Vec<String> {
+        detail["sending"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let detail = call(&svc, "get_thread", json!({ "id": thread.to_string() })).await;
+    assert_eq!(
+        sending(&detail),
+        vec![reply.id.to_string()],
+        "queued in its undo window: on its way; sent later: not yet"
+    );
+
+    reply.state = DraftState::Sent;
+    reply.message_id = Some("reply-1@example.com".into());
+    vault.save_draft(&reply).unwrap();
+    let detail = call(&svc, "get_thread", json!({ "id": thread.to_string() })).await;
+    assert_eq!(sending(&detail), vec![reply.id.to_string()], "sent, copy not here yet");
+
+    let copy = seed_in_thread(&svc, account, thread, sent, 1);
+    let mut message = vault.mail_message(copy).unwrap();
+    message.message_id_header = "reply-1@example.com".into();
+    vault.ingest_mail(account, vec![IngestMessage { message, mailbox: sent, uid: 2 }]).unwrap();
+    let detail = call(&svc, "get_thread", json!({ "id": thread.to_string() })).await;
+    assert!(sending(&detail).is_empty(), "the copy arrived: {detail}");
+}

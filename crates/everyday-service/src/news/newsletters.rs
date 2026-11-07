@@ -57,6 +57,14 @@ use std::sync::Arc;
 /// somebody's archive on the strength of one tick.
 const FIRST_TURN_DAYS: i64 = 30;
 
+/// How far behind its watermark a turn of every newsletter looks, in days.
+/// A message is filed under Newsletters when it is sorted, which can be a
+/// while after it arrived -- the decision model's pass, or a person moving it
+/// by hand -- and by then a newer one may have carried the watermark past
+/// its date. A story already stored for a message, expired or not, keeps it
+/// from being stored again.
+const NEWSLETTERS_LOOKBACK_DAYS: i64 = 3;
+
 /// Someone who sends newsletters to one of this vault's inboxes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,17 +93,22 @@ pub async fn refresh(
     source: &NewsSource,
     state: &mut FetchState,
 ) -> Result<u32, String> {
-    let SourceKind::Mail { sender } = &source.kind else {
-        return Err("this source does not follow a sender in Mail".into());
-    };
-    let sender = sender.trim().to_lowercase();
+    if !source.kind.is_mail() {
+        return Err("this source does not follow a sender, or newsletters, in Mail".into());
+    }
     let now = svc.now();
-    let from = state.watermark.unwrap_or(now - SignedDuration::from_hours(FIRST_TURN_DAYS * 24));
+    let from = match (state.watermark, &source.kind) {
+        (Some(mark), SourceKind::Newsletters) => {
+            mark - SignedDuration::from_hours(NEWSLETTERS_LOOKBACK_DAYS * 24)
+        }
+        (Some(mark), _) => mark,
+        (None, _) => now - SignedDuration::from_hours(FIRST_TURN_DAYS * 24),
+    };
 
     let found = {
         let vault = vault.clone();
         let source = source.clone();
-        blocking(move || Ok(gather(&vault, &source, &sender, from, now)?)).await
+        blocking(move || Ok(gather(&vault, &source, from, now)?)).await
     }
     .map_err(|e| format!("could not read this sender's mail: {}", e.message))?;
 
@@ -211,14 +224,7 @@ pub fn senders(
     messages.retain(|m| m.category == Some(Category::Newsletter));
     let found = cleanup::inbox_senders(&messages, &me, since, usize::MAX);
 
-    let followed: HashSet<String> = vault
-        .news_sources()?
-        .into_iter()
-        .filter_map(|s| match s.kind {
-            SourceKind::Mail { sender } => Some(sender.trim().to_lowercase()),
-            _ => None,
-        })
-        .collect();
+    let followed = followed_senders(vault)?;
     Ok(found
         .into_iter()
         .map(|s| NewsletterSender {
@@ -226,6 +232,20 @@ pub fn senders(
             email: s.email,
             name: s.name,
             messages: s.messages,
+        })
+        .collect())
+}
+
+/// The senders followed as sources of their own, lower-cased and trimmed:
+/// what "From your mail" marks as followed, and what every-newsletter leaves
+/// to them.
+fn followed_senders(vault: &Vault) -> everyday_core::Result<HashSet<String>> {
+    Ok(vault
+        .news_sources()?
+        .into_iter()
+        .filter_map(|s| match s.kind {
+            SourceKind::Mail { sender } => Some(sender.trim().to_lowercase()),
+            _ => None,
         })
         .collect())
 }
@@ -252,36 +272,68 @@ struct Gathered {
 /// Which of an account's mailboxes matter to a newsletter.
 struct Folders {
     inbox: Option<MailboxId>,
+    /// Trash and Spam: somebody threw it away, or nobody should read it.
     trash: HashSet<MailboxId>,
 }
 
-/// Every message from `sender` in `[from, to)`, across the accounts with mail
-/// switched on, that has no story yet -- as a story waiting to be stored.
+/// Whose mail a source reads.
+enum Wanted {
+    /// One sender's, lower-cased and trimmed.
+    Sender(String),
+    /// Whatever Mail files under Newsletters, but for the senders followed
+    /// as sources of their own (lower-cased), whose issues are theirs.
+    Newsletters { followed: HashSet<String> },
+}
+
+impl Wanted {
+    fn of(vault: &Vault, source: &NewsSource) -> everyday_core::Result<Self> {
+        Ok(match &source.kind {
+            SourceKind::Mail { sender } => Wanted::Sender(sender.trim().to_lowercase()),
+            _ => Wanted::Newsletters { followed: followed_senders(vault)? },
+        })
+    }
+
+    fn wants(&self, message: &Message) -> bool {
+        match self {
+            Wanted::Sender(sender) => is_from(message, sender),
+            Wanted::Newsletters { followed } => {
+                message.category == Some(Category::Newsletter)
+                    && !followed.contains(&message.from.email.trim().to_lowercase())
+            }
+        }
+    }
+}
+
+/// Every message the source wants ([`Wanted`]) in `[from, to)`, across the
+/// accounts with mail switched on, that has no story yet -- as a story
+/// waiting to be stored.
 ///
-/// Leaves out a draft, a message marked deleted, anything in a Trash folder
-/// (somebody has already thrown it away), and anything one of the source's
-/// mute words matches. The window's newest date still counts for all of
+/// Leaves out a draft, a message marked deleted, anything in a Trash or Spam
+/// folder, and anything one of the source's mute words matches. The window's newest date still counts for all of
 /// them, so a muted issue is not read again every turn.
 fn gather(
     vault: &Vault,
     source: &NewsSource,
-    sender: &str,
     from: Timestamp,
     to: Timestamp,
 ) -> everyday_core::Result<Gathered> {
+    let wanted = Wanted::of(vault, source)?;
     let mut folders: HashMap<AccountId, Folders> = HashMap::new();
     let mut from_sender: Vec<Message> = Vec::new();
     if vault.supports_accounts() && vault.supports_mail() {
         for account in vault.accounts()?.into_iter().filter(|a| a.services.mail) {
             let mailboxes = vault.mailboxes(account.id)?;
-            let trash =
-                mailboxes.iter().filter(|m| m.role == MailboxRole::Trash).map(|m| m.id).collect();
+            let trash = mailboxes
+                .iter()
+                .filter(|m| matches!(m.role, MailboxRole::Trash | MailboxRole::Spam))
+                .map(|m| m.id)
+                .collect();
             folders.insert(account.id, Folders { inbox: inbox_of(&mailboxes), trash });
             from_sender.extend(
                 vault
                     .mail_between(account.id, from, to)?
                     .into_iter()
-                    .filter(|m| is_from(m, sender) && !m.flags.draft && !m.flags.deleted),
+                    .filter(|m| wanted.wants(m) && !m.flags.draft && !m.flags.deleted),
             );
         }
     }

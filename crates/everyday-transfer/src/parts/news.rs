@@ -304,7 +304,7 @@ fn unusable(source: &NewsSource) -> Option<&'static str> {
                 return Some("a feed's address must start with https:// or http://");
             }
         }
-        SourceKind::HackerNews { .. } => {}
+        SourceKind::HackerNews { .. } | SourceKind::Newsletters => {}
         SourceKind::Mail { sender } => {
             if !sender.contains('@') {
                 return Some("a newsletter source needs the sender's address");
@@ -359,8 +359,7 @@ fn read_source(
     source.icon = None;
     // Said once the source has actually landed: a source left alone because
     // it was already here has had nothing switched off.
-    let switched_off = std::mem::take(&mut source.keep_out_of_inbox)
-        && matches!(source.kind, SourceKind::Mail { .. });
+    let switched_off = std::mem::take(&mut source.keep_out_of_inbox) && source.kind.is_mail();
 
     let existing = match news.get_source(source.id) {
         Ok(existing) => Some(existing),

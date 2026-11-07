@@ -562,6 +562,10 @@ impl MailStore for SqlStore {
         write::merge_messages(self, keep, others)
     }
 
+    fn recount_draft_unread(&self, account: AccountId) -> Result<usize> {
+        write::recount_draft_unread(self, account)
+    }
+
     fn message_by_message_id_header(
         &self,
         account: AccountId,

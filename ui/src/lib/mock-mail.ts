@@ -1005,7 +1005,21 @@ export function mockGetThread(id: ThreadId): ThreadDetail {
     .filter((d) => d.state.type === 'editing' && d.inReplyTo && ids.has(d.inReplyTo))
     .map((draft) => ({ draft, copies: [], ownCopy: null }))
   if (copies.length > 0) threadDrafts.push({ draft: null, copies, ownCopy: null })
-  return { thread, messages, recentActions: seed.recentActions.get(id) ?? [], drafts: threadDrafts }
+  // As `sending_replies`: on its way, or sent and its copy not synced yet.
+  const sending = drafts.filter(
+    (d) =>
+      d.inReplyTo &&
+      ids.has(d.inReplyTo) &&
+      ((d.state.type === 'queued' && !sendTimers.get(d.id)?.scheduled) ||
+        (d.state.type === 'sent' && undelivered.has(d.id))),
+  )
+  return {
+    thread,
+    messages,
+    recentActions: seed.recentActions.get(id) ?? [],
+    drafts: threadDrafts,
+    sending,
+  }
 }
 
 /** The mock keeps no server copies, so there is never one to adopt. */
@@ -1647,6 +1661,11 @@ export function mockMarkDraft(id: MailMessageId): void {
   if (message) seed.messages.set(id, { ...message, flags: { ...message.flags, draft: true } })
 }
 
+/** Sent drafts whose copy has not "synced" yet -- see `mockSendDraft`. */
+const undelivered = new Set<DraftId>()
+/** How long the mock's server takes to hand a sent message back. */
+const SENT_COPY_MS = 4000
+
 function mockDeliverSent(draft: Draft): void {
   const parent = draft.inReplyTo ? seed.messages.get(draft.inReplyTo) : undefined
   if (!parent) return
@@ -1677,7 +1696,14 @@ export function mockSendDraft(id: DraftId, delaySeconds: number, sendAt?: string
     }
     d.state = { type: 'sent' }
     d.sendError = null
-    mockDeliverSent(d)
+    // Sent now, its copy a sync later -- the gap the thread fills with the
+    // draft itself.
+    undelivered.add(d.id)
+    mockRaiseChange({ kind: 'draft', op: 'updated', id: d.id, origin: 'mock-outbox' })
+    setTimeout(() => {
+      undelivered.delete(d.id)
+      mockDeliverSent(d)
+    }, SENT_COPY_MS)
   }, delaySeconds * 1000)
   sendTimers.set(id, { timer, at, scheduled: delaySeconds > UNDO_WINDOW_MAX_S })
   return d

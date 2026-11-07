@@ -947,6 +947,30 @@ pub async fn key_existing_mail(
     }
 }
 
+/// Once per account, before its first pass: bring the unread counts of
+/// threads holding a draft up to date, now that a draft is not counted --
+/// see [`Vault::recount_draft_unread`]. Done once per account, then a lookup.
+pub async fn recount_draft_unread(
+    vault: &Arc<Vault>,
+    account: AccountId,
+    unread_cache: Option<&Arc<crate::mailsync::unread_cache::UnreadCache>>,
+    statuses: &StatusRegistry,
+) {
+    let vault = vault.clone();
+    match tokio::task::spawn_blocking(move || vault.recount_draft_unread(account)).await {
+        Ok(Ok(0)) => {}
+        Ok(Ok(threads)) => {
+            tracing::info!(threads, "recounted unread without drafts");
+            if let Some(cache) = unread_cache {
+                cache.invalidate(account);
+            }
+            statuses.mark_changed(account);
+        }
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not recount unread without drafts"),
+        Err(e) => tracing::warn!(error = %e, "recounting unread without drafts stopped"),
+    }
+}
+
 /// What [`reap_vanished`] and [`refresh_gmail_labels`] both call once
 /// [`everyday_core::Vault::remove_mail_uids`] has told them which messages
 /// just became genuinely dead -- no mailbox names them any more, not merely

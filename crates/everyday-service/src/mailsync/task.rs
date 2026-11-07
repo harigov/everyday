@@ -182,6 +182,8 @@ where
         &statuses,
     )
     .await;
+    passes::recount_draft_unread(&vault, account_id, svc.mail_unread_cache().as_ref(), &statuses)
+        .await;
     statuses.set_phase(account_id, Phase::Connecting, 0, 0);
 
     let credential = match credential::resolve(&svc, &vault, &account).await {
