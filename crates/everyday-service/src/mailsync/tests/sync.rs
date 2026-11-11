@@ -2033,3 +2033,162 @@ async fn a_reused_message_id_on_a_different_message_is_not_folded_by_its_key() {
     let messages: usize = threads.iter().map(|t| env.vault.thread(t.id).unwrap().1.len()).sum();
     assert_eq!(messages, 2, "two messages, not one row filed twice");
 }
+
+// ---------------------------------------------------------------------
+// A reply that names no other message -- see `ingest`'s module docs, "A
+// reply with no headers to follow".
+// ---------------------------------------------------------------------
+
+/// A date `hours` ago, as a `Date:` header says it.
+fn hours_ago(hours: i64) -> String {
+    (Timestamp::now() - jiff::SignedDuration::from_hours(hours))
+        .strftime("%d %b %Y %H:%M:%S +0000")
+        .to_string()
+}
+
+fn thread_of(env: &TestEnv, message_id: &str) -> everyday_core::id::ThreadId {
+    env.vault
+        .message_by_message_id_header(env.account_id, message_id)
+        .unwrap()
+        .unwrap_or_else(|| panic!("{message_id} stored"))
+        .thread_id
+}
+
+/// The answer a sales tool sent as a fresh message with "Re:" in front joins
+/// the conversation it answers; the same subject from somebody who was never
+/// in it, a message that does not say it is a reply, and an answer from long
+/// ago do not.
+#[tokio::test]
+async fn a_reply_with_no_headers_joins_the_conversation_with_its_subject_and_people() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        let ask = raw_message(
+            "ask@tavrn.example",
+            None,
+            "Matt <matt@tavrn.example>",
+            "Numbers ahead of Thursday",
+            &hours_ago(3),
+            "how many firms?",
+        );
+        s.append("INBOX", ask, flags_seen(), None);
+        let mine = raw_message(
+            "mine@example.com",
+            Some("ask@tavrn.example"),
+            "me@example.com",
+            "Re: Numbers ahead of Thursday",
+            &hours_ago(2),
+            "is there an API?",
+        );
+        s.append("Sent", mine, flags_seen(), None);
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    let conversation = thread_of(&env, "ask@tavrn.example");
+    assert_eq!(thread_of(&env, "mine@example.com"), conversation);
+
+    let arrive = |id: &str, from: &str, subject: &str, date: &str| {
+        let raw = raw_message(id, None, from, subject, date, "...");
+        server.lock().unwrap().append("INBOX", raw, flags_seen(), None);
+    };
+    arrive(
+        "answer@tavrn.example",
+        "matt@tavrn.example",
+        "RE: Numbers ahead of Thursday",
+        &hours_ago(1),
+    );
+    arrive(
+        "stranger@else.example",
+        "bob@else.example",
+        "Re: Numbers ahead of Thursday",
+        &hours_ago(1),
+    );
+    arrive("fresh@tavrn.example", "matt@tavrn.example", "Numbers ahead of Thursday", &hours_ago(1));
+    arrive(
+        "old@tavrn.example",
+        "matt@tavrn.example",
+        "Re: Numbers ahead of Thursday",
+        &hours_ago(24 * 60),
+    );
+    env.sync(&mut session).await;
+
+    assert_eq!(thread_of(&env, "answer@tavrn.example"), conversation, "the answer joins");
+    assert_ne!(thread_of(&env, "stranger@else.example"), conversation, "nobody in common");
+    assert_ne!(thread_of(&env, "fresh@tavrn.example"), conversation, "not a reply");
+    assert_ne!(thread_of(&env, "old@tavrn.example"), conversation, "from two months ago");
+}
+
+/// On Gmail the header-less answer gets a Gmail thread of its own. It joins
+/// the conversation all the same, and the next message in that Gmail thread
+/// -- an answer to it -- follows it there rather than to Gmail's split. A
+/// Gmail thread that already holds other messages is left as Gmail made it.
+#[tokio::test]
+async fn on_gmail_a_header_less_answer_and_what_follows_it_join_the_conversation() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let gmail =
+        |thrid: u64, msgid: u64| Some(GmailMeta { thrid, msgid, labels: vec!["\\Inbox".into()] });
+    let raw = |id: &str, parent: Option<&str>, from: &str, subject: &str, hours: i64| {
+        raw_message(id, parent, from, subject, &hours_ago(hours), "...")
+    };
+    server.lock().unwrap().append(
+        "All Mail",
+        raw("ask@tavrn.example", None, "matt@tavrn.example", "Numbers ahead of Thursday", 5),
+        flags_seen(),
+        gmail(1, 1),
+    );
+    server.lock().unwrap().append(
+        "All Mail",
+        raw("other@tavrn.example", None, "matt@tavrn.example", "Lunch", 5),
+        flags_seen(),
+        gmail(3, 2),
+    );
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    let conversation = thread_of(&env, "ask@tavrn.example");
+
+    server.lock().unwrap().append(
+        "All Mail",
+        raw("answer@tavrn.example", None, "matt@tavrn.example", "Re: Numbers ahead of Thursday", 3),
+        flags_seen(),
+        gmail(2, 3),
+    );
+    // Gmail filed this one with "Lunch": its grouping stands.
+    server.lock().unwrap().append(
+        "All Mail",
+        raw(
+            "grouped@tavrn.example",
+            None,
+            "matt@tavrn.example",
+            "Re: Numbers ahead of Thursday",
+            3,
+        ),
+        flags_seen(),
+        gmail(3, 4),
+    );
+    env.sync(&mut session).await;
+    assert_eq!(thread_of(&env, "answer@tavrn.example"), conversation);
+    assert_eq!(
+        thread_of(&env, "grouped@tavrn.example"),
+        thread_of(&env, "other@tavrn.example"),
+        "Gmail already had a thread for it"
+    );
+
+    // A fresh task, remembering nothing: only the stored rows say where the
+    // answer went.
+    server.lock().unwrap().append(
+        "All Mail",
+        raw(
+            "next@example.com",
+            Some("answer@tavrn.example"),
+            "me@example.com",
+            "Re: Numbers ahead of Thursday",
+            1,
+        ),
+        flags_seen(),
+        gmail(2, 5),
+    );
+    env.sync(&mut session).await;
+    assert_eq!(thread_of(&env, "next@example.com"), conversation);
+}
