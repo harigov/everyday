@@ -26,6 +26,33 @@ on the clipboard and a notification says so), `cancelled` (dismissed, or the
 popup lost the keyboard while the model worked — nothing is pasted then,
 since the paste would land wherever the keyboard went), `failed`.
 
+## Keeping the layout
+
+People noticed lost bullets and added or dropped line breaks before anything
+else (Nov 2026), so the layout is held three ways, in
+`everyday-service/src/writing_layout.rs`:
+
+1. **The prompt** has a section of its own on layout (every line break,
+   blank line, list marker and indent stays), and the message describes
+   *this* selection's layout: how many lines with words, how many blank,
+   which markers, how many indented.
+2. **One more ask** when the answer broke it: improving or correcting must
+   keep the same number of lines with words; making it concise may drop
+   lines but not add any, add blank lines or take a list's markers away. The
+   second ask includes the first answer and what was wrong with it. A second
+   answer no better than the first, or one that fails, leaves the first.
+3. **Put back** the original's indentation, markers, blank lines and
+   trailing spaces around the answer's words whenever the two have the same
+   number of lines with words, which is what a rewrite that kept the lines
+   but not their decoration looks like. `\r\n` selections get `\r\n` back.
+
+Not done: the selection is read and pasted as plain text. An application
+whose plain text leaves list markers out (a rich editor may draw its bullets
+without putting them in the text) loses its list before the model sees it,
+and a plain-text paste into a rich editor cannot recreate one. Reading and
+pasting `text/html` alongside would be the fix; not checked against real
+applications yet.
+
 ## Wayland
 
 None of the four things this needs is allowed to an ordinary Wayland

@@ -272,8 +272,14 @@ async fn note_if_credential_is_bad<T>(
         && e.code == codes::FORBIDDEN
     {
         tokens::mark_needs_sign_in(vault, account.id, &e.message, svc.now()).await;
+        crate::trouble::sign_in_needed(svc, vault, account.id);
     }
 }
+
+/// Longest one account calendar's sync may take before it is given up as
+/// failed. A first sync of a busy calendar is a few requests of a few
+/// seconds each; this is room for a slow server, not for one that stopped.
+pub(crate) const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3 * 60);
 
 /// Bring one already-subscribed account calendar's events up to date.
 ///
@@ -296,7 +302,27 @@ pub async fn sync(
     let vault_for_account = vault.clone();
     let account = blocking(move || Ok(vault_for_account.account(account_id)?)).await?;
 
-    let result = provider_for(source).sync(svc, vault, &account, calendar).await;
+    // A ceiling on the whole sync, whatever the source: a server that took
+    // the request and never answered would otherwise hold this calendar's
+    // turn -- and, in the background pass, every calendar after it -- for as
+    // long as the connection lasted. Timed out, it is a failure like any
+    // other: recorded on the calendar, retried, and said once it has gone on.
+    let result = match tokio::time::timeout(
+        SYNC_TIMEOUT,
+        provider_for(source).sync(svc, vault, &account, calendar),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(CommandError::new(
+            codes::NETWORK,
+            format!(
+                "{} did not finish answering within {} minutes",
+                account.address,
+                SYNC_TIMEOUT.as_secs() / 60
+            ),
+        )),
+    };
     note_if_credential_is_bad(svc, vault, &account, &result).await;
 
     // A provider that learned in passing whether this account may write here

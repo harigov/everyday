@@ -40,6 +40,9 @@ pub(crate) struct RoutineRuntime {
     in_flight: Arc<Mutex<HashSet<RoutineId>>>,
     /// The model's passes over mail are going on beside the tick.
     mail_passes: Arc<AtomicBool>,
+    /// They were asked for again while they were going -- new mail landed --
+    /// so they run once more as soon as they end.
+    mail_passes_again: Arc<AtomicBool>,
     /// Flipped to tell every run waiting on an answer to stop waiting: the
     /// scheduler is stopping, or the vault is closing. Replaced by a fresh
     /// one each time, so a run started afterwards is not born withdrawn.
@@ -126,13 +129,19 @@ impl RoutineRuntime {
         detached.push(handle);
     }
 
-    /// [`RoutineRuntime::detach`] the model's passes over mail, unless the last
-    /// ones are still going. Marked done however they finish, an abort on lock
-    /// and a panic among them, or they would never run again.
-    pub(crate) fn detach_mail_passes(
-        &self,
-        run: impl std::future::Future<Output = ()> + Send + 'static,
-    ) {
+    /// [`RoutineRuntime::detach`] the model's passes over mail, or, when the
+    /// last ones are still going, have them run once more as soon as they
+    /// end: new mail that lands during a pass is asked about straight after
+    /// it rather than at the next tick. Marked done however they finish, an
+    /// abort on lock and a panic among them, or they would never run again.
+    ///
+    /// An ask that lands in the moment between the last run ending and the
+    /// flag going down is left to the next tick, a minute at most.
+    pub(crate) fn detach_mail_passes<F, Fut>(&self, passes: F)
+    where
+        F: Fn() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
         struct Landed(Arc<AtomicBool>);
         impl Drop for Landed {
             fn drop(&mut self) {
@@ -140,12 +149,20 @@ impl RoutineRuntime {
             }
         }
         if self.mail_passes.swap(true, Ordering::SeqCst) {
+            self.mail_passes_again.store(true, Ordering::SeqCst);
             return;
         }
         let landed = Landed(self.mail_passes.clone());
+        let again = self.mail_passes_again.clone();
         self.detach(None, async move {
             let _landed = landed;
-            run.await;
+            loop {
+                again.store(false, Ordering::SeqCst);
+                passes().await;
+                if !again.load(Ordering::SeqCst) {
+                    break;
+                }
+            }
         });
     }
 
@@ -211,5 +228,44 @@ impl RoutineRuntime {
         self.forget_reported();
         self.forget_claimed();
         self.forget_running();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// New mail that lands while the model's passes are going has them go
+    /// once more when they end -- once, however many times it was asked.
+    #[tokio::test]
+    async fn mail_passes_asked_for_while_going_go_once_more() {
+        let runtime = RoutineRuntime::default();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (release, released) = watch::channel(false);
+        let passes = {
+            let runs = runs.clone();
+            move || {
+                let runs = runs.clone();
+                let mut released = released.clone();
+                async move {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    let _ = released.wait_for(|r| *r).await;
+                }
+            }
+        };
+        runtime.detach_mail_passes(passes.clone());
+        while runs.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+        runtime.detach_mail_passes(passes.clone());
+        runtime.detach_mail_passes(passes.clone());
+        release.send_replace(true);
+        runtime.settle().await;
+        assert_eq!(runs.load(Ordering::SeqCst), 2);
+
+        runtime.detach_mail_passes(passes);
+        runtime.settle().await;
+        assert_eq!(runs.load(Ordering::SeqCst), 3, "and they run again when asked after");
     }
 }

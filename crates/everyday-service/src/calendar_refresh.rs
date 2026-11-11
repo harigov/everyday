@@ -21,7 +21,7 @@
 use crate::domains::calendars::sync_due;
 use crate::error::codes;
 use crate::events::{Change, Kind, Op};
-use crate::service::Service;
+use crate::service::{Service, blocking};
 use crate::supervisor::{Outcome, TaskResult};
 use everyday_core::Vault;
 use std::sync::Arc;
@@ -31,9 +31,18 @@ use tokio::sync::watch;
 /// The supervisor's key for this task.
 pub const TASK_KEY: &str = "calendars";
 
-/// How often to look for a calendar that has come due. Also how soon a failed
-/// one is tried again, since a failure leaves it due, so this is not a minute.
-const LOOK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How often to look for a calendar that has come due, or that has a reminder
+/// coming round in the next few minutes and has not been checked lately. A
+/// minute, the reminder tick's own, so a meeting moved on somebody's phone is
+/// fetched before its old alert goes off rather than after. Looking costs a
+/// read of the calendar list and the next two days' events; a calendar that
+/// failed is tried again only every few minutes (see `Service::feed_retry_due`).
+const LOOK_EVERY: Duration = Duration::from_secs(60);
+
+/// How far ahead to look for a reminder whose calendar should be checked
+/// first. More than one look, so a reminder never falls between two; few
+/// enough minutes that a meeting moved just before is still caught.
+const CHECK_AHEAD_SECS: i64 = 3 * 60;
 
 /// Start the refresher if it is not already running. Idempotent -- see
 /// [`crate::supervisor::Supervisor::ensure`] -- so it is called from every
@@ -74,8 +83,17 @@ pub async fn run(
         // that has stopped answering must not hold up a lock. Everything a sync
         // stores goes through the blocking pool, which sees its write through
         // whether or not anyone is still waiting for it.
+        let soon = {
+            let (vault, now) = (vault.clone(), svc.now());
+            blocking(move || {
+                Ok(crate::arrivals::calendars_alerting_soon(&vault, now, CHECK_AHEAD_SECS)
+                    .unwrap_or_default())
+            })
+            .await
+            .unwrap_or_default()
+        };
         tokio::select! {
-            pass = sync_due(&svc, &vault, false) => match pass {
+            pass = sync_due(&svc, &vault, false, &soon) => match pass {
                 Ok(pass) => {
                     if pass.changed {
                         svc.events().changed(Change::new(Kind::Event, Op::Updated));

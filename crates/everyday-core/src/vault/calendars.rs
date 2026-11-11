@@ -14,7 +14,7 @@ use super::Vault;
 use super::session::Domain;
 use crate::calendar::{
     AccountSyncCursor, Calendar, CalendarOrigin, DEFAULT_ACCOUNT_REFRESH_MINUTES,
-    DEFAULT_REFRESH_MINUTES, Event, SyncReport,
+    EARLIER_ACCOUNT_REFRESH_MINUTES, Event, SyncReport,
 };
 use crate::error::{Error, Result};
 use crate::id::{AccountId, CalendarId, EventId};
@@ -36,12 +36,14 @@ impl Vault {
         self.with_calendars(|c| c.list_calendars())
     }
 
-    /// Move account calendars off the hourly refresh they were all created
-    /// with onto [`DEFAULT_ACCOUNT_REFRESH_MINUTES`].
+    /// Move account calendars off the refresh intervals they were created
+    /// with before -- hourly, then every fifteen minutes, see
+    /// [`EARLIER_ACCOUNT_REFRESH_MINUTES`] -- onto
+    /// [`DEFAULT_ACCOUNT_REFRESH_MINUTES`].
     ///
     /// Sealed in each record, so it can only happen with the key in hand, and
     /// unlock runs it. It needs no mark to say it has been done: nothing in the
-    /// interface sets this interval, so an account calendar at exactly the old
+    /// interface sets this interval, so an account calendar at exactly an old
     /// default is one nobody chose, and asking again costs one read of a short
     /// list. A calendar set to manual (`0`) is left alone, as is every feed. The
     /// calendar's `updated_at` stays as it was: nobody changed it.
@@ -52,7 +54,7 @@ impl Vault {
         }
         for mut calendar in self.calendars()? {
             if matches!(calendar.origin, CalendarOrigin::Account { .. })
-                && calendar.refresh_minutes == DEFAULT_REFRESH_MINUTES
+                && EARLIER_ACCOUNT_REFRESH_MINUTES.contains(&calendar.refresh_minutes)
             {
                 calendar.refresh_minutes = DEFAULT_ACCOUNT_REFRESH_MINUTES;
                 self.with_calendars(|c| c.put_calendar(&calendar))?;

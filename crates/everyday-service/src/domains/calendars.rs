@@ -29,7 +29,9 @@ use everyday_core::calendar::{
 use everyday_core::model::{system_tz, today_local};
 use everyday_core::store::calendars::EventQuery;
 use everyday_core::{AccountId, CalendarId, EventId, Vault};
+use futures::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::Nothing;
@@ -417,7 +419,7 @@ async fn sync_due_calendars(
     args: SyncDue,
 ) -> CommandResult<Vec<SyncReport>> {
     let vault = svc.require()?;
-    Ok(sync_due(&svc, &vault, args.force).await?.reports)
+    Ok(sync_due(&svc, &vault, args.force, &HashSet::new()).await?.reports)
 }
 
 /// What one pass over the calendars came to.
@@ -429,8 +431,17 @@ pub(crate) struct DuePass {
     pub changed: bool,
 }
 
+/// How many calendars one pass syncs at once. Each waits on its own server, so
+/// one that is slow to answer -- or not answering at all, until
+/// `accountcal::SYNC_TIMEOUT` gives up on it -- no longer holds up the rest.
+const SYNC_AT_ONCE: usize = 4;
+
+/// How recently a calendar with an alert coming up must have synced for the
+/// pass to leave it be. See [`sync_due`]'s `soon`.
+const CHECKED_WITHIN_SECS: i64 = 2 * 60;
+
 /// An account waiting for somebody to sign in again. Asking on its behalf would
-/// send the dead token to the provider every five minutes for as long as nobody
+/// send the dead token to the provider every few minutes for as long as nobody
 /// did, and signing in moves it straight back to `Ok`, so nothing is missed.
 fn waits_for_sign_in(vault: &Vault, calendar: &Calendar) -> bool {
     calendar.origin.account_id().is_some_and(|id| {
@@ -438,8 +449,22 @@ fn waits_for_sign_in(vault: &Vault, calendar: &Calendar) -> bool {
     })
 }
 
+/// A calendar a pass is about to sync, and what it needs to say about it after.
+struct DueCalendar {
+    id: CalendarId,
+    name: String,
+    account: Option<AccountId>,
+    error_before: Option<String>,
+}
+
 /// Fetch every subscription -- a feed's URL or an account's own calendars --
 /// whose refresh interval has elapsed, or all of them if `force`.
+///
+/// `soon` are calendars with a reminder or a meeting coming round in the next
+/// few minutes (see [`crate::arrivals::calendars_alerting_soon`]): each is
+/// synced unless it already has in the last [`CHECKED_WITHIN_SECS`], due or
+/// not, so a meeting moved since the last refresh is reminded at its new time
+/// rather than its old one.
 ///
 /// Failures are collected, not raised: one calendar being down must not stop
 /// the other three. Only the writable vault holder syncs -- see the guard
@@ -450,6 +475,7 @@ pub(crate) async fn sync_due(
     svc: &Arc<Service>,
     vault: &Arc<Vault>,
     force: bool,
+    soon: &HashSet<CalendarId>,
 ) -> CommandResult<DuePass> {
     // A read-only vault cannot store what a sync fetches, and a failed sync
     // would also try to record the failure on the subscription -- another
@@ -462,67 +488,128 @@ pub(crate) async fn sync_due(
     // The name travels with the id because the notification below needs it, and
     // re-reading the subscription after a failed sync to find out what to call
     // it is a second decrypt for a string we already had.
-    let due: Vec<(CalendarId, String, Option<String>)> = {
-        let vault = vault.clone();
+    let due: Vec<DueCalendar> = {
+        let (svc, vault, soon) = (svc.clone(), vault.clone(), soon.clone());
         blocking(move || {
             Ok(vault
                 .calendars()?
                 .into_iter()
+                .filter(|c| c.origin.is_syncable())
                 .filter(|c| {
-                    c.origin.is_syncable()
-                        && (force || (c.is_due(now) && !waits_for_sign_in(&vault, c)))
+                    if force {
+                        return true;
+                    }
+                    if waits_for_sign_in(&vault, c) {
+                        return false;
+                    }
+                    let checked = c
+                        .last_synced_at
+                        .is_some_and(|at| now.as_second() - at.as_second() < CHECKED_WITHIN_SECS);
+                    (soon.contains(&c.id) && !checked)
+                        || (c.is_due(now) && svc.feed_retry_due(c.id, now))
                 })
-                .map(|c| (c.id, c.name, c.last_error))
+                .map(|c| DueCalendar {
+                    id: c.id,
+                    account: c.origin.account_id(),
+                    name: c.name,
+                    error_before: c.last_error,
+                })
                 .collect())
         })
         .await?
     };
 
+    let synced: Vec<(DueCalendar, CommandResult<SyncReport>)> = futures::stream::iter(due)
+        .map(|calendar| async move {
+            let result = sync_telling_about_new_events(svc, vault, calendar.id).await;
+            (calendar, result)
+        })
+        .buffer_unordered(SYNC_AT_ONCE)
+        .collect()
+        .await;
+
     let mut out = DuePass::default();
-    for (id, name, error_before) in due {
-        match sync_telling_about_new_events(svc, vault, id).await {
+    let mut stopped = Vec::new();
+    for (calendar, result) in synced {
+        match result {
             Ok(report) => {
-                svc.feed_recovered(id);
-                out.changed |= report.events > 0 || report.removed > 0 || error_before.is_some();
+                svc.feed_recovered(calendar.id);
+                if let Some(account) = calendar.account {
+                    crate::trouble::calendar_synced(svc, account);
+                }
+                out.changed |=
+                    report.events > 0 || report.removed > 0 || calendar.error_before.is_some();
                 out.reports.push(report);
             }
             // The failure itself is already recorded on the subscription by
             // `sync_one`, and the calendar sidebar shows it there, beside the
             // calendar it belongs to. That is the right place for it and it
             // stays -- but it is only the right place if you are looking at the
-            // calendar. This pass runs on a timer whoever is using the app, so
-            // the case worth notifying is somebody who has spent the week in
-            // the journal while a subscription they rely on has been quietly
-            // returning nothing.
+            // calendar. This pass runs on a timer whoever is using the app, and
+            // what it brings in is what reminders are sent from, so a calendar
+            // that has quietly stopped is a meeting reminded at the time it
+            // used to be.
             //
             // Once per outage, and only one that has lasted (see `feed_failed`),
             // never on a refresh the user asked for by hand -- they are looking
             // at the calendar, and the sidebar has just told them. Nor for an
-            // account that needs signing in: the account view says that, once,
-            // for all of its calendars.
+            // account that needs signing in: `crate::trouble` has said that
+            // already, once, for all of its calendars.
             Err(e) => {
                 // Locked, or removed while this pass was out: not a calendar
                 // that has stopped refreshing, and nothing to say about it.
-                let Ok(after) = vault.calendar(id) else { continue };
-                out.changed |= after.last_error != error_before;
-                tracing::info!(%id, error = %e, "a calendar could not be refreshed");
-                if !force && e.code != codes::FORBIDDEN && svc.feed_failed(id, now) {
-                    svc.events().notify(
-                        Notification::warning(format!("{name} is not refreshing"))
-                            // Deliberately not `e.message`: a feed URL is a
-                            // bearer credential and error text from a fetch can
-                            // quote it. The interface shows the recorded detail
-                            // beside the calendar, where the person reading it
-                            // already has the address.
-                            .body("Its events may be out of date. Open the calendar for details.")
-                            .for_user()
-                            .key(format!("feed:{id}")),
-                    );
+                let Ok(after) = vault.calendar(calendar.id) else { continue };
+                out.changed |= after.last_error != calendar.error_before;
+                tracing::info!(id = %calendar.id, error = %e, "a calendar could not be refreshed");
+                if !force && e.code != codes::FORBIDDEN && svc.feed_failed(calendar.id, now) {
+                    stopped.push(calendar);
                 }
             }
         }
     }
+    tell_about_stopped(svc, vault, stopped);
     Ok(out)
+}
+
+/// Say which calendars have stopped refreshing: one notification per account
+/// whose calendars stopped together -- one server being down is one fact --
+/// and one per feed.
+fn tell_about_stopped(svc: &Service, vault: &Vault, stopped: Vec<DueCalendar>) {
+    let mut by_account: Vec<(Option<AccountId>, Vec<DueCalendar>)> = Vec::new();
+    for calendar in stopped {
+        match by_account.iter_mut().find(|(a, _)| a.is_some() && *a == calendar.account) {
+            Some((_, group)) => group.push(calendar),
+            None => by_account.push((calendar.account, vec![calendar])),
+        }
+    }
+    for (account, group) in by_account {
+        let title = match (&group[..], account) {
+            ([one], _) => format!("{} is not refreshing", one.name),
+            (many, Some(account)) => {
+                let from = vault.account(account).map(|a| a.address).unwrap_or_default();
+                format!("{} calendars from {from} are not refreshing", many.len())
+            }
+            (many, None) => format!("{} calendars are not refreshing", many.len()),
+        };
+        let key = match account {
+            Some(account) => format!("calendars:{account}"),
+            None => format!("feed:{}", group[0].id),
+        };
+        let whose = if group.len() == 1 { "Its" } else { "Their" };
+        svc.events().notify(
+            Notification::warning(title)
+                // Deliberately not the error's own words: a feed URL is a
+                // bearer credential and error text from a fetch can quote it.
+                // The interface shows the recorded detail beside the calendar,
+                // where the person reading it already has the address.
+                .body(format!(
+                    "{whose} events may be out of date, so a meeting moved since may still be \
+                     reminded at its old time. Open the calendar for details."
+                ))
+                .for_user()
+                .key(key),
+        );
+    }
 }
 
 /// Sync one calendar, and say so when the sync added an event the calendar

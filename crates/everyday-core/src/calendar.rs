@@ -406,7 +406,18 @@ pub const DEFAULT_REFRESH_MINUTES: u32 = 60;
 /// document. Google and a Microsoft primary calendar hear only what moved; CalDAV
 /// lists etags, or asks what changed where the server offers `sync-collection`.
 /// The dearest is a Microsoft secondary calendar, which lists its window each time.
-pub const DEFAULT_ACCOUNT_REFRESH_MINUTES: u32 = 15;
+///
+/// Five minutes rather than the fifteen it was: a meeting moved on a phone was
+/// still drawn, and reminded, at its old time for up to a quarter of an hour.
+/// A calendar with a reminder due is checked just before it besides (see the
+/// service's calendar refresher), so this is how fresh the rest of the week is.
+pub const DEFAULT_ACCOUNT_REFRESH_MINUTES: u32 = 5;
+
+/// Defaults account calendars were created with before
+/// [`DEFAULT_ACCOUNT_REFRESH_MINUTES`]: an hour, then fifteen minutes. A
+/// calendar at one of these is one nobody chose, since nothing in the interface
+/// sets the interval, and unlock moves it on.
+pub const EARLIER_ACCOUNT_REFRESH_MINUTES: &[u32] = &[DEFAULT_REFRESH_MINUTES, 15];
 
 /// Calendar accents. The journal palette, so one vault has one set of colours.
 pub const DEFAULT_CALENDAR_COLORS: &[&str] = crate::model::DEFAULT_JOURNAL_COLORS;

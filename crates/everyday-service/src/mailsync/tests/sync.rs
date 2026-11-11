@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use everyday_core::account::{Account, AccountStatus, AuthMethod, Provider};
+use everyday_core::account::{Account, AccountSecret, AccountStatus, AuthMethod, Provider};
 use everyday_core::mail::MailboxRole;
 use everyday_core::store::mail::ThreadFilter;
 use everyday_core::{MailQuery, VaultConfig};
@@ -1751,6 +1751,126 @@ async fn an_auth_failure_sets_needs_sign_in_and_the_task_stops() {
     assert_eq!(outcome, crate::supervisor::Outcome::Done);
     let account = vault_arc.account(account_id).unwrap();
     assert!(matches!(account.status, AccountStatus::NeedsSignIn { .. }), "{:?}", account.status);
+}
+
+/// Every notification raised while this is the service's sink.
+#[derive(Default)]
+struct Told(std::sync::Mutex<Vec<crate::events::Notification>>);
+
+impl crate::events::EventSink for Told {
+    fn notify(&self, notification: crate::events::Notification) {
+        self.0.lock().unwrap().push(notification);
+    }
+}
+
+impl Told {
+    fn titles(&self) -> Vec<String> {
+        self.0.lock().unwrap().iter().map(|n| n.title.clone()).collect()
+    }
+}
+
+/// A clock a test moves by hand.
+struct Hands(std::sync::Mutex<jiff::Timestamp>);
+
+impl crate::clock::Clock for Hands {
+    fn now(&self) -> jiff::Timestamp {
+        *self.0.lock().unwrap()
+    }
+    fn instant(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
+impl Hands {
+    fn forward(&self, minutes: i64) {
+        let mut now = self.0.lock().unwrap();
+        *now = Timestamp::from_second(now.as_second() + minutes * 60).unwrap();
+    }
+}
+
+use jiff::Timestamp;
+
+/// A refused credential is said at once, and once: it will not fix itself,
+/// and a second attempt finding it again is the same fact.
+#[tokio::test]
+async fn a_refused_credential_asks_once_for_a_sign_in() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    vault
+        .save_account_secret(account_id, &AccountSecret::default())
+        .expect("no password: the credential is refused before any connection");
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+
+    for _ in 0..2 {
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        crate::mailsync::task::run_account_with(
+            svc.clone(),
+            vault.clone(),
+            account_id,
+            stop_rx,
+            never_connects,
+            |_account, _svc, _vault| FakeSender::default(),
+        )
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(told.titles(), ["Sign in to me@example.com again"]);
+    let notice = told.0.lock().unwrap()[0].clone();
+    assert!(matches!(notice.reach, crate::events::Reach::User), "it has to leave the window");
+    assert!(notice.body.unwrap().contains("Settings"));
+}
+
+async fn refused_connection(
+    _account: Account,
+    _credential: Credential,
+) -> SessionResult<FakeMailSession> {
+    Err(everyday_mail::session::MailError::Network("connection refused".into()))
+}
+
+/// A server that cannot be reached says nothing for the first few minutes of
+/// trying -- a blink is not an outage -- then says so once, with what it
+/// said; the pass that lands afterwards says it is back.
+#[tokio::test]
+async fn mail_that_stops_syncing_is_said_once_it_has_lasted_and_again_when_it_is_back() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let hands = Arc::new(Hands(std::sync::Mutex::new(Timestamp::now())));
+    svc.set_clock(hands.clone());
+
+    let attempt = || {
+        let (svc, vault) = (svc.clone(), vault.clone());
+        async move {
+            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            crate::mailsync::task::run_account_with(
+                svc,
+                vault,
+                account_id,
+                stop_rx,
+                refused_connection,
+                |_account, _svc, _vault| FakeSender::default(),
+            )
+            .await
+        }
+    };
+    for _ in 0..3 {
+        assert!(attempt().await.is_err(), "retried by the supervisor");
+        hands.forward(5);
+    }
+    assert!(told.titles().is_empty(), "ten minutes in: {:?}", told.titles());
+    assert!(attempt().await.is_err());
+    assert_eq!(told.titles(), ["Mail from me@example.com is not syncing"]);
+    let body = told.0.lock().unwrap()[0].body.clone().unwrap();
+    assert!(body.contains("15 minutes") && body.contains("connection refused"), "{body}");
+    hands.forward(5);
+    assert!(attempt().await.is_err());
+    assert_eq!(told.titles().len(), 1, "once per outage");
+
+    crate::trouble::mail_synced(&svc, &vault, account_id);
+    assert_eq!(told.titles()[1], "Mail from me@example.com is syncing again");
+    let keys: Vec<_> = told.0.lock().unwrap().iter().map(|n| n.key.clone()).collect();
+    assert_eq!(keys[0], keys[1], "the good news replaces the warning");
 }
 
 async fn never_connects(

@@ -138,7 +138,38 @@ async fn connect_over_imap(
 /// hand, with the same `Account` [`connect`](Self) used -- production hands
 /// it [`LazySmtpSender::new`] directly, since that function's own signature
 /// already matches; a test hands it a closure building a fake.
+///
+/// Every attempt that ends in an error is counted towards the account's
+/// outage, and one that has gone on long enough is said -- see
+/// [`crate::trouble`]. Counted here, around the whole attempt, because an
+/// attempt ends in an error at a dozen places and a missed one would be an
+/// outage nobody hears about.
 pub async fn run_account_with<S, C, Fut, T, B>(
+    svc: Arc<Service>,
+    vault: Arc<Vault>,
+    account_id: AccountId,
+    stop: watch::Receiver<bool>,
+    connect: C,
+    build_sender: B,
+) -> TaskResult
+where
+    S: MailSession,
+    C: Fn(Account, Credential) -> Fut,
+    Fut: Future<Output = everyday_mail::session::Result<S>>,
+    T: everyday_mail::outbox::Sender,
+    B: FnOnce(Account, Arc<Service>, Arc<Vault>) -> T,
+{
+    let attempt =
+        run_attempt(svc.clone(), vault.clone(), account_id, stop, connect, build_sender).await;
+    if let Err(e) = &attempt {
+        crate::trouble::mail_failed(&svc, &vault, account_id, &e.to_string());
+    }
+    attempt
+}
+
+/// One attempt of [`run_account_with`]: connect, then pass, drain and wait
+/// until stopped or something fails.
+async fn run_attempt<S, C, Fut, T, B>(
     svc: Arc<Service>,
     vault: Arc<Vault>,
     account_id: AccountId,
@@ -190,6 +221,7 @@ where
         credential::Resolved::Ready(c) => c,
         credential::Resolved::NeedsSignIn(reason) => {
             credential::mark_needs_sign_in(&vault, &account, &reason, svc.now());
+            crate::trouble::sign_in_needed(&svc, &vault, account_id);
             statuses.set_idle(account_id);
             return Ok(Outcome::Done);
         }
@@ -266,8 +298,24 @@ where
             return Ok(Outcome::Done);
         }
 
-        let mailboxes = match passes::sync_once(&ctx, &mut session, &mut labels, &mut threads).await
-        {
+        // Mail somebody wants to hear about is announced the moment its batch
+        // is stored -- see `announce_new_mail` -- rather than once every other
+        // mailbox and every body has been fetched too, which on a large
+        // account, or behind a message with a big attachment, is a while.
+        // Waited on beside the pass, never instead of it: the pass is only
+        // ever finished, not dropped.
+        let passed = {
+            let news = statuses.news(account_id);
+            let pass = passes::sync_once(&ctx, &mut session, &mut labels, &mut threads);
+            tokio::pin!(pass);
+            loop {
+                tokio::select! {
+                    passed = &mut pass => break passed,
+                    () = news.notified() => announce_new_mail(&svc, &statuses, account_id),
+                }
+            }
+        };
+        let mailboxes = match passed {
             Ok(mailboxes) => mailboxes,
             Err(e) => {
                 return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
@@ -277,6 +325,7 @@ where
         let synced_at = svc.now();
         credential::mark_ok(&vault, &account, synced_at);
         statuses.set_synced(account_id, synced_at);
+        crate::trouble::mail_synced(&svc, &vault, account_id);
         // See the module docs' "telling an open window": a background pass
         // writes under no command, so this is the only announcement its new
         // mail ever gets. One batch change for the whole pass -- not one per
@@ -286,16 +335,16 @@ where
         if statuses.take_changed(account_id) {
             svc.events().changed(Change::new(Kind::Thread, Op::Updated));
         }
-        // Mail worth announcing noted during the pass, one notification for
-        // the whole of it. Taken even when nothing was noted, so a pass that
-        // found none does not leave an earlier pass's note behind -- there
-        // is nothing to leave, and taking an empty list is the way to be
-        // sure. See `arrivals`.
-        let (new_mail, total) = statuses.take_new_mail(account_id);
-        if let Some(notice) =
-            crate::arrivals::new_mail_notice(&account_id.to_string(), &new_mail, total)
-        {
-            svc.events().notify(notice);
+        // Whatever was noted after the last announcement during the pass --
+        // the replies settled once every mailbox is stored, most often. Taken
+        // even when nothing was noted, so a pass that found none does not
+        // leave an earlier pass's note behind. See `arrivals`.
+        announce_new_mail(&svc, &statuses, account_id);
+        // New inbox mail is sorted now, not at the scheduler's next tick: under
+        // most notification rules it is the sorting that decides whether it is
+        // announced at all. Bodies are in by now, and the model reads them.
+        if statuses.take_arrived(account_id) {
+            svc.run_mail_passes();
         }
         statuses.set_phase(account_id, Phase::Idling, 0, 0);
 
@@ -397,6 +446,25 @@ where
     }
 }
 
+/// Tell somebody about the mail noted since the last time this was asked, one
+/// notification for all of it, and tell an open window to draw it -- the
+/// notification is no use if clicking it opens a list without the message.
+fn announce_new_mail(
+    svc: &Arc<Service>,
+    statuses: &crate::mailsync::status::StatusRegistry,
+    account_id: AccountId,
+) {
+    let (new_mail, total) = statuses.take_new_mail(account_id);
+    if let Some(notice) =
+        crate::arrivals::new_mail_notice(&account_id.to_string(), &new_mail, total)
+    {
+        if statuses.take_changed(account_id) {
+            svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+        }
+        svc.events().notify(notice);
+    }
+}
+
 /// The mailbox [`run_account_with`] should `IDLE` on: the inbox, or -- on
 /// Gmail, where the inbox is a label rather than a place a message
 /// physically lives, see `crate::mailsync::discovery`'s own module docs --
@@ -433,6 +501,7 @@ async fn handle_session_error(
         MailError::Auth(reason) => {
             svc.token_cache().forget(&account_id.to_string()).await;
             credential::mark_needs_sign_in(vault, account, &reason, svc.now());
+            crate::trouble::sign_in_needed(svc, vault, account_id);
             statuses.set_idle(account_id);
             Ok(Outcome::Done)
         }

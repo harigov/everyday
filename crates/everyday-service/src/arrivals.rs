@@ -656,6 +656,44 @@ fn tick_calendars_inner(svc: &Service, vault: &Vault) -> CoreResult<()> {
     Ok(())
 }
 
+/// The calendars with a reminder, or a meeting's start, coming round in the
+/// next `within` seconds: what the calendar refresher checks first, so a
+/// meeting moved since the last refresh is reminded at its new time and not at
+/// its old one, and a cancelled one not at all. Reads the next two days, as the
+/// reminder tick does every minute; the rare alert set further ahead than that
+/// is left to the ordinary refresh.
+pub fn calendars_alerting_soon(
+    vault: &Vault,
+    now: Timestamp,
+    within: i64,
+) -> CoreResult<HashSet<CalendarId>> {
+    if !vault.supports_calendars() {
+        return Ok(HashSet::new());
+    }
+    let settings = vault.agent_settings().map(|s| s.reminders.events).unwrap_or_default();
+    let today = now.to_zoned(TimeZone::system()).date();
+    let events = vault.events(&EventQuery {
+        from: today.checked_sub(jiff::Span::new().days(1)).ok(),
+        to: today.checked_add(jiff::Span::new().days(REMIND_NEAR_DAYS)).ok(),
+        visible_only: true,
+        ..Default::default()
+    })?;
+    let window = now.as_second()..=now.as_second() + within;
+    Ok(events
+        .iter()
+        .filter(|event| event.status != EventStatus::Cancelled)
+        .filter(|event| {
+            let start = event.start.as_second();
+            window.contains(&start)
+                || settings
+                    .for_event(event)
+                    .iter()
+                    .any(|minutes| window.contains(&(start - i64::from(*minutes) * 60)))
+        })
+        .map(|event| event.calendar_id)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1048,6 +1086,28 @@ mod tests {
                 AccountSyncCursor::default(),
             )
             .unwrap();
+    }
+
+    /// The calendar of a reminder about to go out, or of a meeting about to
+    /// start, is checked first; one whose reminder is a while off, or that
+    /// was called off, is not.
+    #[test]
+    fn the_calendar_of_a_reminder_about_to_go_out_is_checked_first() {
+        let (svc, vault, _dir) = env();
+        let work = account_calendar(&vault, "Work");
+        let home = account_calendar(&vault, "Home");
+        let gone = account_calendar(&vault, "Gone");
+        let standup = account_calendar(&vault, "Stand-up");
+        // The default reminder is ten minutes before.
+        seed(&vault, work.id, &event_at(work.id, "Design sync", 11 * 60, false));
+        seed(&vault, home.id, &event_at(home.id, "Dinner", 60 * 60, false));
+        let mut called_off = event_at(gone.id, "Called off", 11 * 60, false);
+        called_off.status = EventStatus::Cancelled;
+        seed(&vault, gone.id, &called_off);
+        seed(&vault, standup.id, &event_at(standup.id, "Stand-up", 2 * 60, false));
+
+        let soon = calendars_alerting_soon(&vault, svc.now(), 3 * 60).unwrap();
+        assert_eq!(soon, HashSet::from([work.id, standup.id]));
     }
 
     #[test]

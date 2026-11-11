@@ -322,7 +322,7 @@ fn a_repeating_block_is_written_ahead_and_can_be_changed_or_cut_short_from_any_p
 }
 
 #[test]
-fn unlocking_moves_an_account_calendar_off_the_old_hourly_refresh() {
+fn unlocking_moves_an_account_calendar_off_the_old_refresh_defaults() {
     use everyday_core::AccountId;
     use everyday_core::account::Provider;
     use everyday_core::calendar::{
@@ -354,6 +354,13 @@ fn unlocking_moves_an_account_calendar_off_the_old_hourly_refresh() {
     let mut old = account("old");
     old.refresh_minutes = DEFAULT_REFRESH_MINUTES;
     vault.save_calendar(&old).unwrap();
+    // And as one from when account calendars refreshed every fifteen minutes.
+    let mut quarter = account("quarter");
+    quarter.refresh_minutes = 15;
+    vault.save_calendar(&quarter).unwrap();
+    let mut chosen = account("chosen");
+    chosen.refresh_minutes = 30;
+    vault.save_calendar(&chosen).unwrap();
     let mut manual = account("manual");
     manual.refresh_minutes = 0;
     vault.save_calendar(&manual).unwrap();
@@ -368,6 +375,11 @@ fn unlocking_moves_an_account_calendar_off_the_old_hourly_refresh() {
     let moved = vault.calendar(old.id).unwrap();
     assert_eq!(moved.refresh_minutes, DEFAULT_ACCOUNT_REFRESH_MINUTES);
     assert_eq!(moved.name, "old", "nothing else about it changed");
+    assert_eq!(
+        vault.calendar(quarter.id).unwrap().refresh_minutes,
+        DEFAULT_ACCOUNT_REFRESH_MINUTES
+    );
+    assert_eq!(vault.calendar(chosen.id).unwrap().refresh_minutes, 30, "not an old default");
     assert_eq!(vault.calendar(manual.id).unwrap().refresh_minutes, 0, "manual means manual");
     assert_eq!(
         vault.calendar(feed.id).unwrap().refresh_minutes,

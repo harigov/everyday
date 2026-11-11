@@ -575,6 +575,9 @@ pub async fn sync_headers<S: MailSession>(
             // then -- noting it now as well would announce it twice, the
             // first time for mail that is not in the vault.
             Ok(_) => {
+                if !arrivals.is_empty() {
+                    ctx.statuses.mark_arrived(ctx.account_id);
+                }
                 for (message, wanted, arrival) in arrivals {
                     ctx.statuses.note_arrival(&arrival.message_id, Instant::now());
                     if wanted {

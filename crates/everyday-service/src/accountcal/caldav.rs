@@ -122,7 +122,25 @@ const PERIOD_LIMIT: u64 = EXPAND_LIMIT as u64;
 type Connector = hyper_rustls::HttpsConnector<HttpConnector>;
 type Client = OwnServerAuth<LegacyClient<Connector, String>>;
 
+/// Longest reaching a CalDAV server may take. The shared HTTP client's own
+/// figure (see `crate::http`), for the same reason: a server that has not
+/// answered a connection in this long is down, not slow.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a pooled connection may sit quiet before the system asks whether
+/// the server is still there. `hyper`'s pool keeps a connection between
+/// syncs, and one the server or a router dropped in the meantime otherwise
+/// takes the next sync's request into a connection nobody is on the far end
+/// of. The whole sync has a ceiling too -- see `accountcal::SYNC_TIMEOUT` --
+/// but noticing first is better than waiting it out.
+const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn https_connector() -> CommandResult<Connector> {
+    let mut http = HttpConnector::new();
+    // The TLS wrapper below decides the scheme; this only opens sockets.
+    http.enforce_http(false);
+    http.set_connect_timeout(Some(CONNECT_TIMEOUT));
+    http.set_keepalive(Some(KEEPALIVE));
     // The provider is named, not taken from rustls's process default: this
     // binary links both `ring` and `aws-lc-rs`, and with both present the
     // default is ambiguous and panics at the first handshake. The desktop
@@ -147,7 +165,7 @@ fn https_connector() -> CommandResult<Connector> {
         // `Provider::Custom` make.
         .https_or_http()
         .enable_http1()
-        .build())
+        .wrap_connector(http))
 }
 
 /// A transport that signs requests to `server` -- the account's own, its
