@@ -17,7 +17,8 @@
 // every store learning about the event system; one router means adding an app
 // is adding a line here.
 
-import { onChange, onLockState, onPalette } from './api'
+import { onChange, onLockState, onPalette, onShowInMain, type ShowInMain } from './api'
+import { ownOrigin, pinned } from './appwindow'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
@@ -33,7 +34,7 @@ import { overview } from './overview.svelte'
 import { proposals } from './proposals.svelte'
 import { purpose } from './purpose.svelte'
 import { screentime } from './screentime.svelte'
-import { panels } from './panels.svelte'
+import { isSettingsTab, panels } from './panels.svelte'
 import { app } from './state.svelte'
 import { todo } from './todo.svelte'
 import { targets as goalTargets } from './targets.svelte'
@@ -354,13 +355,36 @@ class Live {
     this.#started = true
 
     onChange((change: ChangeEvent) => this.#note(change))
-    // The OS-wide hotkey. The shell has already raised the window by the time
-    // this arrives; all that is left is to open the palette -- and only past
-    // the lock screen, because a key pressed while the vault is sealed should
-    // not put a list of its contents on screen.
-    onPalette(() => {
-      if (app.screen === 'main') panels.openPalette()
-    })
+    // The main window's alone, both of these: the shell raises the main
+    // window for either, and a window of one app opening its palette as well,
+    // behind it, would be a second palette nobody can see.
+    if (!pinned) {
+      // The OS-wide hotkey. The shell has already raised the window by the
+      // time this arrives; all that is left is to open the palette -- and only
+      // past the lock screen, because a key pressed while the vault is sealed
+      // should not put a list of its contents on screen.
+      onPalette(() => {
+        if (app.screen === 'main') panels.openPalette()
+      })
+      // A window of one app handing over what is not its app -- see
+      // `appwindow.ts`. Past the lock screen only, for the palette's reason,
+      // but kept until then rather than dropped: this window going to its
+      // lock screen while somebody works in the other is the ordinary case,
+      // and after the password it should show what was asked for, not
+      // whatever it was last left on.
+      onShowInMain((asked) => {
+        if (app.screen === 'main') this.#show(asked)
+        else this.#asked = asked
+      })
+      $effect.root(() => {
+        $effect(() => {
+          if (app.screen !== 'main' || !this.#asked) return
+          const asked = this.#asked
+          this.#asked = null
+          this.#show(asked)
+        })
+      })
+    }
     onLockState((locked: boolean) => {
       // Not a list to reload: every screen has to leave. A vault that locked
       // itself on the machine holding it locks for everybody looking at it.
@@ -377,16 +401,27 @@ class Live {
     })
   }
 
+  /** What a window of one app asked the main window to show while it was on
+   *  its lock screen -- the latest only, which is the one still wanted. */
+  #asked: ShowInMain | null = null
+
+  #show({ section, settings }: ShowInMain) {
+    if (section) app.setSection(section)
+    else if (isSettingsTab(settings)) panels.openSettings(settings)
+  }
+
   #note(change: ChangeEvent) {
     if (app.screen !== 'main') return
     // A window never reloads for its own write. It already drew the result,
     // and reloading would move the list under the cursor that made the change.
     //
-    // `local` is this process, whichever vault it is looking at. A remote
+    // `local` is the main window in this process, whichever vault it is
+    // looking at; a window of one app has an origin of its own (see
+    // `appwindow.ts`), so the two reload for each other's writes. A remote
     // server filters by device id before it sends, so what arrives here from
     // another machine is already somebody else's; this covers the case where
     // the vault is in this process and the sink is talking to itself.
-    if (change.origin === 'local') return
+    if (change.origin === ownOrigin) return
     this.#pendingChanges.push(change)
     if (this.#timer !== null) return
     this.#timer = setTimeout(() => {

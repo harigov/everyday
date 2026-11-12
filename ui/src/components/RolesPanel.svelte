@@ -86,7 +86,9 @@
         icon: 'target',
         run: () => {
           panels.closeSettings()
-          void app.goTo('todo').then(() => todo.setScope({ kind: 'goals' }))
+          void app.goTo('todo').then((went) => {
+            if (went) void todo.setScope({ kind: 'goals' })
+          })
         },
       },
       SEP,

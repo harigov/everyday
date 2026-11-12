@@ -35,6 +35,7 @@ mod sharing;
 mod state;
 mod transfer;
 mod tray;
+mod windows;
 mod writing;
 
 // Re-exported, not the whole (otherwise private) `state` module: the one
@@ -54,7 +55,7 @@ pub const SAVE_AND_CLOSE: &str = "everyday://save-and-close";
 /// How long the window waits for the interface to finish saving before it
 /// closes anyway. Generous for a handful of local writes, and short enough
 /// that a wedged interface does not read as an app that will not quit.
-const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+pub(crate) const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Entry point shared by the desktop binary and the mobile harnesses.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -102,6 +103,9 @@ pub fn run() {
         // `hotkey` -- and writing help's popup, which one of them opens.
         .manage(hotkey::Hotkeys::default())
         .manage(writing::Writing::default())
+        // Apps opened in windows of their own, while they close -- see
+        // `windows`.
+        .manage(windows::AppWindows::default())
         // Offers to take notes, from the calendar or the microphone -- see
         // `offers` and `micwatch`.
         .manage(offers::Offers::default())
@@ -290,6 +294,10 @@ pub fn run() {
             commands::hide_tray,
             commands::set_tray_meeting,
             commands::set_badge,
+            // An app in a window of its own, and that window handing what is
+            // not its app back to the main one. See `windows.rs`.
+            windows::open_app_window,
+            windows::show_in_main,
             // Meeting notes: hearing a call. See `capture.rs` and
             // `meeting.rs`.
             meeting::meeting_start,
@@ -316,49 +324,73 @@ pub fn run() {
                 }
                 return;
             }
+            // An app in a window of its own is not the application either:
+            // closing it saves and closes that window and nothing else.
+            if windows::is_app_window(window.label()) {
+                windows::on_window_event(window, event);
+                return;
+            }
             if let WindowEvent::Destroyed = event {
                 if let Some(popup) = window.app_handle().get_webview_window(writing::LABEL) {
                     let _ = popup.destroy();
                 }
+                // Asked to save and close on the way here; whatever has not
+                // by now goes with the main window, or the process would
+                // stay up behind a window of one app with no tray to quit
+                // it from.
+                windows::destroy_all(window.app_handle());
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // Closing the window is not always quitting any more.
+                // Closing the window is not quitting. Quit is, from the tray
+                // (or the platform's own quit), and it still saves and locks
+                // on the way out.
                 //
-                // A vault with a routine on it, or one being served to another
-                // machine, has work to do with no window in front of it: the
-                // seven o'clock brief has to happen whether or not anybody
-                // opened anything. So in that case the window hides and the
-                // process stays, reachable from the tray. Quit -- from the
-                // tray, or the platform's own quit -- still quits, and still
-                // locks on the way out.
+                // So the window hides and the process stays, with the vault
+                // as it was: the seven o'clock brief happens whether or not
+                // anybody opened anything, mail and reminders still arrive, a
+                // vault served to another machine goes on being served, the
+                // tray's quick actions still work, and an app open in a
+                // window of its own (see `windows`) stays open. The window
+                // comes back from the tray, the hotkey, a second launch or
+                // the Dock.
+                //
+                // Which means an unlocked vault stays unlocked: its key, and
+                // the search index, stay in memory behind a hidden window,
+                // exactly as behind a window left open on a desk. The lock
+                // timers go on running in it and decide when that ends, the
+                // way they would there; Quit, or a lock, ends it at once.
                 //
                 // Hiding rather than destroying also keeps the webview, which
                 // is what lets a notification raised at seven reach the
                 // notification centre: the routing that decides banner or
                 // toast lives in the interface, and a destroyed webview cannot
                 // run it. See `events.rs`.
-                // ...but only if there is a way back to it.
+                // ...but only while the tray icon is up, because that is
+                // where Quit is -- or, failing that, while there is work here
+                // that needs no window and the hotkey is a way back to it.
                 //
-                // A hidden window is reachable from the tray icon or from the
-                // global hotkey, and on a desktop that offers neither -- a
-                // Wayland session with no StatusNotifier host and no shortcut
-                // portal is the real case -- hiding it leaves a process with
-                // no window, no icon, no hotkey and no way to be quit except
-                // the command line. Closing the window is then the last thing
-                // the person can do to this application, so it has to mean
-                // what it says.
+                // The hotkey brings a hidden window back but cannot quit it,
+                // and the window has no Quit of its own -- its close button is
+                // this. So with the tray switched off, or on a desktop with no
+                // StatusNotifier host to put it in, hiding an ordinary vault's
+                // window would leave a process that can only be quit from the
+                // command line, and closing the window is the last thing the
+                // person can do to this application: it has to mean what it
+                // says. A vault with a routine due, or being served, is the
+                // exception it always was (see `AppState::stays_resident`):
+                // stopping that is not what closing a window asks for. With
+                // neither tray nor hotkey, nothing hides.
                 //
                 // And never for the tray's Quit, which arrives here as this
                 // same close request: hiding is what it is asking not to do.
                 let handle = window.app_handle();
-                let reachable =
-                    handle.state::<Tray>().is_showing() || hotkey::is_registered(handle);
-                if reachable
-                    && window
-                        .try_state::<AppState>()
-                        .is_some_and(|s| !s.is_quitting() && s.stays_resident())
-                {
+                let hides = window.try_state::<AppState>().is_some_and(|s| {
+                    !s.is_quitting()
+                        && (handle.state::<Tray>().is_showing()
+                            || (hotkey::is_registered(handle) && s.stays_resident()))
+                });
+                if hides {
                     api.prevent_close();
                     let _ = window.hide();
                     return;
@@ -378,7 +410,14 @@ pub fn run() {
                     && state.begin_closing()
                 {
                     api.prevent_close();
-                    let _ = window.emit(SAVE_AND_CLOSE, ());
+                    // To this window alone: an app open in a window of its
+                    // own listens for the same event, and is asked on its
+                    // own just below.
+                    let _ = window.emit_to(window.label(), SAVE_AND_CLOSE, ());
+                    // The windows of one app go with this one, after
+                    // writing what was typed in them -- which
+                    // `ready_to_close` waits for before it locks.
+                    windows::close_all(window.app_handle());
 
                     // ...but never at the cost of a window that will not
                     // shut. A wedged or crashed interface never answers, and
@@ -398,9 +437,9 @@ pub fn run() {
                     return;
                 }
 
-                // Lock on the way out so the process never lingers with a
-                // decrypted key in memory, and so the search index -- which
-                // holds plaintext -- is dropped.
+                // Lock on the way out so a process that is going never
+                // lingers with a decrypted key in memory, and so the search
+                // index -- which holds plaintext -- is dropped.
                 if let Some(state) = window.try_state::<AppState>()
                     && let Some(vault) = state.service().get()
                 {
@@ -408,6 +447,25 @@ pub fn run() {
                 }
             }
         })
-        .run(tauri::generate_context!())
-        .expect("failed to start Every Day");
+        .build(tauri::generate_context!())
+        .expect("failed to start Every Day")
+        .run(|_app, _event| {
+            // A click on the Dock icon, or opening the app again, while the
+            // window is hidden -- which closing it does now, see the close
+            // handler above. macOS hands the running instance a reopen
+            // rather than starting a second one, so the single-instance
+            // callback never hears of it, and without this the window would
+            // only come back from the menu bar. Asked of the main window
+            // rather than read from `has_visible_windows`: an app open in a
+            // window of its own is a visible window, and the main one is
+            // still the one a click on the Dock is asking for.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Reopen { .. } = _event
+                && _app
+                    .get_webview_window(windows::MAIN)
+                    .is_some_and(|w| !w.is_visible().unwrap_or(true))
+            {
+                tray::raise_window(_app);
+            }
+        });
 }

@@ -867,7 +867,7 @@ class MailState {
    * → Sharing and the assistant's settings.
    *
    * The same two-step every other app's own cross-app link already is
-   * (`app.goTo('notes').then(() => noteStore.openNote(id))` in
+   * (`app.goTo('notes')`, then `noteStore.openNote(id)` if it went, in
    * `OverviewWidget.svelte`, say): switch the app bar to Mail through its
    * existing routing, then reuse `openThreadById` rather than a second way
    * of opening a thread.

@@ -847,7 +847,7 @@ pub fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             // answer, which is the case where a tray quit matters most.
             //
             // Marked as a quit first, or that handler hides the window
-            // instead whenever the vault has a routine or is being served.
+            // instead, which is what closing it means.
             if let Some(state) = app.try_state::<crate::state::AppState>() {
                 state.quit();
             }

@@ -3,7 +3,7 @@
 // The shell owns the icon and the menu widget; this owns what is in it. What
 // is *in* it is no longer a registry of its own: it is a filtered view over
 // the one action table in `shortcuts.svelte.ts`, taking the rows that wear
-// `tray: true`.
+// `tray: true` -- a handful, on purpose: see that flag's own doc in `keys.ts`.
 //
 // That is the whole change, and it is worth stating why. There were three
 // registries -- the keyboard's, the tray's and the context menus' -- and the
@@ -64,16 +64,21 @@ const showPref = onOffPref('everyday.tray')
 const meetingPref = onOffPref('everyday.tray.meeting', false)
 
 /**
- * The tray rows an app offers right now, as tray entries.
+ * The rows an app offers right now, as tray entries: the tray's own, or with
+ * `quick`, every quick action of the app's (what its button in the app bar
+ * offers on a right-click).
  *
  * Read from the one table, filtered by the group's own name. `id` is required
  * for a tray row -- it is what crosses to Rust and comes back -- so a row
  * wearing `tray` without one is a mistake worth skipping rather than sending.
  */
-function trayEntries(group: Group): TrayAction[] {
+function trayEntries(group: Group, quick = false): TrayAction[] {
   return ACTIONS.filter(
     (a): a is Binding & { group: Group; id: string } =>
-      a.tray === true && a.group === group && a.id !== undefined && (!a.when || a.when()),
+      (a.tray === true || (quick && a.quick === true)) &&
+      a.group === group &&
+      a.id !== undefined &&
+      (!a.when || a.when()),
   ).map((a) => ({
     id: a.id,
     label: a.label,
@@ -156,12 +161,15 @@ class TrayRegistry {
    * section id, and it is typed as one so that a caller cannot ask for a
    * heading the table has never heard of and get an empty menu back. For a
    * menu that is not the tray's: the app bar raises this on a right-click,
-   * and it has to be the same list rather than a second one written beside
-   * it. Two answers to "what can this app start right now" drift, and the one
-   * nobody is looking at is always the stale one.
+   * and it has to be read from the same table rather than from a second list
+   * written beside it. Two answers to "what can this app start right now"
+   * drift, and the one nobody is looking at is always the stale one.
+   *
+   * A superset of the app's tray rows: the `quick` ones too, which are worth
+   * a click from inside the window and not a line in the menu bar.
    */
   entriesFor(group: Group): TrayEntry[] {
-    return trayEntries(group)
+    return trayEntries(group, true)
   }
 
   /** Start listening for clicks and keeping the menu in step. Once. */
@@ -186,7 +194,7 @@ class TrayRegistry {
     // it is indistinguishable from a working one until it is clicked.
     $effect.root(() => {
       $effect(() => {
-        const entries = this.enabled ? this.#compose() : []
+        const entries = this.enabled ? this.menu() : []
         this.#push(this.enabled, entries)
       })
       // Its own effect, separate from the one above: the quick-action menu
@@ -212,28 +220,29 @@ class TrayRegistry {
   }
 
   /**
-   * Every group's actions, in order, with a rule between the groups that
-   * offered any.
+   * The menu as it would be sent right now: every group's tray rows, in
+   * order, the apps' in one run, then a rule and the vault's lock.
    *
    * The order is `GROUPS`, the one the help sheet reads too, rather than a
    * list of its own kept beside it: two orderings of the same headings is how
    * an app ends up fifth in one menu and last in the other. Groups with
    * nothing in the tray -- `Everywhere`, `Go to` -- simply come back empty.
    *
-   * The separators are put in here rather than by the apps because only this
-   * knows which groups came back empty -- and a menu that opens with a rule,
-   * or shows two in a row where the todo app had nothing to say, is the
-   * usual way a composed menu goes wrong.
+   * No rule between one app and the next. There used to be, when each app
+   * offered three or four rows; with one or two each, a rule under every line
+   * was most of what the menu was made of. "New note", "Add a task", "New
+   * event" read as one list of things to start, and the lock below the rule
+   * is the one place a slip would cost something.
    */
-  #compose(): TrayEntry[] {
-    const out: TrayEntry[] = []
+  menu(): TrayEntry[] {
+    const apps: TrayEntry[] = []
+    const vault: TrayEntry[] = []
     for (const group of GROUPS) {
-      const entries = trayEntries(group)
-      if (entries.length === 0) continue
-      if (out.length > 0) out.push({ separator: true })
-      out.push(...entries)
+      if (group === 'Vault') vault.push(...trayEntries(group))
+      else apps.push(...trayEntries(group))
     }
-    return out
+    if (apps.length > 0 && vault.length > 0) apps.push({ separator: true })
+    return [...apps, ...vault]
   }
 
   /** Send a menu, or take the icon down, at most once per real change. */

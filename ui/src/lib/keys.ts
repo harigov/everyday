@@ -80,8 +80,20 @@ export interface Binding {
    * The tray is a *filtered view* over this table rather than a registry of
    * its own, so an action reaches the menu bar by wearing this rather than by
    * being declared a second time somewhere else.
+   *
+   * Kept for the few things worth doing from outside the window -- starting
+   * something, the timer, the lock. Every app's quick actions in one menu
+   * made a list too long to read, and nobody adds a feed or syncs a bank
+   * from the menu bar. A tray row is also a `quick` row: see below.
    */
   tray?: boolean
+  /**
+   * One of its app's quick actions: offered when that app's button in the app
+   * bar is right-clicked, but not in the tray. For what is worth a click
+   * from inside the window and not from outside it -- refreshing the Feed,
+   * syncing banks.
+   */
+  quick?: boolean
   /**
    * Bring the window forward before running, when chosen from the tray.
    * Default true, because almost every quick action ends with a cursor

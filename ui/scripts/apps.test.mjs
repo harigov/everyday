@@ -188,6 +188,7 @@ const actionShape = (a) => ({
   label: a.label,
   group: a.group,
   tray: a.tray === true,
+  quick: a.quick === true,
 })
 
 // The eleven "Go to" rows plus "the next app", in the order they have always
@@ -195,79 +196,56 @@ const actionShape = (a) => ({
 // order starts at the journal rather than the overview. See `apps.ts`'s own
 // note on why they stay hand-written.
 const EXPECTED_GO_TO = [
-  { id: null, keys: 'g j', label: 'Journal', group: 'Go to', tray: false },
-  { id: null, keys: 'g n', label: 'Notes', group: 'Go to', tray: false },
-  { id: null, keys: 'g t', label: 'Todo', group: 'Go to', tray: false },
-  { id: null, keys: 'g c', label: 'Calendar', group: 'Go to', tray: false },
-  { id: null, keys: 'g l', label: 'Library', group: 'Go to', tray: false },
-  { id: null, keys: 'g m', label: 'Mail', group: 'Go to', tray: false },
-  { id: null, keys: 'g f', label: 'Feed', group: 'Go to', tray: false },
-  { id: null, keys: 'g b', label: 'Money', group: 'Go to', tray: false },
-  { id: null, keys: 'g h', label: 'Screen time', group: 'Go to', tray: false },
-  { id: null, keys: 'g o', label: 'Overview', group: 'Go to', tray: false },
-  { id: null, keys: 'g a', label: 'Assistant', group: 'Go to', tray: false },
-  { id: null, keys: 'mod+j', label: 'The next app', group: 'Go to', tray: false },
+  { id: null, keys: 'g j', label: 'Journal', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g n', label: 'Notes', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g t', label: 'Todo', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g c', label: 'Calendar', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g l', label: 'Library', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g m', label: 'Mail', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g f', label: 'Feed', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g b', label: 'Money', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g h', label: 'Screen time', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g o', label: 'Overview', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g a', label: 'Assistant', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'mod+j', label: 'The next app', group: 'Go to', tray: false, quick: false },
 ]
 assert.deepEqual(ACTIONS.filter((a) => a.group === 'Go to').map(actionShape), EXPECTED_GO_TO)
 
-// Every tray row, in table order, id/key/label/group intact.
+// Every tray row, in table order, id/key/label/group intact. Only what is
+// worth starting from outside the window, and one lock: a menu with every
+// app's every action in it was too long to find anything in.
+const tray_ = (id, label, group) => ({ id, keys: null, label, group, tray: true, quick: false })
 const EXPECTED_TRAY_ROWS = [
-  { id: 'journal:new-entry', keys: null, label: 'New journal entry', group: 'Journal', tray: true },
-  { id: 'todo:add', keys: null, label: 'Add a task', group: 'Todo', tray: true },
-  {
-    id: 'calendar:book-now',
-    keys: null,
-    label: 'New event',
-    group: 'Calendar',
-    tray: true,
-  },
-  { id: 'calendar:timer', keys: null, label: 'Track time', group: 'Calendar', tray: true },
-  { id: 'overview:page', keys: null, label: 'How things are going', group: 'Overview', tray: true },
-  { id: 'overview:log', keys: null, label: 'Record a reading', group: 'Overview', tray: true },
-  { id: 'todo:goals', keys: null, label: 'Goals', group: 'Todo', tray: true },
-  { id: 'library:add', keys: null, label: 'Add to library', group: 'Library', tray: true },
-  { id: 'mail:compose', keys: null, label: 'Compose a message', group: 'Mail', tray: true },
-  { id: 'feed:add', keys: null, label: 'Add a feed', group: 'Feed', tray: true },
-  { id: 'feed:refresh', keys: null, label: 'Refresh feeds', group: 'Feed', tray: true },
-  { id: 'money:sync', keys: null, label: 'Sync banks', group: 'Money', tray: true },
-  {
-    id: 'screentime:today',
-    keys: null,
-    label: "Today's screen time",
-    group: 'Screen time',
-    tray: true,
-  },
-  {
-    id: 'assistant:runs',
-    keys: null,
-    label: 'What the assistant did',
-    group: 'Assistant',
-    tray: true,
-  },
-  {
-    id: 'assistant:new-routine',
-    keys: null,
-    label: 'New routine',
-    group: 'Assistant',
-    tray: true,
-  },
-  { id: 'notes:new', keys: null, label: 'New note', group: 'Notes', tray: true },
-  { id: 'vault:lock', keys: null, label: 'Lock this screen', group: 'Vault', tray: true },
-  {
-    id: 'vault:lock-all',
-    keys: null,
-    label: 'Lock the vault everywhere',
-    group: 'Vault',
-    tray: true,
-  },
+  tray_('journal:new-entry', 'New journal entry', 'Journal'),
+  tray_('todo:add', 'Add a task', 'Todo'),
+  tray_('calendar:book-now', 'New event', 'Calendar'),
+  tray_('calendar:timer', 'Track time', 'Calendar'),
+  tray_('overview:log', 'Record a reading', 'Overview'),
+  tray_('library:add', 'Add to library', 'Library'),
+  tray_('mail:compose', 'Compose a message', 'Mail'),
+  tray_('notes:new', 'New note', 'Notes'),
+  tray_('vault:lock-all', 'Lock the vault everywhere', 'Vault'),
 ]
 assert.deepEqual(ACTIONS.filter((a) => a.tray === true).map(actionShape), EXPECTED_TRAY_ROWS)
 
-// ── the tray menu each app offers, fully booted ────────────────────
+// The rows only an app's own menu offers, in table order.
+const quick_ = (id, label, group) => ({ id, keys: null, label, group, tray: false, quick: true })
+const EXPECTED_QUICK_ROWS = [
+  quick_('todo:goals', 'Goals', 'Todo'),
+  quick_('feed:add', 'Add a feed', 'Feed'),
+  quick_('feed:refresh', 'Refresh feeds', 'Feed'),
+  quick_('money:sync', 'Sync banks', 'Money'),
+  quick_('screentime:today', "Today's screen time", 'Screen time'),
+  quick_('assistant:runs', 'What the assistant did', 'Assistant'),
+  quick_('assistant:new-routine', 'New routine', 'Assistant'),
+]
+assert.deepEqual(ACTIONS.filter((a) => a.quick === true).map(actionShape), EXPECTED_QUICK_ROWS)
+
+// ── the menu each app offers in the app bar, fully booted ──────────
 
 const trayShape = (e) => ({ id: e.id, label: e.label })
 
-const EXPECTED_TRAY_MENUS = {
+const EXPECTED_APP_MENUS = {
   Journal: [{ id: 'journal:new-entry', label: 'New journal entry' }],
   Notes: [{ id: 'notes:new', label: 'New note' }],
   Todo: [
@@ -288,18 +266,16 @@ const EXPECTED_TRAY_MENUS = {
   // Glancing at today is the thing worth doing from a menu bar; whether this
   // computer records is a switch in Settings.
   'Screen time': [{ id: 'screentime:today', label: "Today's screen time" }],
-  Overview: [
-    { id: 'overview:page', label: 'How things are going' },
-    { id: 'overview:log', label: 'Record a reading' },
-  ],
+  // "How things are going" is the palette's alone: here it said what "Open
+  // Overview" above it already does.
+  Overview: [{ id: 'overview:log', label: 'Record a reading' }],
   Assistant: [
     { id: 'assistant:runs', label: 'What the assistant did' },
     { id: 'assistant:new-routine', label: 'New routine' },
   ],
-  Vault: [
-    { id: 'vault:lock', label: 'Lock this screen' },
-    { id: 'vault:lock-all', label: 'Lock the vault everywhere' },
-  ],
+  // One lock: the key, which is what the app bar's Lock drops too. Locking
+  // only the screen is the palette's and Ctrl+L's.
+  Vault: [{ id: 'vault:lock-all', label: 'Lock the vault everywhere' }],
   // Neither belongs to an app; both come back empty, the way `actions.test`
   // already checks the tray skips them rather than drawing an empty group.
   Everywhere: [],
@@ -311,10 +287,28 @@ app.status = FULL_STATUS
 for (const group of GROUPS) {
   assert.deepEqual(
     tray.entriesFor(group).map(trayShape),
-    EXPECTED_TRAY_MENUS[group],
-    `${group}'s tray menu changed`,
+    EXPECTED_APP_MENUS[group],
+    `${group}'s app bar menu changed`,
   )
 }
+
+// ── the tray's own menu, fully booted ──────────────────────────────
+//
+// The apps' rows in one run, a rule, the lock. No rule between one app and
+// the next: with one or two rows each, the rules were most of the menu.
+const menuShape = (e) => ('separator' in e ? '---' : e.label)
+assert.deepEqual(tray.menu().map(menuShape), [
+  'New journal entry',
+  'New note',
+  'Add a task',
+  'New event',
+  'Track time',
+  'Add to library',
+  'Compose a message',
+  'Record a reading',
+  '---',
+  'Lock the vault everywhere',
+])
 
 await close()
 console.log('apps: all checks passed')

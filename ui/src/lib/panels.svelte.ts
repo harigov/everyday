@@ -15,51 +15,59 @@
 // in Settings instead of whatever they were doing before. `App.svelte`
 // clears it explicitly with `app.onLock`.
 
+import { api } from './api'
+import { pinned } from './appwindow'
+
 /**
  * The settings page's tabs.
  *
- * Just the type: nothing outside this file ever needed the list itself, only
- * the tab a caller is allowed to ask `openSettings` for, and keeping the
- * array around for that alone was dead weight the moment it stopped being
- * iterated anywhere.
+ * A list as well as a type, for the one caller that cannot be typed: a
+ * window of one app asking the main window to open Settings at a tab, which
+ * arrives as a string over the shell. See `appwindow.ts`.
  */
-export type SettingsTab =
-  | 'general'
-  | 'profile'
-  | 'accounts'
+export const SETTINGS_TABS = [
+  'general',
+  'profile',
+  'accounts',
   // The categories a decision model sorts mail into -- under Accounts, whose
   // mail it is, though it is the models that read it.
-  | 'sorting'
+  'sorting',
   // What the person says about how mail is written for them, beside it.
-  | 'writing'
+  'writing',
   // Which model each size of work runs on -- application settings, not the
   // assistant's, though the assistant is the main thing that asks one.
-  | 'models'
-  | 'assistant'
+  'models',
+  'assistant',
   // The assistant's standing work, drawn under its own tab -- see
   // `assistant.svelte.ts`'s `Pane`, which is these four by name.
-  | 'runs'
-  | 'routines'
-  | 'memory'
-  | 'proposals'
+  'runs',
+  'routines',
+  'memory',
+  'proposals',
   // Not one of `assistant.svelte.ts`'s four panes -- skills are managed only
   // from Settings, never drawn in the Assistant app's own nav -- so it gets
   // its own branch in `SettingsView.svelte` rather than joining `Pane`.
-  | 'skills'
+  'skills',
   // The assistant reached from a chat app on another device -- bot accounts
   // on a server the person runs, listed and edited in `ChatLinksPanel`.
-  | 'chat'
+  'chat',
   // The Plaid keys a person brings for Money -- see `docs/plans/money.md`.
-  | 'money'
+  'money',
   // This computer's screen time -- whether it records, what it is called,
   // the GNOME and browser extensions -- and the vault's retention. See
   // `docs/plans/screentime.md`.
-  | 'screentime'
-  | 'meetings'
+  'screentime',
+  'meetings',
   // Settings for the Contacts shelf's catch-ups -- see KeepInTouchPanel.
-  | 'keepintouch'
-  | 'data'
-  | 'vault'
+  'keepintouch',
+  'data',
+  'vault',
+] as const
+export type SettingsTab = (typeof SETTINGS_TABS)[number]
+
+export function isSettingsTab(raw: string | null | undefined): raw is SettingsTab {
+  return SETTINGS_TABS.includes(raw as SettingsTab)
+}
 
 class Panels {
   /** Which settings tab is showing, or `null` when the dialog is closed. */
@@ -76,6 +84,12 @@ class Panels {
   palette = $state(false)
 
   openSettings(tab: SettingsTab = 'general') {
+    // A window of one app has no Settings of its own: the main window comes
+    // forward with them open. See `appwindow.ts`.
+    if (pinned) {
+      void api.showInMain({ settings: tab }).catch(() => {})
+      return
+    }
     this.shortcuts = false
     this.palette = false
     this.settings = tab

@@ -17,12 +17,15 @@
   // see `WindowControls.svelte`.
 
   import { app } from '../lib/state.svelte'
+  import { pinned } from '../lib/appwindow'
+  import { meetings } from '../lib/meetings.svelte'
   import { keysLabel } from '../lib/keys'
   import { panels } from '../lib/panels.svelte'
   import { sidebar } from '../lib/sidebar.svelte'
   import CommandBar from './CommandBar.svelte'
   import Icon from './Icon.svelte'
   import Logo from './Logo.svelte'
+  import RecordingPill from './RecordingPill.svelte'
   import WindowControls from './WindowControls.svelte'
 
   const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform ?? '')
@@ -59,6 +62,12 @@
       >
         <Icon name="sidebar" size={17} weight={1.7} />
       </button>
+    {/if}
+    <!-- A window of one app has no app bar, where the recording pill
+         lives, and a Notes or Calendar window can start a recording: it is
+         shown, and stopped, from here instead. See `appwindow.ts`. -->
+    {#if pinned && meetings.supported}
+      <RecordingPill />
     {/if}
   </div>
 
@@ -104,6 +113,7 @@
     min-width: 0;
   }
   .side {
+    gap: var(--sp-2);
     padding-left: var(--sp-2);
   }
   .end {

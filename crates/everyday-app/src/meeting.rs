@@ -39,14 +39,20 @@ use crate::tray::Tray;
 /// -- see that function's own doc for why a check made here instead, with
 /// nothing reserved until the await returns, would let two starts pressed
 /// together both pass it.
+///
+/// The record is written as the window that asked -- see
+/// `windows::ctx_for` -- so a recording started in a window of one app reaches
+/// the main window's list, and is not reloaded by the window that started it.
 #[tauri::command]
 pub async fn meeting_start(
     app: AppHandle,
+    webview: tauri::Webview,
     event_id: Option<EventId>,
     title: Option<String>,
     template_id: Option<TemplateId>,
 ) -> CommandResult<Recording> {
-    begin(app, event_id, title, template_id, false).await
+    let ctx = crate::windows::ctx_for(webview.label());
+    begin(app, ctx, event_id, title, template_id, false).await
 }
 
 /// Same as [`meeting_start`], but for a call detected on a calendar the
@@ -67,7 +73,7 @@ pub fn start_automatic(app: AppHandle, event_id: EventId) {
         if state_already_recording(&app) {
             return;
         }
-        if let Err(e) = begin(app, Some(event_id), None, None, true).await {
+        if let Err(e) = begin(app, Ctx::local(), Some(event_id), None, None, true).await {
             tracing::warn!(error = %e, "automatic recording could not start");
         }
     });
@@ -78,15 +84,19 @@ pub(crate) fn state_already_recording(app: &AppHandle) -> bool {
     app.state::<AppState>().capture().lock().unwrap().is_some()
 }
 
+/// `ctx` is who the record is written as: the window that pressed Start, or
+/// the process itself for a start nobody pressed.
 pub(crate) async fn begin(
     app: AppHandle,
+    ctx: Ctx,
     event_id: Option<EventId>,
     title: Option<String>,
     template_id: Option<TemplateId>,
     automatic: bool,
 ) -> CommandResult<Recording> {
     let state = app.state::<AppState>();
-    let recording = begin_headless(
+    let recording = begin_headless_as(
+        ctx,
         state.session(),
         state.sink(),
         state.capture(),
@@ -169,6 +179,34 @@ pub async fn begin_headless(
     automatic: bool,
     app: Option<AppHandle>,
 ) -> CommandResult<Recording> {
+    let ctx = Ctx::local();
+    begin_headless_as(
+        ctx,
+        session,
+        events,
+        capture_slot,
+        event_id,
+        title,
+        template_id,
+        automatic,
+        app,
+    )
+    .await
+}
+
+/// [`begin_headless`], with the record written as `ctx` -- see [`begin`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn begin_headless_as(
+    ctx: Ctx,
+    session: SessionHandle,
+    events: Option<Arc<dyn EventSink>>,
+    capture_slot: &Mutex<Option<CaptureSlot>>,
+    event_id: Option<EventId>,
+    title: Option<String>,
+    template_id: Option<TemplateId>,
+    automatic: bool,
+    app: Option<AppHandle>,
+) -> CommandResult<Recording> {
     {
         let mut slot = capture_slot.lock().unwrap();
         reclaim_if_ended(&mut slot);
@@ -178,7 +216,8 @@ pub async fn begin_headless(
         *slot = Some(CaptureSlot::Starting);
     }
 
-    let result = try_begin(session, events, event_id, title, template_id, automatic, app).await;
+    let result =
+        try_begin(ctx, session, events, event_id, title, template_id, automatic, app).await;
     finish_reservation(capture_slot, result)
 }
 
@@ -189,7 +228,9 @@ pub async fn begin_headless(
 /// (a failed service call, a failed `capture::start`) is just an ordinary
 /// `?`/`Err` rather than something that also has to remember to clear a
 /// lock.
+#[allow(clippy::too_many_arguments)]
 async fn try_begin(
+    ctx: Ctx,
     session: SessionHandle,
     events: Option<Arc<dyn EventSink>>,
     event_id: Option<EventId>,
@@ -202,7 +243,7 @@ async fn try_begin(
 
     let value = call_session
         .call(
-            Ctx::local(),
+            ctx,
             "begin_recording",
             json!({ "eventId": event_id, "title": title, "templateId": template_id, "automatic": automatic }),
         )

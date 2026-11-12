@@ -30,7 +30,9 @@
 // how the few exceptions -- the ones with a modifier in them -- say so.
 
 import { agent } from './agent.svelte'
+import { api } from './api'
 import { APPS } from './apps'
+import { canOpenWindows, pinned } from './appwindow'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, withoutShift, type Binding } from './keys'
@@ -476,10 +478,24 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     run: () => sidebar.toggle(app.section),
   },
   {
+    keys: 'mod+shift+n',
+    label: 'Open this app in a new window',
+    group: 'Everywhere',
+    keywords: ['window', 'separate', 'pop out', 'detach', 'side by side'],
+    icon: 'restore',
+    whileTyping: true,
+    // From the main window only: a window of one app is already that. Nor
+    // for a vault on another computer -- see `appwindow.ts`.
+    when: () => canOpenWindows && !app.remote && inAnyApp(),
+    run: () => void api.openAppWindow(app.section).catch(() => {}),
+  },
+  {
     keys: 'a',
     label: 'The assistant',
     group: 'Everywhere',
-    when: () => anywhere() && agent.supported,
+    // A window of one app has no rail to open; in the Assistant's own window
+    // the key still finds the box.
+    when: () => anywhere() && agent.supported && (!pinned || app.section === 'assistant'),
     // In its own app the conversation is already the page, so the key that
     // would open the rail puts the caret in the box instead -- the thing
     // somebody pressing it there wanted.
@@ -1239,16 +1255,19 @@ export const ACTIONS: (Binding & { group: Group })[] = [
 
   // ── Quick actions ───────────────────────────────────────────────────
   //
-  // The rows the tray offers as well, and the ones that have no shortcut at
-  // all. They are here rather than beside each store for the reason the whole
-  // table exists: three surfaces read this list -- the keyboard, the tray and
-  // the palette -- and an action declared anywhere else reaches at most one of
-  // them.
+  // The rows the tray and the app bar's right-click menus offer as well, and
+  // the ones that have no shortcut at all. They are here rather than beside
+  // each store for the reason the whole table exists: four surfaces read this
+  // list -- the keyboard, the tray, the app bar and the palette -- and an
+  // action declared anywhere else reaches at most one of them.
   //
-  // A tray row needs an `id`, because the shell sends a description across to
-  // Rust and gets an id back; everything else stays on this side. `group` is
-  // what decides where it sits in the menu, so the menu's shape is this
-  // table's reading order.
+  // `tray` is for the few worth doing from outside the window: starting
+  // something, the timer, the lock. `quick` is an app's own menu only --
+  // refreshing the Feed is worth a right-click on the Feed and not a line in
+  // the menu bar. A tray row needs an `id`, because the shell sends a
+  // description across to Rust and gets an id back; everything else stays on
+  // this side. `group` is what decides where it sits in the menu, so the
+  // menu's shape is this table's reading order.
   {
     id: 'journal:new-entry',
     label: 'New journal entry',
@@ -1312,12 +1331,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
   {
     id: 'overview:page',
     // The Overview used to offer four rows here, one per pane. There are no
-    // panes: it is one page of whatever somebody put on it, so it is one row.
+    // panes: it is one page of whatever somebody put on it, so it is one row
+    // -- in the palette only. In the tray it was a way to open the window,
+    // which "Open" already is, and in the app bar's menu it sat under "Open
+    // Overview" saying the same thing twice.
     label: 'How things are going',
     group: 'Overview',
     keywords: ['now', 'day', 'week', 'balance', 'dashboard', 'chart', 'progress'],
     icon: 'compass',
-    tray: true,
     when: () => app.screen === 'main' && app.supportsOverview,
     run: () => void app.goTo('overview'),
   },
@@ -1353,15 +1374,16 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Todo',
     keywords: ['goal', 'aim', 'intention', 'purpose', 'role'],
     icon: 'target',
-    tray: true,
+    quick: true,
     when: () => app.screen === 'main' && app.supportsOverview && app.supportsTasks,
     run: async () => {
       if (await app.goTo('todo')) await todo.setScope({ kind: 'goals' })
     },
   },
   {
-    // Palette-only: the tray already offers the pane, and one more row for
-    // the thing that pane opens with would be two ways to say the same thing.
+    // Palette-only: the todo app's menu already offers the pane, and one more
+    // row for the thing that pane opens with would be two ways to say the
+    // same thing.
     label: 'Add a goal',
     group: 'Todo',
     keywords: ['new goal', 'aim'],
@@ -1413,7 +1435,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Feed',
     keywords: ['follow', 'rss', 'subscribe', 'newsletter', 'hacker news', 'site'],
     icon: 'plus',
-    tray: true,
+    quick: true,
     when: () => app.screen === 'main' && app.supportsNews,
     run: async () => {
       if (await app.goTo('feed')) feed.openAdd()
@@ -1425,7 +1447,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Feed',
     keywords: ['fetch', 'update', 'news', 'check', 'rss'],
     icon: 'refresh',
-    tray: true,
+    quick: true,
     // Asking the network is a thing you do on your way past; the window has
     // nothing to show for it until you look.
     raise: false,
@@ -1438,7 +1460,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Money',
     keywords: ['bank', 'transactions', 'plaid', 'update', 'refresh', 'money'],
     icon: 'refresh',
-    tray: true,
+    quick: true,
     // The Feed's refresh, for the same reason: nothing to look at until you
     // choose to.
     raise: false,
@@ -1465,7 +1487,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Screen time',
     keywords: ['usage', 'apps', 'sites', 'how long', 'today', 'screen time'],
     icon: 'hourglass',
-    tray: true,
+    quick: true,
     when: () => app.screen === 'main' && app.supportsScreenTime,
     run: async () => {
       if (!(await app.goTo('screentime'))) return
@@ -1480,7 +1502,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Assistant',
     keywords: ['runs', 'log', 'routine', 'brief', 'report'],
     icon: 'inbox',
-    tray: true,
+    quick: true,
     when: () => app.screen === 'main' && app.supportsAssistant,
     // Settings rather than the app: the run log is a tab there now, and the
     // app is the conversation. See `AssistantPanes.svelte`.
@@ -1492,7 +1514,7 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Assistant',
     keywords: ['schedule', 'standing', 'every day', 'automate'],
     icon: 'clock',
-    tray: true,
+    quick: true,
     when: () => app.screen === 'main' && app.supportsRoutines,
     run: () => void assistant.draft(),
   },
@@ -1532,9 +1554,9 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Vault',
     keywords: ['sign out', 'seal', 'away'],
     icon: 'lock',
-    tray: true,
-    // The one action here that is about *not* coming back to the window.
-    raise: false,
+    // Not in the tray, which offers one lock -- the one below, which is also
+    // the app bar's. A screen hidden behind the tray has nothing on it to
+    // cover, and the key is what a lock from outside the window is for.
     // Nothing to lock on a vault with no password on it.
     when: () => app.screen === 'main' && app.status?.encrypted === true,
     run: () => void app.lockScreen(),
@@ -1546,11 +1568,12 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     keywords: ['sign out', 'seal', 'forget', 'key', 'everywhere', 'all'],
     icon: 'lock',
     tray: true,
+    // The one action in the tray about *not* coming back to the window.
     raise: false,
     // The heavier of the two, and worth spelling out where it is offered:
     // this drops the key. Every other window looking at this vault goes to
     // its lock screen, and the assistant stops until somebody types the
-    // password again.
+    // password again. What the app bar's Lock does too.
     when: () => app.screen === 'main' && app.status?.encrypted === true,
     run: () => void app.lock(),
   },

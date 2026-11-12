@@ -258,7 +258,11 @@
   })
 
   function openNote(id: string) {
-    void app.goTo('notes').then(() => noteStore.openNote(id))
+    // Not in a window of the Overview alone, which hands Notes to the main
+    // window: the note would be opened in a store nothing here draws.
+    void app.goTo('notes').then((went) => {
+      if (went) void noteStore.openNote(id)
+    })
   }
 
   /**

@@ -15,6 +15,8 @@
   // pressed, and the bar does not.
 
   import { app, type Section } from '../lib/state.svelte'
+  import { api } from '../lib/api'
+  import { canOpenWindows } from '../lib/appwindow'
   import { APPS as APP_REGISTRY } from '../lib/apps'
   import { assistant } from '../lib/assistant.svelte'
   import { jobs } from '../lib/jobs.svelte'
@@ -134,6 +136,15 @@
         disabled: app.section === entry.id && panels.settings === null,
         run: () => app.setSection(entry.id),
       },
+      // The app alone, beside this window -- see `appwindow.ts`. This window
+      // goes on offering it too. Not for a vault on another computer, whose
+      // windows would not hear of each other's writes.
+      canOpenWindows &&
+        !app.remote && {
+          label: 'Open in a new window',
+          icon: 'restore',
+          run: () => void api.openAppWindow(entry.id).catch(() => {}),
+        },
       SEP,
       ...tray.entriesFor(entry.label).map(toItem),
     ])

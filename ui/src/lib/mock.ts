@@ -8062,6 +8062,16 @@ export const mockInvoke = async <T>(
     case 'set_badge':
       return undefined as T
 
+    // An app in a window of its own -- see `lib/appwindow.ts`. A tab here,
+    // on a sample vault of its own: the preview has one page per tab, so
+    // nothing written in one reaches the other, but the window's shape --
+    // one app, no app bar -- can be looked at.
+    case 'open_app_window':
+      window.open(`${location.pathname}?window=${str(args.section)}`, '_blank')
+      return undefined as T
+    case 'show_in_main':
+      return undefined as T
+
     // ── The shell's half: capture, called by name -- see `api.ts`'s
     //    "Meeting capture, in the Tauri shell" ───────────────────────────
 
