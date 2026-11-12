@@ -220,7 +220,10 @@ fn normalize(id: &str) -> String {
 const REPLY_OR_FORWARD_PREFIXES: &[&str] =
     &["re", "fw", "fwd", "aw", "sv", "antw", "rv", "odp", "tr", "wg"];
 
-fn normalize_subject(subject: &str) -> String {
+/// A subject with every leading "Re:"/"Fwd:" (and their localised forms)
+/// taken off, its whitespace collapsed and lower-cased: what two subjects in
+/// one conversation have in common.
+pub fn normalize_subject(subject: &str) -> String {
     let mut rest = subject.trim();
     loop {
         let lower = rest.to_ascii_lowercase();
@@ -235,9 +238,29 @@ fn normalize_subject(subject: &str) -> String {
     rest.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()
 }
 
+/// Whether `subject` says it answers or passes on another message -- it opens
+/// with a "Re:" or "Fwd:" (or a localised form) -- rather than starting a
+/// conversation of its own.
+pub fn is_reply_or_forward(subject: &str) -> bool {
+    let plain = subject.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    !plain.is_empty() && normalize_subject(subject) != plain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_or_forward_is_told_by_its_prefix() {
+        assert!(is_reply_or_forward("Re: Tavrn numbers"));
+        assert!(is_reply_or_forward("RE:  Tavrn numbers"));
+        assert!(is_reply_or_forward("Fwd: Re: Tavrn numbers"));
+        assert!(is_reply_or_forward("AW: Angebot"));
+        assert!(!is_reply_or_forward("Tavrn numbers"));
+        assert!(!is_reply_or_forward("Reminder: rent"));
+        assert!(!is_reply_or_forward(""));
+        assert_eq!(normalize_subject("Re: Fwd:  Tavrn   Numbers"), "tavrn numbers");
+    }
 
     fn message(
         id: &str,

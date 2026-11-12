@@ -77,6 +77,13 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// bounces at least once.
 const MAX_REDIRECTS: usize = 5;
 
+/// The code for a request that failed in transport: [`codes::UNREACHABLE`]
+/// when it never reached the server -- no connection, or no answer in time --
+/// and [`codes::NETWORK`] for anything else that went wrong on the way.
+pub fn transport_code(e: &reqwest::Error) -> &'static str {
+    if e.is_connect() || e.is_timeout() { codes::UNREACHABLE } else { codes::NETWORK }
+}
+
 /// The shared client.
 ///
 /// Built once, on first use. Default features give rustls, HTTP/2 and the

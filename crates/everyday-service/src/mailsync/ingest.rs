@@ -54,6 +54,27 @@
 //!   [`everyday_core::Vault::merge_mail_threads`], and redirects this run's
 //!   own memory of the merged-away ids -- see [`ThreadIndex::resolve`] and
 //!   [`ThreadIndex::redirect`].
+//!
+//! # A reply with no headers to follow
+//!
+//! Some replies name nothing: no `In-Reply-To`, no `References`, only "Re:"
+//! and the subject. Sales tools and mail-merge services that send through a
+//! person's mailbox do this, and so do some phone clients. Neither of the
+//! two mechanisms above can place one -- Gmail starts a thread of its own for
+//! it, and in Gmail's own window it shows apart too -- and somebody reading
+//! the conversation sees the answer to their question somewhere else. So such
+//! a message, and only such a message, joins the account's thread with the
+//! same subject when somebody other than the account itself is in both, and
+//! both are from the last [`SUBJECT_LINK_DAYS`] -- see [`subject_thread`].
+//! `threading::Options::subject_fallback` stays off for every other message:
+//! a subject is not an identifier, and these three conditions are what keep
+//! "Re: Invoice" from two strangers apart.
+//!
+//! On Gmail the message keeps its own `X-GM-THRID`, and the next message in
+//! that Gmail thread -- an answer to it, naming it in `References` -- would
+//! hash to Gmail's separate thread again. [`ThreadIndex::resolve`] looks for
+//! that: a message whose chain names one already moved out of its Gmail
+//! thread follows it to where it went.
 
 use std::collections::HashMap;
 
@@ -187,22 +208,36 @@ pub fn resolve_header(
 
     let local_key = format!("uid:{}", header.uid);
     let gmail_thrid = header.gmail.as_ref().map(|g| g.thrid);
-    let thread_id = threads.resolve(
-        vault,
-        account_id,
-        parsed.message_id.as_deref(),
-        parsed.in_reply_to.as_deref(),
-        &parsed.references,
-        &local_key,
-        gmail_thrid,
-    );
+    let date = parsed.date.unwrap_or(header.internal_date);
+    // A message something earlier in this run already answered -- naming it in
+    // `References` -- goes where that answer went, by `resolve`'s backward
+    // check, not by its subject.
+    let key = parsed.message_id.as_deref().unwrap_or(&local_key);
+    let linked =
+        if parsed.in_reply_to.is_none() && parsed.references.is_empty() && !threads.is_named(key) {
+            subject_thread(vault, account_id, &parsed, date, gmail_thrid, threads)
+        } else {
+            None
+        };
+    let thread_id = match linked {
+        Some(thread_id) => threads.adopt(key, gmail_thrid, thread_id),
+        None => threads.resolve(
+            vault,
+            account_id,
+            parsed.message_id.as_deref(),
+            parsed.in_reply_to.as_deref(),
+            &parsed.references,
+            &local_key,
+            gmail_thrid,
+        ),
+    };
 
     let message = Message {
         id: MailMessageId::new(),
         account_id,
         thread_id,
         message_id_header: parsed.message_id.clone().unwrap_or_else(|| local_key.clone()),
-        date: parsed.date.unwrap_or(header.internal_date),
+        date,
         from: parsed.from.first().map(to_address).unwrap_or_else(|| MailAddress::bare("")),
         to: parsed.to.iter().map(to_address).collect(),
         cc: parsed.cc.iter().map(to_address).collect(),
@@ -257,6 +292,110 @@ pub(crate) fn mail_flags(f: Flags) -> MessageFlags {
     }
 }
 
+/// How recent a reply with no headers must be, and how recently the thread
+/// it names by subject must have had a message, for [`subject_thread`] to put
+/// them together. A month: long enough for a slow answer, short enough that
+/// next quarter's "Re: Invoice" is not this quarter's.
+const SUBJECT_LINK_DAYS: i64 = 30;
+
+/// How many of the account's newest threads [`subject_thread`] looks through.
+const SUBJECT_LINK_LOOK: u32 = 200;
+
+/// The thread a reply that names no other message belongs in, by subject --
+/// see the module docs, "A reply with no headers to follow". `None` unless
+/// the subject says it is a reply or a forward, the message is from the last
+/// [`SUBJECT_LINK_DAYS`], and one of the account's threads has the same
+/// subject, somebody besides the account itself in common with it, and a
+/// message from no more than that long before it. Of several, the one whose
+/// last message before this one is latest: a conversation that only began
+/// after this reply was sent cannot be what it answers.
+///
+/// Not on Gmail when Gmail already put other messages in this one's thread:
+/// Gmail had a reason, and those messages are where it belongs.
+fn subject_thread(
+    vault: &Vault,
+    account_id: AccountId,
+    parsed: &mime::ParsedMessage,
+    date: jiff::Timestamp,
+    gmail_thrid: Option<u64>,
+    threads: &ThreadIndex,
+) -> Option<ThreadId> {
+    use everyday_core::mail::MailboxRole;
+    use everyday_core::store::mail::ThreadFilter;
+    use everyday_mail::threading::{is_reply_or_forward, normalize_subject};
+
+    let subject = parsed.subject.as_deref().unwrap_or_default();
+    if !is_reply_or_forward(subject) {
+        return None;
+    }
+    let window = SUBJECT_LINK_DAYS * 24 * 60 * 60;
+    if jiff::Timestamp::now().as_second() - date.as_second() > window {
+        return None;
+    }
+    if gmail_thrid.is_some_and(|thrid| threads.by_gmail_thrid.contains_key(&thrid)) {
+        return None;
+    }
+    let mailboxes: Vec<_> = vault
+        .mailboxes(account_id)
+        .ok()?
+        .into_iter()
+        .filter(|m| !matches!(m.role, MailboxRole::Trash | MailboxRole::Spam))
+        .map(|m| m.id)
+        .collect();
+    // Whether Gmail's own thread for it already holds anything, asked of the
+    // thread rows alone rather than by reading every message in it.
+    if let Some(thrid) = gmail_thrid {
+        let own = gmail_thread_id(account_id, thrid);
+        let listed = vault.threads_listed(&mailboxes, &ThreadFilter::default(), &[own]).ok()?;
+        if !listed.is_empty() {
+            return None;
+        }
+    }
+
+    let account = vault.account(account_id).ok()?;
+    let own = crate::mailai::own_addresses(&account);
+    let people: std::collections::HashSet<String> = parsed
+        .from
+        .iter()
+        .chain(&parsed.to)
+        .chain(&parsed.cc)
+        .filter_map(|a| a.email.as_deref())
+        .map(str::to_lowercase)
+        .filter(|email| !own.contains(email))
+        .collect();
+    if people.is_empty() {
+        return None;
+    }
+
+    let page = vault
+        .list_threads_across(&mailboxes, &ThreadFilter::default(), None, SUBJECT_LINK_LOOK)
+        .ok()?;
+    let wanted = normalize_subject(subject);
+    page.threads
+        .into_iter()
+        .filter(|t| normalize_subject(&t.subject) == wanted)
+        // Only the threads with the same subject are opened: to see everybody
+        // who wrote and was written to in them -- `participants` names only
+        // who wrote -- and when their messages were.
+        .filter_map(|t| {
+            let (_, messages) = vault.thread(t.id).ok()?;
+            let in_common = messages.iter().any(|m| {
+                std::iter::once(&m.from)
+                    .chain(&m.to)
+                    .chain(&m.cc)
+                    .any(|a| people.contains(&a.email.to_lowercase()))
+            });
+            let before = messages
+                .iter()
+                .map(|m| m.date)
+                .filter(|at| *at <= date && date.as_second() - at.as_second() <= window)
+                .max()?;
+            in_common.then_some((before, t.id))
+        })
+        .max_by_key(|(before, _)| *before)
+        .map(|(_, id)| id)
+}
+
 /// A deterministic [`ThreadId`] for Gmail's own `X-GM-THRID`, stable across
 /// a restart without a lookup -- see the module docs.
 fn gmail_thread_id(account_id: AccountId, thrid: u64) -> ThreadId {
@@ -265,6 +404,27 @@ fn gmail_thread_id(account_id: AccountId, thrid: u64) -> ThreadId {
     let mut bytes = [0u8; 16];
     bytes.copy_from_slice(&hash.as_bytes()[..16]);
     ThreadId::from(uuid::Uuid::from_bytes(bytes))
+}
+
+/// Where `thrid`'s messages went, when the one this message answers --
+/// `parent`, its `In-Reply-To` -- was moved out of its Gmail thread by
+/// [`subject_thread`]: a message in the same Gmail thread living somewhere
+/// other than that thread's own id. `None` -- Gmail's own grouping -- every
+/// other time. One keyed lookup, which misses without reading anything when
+/// the parent is not stored; the parent alone, because a message that moved
+/// carries the ones answering it, and those carry theirs.
+fn moved_gmail_thread(
+    vault: &Vault,
+    account_id: AccountId,
+    thrid: u64,
+    parent: &str,
+) -> Option<ThreadId> {
+    let id = vault.mail_message_by_header(account_id, parent).ok().flatten()?;
+    let message = vault.mail_message(id).ok()?;
+    let same_gmail_thread = message.gmail.as_ref().and_then(|g| g.thread_id.as_deref())
+        == Some(thrid.to_string().as_str());
+    let own = gmail_thread_id(account_id, thrid);
+    (same_gmail_thread && message.thread_id != own).then_some(message.thread_id)
 }
 
 /// `References`, if present and non-empty, else `In-Reply-To` alone -- RFC
@@ -328,6 +488,23 @@ impl ThreadIndex {
         self.by_message_id.insert(message_id.to_string(), thread_id);
     }
 
+    /// Whether a message already placed this run names `key` in its chain --
+    /// [`ThreadIndex::resolve`]'s backward check would find it.
+    pub fn is_named(&self, key: &str) -> bool {
+        self.by_referenced_id.contains_key(key)
+    }
+
+    /// Place a message in `thread_id`, decided elsewhere -- by
+    /// [`subject_thread`] -- and remember it as [`ThreadIndex::resolve`]
+    /// would, its Gmail thread included, so the rest of this run follows it.
+    pub fn adopt(&mut self, key: &str, gmail_thrid: Option<u64>, thread_id: ThreadId) -> ThreadId {
+        self.by_message_id.insert(key.to_string(), thread_id);
+        if let Some(thrid) = gmail_thrid {
+            self.by_gmail_thrid.insert(thrid, thread_id);
+        }
+        thread_id
+    }
+
     /// Place a message with no stored row yet. See the module docs for the
     /// two mechanisms this chooses between.
     ///
@@ -351,7 +528,17 @@ impl ThreadIndex {
         let key = own_message_id.unwrap_or(local_key).to_string();
 
         let thread_id = if let Some(thrid) = gmail_thrid {
-            *self.by_gmail_thrid.entry(thrid).or_insert_with(|| gmail_thread_id(account_id, thrid))
+            match self.by_gmail_thrid.get(&thrid) {
+                Some(&tid) => tid,
+                None => {
+                    let parent = in_reply_to.or(references.last().map(String::as_str));
+                    let tid = parent
+                        .and_then(|parent| moved_gmail_thread(vault, account_id, thrid, parent))
+                        .unwrap_or_else(|| gmail_thread_id(account_id, thrid));
+                    self.by_gmail_thrid.insert(thrid, tid);
+                    tid
+                }
+            }
         } else {
             let mut candidates: Vec<ThreadId> = Vec::new();
             for r in &chain {

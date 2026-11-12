@@ -566,6 +566,33 @@ fn when_it_starts(event: &ReminderEvent, now: Timestamp, zone: &TimeZone) -> Str
     }
 }
 
+/// How far ahead the reminder tick tells the calendar refresher what is coming
+/// round -- see [`upcoming`]. More than the refresher's minute between looks,
+/// so a reminder never falls between two; few enough minutes that a meeting
+/// moved just before is still caught.
+const UPCOMING_SECS: i64 = 3 * 60;
+
+/// Every moment in the next [`UPCOMING_SECS`] at which an event not called off
+/// is reminded of -- [`ReminderEvent::alert_at`], the rule the reminders
+/// themselves follow -- or starts, which is when the meeting-notes offer comes,
+/// with its calendar. What `Service::calendars_alerting_soon` answers from.
+pub fn upcoming(events: &[ReminderEvent], now: Timestamp) -> Vec<(CalendarId, i64)> {
+    let window = now.as_second()..=now.as_second() + UPCOMING_SECS;
+    events
+        .iter()
+        .filter(|event| !event.cancelled)
+        .flat_map(|event| {
+            event
+                .at
+                .iter()
+                .map(|minutes| event.alert_at(*minutes).as_second())
+                .chain(std::iter::once(event.start.as_second()))
+                .filter(|at| window.contains(at))
+                .map(|at| (event.calendar_id, at))
+        })
+        .collect()
+}
+
 /// How late an alert may still be announced: a minute tick that landed late,
 /// a machine woken a few minutes after the moment -- and the gap between two
 /// of the reminder tick's wider looks ([`REMIND_WIDE_EVERY_SECS`]), which
@@ -622,7 +649,7 @@ fn tick_calendars_inner(svc: &Service, vault: &Vault) -> CoreResult<()> {
     if wide {
         WIDE_LOOK_AT.store(now.as_second(), Ordering::Relaxed);
     }
-    let considered: Vec<ReminderEvent> = events
+    let all: Vec<ReminderEvent> = events
         .iter()
         .map(|event| ReminderEvent {
             calendar_id: event.calendar_id,
@@ -636,8 +663,10 @@ fn tick_calendars_inner(svc: &Service, vault: &Vault) -> CoreResult<()> {
             cancelled: event.status == EventStatus::Cancelled,
             at: settings.for_event(event),
         })
-        .filter(|event| !event.at.is_empty())
         .collect();
+    svc.set_upcoming_alerts(upcoming(&all, now));
+    let considered: Vec<ReminderEvent> =
+        all.into_iter().filter(|event| !event.at.is_empty()).collect();
     // Last, as the meeting watcher does: recording an alert as announced for
     // a reason that then skipped it would swallow the real reminder.
     let fresh: Vec<DueReminder> = due_reminders(&considered, now)
@@ -1048,6 +1077,29 @@ mod tests {
                 AccountSyncCursor::default(),
             )
             .unwrap();
+    }
+
+    /// The calendar of a reminder about to go out, or of a meeting about to
+    /// start, is checked first; one whose reminder is a while off, or that
+    /// was called off, is not.
+    #[test]
+    fn the_calendar_of_a_reminder_about_to_go_out_is_checked_first() {
+        let (svc, vault, _dir) = env();
+        let work = account_calendar(&vault, "Work");
+        let home = account_calendar(&vault, "Home");
+        let gone = account_calendar(&vault, "Gone");
+        let standup = account_calendar(&vault, "Stand-up");
+        // The default reminder is ten minutes before.
+        seed(&vault, work.id, &event_at(work.id, "Design sync", 11 * 60, false));
+        seed(&vault, home.id, &event_at(home.id, "Dinner", 60 * 60, false));
+        let mut called_off = event_at(gone.id, "Called off", 11 * 60, false);
+        called_off.status = EventStatus::Cancelled;
+        seed(&vault, gone.id, &called_off);
+        seed(&vault, standup.id, &event_at(standup.id, "Stand-up", 2 * 60, false));
+
+        tick_calendars(&svc, &vault);
+        let soon = svc.calendars_alerting_soon(svc.now());
+        assert_eq!(soon, std::collections::HashSet::from([work.id, standup.id]));
     }
 
     #[test]

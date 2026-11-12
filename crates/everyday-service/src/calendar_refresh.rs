@@ -18,22 +18,31 @@
 //! announces only what changed: one that says something every few minutes would
 //! keep the key in memory for as long as a window was open.
 
-use crate::domains::calendars::sync_due;
-use crate::error::codes;
-use crate::events::{Change, Kind, Op};
-use crate::service::Service;
-use crate::supervisor::{Outcome, TaskResult};
-use everyday_core::Vault;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+
+use crate::domains::calendars::{SYNC_AT_ONCE, due_calendars, settle, sync_chosen};
+use crate::error::codes;
+use crate::events::{Change, Kind, Op};
+use crate::service::{Service, blocking};
+use crate::supervisor::{Outcome, TaskResult};
+use everyday_core::Vault;
+use everyday_core::id::CalendarId;
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 
 /// The supervisor's key for this task.
 pub const TASK_KEY: &str = "calendars";
 
-/// How often to look for a calendar that has come due. Also how soon a failed
-/// one is tried again, since a failure leaves it due, so this is not a minute.
-const LOOK_EVERY: Duration = Duration::from_secs(5 * 60);
+/// How often to look for a calendar that has come due, or that has a reminder
+/// coming round in the next few minutes and has not been checked lately. A
+/// minute, the reminder tick's own, so a meeting moved on somebody's phone is
+/// fetched before its old alert goes off rather than after. Looking costs a
+/// read of the calendar list; what is coming round is what the reminder tick
+/// already read (see `Service::calendars_alerting_soon`), and a calendar that
+/// failed is tried again only every few minutes (see `Service::feed_retry_due`).
+const LOOK_EVERY: Duration = Duration::from_secs(60);
 
 /// Start the refresher if it is not already running. Idempotent -- see
 /// [`crate::supervisor::Supervisor::ensure`] -- so it is called from every
@@ -59,48 +68,88 @@ pub fn ensure_task(svc: &Arc<Service>, vault: &Arc<Vault>) {
     });
 }
 
-/// The supervised loop: refresh what is due, say so if that changed anything,
-/// and look again in [`LOOK_EVERY`]. Returns when `stop` turns `true`.
+/// The supervised loop: every [`LOOK_EVERY`], start syncing what is due, a few
+/// calendars at a time, each its own task; say what each came to as it lands;
+/// tell an open window once nothing is left syncing. Returns when `stop` turns
+/// `true`.
+///
+/// Each calendar is its own task so that one server that has stopped answering
+/// -- held until its sync's ceiling, minutes -- holds up only itself: the next
+/// look still comes a minute later, and still checks the calendar of a
+/// reminder about to go out. A calendar still syncing is not started again.
+///
+/// Stopping drops whatever is still syncing, rather than waiting: a calendar
+/// server that has stopped answering must not hold up a lock. Everything a
+/// sync stores goes through the blocking pool, which sees its write through
+/// whether or not anyone is still waiting for it.
 pub async fn run(
     svc: Arc<Service>,
     vault: Arc<Vault>,
     mut stop: watch::Receiver<bool>,
 ) -> TaskResult {
+    let mut syncing = JoinSet::new();
+    let mut which: HashMap<tokio::task::Id, CalendarId> = HashMap::new();
+    let mut changed = false;
+    let mut look = tokio::time::Instant::now();
     loop {
         if *stop.borrow() {
             return Ok(Outcome::Done);
         }
-        // Raced with the signal rather than left to finish: a calendar server
-        // that has stopped answering must not hold up a lock. Everything a sync
-        // stores goes through the blocking pool, which sees its write through
-        // whether or not anyone is still waiting for it.
         tokio::select! {
-            pass = sync_due(&svc, &vault, false) => match pass {
-                Ok(pass) => {
-                    if pass.changed {
-                        svc.events().changed(Change::new(Kind::Event, Op::Updated));
-                    }
-                }
-                // Locked between one turn and the next: nothing to read and
-                // nothing to write. The supervisor stops this task on the lock
-                // in any case; until it does, wait.
-                Err(e) if e.code == codes::LOCKED => {}
-                Err(e) => return Err(e.into()),
-            },
-            changed = stop.changed() => {
-                if changed.is_err() {
-                    return Ok(Outcome::Done);
-                }
-                continue;
-            }
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(LOOK_EVERY) => {}
-            changed = stop.changed() => {
+            stopping = stop.changed() => {
                 // The sender is gone: nobody is left to ask this to stop, or
                 // to want what it does.
-                if changed.is_err() {
+                if stopping.is_err() {
                     return Ok(Outcome::Done);
+                }
+            }
+            Some(landed) = syncing.join_next_with_id(), if !syncing.is_empty() => {
+                let id = match &landed {
+                    Ok((task, _)) => *task,
+                    Err(e) => e.id(),
+                };
+                which.remove(&id);
+                if let Ok((_, (calendar, result))) = landed {
+                    let (svc, vault) = (svc.clone(), vault.clone());
+                    changed |= blocking(move || Ok(settle(&svc, &vault, &calendar, &result)))
+                        .await
+                        .unwrap_or(false);
+                }
+                // A pass announces a change once, when it is over, and only
+                // when an event came or went or a failure started or stopped:
+                // a window reloading for it counts as somebody being there,
+                // and every few minutes of that would keep the key in memory
+                // for as long as a window was open.
+                if changed && syncing.is_empty() {
+                    changed = false;
+                    svc.events().changed(Change::new(Kind::Event, Op::Updated));
+                }
+            }
+            () = tokio::time::sleep_until(look) => {
+                look = tokio::time::Instant::now() + LOOK_EVERY;
+                // A sync held up past a whole look has kept its news long enough.
+                if changed {
+                    changed = false;
+                    svc.events().changed(Change::new(Kind::Event, Op::Updated));
+                }
+                let soon = svc.calendars_alerting_soon(svc.now());
+                let skip: HashSet<CalendarId> = which.values().copied().collect();
+                let due = {
+                    let (svc, vault) = (svc.clone(), vault.clone());
+                    blocking(move || Ok(due_calendars(&svc, &vault, false, &soon, &skip)?)).await
+                };
+                let due = match due {
+                    Ok(due) => due,
+                    // Locked between one look and the next: nothing to read
+                    // and nothing to write. The supervisor stops this task on
+                    // the lock in any case; until it does, wait.
+                    Err(e) if e.code == codes::LOCKED => Vec::new(),
+                    Err(e) => return Err(e.into()),
+                };
+                for calendar in due.into_iter().take(SYNC_AT_ONCE.saturating_sub(which.len())) {
+                    let id = calendar.id;
+                    let task = syncing.spawn(sync_chosen(svc.clone(), vault.clone(), calendar));
+                    which.insert(task.id(), id);
                 }
             }
         }

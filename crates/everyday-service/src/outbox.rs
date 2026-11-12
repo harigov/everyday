@@ -582,6 +582,7 @@ async fn mark_account_needs_sign_in(
     let loaded = blocking(move || Ok(vault_for_account.account(account)?)).await;
     if let Ok(acct) = loaded {
         crate::mailsync::credential::mark_needs_sign_in(vault, &acct, reason, svc.now());
+        crate::trouble::sign_in_needed(svc, vault, account);
     }
 }
 

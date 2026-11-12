@@ -526,7 +526,10 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
             .send()
             .await
             .map_err(|e| {
-                CommandError::new(codes::NETWORK, format!("could not reach Microsoft Graph: {e}"))
+                CommandError::new(
+                    http::transport_code(&e),
+                    format!("could not reach Microsoft Graph: {e}"),
+                )
             })?;
         let status = response.status().as_u16();
         if status == 401 {

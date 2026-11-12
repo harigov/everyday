@@ -251,3 +251,69 @@ async fn a_blank_selection_asks_nobody_and_keeps_nothing() {
         "and nothing was written behind the command's back"
     );
 }
+
+#[tokio::test]
+async fn bullets_and_blank_lines_the_model_dropped_are_put_back() {
+    let model = fake_model("Hi team,\nBuy milk.\nCall Sam.").await;
+    let (svc, _dir) = env(&model.endpoint);
+
+    let assist: WritingAssist = serde_json::from_value(
+        call(
+            &svc,
+            "rewrite_selection",
+            json!({ "text": "Hi team,\n\n- buy milk\n- call sam\n", "action": "grammar" }),
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(assist.result, "Hi team,\n\n- Buy milk.\n- Call Sam.\n");
+
+    let requests = model.requests.lock().unwrap().clone();
+    assert!(
+        requests[0].contains("3 lines with words on them, 1 blank line"),
+        "the model is told this text's layout: {}",
+        requests[0]
+    );
+    assert!(
+        !requests.iter().any(|r| r.contains("Your first answer was")),
+        "the same lines of words need no second ask"
+    );
+}
+
+#[tokio::test]
+async fn an_answer_that_joins_lines_is_asked_for_once_more() {
+    let model = fake_model("First line and second line.").await;
+    let (svc, _dir) = env(&model.endpoint);
+
+    let assist: WritingAssist = serde_json::from_value(
+        call(
+            &svc,
+            "rewrite_selection",
+            json!({ "text": "first line\nsecond line", "action": "improve" }),
+        )
+        .await,
+    )
+    .unwrap();
+    // Asked again, and the same answer came back: it is kept rather than
+    // failing, since the popup shows it before anything is pasted.
+    assert_eq!(assist.result, "First line and second line.");
+    let requests = model.requests.lock().unwrap().clone();
+    assert!(
+        requests.iter().any(|r| r.contains("Your first answer was")
+            && r.contains("the text has 2 lines with words on them and your answer has 1")),
+        "asked again, saying what changed: {requests:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_windows_selection_gets_its_own_line_endings_back() {
+    let model = fake_model("One.\nTwo.").await;
+    let (svc, _dir) = env(&model.endpoint);
+
+    let assist: WritingAssist = serde_json::from_value(
+        call(&svc, "rewrite_selection", json!({ "text": "one\r\ntwo\r\n", "action": "grammar" }))
+            .await,
+    )
+    .unwrap();
+    assert_eq!(assist.result, "One.\r\nTwo.\r\n");
+}

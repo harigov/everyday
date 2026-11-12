@@ -288,18 +288,28 @@ async fn close_clears_routine_feed_and_remote_image_bookkeeping_even_while_a_cla
     assert!(svc.claims_run("run-1"));
     let failed_at: jiff::Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
     let on = |mins| failed_at + jiff::SignedDuration::from_mins(mins);
-    assert!(!svc.feed_failed(calendar, failed_at), "a first failure may only be no wifi yet");
-    assert!(!svc.feed_failed(calendar, on(25)));
-    assert!(!svc.feed_failed(calendar, on(50)));
-    assert!(svc.feed_failed(calendar, on(65)), "it has lasted, so it is worth saying");
-    assert!(!svc.feed_failed(calendar, on(70)), "and worth saying once");
+    // A server that answered and refused: said once it has lasted.
+    let refused = |t| svc.feed_failed(calendar, t, false);
+    assert!(!refused(failed_at), "a first failure may only be no wifi yet");
+    assert!(!refused(on(5)));
+    assert!(!refused(on(10)));
+    assert!(refused(on(15)), "it has lasted, so it is worth saying");
+    svc.feed_said(calendar);
+    assert!(!refused(on(20)), "and worth saying once");
+    assert!(!svc.feed_retry_due(calendar, on(22)), "tried again every few minutes, not every one");
+    assert!(svc.feed_retry_due(calendar, on(25)));
     // One failure before a night's sleep and another on waking are two blips.
     let asleep = CalendarId::new();
-    assert!(!svc.feed_failed(asleep, failed_at));
-    assert!(!svc.feed_failed(asleep, on(16 * 60)), "nothing is known about the night");
-    assert!(!svc.feed_failed(asleep, on(16 * 60 + 25)));
-    assert!(!svc.feed_failed(asleep, on(16 * 60 + 50)));
-    assert!(svc.feed_failed(asleep, on(16 * 60 + 65)), "but it has lasted since waking");
+    assert!(!svc.feed_failed(asleep, failed_at, false));
+    assert!(!svc.feed_failed(asleep, on(16 * 60), false), "nothing is known about the night");
+    assert!(!svc.feed_failed(asleep, on(16 * 60 + 5), false));
+    assert!(!svc.feed_failed(asleep, on(16 * 60 + 10), false));
+    assert!(svc.feed_failed(asleep, on(16 * 60 + 15), false), "but it has lasted since waking");
+    // A server never reached, with nothing else reached either: this machine
+    // is offline, and that is not every calendar failing.
+    let offline = CalendarId::new();
+    assert!(!svc.feed_failed(offline, failed_at, true));
+    assert!(!svc.feed_failed(offline, on(20), true));
     svc.allow_remote_images_once(message);
     assert!(svc.remote_images_allowed_once(message));
 
@@ -308,10 +318,10 @@ async fn close_clears_routine_feed_and_remote_image_bookkeeping_even_while_a_cla
     assert_eq!(svc.running_routine(), None);
     assert!(svc.routine_failed("r1".to_string()), "cleared, so reporting it again is news again");
     assert!(!svc.claims_run("run-1"), "close() clears claimed runs even with the guard still held");
-    assert!(!svc.feed_failed(calendar, on(70)), "cleared, so this is a new outage");
-    assert!(!svc.feed_failed(calendar, on(95)));
-    assert!(!svc.feed_failed(calendar, on(120)));
-    assert!(svc.feed_failed(calendar, on(135)), "which is news again once it has lasted");
+    assert!(!svc.feed_failed(calendar, on(70), false), "cleared, so this is a new outage");
+    assert!(!svc.feed_failed(calendar, on(75), false));
+    assert!(!svc.feed_failed(calendar, on(80), false));
+    assert!(svc.feed_failed(calendar, on(85), false), "which is news again once it has lasted");
     assert!(!svc.remote_images_allowed_once(message));
 
     // The guard for the run close() already forgot must still drop

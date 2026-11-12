@@ -79,6 +79,7 @@
 //! (`webpki-roots`) with its own update cadence to keep in step with.
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -166,6 +167,33 @@ const IDLE_REISSUE: Duration = Duration::from_secs(25 * 60);
 /// otherwise hold the account task at "connecting" forever, with the
 /// account itself still reading as fine.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a connection may sit with nothing on it before the system asks
+/// the server, below IMAP, whether it is still there; how often it asks again;
+/// and how many unanswered asks end the connection. A connection holding
+/// `IDLE` is silent for up to [`IDLE_REISSUE`] by design, and one whose far
+/// end vanished -- a router that dropped its mapping, a server that went away
+/// without saying so -- is silent the same way. Without these the system's
+/// own defaults wait two hours before asking at all, and the account's mail
+/// stops arriving for that long with nothing reading as wrong. With them a
+/// dead connection is an error within a couple of minutes, and the account
+/// task reconnects.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const KEEPALIVE_PROBES: u32 = 4;
+
+/// Longest a command this side wrote may go unacknowledged by the server's
+/// system before the connection is given up on (Linux's `TCP_USER_TIMEOUT`).
+/// Keepalive only speaks for a quiet connection; this is the same promise for
+/// one that sent `DONE` or a `FETCH` into a connection that is no longer
+/// there, which otherwise retransmits for a quarter of an hour.
+#[cfg(target_os = "linux")]
+const UNACKNOWLEDGED_LIMIT: Duration = Duration::from_secs(90);
+
+/// Longest starting or ending an `IDLE` may take: one short line each way.
+/// A server that does not answer `DONE` in this long is not going to, and
+/// the caller reconnects rather than waiting on it.
+const IDLE_ROUND_TRIP: Duration = Duration::from_secs(30);
 
 /// One live, authenticated IMAP connection: the [`crate::session::MailSession`]
 /// implementation over `async-imap`.
@@ -636,7 +664,7 @@ impl MailSession for ImapSession {
         loop {
             let session = self.take_session()?;
             let mut handle = session.idle();
-            handle.init().await.map_err(classify)?;
+            within_idle_round_trip("start", handle.init()).await?;
             // `_interrupt` (async-imap's own `stop_token::StopSource`) is
             // kept alive, unused otherwise, for exactly as long as `wait`
             // is polled below; this method's own stop signal is the `stop`
@@ -655,7 +683,7 @@ impl MailSession for ImapSession {
                     // connection per idle failure and forcing the next
                     // call to reconnect from scratch. See this method's
                     // own regression test.
-                    let done = handle.done().await.map_err(classify);
+                    let done = within_idle_round_trip("end", handle.done()).await;
                     match done {
                         Ok(session) => self.session = Some(session),
                         Err(e) => return Err(e),
@@ -668,7 +696,7 @@ impl MailSession for ImapSession {
                     }
                 }
                 _ = stop.changed() => {
-                    self.session = Some(handle.done().await.map_err(classify)?);
+                    self.session = Some(within_idle_round_trip("end", handle.done()).await?);
                     return Ok(IdleEvent::Stopped);
                 }
             }
@@ -677,6 +705,44 @@ impl MailSession for ImapSession {
 
     fn capabilities(&self) -> &Capabilities {
         &self.capabilities
+    }
+}
+
+/// Start or end an `IDLE` within [`IDLE_ROUND_TRIP`], or say the connection is
+/// gone. A connection whose `DONE` was never answered is dropped with the
+/// call, which leaves the session empty -- read as [`MailError::Network`] by
+/// the next command, and reconnected from.
+async fn within_idle_round_trip<T>(
+    which: &str,
+    step: impl Future<Output = std::result::Result<T, ImapLibError>>,
+) -> Result<T> {
+    tokio::time::timeout(IDLE_ROUND_TRIP, step)
+        .await
+        .map_err(|_| {
+            MailError::Network(format!(
+                "the server did not answer the {which} of IDLE within {} seconds",
+                IDLE_ROUND_TRIP.as_secs()
+            ))
+        })?
+        .map_err(classify)
+}
+
+/// Turn on the system's checks for a connection whose far end has gone --
+/// see [`KEEPALIVE_IDLE`] and [`UNACKNOWLEDGED_LIMIT`]. A system that refuses
+/// them leaves the connection as it would have been without them, so a
+/// refusal is logged and nothing more.
+fn notice_when_dead(tcp: &TcpStream) {
+    let socket = socket2::SockRef::from(tcp);
+    let keepalive = socket2::TcpKeepalive::new()
+        .with_time(KEEPALIVE_IDLE)
+        .with_interval(KEEPALIVE_INTERVAL)
+        .with_retries(KEEPALIVE_PROBES);
+    if let Err(e) = socket.set_tcp_keepalive(&keepalive) {
+        tracing::debug!(error = %e, "could not turn on keepalive for a mail connection");
+    }
+    #[cfg(target_os = "linux")]
+    if let Err(e) = socket.set_tcp_user_timeout(Some(UNACKNOWLEDGED_LIMIT)) {
+        tracing::debug!(error = %e, "could not limit unacknowledged writes on a mail connection");
     }
 }
 
@@ -749,6 +815,7 @@ async fn open(
     verifier: Verifier,
 ) -> Result<ImapSession> {
     let tcp = TcpStream::connect((host, port)).await.map_err(classify_io)?;
+    notice_when_dead(&tcp);
 
     let mut session = match security {
         Security::Tls => {

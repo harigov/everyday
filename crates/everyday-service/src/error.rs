@@ -86,6 +86,11 @@ pub mod codes {
     pub const FORBIDDEN: &str = "forbidden";
     pub const INTERNAL: &str = "internal";
     pub const NETWORK: &str = "network";
+    /// A request that never reached its server: no connection, or no answer in
+    /// time. [`NETWORK`] is a server that answered and failed. What tells a
+    /// machine that is offline from a server that is down -- see
+    /// `crate::trouble`. Shown the same way.
+    pub const UNREACHABLE: &str = "unreachable";
     pub const NOT_AN_IMAGE: &str = "not_an_image";
     /// `weather` (the command) was asked with no place and the profile has
     /// none either. Its own code, distinct from [`INVALID`], because the
@@ -148,6 +153,7 @@ pub mod codes {
         FORBIDDEN,
         INTERNAL,
         NETWORK,
+        UNREACHABLE,
         NOT_AN_IMAGE,
         NO_LOCATION,
         PANIC,

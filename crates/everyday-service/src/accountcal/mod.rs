@@ -272,6 +272,31 @@ async fn note_if_credential_is_bad<T>(
         && e.code == codes::FORBIDDEN
     {
         tokens::mark_needs_sign_in(vault, account.id, &e.message, svc.now()).await;
+        crate::trouble::sign_in_needed(svc, vault, account.id);
+    }
+}
+
+/// Longest a CalDAV calendar's sync may take before it is given up as failed,
+/// once it has synced before: asking what changed is a request or two. Room
+/// for a slow server, not for one that stopped.
+pub(crate) const SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3 * 60);
+
+/// The same, for a CalDAV calendar's first sync, which fetches its whole
+/// window -- a busy calendar's years of events, in batches.
+const FIRST_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// How long `calendar`'s sync may take, when it needs a ceiling at all. See
+/// [`sync`].
+fn caldav_ceiling(
+    source: AccountCalendarSource,
+    calendar: &Calendar,
+) -> Option<std::time::Duration> {
+    match source {
+        AccountCalendarSource::CalDav if calendar.last_synced_at.is_none() => {
+            Some(FIRST_SYNC_TIMEOUT)
+        }
+        AccountCalendarSource::CalDav => Some(SYNC_TIMEOUT),
+        AccountCalendarSource::Google | AccountCalendarSource::Graph => None,
     }
 }
 
@@ -296,7 +321,29 @@ pub async fn sync(
     let vault_for_account = vault.clone();
     let account = blocking(move || Ok(vault_for_account.account(account_id)?)).await?;
 
-    let result = provider_for(source).sync(svc, vault, &account, calendar).await;
+    // A ceiling on a CalDAV sync: its transport has no timeout of its own per
+    // request, so a server that took the request and never answered would
+    // otherwise hold this calendar's turn for as long as the connection
+    // lasted. Timed out, it is a failure like any other: recorded on the
+    // calendar, retried, and said once it has gone on. Google and Graph go
+    // through the shared client, whose every request has its own deadline, so
+    // a long sync of many pages there is slow, not stuck, and is left to finish.
+    let provider = provider_for(source);
+    let sync = provider.sync(svc, vault, &account, calendar);
+    let result = match caldav_ceiling(source, calendar) {
+        None => sync.await,
+        Some(ceiling) => match tokio::time::timeout(ceiling, sync).await {
+            Ok(result) => result,
+            Err(_) => Err(CommandError::new(
+                codes::UNREACHABLE,
+                format!(
+                    "{} did not finish answering within {} minutes",
+                    account.address,
+                    ceiling.as_secs() / 60
+                ),
+            )),
+        },
+    };
     note_if_credential_is_bad(svc, vault, &account, &result).await;
 
     // A provider that learned in passing whether this account may write here

@@ -307,3 +307,32 @@ async fn a_pass_says_what_arrived_for_a_model_to_announce_later() {
     assert!(!env.statuses.arrived_lately(&id_of("mine"), now()));
     assert_eq!(noted(&env), Vec::<String>::new(), "and nobody is told yet");
 }
+
+/// A noted message wakes the account task beside its pass, which announces it
+/// there and then rather than after every other mailbox and every body; and
+/// any new inbox mail, wanted or not as the rules filed it, has the model's
+/// sorting started as soon as the pass is over.
+#[tokio::test]
+async fn a_noted_message_wakes_the_task_and_new_mail_starts_the_sorting() {
+    use std::time::Duration;
+    let (env, server) = synced_with(MailNotify::default()).await;
+    let news = env.statuses.news(env.account_id);
+    assert!(!env.statuses.take_arrived(env.account_id), "read mail from the first fill");
+
+    arrive(&server, "stranger", "someone@example.com");
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    assert!(env.statuses.take_arrived(env.account_id), "the model may yet want it");
+    assert!(
+        tokio::time::timeout(Duration::ZERO, news.notified()).await.is_err(),
+        "nothing wanted, nothing to wake for"
+    );
+
+    arrive(&server, "wanted", "ada@example.com");
+    env.sync(&mut session).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), news.notified()).await.is_ok(),
+        "woken as it was noted"
+    );
+    assert_eq!(noted(&env), ["wanted"]);
+}

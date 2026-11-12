@@ -93,6 +93,7 @@
     "forbidden",
     "internal",
     "network",
+    "unreachable",
     "not_an_image",
     "no_location",
     "panic",

@@ -15,7 +15,7 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 
 /// Which part of the sync an account's task is doing right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -107,6 +107,12 @@ struct Shared {
     /// Arrivals waiting for a pass to finish before anybody can say whether
     /// they are wanted -- see [`StatusRegistry::note_reply_candidate`].
     reply_candidates: Mutex<HashMap<AccountId, Vec<(MailMessageId, crate::arrivals::NewMail)>>>,
+    /// Woken whenever [`StatusRegistry::note_new_mail`] notes a message, so
+    /// the account task can announce it while the rest of the pass goes on.
+    news: Mutex<HashMap<AccountId, Arc<Notify>>>,
+    /// Accounts a pass has stored new inbox mail for since their task last
+    /// asked -- see [`StatusRegistry::mark_arrived`].
+    arrived: Mutex<HashSet<AccountId>>,
 }
 
 /// One account's [`Shared::arrivals`]: how many were noted, and the first few
@@ -296,6 +302,29 @@ impl StatusRegistry {
         if noted.kept.len() < ARRIVALS_KEPT {
             noted.kept.push(arrival);
         }
+        drop(map);
+        self.news(account_id).notify_one();
+    }
+
+    /// What [`StatusRegistry::note_new_mail`] wakes for `account_id`: the
+    /// account task waits on it beside its pass and announces what was noted
+    /// the moment it is stored, not after every other mailbox and every body.
+    pub fn news(&self, account_id: AccountId) -> Arc<Notify> {
+        self.0.news.lock().unwrap_or_else(|e| e.into_inner()).entry(account_id).or_default().clone()
+    }
+
+    /// Note that a pass stored new, unread inbox mail for `account_id`,
+    /// wanted or not: the model's sorting decides what is wanted under most
+    /// rules, and is started as soon as the pass is over rather than at the
+    /// next scheduler tick.
+    pub fn mark_arrived(&self, account_id: AccountId) {
+        self.0.arrived.lock().unwrap_or_else(|e| e.into_inner()).insert(account_id);
+    }
+
+    /// Whether [`StatusRegistry::mark_arrived`] was called for `account_id`
+    /// since this last asked, clearing it as it answers.
+    pub fn take_arrived(&self, account_id: AccountId) -> bool {
+        self.0.arrived.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id)
     }
 
     /// The messages noted since the last take, the first few of them whole,
@@ -318,6 +347,8 @@ impl StatusRegistry {
         self.0.changed.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
         self.0.arrivals.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
         self.0.reply_candidates.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
+        self.0.news.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
+        self.0.arrived.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id);
     }
 
     /// Every account this session has ever reported on.

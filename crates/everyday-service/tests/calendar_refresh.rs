@@ -167,6 +167,37 @@ async fn a_calendar_not_yet_due_is_left_alone() {
     assert_eq!(fresh.asked(), 0, "refreshed moments ago, so not asked");
 }
 
+/// A calendar that is not due is still fetched when one of its meetings is
+/// about to be reminded: moved on somebody's phone since the last refresh, it
+/// would otherwise be reminded at the time it used to be.
+#[tokio::test]
+async fn a_calendar_with_a_reminder_about_to_go_out_is_checked_first() {
+    let (svc, vault, events, _dir) = fixture();
+    let now = jiff::Timestamp::now();
+    let start = now + jiff::SignedDuration::from_mins(15);
+    let stamp = |t: jiff::Timestamp| t.strftime("%Y%m%dT%H%M%SZ").to_string();
+    let ics = format!(
+        "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//t//t//EN\r\nBEGIN:VEVENT\r\n\
+         UID:soon@t\r\nDTSTAMP:20260101T000000Z\r\nDTSTART:{}\r\nDTEND:{}\r\n\
+         SUMMARY:Design sync\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n",
+        stamp(start),
+        stamp(start + jiff::SignedDuration::from_mins(30)),
+    );
+    let feed = Feed::serving(200, Box::leak(ics.into_boxed_str())).await;
+    vault.save_calendar(&Calendar::subscribed("Work", feed.url.clone())).unwrap();
+    one_pass(&svc, &vault, "the first fetch", || events.event_changes() == 1).await;
+    assert_eq!(feed.asked(), 1);
+
+    // Three minutes on, its hourly refresh is nowhere near due -- but the
+    // default ten-minute reminder goes out in two.
+    svc.set_clock(Arc::new(support::clock::FakeClock::at(
+        now + jiff::SignedDuration::from_mins(3),
+    )));
+    // What the reminder tick saw coming is what the refresher checks.
+    everyday_service::arrivals::tick_calendars(&svc, &vault);
+    one_pass(&svc, &vault, "the check before the reminder", || feed.asked() == 2).await;
+}
+
 #[tokio::test]
 async fn a_pass_with_nothing_due_says_nothing() {
     let (svc, vault, events, _dir) = fixture();
@@ -219,17 +250,17 @@ async fn a_failure_shows_at_once_beside_the_calendar_and_is_notified_only_once_i
     assert_eq!(events.notices(), 0, "too soon to interrupt anybody");
 
     // Still failing, and nothing new for a window to draw each time it does.
-    clock.set(started + jiff::SignedDuration::from_mins(25));
+    clock.set(started + jiff::SignedDuration::from_mins(5));
     one_pass(&svc, &vault, "the second failure", || feed.asked() == 2).await;
-    clock.set(started + jiff::SignedDuration::from_mins(50));
+    clock.set(started + jiff::SignedDuration::from_mins(10));
     one_pass(&svc, &vault, "the third failure", || feed.asked() == 3).await;
     assert_eq!(events.notices(), 0);
     assert_eq!(events.event_changes(), 1, "the same failure again changes nothing on screen");
 
-    // Over an hour of it: now it is worth saying, and saying once.
-    clock.set(started + jiff::SignedDuration::from_mins(65));
+    // A quarter of an hour of it: now it is worth saying, and saying once.
+    clock.set(started + jiff::SignedDuration::from_mins(15));
     one_pass(&svc, &vault, "the notice", || events.notices() == 1).await;
-    clock.set(started + jiff::SignedDuration::from_mins(70));
+    clock.set(started + jiff::SignedDuration::from_mins(20));
     one_pass(&svc, &vault, "the next failure", || feed.asked() == 5).await;
     assert_eq!(events.notices(), 1, "once per outage");
 }

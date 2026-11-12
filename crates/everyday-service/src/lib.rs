@@ -84,10 +84,12 @@ pub mod supervisor;
 pub mod token_cache;
 pub mod touched;
 pub mod transfers;
+pub mod trouble;
 pub mod weather;
 pub(crate) mod weather_cache;
 pub mod webpage;
 pub mod websearch;
+pub mod writing_layout;
 
 pub use command::{Command, Signature};
 pub use ctx::{Caller, Ctx, Scope};

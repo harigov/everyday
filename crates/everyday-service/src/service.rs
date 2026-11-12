@@ -55,21 +55,11 @@ use std::time::Instant;
 /// an older client simply does not call it.
 pub const PROTOCOL: u32 = 1;
 
-/// How long a calendar has to have been failing before anybody is told. An
-/// hour outlasts a laptop finding its wifi and a server having a bad moment.
-const FEED_OUTAGE_WORTH_SAYING_SECS: i64 = 60 * 60;
-
-/// Failures further apart than this are not one outage. The refresher tries
-/// every five minutes, so a gap like this is a machine that has been asleep, and
-/// nothing is known about what was going on while it was.
-const FEED_OUTAGE_GAP_SECS: i64 = 30 * 60;
-
-/// A calendar that is currently failing to refresh.
-struct FeedOutage {
-    since: Timestamp,
-    last: Timestamp,
-    said: bool,
-}
+/// How often a calendar that is failing is tried again. The refresher looks
+/// every minute, which is right for one that works -- it is how a reminder's
+/// calendar gets checked just before it goes out -- and too often to ask a
+/// server that has just said no, most of all somebody else's feed.
+const FEED_RETRY_SECS: i64 = 5 * 60;
 
 /// Holds the open vault, if any.
 ///
@@ -101,24 +91,19 @@ pub struct Service {
     /// discarded when the vault locks, and the lock is this type's business.
     /// See [`crate::transfers`] for why they are held in memory at all.
     transfers: Arc<Transfers>,
-    /// Subscriptions whose background refresh is failing and which the user
-    /// has already been told about.
-    ///
-    /// The background pass runs every few minutes for as long as the app is
-    /// open, so a feed that has been revoked fails again, and again, and again.
-    /// Notifying each time would turn one fact -- this calendar has stopped
-    /// answering -- into a notification every five minutes until somebody muted
-    /// the application. Held here rather than on the subscription because it is
-    /// a fact about *this session's* telling, not about the calendar: the vault
-    /// already records the failure itself, and reopening the app is a
-    /// reasonable moment to be told again.
-    reported_feeds: RwLock<HashMap<CalendarId, FeedOutage>>,
     /// One per calendar that has synced. See [`Service::calendar_sync_turn`].
     calendar_sync: std::sync::Mutex<HashMap<CalendarId, Arc<tokio::sync::Mutex<()>>>>,
     /// The Feed's sources that have already said they are failing, so an
     /// outage is reported once rather than once per attempt -- the courtesy
-    /// `reported_feeds` extends to a calendar.
+    /// [`crate::trouble`] extends to a calendar.
     reported_news: RwLock<HashSet<everyday_core::id::NewsSourceId>>,
+    /// Accounts whose sync has stopped, and what has been said about them.
+    /// See [`crate::trouble`].
+    sync_trouble: crate::trouble::SyncTrouble,
+    /// Calendars with a reminder or a meeting coming round in the next few
+    /// minutes, and when: what the reminder tick saw on its last read, for the
+    /// calendar refresher. See [`Service::calendars_alerting_soon`].
+    upcoming_alerts: std::sync::Mutex<Vec<(CalendarId, i64)>>,
     /// This session's routine bookkeeping -- which runs it is claiming, the
     /// name of whichever is running right now, and which failures it has
     /// already reported. See [`crate::runtime::routine::RoutineRuntime`].
@@ -191,9 +176,10 @@ impl Service {
             pending: Arc::default(),
             idempotency: Idempotency::default(),
             transfers: Arc::default(),
-            reported_feeds: RwLock::new(HashMap::new()),
             calendar_sync: std::sync::Mutex::default(),
             reported_news: RwLock::new(HashSet::new()),
+            sync_trouble: crate::trouble::SyncTrouble::default(),
+            upcoming_alerts: std::sync::Mutex::default(),
             routines: RoutineRuntime::default(),
             sign_ins: Arc::new(SignIns::new()),
             token_cache: Arc::new(TokenCache::new()),
@@ -811,9 +797,10 @@ impl Service {
         self.sign_ins.clear();
         self.money.on_lock();
         self.token_cache.try_clear();
-        self.reported_feeds.write().unwrap().clear();
         self.calendar_sync.lock().unwrap().clear();
         self.reported_news.write().unwrap().clear();
+        self.sync_trouble.clear();
+        self.upcoming_alerts.lock().unwrap().clear();
         self.routines.on_lock();
         self.remote_image_once.write().unwrap().clear();
         // Nothing to do, today -- see `MeetingRuntime::on_lock`'s own doc
@@ -895,30 +882,33 @@ impl Service {
 
     // ---- feeds ----------------------------------------------------------
 
-    /// Note that `id`'s refresh failed at `now`. True once per outage rather
-    /// than once per attempt, and not until the outage has gone on for
-    /// `FEED_OUTAGE_WORTH_SAYING_SECS`: these passes run with nobody watching,
-    /// so the first of them after a laptop wakes usually finds no wifi yet, on
-    /// every calendar at once, and the next one finds everything fine. A failure
-    /// before a sleep and one after it are two blips, not a long outage.
-    pub fn feed_failed(&self, id: CalendarId, now: Timestamp) -> bool {
-        let mut feeds = self.reported_feeds.write().unwrap();
-        let outage = feeds.entry(id).or_insert(FeedOutage { since: now, last: now, said: false });
-        if now.as_second() - outage.last.as_second() > FEED_OUTAGE_GAP_SECS {
-            outage.since = now;
-        }
-        outage.last = now;
-        if outage.said || now.as_second() - outage.since.as_second() < FEED_OUTAGE_WORTH_SAYING_SECS
-        {
-            return false;
-        }
-        outage.said = true;
-        true
+    /// Note that `id`'s refresh failed at `now` -- `unreachable` when it never
+    /// reached the server. True when the outage is worth saying now: it has
+    /// gone on for [`crate::trouble::OUTAGE_WORTH_SAYING`], has not been said,
+    /// and, if the server could not be reached, something else has been since
+    /// it began -- a machine with no network is not every calendar failing.
+    /// See [`crate::trouble`]. [`Service::feed_said`] records it once it is.
+    pub fn feed_failed(&self, id: CalendarId, now: Timestamp, unreachable: bool) -> bool {
+        let trouble = &self.sync_trouble;
+        trouble.calendars().failed(id, now, unreachable, trouble.reached()).is_some()
     }
 
-    /// Note that `id`'s refresh worked, so the next outage is news again.
+    /// Record that `id`'s outage has been said.
+    pub fn feed_said(&self, id: CalendarId) {
+        self.sync_trouble.calendars().said(id);
+    }
+
+    /// Whether a calendar may be tried now: always, unless its last attempt
+    /// failed less than [`FEED_RETRY_SECS`] ago.
+    pub fn feed_retry_due(&self, id: CalendarId, now: Timestamp) -> bool {
+        self.sync_trouble.calendars().retry_due(id, now, FEED_RETRY_SECS)
+    }
+
+    /// Note that `id`'s refresh worked, so the next outage is news again --
+    /// and that the network is there.
     pub fn feed_recovered(&self, id: CalendarId) {
-        self.reported_feeds.write().unwrap().remove(&id);
+        self.sync_trouble.note_reached(self.now());
+        self.sync_trouble.calendars().ended(id);
     }
 
     /// Held while `id` syncs, and read the calendar only once it is held: the
@@ -928,6 +918,35 @@ impl Service {
     /// calendar, so a press of Refresh does not wait on some other server.
     pub(crate) fn calendar_sync_turn(&self, id: CalendarId) -> Arc<tokio::sync::Mutex<()>> {
         self.calendar_sync.lock().unwrap().entry(id).or_default().clone()
+    }
+
+    /// Record what is coming round soon -- each calendar with a reminder or a
+    /// meeting's start, and the second it comes -- as the reminder tick just
+    /// read it. See `arrivals::tick_calendars`.
+    pub(crate) fn set_upcoming_alerts(&self, upcoming: Vec<(CalendarId, i64)>) {
+        *self.upcoming_alerts.lock().unwrap() = upcoming;
+    }
+
+    /// The calendars with a reminder or a meeting coming round from `now` on,
+    /// as the reminder tick last saw them: what the calendar refresher checks
+    /// first, so a meeting moved since the last refresh is reminded at its new
+    /// time, and a cancelled one not at all. Read from what the tick already
+    /// unsealed, rather than unsealing the same days' events again.
+    pub fn calendars_alerting_soon(&self, now: Timestamp) -> HashSet<CalendarId> {
+        let now = now.as_second();
+        self.upcoming_alerts
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, at)| *at >= now)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// What this session has said about accounts that stopped syncing. See
+    /// [`crate::trouble`].
+    pub fn sync_trouble(&self) -> &crate::trouble::SyncTrouble {
+        &self.sync_trouble
     }
 
     /// Note that one of the Feed's sources has failed. True the first time,
@@ -1059,14 +1078,25 @@ impl Service {
         self.routines.detach(routine, run);
     }
 
-    /// Carry the model's passes over mail out beside the scheduler's tick,
-    /// unless the last ones are still going. See
+    /// Carry the model's passes over mail -- sorting, priority, drafts --
+    /// out beside the scheduler's tick, or, if the last ones are still going,
+    /// have them go again as soon as they end. The scheduler asks every
+    /// minute; a mail sync that has just stored new inbox mail asks at once,
+    /// so a message somebody wants to hear about once it is sorted is not
+    /// left waiting for the next tick. See
     /// `RoutineRuntime::detach_mail_passes`.
-    pub(crate) fn detach_mail_passes(
-        &self,
-        run: impl std::future::Future<Output = ()> + Send + 'static,
-    ) {
-        self.routines.detach_mail_passes(run);
+    ///
+    /// `after_new_mail` is the sync's ask: while the passes are going it has
+    /// them run once more when they end. The tick's ask is dropped instead.
+    pub(crate) fn run_mail_passes(self: &Arc<Self>, after_new_mail: bool) {
+        let svc = self.clone();
+        self.routines.detach_mail_passes(after_new_mail, move || {
+            let svc = svc.clone();
+            async move {
+                crate::mailai::categorize_tick(&svc).await;
+                crate::mailai::auto_draft_tick(&svc).await;
+            }
+        });
     }
 
     /// Whether a run of `routine` is going on beside the tick.

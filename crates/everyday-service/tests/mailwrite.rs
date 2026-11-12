@@ -307,6 +307,10 @@ fn seed_week(e: &Env) -> Calendar {
     let mut block = TimeBlock::new(BlockSubject::Adhoc, at("2026-11-10", 9, 0), 60, ZONE);
     block.title = "Inbox zero".into();
     vault.save_block(&block).unwrap();
+    // `save_block` decides plan or record by the real clock, and these tests
+    // run on Thursday morning's: settled again by theirs, Tuesday is still
+    // ahead whatever today really is.
+    vault.settle_blocks(thursday_morning(), None).unwrap();
     calendar
 }
 

@@ -735,7 +735,7 @@ fn error_from(e: &everyday_service::error::CommandError) -> Response<Vec<u8>> {
         codes::INVALID => StatusCode::BAD_REQUEST,
         codes::TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
         codes::NOT_AN_IMAGE => StatusCode::UNPROCESSABLE_ENTITY,
-        codes::NETWORK => StatusCode::BAD_GATEWAY,
+        codes::NETWORK | codes::UNREACHABLE => StatusCode::BAD_GATEWAY,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     error(status, &e.message)

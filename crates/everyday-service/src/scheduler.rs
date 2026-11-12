@@ -240,14 +240,9 @@ pub async fn tick(service: &Arc<Service>) {
     // minutes on them, and the next tick is what the meeting watcher, the
     // reminders and every routine are waiting for: a meeting does not wait,
     // and a reminder that comes late enough never comes at all. One at a time:
-    // a tick that finds the last ones still going leaves them to it.
-    {
-        let passes = service.clone();
-        service.detach_mail_passes(async move {
-            crate::mailai::categorize_tick(&passes).await;
-            crate::mailai::auto_draft_tick(&passes).await;
-        });
-    }
+    // a tick that finds the last ones still going leaves them to it. A mail
+    // sync that stores new mail asks at once, and has them go once more.
+    service.run_mail_passes(false);
 
     if !vault.supports_routines() {
         return;

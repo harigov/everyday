@@ -74,6 +74,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-platform-verifier = "0.7"
 # `Stream` combinators over the fetch and IDLE streams async-imap hands back.
 futures = "0.3"
+# Keepalive and an unacknowledged-write limit on the IMAP socket, which tokio
+# does not expose: see `imap.rs`'s `notice_when_dead`. Already in the tree
+# under tokio and hyper, so this is a feature, not a new crate.
+socket2 = { version = "0.6", features = ["all"] }
 
 # MIME out: builds the RFC 5322 bytes `smtp.rs` sends, from the fields
 # `compose.rs`'s `Outgoing` collects. Sibling project to `mail-parser`

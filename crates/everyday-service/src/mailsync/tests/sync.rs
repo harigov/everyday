@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use everyday_core::account::{Account, AccountStatus, AuthMethod, Provider};
+use everyday_core::account::{Account, AccountSecret, AccountStatus, AuthMethod, Provider};
 use everyday_core::mail::MailboxRole;
 use everyday_core::store::mail::ThreadFilter;
 use everyday_core::{MailQuery, VaultConfig};
@@ -1753,6 +1753,155 @@ async fn an_auth_failure_sets_needs_sign_in_and_the_task_stops() {
     assert!(matches!(account.status, AccountStatus::NeedsSignIn { .. }), "{:?}", account.status);
 }
 
+/// Every notification raised while this is the service's sink.
+#[derive(Default)]
+struct Told(std::sync::Mutex<Vec<crate::events::Notification>>);
+
+impl crate::events::EventSink for Told {
+    fn notify(&self, notification: crate::events::Notification) {
+        self.0.lock().unwrap().push(notification);
+    }
+}
+
+impl Told {
+    fn titles(&self) -> Vec<String> {
+        self.0.lock().unwrap().iter().map(|n| n.title.clone()).collect()
+    }
+}
+
+/// A clock a test moves by hand.
+struct Hands(std::sync::Mutex<jiff::Timestamp>);
+
+impl crate::clock::Clock for Hands {
+    fn now(&self) -> jiff::Timestamp {
+        *self.0.lock().unwrap()
+    }
+    fn instant(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+}
+
+impl Hands {
+    fn forward(&self, minutes: i64) {
+        let mut now = self.0.lock().unwrap();
+        *now = Timestamp::from_second(now.as_second() + minutes * 60).unwrap();
+    }
+}
+
+use jiff::Timestamp;
+
+/// A refused credential is said at once, and once: it will not fix itself,
+/// and a second attempt finding it again is the same fact.
+#[tokio::test]
+async fn a_refused_credential_asks_once_for_a_sign_in() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    vault
+        .save_account_secret(account_id, &AccountSecret::default())
+        .expect("no password: the credential is refused before any connection");
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+
+    for _ in 0..2 {
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        crate::mailsync::task::run_account_with(
+            svc.clone(),
+            vault.clone(),
+            account_id,
+            stop_rx,
+            never_connects,
+            |_account, _svc, _vault| FakeSender::default(),
+        )
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(told.titles(), ["Sign in to me@example.com again"]);
+    let notice = told.0.lock().unwrap()[0].clone();
+    assert!(matches!(notice.reach, crate::events::Reach::User), "it has to leave the window");
+    assert!(notice.body.unwrap().contains("Settings"));
+}
+
+async fn refused_connection(
+    _account: Account,
+    _credential: Credential,
+) -> SessionResult<FakeMailSession> {
+    Err(everyday_mail::session::MailError::Network("connection refused".into()))
+}
+
+/// A server that cannot be reached says nothing for the first few minutes of
+/// trying -- a blink is not an outage -- then says so once, with what it
+/// said; the pass that lands afterwards says it is back.
+#[tokio::test]
+async fn mail_that_stops_syncing_is_said_once_it_has_lasted_and_again_when_it_is_back() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let hands = Arc::new(Hands(std::sync::Mutex::new(Timestamp::now())));
+    svc.set_clock(hands.clone());
+
+    let attempt = || {
+        let (svc, vault) = (svc.clone(), vault.clone());
+        async move {
+            let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            crate::mailsync::task::run_account_with(
+                svc,
+                vault,
+                account_id,
+                stop_rx,
+                refused_connection,
+                |_account, _svc, _vault| FakeSender::default(),
+            )
+            .await
+        }
+    };
+    for _ in 0..3 {
+        assert!(attempt().await.is_err(), "retried by the supervisor");
+        hands.forward(5);
+    }
+    assert!(told.titles().is_empty(), "ten minutes in: {:?}", told.titles());
+    // Something else -- another account, a calendar -- answered meanwhile, so
+    // this machine is online and this server is the one not answering.
+    svc.sync_trouble().note_reached(svc.now());
+    assert!(attempt().await.is_err());
+    assert_eq!(told.titles(), ["Mail from me@example.com is not syncing"]);
+    let body = told.0.lock().unwrap()[0].body.clone().unwrap();
+    assert!(body.contains("15 minutes") && body.contains("connection refused"), "{body}");
+    hands.forward(5);
+    assert!(attempt().await.is_err());
+    assert_eq!(told.titles().len(), 1, "once per outage");
+
+    crate::trouble::mail_synced(&svc, &vault, account_id);
+    assert_eq!(told.titles()[1], "Mail from me@example.com is syncing again");
+    let keys: Vec<_> = told.0.lock().unwrap().iter().map(|n| n.key.clone()).collect();
+    assert_eq!(keys[0], keys[1], "the good news replaces the warning");
+}
+
+/// A machine with no network fails every account at once and reaches none of
+/// them: that is not an account that has stopped, and nothing is said.
+#[tokio::test]
+async fn mail_on_a_machine_with_no_network_says_nothing() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let hands = Arc::new(Hands(std::sync::Mutex::new(Timestamp::now())));
+    svc.set_clock(hands.clone());
+    for _ in 0..6 {
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let attempt = crate::mailsync::task::run_account_with(
+            svc.clone(),
+            vault.clone(),
+            account_id,
+            stop_rx,
+            refused_connection,
+            |_account, _svc, _vault| FakeSender::default(),
+        )
+        .await;
+        assert!(attempt.is_err());
+        hands.forward(5);
+    }
+    assert!(told.titles().is_empty(), "{:?}", told.titles());
+}
+
 async fn never_connects(
     _account: Account,
     _credential: Credential,
@@ -1912,4 +2061,230 @@ async fn a_reused_message_id_on_a_different_message_is_not_folded_by_its_key() {
         env.vault.list_threads(inbox, &ThreadFilter::default(), None, 10).unwrap().threads;
     let messages: usize = threads.iter().map(|t| env.vault.thread(t.id).unwrap().1.len()).sum();
     assert_eq!(messages, 2, "two messages, not one row filed twice");
+}
+
+// ---------------------------------------------------------------------
+// A reply that names no other message -- see `ingest`'s module docs, "A
+// reply with no headers to follow".
+// ---------------------------------------------------------------------
+
+/// A date `hours` ago, as a `Date:` header says it.
+fn hours_ago(hours: i64) -> String {
+    (Timestamp::now() - jiff::SignedDuration::from_hours(hours))
+        .strftime("%d %b %Y %H:%M:%S +0000")
+        .to_string()
+}
+
+fn thread_of(env: &TestEnv, message_id: &str) -> everyday_core::id::ThreadId {
+    env.vault
+        .message_by_message_id_header(env.account_id, message_id)
+        .unwrap()
+        .unwrap_or_else(|| panic!("{message_id} stored"))
+        .thread_id
+}
+
+/// The answer a sales tool sent as a fresh message with "Re:" in front joins
+/// the conversation it answers; the same subject from somebody who was never
+/// in it, a message that does not say it is a reply, and an answer from long
+/// ago do not.
+#[tokio::test]
+async fn a_reply_with_no_headers_joins_the_conversation_with_its_subject_and_people() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    {
+        let mut s = server.lock().unwrap();
+        let ask = raw_message(
+            "ask@tavrn.example",
+            None,
+            "Matt <matt@tavrn.example>",
+            "Numbers ahead of Thursday",
+            &hours_ago(3),
+            "how many firms?",
+        );
+        s.append("INBOX", ask, flags_seen(), None);
+        let mine = raw_message(
+            "mine@example.com",
+            Some("ask@tavrn.example"),
+            "me@example.com",
+            "Re: Numbers ahead of Thursday",
+            &hours_ago(2),
+            "is there an API?",
+        );
+        s.append("Sent", mine, flags_seen(), None);
+    }
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    let conversation = thread_of(&env, "ask@tavrn.example");
+    assert_eq!(thread_of(&env, "mine@example.com"), conversation);
+
+    let arrive = |id: &str, from: &str, subject: &str, date: &str| {
+        let raw = raw_message(id, None, from, subject, date, "...");
+        server.lock().unwrap().append("INBOX", raw, flags_seen(), None);
+    };
+    arrive(
+        "answer@tavrn.example",
+        "matt@tavrn.example",
+        "RE: Numbers ahead of Thursday",
+        &hours_ago(1),
+    );
+    arrive(
+        "stranger@else.example",
+        "bob@else.example",
+        "Re: Numbers ahead of Thursday",
+        &hours_ago(1),
+    );
+    arrive("fresh@tavrn.example", "matt@tavrn.example", "Numbers ahead of Thursday", &hours_ago(1));
+    arrive(
+        "old@tavrn.example",
+        "matt@tavrn.example",
+        "Re: Numbers ahead of Thursday",
+        &hours_ago(24 * 60),
+    );
+    env.sync(&mut session).await;
+
+    assert_eq!(thread_of(&env, "answer@tavrn.example"), conversation, "the answer joins");
+    assert_ne!(thread_of(&env, "stranger@else.example"), conversation, "nobody in common");
+    assert_ne!(thread_of(&env, "fresh@tavrn.example"), conversation, "not a reply");
+    assert_ne!(thread_of(&env, "old@tavrn.example"), conversation, "from two months ago");
+}
+
+/// On Gmail the header-less answer gets a Gmail thread of its own. It joins
+/// the conversation all the same, and the next message in that Gmail thread
+/// -- an answer to it -- follows it there rather than to Gmail's split. A
+/// Gmail thread that already holds other messages is left as Gmail made it.
+#[tokio::test]
+async fn on_gmail_a_header_less_answer_and_what_follows_it_join_the_conversation() {
+    let env = TestEnv::new();
+    let server = gmail_server();
+    let gmail =
+        |thrid: u64, msgid: u64| Some(GmailMeta { thrid, msgid, labels: vec!["\\Inbox".into()] });
+    let raw = |id: &str, parent: Option<&str>, from: &str, subject: &str, hours: i64| {
+        raw_message(id, parent, from, subject, &hours_ago(hours), "...")
+    };
+    server.lock().unwrap().append(
+        "All Mail",
+        raw("ask@tavrn.example", None, "matt@tavrn.example", "Numbers ahead of Thursday", 5),
+        flags_seen(),
+        gmail(1, 1),
+    );
+    server.lock().unwrap().append(
+        "All Mail",
+        raw("other@tavrn.example", None, "matt@tavrn.example", "Lunch", 5),
+        flags_seen(),
+        gmail(3, 2),
+    );
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    let conversation = thread_of(&env, "ask@tavrn.example");
+
+    server.lock().unwrap().append(
+        "All Mail",
+        raw("answer@tavrn.example", None, "matt@tavrn.example", "Re: Numbers ahead of Thursday", 3),
+        flags_seen(),
+        gmail(2, 3),
+    );
+    // Gmail filed this one with "Lunch": its grouping stands.
+    server.lock().unwrap().append(
+        "All Mail",
+        raw(
+            "grouped@tavrn.example",
+            None,
+            "matt@tavrn.example",
+            "Re: Numbers ahead of Thursday",
+            3,
+        ),
+        flags_seen(),
+        gmail(3, 4),
+    );
+    env.sync(&mut session).await;
+    assert_eq!(thread_of(&env, "answer@tavrn.example"), conversation);
+    assert_eq!(
+        thread_of(&env, "grouped@tavrn.example"),
+        thread_of(&env, "other@tavrn.example"),
+        "Gmail already had a thread for it"
+    );
+
+    // A fresh task, remembering nothing: only the stored rows say where the
+    // answer went.
+    server.lock().unwrap().append(
+        "All Mail",
+        raw(
+            "next@example.com",
+            Some("answer@tavrn.example"),
+            "me@example.com",
+            "Re: Numbers ahead of Thursday",
+            1,
+        ),
+        flags_seen(),
+        gmail(2, 5),
+    );
+    env.sync(&mut session).await;
+    assert_eq!(thread_of(&env, "next@example.com"), conversation);
+}
+
+/// Of two conversations with the subject and the people, the answer joins the
+/// one going on when it was sent -- not one that only began afterwards, which
+/// is newer but cannot be what it answers.
+#[tokio::test]
+async fn a_header_less_answer_does_not_join_a_conversation_that_began_after_it() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let add = |id: &str, subject: &str, hours: i64| {
+        let raw = raw_message(id, None, "matt@tavrn.example", subject, &hours_ago(hours), "...");
+        server.lock().unwrap().append("INBOX", raw, flags_seen(), None);
+    };
+    add("first@tavrn.example", "Weekly sync", 25 * 24);
+    add("second@tavrn.example", "Weekly sync", 5 * 24);
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    add("late-answer@tavrn.example", "Re: Weekly sync", 20 * 24);
+    env.sync(&mut session).await;
+    assert_eq!(
+        thread_of(&env, "late-answer@tavrn.example"),
+        thread_of(&env, "first@tavrn.example")
+    );
+}
+
+/// A header-less message that a reply in the same pass already answers goes
+/// with that reply, not with an older conversation it only shares a subject
+/// with.
+#[tokio::test]
+async fn a_header_less_message_stays_with_the_reply_that_names_it() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let older = raw_message(
+        "older@tavrn.example",
+        None,
+        "matt@tavrn.example",
+        "Re: Numbers",
+        &hours_ago(48),
+        "...",
+    );
+    server.lock().unwrap().append("INBOX", older, flags_seen(), None);
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    // Stored in this order, so the newest-first pass meets the reply first.
+    let header_less = raw_message(
+        "h@tavrn.example",
+        None,
+        "matt@tavrn.example",
+        "Re: Numbers",
+        &hours_ago(2),
+        "...",
+    );
+    server.lock().unwrap().append("INBOX", header_less, flags_seen(), None);
+    let reply = raw_message(
+        "r@tavrn.example",
+        Some("h@tavrn.example"),
+        "matt@tavrn.example",
+        "Re: Numbers",
+        &hours_ago(1),
+        "...",
+    );
+    server.lock().unwrap().append("INBOX", reply, flags_seen(), None);
+    env.sync(&mut session).await;
+
+    assert_eq!(thread_of(&env, "h@tavrn.example"), thread_of(&env, "r@tavrn.example"));
 }

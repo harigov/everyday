@@ -277,6 +277,11 @@ struct Told(Mutex<Vec<Notification>>);
 
 impl EventSink for Told {
     fn notify(&self, notification: Notification) {
+        // The account here has no password, so the sync task `unlocked`
+        // starts for it asks for a sign-in -- not what these tests are about.
+        if notification.key.as_deref().is_some_and(|k| k.starts_with("account:")) {
+            return;
+        }
         self.0.lock().unwrap().push(notification);
     }
 }
