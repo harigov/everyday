@@ -207,11 +207,13 @@ impl StatusRegistry {
 
     /// Note that a sync pass over `account_id` wrote something a thread list
     /// draws -- a new message, a flag another client changed, a message
-    /// gone -- so the account task, once the pass is over, knows to tell an
-    /// open window. Called from inside the pass (once per mailbox that
-    /// changed, so possibly several times) and read once at its end by
-    /// [`StatusRegistry::take_changed`]; a flag rather than a counter
-    /// because the window only ever needs to hear "reload", once.
+    /// gone -- so the account task knows to tell an open window. Called from
+    /// inside the pass: as each batch of new mail is stored, before anything
+    /// in it is noted for a notice, and once per mailbox for whatever else
+    /// changed. Read by [`StatusRegistry::take_changed`] when the task
+    /// announces new mail mid-pass, and again at the pass's end; a flag
+    /// rather than a counter because the window only ever needs to hear
+    /// "reload", once each time.
     pub fn mark_changed(&self, account_id: AccountId) {
         self.0.changed.lock().unwrap_or_else(|e| e.into_inner()).insert(account_id);
     }

@@ -59,7 +59,6 @@ use serde_json::{Map, Value};
 
 use crate::decision::{self, ChoiceOption, Content};
 use crate::error::{CommandError, CommandResult, codes};
-use crate::events::{Change, Kind, Op};
 use crate::mailai::{Filed, display_address, excerpt, own_addresses};
 use crate::service::{Service, blocking};
 
@@ -146,8 +145,11 @@ fn sorted_now(t: &Thread) -> bool {
 }
 
 /// One tick: every account that allows sorting, recent mail first, then
-/// any older mail somebody asked for. Raises one `Thread` change if
-/// anything was filed, so an open list redraws.
+/// any older mail somebody asked for. Each account raises a `Thread` change
+/// (in [`crate::mailai::announce_filed`]) as soon as it has moved anything
+/// to another tab, so an open list redraws -- not once every account is done,
+/// which left a banner for mail the list did not show for as long as the
+/// accounts after it took.
 pub(crate) async fn sort_tick(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
@@ -162,7 +164,6 @@ pub(crate) async fn sort_tick(
     let Ok((sorting, contacts)) = context else { return };
     let sorting = Arc::new(sorting);
     let contacts = Arc::new(contacts);
-    let mut filed = 0u32;
     for account in accounts.iter().filter(|a| a.services.mail) {
         if mail_ai_allowed(account, &decision.acknowledgement, MailAiFeature::Categorize).is_err() {
             // Nothing of this account's may be sorted now, so a sort of
@@ -170,23 +171,16 @@ pub(crate) async fn sort_tick(
             service.set_mail_older_sort(account.id, None);
             continue;
         }
-        match sort_account(service, vault, account, decision, &sorting, &contacts).await {
-            Ok(n) => filed += n,
-            Err(e) => {
-                tracing::warn!(error = %e, account = %account.id, "sorting mail failed");
-                // The model, not the account: a refused key or a busy
-                // server will say the same for every account after it.
-                // A message the model would not take is not this -- see
-                // `decision::about_this_request` -- and never gets here.
-                if [codes::PROVIDER, codes::RATE_LIMITED, codes::NETWORK].contains(&e.code.as_str())
-                {
-                    break;
-                }
+        if let Err(e) = sort_account(service, vault, account, decision, &sorting, &contacts).await {
+            tracing::warn!(error = %e, account = %account.id, "sorting mail failed");
+            // The model, not the account: a refused key or a busy server
+            // will say the same for every account after it. A message the
+            // model would not take is not this -- see
+            // `decision::about_this_request` -- and never gets here.
+            if [codes::PROVIDER, codes::RATE_LIMITED, codes::NETWORK].contains(&e.code.as_str()) {
+                break;
             }
         }
-    }
-    if filed > 0 {
-        service.events().changed(Change::new(Kind::Thread, Op::Updated));
     }
 }
 
@@ -201,7 +195,7 @@ enum OlderNext {
     From(Option<String>),
 }
 
-/// One account's share of a tick. Answers how many threads were filed.
+/// One account's share of a tick.
 async fn sort_account(
     service: &Arc<Service>,
     vault: &Arc<Vault>,
@@ -209,13 +203,13 @@ async fn sort_account(
     decision: &DecisionAccess,
     sorting: &Arc<MailSorting>,
     contacts: &Arc<ContactBook>,
-) -> CommandResult<u32> {
+) -> CommandResult<()> {
     let account_id = account.id;
     let inbox = {
         let vault = vault.clone();
         blocking(move || Ok(vault.mail_inbox(account_id)?)).await?
     };
-    let Some(inbox) = inbox else { return Ok(0) };
+    let Some(inbox) = inbox else { return Ok(()) };
     let now = service.now();
     let window = SignedDuration::from_hours(24 * i64::from(sorting.window_days));
     let window_start = now.checked_sub(window).ok();
@@ -278,7 +272,7 @@ async fn sort_account(
         service.mail_sort_take(picked.len() as u32) as usize
     };
     if granted == 0 && !picked.is_empty() {
-        return Ok(0);
+        return Ok(());
     }
     // If the budget leaves some of the older sort's threads out, it starts
     // again from the page the first of them was on, so none is skipped.
@@ -352,15 +346,14 @@ async fn sort_account(
     }
 
     crate::mailai::announce_filed(service, vault, account, &filed).await;
-    let filed = filed.len() as u32;
 
     match first_error {
         Some(e) if asked == 0 => Err(e),
         Some(e) => {
             tracing::warn!(error = %e, account = %account_id, "some mail could not be sorted");
-            Ok(filed)
+            Ok(())
         }
-        None => Ok(filed),
+        None => Ok(()),
     }
 }
 
@@ -444,7 +437,8 @@ async fn ask(
         let (vault, sorted_as) = (vault.clone(), sorted_as.clone());
         blocking(move || Ok(vault.sort_mail_message(mid, treat_as, &sorted_as)?)).await?
     };
-    let filed = wrote.then_some(Filed { message: mid, sorted_as: Some(sorted_as) });
+    let moved = last.category != Some(treat_as);
+    let filed = wrote.then_some(Filed { message: mid, sorted_as: Some(sorted_as), moved });
     Ok(Asked { message_count: thread.message_count, filed })
 }
 

@@ -241,11 +241,91 @@ fn is_attribution_line(trimmed: &str, lower: &str, next: Option<&&str>) -> bool 
 }
 
 /// "Sent from my iPhone", "Sent from Outlook for iOS", "Get Outlook for
-/// Android" -- a mobile client's own trailer, which carries no cut of its
-/// own and can sit above a quote rather than only at the very end.
+/// Android", "Sent via Superhuman" -- a mail program's own trailer, which
+/// carries no cut of its own and can sit above a quote rather than only at
+/// the very end. Any line starting "Sent from " counts here, in what was
+/// sent: it is read for how somebody writes, and losing one real line costs
+/// nothing, where a trailer kept is taken for how they sign off.
 fn is_trailer_line(line: &str) -> bool {
     let lower = line.trim().to_lowercase();
-    lower.starts_with("sent from ") || lower.starts_with("get outlook for")
+    lower.starts_with("sent from ") || names_mail_program(line)
+}
+
+/// Whether `line` is a mail program naming itself: "Get Outlook for iOS",
+/// "Sent from my iPhone", or "Sent via", "with", "using", "by" or "from"
+/// followed at once by a mail program's name -- "Sent via Superhuman", "Sent
+/// with Spark", "Sent with Proton Mail secure email.".
+///
+/// The name has to come first and whole, because each of those is also how a
+/// sentence starts: "Sent by mistake", "Sent with love", "Sent with sparkling
+/// water", "Sent with an outlook of optimism", "Sent from the train". Left in,
+/// "Sent via Superhuman" was three name-shaped words ending most messages, so
+/// [`analyze`] took it for the person's sign-off and every draft was told to
+/// close with it.
+fn names_mail_program(line: &str) -> bool {
+    const VERBS: &[&str] = &["sent via ", "sent with ", "sent using ", "sent by ", "sent from "];
+    const PROGRAMS: &[&str] = &[
+        "superhuman",
+        "spark",
+        "proton",
+        "protonmail",
+        "zoho",
+        "airmail",
+        "mailbird",
+        "shortwave",
+        "mimestream",
+        "blackberry",
+    ];
+    let lower = line.trim().to_lowercase();
+    if lower.starts_with("get outlook for") {
+        return true;
+    }
+    let Some((verb, rest)) =
+        VERBS.iter().find_map(|verb| lower.strip_prefix(verb).map(|rest| (*verb, rest)))
+    else {
+        return false;
+    };
+    // A link the program put beside its name is not words: "Sent via
+    // Superhuman ( https://sprh.mn/... )", or "[Superhuman][1]" as the text
+    // renderer writes one -- read as its leading word.
+    let words: Vec<String> = rest
+        .split_whitespace()
+        .filter(|w| !w.contains("://") && !w.starts_with("www."))
+        .map(|w| {
+            w.chars()
+                .skip_while(|c| !c.is_alphanumeric())
+                .take_while(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    let Some(first) = words.first() else { return false };
+    if words.len() > 5 {
+        return false;
+    }
+    if verb == "sent from " && first == "my" {
+        // "Sent from my iPhone", "Sent from my Galaxy": a device, and nothing
+        // after it a person would add.
+        return words.len() <= 3 && !rest.trim_end().ends_with([',', ';', ':']);
+    }
+    // Outlook's and Yahoo's own trailers only ever say "Sent from"; "Sent via
+    // Outlook calendar invite" is somebody's sentence.
+    if verb == "sent from " && ["outlook", "yahoo"].contains(&first.as_str()) {
+        return true;
+    }
+    PROGRAMS.contains(&first.as_str())
+}
+
+/// `text` -- a message a model wrote for somebody -- without any line that is
+/// a mail program naming itself (see [`names_mail_program`]), copied from the
+/// thread or from what they sent. Not for a rewrite of their own text, where
+/// even a line like that is one they typed.
+pub fn drop_trailers(text: &str) -> String {
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| line.trim_start().starts_with('>') || !names_mail_program(line))
+        .collect();
+    collapse_blank_lines(&kept.join("\n")).trim().to_string()
 }
 
 impl VoiceProfile {
@@ -1175,6 +1255,90 @@ mod tests {
     #[test]
     fn own_words_drops_a_mobile_trailer_with_no_marker_of_its_own() {
         assert_eq!(own_words("Sounds great!\nSent from my iPhone"), "Sounds great!");
+    }
+
+    #[test]
+    fn own_words_drops_another_mail_programs_trailer() {
+        for trailer in [
+            "Sent via Superhuman",
+            "Sent via Superhuman iOS",
+            "Sent via Superhuman ( https://sprh.mn/?vip=hari@example.com )",
+            "Sent via [Superhuman][1]",
+            "Sent with Spark",
+            "Sent with Proton Mail secure email.",
+            "Sent using Zoho Mail",
+        ] {
+            let text = format!("Thursday works.\n\n{trailer}\n\nOn Tue, Sam wrote:\n> lunch?");
+            assert_eq!(own_words(&text), "Thursday works.", "{trailer}");
+        }
+    }
+
+    #[test]
+    fn a_sentence_that_starts_like_a_trailer_stays() {
+        let text = "Sent via FedEx this morning.\nSent with the invoice you asked for, too.";
+        assert_eq!(own_words(text), text);
+    }
+
+    #[test]
+    fn a_trailer_ending_every_message_is_not_a_sign_off() {
+        let sent = [
+            "Thursday works for me.\n\nSent via Superhuman",
+            "Sounds good, see you then.\nSent via Superhuman",
+        ];
+        let samples: Vec<String> = sent.iter().map(|s| own_words(s)).collect();
+        let refs: Vec<&str> = samples.iter().map(String::as_str).collect();
+        assert_eq!(analyze(&refs).sign_off, None);
+    }
+
+    #[test]
+    fn a_trailer_the_model_copied_is_dropped() {
+        for trailer in [
+            "Sent via Superhuman",
+            "Sent via [Superhuman][1]",
+            "Sent from my iPhone",
+            "Sent from Outlook for iOS",
+            "Get Outlook for Android",
+        ] {
+            let text = format!("Thursday works.\n\nThanks,\nHari\n\n{trailer}");
+            assert_eq!(drop_trailers(&text), "Thursday works.\n\nThanks,\nHari", "{trailer}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_only_starts_like_a_trailer_is_kept_in_what_the_model_wrote() {
+        for line in [
+            "Sent by mistake, please ignore",
+            "Sent with love",
+            "Sent with thanks",
+            "Sent with sparkling water.",
+            "Sent by Sparky.",
+            "Sent with an outlook of optimism.",
+            "Sent via Outlook calendar invite.",
+            "Sent via FedEx",
+            "Sent from the train, so excuse the brevity",
+        ] {
+            let text = format!("Running late.\n{line}");
+            assert_eq!(drop_trailers(&text), text, "{line}");
+        }
+    }
+
+    #[test]
+    fn a_closing_that_starts_like_a_trailer_is_still_learned() {
+        let sent =
+            ["Thursday works for me.\n\nSent with love", "See you then, all good.\nSent with love"];
+        let samples: Vec<String> = sent.iter().map(|s| own_words(s)).collect();
+        let refs: Vec<&str> = samples.iter().map(String::as_str).collect();
+        assert_eq!(samples[0], "Thursday works for me.\n\nSent with love");
+        assert_eq!(analyze(&refs).sign_off.as_deref(), Some("Sent with love"));
+    }
+
+    #[test]
+    fn humanize_leaves_a_trailer_to_drop_trailers() {
+        // `humanize` also cleans a rewrite of somebody's own text, where a
+        // line like this is one they typed.
+        let profile = VoiceProfile { samples: 3, ..Default::default() };
+        let text = "Running late.\nSent from the train, so excuse the brevity";
+        assert_eq!(humanize(text, &profile), text);
     }
 
     #[test]
