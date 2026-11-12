@@ -240,9 +240,9 @@ pub async fn tick(service: &Arc<Service>) {
     // minutes on them, and the next tick is what the meeting watcher, the
     // reminders and every routine are waiting for: a meeting does not wait,
     // and a reminder that comes late enough never comes at all. One at a time:
-    // a tick that finds the last ones still going has them go once more when
-    // they end. A mail sync that stores new mail asks the same, at once.
-    service.run_mail_passes();
+    // a tick that finds the last ones still going leaves them to it. A mail
+    // sync that stores new mail asks at once, and has them go once more.
+    service.run_mail_passes(false);
 
     if !vault.supports_routines() {
         return;

@@ -129,15 +129,18 @@ impl RoutineRuntime {
         detached.push(handle);
     }
 
-    /// [`RoutineRuntime::detach`] the model's passes over mail, or, when the
-    /// last ones are still going, have them run once more as soon as they
-    /// end: new mail that lands during a pass is asked about straight after
-    /// it rather than at the next tick. Marked done however they finish, an
-    /// abort on lock and a panic among them, or they would never run again.
+    /// [`RoutineRuntime::detach`] the model's passes over mail. When the last
+    /// ones are still going, `again` has them run once more as soon as they
+    /// end -- new mail that lands during a pass is asked about straight after
+    /// it rather than at the next tick -- and without it the ask is dropped,
+    /// as the scheduler's own minute tick wants: on a slow endpoint it would
+    /// otherwise run them back to back whether or not anything arrived.
+    /// Marked done however they finish, an abort on lock and a panic among
+    /// them, or they would never run again.
     ///
     /// An ask that lands in the moment between the last run ending and the
     /// flag going down is left to the next tick, a minute at most.
-    pub(crate) fn detach_mail_passes<F, Fut>(&self, passes: F)
+    pub(crate) fn detach_mail_passes<F, Fut>(&self, again: bool, passes: F)
     where
         F: Fn() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -149,7 +152,9 @@ impl RoutineRuntime {
             }
         }
         if self.mail_passes.swap(true, Ordering::SeqCst) {
-            self.mail_passes_again.store(true, Ordering::SeqCst);
+            if again {
+                self.mail_passes_again.store(true, Ordering::SeqCst);
+            }
             return;
         }
         let landed = Landed(self.mail_passes.clone());
@@ -254,17 +259,19 @@ mod tests {
                 }
             }
         };
-        runtime.detach_mail_passes(passes.clone());
+        runtime.detach_mail_passes(false, passes.clone());
         while runs.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;
         }
-        runtime.detach_mail_passes(passes.clone());
-        runtime.detach_mail_passes(passes.clone());
+        runtime.detach_mail_passes(false, passes.clone());
+        assert!(!runtime.mail_passes_again.load(Ordering::SeqCst), "the tick's ask is dropped");
+        runtime.detach_mail_passes(true, passes.clone());
+        runtime.detach_mail_passes(true, passes.clone());
         release.send_replace(true);
         runtime.settle().await;
         assert_eq!(runs.load(Ordering::SeqCst), 2);
 
-        runtime.detach_mail_passes(passes);
+        runtime.detach_mail_passes(false, passes);
         runtime.settle().await;
         assert_eq!(runs.load(Ordering::SeqCst), 3, "and they run again when asked after");
     }

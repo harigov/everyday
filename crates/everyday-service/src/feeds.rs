@@ -109,7 +109,7 @@ fn describe(e: reqwest::Error) -> CommandError {
         // interface and in logs, and the URL is a credential.
         format!("the calendar could not be fetched: {}", http::strip_url(&e.to_string()))
     };
-    CommandError::new(codes::NETWORK, message)
+    CommandError::new(http::transport_code(&e), message)
 }
 
 /// The days a sync materialises recurring events into.

@@ -90,11 +90,13 @@ fn instruction(action: WritingAction) -> &'static str {
     }
 }
 
-/// The instruction, this text's layout in words, then the text -- last, so
-/// nothing after it can be read as part of it.
-fn user_prompt(action: WritingAction, text: &str) -> String {
+/// The instruction, this text's layout in words, what went wrong with a first
+/// answer when there was one, then the text -- last, so nothing after it can
+/// be read as part of it.
+fn user_prompt(action: WritingAction, text: &str, retry: Option<&str>) -> String {
+    let retry = retry.map(|note| format!("{note}\n\n")).unwrap_or_default();
     format!(
-        "Instruction: {}\n\n{}\n\nThe text to rewrite:\n{text}",
+        "Instruction: {}\n\n{}\n\n{retry}The text to rewrite:\n{text}",
         instruction(action),
         writing_layout::describe(text, action),
     )
@@ -155,13 +157,12 @@ async fn ask(access: &ModelAccess, action: WritingAction, original: &str) -> Com
     // paste gets back what the selection had.
     let crlf = original.contains("\r\n");
     let text = original.trim().replace("\r\n", "\n");
-    let user = user_prompt(action, &text);
-    let first = answer_to(client.clone(), access, &user).await?;
+    let first = answer_to(client.clone(), access, &user_prompt(action, &text, None)).await?;
     let answer = match writing_layout::problem(&text, &first, action) {
         None => first,
         Some(problem) => {
-            let again = format!("{user}\n\n{}", writing_layout::retry_note(&first, &problem));
-            match answer_to(client, access, &again).await {
+            let note = writing_layout::retry_note(&first, &problem);
+            match answer_to(client, access, &user_prompt(action, &text, Some(&note))).await {
                 Ok(second) if writing_layout::problem(&text, &second, action).is_none() => second,
                 Ok(_) => first,
                 Err(e) => {
@@ -338,8 +339,17 @@ mod tests {
 
     #[test]
     fn the_prompt_carries_the_instruction_and_the_text() {
-        let user = user_prompt(WritingAction::Grammar, "their going");
+        let user = user_prompt(WritingAction::Grammar, "their going", None);
         assert!(user.contains("spelling, grammar"));
         assert!(user.ends_with("their going"));
+    }
+
+    #[test]
+    fn a_second_ask_says_what_went_wrong_before_the_text_not_after() {
+        let user = user_prompt(WritingAction::Improve, "one\ntwo", Some("Your first answer was"));
+        let note = user.find("Your first answer was").unwrap();
+        let text = user.find("The text to rewrite:").unwrap();
+        assert!(note < text, "{user}");
+        assert!(user.ends_with("one\ntwo"));
     }
 }

@@ -220,12 +220,19 @@ pub fn describe(text: &str, action: WritingAction) -> String {
 }
 
 /// How `answer` broke the layout of `original`, said to the model for one
-/// more try -- or `None` when it kept it, as far as can be told. Improving or
-/// correcting keeps every line; making it concise may drop lines, but may
-/// not add any, nor blank lines, nor take a list's markers away.
+/// more try -- or `None` when it kept it, as far as can be told, or broke it
+/// only in ways [`restore`] puts right. Improving or correcting keeps every
+/// line; making it concise may drop lines, but may not add any, nor blank
+/// lines, nor take a list's markers away.
 pub fn problem(original: &str, answer: &str, action: WritingAction) -> Option<String> {
     let was = Shape::of(original);
     let now = Shape::of(answer);
+    // The same lines with words: whatever markers, indents or blank lines the
+    // answer lost or gained, `restore` gives back the original's, with no
+    // second wait on the model.
+    if now.filled == was.filled {
+        return None;
+    }
     match action {
         WritingAction::Improve | WritingAction::Grammar => (now.filled != was.filled).then(|| {
             format!(
@@ -372,6 +379,10 @@ mod tests {
         assert!(problem(original, "Intro: one, two and three.", action).is_some());
         assert!(problem(original, "Intro.\n- one\n- two\n- three\n- four", action).is_some());
         assert!(problem(original, "Intro.\n\n- one\n- two", action).is_some());
+        assert!(
+            problem(original, "Intro.\none\ntwo\nthree", action).is_none(),
+            "the same lines with the markers gone: restore puts them back"
+        );
     }
 
     #[test]

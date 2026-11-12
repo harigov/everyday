@@ -1859,6 +1859,9 @@ async fn mail_that_stops_syncing_is_said_once_it_has_lasted_and_again_when_it_is
         hands.forward(5);
     }
     assert!(told.titles().is_empty(), "ten minutes in: {:?}", told.titles());
+    // Something else -- another account, a calendar -- answered meanwhile, so
+    // this machine is online and this server is the one not answering.
+    svc.sync_trouble().note_reached(svc.now());
     assert!(attempt().await.is_err());
     assert_eq!(told.titles(), ["Mail from me@example.com is not syncing"]);
     let body = told.0.lock().unwrap()[0].body.clone().unwrap();
@@ -1871,6 +1874,32 @@ async fn mail_that_stops_syncing_is_said_once_it_has_lasted_and_again_when_it_is
     assert_eq!(told.titles()[1], "Mail from me@example.com is syncing again");
     let keys: Vec<_> = told.0.lock().unwrap().iter().map(|n| n.key.clone()).collect();
     assert_eq!(keys[0], keys[1], "the good news replaces the warning");
+}
+
+/// A machine with no network fails every account at once and reaches none of
+/// them: that is not an account that has stopped, and nothing is said.
+#[tokio::test]
+async fn mail_on_a_machine_with_no_network_says_nothing() {
+    let (svc, vault, account_id, _dir) = service_test_env();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let hands = Arc::new(Hands(std::sync::Mutex::new(Timestamp::now())));
+    svc.set_clock(hands.clone());
+    for _ in 0..6 {
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        let attempt = crate::mailsync::task::run_account_with(
+            svc.clone(),
+            vault.clone(),
+            account_id,
+            stop_rx,
+            refused_connection,
+            |_account, _svc, _vault| FakeSender::default(),
+        )
+        .await;
+        assert!(attempt.is_err());
+        hands.forward(5);
+    }
+    assert!(told.titles().is_empty(), "{:?}", told.titles());
 }
 
 async fn never_connects(
@@ -2191,4 +2220,71 @@ async fn on_gmail_a_header_less_answer_and_what_follows_it_join_the_conversation
     );
     env.sync(&mut session).await;
     assert_eq!(thread_of(&env, "next@example.com"), conversation);
+}
+
+/// Of two conversations with the subject and the people, the answer joins the
+/// one going on when it was sent -- not one that only began afterwards, which
+/// is newer but cannot be what it answers.
+#[tokio::test]
+async fn a_header_less_answer_does_not_join_a_conversation_that_began_after_it() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let add = |id: &str, subject: &str, hours: i64| {
+        let raw = raw_message(id, None, "matt@tavrn.example", subject, &hours_ago(hours), "...");
+        server.lock().unwrap().append("INBOX", raw, flags_seen(), None);
+    };
+    add("first@tavrn.example", "Weekly sync", 25 * 24);
+    add("second@tavrn.example", "Weekly sync", 5 * 24);
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    add("late-answer@tavrn.example", "Re: Weekly sync", 20 * 24);
+    env.sync(&mut session).await;
+    assert_eq!(
+        thread_of(&env, "late-answer@tavrn.example"),
+        thread_of(&env, "first@tavrn.example")
+    );
+}
+
+/// A header-less message that a reply in the same pass already answers goes
+/// with that reply, not with an older conversation it only shares a subject
+/// with.
+#[tokio::test]
+async fn a_header_less_message_stays_with_the_reply_that_names_it() {
+    let env = TestEnv::new();
+    let server = plain_server();
+    let older = raw_message(
+        "older@tavrn.example",
+        None,
+        "matt@tavrn.example",
+        "Re: Numbers",
+        &hours_ago(48),
+        "...",
+    );
+    server.lock().unwrap().append("INBOX", older, flags_seen(), None);
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+
+    // Stored in this order, so the newest-first pass meets the reply first.
+    let header_less = raw_message(
+        "h@tavrn.example",
+        None,
+        "matt@tavrn.example",
+        "Re: Numbers",
+        &hours_ago(2),
+        "...",
+    );
+    server.lock().unwrap().append("INBOX", header_less, flags_seen(), None);
+    let reply = raw_message(
+        "r@tavrn.example",
+        Some("h@tavrn.example"),
+        "matt@tavrn.example",
+        "Re: Numbers",
+        &hours_ago(1),
+        "...",
+    );
+    server.lock().unwrap().append("INBOX", reply, flags_seen(), None);
+    env.sync(&mut session).await;
+
+    assert_eq!(thread_of(&env, "h@tavrn.example"), thread_of(&env, "r@tavrn.example"));
 }

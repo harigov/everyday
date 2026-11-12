@@ -269,7 +269,9 @@ async fn access_token(
         Err(OAuthError::InvalidClient { .. }) => {
             Err(CommandError::new(codes::FORBIDDEN, "the account's client id or secret is wrong"))
         }
-        Err(e) => Err(CommandError::new(codes::NETWORK, e.to_string())),
+        // The sign-in endpoint not answering, or not answering sensibly: as
+        // far as an outage goes, the server was not reached.
+        Err(e) => Err(CommandError::new(codes::UNREACHABLE, e.to_string())),
     }
 }
 

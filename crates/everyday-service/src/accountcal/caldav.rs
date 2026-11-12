@@ -302,10 +302,12 @@ fn describe<E: std::fmt::Display>(e: WebDavError<E>) -> CommandError {
             codes::FORBIDDEN,
             "the CalDAV server refused this account's credential",
         ),
-        _ => CommandError::new(
-            codes::NETWORK,
+        // The transport's own failure: the request never got an answer.
+        WebDavError::Request(_) => CommandError::new(
+            codes::UNREACHABLE,
             format!("the CalDAV server could not be reached: {e}"),
         ),
+        _ => CommandError::new(codes::NETWORK, format!("the CalDAV server failed: {e}")),
     }
 }
 

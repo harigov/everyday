@@ -640,7 +640,10 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
     loop {
         attempt += 1;
         let response = http::client()?.get(url).bearer_auth(token).send().await.map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
+            CommandError::new(
+                http::transport_code(&e),
+                format!("could not reach Google Calendar: {e}"),
+            )
         })?;
         let status = response.status().as_u16();
         if status == 401 {

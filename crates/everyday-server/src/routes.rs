@@ -264,9 +264,12 @@ pub(crate) fn status_for(code: &str) -> StatusCode {
         // the socket answered with something other than a token or one
         // of the two named failures above, which is exactly the shape
         // of "something beyond this server did not behave".
-        codes::NETWORK | codes::AGENT | codes::QUICK | codes::UNREADABLE | codes::PROVIDER => {
-            StatusCode::BAD_GATEWAY
-        }
+        codes::NETWORK
+        | codes::UNREACHABLE
+        | codes::AGENT
+        | codes::QUICK
+        | codes::UNREADABLE
+        | codes::PROVIDER => StatusCode::BAD_GATEWAY,
         // Nobody's browser came back inside the sign-in's own window.
         codes::TIMED_OUT => StatusCode::REQUEST_TIMEOUT,
         // The flow this call named was withdrawn -- `cancel_oauth_sign_in`
@@ -994,6 +997,7 @@ mod status_tests {
             (codes::FORBIDDEN, StatusCode::FORBIDDEN),
             (codes::INTERNAL, StatusCode::INTERNAL_SERVER_ERROR),
             (codes::NETWORK, StatusCode::BAD_GATEWAY),
+            (codes::UNREACHABLE, StatusCode::BAD_GATEWAY),
             (codes::NOT_AN_IMAGE, StatusCode::UNPROCESSABLE_ENTITY),
             (codes::NO_LOCATION, StatusCode::UNPROCESSABLE_ENTITY),
             (codes::PANIC, StatusCode::INTERNAL_SERVER_ERROR),

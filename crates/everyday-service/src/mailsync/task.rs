@@ -162,7 +162,12 @@ where
     let attempt =
         run_attempt(svc.clone(), vault.clone(), account_id, stop, connect, build_sender).await;
     if let Err(e) = &attempt {
-        crate::trouble::mail_failed(&svc, &vault, account_id, &e.to_string());
+        // Never reached the server, as opposed to reached it and been refused:
+        // what `crate::trouble` needs to tell a machine that is offline from
+        // an account that has stopped.
+        let unreachable =
+            e.downcast_ref::<MailError>().is_some_and(|m| matches!(m, MailError::Network(_)));
+        crate::trouble::mail_failed(&svc, &vault, account_id, &e.to_string(), unreachable);
     }
     attempt
 }
@@ -227,7 +232,10 @@ where
         }
         credential::Resolved::Transient(message) => {
             statuses.set_error(account_id, message.clone());
-            return Err(message.into());
+            // The provider's sign-in endpoint could not be reached, or did not
+            // answer sensibly: as far as an outage goes, the server was not
+            // reached.
+            return Err(Box::new(MailError::Network(message)));
         }
     };
 
@@ -344,7 +352,7 @@ where
         // most notification rules it is the sorting that decides whether it is
         // announced at all. Bodies are in by now, and the model reads them.
         if statuses.take_arrived(account_id) {
-            svc.run_mail_passes();
+            svc.run_mail_passes(true);
         }
         statuses.set_phase(account_id, Phase::Idling, 0, 0);
 
@@ -440,7 +448,7 @@ where
             Ok(IdleEvent::Activity | IdleEvent::Stopped) => continue,
             Err(e) => {
                 statuses.set_error(account_id, e.to_string());
-                return Err(e.to_string().into());
+                return Err(Box::new(e));
             }
         }
     }
@@ -511,7 +519,9 @@ async fn handle_session_error(
         }
         e => {
             statuses.set_error(account_id, e.to_string());
-            Err(e.to_string().into())
+            // Boxed whole, so `run_account_with` can tell a server it never
+            // reached from one that refused.
+            Err(Box::new(e))
         }
     }
 }

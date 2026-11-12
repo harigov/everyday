@@ -193,6 +193,8 @@ async fn a_calendar_with_a_reminder_about_to_go_out_is_checked_first() {
     svc.set_clock(Arc::new(support::clock::FakeClock::at(
         now + jiff::SignedDuration::from_mins(3),
     )));
+    // What the reminder tick saw coming is what the refresher checks.
+    everyday_service::arrivals::tick_calendars(&svc, &vault);
     one_pass(&svc, &vault, "the check before the reminder", || feed.asked() == 2).await;
 }
 
