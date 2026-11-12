@@ -16,7 +16,7 @@ use everyday_core::mail::{
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::IngestMessage;
 use everyday_service::ctx::Ctx;
-use everyday_service::{EventSink, Notification, Service};
+use everyday_service::{Change, EventSink, Kind, Notification, Service};
 use jiff::{SignedDuration, Timestamp};
 use serde_json::{Value, json};
 
@@ -272,8 +272,10 @@ async fn recent_mail_is_sorted_into_the_persons_own_categories_over_typesafe() {
     assert_eq!(fake.seen().len(), 2, "a sorted thread is not asked about again");
 }
 
+/// What was announced, and for each `Thread` change, how many notices had
+/// gone out before it.
 #[derive(Default)]
-struct Told(Mutex<Vec<Notification>>);
+struct Told(Mutex<Vec<Notification>>, Mutex<Vec<usize>>);
 
 impl EventSink for Told {
     fn notify(&self, notification: Notification) {
@@ -283,6 +285,13 @@ impl EventSink for Told {
             return;
         }
         self.0.lock().unwrap().push(notification);
+    }
+
+    fn changed(&self, change: Change) {
+        if change.kind == Kind::Thread {
+            let notices = self.0.lock().unwrap().len();
+            self.1.lock().unwrap().push(notices);
+        }
     }
 }
 
@@ -308,10 +317,14 @@ async fn sorting_tells_you_about_what_it_files_where_you_asked_to_hear() {
 
     everyday_service::mailai::categorize_tick(&svc).await;
 
+    let changes = told.1.lock().unwrap().clone();
     let told = told.0.lock().unwrap();
     assert_eq!(told.len(), 1, "the receipt is not what was asked for");
     assert_eq!(told[0].body.as_deref(), Some("Lunch on Friday?"));
     assert!(matches!(told[0].reach, everyday_service::Reach::User));
+    // An open Important tab is told to draw it before the banner names it,
+    // not once every account has been sorted.
+    assert_eq!(changes.first(), Some(&0), "the list hears first: {changes:?}");
 }
 
 /// Switching a model on files whatever is in the window, and an unread message

@@ -55,6 +55,7 @@ use everyday_core::mail::{
 use serde_json::{Value, json};
 
 use crate::error::{CommandError, CommandResult, codes};
+use crate::events::{Change, Kind, Op};
 use crate::mailvoice::VoiceContext;
 use crate::service::{Service, blocking};
 
@@ -392,7 +393,10 @@ async fn apply_categorize_answer(
             .await
             .is_ok()
         {
-            filed.push(Filed { message: message_id, sorted_as: None });
+            // Every candidate is an `Other` thread, so one kept there moved
+            // nowhere: no list has anything new to draw.
+            let moved = category != Category::Other;
+            filed.push(Filed { message: message_id, sorted_as: None, moved });
         }
     }
     filed
@@ -662,7 +666,7 @@ async fn apply_priority_answer(
             .await
             .is_ok()
         {
-            promoted.push(Filed { message: message_id, sorted_as: None });
+            promoted.push(Filed { message: message_id, sorted_as: None, moved: true });
         }
     }
     promoted
@@ -673,6 +677,8 @@ async fn apply_priority_answer(
 pub(crate) struct Filed {
     pub(crate) message: MailMessageId,
     pub(crate) sorted_as: Option<String>,
+    /// Its thread changed tabs, so an open list is out of date.
+    pub(crate) moved: bool,
 }
 
 /// Tell somebody about what a model just filed where they asked to hear about
@@ -687,6 +693,13 @@ pub(crate) async fn announce_filed(
     account: &Account,
     filed: &[Filed],
 ) {
+    // An open list is told first, whether or not anything below is announced:
+    // a pass writes under no command, so nothing else would tell it, and a
+    // banner for mail the Important tab does not show is what that looked
+    // like until somebody switched tabs and back.
+    if filed.iter().any(|f| f.moved) {
+        service.events().changed(Change::new(Kind::Thread, Op::Updated));
+    }
     let Some(statuses) = service.mail_statuses() else { return };
     let at = service.instant();
     let own = own_addresses(account);

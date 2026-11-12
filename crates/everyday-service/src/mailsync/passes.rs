@@ -428,6 +428,9 @@ pub async fn sync_headers<S: MailSession>(
     let total = new_uids.len() as u64;
     let mut done = 0u64;
     let mut stored_all = true;
+    // Whether a batch below has said the list changed as it stored new mail,
+    // so the end of the mailbox does not say it again for the same messages.
+    let mut marked_new = false;
     ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
 
     // The rules-based half of the split inbox -- see
@@ -475,10 +478,10 @@ pub async fn sync_headers<S: MailSession>(
             // alone.
             categorize_new_message(&mut resolved, &category_rules, ctx.contacts.as_deref());
             // Held until the batch is stored, then noted for the account
-            // task to announce once the whole pass is over -- a headers
-            // batch is the wrong place to post, and a first sync of
-            // thousands of messages would otherwise post thousands of
-            // times. The decision of which messages are news at all lives
+            // task, which announces it as soon as it wakes, beside the pass
+            // -- a headers batch is the wrong place to post, and a first
+            // sync of thousands of messages would otherwise post thousands
+            // of times. The decision of which messages are news at all lives
             // in `arrivals`.
             if crate::arrivals::ingest_is_news(&crate::arrivals::IngestFacts {
                 is_new: resolved.is_new,
@@ -569,12 +572,25 @@ pub async fn sync_headers<S: MailSession>(
                 }
             }
         }
+        let stored_any = !ingest_batch.is_empty();
         match ctx.vault.ingest_mail(ctx.account_id, ingest_batch) {
             // Only a stored message is news. One that failed to store comes
             // back as new on the next pass, with a fresh id, and is noted
             // then -- noting it now as well would announce it twice, the
             // first time for mail that is not in the vault.
             Ok(_) => {
+                // Marked before anything is noted: a notice is announced the
+                // moment it is noted, mid-pass, and takes this to tell an open
+                // list to draw what it names. Left to the end of the mailbox,
+                // as below, the banner came with nothing for the list to show
+                // until the whole pass was over.
+                if stored_any {
+                    if let Some(cache) = &ctx.unread_cache {
+                        cache.invalidate(ctx.account_id);
+                    }
+                    ctx.statuses.mark_changed(ctx.account_id);
+                    marked_new = true;
+                }
                 if !arrivals.is_empty() {
                     ctx.statuses.mark_arrived(ctx.account_id);
                 }
@@ -660,8 +676,9 @@ pub async fn sync_headers<S: MailSession>(
     // from `any_flag_actually_changed`, not `!changes.flag_changes.is_empty()`:
     // without `CONDSTORE`, that list is every known uid's *current* flags,
     // changed or not, and invalidating on it regardless would mean the
-    // cache never survives a single non-`CONDSTORE` pass.
-    let changed = !changes.new_uids.is_empty()
+    // cache never survives a single non-`CONDSTORE` pass. New mail a batch
+    // already marked as it was stored is not counted twice.
+    let changed = (!changes.new_uids.is_empty() && !marked_new)
         || any_flag_actually_changed
         || !changes.vanished.is_empty()
         || gmail_labels_changed;
@@ -670,10 +687,11 @@ pub async fn sync_headers<S: MailSession>(
     }
     // The same "this mailbox's list is different now" the cache just heard,
     // passed on to whoever is drawing it: `crate::mailsync::task` takes this
-    // once the whole pass is over and raises one change event for it, so an
-    // open window reloads its thread list instead of showing what it had
-    // before the mail arrived. Marked here, not announced here, so a pass
-    // that touches six mailboxes says so once.
+    // when it announces new mail mid-pass, and again once the whole pass is
+    // over, raising one change event each time, so an open window reloads
+    // its thread list instead of showing what it had before the mail
+    // arrived. Marked here, not announced here, so a pass that touches six
+    // mailboxes says so once.
     if changed {
         ctx.statuses.mark_changed(ctx.account_id);
     }

@@ -22,7 +22,7 @@ use everyday_core::mail::{
 };
 use everyday_core::packstore::PackRef;
 use everyday_core::store::mail::{IngestMessage, ThreadFilter};
-use everyday_service::Service;
+use everyday_service::{Change, EventSink, Kind, Service};
 use jiff::Timestamp;
 
 // ---- a fake model on loopback ---------------------------------------------
@@ -216,6 +216,24 @@ fn mail_ai(categorize: bool, summaries: bool, auto_draft: bool) -> everyday_core
 
 // ---- model-assisted categorisation ----------------------------------------
 
+/// How many `Thread` changes went out: what tells an open list to redraw.
+#[derive(Default)]
+struct ThreadChanges(std::sync::Mutex<usize>);
+
+impl EventSink for ThreadChanges {
+    fn changed(&self, change: Change) {
+        if change.kind == Kind::Thread {
+            *self.0.lock().unwrap() += 1;
+        }
+    }
+}
+
+impl ThreadChanges {
+    fn count(&self) -> usize {
+        *self.0.lock().unwrap()
+    }
+}
+
 #[tokio::test]
 async fn categorize_tick_applies_the_models_label_to_an_other_bucket_thread() {
     let fake = fake_model(r#"{"labels":[{"index":1,"category":"important"}]}"#.to_string()).await;
@@ -234,11 +252,14 @@ async fn categorize_tick_applies_the_models_label_to_an_other_bucket_thread() {
         "Just checking in.",
         Some(Category::Other),
     );
+    let changes = Arc::new(ThreadChanges::default());
+    svc.set_events(changes.clone());
 
     everyday_service::mailai::categorize_tick(&svc).await;
 
     let updated = svc.get().unwrap().mail_message(msg.id).unwrap();
     assert_eq!(updated.category, Some(Category::Important));
+    assert_eq!(changes.count(), 1, "an open list is told it moved tabs");
 }
 
 #[tokio::test]
@@ -316,10 +337,13 @@ async fn categorize_tick_does_not_reask_a_thread_it_already_labelled_other() {
         Some(Category::Other),
     );
 
+    let changes = Arc::new(ThreadChanges::default());
+    svc.set_events(changes.clone());
     everyday_service::mailai::categorize_tick(&svc).await;
     let (thread, _) = svc.get().unwrap().thread(thread_id).unwrap();
     assert_eq!(thread.ai_categorize_asked_at_count, Some(1), "asked once, and recorded as such");
     assert_eq!(svc.get().unwrap().mail_message(msg.id).unwrap().category, Some(Category::Other));
+    assert_eq!(changes.count(), 0, "kept where it was, so no list has anything to redraw");
 
     // A model that would say "important" this time, if it were ever asked.
     let would_promote =

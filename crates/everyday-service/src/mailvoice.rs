@@ -106,12 +106,13 @@ impl VoiceContext {
     }
 
     /// What every call that writes a message for them does to the answer: on top
-    /// of [`Self::humanized`], a closing the signature already says goes. Not for
-    /// a rewrite of their own text, where a line like that is one they typed.
+    /// of [`Self::humanized`], a closing the signature already says goes, and so
+    /// does a mail program's trailer ("Sent via Superhuman") copied from the
+    /// thread. Not for a rewrite of their own text, where a line like that is
+    /// one they typed.
     pub fn clean(&self, body: &str) -> String {
-        voice::drop_repeated_signature(&self.humanized(body), &self.signature)
-            .trim_end()
-            .to_string()
+        let body = voice::drop_trailers(&self.humanized(body));
+        voice::drop_repeated_signature(&body, &self.signature).trim_end().to_string()
     }
 
     /// This, for writing from `address` rather than the account's own -- an
@@ -695,6 +696,17 @@ mod tests {
         let voice = VoiceContext { signature: "Hari Govardhanam".into(), ..Default::default() };
         assert_eq!(voice.humanized("Thursday works.\n\nHari"), "Thursday works.\n\nHari");
         assert_eq!(voice.clean("Thursday works.\n\nHari"), "Thursday works.");
+    }
+
+    #[test]
+    fn a_trailer_is_dropped_from_what_is_written_for_them_not_from_their_own_text() {
+        let voice = VoiceContext {
+            profile: Arc::new(VoiceProfile { samples: 5, ..Default::default() }),
+            ..Default::default()
+        };
+        let written = "Thursday works.\n\nSent via Superhuman";
+        assert_eq!(voice.clean(written), "Thursday works.");
+        assert_eq!(voice.humanized(written), written);
     }
 
     #[test]

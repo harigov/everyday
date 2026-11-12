@@ -336,3 +336,30 @@ async fn a_noted_message_wakes_the_task_and_new_mail_starts_the_sorting() {
     );
     assert_eq!(noted(&env), ["wanted"]);
 }
+
+/// The account task announces a noted message the moment it wakes, mid-pass,
+/// and tells an open list to draw it only if the pass has said its list
+/// changed. That used to be said once the whole mailbox was done, so the
+/// banner came first and the list went on without the message it named.
+#[tokio::test]
+async fn by_the_time_a_notice_can_go_out_the_list_has_been_told() {
+    let (env, server) = synced_with(MailNotify::default()).await;
+    let news = env.statuses.news(env.account_id);
+    let _ = env.statuses.take_changed(env.account_id);
+
+    arrive(&server, "wanted", "ada@example.com");
+    let mut session = FakeMailSession::new(server);
+    // Woken as the task is, beside the pass: what it would find then.
+    let at_the_notice = async {
+        news.notified().await;
+        env.statuses.take_changed(env.account_id)
+    };
+    let (_, changed) = tokio::join!(env.sync(&mut session), at_the_notice);
+
+    assert!(changed, "the list is told with the notice, not after the pass");
+    assert!(
+        !env.statuses.take_changed(env.account_id),
+        "and not told again at the end of the mailbox for the same message"
+    );
+    assert_eq!(noted(&env), ["wanted"]);
+}
