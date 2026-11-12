@@ -75,12 +75,17 @@ for (const action of ACTIONS) {
 // The shell sends a description across to Rust and gets an *id* back. A row
 // wearing `tray` without an id would be drawn in the menu and then do nothing
 // when it was chosen, which is the worst of the three possible failures.
+//
+// The `quick` rows too: the app bar's menus are drawn from the same entries,
+// and a quick row is a tray row waiting to be promoted -- one with a bad or a
+// borrowed id would pass every check until the day it was.
 
 const trayRows = ACTIONS.filter((a) => a.tray)
 assert.ok(trayRows.length > 0, 'the tray table is empty')
+const menuRows = ACTIONS.filter((a) => a.tray || a.quick)
 
-for (const row of trayRows) {
-  assert.ok(row.id, `${row.label} is offered in the tray with no id`)
+for (const row of menuRows) {
+  assert.ok(row.id, `${row.label} is offered in a menu with no id`)
   assert.ok(
     row.id.includes(':'),
     `${row.id} should be prefixed with the app it belongs to, as todo:add`,
@@ -91,8 +96,8 @@ for (const row of trayRows) {
   )
 }
 
-const ids = trayRows.map((r) => r.id)
-assert.equal(new Set(ids).size, ids.length, `two tray rows share an id: ${ids}`)
+const ids = menuRows.map((r) => r.id)
+assert.equal(new Set(ids).size, ids.length, `two menu rows share an id: ${ids}`)
 
 // ── ...and its heading is one the surfaces know how to order ──────────
 //
@@ -116,15 +121,16 @@ for (const action of ACTIONS) {
 // A heading listed twice would draw twice, with the rows split between them.
 assert.equal(new Set(GROUPS).size, GROUPS.length, `a heading is listed twice in GROUPS`)
 
-// Every app's heading has at least one tray row under it, so a right-click on
-// a tab in the app bar offers something. `Everywhere` and `Go to` are the two
-// headings that belong to no app: they are keyboard and palette rows, and the
-// tray skips them for being empty rather than drawing a stray separator.
+// Every app's heading has at least one tray or quick row under it, so a
+// right-click on a tab in the app bar offers something -- the tray itself
+// carries only a few of them. `Everywhere` and `Go to` are the two headings
+// that belong to no app: they are keyboard and palette rows, and the tray
+// skips them for being empty rather than drawing a stray separator.
 for (const group of GROUPS) {
   if (group === 'Everywhere' || group === 'Go to') continue
   assert.ok(
-    trayRows.some((r) => r.group === group),
-    `the app bar offers group ${group} and no tray action is in it`,
+    menuRows.some((r) => r.group === group),
+    `the app bar offers group ${group} and no tray or quick action is in it`,
   )
 }
 

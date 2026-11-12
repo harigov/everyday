@@ -230,6 +230,16 @@ impl Scope {
 pub enum Caller {
     /// The window in this process, or the process itself.
     Local,
+    /// One more window of the desktop app in this process -- a single app
+    /// opened on its own beside the main window -- by the origin its
+    /// changes are stamped with: `window:` and the window's label.
+    ///
+    /// Everything [`Caller::Local`] may do; a caller of its own only so its
+    /// writes are not stamped `local`. The main window drops changes with
+    /// that origin as its own, so a task added in a window of its own would
+    /// otherwise never reach the main window's list -- and that window, for
+    /// its part, has to drop its own writes and not the main window's.
+    Window(String),
     /// A process belonging to the same user, over the local socket. The
     /// operating system vouched for it, so there is no token.
     Socket,
@@ -255,6 +265,7 @@ impl Caller {
     pub fn origin(&self) -> Option<&str> {
         match self {
             Caller::Local => Some("local"),
+            Caller::Window(origin) => Some(origin.as_str()),
             Caller::Socket => Some("socket"),
             Caller::Device(id) => Some(id.as_str()),
             Caller::Assistant(_) => Some("assistant"),
@@ -288,6 +299,12 @@ impl Ctx {
     /// The window in this process: everything, no request ids needed.
     pub fn local() -> Self {
         Self { caller: Caller::Local, scopes: vec![Scope::All], proved_at: None, request_id: None }
+    }
+
+    /// Another window in this process, named by its label: everything, as
+    /// [`Ctx::local`], with an origin of its own. See [`Caller::Window`].
+    pub fn window(label: &str) -> Self {
+        Self { caller: Caller::Window(format!("window:{label}")), ..Self::local() }
     }
 
     pub fn with_request_id(mut self, id: Option<String>) -> Self {
@@ -355,6 +372,15 @@ mod tests {
         assert!(!everything.names(Scope::Money));
         let named = Ctx { scopes: vec![Scope::Tasks, Scope::Money], ..Ctx::local() };
         assert!(named.names(Scope::Money));
+    }
+
+    #[test]
+    fn another_window_holds_everything_under_an_origin_of_its_own() {
+        let window = Ctx::window("app-todo");
+        assert!(window.holds(Scope::Admin));
+        assert_eq!(window.caller.origin(), Some("window:app-todo"));
+        // Not the main window's: that one drops `local` as its own write.
+        assert_ne!(window.caller.origin(), Ctx::local().caller.origin());
     }
 
     #[test]

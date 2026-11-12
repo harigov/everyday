@@ -30,7 +30,7 @@ pub struct AppState {
     /// `CloseRequested` -- the one we ask for ourselves -- is let through.
     closing: AtomicBool,
     /// Set by an explicit Quit, so the close it asks for is not turned into a
-    /// hide by [`AppState::stays_resident`]. See [`AppState::quit`].
+    /// hide, which is what closing the window does. See [`AppState::quit`].
     quitting: AtomicBool,
     /// Where the service's remarks go. Kept so a remote session can re-emit the
     /// server's events through the same channel a local vault uses.
@@ -124,23 +124,17 @@ impl AppState {
         Ok(registry)
     }
 
-    /// Should closing the window leave the process running?
+    /// Is there work here that does not need a window?
     ///
-    /// True when there is work here that does not need a window: a routine the
-    /// assistant is expected to run on a schedule, a vault being served to
-    /// another machine, or a vault being served to an MCP client. All three
-    /// would stop dead if the process went, and none of them is something a
-    /// person closing a window is asking to stop.
+    /// A routine the assistant is expected to run on a schedule, a vault being
+    /// served to another machine, or a vault being served to an MCP client:
+    /// all three would stop dead if the process went, and none of them is
+    /// something a person closing a window is asking to stop.
     ///
-    /// False in the ordinary case, which is the one nearly everybody is in:
-    /// closing the window of an application that is only an application should
-    /// quit it, and a process lingering invisibly in a tray nobody asked for is
-    /// how a laptop ends up with four of them.
-    ///
-    /// This answers only "is there work here". Whether there is a way *back* to
-    /// a hidden window is the caller's question, and it has to be asked too --
-    /// see the close handler in `lib.rs`. A process with work to do and no tray
-    /// icon and no hotkey is not resident, it is stranded.
+    /// Closing the window hides it whenever the tray is up, since Quit is
+    /// there. This is what still hides it with only the hotkey to come back
+    /// by -- see the close handler in `lib.rs`: with work like this to do, a
+    /// process with no Quit to hand is better than one that stops serving.
     pub fn stays_resident(&self) -> bool {
         if self.sharing.is_running() || self.mcp.is_running() {
             return true;
@@ -231,8 +225,8 @@ impl AppState {
     ///
     /// The tray's Quit closes the window the same way its close button does,
     /// so that quitting saves and locks through the one handshake -- and so,
-    /// without this, a vault with a routine on it answered Quit by hiding a
-    /// window that was usually hidden already, and nothing happened at all.
+    /// without this, Quit was answered by hiding a window that was usually
+    /// hidden already, and nothing happened at all.
     /// Never cleared: once asked, the process goes, if only by the close
     /// handler's own fallback.
     pub fn quit(&self) {

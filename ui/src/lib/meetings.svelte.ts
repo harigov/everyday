@@ -28,6 +28,7 @@ import {
 import type { MeetingOfferAnswer, MeetingOfferPayload } from './api'
 import { notify } from './notify.svelte'
 import { panels } from './panels.svelte'
+import { pinned } from './appwindow'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import type {
   CaptureStatus,
@@ -136,12 +137,29 @@ class MeetingsState {
    * Begin listening for the shell's capture events, and take the first
    * reading of what it is doing. Called once, from `App.svelte`, the way
    * `live.start()` and `tray.start()` are.
+   *
+   * In every window, the recording itself: a Notes or Calendar window of its
+   * own can start one, and has to show it and stop it -- see the pill in
+   * `TopBar.svelte` -- and must not offer to start a second over it. Offers
+   * and "still on the call?" are the main window's alone (`appwindow.ts`):
+   * each is a question, and asking it in two windows at once is asking twice.
    */
   start() {
     if (this.#started || !this.supported) return
     this.#started = true
 
     onMeetingStatus((status) => (this.capture = status))
+    void api
+      .meetingStatus()
+      .then((status) => (this.capture = status))
+      .catch(() => {
+        // No shell to ask (a plain browser build, or a remote client) --
+        // the pill simply never shows, which is the right degrading.
+      })
+    void this.refreshRecordings()
+
+    if (pinned) return
+
     onMeetingStillOn((id) => (this.stillOn = id))
     onMeetingOffer((offer) => {
       if (offer.automatic) {
@@ -175,15 +193,6 @@ class MeetingsState {
       })
     })
     onMeetingOfferSetup(() => panels.openSettings('meetings'))
-
-    void api
-      .meetingStatus()
-      .then((status) => (this.capture = status))
-      .catch(() => {
-        // No shell to ask (a plain browser build, or a remote client) --
-        // the pill simply never shows, which is the right degrading.
-      })
-    void this.refreshRecordings()
 
     // Offers raised before this window was listening -- it was opened from
     // the tray, say, or reloaded. Merged rather than assigned, so one that

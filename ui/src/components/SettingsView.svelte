@@ -472,8 +472,17 @@
             <span>
               <b>Show Every Day in the {TRAY_WORD}</b>
               <small>
+                <!-- What closing the window does follows from the icon being
+                     up -- `showing`, the shell's own answer, which is what its
+                     close handler asks too: with it, closing hides the window
+                     and Quit is in the menu. Without it, closing quits unless
+                     there is work to do and a hotkey to come back by, which is
+                     more than a line here should try to say. -->
                 {#if tray.unavailable}
                   This desktop session has no {TRAY_WORD} for Every Day to appear in.
+                {:else if tray.showing}
+                  Start an entry, a task or an hour without coming back to the window. Closing the
+                  window keeps Every Day running here; quit it from this menu.
                 {:else}
                   Start an entry, a task or an hour without coming back to the window.
                 {/if}

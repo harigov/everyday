@@ -27,7 +27,6 @@
 
 use everyday_core::{Journal, VaultConfig, VaultStatus};
 use everyday_service::agent::AgentEvent;
-use everyday_service::ctx::Ctx;
 use everyday_service::error::{CommandError, CommandResult};
 use everyday_service::service::blocking;
 use serde::Serialize;
@@ -374,15 +373,20 @@ pub async fn open_vault(state: State<'_, AppState>, path: PathBuf) -> CommandRes
 /// local vault, where a command cannot half-happen, and everything on a remote
 /// one -- see `everyday_service::idempotency`. Carrying it on both paths is
 /// what keeps the two identical.
+///
+/// Stamped with the window it came from -- see `windows::ctx_for` -- so a
+/// write made in a window of one app reaches the main window's lists, and
+/// the other way round.
 #[tauri::command]
 pub async fn call(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     name: String,
     args: Option<Value>,
     request_id: Option<String>,
 ) -> CommandResult<Value> {
     let session = state.session().as_session();
-    let ctx = Ctx::local().with_request_id(request_id);
+    let ctx = crate::windows::ctx_for(webview.label()).with_request_id(request_id);
     session.call(ctx, &name, args.unwrap_or(Value::Null)).await
 }
 
@@ -415,20 +419,28 @@ pub struct Connected {
 /// connection that then failed would leave a row in the picker whose token the
 /// user has no way to know is good.
 #[tauri::command]
-pub async fn connect_remote(state: State<'_, AppState>, link: String) -> CommandResult<Connected> {
+pub async fn connect_remote(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    link: String,
+) -> CommandResult<Connected> {
     let invite = everyday_server::pairing::parse(&link)
         .map_err(|message| CommandError::new("invalid", message))?;
     let device_name = device_name();
     let (client, token) = RemoteClient::pair(&invite, &device_name).await?;
     remotes::remember(client.connection(), &token)?;
-    attach(&state, client).await
+    attach(&app, &state, client).await
 }
 
 /// Reconnect to a server this copy already paired with.
 #[tauri::command]
-pub async fn reconnect_remote(state: State<'_, AppState>, id: String) -> CommandResult<Connected> {
+pub async fn reconnect_remote(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<Connected> {
     let client = remote::resume(&id).await?;
-    attach(&state, client).await
+    attach(&app, &state, client).await
 }
 
 /// Stop looking at another computer's vault. The pairing survives.
@@ -447,10 +459,20 @@ pub async fn forget_remote(state: State<'_, AppState>, id: String) -> CommandRes
     remotes::forget(&id)
 }
 
-async fn attach(state: &State<'_, AppState>, client: RemoteClient) -> CommandResult<Connected> {
+async fn attach(
+    app: &tauri::AppHandle,
+    state: &State<'_, AppState>,
+    client: RemoteClient,
+) -> CommandResult<Connected> {
     let sink =
         state.sink().ok_or_else(|| CommandError::new("internal", "the window is not ready yet"))?;
     let connection = client.connection().clone();
+    // Apps open in windows of their own close first, writing what was typed
+    // in them to the vault they were looking at -- which `connect` is about
+    // to close -- and are not reopened: two windows on a remote vault would
+    // not hear of each other's writes. See `windows`.
+    crate::windows::close_all(app);
+    crate::windows::settle(app, crate::CLOSE_GRACE / 2).await;
     let remote = Remote::start(client, sink);
     state.connect(remote).await;
     let status =
@@ -493,6 +515,7 @@ fn device_name() -> String {
 /// `application/octet-stream` instead and lands here as bytes.
 #[tauri::command]
 pub async fn put_blob(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     request: tauri::ipc::Request<'_>,
 ) -> CommandResult<String> {
@@ -506,7 +529,8 @@ pub async fn put_blob(
         tauri::ipc::InvokeBody::Json(value) => serde_json::from_value::<Vec<u8>>(value.clone())
             .map_err(|_| CommandError::new("invalid", "attachment payload was not a buffer"))?,
     };
-    state.session().as_session().put_blob(&Ctx::local(), bytes).await
+    let ctx = crate::windows::ctx_for(webview.label());
+    state.session().as_session().put_blob(&ctx, bytes).await
 }
 
 /// Say something to the assistant, and stream what it says back.
@@ -517,6 +541,7 @@ pub async fn put_blob(
 /// whether the turn finished.
 #[tauri::command]
 pub async fn send_message(
+    webview: tauri::Webview,
     state: State<'_, AppState>,
     conversation_id: everyday_core::ConversationId,
     prompt: String,
@@ -538,7 +563,9 @@ pub async fn send_message(
     });
     session
         .send_message(
-            Ctx::local(),
+            // The turn is announced to every window but the one that asked,
+            // which is drawing it from `channel` already.
+            crate::windows::ctx_for(webview.label()),
             serde_json::json!({
                 "conversationId": conversation_id,
                 "prompt": prompt,
@@ -556,11 +583,20 @@ pub async fn send_message(
 /// handler: that one cancelled the close and asked for a flush, this one
 /// completes it. Locking here rather than in the window handler is what makes
 /// the ordering right -- the key is dropped after the last write, not before it.
+///
+/// From a window of one app, only that window goes: the vault is still the
+/// main window's, open or hidden. From the main window, the windows of one
+/// app it asked to close as well are given a moment to land their own
+/// writes first -- see `windows::settle`.
 #[tauri::command]
 pub async fn ready_to_close(
     window: tauri::Window,
     state: State<'_, AppState>,
 ) -> CommandResult<()> {
+    if crate::windows::is_app_window(window.label()) {
+        return window.destroy().map_err(|e| CommandError::new("close_failed", e.to_string()));
+    }
+    crate::windows::settle(window.app_handle(), crate::CLOSE_GRACE / 2).await;
     if let Some(vault) = state.service().get() {
         blocking(move || {
             // Best-effort: a checkpoint failing is not a reason to refuse to

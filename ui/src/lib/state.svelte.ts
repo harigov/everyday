@@ -7,12 +7,14 @@
 import { tick } from 'svelte'
 import { api, isMock, newRequestId } from './api'
 import { APP_ORDER, APPS, type Section } from './apps'
+import { pinned } from './appwindow'
 import { AUTOSAVE_MS } from './autosave'
 import { errorMessage, handle, isConflict, isLocked, quietly, setPolicy } from './errors'
 import { notify } from './notify.svelte'
 import { seen, type Showing } from './onscreen'
 import { panels } from './panels.svelte'
 import { pref } from './prefs'
+import { windowControls } from './window.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
 import { todayIso } from './time'
@@ -44,6 +46,28 @@ const AUTOLOCK_POLL_MS = 5_000
 const IDLE_POLL_MS = 5_000
 /** Floor between "the user is still here" pings to the backend. */
 const TOUCH_MS = 15_000
+
+/**
+ * When somebody last used any window of this app on this machine, kept where
+ * every window can read it.
+ *
+ * The screen timer is each window's own, and a window of one app
+ * (`appwindow.ts`) is somebody at this keyboard all the same: an hour spent in
+ * the todo window must not send the main window beside it to its lock screen.
+ * Written at the pace `touch` pings the backend -- so a window's view of the
+ * others is at most `TOUCH_MS` old, against a timeout counted in minutes --
+ * and only by this machine's windows, so a phone looking at the same vault
+ * defers nothing here.
+ */
+const ACTIVE_AT = 'everyday.activeAt'
+
+function activeElsewhere(): number {
+  try {
+    return Number(localStorage.getItem(ACTIVE_AT)) || 0
+  } catch {
+    return 0
+  }
+}
 /** Floor between list refreshes triggered by an autosave. */
 const LIST_REFRESH_MS = 4_000
 
@@ -273,7 +297,9 @@ class AppState {
     // `?section=` alongside `?theme=`, and for the same reason: so the
     // interface can be opened straight to the app under review.
     const asked = isMock ? new URLSearchParams(location.search).get('section') : null
-    const section = parseSection(asked ?? localStorage.getItem('everyday.section'))
+    // A window of one app shows that app, whatever the main window was last
+    // left on. See `appwindow.ts`.
+    const section = pinned ?? parseSection(asked ?? localStorage.getItem('everyday.section'))
     if (section) this.section = section
     try {
       const boot = await api.bootstrap()
@@ -581,6 +607,13 @@ class AppState {
 
   setSection(section: Section) {
     if (!this.canShow(section)) return
+    // A window of one app shows no other: the main window comes forward to
+    // show it instead. Nor does it remember its own app as the last one
+    // open -- that is the main window's to come back to.
+    if (pinned) {
+      if (section !== pinned) void api.showInMain({ section }).catch(() => {})
+      return
+    }
     this.section = section
     sectionPref.set(section)
     // Choosing an app is how Settings is left, the same as the close button
@@ -603,6 +636,13 @@ class AppState {
    */
   async goTo(section: Section): Promise<boolean> {
     if (this.screen !== 'main' || !this.canShow(section)) return false
+    // In a window of one app, another app is the main window's to show --
+    // and whatever the caller meant to do there next has no store here to
+    // do it in, so it is told to stop.
+    if (pinned && section !== pinned) {
+      this.setSection(section)
+      return false
+    }
     this.setSection(section)
     await tick()
     return true
@@ -617,6 +657,7 @@ class AppState {
    * a screen that cannot work.
    */
   nextSection() {
+    if (pinned) return
     const available = APP_ORDER.filter((s) => this.canShow(s))
     if (available.length < 2) return
     const at = available.indexOf(this.section)
@@ -769,7 +810,15 @@ class AppState {
     this.screen = 'main'
     // A vault opened on a backend that stores journals only cannot show the
     // section the last one left us in.
-    if (!this.canShow(this.section)) this.section = 'journal'
+    if (!this.canShow(this.section)) {
+      // A window of one app has nothing else to show: it closes, through
+      // the same save as any other close.
+      if (pinned) {
+        windowControls.close()
+        return
+      }
+      this.section = 'journal'
+    }
     await this.refreshJournals()
     await this.refreshEntries()
     this.startLockTimers()
@@ -805,7 +854,8 @@ class AppState {
     this.#screenTimer = setInterval(() => {
       const seconds = this.status?.autoLockSeconds ?? 0
       if (seconds <= 0 || this.opensItself || this.screen !== 'main') return
-      if (Date.now() - this.#idleSince >= seconds * 1000) void this.lockScreen()
+      const since = Math.max(this.#idleSince, activeElsewhere())
+      if (Date.now() - since >= seconds * 1000) void this.lockScreen()
     }, IDLE_POLL_MS)
     if (this.remote) return
     this.#lockTimer = setInterval(async () => {
@@ -852,6 +902,12 @@ class AppState {
     if (now - this.#lastTouch < TOUCH_MS) return
     this.#lastTouch = now
     void api.touch().catch(() => {})
+    try {
+      localStorage.setItem(ACTIVE_AT, String(now))
+    } catch {
+      // Storage refused (full, or a stand-in under test): each window then
+      // keeps its own clock, as every window did before there were two.
+    }
   }
 
   // ── the open document ────────────────────────────────────────────────
@@ -1460,6 +1516,18 @@ class AppState {
 }
 
 export const app = new AppState()
+
+// The theme, when it is changed in another window: a window of one app has no
+// Settings of its own, and should not stay light after the main window went
+// dark. `storage` fires in every other window of this origin, never the one
+// that wrote.
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'everyday.theme') return
+    app.theme = parseTheme(e.newValue)
+    app.applyTheme()
+  })
+}
 
 // `errors.ts` states the policy; this is the line that gives it the session to
 // apply it to. Here rather than in that file so it depends on nothing, which

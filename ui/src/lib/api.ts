@@ -153,6 +153,7 @@ import type {
 import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
 import type { Commands } from './generated/commands'
+import type { Section } from './apps'
 
 // Decided at BUILD time, not run time.
 //
@@ -249,6 +250,19 @@ export let onPalette: (handler: () => void) => void = () => {}
  * Outside Tauri there is no tray to click, so this is a no-op.
  */
 export let onOpenCalendar: (handler: () => void) => void = () => {}
+
+/** What a window of one app hands back to the main window -- see `showInMain`. */
+export interface ShowInMain {
+  section: Section | null
+  settings: string | null
+}
+
+/**
+ * Register the main window's handler for a window of one app asking it to
+ * show something that is not that app: another app, or Settings. The shell
+ * has raised the main window already. See `lib/appwindow.ts`.
+ */
+export let onShowInMain: (handler: (asked: ShowInMain) => void) => void = () => {}
 
 // ── Meeting capture, from the Tauri shell ───────────────────────────────
 //
@@ -367,8 +381,12 @@ export let sendMessage: (
 
 if (!MOCK) {
   const { listen } = await import('@tauri-apps/api/event')
+  const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow')
   onSaveAndClose = (handler) => {
-    void listen('everyday://save-and-close', () => void handler())
+    // On this window, not `listen`'s every window: the shell asks each
+    // window by name, and a window of one app closing must not take the
+    // main window with it. See `windows.rs`.
+    void getCurrentWebviewWindow().listen('everyday://save-and-close', () => void handler())
   }
   onShellNotification = (handler) => {
     void listen<ShellNotification>('everyday://notify', (event) => handler(event.payload))
@@ -387,6 +405,9 @@ if (!MOCK) {
   }
   onOpenCalendar = (handler) => {
     void listen('everyday://open-calendar', () => handler())
+  }
+  onShowInMain = (handler) => {
+    void listen<ShowInMain>('everyday://show-in-main', (e) => handler(e.payload))
   }
   onMeetingStatus = (handler) => {
     void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
@@ -998,6 +1019,21 @@ export const api = {
    * itself being on) rather than mirroring a vault write.
    */
   setTrayMeeting: (on: boolean) => invoke<void>('set_tray_meeting', { on }),
+
+  /**
+   * Open an app in a window of its own, or bring forward the one already
+   * showing it. See `lib/appwindow.ts`.
+   */
+  openAppWindow: (section: Section) => invoke<void>('open_app_window', { section }),
+  /**
+   * From a window of one app: bring the main window forward showing another
+   * app, or Settings at a tab.
+   */
+  showInMain: (asked: { section?: Section; settings?: string }) =>
+    invoke<void>('show_in_main', {
+      section: asked.section ?? null,
+      settings: asked.settings ?? null,
+    }),
   /**
    * Choose what the number on the application's icon counts; nothing chosen
    * takes it off. The shell does the counting, and keeps it current with the

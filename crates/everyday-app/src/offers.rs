@@ -876,7 +876,8 @@ pub(crate) fn take_now(app: &AppHandle) {
 }
 
 async fn take_now_inner(app: &AppHandle) {
-    if let Err(e) = crate::meeting::begin(app.clone(), None, None, None, false).await {
+    if let Err(e) = crate::meeting::begin(app.clone(), Ctx::local(), None, None, None, false).await
+    {
         report_failure(app, "", &e);
     }
 }
@@ -942,8 +943,15 @@ async fn answer(
 }
 
 async fn take(app: &AppHandle, payload: &OfferPayload) -> CommandResult<Recording> {
-    crate::meeting::begin(app.clone(), payload.event_id, Some(payload.title.clone()), None, false)
-        .await
+    crate::meeting::begin(
+        app.clone(),
+        Ctx::local(),
+        payload.event_id,
+        Some(payload.title.clone()),
+        None,
+        false,
+    )
+    .await
 }
 
 async fn dismiss(

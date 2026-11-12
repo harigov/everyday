@@ -510,7 +510,9 @@ export function calendarTaskMenu(task: Task): MenuItem[] {
       label: 'Open in the todo app',
       icon: 'check',
       run: async () => {
-        app.setSection('todo')
+        // Stops in a window of one app, which hands the todo app to the main
+        // window: this task is to be opened there, not here.
+        if (!(await app.goTo('todo'))) return
         await todo.setScope(
           task.projectId ? { kind: 'project', id: task.projectId } : { kind: 'all' },
         )
@@ -600,7 +602,7 @@ export function readingMenu(reading: Reading, tracker: Tracker): MenuItem[] {
       label: 'Open the entry it was recorded under',
       icon: 'quote',
       run: async () => {
-        app.setSection('journal')
+        if (!(await app.goTo('journal'))) return
         // The journal first: opening an entry the list is not showing leaves
         // the list pointing at some other day's row.
         // A reading logged from no page has no journal to select, and the

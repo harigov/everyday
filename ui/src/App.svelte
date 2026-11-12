@@ -11,6 +11,7 @@
   // App bar order first, then what every app shares, then the window's own.
   import { app } from './lib/state.svelte'
   import { APPS } from './lib/apps'
+  import { pinned } from './lib/appwindow'
   import './lib/notes.svelte'
   import { todo } from './lib/todo.svelte'
   import { calendar } from './lib/calendar.svelte'
@@ -67,7 +68,12 @@
   void app.start()
   // Let the Rust shell speak. Its background work -- refreshing subscribed
   // calendars on a timer -- previously had nowhere to report to but the log.
-  notify.listenToShell()
+  //
+  // The main window's alone, as are the tray, the badge, the assistant's rail
+  // and meeting offers: one of each per process, and a window of one
+  // app (`appwindow.ts`) posting every notification a second time is two of
+  // it.
+  if (!pinned) notify.listenToShell()
   // A toast can be quoting an entry title or a project name, which are
   // decrypted contents of the vault. They go when the key does, for the same
   // reason the search index does.
@@ -91,21 +97,23 @@
   // cursor.
   live.start()
 
-  // Put the quick actions in the menu bar, and keep them in step with the
-  // vault from here on. What is in it is a filtered view over the one action
-  // table, so there is nothing for an app to register first.
-  tray.start()
+  if (!pinned) {
+    // Put the quick actions in the menu bar, and keep them in step with the
+    // vault from here on. What is in it is a filtered view over the one
+    // action table, so there is nothing for an app to register first.
+    tray.start()
 
-  // The number on the Dock or taskbar icon, if one has been chosen in
-  // Settings. The shell counts it; this only tells the shell what to count.
-  badge.start()
+    // The number on the Dock or taskbar icon, if one has been chosen in
+    // Settings. The shell counts it; this only tells the shell what to count.
+    badge.start()
 
-  // Whether the assistant's rail was showing is remembered across launches:
-  // it is a panel somebody either works with or does not, and reopening it
-  // every session is as wrong as closing it every session. What it holds is
-  // loaded by the panel itself -- see `ensureLoaded`, which also covers the
-  // rail still being open after a lock cleared everything behind it.
-  agent.restore()
+    // Whether the assistant's rail was showing is remembered across launches:
+    // it is a panel somebody either works with or does not, and reopening it
+    // every session is as wrong as closing it every session. What it holds is
+    // loaded by the panel itself -- see `ensureLoaded`, which also covers the
+    // rail still being open after a lock cleared everything behind it.
+    agent.restore()
+  }
 
   // Roles and goals, loaded once the vault is open and reloaded after every
   // unlock.
@@ -144,6 +152,8 @@
     // shell before either has anything to show; `capabilities.notes` is not
     // known until `app.status` has loaded, which is why this waits for
     // `main` rather than running at import time the way `live.start()` does.
+    // A window of one app hears the recording too, not the offers: see
+    // `start` itself.
     meetings.start()
   })
 
@@ -289,9 +299,14 @@
            left end on macOS, and are drawn at its right end elsewhere. -->
       <TopBar />
       <Notices />
-      <MeetingOfferBanner />
+      {#if !pinned}
+        <MeetingOfferBanner />
+      {/if}
       <div class="panes">
-        <AppBar />
+        <!-- A window of one app has nothing to switch between. -->
+        {#if !pinned}
+          <AppBar />
+        {/if}
         <!-- Settings stands in the place the current app's own sidebar and
              view would fill, not over them -- see `SettingsView.svelte`'s
              header comment for why it moved here. It draws its own
@@ -353,7 +368,7 @@
              where the conversation already has the whole window -- the rail
              there would be the same thread again, narrower. Whether it was
              open is kept, so leaving the Assistant app brings it back. -->
-        {#if agent.open && agent.supported && app.section !== 'assistant'}
+        {#if !pinned && agent.open && agent.supported && app.section !== 'assistant'}
           <ChatPanel />
         {/if}
 
@@ -367,7 +382,7 @@
              the bottom right of a window is the most conventional gesture in
              software, and this is the feature least likely to be discovered
              by anybody hunting through a bar of grey labels. -->
-        {#if agent.supported && !agent.open && app.section !== 'assistant'}
+        {#if !pinned && agent.supported && !agent.open && app.section !== 'assistant'}
           <button
             class="float"
             onclick={() => void agent.toggle()}
