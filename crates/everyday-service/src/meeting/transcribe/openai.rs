@@ -295,6 +295,12 @@ struct VerboseSegment {
     end: f64,
     #[serde(default)]
     text: String,
+    /// Whisper's own figures, which tell a line made up over silence from
+    /// real speech. Not every compatible server sends them.
+    #[serde(default)]
+    no_speech_prob: Option<f32>,
+    #[serde(default)]
+    avg_logprob: Option<f32>,
 }
 
 fn seconds_to_ms(seconds: f64) -> u64 {
@@ -329,6 +335,8 @@ fn parse_response(
                 end_ms: seconds_to_ms(s.end).min(chunk_duration_ms),
                 text: s.text,
                 speaker_hint: s.speaker,
+                no_speech_prob: None,
+                avg_logprob: None,
             })
             .collect();
         return Ok(segments);
@@ -344,6 +352,8 @@ fn parse_response(
             end_ms: chunk_duration_ms,
             text: parsed.text,
             speaker_hint: None,
+            no_speech_prob: None,
+            avg_logprob: None,
         }]);
     }
 
@@ -357,6 +367,8 @@ fn parse_response(
             end_ms: seconds_to_ms(s.end).min(chunk_duration_ms),
             text: s.text,
             speaker_hint: None,
+            no_speech_prob: s.no_speech_prob,
+            avg_logprob: s.avg_logprob,
         })
         .collect();
     if !segments.is_empty() {
@@ -373,6 +385,8 @@ fn parse_response(
             end_ms: chunk_duration_ms,
             text: parsed.text,
             speaker_hint: None,
+            no_speech_prob: None,
+            avg_logprob: None,
         }])
     }
 }
@@ -445,6 +459,8 @@ mod tests {
                 end_ms: 4_200,
                 text: "Hello there.".into(),
                 speaker_hint: None,
+                no_speech_prob: None,
+                avg_logprob: None
             }]
         );
     }
@@ -473,6 +489,21 @@ mod tests {
     }
 
     #[test]
+    fn whispers_own_confidence_comes_through_when_a_server_sends_it() {
+        let body = serde_json::json!({
+            "text": "Thank you.",
+            "segments": [
+                {"start": 0.0, "end": 1.0, "text": "Thank you.", "no_speech_prob": 0.91, "avg_logprob": -1.3},
+                {"start": 1.0, "end": 2.0, "text": "Ship it."}
+            ]
+        });
+        let out = parse_response(body.to_string().as_bytes(), false, false, 5_000).unwrap();
+        assert_eq!(out[0].no_speech_prob, Some(0.91));
+        assert_eq!(out[0].avg_logprob, Some(-1.3));
+        assert_eq!((out[1].no_speech_prob, out[1].avg_logprob), (None, None));
+    }
+
+    #[test]
     fn a_verbose_response_with_no_segments_falls_back_to_one_spanning_segment() {
         let body = serde_json::json!({"text": "Whole thing.", "segments": []});
         let out = parse_response(body.to_string().as_bytes(), false, false, 3_000).unwrap();
@@ -483,6 +514,8 @@ mod tests {
                 end_ms: 3_000,
                 text: "Whole thing.".into(),
                 speaker_hint: None,
+                no_speech_prob: None,
+                avg_logprob: None
             }]
         );
     }

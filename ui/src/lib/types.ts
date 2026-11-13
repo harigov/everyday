@@ -4158,6 +4158,9 @@ export interface Transcript {
   backend: string
   speakers: Speaker[]
   segments: Segment[]
+  /** Everybody was heard on one microphone: a meeting in a room, not a call.
+   *  Absent when false. */
+  room?: boolean
   createdAt: string
   updatedAt: string
 }
@@ -4211,6 +4214,9 @@ export interface MeetingSettings {
   voiceprints: boolean
   autoStop: boolean
   summaryBudget?: number | null
+  /** Names, products and acronyms to spell right in every meeting. Saved
+   *  trimmed, each once, at most 100; the panel edits it one per line. */
+  vocabulary: string[]
 }
 
 /** What `meetingSettings` answers: the settings, and what they add up to. */

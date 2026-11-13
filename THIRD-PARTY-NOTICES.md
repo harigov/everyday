@@ -51,6 +51,7 @@ Reproduced below in full:
   42. image — the image-rs developers, https://github.com/image-rs/image
   43. jpeg-encoder — © 2021 Volker Ströbel, https://github.com/vstroebel/jpeg-encoder, with portions from the Independent JPEG Group's software
   44. pdf.js — © Mozilla Foundation, https://github.com/mozilla/pdf.js, with the CMaps, fonts and image decoders it ships
+  45. Yogurt — © 2026 Frigade, https://github.com/FrigadeHQ/yogurt — not a dependency: the meeting-notes echo check, recogniser clean-up, vocabulary and note prompt in `everyday-core/src/meeting` follow its approach, thresholds and word lists
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -3545,6 +3546,37 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 45. Yogurt
+
+`crates/everyday-core/src/meeting/{echo,hallucination,vocab,prompt}.rs`
+follow Yogurt's approach to echo detection, made-up recogniser lines,
+meeting vocabulary and the shape of a meeting note, and reuse its
+thresholds and word lists.
+
+MIT License
+
+Copyright (c) 2026 Frigade
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

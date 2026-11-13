@@ -143,6 +143,7 @@ fn sample_transcript(now: Timestamp) -> Transcript {
         backend: "preview".into(),
         speakers,
         segments,
+        room: false,
         created_at: now,
         updated_at: now,
     }
@@ -278,9 +279,19 @@ async fn preview_meeting_template(
         tz,
     };
 
+    let spelling = {
+        let vault = vault.clone();
+        let settings = settings.clone();
+        blocking(move || {
+            let words = pipeline::words_for(&vault, None, &settings);
+            Ok(everyday_core::meeting::vocab::spelling_line(&words))
+        })
+        .await?
+    };
     let summariser = pipeline::AssistantSummariser::new(vault.clone());
     let answer =
-        pipeline::summarise_stage(&summariser, &transcript, &args.body, &facts, budget).await?;
+        pipeline::summarise_stage(&summariser, &transcript, &args.body, &facts, budget, &spelling)
+            .await?;
     let details = everyday_core::meeting::template::details_block(&facts);
     Ok(if details.is_empty() { answer } else { format!("{details}\n\n{answer}") })
 }
@@ -344,9 +355,26 @@ async fn rewrite_meeting_note(
             .unwrap_or(tz_fallback),
     };
 
+    let spelling = {
+        let vault = vault.clone();
+        let event = facts.event.clone();
+        let settings = settings.clone();
+        blocking(move || {
+            let words = pipeline::words_for(&vault, event.as_ref(), &settings);
+            Ok(everyday_core::meeting::vocab::spelling_line(&words))
+        })
+        .await?
+    };
     let summariser = pipeline::AssistantSummariser::new(vault.clone());
-    let answer =
-        pipeline::summarise_stage(&summariser, &transcript, &template.body, &facts, budget).await?;
+    let answer = pipeline::summarise_stage(
+        &summariser,
+        &transcript,
+        &template.body,
+        &facts,
+        budget,
+        &spelling,
+    )
+    .await?;
     let details = everyday_core::meeting::template::details_block(&facts);
     Ok(if details.is_empty() { answer } else { format!("{details}\n\n{answer}") })
 }
@@ -935,6 +963,7 @@ mod tests {
                 speaker: 0,
                 text: "hello".into(),
             }],
+            room: false,
             created_at: now,
             updated_at: now,
         }

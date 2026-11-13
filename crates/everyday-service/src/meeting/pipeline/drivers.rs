@@ -136,11 +136,15 @@ pub(crate) async fn transcribe_pending(
     let key = crate::domains::meetings::transcriber_key(vault);
     let transcriber = build_transcriber(&config, key)?;
 
-    let names: Vec<String> =
-        recording.event.as_ref().map(|e| e.attendees.clone()).unwrap_or_default();
+    let words = {
+        let vault = vault.clone();
+        let event = recording.event.clone();
+        let settings = settings.clone();
+        blocking(move || Ok(words_for(&vault, event.as_ref(), &settings))).await?
+    };
     let hints = Hints {
         language: settings.language.clone(),
-        prompt: everyday_core::meeting::prompt::transcriber_hint(&recording.title, &names),
+        prompt: everyday_core::meeting::vocab::transcriber_prompt(&words),
     };
 
     #[cfg(feature = "speech")]
@@ -291,6 +295,7 @@ fn build_transcript(
         backend,
         speakers: identified.speakers.clone(),
         segments: identified.segments.clone(),
+        room: identified.room,
         created_at: now,
         updated_at: now,
     }
@@ -360,7 +365,9 @@ pub(crate) async fn do_summarise_and_write(
     let mut transcript = build_transcript(&recording, &identified, &settings);
     let facts = facts_for(&recording, &identified, &tz);
 
-    let answer = summarise_stage(summariser, &transcript, &template.body, &facts, budget).await?;
+    let spelling = everyday_core::meeting::vocab::spelling_line(&identified.words);
+    let answer =
+        summarise_stage(summariser, &transcript, &template.body, &facts, budget, &spelling).await?;
     let details = everyday_core::meeting::template::details_block(&facts);
     let body = if details.is_empty() { answer } else { format!("{details}\n\n{answer}") };
 

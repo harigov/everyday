@@ -173,6 +173,66 @@ and the plan disagree, this section wins:
   different time -- its name becomes a tag (`weekly-sync`) on the new note
   and on the earlier ones, so the first week is found too.
 
+## Note quality, round two (Nov 2026)
+
+Notes were still well short of Granola's. Yogurt
+(github.com/FrigadeHQ/yogurt, MIT), an open-source Granola, gets better notes
+out of a small local model, and the difference was in how it cleans the
+transcript and asks for the note, not in the model. Where this section and
+anything above disagree, this section wins:
+
+- **Notes are organised by topic.** The starter template is now a
+  `## {{topics}}` heading -- any number of sections, one per topic, each
+  headed by the model ("Pricing for the Acme renewal", "Maya's update") --
+  then `## Next steps` as `**Name:** task, by when`. Fixed buckets (Summary,
+  Key points, Decisions, an action table) tore decisions away from the topic
+  they settled. `{{topics}}` works in any template; the old starter is
+  upgraded when it was never edited. The prompt asks for short bullets that
+  start with the point, the concrete details kept, small talk left out, and
+  the whole meeting covered. A section the model left out is asked for once
+  more on its own, and a wrapping code fence or "Here are the notes:" is
+  taken off.
+- **The model reads turns.** Consecutive segments from one speaker are one
+  line, without timestamps (`Transcript::as_turns`); a 68-minute call was
+  1,095 fragments, most of them continuing the speaker before. A call too
+  long for one request has each part noted freely, and the note is written
+  once from every part's notes, instead of each part filling the template
+  and the filled templates being merged.
+- **Echo is decided by the audio.** A mic line is dropped as the call's
+  sound only when the two tracks' loudness envelopes show the speakers
+  leaking into the microphone at a steady lag (`echo::EchoCheck`), and then
+  by length-graded overlap, counted as a share of the mic line's own words,
+  that never takes an acknowledgement. The
+  old rule -- 60% of the shorter line's words within 1.5 s -- dropped the
+  owner's own short replies even on headphones.
+- **A sentence is not cut at a chunk boundary.** When speech runs across
+  the 30-second boundary, the turn is sent whole with the start of the next
+  chunk, and `ChunkMeta::head_ms` records what of that chunk was already
+  sent; a turn that would pass 28 s is cut at its quietest 100 ms. Needs
+  the speech kit's voice detection; a live call's chunk waits for its
+  successor before early transcription.
+- **Names and words are spelled right.** `vocab` builds the recogniser's
+  prompt in sentences from the calendar title, the invitees, companies read
+  from work addresses and a new Settings list (`MeetingSettings.vocabulary`),
+  gives the summary a spelling rule, and respells a capitalised word one edit
+  off one of them -- never a word the transcript also writes in lower case,
+  never a plural, never a sentence's first word. Only the owner's addresses
+  on this meeting's invite name a company.
+- **Made-up lines are dropped.** `hallucination::clean_line` takes out the
+  prompt read back, prompt names used as a speaker label, stock subtitle
+  lines over faint audio, noise tags, Whisper's own no-speech verdict, and
+  loops cut back to one saying.
+- **A meeting in a room is said to be one.** A meeting somebody else was
+  invited to, with at most 2% of the words from the computer's sound, was
+  most likely held in a room and heard on the microphone (a demo the owner
+  talks through is still a call). With the speech kit and the owner's
+  voiceprint, and nothing at all on the system track, the mic's voices are
+  told apart like a call's; a voice close to the owner's is folded back into
+  the owner rather than risk handing their words to someone else. Otherwise
+  every line keeps the owner's label, `Transcript::room` is set, and the
+  summary is told that if the lines read like several people, it should
+  credit the owner only when a line makes it clear.
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it

@@ -305,6 +305,7 @@ fn chunk_track(
             start_ms: (seq * CHUNK_SECONDS as usize) as u64 * 1000,
             samples: chunk.len() as u64,
             transcribed: false,
+            head_ms: 0,
         });
     }
     metas

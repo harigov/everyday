@@ -76,7 +76,14 @@ impl LocalTranscriber {
             if text.is_empty() {
                 continue;
             }
-            segments.push(RawSegment { start_ms, end_ms, text, speaker_hint: None });
+            segments.push(RawSegment {
+                start_ms,
+                end_ms,
+                text,
+                speaker_hint: None,
+                no_speech_prob: None,
+                avg_logprob: None,
+            });
         }
         Ok(segments)
     }

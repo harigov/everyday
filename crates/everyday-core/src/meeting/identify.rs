@@ -58,11 +58,22 @@ pub struct Params {
     /// joined who was not on the invite, or the invite named a group --
     /// and are left apart for `people::tidy` to label honestly.
     pub cap_floor: f32,
+    /// The owner may be one of these voices: a meeting in a room, heard on
+    /// the one microphone, rather than the system track of a call, where the
+    /// owner cannot be. Lets the owner's own voiceprint, if they have one,
+    /// match a cluster.
+    pub owner_may_speak: bool,
 }
 
 impl Default for Params {
     fn default() -> Self {
-        Self { cluster_threshold: 0.55, match_threshold: 0.62, max_voices: None, cap_floor: 0.3 }
+        Self {
+            cluster_threshold: 0.55,
+            match_threshold: 0.62,
+            max_voices: None,
+            cap_floor: 0.3,
+            owner_may_speak: false,
+        }
     }
 }
 
@@ -347,10 +358,12 @@ fn name_clusters(
     candidates: &[Candidate],
     params: Params,
 ) -> Vec<Cluster> {
-    // The owner is mic-track, always; their voiceprint is never a candidate
-    // for a system-track cluster.
+    // On a call the owner is mic-track, always; their voiceprint is never a
+    // candidate for a system-track cluster. In a room it may be any voice.
     let usable: Vec<usize> = (0..candidates.len())
-        .filter(|&i| !candidates[i].voiceprint.as_ref().is_some_and(|v| v.is_owner))
+        .filter(|&i| {
+            params.owner_may_speak || !candidates[i].voiceprint.as_ref().is_some_and(|v| v.is_owner)
+        })
         .collect();
 
     let mut attribution: Vec<Option<Attribution>> = vec![None; final_clusters.len()];

@@ -18,12 +18,16 @@
 //! that exists until the note does. See `docs/plans/meeting-notes.md`.
 
 pub mod detect;
+pub mod echo;
 pub mod filing;
+pub mod hallucination;
 pub mod identify;
 pub mod merge;
 pub mod people;
 pub mod prompt;
 pub mod template;
+pub mod vocab;
+pub mod words;
 
 use crate::calendar::Event;
 use crate::id::{CalendarId, NoteId, RecordingId, TemplateId, TranscriptId, VoiceprintId};
@@ -189,6 +193,16 @@ pub struct ChunkMeta {
     /// a retry skip what already worked.
     #[serde(default)]
     pub transcribed: bool,
+    /// How much of this chunk's start was already transcribed as the end of
+    /// the previous chunk's last sentence: speech running across a chunk
+    /// boundary is sent whole, with the previous chunk, rather than cut in
+    /// two. Zero when nothing ran over.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub head_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 /// A recording: the pipeline's durable state, and afterwards the history of
@@ -266,6 +280,39 @@ pub struct TrackSegment {
     pub hint_scope: u32,
 }
 
+/// At or under this share of the words from the computer's own sound,
+/// nobody was on a call: the meeting was in a room and everyone in it was
+/// heard on the microphone. A stand-up heard through a laptop's microphone
+/// measured 1%. Kept low on purpose: a call the owner does nearly all the
+/// talking on -- a demo, with the client's few questions coming through the
+/// speakers -- is still a call, and its microphone is still the owner alone.
+pub const ROOM_SYSTEM_SHARE: f32 = 0.02;
+
+/// The fewest words on the microphone before a recording is judged a room
+/// at all: a few seconds of somebody talking to themselves is not a meeting
+/// to change anything about.
+pub const ROOM_MIN_WORDS: usize = 20;
+
+/// Was everybody heard on the one microphone? Only for a meeting somebody
+/// else was invited to (`others_invited`) -- a voice memo is the owner
+/// alone -- and then when the microphone carried at least
+/// [`ROOM_MIN_WORDS`] words and the system track at most
+/// [`ROOM_SYSTEM_SHARE`] of all of them. Words are counted the way
+/// [`words::tokens`] counts them, so a transcript in Japanese or Chinese is
+/// measured in characters, not in segments. Echo is expected to have been
+/// removed already, so the speakers leaking into the microphone does not
+/// count for the room.
+pub fn heard_in_one_room(segments: &[TrackSegment], others_invited: bool) -> bool {
+    if !others_invited {
+        return false;
+    }
+    let count = |track: Track| -> usize {
+        segments.iter().filter(|s| s.track == track).map(|s| words::tokens(&s.text).len()).sum()
+    };
+    let (mic, system) = (count(Track::Mic), count(Track::System));
+    mic >= ROOM_MIN_WORDS && (system as f32) <= (mic + system) as f32 * ROOM_SYSTEM_SHARE
+}
+
 /// How a speaker's name was arrived at. Shown, because a guess and a match
 /// should not look the same.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -333,6 +380,13 @@ pub struct Transcript {
     pub backend: String,
     pub speakers: Vec<Speaker>,
     pub segments: Vec<Segment>,
+    /// Most likely a meeting in a room, everybody heard on the one
+    /// microphone (see [`heard_in_one_room`]), whose voices were not told
+    /// apart: every line under the owner's label may be anyone in the room. A room whose
+    /// voices were told apart is not flagged -- its labels are as sure, or
+    /// unsure, as a call's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub room: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -366,6 +420,44 @@ impl Transcript {
             out.push('\n');
         }
         out
+    }
+
+    /// What the summarising model reads: one line per turn, `Name: text`,
+    /// with consecutive segments from one speaker joined into one turn and
+    /// no timestamps. A transcript arrives as hundreds of fragments -- a
+    /// chunk boundary, a breath, a recogniser's own segmentation -- and a
+    /// name and a stamp on every one of them cost tokens and make the
+    /// conversation harder to follow than the turns people actually took.
+    pub fn as_turns(&self) -> String {
+        let mut out = String::new();
+        let mut current: Option<u16> = None;
+        for seg in &self.segments {
+            let text = seg.text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            if current == Some(seg.speaker) {
+                out.push(' ');
+            } else {
+                if current.is_some() {
+                    out.push('\n');
+                }
+                let name = self.speaker(seg.speaker).map(|s| s.label.as_str()).unwrap_or("Unknown");
+                out.push_str(name);
+                out.push_str(": ");
+                current = Some(seg.speaker);
+            }
+            out.push_str(text);
+        }
+        if current.is_some() {
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The speaker the microphone track was attributed to, if one was.
+    pub fn owner(&self) -> Option<&Speaker> {
+        self.speakers.iter().find(|s| matches!(s.how, Attribution::Owner))
     }
 
     pub fn searchable_text(&self) -> String {
@@ -540,6 +632,10 @@ pub struct MeetingSettings {
     pub auto_stop: bool,
     /// Summary budget override, in tokens. `None` picks by endpoint.
     pub summary_budget: Option<u32>,
+    /// Names, products and acronyms to spell right in every meeting: told
+    /// to the recogniser, to the summarising model, and used to correct a
+    /// transcript's near misses. See [`vocab`].
+    pub vocabulary: Vec<String>,
 }
 
 impl Default for MeetingSettings {
@@ -568,6 +664,7 @@ impl Default for MeetingSettings {
             voiceprints: false,
             auto_stop: true,
             summary_budget: None,
+            vocabulary: Vec::new(),
         }
     }
 }
@@ -606,3 +703,44 @@ pub fn chunk_aad(id: RecordingId, track: Track, seq: u32) -> Vec<u8> {
 }
 
 pub const SETTINGS_AAD: &[u8] = b"everyday.meeting-settings.v1";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seg(track: Track, text: &str) -> TrackSegment {
+        TrackSegment {
+            track,
+            start_ms: 0,
+            end_ms: 1_000,
+            text: text.into(),
+            speaker_hint: None,
+            hint_scope: 0,
+        }
+    }
+
+    #[test]
+    fn a_room_is_a_meeting_with_others_heard_only_on_the_microphone() {
+        let owner = "so the first thing on the list today is the pricing page and the launch date";
+        let mic = vec![seg(Track::Mic, owner), seg(Track::Mic, owner)];
+        assert!(heard_in_one_room(&mic, true));
+        // A voice memo: nobody else was invited.
+        assert!(!heard_in_one_room(&mic, false));
+        // A demo the owner talks through, the client asking a little: a call.
+        let mut demo = mic.clone();
+        demo.push(seg(Track::System, "and what does it cost per seat"));
+        assert!(!heard_in_one_room(&demo, true));
+        // Too little said to judge.
+        assert!(!heard_in_one_room(&[seg(Track::Mic, "testing one two")], true));
+    }
+
+    #[test]
+    fn a_room_is_measured_in_characters_where_there_are_no_spaces() {
+        // Many short lines of the owner's against a few long ones of theirs.
+        let mut segments: Vec<TrackSegment> =
+            (0..30).map(|_| seg(Track::Mic, "はい、そうです")).collect();
+        segments.push(seg(Track::System, "来週の火曜日までに価格表を更新して送ります"));
+        segments.push(seg(Track::System, "それからデザインの確認もお願いします"));
+        assert!(!heard_in_one_room(&segments, true));
+    }
+}

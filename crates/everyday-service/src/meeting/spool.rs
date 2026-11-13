@@ -413,6 +413,7 @@ pub fn append(
                     start_ms,
                     samples: pcm.len() as u64,
                     transcribed: false,
+                    head_ms: 0,
                 });
                 true
             }

@@ -1,6 +1,12 @@
 //! What the summarising model is asked, and how a long call is split.
+//!
+//! The shape of the note follows what made Granola's notes read well, as
+//! the open-source Yogurt (github.com/FrigadeHQ/yogurt, MIT) spells it out:
+//! sections named after what was talked about rather than fixed buckets,
+//! short bullets that start with the point, decisions kept with their
+//! topic, small talk left out, and next steps last, one person at a time.
 
-use super::Transcript;
+use super::{Attribution, Transcript};
 
 /// Rough token estimate: four characters each, rounded up.
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -20,17 +26,31 @@ pub struct Request {
     pub user: String,
 }
 
-/// Split the transcript's lines (see [`Transcript::as_lines`]) into pieces
-/// that each fit `budget`, only ever on line boundaries. One piece if it fits.
+/// Split the transcript's turns (see [`Transcript::as_turns`]) into pieces
+/// that each fit `budget`, only ever between turns. One piece if it fits.
+///
+/// Even pieces read better than a full one and a scrap, so each is first
+/// aimed at an equal share of the whole. Turns cannot be cut to fill a share
+/// exactly, though, and when aiming at the share would take more pieces --
+/// and more requests -- than filling each up to the budget, the budget wins.
 pub fn pieces(transcript: &Transcript, budget: u32) -> Vec<String> {
-    let text = transcript.as_lines();
+    let text = transcript.as_turns();
     if text.is_empty() {
         return vec![String::new()];
     }
-    if estimate_tokens(&text) <= budget {
+    let total = estimate_tokens(&text);
+    if total <= budget {
         return vec![text];
     }
+    let budget = budget.max(1);
+    let parts = total.div_ceil(budget);
+    let even = pack(&text, total.div_ceil(parts).clamp(1, budget), budget);
+    if even.len() as u32 <= parts { even } else { pack(&text, budget, budget) }
+}
 
+/// The turns of `text` packed into pieces of at most `target` tokens; a turn
+/// longer than `budget` is cut on whitespace by [`split_long_line`].
+fn pack(text: &str, target: u32, budget: u32) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     for line in text.lines() {
@@ -47,7 +67,7 @@ pub fn pieces(transcript: &Transcript, budget: u32) -> Vec<String> {
         }
 
         if !current.is_empty()
-            && estimate_tokens(&current) + estimate_tokens(&with_newline) > budget
+            && estimate_tokens(&current) + estimate_tokens(&with_newline) > target
         {
             out.push(std::mem::take(&mut current));
         }
@@ -62,15 +82,23 @@ pub fn pieces(transcript: &Transcript, budget: u32) -> Vec<String> {
     out
 }
 
-/// Split one over-long line on whitespace into pieces that each fit
-/// `budget`. A single word longer than the whole budget still becomes its
-/// own piece -- there is nowhere else to cut it.
+/// Split one over-long turn on whitespace into pieces that each fit
+/// `budget`, each piece after the first starting with who said it again.
+/// A single word longer than the whole budget still becomes its own piece
+/// -- there is nowhere else to cut it.
 fn split_long_line(line: &str, budget: u32) -> Vec<String> {
+    let who = line.split_once(": ").filter(|(w, _)| w.chars().count() <= 60).map(|(w, _)| w);
     let mut out = Vec::new();
     let mut current = String::new();
     for word in line.split_inclusive(' ') {
         if !current.is_empty() && estimate_tokens(&current) + estimate_tokens(word) > budget {
             out.push(std::mem::take(&mut current));
+            if let Some(who) = who
+                && estimate_tokens(who) * 4 < budget
+            {
+                current.push_str(who);
+                current.push_str(": ");
+            }
         }
         current.push_str(word);
     }
@@ -83,101 +111,257 @@ fn split_long_line(line: &str, budget: u32) -> Vec<String> {
     out
 }
 
-/// What every summarising request is told about the material it is reading
-/// -- shared by [`summarise`] and [`combine`], which see the same noise.
+/// What every request is told about the material it is reading.
 const ABOUT_THE_TRANSCRIPT: &str = "\
 About the transcript:
+- Each line is one turn: who spoke, then what they said.
 - It came from automatic speech recognition, not a person. Expect misheard \
   words, wrong homophones, garbled names, numbers and product names, \
   sentences cut in half, and filler. Read through the noise: correct an \
   obvious mishearing from context and from how names are spelled in the \
-  people list, and quietly drop what cannot be made sense of.
+  people list and the spelling line, and quietly drop what cannot be made \
+  sense of.
 - Speaker labels can be wrong, and one person can appear under more than one \
   label. A label such as \"Unknown 1\" or \"Others\" is a voice nobody could \
   put a name to: never present it as a person's name, and never give it an \
-  action item -- say \"someone\" in prose, and \"Unassigned\" as an owner.
+  action item -- say \"someone\" in prose, and \"Unassigned\" as an owner. \
+  Who someone is can often be told from what is said: people address each \
+  other by name, and say what they are working on.
 - Where something that matters is unclear -- an amount, a date, who agreed, \
   who owns a task -- say so in a few words, \"(unclear)\", rather than guess. \
   Never build a decision or an action item on a fragment you cannot make \
   sense of.";
 
-/// How the note should read -- shared by [`summarise`] and [`combine`].
+/// How the note should read.
 const HOW_TO_WRITE: &str = "\
-How to write:
+How to write, so the notes read at a glance:
 - Keep every heading from the template, in the order it appears, and write \
-  nothing outside those headings.
-- The text under each heading in the template is an instruction to you, not \
-  content to keep: replace it with what actually happened. Where it shows a \
-  table, write a Markdown table with exactly those columns.
+  nothing outside those headings. The text under each heading in the \
+  template is an instruction to you, not content to keep: replace it with \
+  what actually happened. Where it shows a table, write a Markdown table \
+  with exactly those columns.
+- A heading written {{topics}} is not kept as it is: it stands for any \
+  number of sections at that heading's level, one per topic, each under a \
+  heading you write naming what it is about in a few specific words \
+  (\"Pricing for the Acme renewal\", \"Desktop launch date\"), never \
+  \"Discussion\", \"Updates\" or \"Topic 1\". Most important first. Bring \
+  together what was said about one topic at different times. When people \
+  took turns giving their own updates, a section per person (\"Maya's \
+  update\") works well.
+- Notes are about the substance: customers, deals and prices, numbers, \
+  plans, problems, launches, what each person is working on, what was \
+  decided. Leave out small talk, greetings, weekends and trips, jokes, \
+  errands and other personal chat, and talk about the call itself (audio, \
+  screens, who can hear whom). Something personal goes in only if the \
+  meeting was about it.
+- Bullets (\"- \") with real substance: what was said, found, proposed or \
+  decided, and why. A bullet is one full point of up to about twenty words \
+  that starts with the point, never with \"The team discussed\". More detail \
+  goes in indented bullets under it.
+- Keep the concrete details: names of people, customers, companies and \
+  systems, numbers, prices, dates, ticket numbers and tools.
+- A decision or an open question goes in the topic it belongs to, said \
+  plainly (\"Decided: no paid placements for now\", \"Open: who owns the \
+  migration\").
+- Cover the whole meeting, the end as well. A short meeting gets fewer \
+  sections, not thinner ones.
+- **Bold** rarely: a deadline, a big number or a key term, a few times in all.
 - The note already lists who attended. Do not list attendees again, and do \
-  not open sentences with who was present; name a person only where it \
-  matters -- who decided something, who owns something, whose view differed.
-- Be specific and concrete: the actual numbers, dates, names of systems, \
-  customers and documents, and the reasons given. No filler (\"the team \
-  discussed\", \"a productive conversation\"), and no repeating the same \
-  point under two headings.
+  not open sentences with who was present; name a person where it matters \
+  -- who decided something, who owns something, whose view differed.
 - Use people's names as the people list spells them; the person who \
   recorded the call by their name too.
 - Never invent a name, a decision, a number or a date that was not said.
 - If a heading has nothing to say, write \"Nothing recorded.\" under it.
-- Output Markdown only: no code fences, and no commentary before or after \
-  the note.";
+- Output Markdown only: no title of your own, no introduction, no code \
+  fences, and nothing after the last section.";
 
-/// The request for one piece (or the whole call). `part` is `Some((n, of))`
-/// when the call was split. `people` is [`people_block`]'s, or empty.
-pub fn summarise(
-    filled_template: &str,
-    people: &str,
-    lines: &str,
-    part: Option<(usize, usize)>,
-) -> Request {
+/// What every request about one meeting carries besides its material.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Context<'a> {
+    /// The template, placeholders filled -- see `template::fill`.
+    pub template: &'a str,
+    /// [`people_block`]'s, or empty.
+    pub people: &'a str,
+    /// `vocab::spelling_line`'s, or empty.
+    pub spelling: &'a str,
+    /// [`room_note`]'s, or empty.
+    pub room: &'a str,
+}
+
+impl Context<'_> {
+    /// The people, spelling and room blocks, each followed by a blank line,
+    /// leaving out whichever is empty.
+    fn preamble(&self) -> String {
+        let mut out = String::new();
+        for block in [self.people, self.spelling, self.room] {
+            if !block.trim().is_empty() {
+                out.push_str(block.trim());
+                out.push_str("\n\n");
+            }
+        }
+        out
+    }
+}
+
+/// The request for the whole call, read in one go.
+pub fn summarise(cx: &Context<'_>, lines: &str) -> Request {
     let system = format!(
         "You are writing meeting notes from a transcript, using the template you are \
          given.\n\n{ABOUT_THE_TRANSCRIPT}\n\n{HOW_TO_WRITE}"
     );
-    let mut user = String::new();
-    if let Some((n, of)) = part {
-        user.push_str(&format!(
-            "This is part {n} of {of} of one call's transcript, split only because it was \
-             long. Summarise what is in this part alone; another pass will merge every \
-             part's answer into one note, so do not worry about what came before or after.\n\n"
-        ));
-    }
-    if !people.is_empty() {
-        user.push_str(people);
-        user.push_str("\n\n");
-    }
+    let mut user = cx.preamble();
     user.push_str("Template:\n\n");
-    user.push_str(filled_template);
+    user.push_str(cx.template);
     user.push_str("\n\nTranscript:\n\n");
     user.push_str(lines);
     Request { system, user }
 }
 
-/// The request that merges the per-piece answers into one note.
-pub fn combine(filled_template: &str, people: &str, partials: &[String]) -> Request {
+/// The request for notes on one part of a call too long to read in one go.
+/// Free-form and thorough rather than in the template's shape: the shape
+/// is applied once, by [`from_parts`], to every part's notes together, so
+/// nothing is lost to a section one part had nothing for.
+pub fn part_notes(cx: &Context<'_>, lines: &str, n: usize, of: usize) -> Request {
     let system = format!(
-        "You are merging several partial meeting notes into one final note. Each part \
-         was written from a different stretch of the same call's transcript, using the \
-         same template.\n\n\
-         Combine what each part says under a heading into one account. Do not repeat a \
-         decision or an action item that more than one part recorded; merge tables into \
-         one table, keeping one person's rows together. If every part left a heading \
-         with nothing recorded, write \"Nothing recorded.\" under it.\n\n\
-         {ABOUT_THE_TRANSCRIPT}\n\n{HOW_TO_WRITE}"
+        "You take compact notes on one part of a long meeting's transcript. Another \
+         pass will write the final notes from every part's, in order.\n\n\
+         Write notes on this part only: every topic discussed with its concrete \
+         details (numbers, dates, names, customers, tools, examples), what was decided, \
+         open questions, and who agreed to do what, by name. Short \"- \" bullets \
+         grouped under a \"### \" line naming the topic. Leave out small talk. Nothing \
+         else: no introduction, no closing line.\n\n{ABOUT_THE_TRANSCRIPT}"
     );
-    let mut user = String::new();
-    if !people.is_empty() {
-        user.push_str(people);
-        user.push_str("\n\n");
-    }
-    user.push_str("Template:\n\n");
-    user.push_str(filled_template);
-    for (i, partial) in partials.iter().enumerate() {
-        user.push_str(&format!("\n\nPart {} of {}:\n\n", i + 1, partials.len()));
-        user.push_str(partial);
-    }
+    let mut user = cx.preamble();
+    user.push_str(&format!("This is part {n} of {of} of the transcript.\n\nTranscript:\n\n"));
+    user.push_str(lines);
     Request { system, user }
+}
+
+/// The request that writes the note from every part's notes, in order.
+pub fn from_parts(cx: &Context<'_>, parts: &[String]) -> Request {
+    let system = format!(
+        "You are writing meeting notes, using the template you are given, from notes \
+         taken on each part of a long meeting, in order. Bring together what different \
+         parts said about one topic, and never repeat a point or a next step two parts \
+         both noted.\n\n{ABOUT_THE_TRANSCRIPT}\n\n{HOW_TO_WRITE}"
+    );
+    let mut user = cx.preamble();
+    user.push_str("Template:\n\n");
+    user.push_str(cx.template);
+    push_parts(&mut user, parts);
+    Request { system, user }
+}
+
+/// What a note was written from, for [`missing_sections`].
+#[derive(Debug, Clone, Copy)]
+pub enum Source<'a> {
+    Transcript(&'a str),
+    Parts(&'a [String]),
+}
+
+/// The request for only the template's sections a first answer left out --
+/// a model that stopped before the end, as one sometimes does. `written`
+/// is that first answer.
+pub fn missing_sections(
+    cx: &Context<'_>,
+    source: Source<'_>,
+    written: &str,
+    missing: &[String],
+) -> Request {
+    let system = format!(
+        "You are finishing meeting notes someone else started, using the template you \
+         are given.\n\n{ABOUT_THE_TRANSCRIPT}\n\n{HOW_TO_WRITE}"
+    );
+    let mut user = cx.preamble();
+    user.push_str("Template:\n\n");
+    user.push_str(cx.template);
+    match source {
+        Source::Transcript(lines) => {
+            user.push_str("\n\nTranscript:\n\n");
+            user.push_str(lines);
+        }
+        Source::Parts(parts) => push_parts(&mut user, parts),
+    }
+    user.push_str("\n\nNotes written so far:\n\n");
+    user.push_str(written.trim());
+    user.push_str(&format!(
+        "\n\nThese sections of the template are missing from them: {}. Write only \
+         those sections, each under its heading exactly as the template has it, \
+         following the same rules. Nothing else.",
+        missing.join(", ")
+    ));
+    Request { system, user }
+}
+
+fn push_parts(user: &mut String, parts: &[String]) {
+    user.push_str("\n\nNotes on each part, in order:");
+    for (i, part) in parts.iter().enumerate() {
+        user.push_str(&format!("\n\nPart {} of {}:\n\n", i + 1, parts.len()));
+        user.push_str(part.trim());
+    }
+}
+
+/// From an answer to [`missing_sections`], the sections asked for and
+/// nothing else -- not a section the first answer already had, written out
+/// again -- or `None` when it wrote none of them.
+pub fn take_sections(answer: &str, asked: &[String]) -> Option<String> {
+    use super::template::{heading_key, is_heading_line};
+    let answer = tidy_answer(answer);
+    let wanted: Vec<String> = asked.iter().map(|h| heading_key(h)).collect();
+    let mut kept: Vec<&str> = Vec::new();
+    let mut keeping = false;
+    for line in answer.lines() {
+        if is_heading_line(line) {
+            keeping = wanted.contains(&heading_key(line));
+        }
+        if keeping {
+            kept.push(line);
+        }
+    }
+    let kept = kept.join("\n").trim().to_string();
+    (!kept.is_empty()).then_some(kept)
+}
+
+/// An answer without the wrapping models add: a code fence around the
+/// whole of it, and one line of chatter before the first heading ("Here are
+/// the notes:"). Anything else before the first heading -- a summary a
+/// template asked for, a topic written as a bold line -- is the note, and
+/// stays, as does everything after the last heading ("Nothing recorded."
+/// under a final heading is part of the note).
+pub fn tidy_answer(answer: &str) -> String {
+    let lines: Vec<&str> = answer
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("```") || t.starts_with("~~~"))
+        })
+        .collect();
+    let first_text = lines.iter().position(|l| !l.trim().is_empty());
+    let start = match first_text {
+        Some(i)
+            if is_chatter(lines[i])
+                && lines[i + 1..].iter().any(|l| l.trim_start().starts_with('#')) =>
+        {
+            i + 1
+        }
+        _ => 0,
+    };
+    lines[start..].join("\n").trim().to_string()
+}
+
+/// A model's line of preamble: short, prose, and introducing what follows
+/// -- it ends with a colon, or opens the way such lines do.
+fn is_chatter(line: &str) -> bool {
+    let t = line.trim();
+    if t.starts_with(['#', '-', '*', '|', '>']) || t.chars().count() > 120 {
+        return false;
+    }
+    let lower = t.to_lowercase();
+    t.ends_with(':')
+        || ["here are", "here is", "here's", "sure", "certainly", "below are", "below is"]
+            .iter()
+            .any(|p| lower.starts_with(p))
 }
 
 /// Who was on the call, for the summarising model: the person recording,
@@ -185,18 +369,20 @@ pub fn combine(filled_template: &str, people: &str, partials: &[String]) -> Requ
 /// invited who was not heard, with their answer. Empty when there is
 /// nobody to say anything about.
 pub fn people_block(transcript: &Transcript, invitees: &[super::people::Invitee]) -> String {
-    use super::Attribution;
-
     let mut spoke: Vec<u16> = Vec::new();
     for seg in &transcript.segments {
         if !spoke.contains(&seg.speaker) {
             spoke.push(seg.speaker);
         }
     }
+    let one_room_mic = transcript.room;
     let mut lines = Vec::new();
     for key in &spoke {
         let Some(s) = transcript.speaker(*key) else { continue };
         let how = match s.how {
+            Attribution::Owner if one_room_mic => {
+                "the microphone; if several people were in the room, any of them, whoever said it"
+            }
             Attribution::Owner => "the person who recorded this call; certain",
             Attribution::Named => "named by hand; certain",
             Attribution::Matched { .. } => "recognised by voice; fairly sure",
@@ -235,6 +421,23 @@ pub fn people_block(transcript: &Transcript, invitees: &[super::people::Invitee]
          been there, listening or under an unnamed label):\n{}",
         lines.join("\n")
     )
+}
+
+/// What the summarising model needs to know about a meeting held in a room
+/// on one microphone whose voices could not be told apart -- see
+/// [`Transcript::room`]. Empty otherwise.
+pub fn room_note(transcript: &Transcript) -> String {
+    match transcript.owner() {
+        Some(owner) if transcript.room => format!(
+            "Nothing came through the computer's sound, so this was most likely a meeting \
+             in a room heard on one microphone, and every line is labelled {} whoever said \
+             it. If the lines read like several people talking, credit something to {} only \
+             when the line itself makes clear who said it; otherwise leave out who said it, \
+             or say \"someone\".",
+            owner.label, owner.label
+        ),
+        _ => String::new(),
+    }
 }
 
 const TITLE_RULES: &str = "\
@@ -289,52 +492,6 @@ pub fn title_of(event_title: &str, topic: Option<&str>, date: &str) -> String {
     }
 }
 
-/// Hints for a transcriber: event title and attendee names, so names are
-/// spelled right. Short; recognisers cap their prompts.
-pub fn transcriber_hint(title: &str, names: &[String]) -> String {
-    let cleaned: Vec<String> = names
-        .iter()
-        .filter_map(|raw| {
-            let (name, email) = super::identify::parse_attendee(raw);
-            name.or_else(|| email.map(|e| local_part(&e)))
-        })
-        .collect();
-
-    let mut hint = format!("Meeting: {title}.");
-    if !cleaned.is_empty() {
-        hint.push_str(" Participants: ");
-        hint.push_str(&cleaned.join(", "));
-        hint.push('.');
-    }
-    truncate_at_name_boundary(&hint, 400)
-}
-
-fn local_part(email: &str) -> String {
-    email.split('@').next().unwrap_or(email).to_string()
-}
-
-/// Cut a string down to (about) `max` bytes without splitting a name in the
-/// middle: back up to the last ", " at or before the limit.
-///
-/// The limit is first moved back onto a character boundary: attendee names
-/// are whatever the calendar says, and "José" straddling byte 400 must not
-/// take the whole pipeline down with it.
-fn truncate_at_name_boundary(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut max = max;
-    while !s.is_char_boundary(max) {
-        max -= 1;
-    }
-    let cut = s[..max].rfind(", ").unwrap_or(max);
-    let mut out = s[..cut].to_string();
-    if !out.ends_with('.') {
-        out.push('.');
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,6 +538,7 @@ mod tests {
             backend: "test".into(),
             speakers,
             segments,
+            room: false,
             created_at: jiff::Timestamp::now(),
             updated_at: jiff::Timestamp::now(),
         }
@@ -391,7 +549,7 @@ mod tests {
         let t = transcript_of(&[("A", "hello"), ("B", "hi there")]);
         let p = pieces(&t, 10_000);
         assert_eq!(p.len(), 1);
-        assert_eq!(p[0], t.as_lines());
+        assert_eq!(p[0], t.as_turns());
     }
 
     #[test]
@@ -403,7 +561,9 @@ mod tests {
     #[test]
     fn a_long_transcript_splits_on_line_boundaries() {
         let lines: Vec<(&str, &str)> = (0..50)
-            .map(|_| ("A", "this line is fairly long and repeats a bit to add up"))
+            .map(|i| {
+                (if i % 2 == 0 { "A" } else { "B" }, "this line is fairly long and repeats a bit")
+            })
             .collect();
         let t = transcript_of(&lines);
         let budget = 200;
@@ -414,7 +574,7 @@ mod tests {
         }
         // Every original line survives exactly once, in order, across the pieces.
         let rejoined: String = p.concat();
-        assert_eq!(rejoined, t.as_lines());
+        assert_eq!(rejoined, t.as_turns());
     }
 
     #[test]
@@ -427,30 +587,6 @@ mod tests {
         for piece in &p {
             assert!(estimate_tokens(piece) <= budget || !piece.contains(' '), "{piece:?}");
         }
-    }
-
-    #[test]
-    fn summarise_carries_the_template_and_transcript_and_says_which_part() {
-        let req = summarise("# T\n## Summary\n...", "", "[00:00] A: hi\n", Some((2, 3)));
-        assert!(req.system.contains("Keep every heading"));
-        assert!(req.system.contains("speech recognition"));
-        assert!(req.user.contains("part 2 of 3"));
-        assert!(req.user.contains("# T"));
-        assert!(req.user.contains("[00:00] A: hi"));
-
-        let whole = summarise("# T", "People:\n- Priya", "lines", None);
-        assert!(!whole.user.contains("part"));
-        assert!(whole.user.starts_with("People:\n- Priya"));
-    }
-
-    #[test]
-    fn combine_lists_every_partial_against_the_template() {
-        let req = combine("# T\n## Summary", "", &["first answer".into(), "second answer".into()]);
-        assert!(req.user.contains("Part 1 of 2"));
-        assert!(req.user.contains("first answer"));
-        assert!(req.user.contains("Part 2 of 2"));
-        assert!(req.user.contains("second answer"));
-        assert!(req.system.to_lowercase().contains("repeat"));
     }
 
     #[test]
@@ -515,58 +651,153 @@ mod tests {
         assert_eq!(people_block(&transcript_of(&[]), &[]), "");
     }
 
-    #[test]
-    fn transcriber_hint_names_participants_by_their_display_name() {
-        let hint = transcriber_hint(
-            "Design sync",
-            &["Priya Raman <priya@x.com>".into(), "bob@example.com".into(), "Just A Name".into()],
-        );
-        assert_eq!(hint, "Meeting: Design sync. Participants: Priya Raman, bob, Just A Name.");
+    fn context<'a>(template: &'a str, people: &'a str) -> Context<'a> {
+        Context { template, people, spelling: "", room: "" }
     }
 
     #[test]
-    fn transcriber_hint_with_no_names_is_just_the_title() {
-        assert_eq!(transcriber_hint("Design sync", &[]), "Meeting: Design sync.");
+    fn turns_join_one_speakers_fragments_and_drop_the_timestamps() {
+        let t = transcript_of(&[("A", "so the"), ("A", "plan is"), ("B", "fine"), ("A", "good")]);
+        // `transcript_of` numbers speakers alphabetically: A then B.
+        assert_eq!(t.as_turns(), "A: so the plan is\nB: fine\nA: good\n");
     }
 
     #[test]
-    fn transcriber_hint_never_cuts_through_a_character() {
-        // Every offset near the limit, so one of them lands inside a
-        // two-byte "é" or a three-byte "田".
-        for pad in 0..6 {
-            let names: Vec<String> =
-                (0..60).map(|i| format!("{}José 田中 Müller {i}", "x".repeat(pad))).collect();
-            let hint = transcriber_hint("Réunion", &names);
-            assert!(hint.len() <= 401, "{}", hint.len());
-            assert!(hint.ends_with('.'));
+    fn summarise_carries_the_template_the_rules_and_the_transcript() {
+        let req =
+            summarise(&context("## {{topics}}\n...\n## Next steps", "People:\n- Priya"), "A: hi\n");
+        assert!(req.system.contains("Keep every heading"));
+        assert!(req.system.contains("speech recognition"));
+        assert!(req.system.contains("{{topics}}"), "the marker is explained");
+        assert!(req.system.contains("small talk"));
+        assert!(req.user.starts_with("People:\n- Priya"));
+        assert!(req.user.contains("## Next steps"));
+        assert!(req.user.contains("A: hi"));
+        assert!(!req.user.contains("Spelling"), "no spelling line was given");
+    }
+
+    #[test]
+    fn spelling_and_the_room_go_with_every_request_when_given() {
+        let cx = Context {
+            template: "## Notes",
+            people: "",
+            spelling: "- Spelling: Kubernetes.",
+            room: "Recorded in a room.",
+        };
+        for req in [
+            summarise(&cx, "A: hi"),
+            part_notes(&cx, "A: hi", 1, 2),
+            from_parts(&cx, &["### X\n- y".into()]),
+            missing_sections(
+                &cx,
+                Source::Transcript("A: hi"),
+                "## Notes\n- a",
+                &["## Next".into()],
+            ),
+        ] {
+            assert!(req.user.contains("- Spelling: Kubernetes."), "{}", req.user);
+            assert!(req.user.contains("Recorded in a room."), "{}", req.user);
         }
-        // And one long name with no comma to back up to at all.
-        let hint = transcriber_hint("Réunion", &["é".repeat(400)]);
-        assert!(hint.len() <= 401);
     }
 
     #[test]
-    fn transcriber_hint_truncates_at_a_name_boundary() {
-        let names: Vec<String> =
-            (0..100).map(|i| format!("Person With A Rather Long Full Name Number {i}")).collect();
-        let untruncated_len: usize = "Meeting: A very long meeting title indeed. Participants: "
-            .len()
-            + names.iter().map(|n| n.len() + 2).sum::<usize>();
-        assert!(
-            untruncated_len > 400,
-            "test needs a hint that actually overflows: {untruncated_len}"
+    fn a_part_is_noted_freely_and_the_note_written_from_every_part() {
+        let part = part_notes(&context("## {{topics}}", ""), "A: hi", 2, 3);
+        assert!(part.user.contains("part 2 of 3"), "{}", part.user);
+        assert!(!part.user.contains("{{topics}}"), "parts never see the template");
+        assert!(part.system.contains("### "));
+
+        let whole = from_parts(&context("## {{topics}}", ""), &["first".into(), "second".into()]);
+        assert!(whole.user.contains("Part 1 of 2:\n\nfirst"), "{}", whole.user);
+        assert!(whole.user.contains("Part 2 of 2:\n\nsecond"), "{}", whole.user);
+        assert!(whole.user.contains("## {{topics}}"));
+        assert!(whole.system.contains("Keep every heading"));
+    }
+
+    #[test]
+    fn a_missing_section_is_asked_for_alone() {
+        let req = missing_sections(
+            &context("## {{topics}}\n## Next steps\n...", ""),
+            Source::Parts(&["### Pricing\n- up".into()]),
+            "## Pricing\n- Up 5%",
+            &["## Next steps".into()],
         );
-        let hint = transcriber_hint("A very long meeting title indeed", &names);
-        assert!(hint.len() <= 401, "{}: {}", hint.len(), hint);
-        assert!(hint.ends_with('.'));
-        // What is kept must be a whole, comma-separated list of names, not a
-        // name sliced in half partway through.
-        let names_part = hint.trim_end_matches('.').split("Participants: ").nth(1).unwrap();
-        for name in names_part.split(", ") {
-            assert!(
-                name.starts_with("Person With A Rather Long Full Name Number"),
-                "cut mid-name: {name:?} in {hint:?}"
-            );
+        assert!(req.user.contains("## Pricing\n- Up 5%"), "{}", req.user);
+        assert!(req.user.contains("Write only"), "{}", req.user);
+        assert!(req.user.contains("## Next steps"));
+        assert!(req.user.contains("Part 1 of 1"));
+    }
+
+    #[test]
+    fn only_the_sections_asked_for_are_taken_from_the_answer() {
+        let asked = vec!["## Next steps".to_string()];
+        assert_eq!(
+            take_sections("Sure! Here they are:\n\n## Next steps\n- **Bo:** ship it\n", &asked),
+            Some("## Next steps\n- **Bo:** ship it".to_string())
+        );
+        assert_eq!(take_sections("Nobody is doing anything.", &asked), None);
+        assert_eq!(
+            take_sections("```markdown\n## next steps\n- **Bo:** ship\n```", &asked),
+            Some("## next steps\n- **Bo:** ship".to_string())
+        );
+        // A section it was not asked for, written again, is left out.
+        assert_eq!(
+            take_sections("## Decisions\n- x\n\n## Next steps\n- y\n\n## Pricing\n- z", &asked),
+            Some("## Next steps\n- y".to_string())
+        );
+    }
+
+    #[test]
+    fn an_answer_loses_its_fences_and_its_preamble() {
+        assert_eq!(
+            tidy_answer("Here are the notes:\n\n```markdown\n## A\n- b\n```\n"),
+            "## A\n- b"
+        );
+        // What a template asked for before its first heading is the note.
+        let summary = "We agreed to ship on Friday. Pricing stays.\n\n## Action items\n- x";
+        assert_eq!(tidy_answer(summary), summary);
+        let bold = "**Pricing**\nWe agreed to raise prices 5%.\n\n## Next steps\n- x";
+        assert_eq!(tidy_answer(bold), bold);
+        let numbered = "1. Pricing up 5%\n\n## Next steps\n- x";
+        assert_eq!(tidy_answer(numbered), numbered);
+        assert_eq!(
+            tidy_answer("## A\n- b\n\nNothing recorded.\n"),
+            "## A\n- b\n\nNothing recorded."
+        );
+        assert_eq!(tidy_answer("Just prose, no headings."), "Just prose, no headings.");
+    }
+
+    #[test]
+    fn a_room_heard_on_one_microphone_is_explained() {
+        let mut one = transcript_of(&[("Hari", "we should ship")]);
+        one.speakers[0].how = Attribution::Owner;
+        assert_eq!(room_note(&one), "");
+        one.room = true;
+        let note = room_note(&one);
+        assert!(note.contains("every line is labelled Hari whoever said it"), "{note}");
+        assert!(note.contains("If the lines read like several people"), "{note}");
+        let block = people_block(&one, &[]);
+        assert!(block.contains("whoever said it"), "{block}");
+
+        // A hybrid meeting: someone on the call besides the room's microphone.
+        let mut hybrid = transcript_of(&[("Hari", "we should"), ("Priya", "agreed")]);
+        hybrid.room = true;
+        hybrid.speakers[0].how = Attribution::Owner;
+        hybrid.speakers[1].how = Attribution::Inferred;
+        assert!(room_note(&hybrid).contains("labelled Hari"));
+        assert!(people_block(&hybrid, &[]).contains("- Priya -- spoke (worked out"));
+    }
+
+    #[test]
+    fn pieces_are_even_but_never_more_than_filling_each_would_take() {
+        let words = |n: usize| "word ".repeat(n);
+        // 4900, 200 and 4900 tokens' worth (four characters a token).
+        let (a, b, c) = (words(3_920), words(160), words(3_920));
+        let t = transcript_of(&[("A", &a), ("B", &b), ("A", &c)]);
+        let p = pieces(&t, 6_000);
+        assert_eq!(p.len(), 2, "{:?}", p.iter().map(|x| estimate_tokens(x)).collect::<Vec<_>>());
+        for piece in &p {
+            assert!(estimate_tokens(piece) <= 6_000);
         }
     }
 }
