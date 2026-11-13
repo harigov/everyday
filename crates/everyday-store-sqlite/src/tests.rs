@@ -1539,6 +1539,7 @@ fn deleting_a_note_takes_its_transcript_and_clears_the_recording_pointer() {
             speaker: 0,
             text: "let's ship on friday".into(),
         }],
+        room: false,
         created_at: now,
         updated_at: now,
     };
@@ -1593,6 +1594,7 @@ fn an_autosave_keeps_the_note_s_transcript_searchable() {
             speaker: 0,
             text: "let's ship on friday".into(),
         }],
+        room: false,
         created_at: now,
         updated_at: now,
     };
@@ -1645,6 +1647,7 @@ fn the_database_file_contains_no_readable_meeting_text() {
             speaker: 0,
             text: "a word nobody should see".into(),
         }],
+        room: false,
         created_at: now,
         updated_at: now,
     };

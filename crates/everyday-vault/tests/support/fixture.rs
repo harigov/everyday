@@ -591,6 +591,7 @@ pub fn build(vault: &Vault, base: u128, ts_base: i64) -> Vec<u8> {
         backend: "fixture".into(),
         speakers: Vec::new(),
         segments: Vec::new(),
+        room: false,
         created_at: clock.next(),
         updated_at: clock.next(),
     };

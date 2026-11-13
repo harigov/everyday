@@ -1,85 +1,24 @@
 //! Two tracks into one ordered transcript, without the echo.
 
+use super::echo::{EchoCheck, is_echo};
 use super::{Track, TrackSegment};
-use std::collections::HashMap;
 
-/// How much two segments' times are allowed to slip and still count as the
-/// same moment: a chunk boundary and two different pipelines' VAD rarely
-/// agree to the millisecond.
-const OVERLAP_SLACK_MS: i64 = 1_500;
-
-/// Drop mic segments that are the call's audio heard through the speakers:
-/// overlapping in time a system segment with near-identical text
-/// (normalised token overlap at or above `threshold`, e.g. 0.6). Returns
-/// the kept segments of both tracks, ordered by start, and whether any
-/// echo was found.
-pub fn remove_echo(segments: Vec<TrackSegment>, threshold: f32) -> (Vec<TrackSegment>, bool) {
+/// Drop mic segments that are the call's audio heard through the speakers --
+/// see [`super::echo::is_echo`], which decides, and never does without the
+/// audio's own evidence that echo is present (`check`). Returns the kept
+/// segments of both tracks, ordered by start, and whether any echo was
+/// dropped.
+pub fn remove_echo(segments: Vec<TrackSegment>, check: &EchoCheck) -> (Vec<TrackSegment>, bool) {
     let system: Vec<&TrackSegment> = segments.iter().filter(|s| s.track == Track::System).collect();
-
-    let mut echo_found = false;
-    let mut kept: Vec<TrackSegment> = Vec::with_capacity(segments.len());
-
-    for seg in &segments {
-        if seg.track == Track::Mic {
-            let is_echo = system.iter().any(|sys| {
-                overlaps_with_slack(seg, sys) && similarity(&seg.text, &sys.text) >= threshold
-            });
-            if is_echo {
-                echo_found = true;
-                continue;
-            }
-        }
-        kept.push(seg.clone());
-    }
-
+    let dropped: Vec<bool> = segments
+        .iter()
+        .map(|seg| seg.track == Track::Mic && is_echo(seg, &system, check))
+        .collect();
+    let echo_found = dropped.iter().any(|d| *d);
+    let mut kept: Vec<TrackSegment> =
+        segments.iter().zip(&dropped).filter(|(_, d)| !**d).map(|(s, _)| s.clone()).collect();
     kept.sort_by(|a, b| a.start_ms.cmp(&b.start_ms).then_with(|| a.track.cmp(&b.track)));
     (kept, echo_found)
-}
-
-fn overlaps_with_slack(a: &TrackSegment, b: &TrackSegment) -> bool {
-    let a_start = a.start_ms as i64 - OVERLAP_SLACK_MS;
-    let a_end = a.end_ms as i64 + OVERLAP_SLACK_MS;
-    let b_start = b.start_ms as i64;
-    let b_end = b.end_ms as i64;
-    a_start <= b_end && b_start <= a_end
-}
-
-/// Normalised token overlap of two strings, 0.0..=1.0.
-///
-/// Lower-cased, punctuation stripped, split on whitespace; the overlap is
-/// the size of the multiset intersection over the shorter of the two token
-/// counts, so "yes" against "yes yes yes" scores 1.0 rather than 0.33 --
-/// echo is about whether the mic heard *the same words*, not the same
-/// number of them.
-pub fn similarity(a: &str, b: &str) -> f32 {
-    let ta = tokenize(a);
-    let tb = tokenize(b);
-    if ta.is_empty() || tb.is_empty() {
-        return 0.0;
-    }
-
-    let mut counts: HashMap<&str, i32> = HashMap::new();
-    for t in &ta {
-        *counts.entry(t.as_str()).or_insert(0) += 1;
-    }
-    let mut overlap = 0;
-    for t in &tb {
-        if let Some(c) = counts.get_mut(t.as_str())
-            && *c > 0
-        {
-            *c -= 1;
-            overlap += 1;
-        }
-    }
-    overlap as f32 / ta.len().min(tb.len()) as f32
-}
-
-fn tokenize(s: &str) -> Vec<String> {
-    s.to_ascii_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_string())
-        .collect()
 }
 
 #[cfg(test)]
@@ -98,79 +37,87 @@ mod tests {
     }
 
     #[test]
-    fn similarity_ignores_case_and_punctuation() {
-        assert!((similarity("Hello, world!", "hello world") - 1.0).abs() < 1e-6);
+    fn an_exact_echo_is_dropped_when_echo_was_heard() {
+        let segments = vec![
+            seg(Track::Mic, 4_000, 5_000, "sounds good to me"),
+            seg(Track::Mic, 1_200, 3_100, "let's ship on Friday"),
+            seg(Track::System, 1_000, 3_000, "let's ship on Friday"),
+        ];
+        let (kept, echo) = remove_echo(segments, &EchoCheck::assume_present());
+        assert!(echo);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].track, Track::System);
+        assert_eq!(kept[1].text, "sounds good to me");
     }
 
     #[test]
-    fn similarity_of_empty_text_is_zero() {
-        assert_eq!(similarity("", "hello"), 0.0);
-        assert_eq!(similarity("hello", ""), 0.0);
-        assert_eq!(similarity("", ""), 0.0);
-    }
-
-    #[test]
-    fn similarity_is_a_fraction_of_the_shorter_side() {
-        // "yes" fully inside "yes yes yes" -- overlap 1, shorter side is 1 token.
-        assert!((similarity("yes", "yes yes yes") - 1.0).abs() < 1e-6);
-        // Two of three words shared.
-        let s = similarity("we should ship it", "we should not ship");
-        assert!(s > 0.5 && s < 1.0, "{s}");
-    }
-
-    #[test]
-    fn an_exact_echo_is_dropped() {
+    fn without_evidence_of_echo_nothing_is_dropped() {
+        // Headphones: a line that repeats theirs is the owner's own.
         let segments = vec![
             seg(Track::System, 1_000, 3_000, "let's ship on Friday"),
             seg(Track::Mic, 1_200, 3_100, "let's ship on Friday"),
+            seg(Track::Mic, 3_200, 3_800, "yeah, Friday"),
         ];
-        let (kept, echo) = remove_echo(segments, 0.6);
-        assert!(echo);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].track, Track::System);
+        let (kept, echo) = remove_echo(segments, &EchoCheck::none());
+        assert!(!echo);
+        assert_eq!(kept.len(), 3);
     }
 
     #[test]
-    fn a_genuine_short_reply_sharing_a_few_words_is_kept() {
+    fn a_genuine_short_reply_is_kept_even_when_echo_was_heard() {
         let segments = vec![
-            seg(Track::System, 1_000, 4_000, "should we ship the design on Friday or Monday"),
-            seg(Track::Mic, 4_200, 5_000, "let's ship Friday"),
+            seg(Track::System, 1_000, 3_500, "do you think we can ship the design on Friday"),
+            seg(Track::Mic, 3_600, 4_400, "Yeah, I think so."),
+            seg(Track::Mic, 4_500, 4_900, "right okay"),
+            seg(Track::Mic, 5_000, 5_800, "let's ship Friday"),
         ];
-        let (kept, echo) = remove_echo(segments, 0.6);
-        assert!(!echo, "a real reply must not be treated as echo");
-        assert_eq!(kept.len(), 2);
+        let (kept, echo) = remove_echo(segments, &EchoCheck::assume_present());
+        assert!(!echo, "a real reply must not be treated as echo: {kept:?}");
+        assert_eq!(kept.len(), 4);
     }
 
     #[test]
-    fn echo_needs_both_overlap_and_similar_text() {
-        // Overlaps in time, but says something different: not echo.
+    fn echo_needs_both_the_same_moment_and_the_same_words() {
+        let present = EchoCheck::assume_present();
+        // The same moment, different words: not echo.
         let different_text = vec![
             seg(Track::System, 1_000, 3_000, "let's ship on Friday"),
             seg(Track::Mic, 1_200, 3_100, "sounds good to me"),
         ];
-        let (kept, echo) = remove_echo(different_text, 0.6);
+        let (kept, echo) = remove_echo(different_text, &present);
         assert!(!echo);
         assert_eq!(kept.len(), 2);
 
-        // Same text, but nowhere near each other in time: not echo.
+        // The same words, nowhere near each other in time: not echo.
         let no_overlap = vec![
             seg(Track::System, 1_000, 2_000, "let's ship on Friday"),
             seg(Track::Mic, 60_000, 61_000, "let's ship on Friday"),
         ];
-        let (kept, echo) = remove_echo(no_overlap, 0.6);
+        let (kept, echo) = remove_echo(no_overlap, &present);
         assert!(!echo);
         assert_eq!(kept.len(), 2);
     }
 
     #[test]
-    fn slack_covers_a_chunk_boundarys_worth_of_drift() {
-        let segments = vec![
+    fn a_copy_begun_after_the_speakers_tail_is_a_read_back() {
+        let present = EchoCheck::assume_present();
+        // Starts 400 ms after their line ended: still coming out of the speakers.
+        let tail = vec![
             seg(Track::System, 1_000, 2_000, "let's ship on Friday"),
-            // Starts 1.4s after the system segment ends -- within the 1.5s slack.
-            seg(Track::Mic, 3_400, 4_400, "let's ship on Friday"),
+            seg(Track::Mic, 2_400, 3_400, "let's ship on Friday"),
         ];
-        let (_, echo) = remove_echo(segments, 0.6);
+        let (kept, echo) = remove_echo(tail, &present);
         assert!(echo);
+        assert_eq!(kept.len(), 1);
+
+        // Starts 600 ms after: the owner saying it back.
+        let read_back = vec![
+            seg(Track::System, 1_000, 2_000, "let's ship on Friday"),
+            seg(Track::Mic, 2_600, 3_600, "let's ship on Friday"),
+        ];
+        let (kept, echo) = remove_echo(read_back, &present);
+        assert!(!echo);
+        assert_eq!(kept.len(), 2);
     }
 
     #[test]
@@ -180,7 +127,7 @@ mod tests {
             seg(Track::System, 1_000, 2_000, "earlier system"),
             seg(Track::Mic, 1_000, 2_000, "earlier mic"),
         ];
-        let (kept, _) = remove_echo(segments, 0.6);
+        let (kept, _) = remove_echo(segments, &EchoCheck::none());
         assert_eq!(kept[0].text, "earlier mic");
         assert_eq!(kept[0].track, Track::Mic);
         assert_eq!(kept[1].text, "earlier system");

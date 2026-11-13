@@ -5,6 +5,13 @@
 //! `{{present}}`, `{{calendar}}`) are filled by code before the model sees
 //! anything. After that, a heading is kept verbatim and the text under it is
 //! an instruction the model replaces with content.
+//!
+//! One heading is not kept verbatim: `{{topics}}` (at any level) stands for
+//! any number of sections at that level, one per topic the meeting covered,
+//! each under a heading the model writes. Notes organised by what was talked
+//! about read far better than the same material sorted into fixed buckets
+//! ("Key points", "Decisions"), which tear a decision away from the topic it
+//! settled. See [`TOPICS`].
 
 use super::identify::parse_attendee;
 use super::{EventRef, NoteTemplate};
@@ -37,6 +44,20 @@ pub struct Facts {
 const KNOWN_PLACEHOLDERS: &[&str] =
     &["title", "date", "start", "end", "duration", "organizer", "attendees", "present", "calendar"];
 
+/// The heading text that stands for one section per topic -- see the module
+/// doc. Left in place by [`fill`]; never required verbatim by
+/// [`enforce_headings`]; taken out of an answer that copied it.
+pub const TOPICS: &str = "{{topics}}";
+
+/// Is `heading` (`## {{topics}}`, as [`headings`] returns it) the topics
+/// marker?
+pub fn is_topics_heading(heading: &str) -> bool {
+    let text = heading.trim_start_matches('#').trim();
+    text.strip_prefix("{{")
+        .and_then(|t| t.strip_suffix("}}"))
+        .is_some_and(|t| t.trim().eq_ignore_ascii_case("topics"))
+}
+
 /// A fixed id for the built-in starter template. It has to be a real id --
 /// [`super::MeetingSettings::default`] calls [`starter`] fresh on every
 /// install -- but not a *newly minted* one, or two installs, or a vault
@@ -54,6 +75,46 @@ pub fn starter() -> NoteTemplate {
 }
 
 const STARTER_BODY: &str = "\
+## {{topics}}
+One section per topic that was discussed, most important first, each headed \
+by what it was about in a few specific words. When people took turns giving \
+their own updates, a section per person. Under each, short bullets that start \
+with the point -- what was said, found, proposed or decided, and why -- \
+keeping names, numbers, dates and tools, with more detail in indented \
+bullets, and decisions and open questions said plainly in the topic they \
+belong to.
+
+## Next steps
+One bullet per thing someone said they would do after the meeting, all of \
+one person's together, as \"- **Name:** what they will do, by when\" -- the \
+when only if it was said, and \"**Unassigned:**\" when nobody took it on.
+";
+
+/// What [`STARTER_BODY`] used to be. September's repeated the title and
+/// every name the details block already gives, and listed action items as
+/// checkboxes nobody could scan; November's sorted everything into fixed
+/// buckets (Summary, Key points, Decisions...), which read worse than notes
+/// organised by topic. A vault whose starter template still reads exactly
+/// one of these was never edited, so [`upgrade_starter`] may swap it for
+/// the current one.
+const OLD_STARTER_BODIES: &[&str] = &[
+    "\
+# {{title}}
+{{date}}, {{start}}\u{2013}{{end}} \u{b7} {{present}}
+
+## Summary
+Three sentences: what the call was for and where it landed.
+
+## Decisions
+Bullets. Only what was actually agreed, with who agreed it.
+
+## Action items
+- [ ] Owner \u{2014} what \u{2014} by when, only if a date was said.
+
+## Open questions
+Bullets. What was raised and left unsettled.
+",
+    "\
 ## Summary
 Two to four sentences: what this meeting was for, what was settled and what \
 happens next. Concrete, and without listing who attended.
@@ -74,29 +135,8 @@ A table, one row per action, with all of one person's rows together. Owner is \
 
 ## Open questions
 Bullets. What was raised and left unsettled, and who follows up if anyone said.
-";
-
-/// What [`STARTER_BODY`] used to be, before September's notes showed it
-/// repeating the title and every name the details block already gives, and
-/// listing action items as checkboxes nobody could scan. A vault whose
-/// starter template still reads exactly this was never edited, so
-/// [`upgrade_starter`] may swap it for the current one.
-const OLD_STARTER_BODIES: &[&str] = &["\
-# {{title}}
-{{date}}, {{start}}\u{2013}{{end}} \u{b7} {{present}}
-
-## Summary
-Three sentences: what the call was for and where it landed.
-
-## Decisions
-Bullets. Only what was actually agreed, with who agreed it.
-
-## Action items
-- [ ] Owner \u{2014} what \u{2014} by when, only if a date was said.
-
-## Open questions
-Bullets. What was raised and left unsettled.
-"];
+",
+];
 
 /// Bring the starter template up to date wherever it was never edited:
 /// same id, and a body that is word for word an earlier starter's. One
@@ -243,8 +283,50 @@ pub fn headings(body: &str) -> Vec<String> {
     out
 }
 
-fn normalise_heading(heading: &str) -> String {
-    heading.trim_start_matches('#').trim().to_ascii_lowercase()
+/// What a heading says, for telling whether two are the same: without its
+/// `#`s, bold marks, a trailing colon or full stop, case and runs of
+/// spaces -- "## Next Steps:" is the template's "## Next steps".
+pub fn heading_key(heading: &str) -> String {
+    let text = heading.trim().trim_start_matches('#').trim();
+    let text = text.trim_matches(|c| c == '*' || c == '_').trim();
+    let text = text.trim_end_matches([':', '.']).trim();
+    text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+/// A line written as a heading, by `#`s or -- as models sometimes do -- as
+/// a line that is bold and nothing else ("**Next steps**").
+pub fn is_heading_line(line: &str) -> bool {
+    let t = line.trim();
+    let hashes = t.chars().take_while(|&c| c == '#').count();
+    if (1..=6).contains(&hashes) {
+        let after = &t[hashes..];
+        return after.is_empty() || after.starts_with([' ', '\t']);
+    }
+    let bold = |mark: &str| {
+        t.len() > 2 * mark.len()
+            && t.starts_with(mark)
+            && t.ends_with(mark)
+            && !t[mark.len()..t.len() - mark.len()].contains(mark)
+    };
+    bold("**") || bold("__")
+}
+
+/// The keys of every heading in an answer, bold-line headings included,
+/// outside code fences.
+fn answer_heading_keys(answer: &str) -> HashSet<String> {
+    let mut in_fence = false;
+    let mut keys = HashSet::new();
+    for line in answer.lines() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence && is_heading_line(t) {
+            keys.insert(heading_key(t));
+        }
+    }
+    keys
 }
 
 /// Check the model kept the template's headings in order. Missing ones are
@@ -259,16 +341,17 @@ fn normalise_heading(heading: &str) -> String {
 /// since a note that starts mid-body reads as broken in a way a missing
 /// `## Open questions` at the end does not.
 pub fn enforce_headings(filled_template: &str, answer: &str) -> String {
+    let answer = without_topics_marker(answer);
     let template_headings = headings(filled_template);
     if template_headings.is_empty() {
-        return answer.to_string();
+        return answer;
     }
-    let present: HashSet<String> = headings(answer).iter().map(|h| normalise_heading(h)).collect();
+    let present = answer_heading_keys(&answer);
 
     let mut missing_title: Option<&str> = None;
     let mut missing_rest: Vec<&str> = Vec::new();
     for (i, heading) in template_headings.iter().enumerate() {
-        if present.contains(&normalise_heading(heading)) {
+        if is_topics_heading(heading) || present.contains(&heading_key(heading)) {
             continue;
         }
         if i == 0 && heading.starts_with("# ") && !heading.starts_with("## ") {
@@ -290,6 +373,43 @@ pub fn enforce_headings(filled_template: &str, answer: &str) -> String {
         out.push_str("\n(not written)");
     }
     out
+}
+
+/// The template's headings `answer` lacks, the ones worth asking the model
+/// for again: never the topics marker, and never a leading `# title`, which
+/// [`enforce_headings`] puts back itself.
+pub fn missing_headings(filled_template: &str, answer: &str) -> Vec<String> {
+    let present = answer_heading_keys(answer);
+    headings(filled_template)
+        .into_iter()
+        .enumerate()
+        .filter(|(i, h)| !(*i == 0 && h.starts_with("# ") && !h.starts_with("## ")))
+        .filter(|(_, h)| !is_topics_heading(h) && !present.contains(&heading_key(h)))
+        .map(|(_, h)| h)
+        .collect()
+}
+
+/// `answer` without any heading line that is the topics marker itself --
+/// a model that copied `## {{topics}}` instead of writing topic headings.
+/// What was under it stays.
+fn without_topics_marker(answer: &str) -> String {
+    let mut in_fence = false;
+    let mut out: Vec<&str> = Vec::new();
+    for line in answer.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        if !in_fence && trimmed.starts_with('#') && is_topics_heading(trimmed.trim_end()) {
+            continue;
+        }
+        out.push(line);
+    }
+    let mut joined = out.join("\n");
+    if answer.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
 }
 
 /// The block code writes at the top of every meeting note, whatever the
@@ -375,7 +495,7 @@ pub fn lint(body: &str) -> Vec<String> {
         let Some(end) = after_open.find("}}") else { break };
         let key_raw = &after_open[..end];
         let key = key_raw.trim().to_ascii_lowercase();
-        if !KNOWN_PLACEHOLDERS.contains(&key.as_str()) {
+        if !KNOWN_PLACEHOLDERS.contains(&key.as_str()) && key != "topics" {
             issues.push(format!("Unknown placeholder {{{{{key_raw}}}}}"));
         }
         rest = &after_open[end + 2..];
@@ -596,14 +716,72 @@ mod tests {
     }
 
     #[test]
-    fn the_starter_asks_for_action_items_as_a_table() {
+    fn the_starter_is_organised_by_topic_and_ends_with_next_steps() {
         let body = starter().body;
-        assert!(body.contains("| Owner | Action | Due |"), "{body}");
+        let hs = headings(&body);
+        assert!(is_topics_heading(&hs[0]), "{hs:?}");
+        assert_eq!(hs.last().map(String::as_str), Some("## Next steps"));
+        assert!(body.contains("**Name:**"), "{body}");
         assert!(!body.contains("{{present}}"), "names are in the details block already");
+    }
+
+    #[test]
+    fn every_earlier_starter_is_upgraded() {
+        for old in OLD_STARTER_BODIES {
+            let mut templates = vec![NoteTemplate { body: old.to_string(), ..starter() }];
+            upgrade_starter(&mut templates);
+            assert_eq!(templates[0].body, STARTER_BODY);
+        }
+        assert_eq!(OLD_STARTER_BODIES.len(), 2);
+        assert!(OLD_STARTER_BODIES[1].contains("| Owner | Action | Due |"));
+    }
+
+    #[test]
+    fn the_topics_marker_is_filled_by_the_model_not_by_code() {
+        let filled = fill(&starter().body, &facts());
+        assert!(filled.contains("## {{topics}}"), "{filled}");
+        assert!(is_topics_heading("## {{ Topics }}"));
+        assert!(!is_topics_heading("## Topics"));
+
+        // Topic headings of the model's own satisfy it; Next steps is still owed.
+        let answer = "## Pricing for Acme\n- Up 5%\n\n## Desktop launch\n- May\n";
+        assert_eq!(missing_headings(&filled, answer), vec!["## Next steps".to_string()]);
+        let out = enforce_headings(&filled, answer);
+        assert!(!out.contains("{{topics}}"), "{out}");
+        assert!(out.trim_end().ends_with("## Next steps\n(not written)"), "{out}");
+    }
+
+    #[test]
+    fn a_copied_topics_marker_is_taken_out_and_its_text_kept() {
+        let filled = fill(&starter().body, &facts());
+        let answer = "## {{topics}}\n- Pricing up 5%\n\n## Next steps\n- **Bo:** send it\n";
+        let out = enforce_headings(&filled, answer);
+        assert!(!out.contains("{{topics}}"), "{out}");
+        assert!(out.contains("- Pricing up 5%"), "{out}");
+    }
+
+    #[test]
+    fn a_missing_title_is_not_asked_for_again() {
+        let filled = fill("# {{title}}\n\n## Summary\n...\n", &facts());
+        assert!(missing_headings(&filled, "## Summary\nFine.\n").is_empty());
+        assert_eq!(missing_headings(&filled, "Fine.\n"), vec!["## Summary".to_string()]);
     }
 
     #[test]
     fn lint_is_quiet_about_a_clean_template() {
         assert!(lint(&starter().body).is_empty());
+    }
+
+    #[test]
+    fn a_heading_written_a_little_differently_is_not_missing() {
+        let filled = fill(&starter().body, &facts());
+        for written in ["## Next Steps:", "**Next steps**", "### next   steps", "__Next steps:__"] {
+            let answer = format!("## Pricing\n- Up 5%\n\n{written}\n- **Bo:** send it\n");
+            assert!(missing_headings(&filled, &answer).is_empty(), "{written}");
+            assert!(!enforce_headings(&filled, &answer).contains("(not written)"), "{written}");
+        }
+        assert!(!is_heading_line("**Bo:** send it"));
+        assert!(!is_heading_line("- **Next steps**"));
+        assert_eq!(heading_key("## Next Steps:"), "next steps");
     }
 }

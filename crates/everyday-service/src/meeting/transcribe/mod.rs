@@ -65,8 +65,8 @@ impl SpeechChunk {
 pub struct Hints {
     /// BCP-47-ish, or `None` to detect.
     pub language: Option<String>,
-    /// Names and the title, so they are spelled right.
-    /// See `everyday_core::meeting::prompt::transcriber_hint`.
+    /// Names, companies, the title and the person's own words, so they are
+    /// spelled right. See `everyday_core::meeting::vocab::transcriber_prompt`.
     pub prompt: String,
 }
 
@@ -78,6 +78,13 @@ pub struct RawSegment {
     pub text: String,
     /// The backend's own speaker label, if it diarises. Only ever a hint.
     pub speaker_hint: Option<String>,
+    /// How sure a Whisper-style backend was that nothing was said, and its
+    /// mean log-probability for the words -- the two figures
+    /// `verbose_json` carries that tell a line made up over silence from
+    /// real speech. `None` from every backend that does not give them. See
+    /// `everyday_core::meeting::hallucination::clean_line`.
+    pub no_speech_prob: Option<f32>,
+    pub avg_logprob: Option<f32>,
 }
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

@@ -399,6 +399,7 @@ async fn save_meeting_settings(
     blocking(move || {
         let mut settings = args.settings;
         validate_templates(&settings.templates)?;
+        settings.vocabulary = everyday_core::meeting::vocab::clean_terms(&settings.vocabulary);
 
         // Refused when the save would leave meeting notes on with nothing
         // to transcribe through: turning them on, or changing how speech

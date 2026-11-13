@@ -123,6 +123,7 @@ let settings: MeetingSettings = {
   voiceprints: false,
   autoStop: true,
   summaryBudget: null,
+  vocabulary: ['Kubernetes', 'OKRs'],
 }
 
 let hasKey = false

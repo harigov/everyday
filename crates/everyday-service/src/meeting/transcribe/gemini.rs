@@ -377,6 +377,8 @@ fn parse_response(body: &[u8], chunk_duration_ms: u64) -> CommandResult<Vec<RawS
             end_ms: s.end.to_ms().min(chunk_duration_ms),
             text: s.text,
             speaker_hint: s.speaker,
+            no_speech_prob: None,
+            avg_logprob: None,
         })
         .collect();
     Ok(segments)

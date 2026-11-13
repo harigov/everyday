@@ -14,6 +14,7 @@ use jiff::Timestamp;
 use crate::error::CommandResult;
 use crate::meeting::transcribe::{Hints, RawSegment, SpeechChunk, Transcriber};
 use crate::service::blocking;
+use everyday_core::meeting::{echo, hallucination, vocab};
 
 #[cfg(feature = "speech")]
 use crate::meeting::speech::SpeechKit;
@@ -24,17 +25,23 @@ use super::turns::*;
 // Transcribing
 // ============================================================================
 
-/// Every 30-second chunk, cut into speech turns: with feature `speech`, real
+/// What cuts audio into speech turns: the speech kit, or -- in a build
+/// without local speech -- nothing that can ever be present.
+#[cfg(feature = "speech")]
+type Kit = SpeechKit;
+#[cfg(not(feature = "speech"))]
+type Kit = ();
+
+/// Every 30-second chunk, cut into speech turns: with the speech kit, real
 /// VAD; without it, one turn spanning the whole chunk, so [`group_turns`]
 /// and [`map_segment`] serve both paths.
-fn turns_of(
-    #[allow(unused_variables)] samples: &[i16],
-    #[cfg(feature = "speech")] kit: Option<&SpeechKit>,
-) -> Vec<(u64, u64)> {
+fn turns_of(samples: &[i16], kit: Option<&Kit>) -> Vec<(u64, u64)> {
     #[cfg(feature = "speech")]
     if let Some(kit) = kit {
         return kit.vad(samples);
     }
+    #[cfg(not(feature = "speech"))]
+    let _ = kit;
     if samples.is_empty() { Vec::new() } else { vec![(0, ms_of(samples.len()))] }
 }
 
@@ -55,6 +62,26 @@ fn turns_of(
 /// index into whatever was last read, so it merges into whatever the row
 /// looks like *now* -- including a chunk `append` added while this one
 /// was being transcribed -- rather than overwriting it with a stale copy.
+///
+/// # Sentences across a chunk boundary
+///
+/// The spool cuts each track every 30 seconds whatever is being said, and
+/// a sentence cut in two comes back from any recogniser as two broken
+/// halves. So when a chunk's last speech turn runs to its end and the next
+/// chunk of the same track starts mid-speech, the turn is sent whole, with
+/// the start of the next chunk appended, and the next chunk remembers how
+/// much of its start was already sent ([`ChunkMeta::head_ms`]). This needs
+/// voice detection to find the turns; without the speech kit a chunk is
+/// sent whole, as before. While the call is still going, a chunk therefore
+/// waits for its successor before it is transcribed -- thirty seconds'
+/// delay on an early transcription, never a sentence broken in half.
+///
+/// # Lines nobody said
+///
+/// Every line a backend returns goes through
+/// [`hallucination::clean_line`]: its prompt read back, stock subtitle
+/// lines over a faint sound, noise tags and loops are dropped or collapsed
+/// before they ever reach the transcript.
 pub(crate) async fn transcribe_stage(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
@@ -64,27 +91,58 @@ pub(crate) async fn transcribe_stage(
     #[cfg(feature = "speech")] kit: Option<Arc<SpeechKit>>,
 ) -> CommandResult<()> {
     let limits = transcriber.limits();
+    #[cfg(not(feature = "speech"))]
+    let kit: Option<Arc<Kit>> = None;
 
     loop {
         let recording = {
             let vault = vault.clone();
             blocking(move || Ok(vault.recording(id)?)).await?
         };
-        let Some(meta) = recording.chunks.iter().find(|c| !c.transcribed).cloned() else {
+        // Only voice detection can carry a sentence over, so only then does
+        // a chunk of a live call wait for the one after it.
+        let waits = matches!(recording.stage, Stage::Recording) && kit.is_some();
+        let Some(meta) = recording
+            .chunks
+            .iter()
+            .find(|c| !c.transcribed && (!waits || successor(&recording.chunks, c).is_some()))
+            .cloned()
+        else {
             return Ok(());
         };
+        let next = successor(&recording.chunks, &meta).filter(|n| !n.transcribed).cloned();
 
         let source_for_read = source.clone();
-        #[cfg(feature = "speech")]
         let kit_for_read = kit.clone();
         let meta_for_read = meta.clone();
-        let groups = blocking(move || {
-            let samples = source_for_read.read_chunk(id, meta_for_read.track, meta_for_read.seq)?;
-            #[cfg(feature = "speech")]
-            let turns = turns_of(&samples, kit_for_read.as_deref());
-            #[cfg(not(feature = "speech"))]
-            let turns = turns_of(&samples);
-            Ok(group_turns(&turns, &samples, meta_for_read.start_ms, limits))
+        let (groups, floor, carried) = blocking(move || {
+            let kit = kit_for_read.as_deref();
+            let detects_speech = kit.is_some();
+            let turns_in = |samples: &[i16]| turns_of(samples, kit);
+            let mut samples =
+                source_for_read.read_chunk(id, meta_for_read.track, meta_for_read.seq)?;
+            let floor = hallucination::noise_floor(&samples);
+            let len_ms = ms_of(samples.len());
+            let mut turns = after_head(&turns_in(&samples), meta_for_read.head_ms);
+
+            // Only with real voice detection: without it the whole chunk is
+            // one turn, which always "runs over" and would carry for ever.
+            let mut carried = None;
+            if detects_speech
+                && runs_over(&turns, len_ms)
+                && let Some(next) = next.as_ref()
+                && next.start_ms.abs_diff(meta_for_read.start_ms + len_ms) <= CONTIGUOUS_MS
+                && let Ok(next_samples) = source_for_read.read_chunk(id, next.track, next.seq)
+                && let Some(wanted) = carry_into(&turns_in(&next_samples))
+                && let Some(last) = turns.last_mut()
+                && let Some(end) = carry_end(&next_samples, len_ms.saturating_sub(last.0), wanted)
+            {
+                let end_index = index_of(end).min(next_samples.len());
+                samples.extend_from_slice(&next_samples[..end_index]);
+                last.1 = len_ms + ms_of(end_index);
+                carried = Some((next.seq, ms_of(end_index)));
+            }
+            Ok((group_turns(&turns, &samples, meta_for_read.start_ms, limits), floor, carried))
         })
         .await?;
 
@@ -95,14 +153,24 @@ pub(crate) async fn transcribe_stage(
                 offset_ms: 0,
                 scope: meta.seq * 1000 + gi as u32,
             };
+            let faint =
+                hallucination::clear_speech_ms(&group.samples, floor) < hallucination::MIN_CLEAR_MS;
             let raw: Vec<RawSegment> = transcriber.transcribe(&speech_chunk, hints).await?;
             for seg in raw {
+                let heard = hallucination::Heard {
+                    text: &seg.text,
+                    no_speech_prob: seg.no_speech_prob,
+                    avg_logprob: seg.avg_logprob,
+                };
+                let Some(text) = hallucination::clean_line(heard, &hints.prompt, faint) else {
+                    continue;
+                };
                 let (start_ms, end_ms) = map_segment(&group.map, seg.start_ms, seg.end_ms);
                 new_segments.push(TrackSegment {
                     track: meta.track,
                     start_ms,
                     end_ms,
-                    text: seg.text,
+                    text,
                     speaker_hint: seg.speaker_hint,
                     hint_scope: speech_chunk.scope,
                 });
@@ -116,6 +184,11 @@ pub(crate) async fn transcribe_stage(
                 if let Some(c) = r.chunks.iter_mut().find(|c| (c.track, c.seq) == key) {
                     c.transcribed = true;
                 }
+                if let Some((seq, head_ms)) = carried
+                    && let Some(c) = r.chunks.iter_mut().find(|c| (c.track, c.seq) == (key.0, seq))
+                {
+                    c.head_ms = head_ms;
+                }
                 r.partial.extend(new_segments);
                 r.updated_at = Timestamp::now();
                 Ok(())
@@ -123,6 +196,21 @@ pub(crate) async fn transcribe_stage(
         })
         .await?;
     }
+}
+
+/// How far apart, in ms, the end of one chunk (its start plus its length)
+/// and the start of the next may be and the two still count as one
+/// unbroken stretch of audio. The capture stamps each chunk with the wall
+/// clock when the batch holding its first sample arrived, so chunks cut
+/// from one continuous stream disagree by the batch period and by drift
+/// between the audio and wall clocks -- tens, at worst a few hundred, ms. A
+/// stream that went down and came back leaves a gap of a second or more,
+/// and speech is not carried over that.
+const CONTIGUOUS_MS: u64 = 1_000;
+
+/// The chunk after `meta` on the same track, if it has arrived.
+fn successor<'a>(chunks: &'a [ChunkMeta], meta: &ChunkMeta) -> Option<&'a ChunkMeta> {
+    chunks.iter().find(|c| c.track == meta.track && c.seq == meta.seq + 1)
 }
 
 /// Read back the audio of `[start_ms, end_ms)` on `track`, spanning however
@@ -309,11 +397,82 @@ pub(crate) struct Identified {
     pub(crate) invitees: Vec<Invitee>,
     /// The owner's label, as the mic track's lines carry it.
     pub(crate) owner_label: String,
+    /// Most likely everybody was heard on the one microphone, and their
+    /// voices were not told apart: the owner's label is on every line of
+    /// it -- see [`Transcript::room`].
+    pub(crate) room: bool,
+    /// The meeting's names and words, for the summary's spelling rule.
+    pub(crate) words: vocab::MeetingWords,
 }
 
-/// Echo removal, mic → owner, system → turns → clusters → speakers, per the
-/// plan's "Who said what". `partial` is `recording.partial`, already sorted
-/// by [`merge::remove_echo`](everyday_core::meeting::merge::remove_echo).
+/// The meeting's names and words -- see [`vocab::meeting_words`]. The
+/// title only when it is a calendar's: one the app made up says nothing.
+///
+/// Of the owner's own addresses, only the ones on this meeting's invite
+/// give a company: the other accounts in the vault -- a side project, an
+/// old job -- have nothing to do with this meeting, and must neither be
+/// sent to a transcriber nor become words to respell.
+pub(crate) fn words_for(
+    vault: &Vault,
+    event: Option<&EventRef>,
+    settings: &MeetingSettings,
+) -> vocab::MeetingWords {
+    let owner = owner_of(vault);
+    let invitees = invitees_of(event, &owner);
+    let title = event.map(|e| e.title.as_str()).unwrap_or_default();
+    vocab::meeting_words(title, &invitees, &owner_on_invite(&owner, event), &settings.vocabulary)
+}
+
+/// The owner as this meeting knows them: their name, and only those of
+/// their addresses on its invite -- see [`words_for`].
+pub(crate) fn owner_on_invite(owner: &people::Owner, event: Option<&EventRef>) -> people::Owner {
+    let on_invite: std::collections::HashSet<String> = event
+        .map(|e| {
+            e.guests
+                .iter()
+                .map(|g| g.email.to_ascii_lowercase())
+                .chain(e.attendees.iter().filter_map(|a| identify::parse_attendee(a).1))
+                .chain(identify::parse_attendee(&e.organizer).1)
+                .collect()
+        })
+        .unwrap_or_default();
+    people::Owner {
+        addresses: owner.addresses.intersection(&on_invite).cloned().collect(),
+        name: owner.name.clone(),
+    }
+}
+
+/// Whether echo reached the microphone in this recording, from both
+/// tracks' audio -- see [`echo::EchoCheck`]. A chunk that cannot be read
+/// counts as silence; with no audio at all there is no evidence, and no
+/// line is ever taken for an echo. When one track said nothing, there is no
+/// line to judge, and the audio is not read at all.
+async fn echo_check(
+    source: &Arc<dyn AudioSource>,
+    id: RecordingId,
+    chunks: &[ChunkMeta],
+    partial: &[TrackSegment],
+) -> CommandResult<echo::EchoCheck> {
+    let said = |track: Track| partial.iter().any(|s| s.track == track);
+    if !said(Track::Mic) || !said(Track::System) {
+        return Ok(echo::EchoCheck::none());
+    }
+    let source = source.clone();
+    let chunks = chunks.to_vec();
+    blocking(move || {
+        let mut envelopes = echo::Envelopes::default();
+        for meta in &chunks {
+            if let Ok(samples) = source.read_chunk(id, meta.track, meta.seq) {
+                envelopes.push(meta.track, meta.start_ms, &samples);
+            }
+        }
+        Ok(echo::EchoCheck::analyse(envelopes))
+    })
+    .await
+}
+
+/// Echo removal, respelling, mic → owner (or, in a room, → voices), system
+/// → turns → clusters → speakers, per the plan's "Who said what".
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn identify_stage(
     vault: &Arc<Vault>,
@@ -323,8 +482,24 @@ pub(crate) async fn identify_stage(
     embedding_model: &str,
     #[cfg(feature = "speech")] kit: Option<Arc<SpeechKit>>,
 ) -> CommandResult<Identified> {
-    let (kept, _echo_found) =
-        everyday_core::meeting::merge::remove_echo(recording.partial.clone(), 0.6);
+    let id = recording.id;
+    let chunks = recording.chunks.clone();
+
+    let check = echo_check(source, id, &chunks, &recording.partial).await?;
+    let (mut kept, _echo_found) =
+        everyday_core::meeting::merge::remove_echo(recording.partial.clone(), &check);
+
+    let words = {
+        let vault = vault.clone();
+        let event = recording.event.clone();
+        let settings = settings.clone();
+        blocking(move || Ok(words_for(&vault, event.as_ref(), &settings))).await?
+    };
+    let ordinary = vocab::ordinary_words(kept.iter().map(|s| s.text.as_str()));
+    let respeller = vocab::Respeller::new(&words);
+    for seg in &mut kept {
+        seg.text = respeller.respell(&seg.text, &ordinary);
+    }
 
     let mut mic: Vec<TrackSegment> =
         kept.iter().filter(|s| s.track == Track::Mic).cloned().collect();
@@ -332,9 +507,6 @@ pub(crate) async fn identify_stage(
         kept.iter().filter(|s| s.track == Track::System).cloned().collect();
     mic.sort_by_key(|s| s.start_ms);
     system.sort_by_key(|s| s.start_ms);
-
-    let id = recording.id;
-    let chunks = recording.chunks.clone();
 
     #[cfg(feature = "speech")]
     {
@@ -369,13 +541,23 @@ pub(crate) async fn identify_stage(
         let event = recording.event.clone();
         blocking(move || Ok(invitees_of(event.as_ref(), &owner_of(&vault)))).await?
     };
-    let candidates = {
+    let in_room = everyday_core::meeting::heard_in_one_room(&kept, !invitees.is_empty());
+    let label = {
+        let vault = vault.clone();
+        blocking(move || Ok(owner_label(&vault))).await?
+    };
+    let (candidates, owner_voiceprint) = {
         let vault = vault.clone();
         let invitees = invitees.clone();
         let embedding_model = embedding_model.to_string();
         blocking(move || {
             let voiceprints = vault.voiceprints()?;
-            Ok(candidates_for(&invitees, &voiceprints, voiceprints_on, &embedding_model))
+            let owner = voiceprints_on
+                .then(|| {
+                    voiceprints.iter().find(|v| v.is_owner && v.model == embedding_model).cloned()
+                })
+                .flatten();
+            Ok((candidates_for(&invitees, &voiceprints, voiceprints_on, &embedding_model), owner))
         })
         .await?
     };
@@ -383,31 +565,17 @@ pub(crate) async fn identify_stage(
     // Every system segment becomes one `Turn`, embedded via the speech kit
     // when the feature is compiled in and the segment is long enough. See
     // `MIN_EMBED_MS`.
-    let mut turns = Vec::with_capacity(system.len());
-    for seg in &system {
-        let hint = seg.speaker_hint.as_ref().map(|h| (seg.hint_scope, h.clone()));
-        let long_enough = seg.end_ms.saturating_sub(seg.start_ms) >= MIN_EMBED_MS;
-        let embedding = if long_enough {
-            embed_segment(
-                vault,
-                source,
-                id,
-                &chunks,
-                seg,
-                #[cfg(feature = "speech")]
-                kit.clone(),
-            )
-            .await?
-        } else {
-            Vec::new()
-        };
-        turns.push(Turn {
-            index: turns.len(),
-            duration_ms: seg.end_ms.saturating_sub(seg.start_ms),
-            hint,
-            embedding,
-        });
-    }
+    let turns = turns_for(
+        vault,
+        source,
+        id,
+        &chunks,
+        &system,
+        Track::System,
+        #[cfg(feature = "speech")]
+        kit.clone(),
+    )
+    .await?;
 
     // Nobody on the other end can be anyone but an invitee, so there are
     // never more distinct voices than invitees -- see `Params::max_voices`.
@@ -430,37 +598,67 @@ pub(crate) async fn identify_stage(
         clusters[0].label = people::OTHERS.to_string();
     }
 
-    let voiceprints_used = voiceprints_on;
-    let label = {
-        let vault = vault.clone();
-        blocking(move || Ok(owner_label(&vault))).await?
-    };
-    let (owner_speaker, next_key) = if mic.is_empty() {
-        (None, 0u16)
-    } else {
-        (
-            Some(Speaker {
-                key: 0,
-                label: label.clone(),
-                email: None,
-                voiceprint_id: None,
-                how: Attribution::Owner,
-                centroid: Vec::new(),
-                embedding_model: String::new(),
-            }),
-            1u16,
+    // In a room, the microphone heard everyone. Its voices are told apart
+    // only when the owner can be told from the rest by their voiceprint --
+    // otherwise one voice split in two by the clustering would hand half of
+    // the owner's words to somebody else -- and only when nothing came over
+    // the system track, so a voice on the microphone can never be named
+    // after a speaker on the call as well. Anything less leaves the room
+    // under the owner's label, and the summary is told so.
+    let mut mic_clusters: Vec<identify::Cluster> = Vec::new();
+    if in_room
+        && system.is_empty()
+        && let Some(owner_print) = &owner_voiceprint
+    {
+        let mic_turns = turns_for(
+            vault,
+            source,
+            id,
+            &chunks,
+            &mic,
+            Track::Mic,
+            #[cfg(feature = "speech")]
+            kit.clone(),
         )
-    };
-
-    let mut speakers = Vec::new();
-    if let Some(owner) = owner_speaker.clone() {
-        speakers.push(owner);
+        .await?;
+        if mic_turns.iter().filter(|t| !t.embedding.is_empty()).count() >= 2 {
+            let mut room_candidates = candidates.clone();
+            room_candidates.push(Candidate {
+                attendee: label.clone(),
+                voiceprint: Some(owner_print.clone()),
+                declined: false,
+            });
+            let params = identify::Params {
+                max_voices: Some(invitees.len() + 1),
+                owner_may_speak: true,
+                ..identify::Params::default()
+            };
+            let found = fold_into_owner(
+                identify::identify(&mic_turns, &room_candidates, params),
+                owner_print,
+            );
+            if found.len() >= 2 && found.iter().any(|c| c.voiceprint_id == Some(owner_print.id)) {
+                mic_clusters = found;
+            }
+        }
     }
-    let mut cluster_keys = Vec::with_capacity(clusters.len());
-    for (i, cluster) in clusters.iter().enumerate() {
-        let key = next_key + i as u16;
-        cluster_keys.push(key);
-        speakers.push(Speaker {
+
+    let voiceprints_used = voiceprints_on;
+    let owner_voice = owner_voiceprint.as_ref().map(|v| v.id);
+    let owner_speaker = |key: u16| Speaker {
+        key,
+        label: label.clone(),
+        email: None,
+        voiceprint_id: None,
+        how: Attribution::Owner,
+        centroid: Vec::new(),
+        embedding_model: String::new(),
+    };
+    let as_speaker = |key: u16, cluster: &identify::Cluster| -> Speaker {
+        if owner_voice.is_some() && cluster.voiceprint_id == owner_voice {
+            return owner_speaker(key);
+        }
+        Speaker {
             key,
             label: cluster.label.clone(),
             email: cluster.email.clone(),
@@ -472,31 +670,52 @@ pub(crate) async fn identify_stage(
             } else {
                 String::new()
             },
-        });
-    }
+        }
+    };
 
+    let mut speakers = Vec::new();
     let mut segments = Vec::new();
-    if let Some(owner) = &owner_speaker {
-        for seg in &mic {
-            segments.push(Segment {
-                start_ms: seg.start_ms,
-                end_ms: seg.end_ms,
-                speaker: owner.key,
-                text: seg.text.clone(),
-            });
+    let mut next_key = 0u16;
+    if mic_clusters.is_empty() {
+        if !mic.is_empty() {
+            speakers.push(owner_speaker(next_key));
+            for seg in &mic {
+                segments.push(Segment {
+                    start_ms: seg.start_ms,
+                    end_ms: seg.end_ms,
+                    speaker: next_key,
+                    text: seg.text.clone(),
+                });
+            }
+            next_key += 1;
+        }
+    } else {
+        for cluster in &mic_clusters {
+            speakers.push(as_speaker(next_key, cluster));
+            for &turn_idx in &cluster.turns {
+                let seg = &mic[turn_idx];
+                segments.push(Segment {
+                    start_ms: seg.start_ms,
+                    end_ms: seg.end_ms,
+                    speaker: next_key,
+                    text: seg.text.clone(),
+                });
+            }
+            next_key += 1;
         }
     }
-    for (ci, cluster) in clusters.iter().enumerate() {
-        let key = cluster_keys[ci];
+    for cluster in &clusters {
+        speakers.push(as_speaker(next_key, cluster));
         for &turn_idx in &cluster.turns {
             let seg = &system[turn_idx];
             segments.push(Segment {
                 start_ms: seg.start_ms,
                 end_ms: seg.end_ms,
-                speaker: key,
+                speaker: next_key,
                 text: seg.text.clone(),
             });
         }
+        next_key += 1;
     }
     segments.sort_by_key(|s| s.start_ms);
 
@@ -506,7 +725,79 @@ pub(crate) async fn identify_stage(
     // `resolve_speakers`, which has the last word.
     people::tidy(&mut speakers, &mut segments, None);
 
-    Ok(Identified { speakers, segments, invitees, owner_label: label })
+    let room = in_room && mic_clusters.is_empty();
+    Ok(Identified { speakers, segments, invitees, owner_label: label, room, words })
+}
+
+/// How alike a voice on a room's microphone must be to the owner's
+/// voiceprint to be taken for the owner's own, split off by the clustering:
+/// well under the match threshold, since anything this close is far more
+/// likely the owner on a bad stretch of audio than somebody else.
+const OWNER_FOLD: f32 = 0.45;
+
+/// `clusters` with every unnamed one that sounds like the owner folded into
+/// the owner's -- the one matched to `owner` -- so the owner's voice split in
+/// two can never leave half of it to be named after somebody else. A voice
+/// another voiceprint matched stays apart.
+pub(crate) fn fold_into_owner(
+    clusters: Vec<identify::Cluster>,
+    owner: &everyday_core::meeting::Voiceprint,
+) -> Vec<identify::Cluster> {
+    if !clusters.iter().any(|c| c.voiceprint_id == Some(owner.id)) {
+        return clusters;
+    }
+    let near_owner = |c: &identify::Cluster| {
+        c.voiceprint_id != Some(owner.id)
+            && matches!(c.how, Attribution::Unknown | Attribution::Inferred)
+            && owner.centroids.iter().any(|o| identify::cosine(&c.centroid, o) >= OWNER_FOLD)
+    };
+    let (folded, mut kept): (Vec<_>, Vec<_>) = clusters.into_iter().partition(near_owner);
+    if let Some(owner_cluster) = kept.iter_mut().find(|c| c.voiceprint_id == Some(owner.id)) {
+        owner_cluster.turns.extend(folded.into_iter().flat_map(|c| c.turns));
+        owner_cluster.turns.sort_unstable();
+    }
+    kept
+}
+
+/// One `Turn` per segment of `track`, embedded via the speech kit when the
+/// feature is compiled in and the segment is long enough -- see
+/// [`MIN_EMBED_MS`].
+async fn turns_for(
+    vault: &Arc<Vault>,
+    source: &Arc<dyn AudioSource>,
+    id: RecordingId,
+    chunks: &[ChunkMeta],
+    segments: &[TrackSegment],
+    track: Track,
+    #[cfg(feature = "speech")] kit: Option<Arc<SpeechKit>>,
+) -> CommandResult<Vec<Turn>> {
+    let mut turns = Vec::with_capacity(segments.len());
+    for seg in segments {
+        let hint = seg.speaker_hint.as_ref().map(|h| (seg.hint_scope, h.clone()));
+        let long_enough = seg.end_ms.saturating_sub(seg.start_ms) >= MIN_EMBED_MS;
+        let embedding = if long_enough {
+            embed_segment(
+                vault,
+                source,
+                id,
+                chunks,
+                seg,
+                track,
+                #[cfg(feature = "speech")]
+                kit.clone(),
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
+        turns.push(Turn {
+            index: turns.len(),
+            duration_ms: seg.end_ms.saturating_sub(seg.start_ms),
+            hint,
+            embedding,
+        });
+    }
+    Ok(turns)
 }
 
 /// Ask the model to put names to the voices the audio could not, from what
@@ -548,12 +839,14 @@ pub(crate) async fn resolve_speakers(
     people::tidy(&mut identified.speakers, &mut identified.segments, invited);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn embed_segment(
     vault: &Arc<Vault>,
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
     chunks: &[ChunkMeta],
     seg: &TrackSegment,
+    track: Track,
     #[cfg(feature = "speech")] kit: Option<Arc<SpeechKit>>,
 ) -> CommandResult<Vec<f32>> {
     let _ = vault;
@@ -565,15 +858,14 @@ async fn embed_segment(
         let start_ms = seg.start_ms;
         let end_ms = seg.end_ms;
         return blocking(move || {
-            let samples =
-                read_range(source.as_ref(), id, Track::System, &chunks, start_ms, end_ms)?;
+            let samples = read_range(source.as_ref(), id, track, &chunks, start_ms, end_ms)?;
             Ok(kit.embed(&samples).unwrap_or_default())
         })
         .await;
     }
     #[cfg(not(feature = "speech"))]
     {
-        let _ = (source, id, chunks, seg);
+        let _ = (source, id, chunks, seg, track);
         Ok(Vec::new())
     }
 }
@@ -630,41 +922,80 @@ fn facts_from(
     }
 }
 
-/// Fill the template, split it into pieces under budget, summarise each and
-/// combine, then enforce the template's own headings. Returns the answer
-/// alone -- the details block is [`write_stage`]'s to prepend.
+/// Fill the template and write the note: the whole transcript in one
+/// request when it fits `budget`, else notes on each part and the note
+/// written from those. A section of the template the answer left out is
+/// asked for once more on its own, and anything still missing is marked by
+/// [`template::enforce_headings`]. Returns the answer alone -- the details
+/// block is the writing stage's to prepend.
+///
+/// `spelling` is [`vocab::spelling_line`]'s, or empty.
 ///
 /// `pub(crate)`: `domains::transcripts` reuses this directly for
 /// `preview_meeting_template` and `rewrite_meeting_note`, so a preview and
 /// the real note are always produced by exactly the same code.
+///
+/// [`template::enforce_headings`]: everyday_core::meeting::template::enforce_headings
 pub(crate) async fn summarise_stage(
     summariser: &dyn Summariser,
     transcript: &Transcript,
     template_body: &str,
     facts: &Facts,
     budget: u32,
+    spelling: &str,
 ) -> CommandResult<String> {
-    let filled = everyday_core::meeting::template::fill(template_body, facts);
-    let pieces = everyday_core::meeting::prompt::pieces(transcript, budget);
-    let people = everyday_core::meeting::prompt::people_block(transcript, &facts.invitees);
+    use everyday_core::meeting::{prompt, template};
 
-    let mut answers = Vec::with_capacity(pieces.len());
-    let n = pieces.len();
-    for (i, piece) in pieces.iter().enumerate() {
-        let part = if n > 1 { Some((i + 1, n)) } else { None };
-        let req = everyday_core::meeting::prompt::summarise(&filled, &people, piece, part);
-        let answer = summariser.ask(&req.system, &req.user).await?;
-        answers.push(answer);
-    }
+    let filled = template::fill(template_body, facts);
+    let people = prompt::people_block(transcript, &facts.invitees);
+    let room = prompt::room_note(transcript);
+    let cx = prompt::Context { template: &filled, people: &people, spelling, room: &room };
+    let pieces = prompt::pieces(transcript, budget);
 
-    let combined = if answers.len() > 1 {
-        let req = everyday_core::meeting::prompt::combine(&filled, &people, &answers);
-        summariser.ask(&req.system, &req.user).await?
+    let mut parts = Vec::new();
+    let answer = if pieces.len() > 1 {
+        let n = pieces.len();
+        for (i, piece) in pieces.iter().enumerate() {
+            let req = prompt::part_notes(&cx, piece, i + 1, n);
+            parts.push(prompt::tidy_answer(&summariser.ask(&req.system, &req.user).await?));
+        }
+        let req = prompt::from_parts(&cx, &parts);
+        prompt::tidy_answer(&summariser.ask(&req.system, &req.user).await?)
     } else {
-        answers.into_iter().next().unwrap_or_default()
+        let lines = pieces.first().map(String::as_str).unwrap_or_default();
+        let req = prompt::summarise(&cx, lines);
+        prompt::tidy_answer(&summariser.ask(&req.system, &req.user).await?)
     };
 
-    Ok(everyday_core::meeting::template::enforce_headings(&filled, &combined))
+    // A model sometimes stops before the end of the template. One more
+    // request for only what it left out is cheaper than a note without its
+    // next steps; a failure here keeps what was written.
+    let missing = template::missing_headings(&filled, &answer);
+    let answer = if missing.is_empty() || answer.trim().is_empty() {
+        answer
+    } else {
+        let source = if parts.is_empty() {
+            prompt::Source::Transcript(pieces.first().map(String::as_str).unwrap_or_default())
+        } else {
+            prompt::Source::Parts(&parts)
+        };
+        let req = prompt::missing_sections(&cx, source, &answer, &missing);
+        match summariser.ask(&req.system, &req.user).await {
+            Ok(more) => match prompt::take_sections(&more, &missing) {
+                Some(sections) => format!("{}\n\n{sections}", answer.trim_end()),
+                None => answer,
+            },
+            Err(e) => {
+                tracing::warn!(
+                    error = %e.message,
+                    "meeting pipeline: could not ask for the sections the note left out"
+                );
+                answer
+            }
+        }
+    };
+
+    Ok(template::enforce_headings(&filled, &answer))
 }
 
 // ============================================================================

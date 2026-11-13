@@ -83,6 +83,7 @@ fn blank_settings() -> MeetingSettings {
         voiceprints: false,
         auto_stop: true,
         summary_budget: None,
+        vocabulary: vec!["Kubernetes".into()],
     }
 }
 
@@ -127,6 +128,7 @@ fn transcript(note_id: NoteId) -> Transcript {
             embedding_model: String::new(),
         }],
         segments: vec![Segment { start_ms: 0, end_ms: 1_000, speaker: 0, text: "hello".into() }],
+        room: false,
         created_at: now,
         updated_at: now,
     }

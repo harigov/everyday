@@ -560,6 +560,22 @@
         />
       </label>
 
+      <label class="setting">
+        <span>Names and words to spell right</span>
+        <textarea
+          class="terms"
+          rows="4"
+          value={draft.vocabulary.join('\n')}
+          oninput={(e) => draft && (draft.vocabulary = e.currentTarget.value.split('\n'))}
+          placeholder="One per line: product names, acronyms, people"
+          spellcheck="false"
+        ></textarea>
+      </label>
+      <p class="hint">
+        Told to the transcriber and the note writer in every meeting, along with the names on the
+        invite, and used to correct near misses in the transcript.
+      </p>
+
       {#if draft.skippedSeries.length > 0}
         <div class="pick-list">
           <span class="eyebrow">Never for these meetings</span>
@@ -634,7 +650,8 @@
           <code>{'{{title}}'}</code> <code>{'{{date}}'}</code> <code>{'{{start}}'}</code>
           <code>{'{{end}}'}</code> <code>{'{{duration}}'}</code> <code>{'{{organizer}}'}</code>
           <code>{'{{attendees}}'}</code> <code>{'{{present}}'}</code> <code>{'{{calendar}}'}</code>
-          — a heading is kept as written; the text under it is an instruction the model replaces.
+          — a heading is kept as written; the text under it is an instruction the model replaces. A heading
+          of <code>{'{{topics}}'}</code> becomes one section per topic discussed.
         </p>
         <div class="row">
           <button class="btn" disabled={linting} onclick={() => void lintNow()}>
@@ -898,6 +915,10 @@
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);
+  }
+
+  textarea.terms {
+    resize: vertical;
   }
 
   textarea.body {

@@ -7545,6 +7545,12 @@
       "ChunkMeta": {
         "description": "One spooled chunk of one track.",
         "properties": {
+          "headMs": {
+            "description": "How much of this chunk's start was already transcribed as the end of\nthe previous chunk's last sentence: speech running across a chunk\nboundary is sent whole, with the previous chunk, rather than cut in\ntwo. Zero when nothing ran over.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "samples": {
             "description": "Samples at [`SAMPLE_RATE`], mono.",
             "format": "uint64",
@@ -9967,6 +9973,10 @@
           "string",
           "null"
         ]
+      },
+      "room": {
+        "description": "Most likely a meeting in a room, everybody heard on the one\nmicrophone (see [`heard_in_one_room`]), whose voices were not told\napart: every line under the owner's label may be anyone in the room. A room whose\nvoices were told apart is not flagged -- its labels are as sure, or\nunsure, as a call's.",
+        "type": "boolean"
       },
       "segments": {
         "items": {

@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use everyday_core::meeting::{
-    ChunkMeta, EventRef, Recording, SAMPLE_RATE, Stage, Track, TrackSegment, TranscriberConfig,
-    Voiceprint,
+    Attribution, ChunkMeta, EventRef, Recording, SAMPLE_RATE, Stage, Track, TrackSegment,
+    TranscriberConfig, Voiceprint,
 };
 use everyday_core::{RecordingId, Vault};
 use jiff::Timestamp;
@@ -149,7 +149,14 @@ impl AudioSource for FakeAudio {
 }
 
 fn meta(track: Track, seq: u32, start_ms: u64, dur_ms: u64) -> ChunkMeta {
-    ChunkMeta { track, seq, start_ms, samples: ms_to_samples(dur_ms) as u64, transcribed: false }
+    ChunkMeta {
+        track,
+        seq,
+        start_ms,
+        samples: ms_to_samples(dur_ms) as u64,
+        transcribed: false,
+        head_ms: 0,
+    }
 }
 
 #[test]
@@ -242,6 +249,49 @@ fn a_voiceprint_matches_by_email_then_falls_back_to_name() {
     assert_eq!(found.unwrap().name, "Bob");
 }
 
+#[test]
+fn only_the_owners_addresses_on_the_invite_name_a_company() {
+    let mut owner = everyday_core::meeting::people::Owner::default();
+    owner.addresses.insert("me@viyamd.com".to_string());
+    owner.addresses.insert("me@sideproject.io".to_string());
+    let event = event_with(vec!["Priya Raman <priya@x.com>", "Me <me@viyamd.com>"]);
+    let present = owner_on_invite(&owner, Some(&event));
+    assert_eq!(present.addresses.len(), 1);
+    assert!(present.addresses.contains("me@viyamd.com"));
+    assert!(owner_on_invite(&owner, None).addresses.is_empty());
+}
+
+#[test]
+fn a_room_voice_that_sounds_like_the_owner_is_folded_into_the_owner() {
+    use everyday_core::meeting::identify::Cluster;
+    let mut owner = voiceprint("Hari", None, "m");
+    owner.is_owner = true;
+    owner.centroids = vec![vec![1.0, 0.0]];
+    let priya = voiceprint("Priya", None, "m");
+    let cluster = |turns: Vec<usize>, centroid: Vec<f32>, vp: Option<&Voiceprint>, how| Cluster {
+        turns,
+        centroid,
+        label: String::new(),
+        email: None,
+        voiceprint_id: vp.map(|v| v.id),
+        how,
+    };
+    let clusters = vec![
+        cluster(vec![0, 3], vec![1.0, 0.0], Some(&owner), Attribution::Matched { score: 0.9 }),
+        // The owner on a bad stretch: under the match threshold, still close.
+        cluster(vec![1], vec![0.6, 0.8], None, Attribution::Unknown),
+        // Somebody else entirely.
+        cluster(vec![2], vec![0.0, 1.0], None, Attribution::Unknown),
+        // Close to the owner, but another voiceprint matched it: stays apart.
+        cluster(vec![4], vec![0.7, 0.7], Some(&priya), Attribution::Matched { score: 0.7 }),
+    ];
+    let folded = fold_into_owner(clusters, &owner);
+    assert_eq!(folded.len(), 3);
+    assert_eq!(folded[0].turns, vec![0, 1, 3]);
+    assert_eq!(folded[1].turns, vec![2]);
+    assert_eq!(folded[2].turns, vec![4]);
+}
+
 // ---- pipeline stage progression, against a fake transcriber and audio --
 
 struct FakeTranscriber {
@@ -267,7 +317,14 @@ impl Transcriber for FakeTranscriber {
         let reply = self.reply.clone();
         let duration = chunk.duration_ms();
         Box::pin(async move {
-            Ok(vec![RawSegment { start_ms: 0, end_ms: duration, text: reply, speaker_hint: None }])
+            Ok(vec![RawSegment {
+                start_ms: 0,
+                end_ms: duration,
+                text: reply,
+                speaker_hint: None,
+                no_speech_prob: None,
+                avg_logprob: None,
+            }])
         })
     }
 }
@@ -420,6 +477,8 @@ async fn retrying_transcription_skips_chunks_already_marked_done() {
                     end_ms: duration,
                     text: "hi".into(),
                     speaker_hint: None,
+                    no_speech_prob: None,
+                    avg_logprob: None,
                 }])
             })
         }
@@ -474,45 +533,244 @@ async fn a_summariser_failure_leaves_the_recording_failed_with_the_spool_kept() 
     assert!(audio.removed.lock().unwrap().is_empty());
 }
 
-#[tokio::test]
-async fn echo_is_removed_before_identification() {
-    let (_dir, vault) = test_vault();
-    let audio = Arc::new(FakeAudio::new());
-    let id = seed_recording(&vault, &audio, 1, 1);
-    let mut recording = vault.recording(id).unwrap();
-    recording.partial.push(TrackSegment {
-        track: Track::System,
-        start_ms: 1_000,
-        end_ms: 3_000,
-        text: "let's ship on Friday".into(),
-        speaker_hint: None,
-        hint_scope: 0,
-    });
-    recording.partial.push(TrackSegment {
-        track: Track::Mic,
-        start_ms: 1_200,
-        end_ms: 3_100,
-        text: "let's ship on Friday".into(),
-        speaker_hint: None,
-        hint_scope: 0,
-    });
-    vault.save_recording(&recording).unwrap();
+/// Speech-shaped audio: bursts of a tone at syllable pace, each a different
+/// loudness, with gaps between -- enough like talking for the echo check's
+/// loudness envelopes to have something to follow. Deterministic.
+fn speechlike(ms: u64, seed: u32) -> Vec<i16> {
+    let n = ms_to_samples(ms);
+    let mut out = vec![0i16; n];
+    let mut state = seed;
+    let mut next = || {
+        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (state >> 8) as usize
+    };
+    let mut i = 0;
+    while i < n {
+        let on = ms_to_samples(100) + next() % ms_to_samples(300);
+        let off = ms_to_samples(50) + next() % ms_to_samples(200);
+        let amp = 3_000.0 + (next() % 6_000) as f32;
+        for (k, sample) in out.iter_mut().enumerate().skip(i).take(on) {
+            let phase = 2.0 * std::f32::consts::PI * 220.0 * k as f32 / SAMPLE_RATE as f32;
+            *sample = (amp * phase.sin()) as i16;
+        }
+        i += on + off;
+    }
+    out
+}
 
+/// `src` heard `delay_ms` later at `gain`: the speakers, through the air.
+fn delayed(src: &[i16], delay_ms: u64, gain: f32) -> Vec<i16> {
+    let shift = ms_to_samples(delay_ms);
+    let mut out = vec![0i16; src.len()];
+    for (i, s) in src.iter().enumerate() {
+        if i + shift < out.len() {
+            out[i + shift] = (f32::from(*s) * gain) as i16;
+        }
+    }
+    out
+}
+
+/// A recording with one 30-second chunk per track holding `system` and
+/// `mic`, and the same sentence transcribed on both tracks at once.
+fn echo_recording(vault: &Vault, audio: &FakeAudio, system: Vec<i16>, mic: Vec<i16>) -> Recording {
+    let id = seed_recording(vault, audio, 0, 0);
+    let mut recording = vault.recording(id).unwrap();
+    audio.put(id, Track::System, 0, system);
+    audio.put(id, Track::Mic, 0, mic);
+    recording.chunks = vec![meta(Track::Mic, 0, 0, 30_000), meta(Track::System, 0, 0, 30_000)];
+    for (track, start_ms, end_ms) in [(Track::System, 1_000, 3_000), (Track::Mic, 1_200, 3_100)] {
+        recording.partial.push(TrackSegment {
+            track,
+            start_ms,
+            end_ms,
+            text: "let's ship the pricing page on Friday".into(),
+            speaker_hint: None,
+            hint_scope: 0,
+        });
+    }
+    vault.save_recording(&recording).unwrap();
+    recording
+}
+
+async fn identify_without_speech(
+    vault: &Arc<Vault>,
+    audio: &Arc<FakeAudio>,
+    recording: &Recording,
+) -> Identified {
     let source: Arc<dyn AudioSource> = audio.clone();
     let settings = vault.meeting_settings().unwrap();
-    let identified = identify_stage(
-        &vault,
+    identify_stage(
+        vault,
         &source,
-        &recording,
+        recording,
         &settings,
         "test-model",
         #[cfg(feature = "speech")]
         None,
     )
     .await
-    .unwrap();
-    // The mic echo was dropped: only the system segment's text survives.
-    assert_eq!(identified.segments.iter().filter(|s| s.text.contains("ship on Friday")).count(), 1);
+    .unwrap()
+}
+
+#[tokio::test]
+async fn echo_heard_in_the_audio_is_removed_before_identification() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let system = speechlike(30_000, 7);
+    // No headphones: the mic hears the speakers 80 ms late, quieter.
+    let mic = delayed(&system, 80, 0.3);
+    let recording = echo_recording(&vault, &audio, system, mic);
+
+    let identified = identify_without_speech(&vault, &audio, &recording).await;
+    // The mic's copy was dropped: only the system segment's text survives.
+    assert_eq!(identified.segments.iter().filter(|s| s.text.contains("on Friday")).count(), 1);
+}
+
+#[tokio::test]
+async fn with_headphones_the_owners_own_words_are_never_taken_for_echo() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    // Nothing of theirs reaches the mic: the owner repeating their words
+    // back is the owner talking.
+    let recording = echo_recording(&vault, &audio, speechlike(30_000, 7), speechlike(30_000, 99));
+
+    let identified = identify_without_speech(&vault, &audio, &recording).await;
+    assert_eq!(identified.segments.iter().filter(|s| s.text.contains("on Friday")).count(), 2);
+    assert!(!identified.room);
+}
+
+#[tokio::test]
+async fn a_meeting_heard_only_on_the_microphone_is_a_room() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_recording(&vault, &audio, 1, 0);
+    let mut recording = vault.recording(id).unwrap();
+    for (i, text) in [
+        "okay so the first thing on the list is the pricing page",
+        "I think we can ship it on Friday if the copy is done",
+        "the copy is done, design signed off yesterday",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        recording.partial.push(TrackSegment {
+            track: Track::Mic,
+            start_ms: i as u64 * 5_000,
+            end_ms: i as u64 * 5_000 + 4_000,
+            text: text.into(),
+            speaker_hint: None,
+            hint_scope: 0,
+        });
+    }
+    vault.save_recording(&recording).unwrap();
+
+    let identified = identify_without_speech(&vault, &audio, &recording).await;
+    assert!(identified.room);
+    // No voices to tell apart without the speech kit: one label, the
+    // owner's, on every line -- and the summary is told so.
+    assert_eq!(identified.speakers.len(), 1);
+    assert!(matches!(identified.speakers[0].how, Attribution::Owner));
+}
+
+#[tokio::test]
+async fn the_recognisers_prompt_read_back_never_reaches_the_transcript() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_recording(&vault, &audio, 0, 1);
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let hints =
+        Hints { language: None, prompt: "Design sync. With Priya Raman of Example.".into() };
+    for (reply, kept) in
+        [("Design sync. With Priya Raman.", false), ("Priya, can you send the deck?", true)]
+    {
+        let mut recording = vault.recording(id).unwrap();
+        recording.partial.clear();
+        recording.chunks.iter_mut().for_each(|c| c.transcribed = false);
+        recording.stage = Stage::Transcribing;
+        vault.save_recording(&recording).unwrap();
+        let transcriber = FakeTranscriber {
+            limits: Limits { max_bytes: 100_000_000, max_seconds: 3_600 },
+            diarises: false,
+            reply: reply.into(),
+        };
+        transcribe_stage(
+            &vault,
+            &source,
+            &transcriber,
+            id,
+            &hints,
+            #[cfg(feature = "speech")]
+            None,
+        )
+        .await
+        .unwrap();
+        let recording = vault.recording(id).unwrap();
+        assert_eq!(!recording.partial.is_empty(), kept, "{reply}");
+    }
+}
+
+/// Answers every request the same way, and keeps what it was asked.
+struct Recorder {
+    answer: String,
+    asked: Mutex<Vec<(String, String)>>,
+}
+
+impl Summariser for Recorder {
+    fn ask<'a>(
+        &'a self,
+        system: &'a str,
+        user: &'a str,
+    ) -> crate::meeting::transcribe::BoxFuture<'a, CommandResult<String>> {
+        self.asked.lock().unwrap().push((system.to_string(), user.to_string()));
+        let answer = self.answer.clone();
+        Box::pin(async move { Ok(answer) })
+    }
+}
+
+#[tokio::test]
+async fn a_note_is_written_by_topic_and_a_missing_section_asked_for_once() {
+    let (_dir, vault) = test_vault();
+    let audio = Arc::new(FakeAudio::new());
+    let id = seed_recording(&vault, &audio, 1, 1);
+    let source: Arc<dyn AudioSource> = audio.clone();
+    let mut settings = vault.meeting_settings().unwrap();
+    settings.vocabulary = vec!["Kubernetes".into()];
+    vault.save_meeting_settings(&settings).unwrap();
+    let transcriber = FakeTranscriber {
+        limits: Limits { max_bytes: 100_000_000, max_seconds: 3_600 },
+        diarises: false,
+        reply: "we should move the cluster to Kubernetis next week".into(),
+    };
+    do_transcribe_with(&vault, &source, id, &transcriber).await.unwrap();
+    do_identify(&vault, &source, id).await.unwrap();
+
+    // Topics, but no "Next steps": the template's last section is owed.
+    let summariser = Recorder {
+        answer: "Here are the notes:\n\n## Cluster move\n- Moving to Kubernetes next week\n".into(),
+        asked: Mutex::new(Vec::new()),
+    };
+    let events = Arc::new(crate::events::Silent);
+    do_summarise_and_write(&vault, &source, id, &summariser, events.as_ref()).await.unwrap();
+
+    let asked = summariser.asked.lock().unwrap();
+    let summary =
+        asked.iter().find(|(system, _)| system.contains("writing meeting notes")).unwrap();
+    assert!(summary.0.contains("{{topics}}"), "the topic sections are explained");
+    assert!(summary.1.contains("## {{topics}}"), "{}", summary.1);
+    assert!(summary.1.contains("- Spelling:") && summary.1.contains("Kubernetes"), "{}", summary.1);
+    // The transcript was respelled, and goes in as turns.
+    assert!(summary.1.contains("move the cluster to Kubernetes next week"), "{}", summary.1);
+    let follow_up: Vec<_> = asked.iter().filter(|(_, user)| user.contains("Write only")).collect();
+    assert_eq!(follow_up.len(), 1, "asked once for what was missing");
+    assert!(follow_up[0].1.contains("## Next steps"));
+
+    let recording = vault.recording(id).unwrap();
+    let note = vault.note(recording.note_id.unwrap()).unwrap().body.to_markdown();
+    assert!(note.contains("## Cluster move"), "{note}");
+    assert!(!note.contains("Here are the notes"), "{note}");
+    assert!(!note.contains("{{topics}}"), "{note}");
+    // The follow-up wrote nothing usable either: the gap shows.
+    assert!(note.contains("## Next steps"), "{note}");
 }
 
 #[tokio::test]
@@ -858,6 +1116,8 @@ impl Transcriber for FlakyTranscriber {
                 end_ms: duration,
                 text: "hi".into(),
                 speaker_hint: None,
+                no_speech_prob: None,
+                avg_logprob: None,
             }])
         })
     }
