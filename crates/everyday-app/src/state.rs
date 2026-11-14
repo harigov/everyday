@@ -39,6 +39,9 @@ pub struct AppState {
     sharing: Arc<Sharing>,
     /// Serving this vault's tools to an MCP client, when that is on.
     mcp: Arc<Mcp>,
+    /// Web access -- the interface in a browser on the tailnet. A third
+    /// switch beside sharing and MCP, composed into the fan-out the same way.
+    web: Arc<crate::web::WebAccess>,
     /// A meeting being recorded, or being started, for the life of the
     /// capture. See `capture.rs`'s `CaptureSlot` and `meeting.rs`'s
     /// `begin_headless`, which reserves this with `CaptureSlot::Starting`
@@ -79,6 +82,7 @@ impl AppState {
             sink: RwLock::new(None),
             sharing: Arc::default(),
             mcp: Arc::default(),
+            web: Arc::default(),
             capture: Mutex::new(None),
             registry: Mutex::new(None),
         }
@@ -93,6 +97,10 @@ impl AppState {
 
     pub fn sharing(&self) -> Arc<Sharing> {
         self.sharing.clone()
+    }
+
+    pub fn web(&self) -> Arc<crate::web::WebAccess> {
+        self.web.clone()
     }
 
     pub fn mcp(&self) -> Arc<Mcp> {
@@ -136,7 +144,7 @@ impl AppState {
     /// by -- see the close handler in `lib.rs`: with work like this to do, a
     /// process with no Quit to hand is better than one that stops serving.
     pub fn stays_resident(&self) -> bool {
-        if self.sharing.is_running() || self.mcp.is_running() {
+        if self.sharing.is_running() || self.mcp.is_running() || self.web.is_running() {
             return true;
         }
         let Some(vault) = self.service.get() else { return false };
@@ -179,6 +187,7 @@ impl AppState {
         let mut other = Vec::new();
         other.extend(self.sharing.sink());
         other.extend(self.mcp.sink());
+        other.extend(self.web.sink());
         self.service.set_events(crate::fanout::compose(window, other));
     }
 

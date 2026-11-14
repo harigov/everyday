@@ -2553,6 +2553,33 @@ export interface McpStatus {
   deviceId: string | null
 }
 
+// ── Opening this vault in a browser ─────────────────────────────────────
+
+/** Which network web access answers on. Only Tailscale today; see
+ *  `everyday_server::web::Network`. */
+export type WebNetwork = {
+  kind: 'tailscale'
+  peers: 'sameUser' | { logins: string[] }
+}
+
+/** What the web access pane draws. */
+export interface WebStatus {
+  /** The switch is on -- not necessarily answering yet; see `listening`. */
+  running: boolean
+  /** The addresses actually bound. Empty while something is in the way. */
+  listening: string[]
+  /** What to open in a browser, best first. */
+  urls: string[]
+  port: number
+  network: WebNetwork
+  /** What is in the way, in words, when something is. */
+  problem: string | null
+  certificate: { names: string[]; at: string } | null
+  /** How many browsers are signed in right now. */
+  sessions: number
+  allowUnlock: boolean
+}
+
 /**
  * The OS-wide key that raises the palette.
  *

@@ -17,6 +17,10 @@ pub struct ServeOptions<'a> {
     /// this is not read from `mcp.json`.
     pub mcp: bool,
     pub mcp_listen: Option<&'a str>,
+    /// Open the interface to a browser on the tailnet too. See the flag's
+    /// own documentation for why this is not read from `web.json`.
+    pub web: bool,
+    pub web_ui: Option<&'a std::path::Path>,
 }
 
 pub(crate) fn serve(
@@ -24,7 +28,11 @@ pub(crate) fn serve(
     vault_path: &std::path::Path,
     options: ServeOptions<'_>,
 ) -> Result<()> {
-    let ServeOptions { listen, port, pair, no_remote_unlock, no_tls, mcp, mcp_listen } = options;
+    let ServeOptions { listen, port, pair, no_remote_unlock, no_tls, mcp, mcp_listen, web, web_ui } =
+        options;
+    // Before anything binds: a missing interface is a mistake to report, not
+    // something to find out from a browser.
+    let web_assets = if web { Some(web_assets(web_ui)?) } else { None };
     let ip: std::net::IpAddr =
         listen.parse().map_err(|_| Error::Invalid(format!("{listen} is not an address")))?;
     let config = everyday_server::Config {
@@ -76,13 +84,54 @@ pub(crate) fn serve(
             }
             None
         };
-        if let Some(running) = &mcp_running {
-            // Both sinks, so `lock_state` reaches every paired device *and*
-            // every open MCP stream -- which is what tells a client that
-            // connected to a locked vault to ask for the catalogue again.
-            service
-                .set_events(everyday_server::fanout(running.server.clone(), broadcaster.clone()));
-            println!("MCP endpoint: http://{}/mcp", running.address);
+        // A browser on the tailnet, over the same service and the same
+        // `Registry` -- its password attempts share the unlock lockout a
+        // paired device's do.
+        let web_running = match web_assets {
+            Some(assets) => {
+                let mut config = everyday_server::web::Config::load(&dir);
+                config.enabled = true;
+                let web = everyday_server::web::Web::start(
+                    service.clone(),
+                    registry.clone(),
+                    assets,
+                    config,
+                    name.clone(),
+                );
+                // Long enough for a first certificate; it keeps trying after
+                // this either way, and says so below.
+                web.first_look(std::time::Duration::from_secs(90)).await;
+                let status = web.status();
+                match (&status.problem, status.urls.first()) {
+                    (None, Some(url)) => println!("In a browser:  {url}"),
+                    (Some(problem), _) => {
+                        eprintln!("warning: web access is not answering yet ({problem})");
+                        eprintln!("         it will keep trying once a minute");
+                    }
+                    (None, None) => eprintln!("warning: web access is not answering yet"),
+                }
+                Some(web)
+            }
+            None => None,
+        };
+
+        // Every sink, so `lock_state` reaches every paired device, every open
+        // MCP stream -- which is what tells a client that connected to a
+        // locked vault to ask for the catalogue again -- and every browser,
+        // whose sessions end with it.
+        {
+            let mut sinks: Vec<std::sync::Arc<dyn everyday_service::events::EventSink>> =
+                vec![broadcaster.clone()];
+            if let Some(running) = &mcp_running {
+                sinks.push(running.server.clone());
+                println!("MCP endpoint: http://{}/mcp", running.address);
+            }
+            if let Some(web) = &web_running {
+                sinks.push(web.sink());
+            }
+            if sinks.len() > 1 {
+                service.set_events(std::sync::Arc::new(everyday_server::Fanout::new(sinks)));
+            }
         }
 
         // The assistant's routines, on this runtime rather than one of their
@@ -193,6 +242,9 @@ pub(crate) fn serve(
         // queue the next time the vault is unlocked.
         working.abort();
         supervisor.stop_all().await;
+        if let Some(web) = &web_running {
+            web.stop_and_wait().await;
+        }
         running.stop();
         // Give the vault its checkpoint before the process goes.
         if let Some(v) = service.get() {
@@ -201,6 +253,34 @@ pub(crate) fn serve(
         }
         Ok(())
     })
+}
+
+/// The built interface `--web` serves: `--web-ui` (or `EVERYDAY_WEB_UI`)
+/// when given, otherwise a `ui` folder beside this binary, otherwise the
+/// repository's own `ui/dist` -- which is where `npm run build` leaves it
+/// for somebody running from a checkout.
+fn web_assets(asked: Option<&std::path::Path>) -> Result<everyday_server::web::Assets> {
+    let candidates: Vec<std::path::PathBuf> = match asked {
+        Some(dir) => vec![dir.to_path_buf()],
+        None => {
+            let mut found = Vec::new();
+            if let Some(dir) =
+                std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("ui")))
+            {
+                found.push(dir);
+            }
+            found.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ui/dist"));
+            found
+        }
+    };
+    match candidates.iter().find(|dir| dir.join("index.html").is_file()) {
+        Some(dir) => Ok(everyday_server::web::Assets::folder(dir.clone())),
+        None => Err(Error::Invalid(format!(
+            "--web needs the built interface, and there is no index.html in {}. Run `npm run \
+             build` in ui/, or point --web-ui at the folder it wrote.",
+            candidates.iter().map(|d| d.display().to_string()).collect::<Vec<_>>().join(" or ")
+        ))),
+    }
 }
 
 /// A QR code drawn with half-block characters.

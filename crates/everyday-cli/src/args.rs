@@ -102,6 +102,21 @@ pub enum Command {
         /// for you.
         #[arg(long, value_name = "ADDR")]
         mcp_listen: Option<String>,
+        /// Also open the interface to a browser on this machine's tailnet.
+        ///
+        /// Opt-in here for the same reason as `--mcp`: the switch in the
+        /// desktop app's settings is somebody at a keyboard deciding, and a
+        /// configuration directory that travels must not decide it for a
+        /// daemon. Everything else -- the port, which tailnet devices may
+        /// connect -- still comes from `web.json`. Answers only on this
+        /// machine's Tailscale addresses, with Tailscale's certificate; see
+        /// `docs/plans/web-access.md`.
+        #[arg(long)]
+        web: bool,
+        /// Where the built interface is, for `--web` (`npm run build` in
+        /// `ui/` writes it to `ui/dist`).
+        #[arg(long, value_name = "DIR", env = "EVERYDAY_WEB_UI")]
+        web_ui: Option<std::path::PathBuf>,
         /// Open the vault with the key this machine has in its keychain,
         /// rather than waiting for a client to type a password.
         ///

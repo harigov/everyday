@@ -291,6 +291,13 @@
      section's top edge touched whatever was drawn above it. */
   section {
     margin-top: var(--sp-6);
+    /* And SettingsView's own column, which its scoped `section` rule does
+       not reach into a child component to give. Without it the eyebrow ran
+       on into the switch beside it. */
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    min-width: 0;
   }
 
   .field-row {
@@ -354,5 +361,39 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+  }
+
+  /* The switch and its explanation, as every other settings panel draws
+     them (SettingsView's own copy is scoped to that file and does not reach
+     this one): the sentence under the title, not run on beside it. */
+  .toggle {
+    display: flex;
+    gap: var(--sp-3);
+    align-items: flex-start;
+    min-width: 0;
+    cursor: pointer;
+  }
+  .toggle input {
+    flex: none;
+    margin-top: 3px;
+    accent-color: var(--accent);
+  }
+  .toggle span {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+  }
+  .toggle b {
+    font-size: var(--text-base);
+    font-weight: 600;
+  }
+  .toggle small,
+  .hint {
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: var(--leading-normal);
+    color: var(--fg-subtle);
+    overflow-wrap: anywhere;
   }
 </style>

@@ -247,6 +247,12 @@ fn shared_caller(
             request_id: None,
         }),
         Transport::Network => authenticate(&server.registry, headers),
+        // Never routed: web access's router leaves these two routes out. A
+        // refusal rather than an `unreachable!` all the same, so a router
+        // change that put them back would fail closed.
+        Transport::Web => {
+            Err(CommandError::new("forbidden", "screen time is not collected through a browser"))
+        }
     }
 }
 

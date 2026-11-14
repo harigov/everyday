@@ -22,7 +22,7 @@
 // labels, ids, enabled flags -- and what comes back is the id that was
 // chosen. See `crates/everyday-app/src/tray.rs`.
 
-import { api, isMock, onOpenCalendar, onTrayAction } from './api'
+import { api, hasShell, onOpenCalendar, onTrayAction } from './api'
 import { onOffPref } from './prefs'
 import { ACTIONS, GROUPS, type Group } from './shortcuts.svelte'
 import { app } from './state.svelte'
@@ -151,7 +151,7 @@ class TrayRegistry {
    * meaningful and cannot be honoured, which is worth saying out loud.
    */
   get supported(): boolean {
-    return !isMock
+    return hasShell
   }
 
   /**

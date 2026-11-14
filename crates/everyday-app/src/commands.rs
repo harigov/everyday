@@ -121,7 +121,10 @@ pub async fn set_opens_itself(
 }
 
 #[tauri::command]
-pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
+pub async fn bootstrap(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<Bootstrap> {
     let service = state.service();
     // A window already looking at another machine's vault is not one that
     // should quietly open a local one underneath it.
@@ -251,6 +254,25 @@ pub async fn bootstrap(state: State<'_, AppState>) -> CommandResult<Bootstrap> {
         async || {
             let registry = state.registry()?;
             state.mcp().start(service.clone(), mcp_config, registry).await?;
+            state.recompose_events();
+            Ok(())
+        },
+    )
+    .await;
+
+    let web_config = crate::web::WebAccess::config();
+    resume_listener(
+        web_config.enabled
+            && service.get().is_some()
+            && !state.web().is_running()
+            && state.sink().is_some(),
+        "web access",
+        async || {
+            let registry = state.registry()?;
+            state
+                .web()
+                .start(service.clone(), registry, crate::web::assets(&app), web_config, false)
+                .await?;
             state.recompose_events();
             Ok(())
         },
@@ -762,6 +784,56 @@ pub async fn mcp_start(
 #[tauri::command]
 pub async fn mcp_stop(state: State<'_, AppState>) -> CommandResult<crate::mcp::McpStatus> {
     let status = state.mcp().stop_and_remember()?;
+    state.recompose_events();
+    Ok(status)
+}
+
+// ---- Web access -------------------------------------------------------------
+//
+// The interface in a browser on this machine's tailnet. See
+// `docs/plans/web-access.md` and `crate::web`.
+
+#[tauri::command]
+pub async fn web_status(
+    state: State<'_, AppState>,
+) -> CommandResult<everyday_server::web::WebStatus> {
+    Ok(state.web().status())
+}
+
+/// Switch web access on. `port` is remembered for next time.
+#[tauri::command]
+pub async fn web_start(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    port: Option<u16>,
+) -> CommandResult<everyday_server::web::WebStatus> {
+    // Same guard as `share_start`: serving a vault this window does not hold
+    // would be forwarding somebody else's.
+    if state.is_remote() {
+        return Err(CommandError::new(
+            "unsupported",
+            "this window is looking at a vault on another computer; open it in a browser from there",
+        ));
+    }
+    if state.sink().is_none() {
+        return Err(CommandError::new("internal", "the window is not ready yet"));
+    }
+    let mut config = crate::web::WebAccess::config();
+    if let Some(port) = port {
+        config.port = port;
+    }
+    let registry = state.registry()?;
+    let status =
+        state.web().start(state.service(), registry, crate::web::assets(&app), config, true).await?;
+    state.recompose_events();
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn web_stop(
+    state: State<'_, AppState>,
+) -> CommandResult<everyday_server::web::WebStatus> {
+    let status = state.web().stop_and_remember().await?;
     state.recompose_events();
     Ok(status)
 }

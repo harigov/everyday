@@ -36,14 +36,14 @@
 // moments, and conflating them would make a browser that took its time to
 // load look like a failure.
 
-import { isMock } from './api'
+import { hasShell } from './api'
 
 /**
  * Open `url` in a real browser, if this process can reach one on the user's
  * behalf. Answers whether it did.
  */
 export async function openExternal(url: string): Promise<boolean> {
-  if (isMock) {
+  if (!hasShell) {
     const opened = window.open(url, '_blank', 'noopener,noreferrer')
     return opened !== null
   }

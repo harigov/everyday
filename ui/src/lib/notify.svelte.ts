@@ -36,7 +36,7 @@
 //     whole service, and every notification still arrives. Degrading is the
 //     normal case, not the error case.
 
-import { api, isMock, onShellNotification } from './api'
+import { api, hasShell, onShellNotification } from './api'
 import { channelFor, push, toToast, type NotifySpec, type Toast } from './notify-policy'
 
 export type { NotifyLevel, NotifyReach, NotifySpec, Toast } from './notify-policy'
@@ -103,9 +103,9 @@ function webChannel(): OsChannel {
 // is a network round trip in development and a chunk load in production --
 // either can fail, and the notification that a save is failing is the last
 // one that should be lost to a loading error.
-const osChannel: Promise<OsChannel> = isMock
-  ? Promise.resolve(webChannel())
-  : tauriChannel().catch(() => NO_OS)
+const osChannel: Promise<OsChannel> = hasShell
+  ? tauriChannel().catch(() => NO_OS)
+  : Promise.resolve(webChannel())
 
 /** Options a caller may add to the level shorthands. */
 type Options = Omit<NotifySpec, 'title' | 'level'>

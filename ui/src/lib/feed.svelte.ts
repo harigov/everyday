@@ -19,9 +19,10 @@
 //      looking, and tells this store by a change event (`live.svelte.ts`).
 
 import { accounts } from './accounts.svelte'
-import { api, callCommand, isMock } from './api'
+import { api, callCommand, isMock, isWeb } from './api'
 import { filterStories, groupFolders, sortStories } from './feed'
-import { applyBodyTheme, bodyDocument } from './mailview'
+import { allowWebOrigin, applyBodyTheme, bodyDocument } from './mailview'
+import { mediaBase } from './web'
 import { notify } from './notify.svelte'
 import { seen, type Showing } from './onscreen'
 import { openExternal } from './open-external'
@@ -124,6 +125,7 @@ function plural(n: number, one: string, many: string): string {
  * address itself.
  */
 function newsOrigin(): string {
+  if (isWeb) return `${mediaBase()}/v1/news`
   return navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
     ? 'http://everyday.localhost/news'
     : 'everyday://news'
@@ -140,7 +142,9 @@ function newsOrigin(): string {
  */
 function applyNewsOrigin(html: string): string {
   const origin = newsOrigin()
-  return origin === 'everyday://news' ? html : html.split('everyday://news/').join(`${origin}/`)
+  return origin === 'everyday://news'
+    ? html
+    : allowWebOrigin(html.split('everyday://news/').join(`${origin}/`))
 }
 
 /** Is the window drawing dark? What `MailThread` asks before it themes a body. */

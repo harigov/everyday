@@ -87,6 +87,9 @@ pub struct Server {
     /// left sharing switched off with an "address already in use" behind it.
     allow_remote_unlock: std::sync::atomic::AtomicBool,
     in_flight: Arc<tokio::sync::Semaphore>,
+    /// The browsers signed in, for a server answering `Transport::Web`.
+    /// `None` everywhere else, where nothing could be signed in.
+    sessions: Option<Arc<crate::web::session::Sessions>>,
 }
 
 impl Server {
@@ -106,6 +109,30 @@ impl Server {
             fingerprint,
             allow_remote_unlock: std::sync::atomic::AtomicBool::new(allow_remote_unlock),
             in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
+            sessions: None,
+        })
+    }
+
+    /// The server behind web access: the same routes, answering signed-in
+    /// browsers from `sessions` instead of paired devices from tokens. No
+    /// fingerprint -- a browser pins nothing -- and remote unlock is web
+    /// access's own setting, decided at its login, not here.
+    pub fn for_web(
+        service: Arc<Service>,
+        registry: Arc<Registry>,
+        broadcaster: Arc<Broadcaster>,
+        name: String,
+        sessions: Arc<crate::web::session::Sessions>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            service,
+            registry,
+            broadcaster,
+            name,
+            fingerprint: String::new(),
+            allow_remote_unlock: std::sync::atomic::AtomicBool::new(false),
+            in_flight: Arc::new(tokio::sync::Semaphore::new(MAX_IN_FLIGHT * 4)),
+            sessions: Some(sessions),
         })
     }
 
@@ -125,16 +152,34 @@ pub enum Transport {
     Network,
     /// A local socket. The operating system vouched for the peer.
     Socket,
+    /// A browser, through web access's gatekeeper -- see
+    /// `crate::web::routes`. The session it found is in two headers only
+    /// the gatekeeper sets.
+    Web,
 }
 
 pub fn router(server: Arc<Server>, transport: Transport) -> Router {
     use axum::extract::DefaultBodyLimit;
-    Router::new()
-        .route("/v1/hello", get(hello))
-        // Its own limit, not only the router's below, so that widening the
-        // default for some later route can never widen what a stranger with
-        // no token may make this server buffer.
-        .route("/v1/pair", post(pair).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_BYTES)))
+    let mut router = Router::new();
+    // A browser does not pair, has its own handshake (`/web/hello`) and its
+    // own event stream (`/web/events`, which ends with the session), and is
+    // not a screen-time collector. Everything else is the same for it.
+    if transport != Transport::Web {
+        router = router
+            .route("/v1/hello", get(hello))
+            // Its own limit, not only the router's below, so that widening the
+            // default for some later route can never widen what a stranger with
+            // no token may make this server buffer.
+            .route("/v1/pair", post(pair).layer(DefaultBodyLimit::max(UNAUTHENTICATED_BODY_BYTES)))
+            .route("/v1/events", get(events))
+            // The two routes collectors speak to, for a machine with no copy of
+            // this application running: a heartbeats token, no protocol header,
+            // and a body that must name its device. Their handlers are shared
+            // with the shell's loopback listener -- see `crate::screentime`.
+            .route("/v1/screentime/hello", get(crate::screentime::shared_hello))
+            .route("/v1/screentime/heartbeats", post(crate::screentime::shared_heartbeats));
+    }
+    router
         .route("/v1/call/{name}", post(call))
         .route("/v1/stream/{name}", post(stream))
         .route("/v1/blob", post(put_blob))
@@ -149,13 +194,6 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/mail/img/{token}", get(get_mail_image_legacy))
         .route("/v1/news/body/{story}", get(get_news_body))
         .route("/v1/news/img/{story}/{token}", get(get_news_image))
-        .route("/v1/events", get(events))
-        // The two routes collectors speak to, for a machine with no copy of
-        // this application running: a heartbeats token, no protocol header,
-        // and a body that must name its device. Their handlers are shared
-        // with the shell's loopback listener -- see `crate::screentime`.
-        .route("/v1/screentime/hello", get(crate::screentime::shared_hello))
-        .route("/v1/screentime/heartbeats", post(crate::screentime::shared_heartbeats))
         // What an extractor that buffers -- `Json`, `Bytes` -- may take when a
         // route says nothing. It does not govern a raw `Body`, which is why
         // `call`, `stream` and `put_blob` can still take up to their own
@@ -578,8 +616,7 @@ async fn get_blob(
     headers: HeaderMap,
     Query(_q): Query<BlobQuery>,
 ) -> Answer<Response> {
-    check_protocol(&headers)?;
-    let _ctx = authenticate(&server, transport, &headers)?;
+    let _ctx = authenticate_media(&server, transport, &headers)?;
     let id = BlobId::parse(&id).map_err(|_| CommandError::new("invalid", "not a blob address"))?;
 
     let total = server.service.blob_len(id)?;
@@ -624,8 +661,7 @@ async fn get_mail_body(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Answer<Response> {
-    check_protocol(&headers)?;
-    let ctx = authenticate(&server, transport, &headers)?;
+    let ctx = authenticate_media(&server, transport, &headers)?;
     ctx.require(Scope::Mail)?;
     let id =
         MailMessageId::parse(&id).map_err(|_| CommandError::new("invalid", "not a message id"))?;
@@ -658,8 +694,7 @@ async fn get_mail_part(
     Path((message_id, identifier)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Answer<Response> {
-    check_protocol(&headers)?;
-    let ctx = authenticate(&server, transport, &headers)?;
+    let ctx = authenticate_media(&server, transport, &headers)?;
     ctx.require(Scope::Mail)?;
     let message_id = MailMessageId::parse(&message_id)
         .map_err(|_| CommandError::new("invalid", "not a message id"))?;
@@ -715,8 +750,7 @@ async fn mail_image_response(
     message_id: &str,
     token: &str,
 ) -> Answer<Response> {
-    check_protocol(headers)?;
-    let ctx = authenticate(server, transport, headers)?;
+    let ctx = authenticate_media(server, transport, headers)?;
     ctx.require(Scope::Mail)?;
     let message_id = MailMessageId::parse(message_id)
         .map_err(|_| CommandError::new("invalid", "not a message id"))?;
@@ -766,8 +800,7 @@ async fn get_news_body(
     Path(story): Path<String>,
     headers: HeaderMap,
 ) -> Answer<Response> {
-    check_protocol(&headers)?;
-    let ctx = authenticate(&server, transport, &headers)?;
+    let ctx = authenticate_media(&server, transport, &headers)?;
     ctx.require(Scope::News)?;
     let story =
         StoryId::parse(&story).map_err(|_| CommandError::new("invalid", "not a story id"))?;
@@ -809,8 +842,7 @@ async fn get_news_image(
     Path((story, token)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Answer<Response> {
-    check_protocol(&headers)?;
-    let ctx = authenticate(&server, transport, &headers)?;
+    let ctx = authenticate_media(&server, transport, &headers)?;
     ctx.require(Scope::News)?;
     let story =
         StoryId::parse(&story).map_err(|_| CommandError::new("invalid", "not a story id"))?;
@@ -921,7 +953,67 @@ fn authenticate(
             }
             Ok(ctx)
         }
+        Transport::Web => web_session(server, headers, false),
     }
+}
+
+/// [`authenticate`], for the routes that answer media -- an attachment, a
+/// message body, a picture inside one, a story.
+///
+/// The same for a paired device or the socket. A browser may reach these
+/// with the media token instead of the cookie (see `crate::web::session`
+/// for why the token exists), and without the protocol header, which an
+/// `<img>` cannot send. These routes only read.
+fn authenticate_media(
+    server: &Arc<Server>,
+    transport: Transport,
+    headers: &HeaderMap,
+) -> Result<Ctx, Failure> {
+    if transport == Transport::Web {
+        return web_session(server, headers, true);
+    }
+    check_protocol(headers)?;
+    authenticate(server, transport, headers)
+}
+
+/// The session web access's gatekeeper found for this request.
+///
+/// Only ever from the two headers the gatekeeper sets -- it removes any copy
+/// a client sent before it looks. `media` says whether the media token is
+/// enough, or the cookie is needed.
+///
+/// A vault that is no longer unlocked ends every session here too, not only
+/// through `crate::web::WebSink`: a lock that some path forgot to announce
+/// must not leave a browser holding a session into the next unlock.
+fn web_session(server: &Arc<Server>, headers: &HeaderMap, media: bool) -> Result<Ctx, Failure> {
+    use crate::web::routes::{ACCESS_HEADER, SESSION_HEADER};
+    let sessions = server
+        .sessions
+        .as_ref()
+        .ok_or_else(|| CommandError::new("internal", "this server has no browser sessions"))?;
+    let signed_out = || CommandError::new("unauthorized", "this browser is not signed in");
+    let id = header_str(headers, SESSION_HEADER).ok_or_else(signed_out)?;
+    let access = header_str(headers, ACCESS_HEADER).unwrap_or_default();
+    if access != "full" && !(media && access == "media") {
+        return Err(signed_out().into());
+    }
+    let Some(vault) = server.service.get().filter(|v| v.is_unlocked()) else {
+        sessions.close_all();
+        return Err(signed_out().into());
+    };
+    // A session opened on the vault that was open before this one -- the
+    // desktop opening or creating another underneath a running server -- is
+    // no key to this one. `belongs_to` ends every such session.
+    if !sessions.belongs_to(vault.path()) {
+        return Err(signed_out().into());
+    }
+    let session = sessions.by_id(&id).ok_or_else(signed_out)?;
+    Ok(Ctx {
+        caller: Caller::Device(crate::web::routes::origin_of(&session.id, headers)),
+        scopes: vec![Scope::All],
+        proved_at: Some(session.proved_at),
+        request_id: None,
+    })
 }
 
 /// The connection's peer, for logs. Not used for authentication -- see

@@ -12,7 +12,8 @@
 // which world this session is in, rather than every call site re-deriving
 // it. Keep this the only place that decision is made.
 
-import { isMock } from './api'
+import { isMock, isWeb } from './api'
+import { mediaBase } from './web'
 import { adaptToPage, looksDesigned, readBody } from './mailbody'
 import type { MailAttachment } from './types'
 
@@ -71,6 +72,9 @@ export interface MockMailBody {
  * degraded image somewhere -- it is every message body failing to load.
  */
 export function mailOrigin(): string {
+  // A browser on web access reads mail from the server it was served by,
+  // through the session's media token -- see `web.ts`.
+  if (isWeb) return `${mediaBase()}/v1/mail`
   return navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
     ? 'http://everyday.localhost/mail'
     : 'everyday://mail'
@@ -89,7 +93,27 @@ export function mailOrigin(): string {
 export function applyPlatformOrigin(html: string): string {
   const origin = mailOrigin()
   if (origin === 'everyday://mail') return html
-  return html.split('everyday://mail/').join(`${origin}/`)
+  return allowWebOrigin(html.split('everyday://mail/').join(`${origin}/`))
+}
+
+/**
+ * Let a body's own Content-Security-Policy load pictures from this page's
+ * origin, in a browser on web access.
+ *
+ * The policy is written into every body by the service (`mailview::CSP`),
+ * naming the desktop's media origins and nothing else -- so the addresses
+ * rewritten above would be refused by the very document they are in. This
+ * adds the origin to whatever `img-src` the policy's meta tag says, rather
+ * than matching its exact wording; the one thing it relies on -- a meta tag
+ * with an `img-src` -- is pinned by a test beside `mailview::CSP`. A no-op
+ * in the desktop app.
+ */
+export function allowWebOrigin(html: string): string {
+  if (!isWeb) return html
+  return html.replace(
+    /(<meta http-equiv="Content-Security-Policy" content="[^"]*?img-src)(\s)/,
+    `$1 ${location.origin}$2`,
+  )
 }
 
 export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBodySource {

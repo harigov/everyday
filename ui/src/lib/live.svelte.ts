@@ -287,7 +287,15 @@ export function targetsFor(
   overviewShowing = false,
   todoShowing = false,
 ): ReloadTarget[] {
-  const targets = new Set(kinds.map((kind) => RELOADS[kind]).filter((t) => t !== null))
+  // `!= null`, not `!== null`: a kind the service raises that no command
+  // declares -- a supervised task's `backgroundTask` status, a sync pass's
+  // `mailbox` -- is not in the generated `ChangeKind`, so `RELOADS` has no
+  // entry for it and answers `undefined`. Kept, that `undefined` became a
+  // target whose reload was called as a function, which threw and took
+  // every reload after it in the same batch down with it.
+  const targets = new Set(
+    kinds.map((kind) => RELOADS[kind]).filter((t): t is ReloadTarget => t != null),
+  )
   // See `PURPOSE_BEARING`: these do not name the Overview and still change what
   // it says, but only matter while somebody is looking at it.
   if (overviewShowing && kinds.some((kind) => PURPOSE_BEARING.has(kind))) {

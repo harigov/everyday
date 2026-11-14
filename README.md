@@ -2349,6 +2349,39 @@ The other half of the split is who counts as a person. `Vault::read` and
 who is asking and the assistant reads this vault every minute of every day. The
 service defers it instead, for every caller except the assistant's own.
 
+### In a browser, on your tailnet
+
+The same interface, in a web browser on your phone or a borrowed laptop, with
+nothing installed there. Turn it on in **Settings → Vault → Open in a
+browser**, or start a headless server with `--web`:
+
+```sh
+everyday --vault ~/vault serve --web        # prints the address to open
+```
+
+The vault password is the login. Typing it unlocks a locked vault, or proves
+who you are to one that is already open — it is checked every time, never
+skipped because the desktop has the vault open. Locking the vault, from
+anywhere, signs every browser out; so does an hour untouched, and this
+browser's own lock screen.
+
+It answers **only devices on this machine's tailnet, signed in to Tailscale as
+you**, and there is no setting that widens it. The listener binds this
+machine's Tailscale addresses and nothing else — not every interface, not
+loopback, so not Funnel or `tailscale serve` either — and every request, the
+login page included, is checked against tailscaled's own record of who is on
+the other end. The certificate is the one Tailscale issues for the machine's
+tailnet name, so the browser trusts it with no warning to click through.
+Once per tailnet: MagicDNS and HTTPS certificates on in the admin console.
+Once per machine: `sudo tailscale set --operator=$USER`, so the app may ask
+for that certificate. Then open `https://<machine>.<tailnet>.ts.net:7400/`.
+
+What only the desktop can do stays there: the tray, the OS-wide keys, windows
+of one app, recording a meeting, the screen-time collectors, and adding an
+account that signs in through Google or Microsoft. The design, and where a
+plain WireGuard network or a self-generated certificate would slot in, is in
+[`docs/plans/web-access.md`](docs/plans/web-access.md).
+
 ## Letting another agent in
 
 The assistant in the rail is not the only thing that can use this vault's
@@ -2998,6 +3031,7 @@ everyday backup ~/vault-copy       # the vault itself, still sealed
 everyday backend                   # what the storage backend is set to
 everyday check                     # look for storage-level damage
 everyday serve --pair              # serve this vault to other machines
+everyday serve --web               # and to a browser on your tailnet
 everyday do list_tools --list      # the assistant's verbs, without a model
 ```
 

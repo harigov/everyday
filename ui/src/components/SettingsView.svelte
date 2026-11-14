@@ -43,7 +43,7 @@
   // any more, because that was the one way `Escape` in this file ever
   // differed from `Escape` in every other app's.
 
-  import { api } from '../lib/api'
+  import { api, isWeb } from '../lib/api'
   import { agent } from '../lib/agent.svelte'
   import { assistant, PANE_LABELS, type Pane } from '../lib/assistant.svelte'
   import { jobs } from '../lib/jobs.svelte'
@@ -71,6 +71,7 @@
   import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
+  import WebAccessPanel from './WebAccessPanel.svelte'
   import SkillsPanel from './SkillsPanel.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
@@ -712,56 +713,60 @@
           </p>
         </section>
 
-        <section>
-          <span class="eyebrow">Opening this vault</span>
-          <!-- The box is driven by `opensItself` and nothing else, and the
+        <!-- This machine's keychain, so nothing a browser on web access can
+             reach: the keychain is the desktop's. -->
+        {#if !isWeb}
+          <section>
+            <span class="eyebrow">Opening this vault</span>
+            <!-- The box is driven by `opensItself` and nothing else, and the
                  handler puts it straight back: turning it on only opens the
                  password step, so a cancelled or refused attempt must not
                  leave a switch that says the key is kept when it is not. -->
-          <label class="toggle">
-            <input
-              type="checkbox"
-              checked={opensItself}
-              onchange={(e) => {
-                e.currentTarget.checked = opensItself
-                void setOpensItself(!opensItself)
-              }}
-            />
-            <span>
-              <b>Open without a password when the app starts</b>
-              <small>
-                This computer keeps the key in its own keychain. The vault is then as safe as your
-                login here, rather than as safe as its password — anybody already sitting at this
-                desk, logged in as you, can read it. Signing in here is what unlocks it from then
-                on, so it also stops both idle locks above from firing; lock it yourself with
-                {LOCK_SHORTCUT} when you mean to.
-              </small>
-            </span>
-          </label>
-          <p class="hint">
-            Worth it for one thing: the assistant's routines run where the vault is, and a vault
-            that is shut from the moment this machine boots until somebody types a password is a
-            vault whose morning brief does not happen.
-          </p>
-          {#if askingForKey}
-            <form onsubmit={confirmOpensItself}>
+            <label class="toggle">
               <input
-                class="field"
-                type="password"
-                placeholder="Your vault password"
-                bind:value={keyPassword}
-                autocomplete="current-password"
-                use:focusOnMount
+                type="checkbox"
+                checked={opensItself}
+                onchange={(e) => {
+                  e.currentTarget.checked = opensItself
+                  void setOpensItself(!opensItself)
+                }}
               />
-              <div class="row">
-                <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
-                <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
-                  Keep the key
-                </button>
-              </div>
-            </form>
-          {/if}
-        </section>
+              <span>
+                <b>Open without a password when the app starts</b>
+                <small>
+                  This computer keeps the key in its own keychain. The vault is then as safe as your
+                  login here, rather than as safe as its password — anybody already sitting at this
+                  desk, logged in as you, can read it. Signing in here is what unlocks it from then
+                  on, so it also stops both idle locks above from firing; lock it yourself with
+                  {LOCK_SHORTCUT} when you mean to.
+                </small>
+              </span>
+            </label>
+            <p class="hint">
+              Worth it for one thing: the assistant's routines run where the vault is, and a vault
+              that is shut from the moment this machine boots until somebody types a password is a
+              vault whose morning brief does not happen.
+            </p>
+            {#if askingForKey}
+              <form onsubmit={confirmOpensItself}>
+                <input
+                  class="field"
+                  type="password"
+                  placeholder="Your vault password"
+                  bind:value={keyPassword}
+                  autocomplete="current-password"
+                  use:focusOnMount
+                />
+                <div class="row">
+                  <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
+                  <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
+                    Keep the key
+                  </button>
+                </div>
+              </form>
+            {/if}
+          </section>
+        {/if}
 
         <section>
           <span class="eyebrow">Password</span>
@@ -801,9 +806,15 @@
         </section>
       {/if}
 
-      <SharePanel />
+      <!-- Three ways of serving this vault from the machine holding it, so none
+           of them is drawn in a browser that is itself one of the ways in. -->
+      {#if !isWeb}
+        <SharePanel />
 
-      <McpPanel />
+        <WebAccessPanel />
+
+        <McpPanel />
+      {/if}
 
       {#if notice}<p class="notice">{notice}</p>{/if}
 

@@ -686,19 +686,21 @@ fn random_code() -> String {
     bytes.iter().map(|b| CODE_ALPHABET[*b as usize % CODE_ALPHABET.len()] as char).collect()
 }
 
-fn random_token() -> String {
+/// Also the secret behind a browser's session and media token -- see
+/// `crate::web::session`.
+pub(crate) fn random_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rngs::OsRng.try_fill_bytes(&mut bytes).expect("the system random source");
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
-fn hash(token: &str) -> String {
+pub(crate) fn hash(token: &str) -> String {
     blake3::hash(token.as_bytes()).to_hex().to_string()
 }
 
 /// Compare without leaking where two strings first differ.
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.len() != b.len() {
         return false;

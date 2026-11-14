@@ -35,6 +35,7 @@ mod sharing;
 mod state;
 mod transfer;
 mod tray;
+mod web;
 mod windows;
 mod writing;
 
@@ -259,6 +260,9 @@ pub fn run() {
             commands::set_remote_unlock,
             // Letting another program use this vault's tools over MCP.
             commands::mcp_status,
+            commands::web_status,
+            commands::web_start,
+            commands::web_stop,
             commands::mcp_start,
             commands::mcp_stop,
             commands::mcp_set_destructive,
