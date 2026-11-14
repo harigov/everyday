@@ -13,8 +13,11 @@ import { load, makeCheck, stubBrowser } from './harness.mjs'
 let dark = false
 stubBrowser({ matchMedia: () => ({ matches: dark, addEventListener: () => {} }) })
 
-const { module: themes, close } = await load('/src/lib/themes.ts')
-const { THEMES, THEME_TOKENS, DERIVED_TOKENS, parseThemeChoice, resolveTheme } = themes
+const {
+  modules: [themes, apps],
+  close,
+} = await load(['/src/lib/themes.ts', '/src/lib/apps.ts'])
+const { THEMES, THEME_TOKENS, DERIVED_TOKENS, APP_COLOURS, parseThemeChoice, resolveTheme } = themes
 const { check, ok, finish } = makeCheck()
 
 const styles = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'styles')
@@ -67,6 +70,12 @@ for (const theme of THEMES) {
   // A glass theme frosts and spaces its panels; a flat one does neither.
   const flat = decls.get('--glass-blur') === 'none' && decls.get('--shell-gap') === '0'
   check(`${theme.id}: glass flag matches its frame tokens`, !flat, theme.glass)
+  // A framed document is handed these, since it cannot read the stylesheet.
+  check(`${theme.id}: frame.card is --card`, theme.frame.card, decls.get('--card'))
+  check(`${theme.id}: frame.text is --fg`, theme.frame.text, decls.get('--fg'))
+  check(`${theme.id}: frame.subtle is --fg-subtle`, theme.frame.subtle, decls.get('--fg-subtle'))
+  if (!theme.glass)
+    check(`${theme.id}: a flat frame.page is --bg`, theme.frame.page, decls.get('--bg'))
 }
 
 // theme.css: layout on :root, the derived tokens on [data-theme], and no
@@ -86,6 +95,10 @@ for (const { selector, decls } of blocks(themeCss)) {
   )
   check('theme.css: :root sets no theme token', leaked, [])
 }
+
+// Every app has a colour, and nothing but an app does: an app added to
+// `apps.ts` without one would draw its icons in an invalid colour.
+check('APP_COLOURS is every app', sorted(APP_COLOURS), sorted(apps.APP_ORDER))
 
 // Ids kept from when there were two themes, so a saved choice still means the same.
 check('Paper keeps the id `light`', THEMES.find((t) => t.name === 'Paper')?.id, 'light')

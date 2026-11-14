@@ -832,7 +832,7 @@ class FeedState {
     try {
       const loaded = isMock ? await this.#mockBody(story) : await this.#fetchBody(story)
       return {
-        html: applyNewsOrigin(applyBodyTheme(loaded.html, app.dark)),
+        html: applyNewsOrigin(applyBodyTheme(loaded.html, app.dark, app.frame)),
         imagesHidden: loaded.imagesHidden,
       }
     } catch (e) {

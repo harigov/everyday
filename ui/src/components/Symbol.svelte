@@ -7,6 +7,7 @@
   // left empty by a missing drawing.
   import type { IconName } from '../lib/icons'
   import { SYMBOLS, type SymbolName } from '../lib/symbols'
+  import { dayOfMonth } from '../lib/today.svelte'
   import Icon from './Icon.svelte'
 
   let {
@@ -22,9 +23,11 @@
   // must not share one.
   const uid = $props.id()
   const art = $derived(SYMBOLS[name])
-  // Read when drawn. The bar is redrawn often enough -- every change of app
-  // -- that a date a few hours stale after midnight is the worst case.
-  const mark = $derived(art?.mark?.replace('{day}', String(new Date().getDate())))
+  // Only a mark that asks for the date reads it, so only the calendar
+  // symbol is redrawn when the day turns over.
+  const mark = $derived(
+    art?.mark?.includes('{day}') ? art.mark.replace('{day}', String(dayOfMonth())) : art?.mark,
+  )
 </script>
 
 {#if art}

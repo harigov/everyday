@@ -157,7 +157,7 @@
   const quotedHtml = initialBody.quoted
   let showQuote = $state(false)
 
-  const quoteSrcdoc = $derived(quotedHtml ? quoteDocument(quotedHtml, app.dark) : '')
+  const quoteSrcdoc = $derived(quotedHtml ? quoteDocument(quotedHtml, app.dark, app.frame) : '')
 
   /** Sizes the quote's frame from its HTML, the way `MailThread` sizes a
    *  message's: a sandboxed frame cannot be measured from out here. */

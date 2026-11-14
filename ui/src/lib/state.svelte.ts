@@ -21,6 +21,7 @@ import {
   showTheme,
   themeInfo,
   watchSystemScheme,
+  type Frame,
   type ThemeChoice,
   type ThemeId,
 } from './themes'
@@ -701,6 +702,13 @@ class AppState {
    *  story asks before it is rendered to match. */
   get dark(): boolean {
     return themeInfo(this.shown).scheme === 'dark'
+  }
+
+  /** The colours a framed document -- a mail body, a feed story -- is drawn
+   *  in for the theme on screen. Reactive, so a renderer that reads it is
+   *  redrawn by a change between two light themes as well as to dark. */
+  get frame(): Frame {
+    return themeInfo(this.shown).frame
   }
 
   applyTheme() {

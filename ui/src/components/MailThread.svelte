@@ -33,7 +33,6 @@
     bodyDocument,
     draftDocument,
     loadBody,
-    mailPage,
     mockPartUrl,
     partIdentifier,
     partUrl,
@@ -78,7 +77,7 @@
   function sendingBody(draft: Draft): RenderedBody {
     return renderBody(draftDocument(splitQuoted(draft.bodyHtml).own), {
       dark,
-      page,
+      frame: app.frame,
       showHistory: false,
       subject: draft.subject,
       imagesHidden: false,
@@ -196,13 +195,6 @@
     .catch(() => {})
 
   const dark = $derived(app.dark)
-  /** The theme's card, which a plain message's page is painted to match. Read
-   *  again whenever the theme changes, not only between light and dark: two
-   *  light themes have different cards. */
-  const page = $derived.by(() => {
-    void app.shown
-    return mailPage(dark)
-  })
 
   function senderName(message: MailMessageDetail, own: ReadonlySet<string>): string {
     if (own.has(message.from.email.toLowerCase())) return 'Me'
@@ -351,7 +343,7 @@
   }
 </script>
 
-<div class="thread" style:--mail-card={page.background}>
+<div class="thread" style:--mail-card={app.frame.card}>
   {#each messages as message, i (message.id)}
     {@const isOpen = expanded.has(message.id)}
     {@const isLast = i === messages.length - 1}
@@ -361,7 +353,7 @@
       loaded && loaded !== 'loading' && loaded !== 'error'
         ? renderBody(loaded.html, {
             dark,
-            page,
+            frame: app.frame,
             showHistory: historyOpen.has(message.id),
             subject: message.subject,
             imagesHidden: loaded.imagesHidden,
@@ -1042,7 +1034,7 @@
      scrolling the thread.
 
      A designed message paints its own white page, and the corners here round
-     it off. Anything else paints the card's colour (`mailPage`), so there is
+     it off. Anything else paints the theme's card (`app.frame`), so there is
      no frame to see. */
   .frame-wrap.paper {
     border-radius: var(--radius);

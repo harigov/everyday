@@ -328,7 +328,7 @@
     position: absolute;
     top: 0;
     bottom: var(--shell-gap);
-    left: calc(var(--appbar-w) + var(--shell-gap));
+    left: calc(var(--bar-w, var(--appbar-w)) + var(--shell-gap));
     z-index: 40;
     background: var(--sidebar);
     visibility: hidden;

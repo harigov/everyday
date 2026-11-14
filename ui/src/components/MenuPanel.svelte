@@ -229,57 +229,62 @@
     within: '[role="menu"], [data-menu-trigger]',
   }}
 >
-  {#each items as item, i (i)}
-    {#if item.kind === 'separator'}
-      <div class="rule" role="separator"></div>
-    {:else if item.kind === 'heading'}
-      <div class="head"><span class="eyebrow">{item.label}</span></div>
-    {:else}
-      <button
-        bind:this={rows[i]}
-        class="item"
-        class:danger={item.danger}
-        class:open={openIndex === i}
-        role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
-        aria-checked={item.checked}
-        tabindex="-1"
-        disabled={item.disabled}
-        aria-haspopup={item.items ? 'menu' : undefined}
-        aria-expanded={item.items ? openIndex === i : undefined}
-        onpointerenter={() => hover(item, i)}
-        onclick={() => choose(item, i)}
-      >
-        <span class="mark" aria-hidden="true">
-          {#if item.dot}
-            <span class="dot" style="--c: {item.dot}"></span>
-          {:else if item.checked}
-            <Icon name="tick" size={13} weight={2.2} />
-          {:else if item.icon}
-            <Icon name={item.icon} size={14} />
-          {/if}
-        </span>
-        <span class="label">{item.label}</span>
-        {#if item.hint}<span class="hint">{item.hint}</span>{/if}
-        <!-- A swatch keeps the gutter, so the colour in force is ticked on
+  <!-- The rows scroll here rather than the panel itself: the panel is
+       frosted (`.frost`), and its blurring layer would scroll away with the
+       first screenful. -->
+  <div class="items">
+    {#each items as item, i (i)}
+      {#if item.kind === 'separator'}
+        <div class="rule" role="separator"></div>
+      {:else if item.kind === 'heading'}
+        <div class="head"><span class="eyebrow">{item.label}</span></div>
+      {:else}
+        <button
+          bind:this={rows[i]}
+          class="item"
+          class:danger={item.danger}
+          class:open={openIndex === i}
+          role={item.checked === undefined ? 'menuitem' : 'menuitemcheckbox'}
+          aria-checked={item.checked}
+          tabindex="-1"
+          disabled={item.disabled}
+          aria-haspopup={item.items ? 'menu' : undefined}
+          aria-expanded={item.items ? openIndex === i : undefined}
+          onpointerenter={() => hover(item, i)}
+          onclick={() => choose(item, i)}
+        >
+          <span class="mark" aria-hidden="true">
+            {#if item.dot}
+              <span class="dot" style="--c: {item.dot}"></span>
+            {:else if item.checked}
+              <Icon name="tick" size={13} weight={2.2} />
+            {:else if item.icon}
+              <Icon name={item.icon} size={14} />
+            {/if}
+          </span>
+          <span class="label">{item.label}</span>
+          {#if item.hint}<span class="hint">{item.hint}</span>{/if}
+          <!-- A swatch keeps the gutter, so the colour in force is ticked on
              the other side rather than having its colour hidden by the tick
              that says it is the one. -->
-        {#if item.checked && item.dot}
-          <span class="on" aria-hidden="true"><Icon name="tick" size={13} weight={2.2} /></span>
-        {/if}
-        {#if item.items}<span class="chev"><Icon name="chevron" size={13} /></span>{/if}
-      </button>
+          {#if item.checked && item.dot}
+            <span class="on" aria-hidden="true"><Icon name="tick" size={13} weight={2.2} /></span>
+          {/if}
+          {#if item.items}<span class="chev"><Icon name="chevron" size={13} /></span>{/if}
+        </button>
 
-      {#if item.items && openIndex === i}
-        <Self
-          items={item.items}
-          anchor={subAnchor}
-          autofocus={openByKey}
-          onclose={closeSub}
-          {onexit}
-        />
+        {#if item.items && openIndex === i}
+          <Self
+            items={item.items}
+            anchor={subAnchor}
+            autofocus={openByKey}
+            onclose={closeSub}
+            {onexit}
+          />
+        {/if}
       {/if}
-    {/if}
-  {/each}
+    {/each}
+  </div>
 </div>
 
 <style>
@@ -289,8 +294,9 @@
     min-width: 180px;
     max-width: 320px;
     max-height: calc(100vh - 12px);
-    overflow-y: auto;
-    padding: var(--sp-1);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
@@ -306,6 +312,12 @@
   }
   .menu:focus {
     outline: none;
+  }
+
+  .items {
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--sp-1);
   }
 
   .item {

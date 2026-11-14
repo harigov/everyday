@@ -13,8 +13,36 @@
   const light = THEMES.filter((t) => t.scheme === 'light')
   const dark = THEMES.filter((t) => t.scheme === 'dark')
 
+  /** In the order they are drawn, which is the order the arrow keys move in. */
+  const ORDER: ThemeChoice[] = ['system', ...light.map((t) => t.id), ...dark.map((t) => t.id)]
+
+  let group = $state<HTMLElement>()
+
   function choose(choice: ThemeChoice) {
     app.setTheme(choice)
+  }
+
+  // A radio group, as it announces itself: one tab stop -- the chosen card --
+  // and the arrow keys both move and choose, wrapping at the ends. Up and
+  // Down move a whole row of the grid, so the keys go where the eye does.
+  function onkeydown(e: KeyboardEvent) {
+    const cards = [...(group?.querySelectorAll<HTMLElement>('[role="radio"]') ?? [])]
+    const at = ORDER.indexOf(app.theme)
+    const across = Math.max(1, Math.round(group!.clientWidth / (cards[0]?.offsetWidth ?? 1)))
+    const step: Record<string, number> = {
+      ArrowRight: 1,
+      ArrowLeft: -1,
+      ArrowDown: across,
+      ArrowUp: -across,
+    }
+    let next: number
+    if (e.key in step) next = (at + step[e.key]! + ORDER.length) % ORDER.length
+    else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = ORDER.length - 1
+    else return
+    e.preventDefault()
+    choose(ORDER[next]!)
+    cards[next]?.focus()
   }
 </script>
 
@@ -44,6 +72,7 @@
     class:on={app.theme === id}
     role="radio"
     aria-checked={app.theme === id}
+    tabindex={app.theme === id ? 0 : -1}
     onclick={() => choose(id)}
   >
     {@render mini(id)}
@@ -55,12 +84,20 @@
   </button>
 {/snippet}
 
-<div class="picker" role="radiogroup" aria-label="Theme">
+<div
+  class="picker"
+  role="radiogroup"
+  aria-label="Theme"
+  tabindex="-1"
+  bind:this={group}
+  {onkeydown}
+>
   <button
     class="theme"
     class:on={app.theme === 'system'}
     role="radio"
     aria-checked={app.theme === 'system'}
+    tabindex={app.theme === 'system' ? 0 : -1}
     onclick={() => choose('system')}
   >
     <span class="split">

@@ -16,6 +16,7 @@ import { isMock, isWeb } from './api'
 import { mediaBase } from './web'
 import { adaptToPage, looksDesigned, readBody } from './mailbody'
 import type { MailAttachment } from './types'
+import type { Frame } from './themes'
 
 /** What `<iframe sandbox srcdoc>` needs, whichever world this is running in.
  * Exactly one of `url` and `html` is set:
@@ -250,7 +251,7 @@ export function draftDocument(inner: string): string {
  * of the sheet rather than a card inside it. A designed one keeps a light card
  * of its own, whatever the theme: see `mailbody.ts`'s `isDesigned`.
  */
-export function quoteDocument(quotedHtml: string, dark: boolean): string {
+export function quoteDocument(quotedHtml: string, dark: boolean, frame?: Frame): string {
   /** Pressing Reply must not depend on this being able to read the message. */
   function safely<T>(read: () => T, otherwise: T): T {
     try {
@@ -262,18 +263,18 @@ export function quoteDocument(quotedHtml: string, dark: boolean): string {
 
   const styled = safely(() => looksDesigned(quotedHtml), true)
   const paper = !dark || styled
-  const fg = paper ? '#1c1a17' : '#eceaf0'
-  const muted = paper ? '#5f5a52' : '#a9a5b2'
+  // A designed quote keeps its own light card in every theme; anything else
+  // takes the theme's text, on the theme's card.
+  const fg = styled || !frame ? (paper ? '#1c1a17' : '#eceaf0') : frame.text
+  const muted = styled || !frame ? (paper ? '#5f5a52' : '#a9a5b2') : frame.subtle
   const rule = paper ? '#d6d2ca' : '#3a3840'
+  const page = frame?.card ?? (dark ? '#201f24' : '#fffefc')
   const card = styled
     ? `background:#ffffff;padding:12px 14px;border-radius:8px;`
     : 'background:transparent;padding:0 2px;'
   const inner = styled
     ? quotedHtml
-    : safely(
-        () => adaptToPage(quotedHtml, { background: dark ? '#201f24' : '#fffefc', text: fg }),
-        quotedHtml,
-      )
+    : safely(() => adaptToPage(quotedHtml, { background: page, text: fg }), quotedHtml)
   return applyPlatformOrigin(
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
       `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src everyday: http://everyday.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
@@ -325,9 +326,8 @@ export async function loadBody(source: MailBodySource): Promise<LoadedMailBody> 
 }
 
 /** The card an open message is drawn on, which is also the page of the frame
- *  inside it, so the two have one edge -- Paper's and Ink's, for wherever
- *  there is no window to ask (the tests). The frame's document has no access
- *  to the theme's custom properties, so `mailPage` reads them out here. */
+ *  inside it, so the two have one edge: Paper's and Ink's, for a caller that
+ *  does not pass the theme's own (`app.frame`) -- the tests. */
 export const MAIL_CARD = { dark: '#2a292f', light: '#f7f6f3' } as const
 
 /** The page a designed message was made for. */
@@ -335,23 +335,6 @@ const PAPER = { background: '#ffffff', text: '#1c1a17' }
 
 /** The colours of the app's own text in Paper and Ink, likewise. */
 const APP_TEXT = { dark: '#eceaf0', light: '#1c1a17' } as const
-
-/** The page a plain message is drawn on, and its text: the theme's `--card`
- *  and `--fg`, read from the window at the moment of asking -- so a caller
- *  that wants a change of theme to redraw must depend on the theme itself,
- *  not only on `dark`, since two light themes have different cards. */
-export function mailPage(dark: boolean): { background: string; text: string } {
-  const fallback = {
-    background: dark ? MAIL_CARD.dark : MAIL_CARD.light,
-    text: dark ? APP_TEXT.dark : APP_TEXT.light,
-  }
-  if (typeof getComputedStyle !== 'function' || typeof document === 'undefined') return fallback
-  const style = getComputedStyle(document.documentElement)
-  return {
-    background: style.getPropertyValue('--card').trim() || fallback.background,
-    text: style.getPropertyValue('--fg').trim() || fallback.text,
-  }
-}
 
 /** The document's `<head>`, its markup, and what closes it. `null` for
  *  anything that is not a document `body_document` or {@link bodyDocument}
@@ -402,9 +385,8 @@ export interface RenderedBody {
 
 export interface RenderOptions {
   dark: boolean
-  /** The card to draw on, when the caller has already read it (`mailPage`)
-   *  and wants a change of theme to count as a change of input. */
-  page?: { background: string; text: string }
+  /** The theme's frame colours (`app.frame`); Paper's or Ink's without. */
+  frame?: Frame
   showHistory: boolean
   subject: string
   /** The body's own `imagesHidden`. */
@@ -442,7 +424,12 @@ function readForTheme(html: string, options: RenderOptions): RenderedBody {
   const parts = splitDocument(html)
   const { dark, imagesHidden } = options
   if (!parts) return { html, hasHistory: false, paper: false, hidesImages: false, imagesHidden }
-  const page = options.page ?? mailPage(dark)
+  const page = options.frame
+    ? { background: options.frame.card, text: options.frame.text }
+    : {
+        background: dark ? MAIL_CARD.dark : MAIL_CARD.light,
+        text: dark ? APP_TEXT.dark : APP_TEXT.light,
+      }
   const read = readBody(parts.inner, {
     page,
     showHistory: options.showHistory,
@@ -506,15 +493,15 @@ function bodyTag(parts: { tail: string }, inner: string): string {
  * which theme it chose. So a light app on a dark desktop used to draw plain
  * mail on a dark page.
  */
-export function applyBodyTheme(html: string, dark: boolean): string {
+export function applyBodyTheme(html: string, dark: boolean, frame?: Frame): string {
   try {
-    return themedDocument(html, dark)
+    return themedDocument(html, dark, frame)
   } catch {
     return html
   }
 }
 
-function themedDocument(html: string, dark: boolean): string {
+function themedDocument(html: string, dark: boolean, frame?: Frame): string {
   const parts = splitDocument(html)
   if (!parts) return html
   if (looksDesigned(parts.inner)) {
@@ -522,9 +509,9 @@ function themedDocument(html: string, dark: boolean): string {
       ':root{color-scheme:light}body{color:#1c1a17;background:#ffffff}summary{color:#8b857c}'
     return `${parts.head}<style>${style}</style>${bodyTag(parts, withoutDarkRules(parts.inner))}`
   }
-  const background = dark ? '#17161a' : '#f7f6f3'
-  const text = dark ? APP_TEXT.dark : APP_TEXT.light
-  const summary = dark ? '#7d7a86' : '#8b857c'
+  const background = frame?.page ?? (dark ? '#17161a' : '#f7f6f3')
+  const text = frame?.text ?? (dark ? APP_TEXT.dark : APP_TEXT.light)
+  const summary = frame?.subtle ?? (dark ? '#7d7a86' : '#8b857c')
   const style = `:root{color-scheme:${dark ? 'dark' : 'light'}}body{color:${text};background:${background}}summary{color:${summary}}`
   return `${parts.head}<style>${style}</style>${bodyTag(parts, adaptToPage(parts.inner, { background, text }))}`
 }

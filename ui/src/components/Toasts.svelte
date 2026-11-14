@@ -115,6 +115,10 @@
   }
 
   .toast {
+    /* Placed and stacked, as `.frost` needs: without them its blurring layer
+       is sized against the whole stack rather than this one toast. */
+    position: relative;
+    z-index: 0;
     pointer-events: auto;
     display: flex;
     align-items: flex-start;

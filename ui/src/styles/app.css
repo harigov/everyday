@@ -321,7 +321,9 @@ textarea.field {
    decided by the theme's tokens alone -- nothing here or in a component
    names a theme. `.panes` in `App.svelte` spaces them. */
 
-.shell-card {
+/* Every panel's corners and lift, the stage's included -- one definition. */
+.shell-card,
+.shell-stage {
   border-radius: var(--shell-radius);
   box-shadow: var(--edge), var(--shell-shadow);
 }
@@ -334,8 +336,6 @@ textarea.field {
   min-width: 0;
   min-height: 0;
   background: var(--surface);
-  border-radius: var(--shell-radius);
-  box-shadow: var(--edge), var(--shell-shadow);
 }
 /* Rounded with the stage rather than clipped by it: `overflow: hidden` here
    would cut off every popover a view positions past its own edge. The few
@@ -452,19 +452,13 @@ textarea.field {
   color: var(--accent);
   font-weight: 620;
 }
-/* The rows' symbols are in the open app's own colour -- the colour its icon
-   has in the app bar, `--app` set by `App.svelte` -- so the sidebar reads as
-   that app's. The open row takes the row's colour instead, with a fuller
-   back layer, so the selection is one thing rather than an icon of one
-   colour beside a label of another. */
-.side-icon {
-  color: var(--app, currentColor);
-}
-.side-row.sel .side-icon {
-  color: inherit;
-  --symbol-back: 0.5;
-}
-/* A centred box of a known size, for an inline icon or an emoji alike. */
+/* A centred box of a known size, for an inline icon or an emoji alike.
+
+   Its symbol is in the open app's own colour -- the colour its icon has in
+   the app bar, `--app` set by `App.svelte` -- so the sidebar reads as that
+   app's. The open row takes the row's colour instead, with a fuller back
+   layer, so the selection is one thing rather than an icon of one colour
+   beside a label of another. */
 .side-icon {
   flex: none;
   display: grid;
@@ -473,6 +467,11 @@ textarea.field {
   height: 18px;
   font-size: var(--text-sm);
   line-height: 1;
+  color: var(--app, currentColor);
+}
+.side-row.sel .side-icon {
+  color: inherit;
+  --symbol-back: 0.5;
 }
 .side-text {
   flex: 1;
@@ -784,6 +783,22 @@ textarea.field {
 }
 .sheet-row .spacer {
   flex: 1;
+}
+
+/* A sheet too tall for the window scrolls this, the whole of its content,
+   rather than scrolling itself: a sheet is frosted, and the blurring layer
+   behind it would scroll away with the first screenful. The sheet becomes
+   a column with a height limit; this takes what is left and scrolls it,
+   reaching out to the sheet's edges so the scrollbar sits at the rim. */
+.sheet:has(> .sheet-scroll) {
+  display: flex;
+  flex-direction: column;
+}
+.sheet-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  margin: calc(var(--sp-4) * -1);
+  padding: var(--sp-4);
 }
 
 /* Respect the platform's reduced-motion preference. */

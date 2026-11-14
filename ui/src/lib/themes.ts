@@ -26,22 +26,98 @@ export interface ThemeInfo {
   scheme: Scheme
   /** A coloured backdrop with floating, translucent panels, rather than flat. */
   glass: boolean
+  /** The colours a framed document is drawn in -- a mail body, a feed story,
+   *  an attachment shown as a page, the quote under a reply. A frame's
+   *  document cannot see this window's custom properties, so it is handed
+   *  these instead. `card` and `text` are the theme's `--card` and `--fg`,
+   *  and `subtle` its `--fg-subtle` (`themes.test.mjs` holds them to the
+   *  stylesheet); `page` is what a frame that fills a pane stands on, which a
+   *  flat theme can match exactly and a glass theme, whose panes are
+   *  translucent and a frame cannot be, draws as its card. */
+  frame: Frame
+}
+
+export interface Frame {
+  card: string
+  page: string
+  text: string
+  subtle: string
 }
 
 /** Light ones first, then dark; within each, the flat original first. `light`
  *  and `dark` keep the ids they had when they were the only two, so a choice
  *  saved before there were more still names the same theme. */
 export const THEMES = [
-  { id: 'light', name: 'Paper', scheme: 'light', glass: false },
-  { id: 'lagoon', name: 'Lagoon', scheme: 'light', glass: true },
-  { id: 'blossom', name: 'Blossom', scheme: 'light', glass: true },
-  { id: 'meadow', name: 'Meadow', scheme: 'light', glass: true },
-  { id: 'dune', name: 'Dune', scheme: 'light', glass: true },
-  { id: 'dark', name: 'Ink', scheme: 'dark', glass: false },
-  { id: 'aurora', name: 'Aurora', scheme: 'dark', glass: true },
-  { id: 'ember', name: 'Ember', scheme: 'dark', glass: true },
-  { id: 'dusk', name: 'Dusk', scheme: 'dark', glass: true },
-  { id: 'tide', name: 'Tide', scheme: 'dark', glass: true },
+  {
+    id: 'light',
+    name: 'Paper',
+    scheme: 'light',
+    glass: false,
+    frame: { card: '#f7f6f3', page: '#f7f6f3', text: '#1c1a17', subtle: '#8b857c' },
+  },
+  {
+    id: 'lagoon',
+    name: 'Lagoon',
+    scheme: 'light',
+    glass: true,
+    frame: { card: '#f3f7fc', page: '#f3f7fc', text: '#0e1a2b', subtle: '#6a788d' },
+  },
+  {
+    id: 'blossom',
+    name: 'Blossom',
+    scheme: 'light',
+    glass: true,
+    frame: { card: '#fcf4f6', page: '#fcf4f6', text: '#2b1520', subtle: '#957381' },
+  },
+  {
+    id: 'meadow',
+    name: 'Meadow',
+    scheme: 'light',
+    glass: true,
+    frame: { card: '#f3f8f3', page: '#f3f8f3', text: '#10231a', subtle: '#6c8173' },
+  },
+  {
+    id: 'dune',
+    name: 'Dune',
+    scheme: 'light',
+    glass: true,
+    frame: { card: '#fbf5ec', page: '#fbf5ec', text: '#24190f', subtle: '#8e7e6c' },
+  },
+  {
+    id: 'dark',
+    name: 'Ink',
+    scheme: 'dark',
+    glass: false,
+    frame: { card: '#2a292f', page: '#17161a', text: '#eceaf0', subtle: '#7d7a86' },
+  },
+  {
+    id: 'aurora',
+    name: 'Aurora',
+    scheme: 'dark',
+    glass: true,
+    frame: { card: '#2a1d57', page: '#2a1d57', text: '#f3f1ff', subtle: '#958dc8' },
+  },
+  {
+    id: 'ember',
+    name: 'Ember',
+    scheme: 'dark',
+    glass: true,
+    frame: { card: '#3f1d1a', page: '#3f1d1a', text: '#fff3ec', subtle: '#b8958a' },
+  },
+  {
+    id: 'dusk',
+    name: 'Dusk',
+    scheme: 'dark',
+    glass: true,
+    frame: { card: '#262a6b', page: '#262a6b', text: '#f5f6ff', subtle: '#969dcf' },
+  },
+  {
+    id: 'tide',
+    name: 'Tide',
+    scheme: 'dark',
+    glass: true,
+    frame: { card: '#0f3552', page: '#0f3552', text: '#effaff', subtle: '#88afc0' },
+  },
 ] as const satisfies readonly ThemeInfo[]
 
 export type ThemeId = (typeof THEMES)[number]['id']

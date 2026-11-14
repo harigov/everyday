@@ -282,272 +282,279 @@
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={() => !busy && close()}></div>
 <div class="sheet wide" role="dialog" aria-modal="true" aria-label="Import a file" use:trapFocus>
-  <h2>Import a file</h2>
+  <div class="sheet-scroll">
+    <h2>Import a file</h2>
 
-  {#if step === 'pick'}
-    <p class="hint">
-      A statement downloaded from your bank's website: OFX or QFX (often called “Quicken” or “Money”
-      format), or a CSV. It is read on this device and goes into an account you keep by hand.
-    </p>
-    <label class="file btn btn-outline" class:busy>
-      <input
-        type="file"
-        accept=".ofx,.qfx,.csv,text/csv"
-        disabled={busy}
-        onchange={(e) => void pickFile(e)}
-        use:focusOnMount
-      />
-      {busy ? 'Reading…' : 'Choose a file…'}
-    </label>
-    {#if error}<p class="error">{error}</p>{/if}
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <button class="btn" onclick={close}>Cancel</button>
-    </div>
-  {:else if step === 'preview' && preview}
-    <p class="hint file-line">
-      <b>{fileName}</b> · {preview.format === 'csv' ? 'CSV' : 'OFX'} · {plural(
-        preview.lines,
-        'line',
-      )}{#if preview.currency}
-        · {preview.currency}{/if}
-    </p>
+    {#if step === 'pick'}
+      <p class="hint">
+        A statement downloaded from your bank's website: OFX or QFX (often called “Quicken” or
+        “Money” format), or a CSV. It is read on this device and goes into an account you keep by
+        hand.
+      </p>
+      <label class="file btn btn-outline" class:busy>
+        <input
+          type="file"
+          accept=".ofx,.qfx,.csv,text/csv"
+          disabled={busy}
+          onchange={(e) => void pickFile(e)}
+          use:focusOnMount
+        />
+        {busy ? 'Reading…' : 'Choose a file…'}
+      </label>
+      {#if error}<p class="error">{error}</p>{/if}
+      <div class="sheet-row">
+        <span class="spacer"></span>
+        <button class="btn" onclick={close}>Cancel</button>
+      </div>
+    {:else if step === 'preview' && preview}
+      <p class="hint file-line">
+        <b>{fileName}</b> · {preview.format === 'csv' ? 'CSV' : 'OFX'} · {plural(
+          preview.lines,
+          'line',
+        )}{#if preview.currency}
+          · {preview.currency}{/if}
+      </p>
 
-    {#if preview.problems.length > 0}
-      <ul class="problems">
-        {#each preview.problems.slice(0, 5) as problem, i (i)}
-          <li>{problem}</li>
-        {/each}
-        {#if preview.problems.length > 5}
-          <li>and {preview.problems.length - 5} more</li>
-        {/if}
-      </ul>
-    {/if}
+      {#if preview.problems.length > 0}
+        <ul class="problems">
+          {#each preview.problems.slice(0, 5) as problem, i (i)}
+            <li>{problem}</li>
+          {/each}
+          {#if preview.problems.length > 5}
+            <li>and {preview.problems.length - 5} more</li>
+          {/if}
+        </ul>
+      {/if}
 
-    {#if isCsv && mapping}
-      <fieldset class="mapping">
-        <legend class="field-label">Which column is which</legend>
-        <div class="grid">
-          <label for="imp-date">Date</label>
-          <select
-            id="imp-date"
-            value={String(mapping.date)}
-            onchange={(e) => setColumn('date', e.currentTarget.value)}
-          >
-            {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option>{/each}
-          </select>
+      {#if isCsv && mapping}
+        <fieldset class="mapping">
+          <legend class="field-label">Which column is which</legend>
+          <div class="grid">
+            <label for="imp-date">Date</label>
+            <select
+              id="imp-date"
+              value={String(mapping.date)}
+              onchange={(e) => setColumn('date', e.currentTarget.value)}
+            >
+              {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
+                >{/each}
+            </select>
 
-          <label for="imp-payee">Payee</label>
-          <select
-            id="imp-payee"
-            value={String(mapping.payee)}
-            onchange={(e) => setColumn('payee', e.currentTarget.value)}
-          >
-            {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option>{/each}
-          </select>
+            <label for="imp-payee">Payee</label>
+            <select
+              id="imp-payee"
+              value={String(mapping.payee)}
+              onchange={(e) => setColumn('payee', e.currentTarget.value)}
+            >
+              {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
+                >{/each}
+            </select>
 
-          <span class="lab">Amount</span>
-          <div class="modes" role="radiogroup" aria-label="How amounts are written">
-            <label>
-              <input
-                type="radio"
-                name="imp-mode"
-                checked={amountMode === 'one'}
-                onchange={() => setAmountMode('one')}
-              />
-              One column
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="imp-mode"
-                checked={amountMode === 'split'}
-                onchange={() => setAmountMode('split')}
-              />
-              Money out and in apart
-            </label>
+            <span class="lab">Amount</span>
+            <div class="modes" role="radiogroup" aria-label="How amounts are written">
+              <label>
+                <input
+                  type="radio"
+                  name="imp-mode"
+                  checked={amountMode === 'one'}
+                  onchange={() => setAmountMode('one')}
+                />
+                One column
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name="imp-mode"
+                  checked={amountMode === 'split'}
+                  onchange={() => setAmountMode('split')}
+                />
+                Money out and in apart
+              </label>
+            </div>
+
+            {#if amountMode === 'one'}
+              <label for="imp-amount">Amount column</label>
+              <select
+                id="imp-amount"
+                value={mapping.amount == null ? '' : String(mapping.amount)}
+                onchange={(e) => setOptionalColumn('amount', e.currentTarget.value)}
+              >
+                {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
+                  >{/each}
+              </select>
+            {:else}
+              <label for="imp-debit">Money out</label>
+              <select
+                id="imp-debit"
+                value={mapping.debit == null ? '' : String(mapping.debit)}
+                onchange={(e) => setOptionalColumn('debit', e.currentTarget.value)}
+              >
+                <option value="">None</option>
+                {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
+                  >{/each}
+              </select>
+              <label for="imp-credit">Money in</label>
+              <select
+                id="imp-credit"
+                value={mapping.credit == null ? '' : String(mapping.credit)}
+                onchange={(e) => setOptionalColumn('credit', e.currentTarget.value)}
+              >
+                <option value="">None</option>
+                {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
+                  >{/each}
+              </select>
+            {/if}
+
+            <label for="imp-desc">Description</label>
+            <select
+              id="imp-desc"
+              value={mapping.description == null ? '' : String(mapping.description)}
+              onchange={(e) => setOptionalColumn('description', e.currentTarget.value)}
+            >
+              <option value="">None</option>
+              {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
+                >{/each}
+            </select>
+
+            <label for="imp-order">Dates</label>
+            <select
+              id="imp-order"
+              value={mapping.dateOrder}
+              onchange={(e) => setDateOrder(e.currentTarget.value)}
+            >
+              {#each DATE_ORDERS as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
+            </select>
           </div>
 
-          {#if amountMode === 'one'}
-            <label for="imp-amount">Amount column</label>
-            <select
-              id="imp-amount"
-              value={mapping.amount == null ? '' : String(mapping.amount)}
-              onchange={(e) => setOptionalColumn('amount', e.currentTarget.value)}
-            >
-              {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
-                >{/each}
-            </select>
-          {:else}
-            <label for="imp-debit">Money out</label>
-            <select
-              id="imp-debit"
-              value={mapping.debit == null ? '' : String(mapping.debit)}
-              onchange={(e) => setOptionalColumn('debit', e.currentTarget.value)}
-            >
-              <option value="">None</option>
-              {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
-                >{/each}
-            </select>
-            <label for="imp-credit">Money in</label>
-            <select
-              id="imp-credit"
-              value={mapping.credit == null ? '' : String(mapping.credit)}
-              onchange={(e) => setOptionalColumn('credit', e.currentTarget.value)}
-            >
-              <option value="">None</option>
-              {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option
-                >{/each}
-            </select>
-          {/if}
-
-          <label for="imp-desc">Description</label>
-          <select
-            id="imp-desc"
-            value={mapping.description == null ? '' : String(mapping.description)}
-            onchange={(e) => setOptionalColumn('description', e.currentTarget.value)}
-          >
-            <option value="">None</option>
-            {#each columnIndexes as i (i)}<option value={String(i)}>{columnName(i)}</option>{/each}
-          </select>
-
-          <label for="imp-order">Dates</label>
-          <select
-            id="imp-order"
-            value={mapping.dateOrder}
-            onchange={(e) => setDateOrder(e.currentTarget.value)}
-          >
-            {#each DATE_ORDERS as o (o.value)}<option value={o.value}>{o.label}</option>{/each}
-          </select>
-        </div>
-
-        <div class="checks">
-          <label>
-            <input
-              type="checkbox"
-              checked={mapping.hasHeader}
-              onchange={(e) => setFlag('hasHeader', e.currentTarget.checked)}
-            />
-            The first line is column names
-          </label>
-          {#if amountMode === 'one'}
+          <div class="checks">
             <label>
               <input
                 type="checkbox"
-                checked={mapping.negate}
-                onchange={(e) => setFlag('negate', e.currentTarget.checked)}
+                checked={mapping.hasHeader}
+                onchange={(e) => setFlag('hasHeader', e.currentTarget.checked)}
               />
-              This bank writes money out as a positive number
+              The first line is column names
             </label>
-          {/if}
-        </div>
-      </fieldset>
+            {#if amountMode === 'one'}
+              <label>
+                <input
+                  type="checkbox"
+                  checked={mapping.negate}
+                  onchange={(e) => setFlag('negate', e.currentTarget.checked)}
+                />
+                This bank writes money out as a positive number
+              </label>
+            {/if}
+          </div>
+        </fieldset>
 
-      <div class="table-wrap scroll">
-        <table class="raw">
-          <thead>
-            <tr>
-              {#each columnIndexes as i (i)}
-                {@const role = roleOf(i)}
-                <th scope="col" class:mapped={!!role}>
-                  <span class="col-name">{columnName(i)}</span>
-                  {#if role}<span class="role">{role}</span>{/if}
-                </th>
-              {/each}
-            </tr>
-          </thead>
-          <tbody>
-            {#each preview.rows.slice(0, SHOWN_ROWS) as row, r (r)}
+        <div class="table-wrap scroll">
+          <table class="raw">
+            <thead>
               <tr>
                 {#each columnIndexes as i (i)}
-                  <td class:mapped={!!roleOf(i)}>{row[i] ?? ''}</td>
+                  {@const role = roleOf(i)}
+                  <th scope="col" class:mapped={!!role}>
+                    <span class="col-name">{columnName(i)}</span>
+                    {#if role}<span class="role">{role}</span>{/if}
+                  </th>
                 {/each}
               </tr>
-            {/each}
-          </tbody>
-        </table>
-      </div>
-    {/if}
+            </thead>
+            <tbody>
+              {#each preview.rows.slice(0, SHOWN_ROWS) as row, r (r)}
+                <tr>
+                  {#each columnIndexes as i (i)}
+                    <td class:mapped={!!roleOf(i)}>{row[i] ?? ''}</td>
+                  {/each}
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
 
-    {#if preview.sample.length > 0 && !mappingChanged}
-      <div class="sample">
-        <span class="field-label">How it reads</span>
-        {#each preview.sample.slice(0, SHOWN_ROWS) as t, i (i)}
-          <div class="sample-row">
-            <span class="d">{t.date}</span>
-            <span class="p">{t.payee || t.description}</span>
-            <MoneyAmount amount={t.amount} {currency} size="sm" />
-          </div>
+      {#if preview.sample.length > 0 && !mappingChanged}
+        <div class="sample">
+          <span class="field-label">How it reads</span>
+          {#each preview.sample.slice(0, SHOWN_ROWS) as t, i (i)}
+            <div class="sample-row">
+              <span class="d">{t.date}</span>
+              <span class="p">{t.payee || t.description}</span>
+              <MoneyAmount amount={t.amount} {currency} size="sm" />
+            </div>
+          {/each}
+        </div>
+      {:else if mappingChanged}
+        <p class="hint">The columns have changed; the import reads them as chosen above.</p>
+      {/if}
+
+      <label class="field-label spaced" for="imp-account">Into</label>
+      <select id="imp-account" class="field" bind:value={target}>
+        {#each manual as a (a.id)}
+          <option value={a.id}>{a.name}{a.mask ? ` ··${a.mask}` : ''} ({a.currency})</option>
         {/each}
+        <option value="">A new account…</option>
+      </select>
+
+      {#if target === ''}
+        <div class="new-account">
+          <input
+            class="field"
+            bind:value={newName}
+            placeholder="Account name"
+            aria-label="New account name"
+            autocomplete="off"
+          />
+          <select class="field" bind:value={newKind} aria-label="Kind of account">
+            {#each KINDS as k (k.value)}<option value={k.value}>{k.label}</option>{/each}
+          </select>
+          <input
+            class="field currency"
+            bind:value={newCurrency}
+            maxlength="3"
+            placeholder="USD"
+            aria-label="Currency"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+      {/if}
+
+      {#if error}<p class="error">{error}</p>{/if}
+
+      <div class="sheet-row">
+        <button class="btn" disabled={busy} onclick={() => (step = 'pick')}>Another file</button>
+        <span class="spacer"></span>
+        <button class="btn" disabled={busy} onclick={close}>Cancel</button>
+        <button class="btn btn-primary" disabled={!ready} onclick={() => void run()}>
+          {busy ? 'Importing…' : 'Import'}
+        </button>
       </div>
-    {:else if mappingChanged}
-      <p class="hint">The columns have changed; the import reads them as chosen above.</p>
-    {/if}
-
-    <label class="field-label spaced" for="imp-account">Into</label>
-    <select id="imp-account" class="field" bind:value={target}>
-      {#each manual as a (a.id)}
-        <option value={a.id}>{a.name}{a.mask ? ` ··${a.mask}` : ''} ({a.currency})</option>
-      {/each}
-      <option value="">A new account…</option>
-    </select>
-
-    {#if target === ''}
-      <div class="new-account">
-        <input
-          class="field"
-          bind:value={newName}
-          placeholder="Account name"
-          aria-label="New account name"
-          autocomplete="off"
-        />
-        <select class="field" bind:value={newKind} aria-label="Kind of account">
-          {#each KINDS as k (k.value)}<option value={k.value}>{k.label}</option>{/each}
-        </select>
-        <input
-          class="field currency"
-          bind:value={newCurrency}
-          maxlength="3"
-          placeholder="USD"
-          aria-label="Currency"
-          autocomplete="off"
-          spellcheck="false"
-        />
+    {:else if step === 'done' && report}
+      <p class="lead">
+        {plural(report.added, 'transaction')} added{#if report.skipped > 0}, {report.skipped} already
+          there{/if}.
+      </p>
+      {#if report.problems.length > 0}
+        <ul class="problems">
+          {#each report.problems.slice(0, 8) as problem, i (i)}
+            <li>{problem}</li>
+          {/each}
+          {#if report.problems.length > 8}
+            <li>and {report.problems.length - 8} more</li>
+          {/if}
+        </ul>
+      {/if}
+      <div class="sheet-row">
+        <span class="spacer"></span>
+        <button class="btn" onclick={close}>Done</button>
+        <button class="btn btn-primary" use:focusOnMount onclick={() => void seeThem()}>
+          See them
+        </button>
       </div>
     {/if}
-
-    {#if error}<p class="error">{error}</p>{/if}
-
-    <div class="sheet-row">
-      <button class="btn" disabled={busy} onclick={() => (step = 'pick')}>Another file</button>
-      <span class="spacer"></span>
-      <button class="btn" disabled={busy} onclick={close}>Cancel</button>
-      <button class="btn btn-primary" disabled={!ready} onclick={() => void run()}>
-        {busy ? 'Importing…' : 'Import'}
-      </button>
-    </div>
-  {:else if step === 'done' && report}
-    <p class="lead">
-      {plural(report.added, 'transaction')} added{#if report.skipped > 0}, {report.skipped} already there{/if}.
-    </p>
-    {#if report.problems.length > 0}
-      <ul class="problems">
-        {#each report.problems.slice(0, 8) as problem, i (i)}
-          <li>{problem}</li>
-        {/each}
-        {#if report.problems.length > 8}
-          <li>and {report.problems.length - 8} more</li>
-        {/if}
-      </ul>
-    {/if}
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <button class="btn" onclick={close}>Done</button>
-      <button class="btn btn-primary" use:focusOnMount onclick={() => void seeThem()}>
-        See them
-      </button>
-    </div>
-  {/if}
+  </div>
 </div>
 
 <style>
@@ -556,7 +563,6 @@
     translate: -50% -50%;
     width: min(640px, calc(100vw - var(--sp-8)));
     max-height: calc(100vh - var(--sp-8));
-    overflow-y: auto;
   }
   h2 {
     font-size: var(--text-md);

@@ -464,9 +464,14 @@
     min-height: 0;
     gap: var(--shell-gap);
     padding: 0 var(--shell-gap) var(--shell-gap) 0;
+    /* How far in from the window's edge the sidebar starts, for what is
+       placed over the row rather than in it: the folded sidebar and the
+       strip that brings it back. */
+    --bar-w: var(--appbar-w);
   }
   .panes.pinned {
     padding-left: var(--shell-gap);
+    --bar-w: 0px;
   }
 
   /* Where a folded sidebar is found again: a strip of the app's left edge,
@@ -477,7 +482,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    left: var(--appbar-w);
+    left: calc(var(--bar-w) + var(--shell-gap));
     width: 10px;
     z-index: 35;
   }
