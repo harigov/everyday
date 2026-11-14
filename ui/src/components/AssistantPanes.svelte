@@ -1200,7 +1200,7 @@
 
   .day.on {
     background: var(--accent);
-    color: #fff;
+    color: var(--fg-on-accent);
   }
 
   .toggle {

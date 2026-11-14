@@ -1,0 +1,144 @@
+/**
+ * The themes, and the contract every one of them keeps.
+ *
+ * A theme is a `[data-theme='…']` block in `styles/themes.css` setting every
+ * token in `THEME_TOKENS` -- the colours, shadows and frame shape the
+ * components are written against (see the contract at the foot of
+ * `styles/theme.css` for what each one is for). This file is the other half:
+ * which themes there are, what they are called, whether each is light or
+ * dark, and in what order Settings lists them. `scripts/themes.test.mjs`
+ * reads the stylesheet and fails if the two disagree -- a theme here with no
+ * block, a block missing a token, a token no theme should set, or a block
+ * whose `color-scheme` is not the scheme named here.
+ *
+ * Nothing else in the interface names a theme. A component that needs to
+ * know whether the window is dark -- to render a mail body to match, say --
+ * asks `app.dark`, never `app.theme === 'dark'`: there are several dark
+ * themes now.
+ */
+
+export type Scheme = 'light' | 'dark'
+
+export interface ThemeInfo {
+  /** The `data-theme` value, and what is kept in `everyday.theme`. */
+  id: string
+  name: string
+  scheme: Scheme
+  /** A coloured backdrop with floating, translucent panels, rather than flat. */
+  glass: boolean
+}
+
+/** Light ones first, then dark; within each, the flat original first. `light`
+ *  and `dark` keep the ids they had when they were the only two, so a choice
+ *  saved before there were more still names the same theme. */
+export const THEMES = [
+  { id: 'light', name: 'Paper', scheme: 'light', glass: false },
+  { id: 'lagoon', name: 'Lagoon', scheme: 'light', glass: true },
+  { id: 'blossom', name: 'Blossom', scheme: 'light', glass: true },
+  { id: 'meadow', name: 'Meadow', scheme: 'light', glass: true },
+  { id: 'dune', name: 'Dune', scheme: 'light', glass: true },
+  { id: 'dark', name: 'Ink', scheme: 'dark', glass: false },
+  { id: 'aurora', name: 'Aurora', scheme: 'dark', glass: true },
+  { id: 'ember', name: 'Ember', scheme: 'dark', glass: true },
+  { id: 'dusk', name: 'Dusk', scheme: 'dark', glass: true },
+  { id: 'tide', name: 'Tide', scheme: 'dark', glass: true },
+] as const satisfies readonly ThemeInfo[]
+
+export type ThemeId = (typeof THEMES)[number]['id']
+
+/** What the person chose: a theme, or to follow the desktop between Paper and
+ *  Ink. */
+export type ThemeChoice = ThemeId | 'system'
+
+/** Every custom property a theme block sets. Grouped as the contract in
+ *  `theme.css` is. */
+export const THEME_TOKENS = [
+  // The frame.
+  '--backdrop',
+  '--chrome',
+  '--sidebar',
+  '--surface',
+  '--shell-gap',
+  '--shell-radius',
+  '--shell-rule',
+  '--shell-shadow',
+  // The content.
+  '--bg',
+  '--bg-sunken',
+  '--bg-raised',
+  '--bg-panel',
+  '--bg-hover',
+  '--bg-active',
+  '--bg-selected',
+  '--card',
+  // Floating layers.
+  '--float',
+  '--glass-blur',
+  '--edge',
+  '--scrim',
+  // Text and lines.
+  '--fg',
+  '--fg-muted',
+  '--fg-subtle',
+  '--fg-faint',
+  '--fg-on-accent',
+  '--border',
+  '--border-strong',
+  // Meaning.
+  '--accent',
+  '--accent-hover',
+  '--hue-strength',
+  '--danger',
+  '--success',
+  '--warning',
+  '--info',
+  '--star',
+  '--highlight',
+  '--aqi-1',
+  '--aqi-2',
+  '--aqi-5',
+  '--aqi-6',
+  // Elevation.
+  '--shadow-sm',
+  '--shadow',
+  '--shadow-lg',
+] as const
+
+/** Tokens computed from the others once, in `theme.css`'s `[data-theme]` rule,
+ *  rather than set by each theme. */
+export const DERIVED_TOKENS = ['--aqi-3', '--aqi-4'] as const
+
+const BY_ID = new Map<string, ThemeInfo>(THEMES.map((t) => [t.id, t]))
+
+export function themeInfo(id: ThemeId): ThemeInfo {
+  return BY_ID.get(id)!
+}
+
+/** A stored or `?theme=` value, checked: anything that is not a theme -- one
+ *  since removed, a typo in a URL -- is the desktop's choice. */
+export function parseThemeChoice(raw: string | null): ThemeChoice {
+  return raw !== null && BY_ID.has(raw) ? (raw as ThemeId) : 'system'
+}
+
+function prefersDark(): boolean {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches
+}
+
+/** The theme to draw for a choice: itself, or Paper or Ink by the desktop. */
+export function resolveTheme(choice: ThemeChoice): ThemeId {
+  if (choice !== 'system') return choice
+  return prefersDark() ? 'dark' : 'light'
+}
+
+/** Set a theme on the window. `data-theme` is always present -- `system` is
+ *  resolved here, not left to a media query -- so the stylesheet needs one
+ *  block per theme and no second copy of Ink inside `prefers-color-scheme`. */
+export function showTheme(id: ThemeId): void {
+  document.documentElement.setAttribute('data-theme', id)
+}
+
+/** Call `onchange` when the desktop switches between light and dark. */
+export function watchSystemScheme(onchange: () => void): void {
+  if (typeof matchMedia !== 'function') return
+  matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', onchange)
+}

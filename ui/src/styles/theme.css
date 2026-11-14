@@ -128,120 +128,82 @@
   --med: 220ms;
 }
 
-/* ── Light ─────────────────────────────────────────────────────────────── */
-:root,
-[data-theme='light'] {
-  color-scheme: light;
+/* ── The theme contract ────────────────────────────────────────────────
+ *
+ * Everything above is layout and type, and the same in every theme. Every
+ * colour, every shadow and the shape of the window's frame is a theme's, and
+ * lives in `themes.css`: one `[data-theme='…']` block per theme, each
+ * setting exactly the tokens listed here -- no more, no fewer. That list is
+ * also `THEME_TOKENS` in `lib/themes.ts`, and `scripts/themes.test.mjs`
+ * fails when a block and the list disagree, so a theme cannot quietly leave
+ * a token to fall through to whichever theme happened to be defined first.
+ *
+ * Components use these and nothing else for colour. A hex value in a
+ * component's styles is a colour that will look right in one theme only.
+ *
+ * The frame -- what is around the content
+ *   --backdrop       the window behind everything; a colour or a gradient
+ *   --chrome         the strip across the top and the app bar down the left
+ *   --sidebar        an app's sidebar, Settings' tabs
+ *   --surface        the content: the list and the page beside it
+ *   --shell-gap      space between the frame's panels (0 = they touch)
+ *   --shell-radius   their corners (0 = square, edge to edge)
+ *   --shell-rule     the line between touching panels (`none` once apart)
+ *   --shell-shadow   what lifts a panel off the backdrop
+ *
+ * The content
+ *   --bg             the page under cards; inset wells inside a card
+ *   --bg-sunken      a recessed track: the filter bar, a tag
+ *   --bg-raised      a card, a field, a popover; must stay legible over text
+ *   --bg-panel       a side panel inside the content
+ *   --bg-hover, --bg-active, --bg-selected
+ *   --card           an opaque card, for what is drawn in a frame -- a mail
+ *                    body -- whose document cannot see the backdrop or these
+ *                    tokens, and is handed this colour to stand on instead
+ *
+ * Floating layers -- menus, sheets, toasts
+ *   --float          their fill; may be translucent when --glass-blur is set
+ *   --glass-blur     a `backdrop-filter` value, or `none`
+ *   --edge           an inset highlight along a card's rim (`0 0 #0000` = none)
+ *   --scrim          the dimming under a sheet
+ *
+ * Text and lines
+ *   --fg, --fg-muted, --fg-subtle, --fg-faint, --fg-on-accent
+ *   --border, --border-strong
+ *
+ * Meaning
+ *   --accent, --accent-hover   the theme's own colour
+ *   --hue-strength             how much of a thing's own colour -- a
+ *                              journal's, a calendar's -- its text keeps, the
+ *                              rest being --fg: `color-mix(in oklab, X
+ *                              var(--hue-strength), var(--fg))`. 100% keeps
+ *                              it pure; dark glass lifts colours chosen for
+ *                              Paper and Ink so they read on a vivid backdrop
+ *   --danger                   something is wrong
+ *   --success, --warning, --info
+ *   --star                     a favourite, a rating
+ *   --highlight                a highlighter pen in text
+ *   --aqi-1, --aqi-2, --aqi-5, --aqi-6   air-quality bands (3 and 4 below)
+ *
+ * Elevation
+ *   --shadow-sm, --shadow, --shadow-lg
+ *
+ * And `color-scheme`, which tells the engine whether form controls and
+ * scrollbars it draws itself should be light or dark.
+ */
 
-  /* Warm, paper-ish greys. A pure-white journal feels like a spreadsheet. */
-  --bg: #f7f6f3;
-  --bg-sunken: #efede8;
-  --bg-raised: #fffefc;
-  --bg-panel: #fbfaf7;
-  --bg-hover: rgb(0 0 0 / 0.035);
-  --bg-active: rgb(0 0 0 / 0.06);
-  --bg-selected: color-mix(in oklab, var(--accent) 13%, transparent);
+/* Derived from each theme's own tokens, on every element that names a theme
+   -- not on `:root` alone -- so a preview card in Settings, which carries its
+   own `data-theme`, computes these from its theme rather than inheriting the
+   window's.
 
-  --fg: #1c1a17;
-  --fg-muted: #605c55;
-  --fg-subtle: #8b857c;
-  --fg-faint: #aaa49a;
-  --fg-on-accent: #fff;
-
-  --border: rgb(0 0 0 / 0.09);
-  --border-strong: rgb(0 0 0 / 0.16);
-
-  --accent: #b4530f;
-  --accent-hover: #9c460b;
-  --danger: #b42318;
-
-  /* The six AQI bands -- good, moderate/fair, unhealthy for sensitive
-     groups/poor, unhealthy, very unhealthy/very poor, hazardous/extremely
-     poor -- softened from the EPA's own saturated green/yellow/orange/red/
-     purple/maroon ramp to sit on this palette rather than fight it. The
-     third and fourth reuse `--accent` and `--danger`: both are already
-     "orange, something is worth noticing" and "red, something is wrong" in
-     this app, which is exactly what those two bands mean. See
-     `ui/src/lib/dashboard.ts`'s `aqiTier`, which is what picks a number 1-6.
-  */
-  --aqi-1: #3f8f3f;
-  --aqi-2: #a68b17;
+   The six AQI bands -- good, moderate/fair, unhealthy for sensitive
+   groups/poor, unhealthy, very unhealthy/very poor, hazardous/extremely poor
+   -- softened from the EPA's saturated ramp to sit on the palette. The third
+   and fourth are `--accent` and `--danger`: "something is worth noticing"
+   and "something is wrong" in this app, which is what those two bands mean.
+   See `ui/src/lib/dashboard.ts`'s `aqiTier`, which picks a number 1-6. */
+[data-theme] {
   --aqi-3: var(--accent);
   --aqi-4: var(--danger);
-  --aqi-5: #7a4a9c;
-  --aqi-6: #6b1f2e;
-
-  --shadow-sm: 0 1px 2px rgb(28 26 23 / 0.06), 0 1px 1px rgb(28 26 23 / 0.04);
-  --shadow: 0 4px 12px -2px rgb(28 26 23 / 0.1), 0 2px 4px -2px rgb(28 26 23 / 0.06);
-  --shadow-lg: 0 18px 40px -12px rgb(28 26 23 / 0.22), 0 4px 10px -4px rgb(28 26 23 / 0.1);
-}
-
-/* ── Dark ──────────────────────────────────────────────────────────────── */
-[data-theme='dark'] {
-  color-scheme: dark;
-
-  --bg: #17161a;
-  --bg-sunken: #100f13;
-  --bg-raised: #201f24;
-  --bg-panel: #1b1a1f;
-  --bg-hover: rgb(255 255 255 / 0.045);
-  --bg-active: rgb(255 255 255 / 0.08);
-  --bg-selected: color-mix(in oklab, var(--accent) 22%, transparent);
-
-  --fg: #eceaf0;
-  --fg-muted: #a8a4b0;
-  --fg-subtle: #7d7a86;
-  --fg-faint: #5c5966;
-  --fg-on-accent: #fff;
-
-  --border: rgb(255 255 255 / 0.09);
-  --border-strong: rgb(255 255 255 / 0.17);
-
-  --accent: #e8853f;
-  --accent-hover: #f0975a;
-  --danger: #f87171;
-
-  /* As the light theme's own, lighter so the bands still separate against a
-     dark card. */
-  --aqi-1: #6fcf6f;
-  --aqi-2: #d4b84a;
-  --aqi-3: var(--accent);
-  --aqi-4: var(--danger);
-  --aqi-5: #b48ad6;
-  --aqi-6: #c2566b;
-
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-  --shadow: 0 4px 14px -2px rgb(0 0 0 / 0.5);
-  --shadow-lg: 0 20px 44px -12px rgb(0 0 0 / 0.65);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    color-scheme: dark;
-    --bg: #17161a;
-    --bg-sunken: #100f13;
-    --bg-raised: #201f24;
-    --bg-panel: #1b1a1f;
-    --bg-hover: rgb(255 255 255 / 0.045);
-    --bg-active: rgb(255 255 255 / 0.08);
-    --bg-selected: color-mix(in oklab, var(--accent) 22%, transparent);
-    --fg: #eceaf0;
-    --fg-muted: #a8a4b0;
-    --fg-subtle: #7d7a86;
-    --fg-faint: #5c5966;
-    --border: rgb(255 255 255 / 0.09);
-    --border-strong: rgb(255 255 255 / 0.17);
-    --accent: #e8853f;
-    --accent-hover: #f0975a;
-    --danger: #f87171;
-    --aqi-1: #6fcf6f;
-    --aqi-2: #d4b84a;
-    --aqi-3: var(--accent);
-    --aqi-4: var(--danger);
-    --aqi-5: #b48ad6;
-    --aqi-6: #c2566b;
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-    --shadow: 0 4px 14px -2px rgb(0 0 0 / 0.5);
-    --shadow-lg: 0 20px 44px -12px rgb(0 0 0 / 0.65);
-  }
 }

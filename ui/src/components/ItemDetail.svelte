@@ -987,7 +987,7 @@
     color: var(--fg);
   }
   .icon-btn.on {
-    color: #e0a92b;
+    color: var(--star);
   }
   .icon-btn.danger:hover {
     color: var(--danger);

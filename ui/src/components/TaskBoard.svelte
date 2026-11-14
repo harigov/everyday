@@ -401,7 +401,7 @@
     background: var(--danger);
   }
   .chip.p-high {
-    color: #b45309;
+    color: var(--warning);
   }
   .chip.p-urgent {
     color: var(--danger);

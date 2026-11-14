@@ -1,5 +1,6 @@
 @import './fonts.css';
 @import './theme.css';
+@import './themes.css';
 
 /* ── Reset ─────────────────────────────────────────────────────────────── */
 
@@ -23,7 +24,9 @@ body {
   font-size: var(--text-base);
   line-height: var(--leading-snug);
   color: var(--fg);
-  background: var(--bg);
+  /* The window's own backdrop: a flat theme's frame colour, or a glass
+     theme's glows, which the panels float over. */
+  background: var(--backdrop);
 
   /* Font rendering.
    *
@@ -308,6 +311,71 @@ textarea.field {
   height: 1px;
   background: var(--border);
   border: none;
+}
+
+/* ── The frame ─────────────────────────────────────────────────────────
+   The panels the window is made of: the sidebar (and Settings' tabs, and the
+   assistant's rail) and the stage that holds whichever app is open. In a
+   flat theme they touch, split by `--shell-rule`; in a glass theme each is a
+   rounded card with `--shell-gap` of backdrop between them. Which one is
+   decided by the theme's tokens alone -- nothing here or in a component
+   names a theme. `.panes` in `App.svelte` spaces them. */
+
+.shell-card {
+  border-radius: var(--shell-radius);
+  box-shadow: var(--edge), var(--shell-shadow);
+}
+
+/* The content. A flex row, as `.panes` was before it, so the list and the
+   page inside it lay out exactly as they did when they were its children. */
+.shell-stage {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  background: var(--surface);
+  border-radius: var(--shell-radius);
+  box-shadow: var(--edge), var(--shell-shadow);
+}
+/* Rounded with the stage rather than clipped by it: `overflow: hidden` here
+   would cut off every popover a view positions past its own edge. The few
+   views that paint a background of their own -- the Overview's page, a
+   side panel -- follow the stage's corners instead. */
+.shell-stage > :first-child {
+  border-top-left-radius: inherit;
+  border-bottom-left-radius: inherit;
+}
+.shell-stage > :last-child {
+  border-top-right-radius: inherit;
+  border-bottom-right-radius: inherit;
+}
+
+/* A floating layer -- a menu, a sheet, a toast -- frosted in a glass theme:
+   what is under it shows through, blurred. On a pseudo-element, not the
+   element, because `backdrop-filter` on an element makes it the containing
+   block of every `position: fixed` thing inside it, and a menu inside a menu
+   would then open relative to its parent rather than the window. The
+   element must be positioned and have a z-index (every floating layer
+   already does), which keeps the pseudo-element above its background and
+   below its content. A flat theme's `--glass-blur` is `none`, and its
+   `--float` is opaque, so there this is only a background. `.sheet`, below,
+   is one without having to say so. */
+.frost,
+.sheet {
+  background: var(--float);
+  isolation: isolate;
+}
+.frost::before,
+.sheet::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--edge);
+  pointer-events: none;
 }
 
 /* ── Sidebars ──────────────────────────────────────────────────────────
@@ -680,7 +748,7 @@ textarea.field {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgb(0 0 0 / 0.18);
+  background: var(--scrim);
 }
 
 .sheet {
@@ -691,7 +759,6 @@ textarea.field {
   translate: -50% 0;
   width: min(420px, calc(100vw - var(--sp-8)));
   padding: var(--sp-4);
-  background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);

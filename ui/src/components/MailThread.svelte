@@ -33,7 +33,7 @@
     bodyDocument,
     draftDocument,
     loadBody,
-    MAIL_CARD,
+    mailPage,
     mockPartUrl,
     partIdentifier,
     partUrl,
@@ -78,6 +78,7 @@
   function sendingBody(draft: Draft): RenderedBody {
     return renderBody(draftDocument(splitQuoted(draft.bodyHtml).own), {
       dark,
+      page,
       showHistory: false,
       subject: draft.subject,
       imagesHidden: false,
@@ -194,14 +195,14 @@
     .then((r) => (allowances = r))
     .catch(() => {})
 
-  function isDarkMode(): boolean {
-    if (app.theme === 'dark') return true
-    if (app.theme === 'light') return false
-    return (
-      typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
-    )
-  }
-  const dark = $derived(isDarkMode())
+  const dark = $derived(app.dark)
+  /** The theme's card, which a plain message's page is painted to match. Read
+   *  again whenever the theme changes, not only between light and dark: two
+   *  light themes have different cards. */
+  const page = $derived.by(() => {
+    void app.shown
+    return mailPage(dark)
+  })
 
   function senderName(message: MailMessageDetail, own: ReadonlySet<string>): string {
     if (own.has(message.from.email.toLowerCase())) return 'Me'
@@ -350,7 +351,7 @@
   }
 </script>
 
-<div class="thread" style:--mail-card={dark ? MAIL_CARD.dark : MAIL_CARD.light}>
+<div class="thread" style:--mail-card={page.background}>
   {#each messages as message, i (message.id)}
     {@const isOpen = expanded.has(message.id)}
     {@const isLast = i === messages.length - 1}
@@ -360,6 +361,7 @@
       loaded && loaded !== 'loading' && loaded !== 'error'
         ? renderBody(loaded.html, {
             dark,
+            page,
             showHistory: historyOpen.has(message.id),
             subject: message.subject,
             imagesHidden: loaded.imagesHidden,
@@ -1040,7 +1042,7 @@
      scrolling the thread.
 
      A designed message paints its own white page, and the corners here round
-     it off. Anything else paints the card's colour (`MAIL_CARD`), so there is
+     it off. Anything else paints the card's colour (`mailPage`), so there is
      no frame to see. */
   .frame-wrap.paper {
     border-radius: var(--radius);

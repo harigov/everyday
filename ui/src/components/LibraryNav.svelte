@@ -354,7 +354,7 @@
   }
 
   .star {
-    color: #e0a92b;
+    color: var(--star);
   }
 
   /* Set in by the rows' own padding, so the lines start where the shelf

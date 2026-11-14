@@ -325,15 +325,33 @@ export async function loadBody(source: MailBodySource): Promise<LoadedMailBody> 
 }
 
 /** The card an open message is drawn on, which is also the page of the frame
- *  inside it, so the two have one edge. Written out because the frame's
- *  document has no access to the theme's custom properties. */
+ *  inside it, so the two have one edge -- Paper's and Ink's, for wherever
+ *  there is no window to ask (the tests). The frame's document has no access
+ *  to the theme's custom properties, so `mailPage` reads them out here. */
 export const MAIL_CARD = { dark: '#2a292f', light: '#f7f6f3' } as const
 
 /** The page a designed message was made for. */
 const PAPER = { background: '#ffffff', text: '#1c1a17' }
 
-/** The colours of the app's own text, from `theme.css`. */
+/** The colours of the app's own text in Paper and Ink, likewise. */
 const APP_TEXT = { dark: '#eceaf0', light: '#1c1a17' } as const
+
+/** The page a plain message is drawn on, and its text: the theme's `--card`
+ *  and `--fg`, read from the window at the moment of asking -- so a caller
+ *  that wants a change of theme to redraw must depend on the theme itself,
+ *  not only on `dark`, since two light themes have different cards. */
+export function mailPage(dark: boolean): { background: string; text: string } {
+  const fallback = {
+    background: dark ? MAIL_CARD.dark : MAIL_CARD.light,
+    text: dark ? APP_TEXT.dark : APP_TEXT.light,
+  }
+  if (typeof getComputedStyle !== 'function' || typeof document === 'undefined') return fallback
+  const style = getComputedStyle(document.documentElement)
+  return {
+    background: style.getPropertyValue('--card').trim() || fallback.background,
+    text: style.getPropertyValue('--fg').trim() || fallback.text,
+  }
+}
 
 /** The document's `<head>`, its markup, and what closes it. `null` for
  *  anything that is not a document `body_document` or {@link bodyDocument}
@@ -384,6 +402,9 @@ export interface RenderedBody {
 
 export interface RenderOptions {
   dark: boolean
+  /** The card to draw on, when the caller has already read it (`mailPage`)
+   *  and wants a change of theme to count as a change of input. */
+  page?: { background: string; text: string }
   showHistory: boolean
   subject: string
   /** The body's own `imagesHidden`. */
@@ -421,10 +442,7 @@ function readForTheme(html: string, options: RenderOptions): RenderedBody {
   const parts = splitDocument(html)
   const { dark, imagesHidden } = options
   if (!parts) return { html, hasHistory: false, paper: false, hidesImages: false, imagesHidden }
-  const page = {
-    background: dark ? MAIL_CARD.dark : MAIL_CARD.light,
-    text: dark ? APP_TEXT.dark : APP_TEXT.light,
-  }
+  const page = options.page ?? mailPage(dark)
   const read = readBody(parts.inner, {
     page,
     showHistory: options.showHistory,

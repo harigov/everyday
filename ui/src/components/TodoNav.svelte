@@ -377,7 +377,7 @@
      the time tally at the foot. */
 
   .side-icon.today {
-    color: #e0a92b;
+    color: var(--star);
   }
   /* Something has already slipped, which is worth a colour -- and the
      danger colour wins over the accent the badge would otherwise wear, open

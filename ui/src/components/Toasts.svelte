@@ -67,7 +67,7 @@
 </div>
 
 {#snippet row(toast: Toast)}
-  <div class="toast {toast.level}">
+  <div class="toast frost {toast.level}">
     <span class="mark"><Icon name={ICON[toast.level]} size={17} /></span>
     <div class="text">
       <strong>{toast.title}</strong>
@@ -120,7 +120,6 @@
     align-items: flex-start;
     gap: var(--sp-3);
     padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-4);
-    background: var(--bg-raised);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     box-shadow: var(--shadow-lg);

@@ -124,8 +124,9 @@
      arriving holds it, leaving lets it go after a moment -- see
      `sidebar.svelte.ts` for the delays. Escape puts it away at once. -->
 <aside
-  class="sidebar"
+  class="sidebar shell-card"
   class:folded
+  class:frost={folded}
   class:peeking
   inert={folded && !peeking}
   aria-hidden={folded && !peeking ? 'true' : undefined}
@@ -308,20 +309,27 @@
     display: flex;
     flex-direction: column;
     padding-top: var(--sp-1);
-    background: var(--bg-sunken);
-    border-right: 1px solid var(--border);
+    background: var(--sidebar);
+    border-right: var(--shell-rule);
   }
 
   /* Folded: out of the row, so the app takes its width, and laid over the
      app's left edge instead -- invisible until a peek draws it. Over, not
      beside: a peek that reflowed the app would move the very list somebody
-     was reading. `.panes` is what it is positioned in. */
+     was reading. `.panes` is what it is positioned in, so it is placed by
+     the same gaps `.panes` leaves around a sidebar that is in the row.
+
+     Frosted (`.frost`): over the app rather than over the backdrop, a glass
+     theme's translucent sidebar would otherwise let the list underneath read
+     through it. Its own fill, not the floating one, so in a flat theme it is
+     the same sidebar it is when it is in the row. */
   .sidebar.folded {
     position: absolute;
     top: 0;
-    bottom: 0;
-    left: var(--appbar-w);
+    bottom: var(--shell-gap);
+    left: calc(var(--appbar-w) + var(--shell-gap));
     z-index: 40;
+    background: var(--sidebar);
     visibility: hidden;
     opacity: 0;
     translate: -10px 0;
@@ -384,6 +392,6 @@
   }
 
   .star {
-    color: #e0a92b;
+    color: var(--star);
   }
 </style>

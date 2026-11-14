@@ -211,7 +211,7 @@
 
 <div
   bind:this={panel}
-  class="menu"
+  class="menu frost"
   class:placed={!!pos}
   role="menu"
   tabindex="-1"
@@ -291,7 +291,6 @@
     max-height: calc(100vh - 12px);
     overflow-y: auto;
     padding: var(--sp-1);
-    background: var(--bg-raised);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);

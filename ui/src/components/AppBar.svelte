@@ -244,8 +244,8 @@
     /* The first app sits a little way under the strip above, rather than
        flush against its rule. */
     padding-top: var(--sp-2);
-    background: var(--bg-sunken);
-    border-right: 1px solid var(--border);
+    background: var(--chrome);
+    border-right: var(--shell-rule);
   }
 
   .glyph {
@@ -265,7 +265,7 @@
     padding: 0 4px;
     border-radius: 999px;
     background: var(--accent);
-    color: #fff;
+    color: var(--fg-on-accent);
     font-size: 10px;
     font-weight: 700;
     line-height: 1;
@@ -296,6 +296,6 @@
      journal or the project the rest of the window is already tinted by. */
   .barbtn.on {
     background: color-mix(in oklab, var(--journal-accent, var(--accent)) 14%, transparent);
-    color: var(--journal-accent, var(--accent));
+    color: color-mix(in oklab, var(--journal-accent, var(--accent)) var(--hue-strength), var(--fg));
   }
 </style>

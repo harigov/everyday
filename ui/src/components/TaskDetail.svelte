@@ -703,7 +703,7 @@
   }
   /* Time that has passed counts as logged; time ahead is only planned. */
   .kind.actual {
-    color: #15803d;
+    color: var(--success);
   }
   .when {
     flex: 1;

@@ -71,7 +71,7 @@
     position: fixed;
     inset: 0;
     z-index: 62;
-    background: rgb(0 0 0 / 0.28);
+    background: var(--scrim);
   }
   .sheet {
     position: fixed;
@@ -85,7 +85,6 @@
     max-height: min(680px, calc(100vh - var(--sp-8)));
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    background: var(--bg-raised);
     box-shadow: var(--shadow-lg);
     overflow: hidden;
   }

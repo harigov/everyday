@@ -156,7 +156,7 @@
     display: inline-flex;
     align-items: center;
     gap: 1px;
-    color: #e0a92b;
+    color: var(--star);
     border-radius: var(--radius-sm);
   }
   /* Somebody else's score: quieter than yours, but still a score.
@@ -166,7 +166,7 @@
      the chroma down leaves the fill readable and still unmistakably not
      the gold row above it. */
   .rating.muted {
-    color: color-mix(in oklab, #e0a92b 45%, var(--fg-subtle));
+    color: color-mix(in oklab, var(--star) 45%, var(--fg-subtle));
   }
   .rating.muted .back {
     opacity: 0.4;

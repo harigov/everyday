@@ -157,12 +157,7 @@
   const quotedHtml = initialBody.quoted
   let showQuote = $state(false)
 
-  function isDarkMode(): boolean {
-    if (app.theme === 'dark') return true
-    if (app.theme === 'light') return false
-    return window.matchMedia('(prefers-color-scheme: dark)').matches
-  }
-  const quoteSrcdoc = $derived(quotedHtml ? quoteDocument(quotedHtml, isDarkMode()) : '')
+  const quoteSrcdoc = $derived(quotedHtml ? quoteDocument(quotedHtml, app.dark) : '')
 
   /** Sizes the quote's frame from its HTML, the way `MailThread` sizes a
    *  message's: a sandboxed frame cannot be measured from out here. */

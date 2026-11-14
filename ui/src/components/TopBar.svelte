@@ -95,8 +95,8 @@
     align-items: center;
     height: var(--topbar-h);
     flex: none;
-    background: var(--bg-sunken);
-    border-bottom: 1px solid var(--border);
+    background: var(--chrome);
+    border-bottom: var(--shell-rule);
   }
 
   .lead {
