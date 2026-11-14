@@ -13,6 +13,12 @@ authors.workspace = true
 # server; off for the CLI and a plain `cargo test`. See
 # docs/plans/meeting-notes.md.
 speech = ["dep:sherpa-onnx"]
+# Local decision models: a downloaded GGUF run through llama.cpp, for sorting
+# mail on this computer instead of at a provider. Links a native library
+# built from source with CMake. On in the desktop app only -- not in the
+# server, a default workspace member, so a plain `cargo test` never builds
+# llama.cpp. See docs/plans/mail-sorting.md.
+decisions = ["dep:llama-cpp-sys-2"]
 
 [dependencies]
 everyday-core.workspace = true
@@ -156,10 +162,10 @@ dom_query = "0.28"
 calcard = { version = "=0.3.13", default-features = false }
 chrono = "0.4"
 
-# ── Local speech (`meeting::models`, `meeting::speech`, phase 4 of
+# ── Local speech (`local::files`, `meeting::speech`, phase 4 of
 # docs/plans/meeting-notes.md) ──────────────────────────────────────────────
 #
-# `meeting::models` is deliberately not behind the `speech` feature -- a
+# `local::files` is deliberately not behind the `speech` feature -- a
 # build without local recognition still has to answer "what would this need"
 # -- so `directories`, `sha2`, `tar` and `bzip2` are plain dependencies, not
 # optional ones. `directories` matches the pin `everyday-vault` already
@@ -168,7 +174,7 @@ chrono = "0.4"
 # phase does not need to take on, so `models_dir` is its own call of the same
 # constructor rather than a re-export.
 directories = "6"
-# The catalogue in `meeting::models` pins every downloadable model by
+# The catalogue in `local::files` pins every downloadable model by
 # SHA-256, checked once after each download and recorded in a marker file --
 # see that module's doc. `blake3`, already in the tree, is *this*
 # application's own hash for its own records; a model's checksum is decided
@@ -177,7 +183,7 @@ directories = "6"
 sha2 = "0.10"
 # The pyannote segmentation model, and both local recognisers, are published
 # as a `.tar.bz2` alongside files this application does not want (Python
-# export scripts, licence text, test wavs) -- see `meeting::models`'
+# export scripts, licence text, test wavs) -- see `local::files`'
 # `Source::Archive`. `tar` is pure Rust already; `bzip2`'s default feature as
 # of 0.6 is `libbz2-rs-sys`, a pure-Rust reimplementation, so decompressing
 # an archive needs no C toolchain and no system `libbz2` either.
@@ -193,12 +199,40 @@ bzip2 = "0.6"
 # set. See `.github/workflows/check.yml` for how CI caches that archive
 # rather than re-downloading it every run.
 sherpa-onnx = { version = "1.13", optional = true }
+# A local decision model is a GGUF file run through llama.cpp -- see
+# `local::decide` and docs/plans/mail-sorting.md. Off by default; the
+# `decisions` feature above turns it on. llama.cpp is compiled from the
+# source this crate ships, so a build needs CMake and a C++ compiler.
+# The raw bindings, with their default features off, behind a small safe
+# layer of our own (`local::llama`) -- not the `llama-cpp-2` safe bindings,
+# which switch on the sys crate's `common` library whatever their own
+# features say. `common` builds a `std::regex` at load time that clashes
+# with the one inside sherpa-onnx's prebuilt library, and a binary with both
+# aborted before `main`. See `local::llama`'s doc. No OpenMP either, which
+# Apple's toolchain does not ship; ggml falls back to its own thread pool.
+# On x86-64, ggml is built for the baseline processor (the bindings copy
+# Rust's target features, and no target-cpu is set): building it for AVX2
+# instead (`GGML_AVX2=ON` and friends) measured no faster for these models,
+# and would stop the app on a processor without AVX2. Runtime dispatch
+# (`dynamic-backends`) needs ggml as shared libraries beside the binary.
+llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false }
+# A decision model's GGUF carries its prompt as a Jinja template (its
+# `systemone` chat template). Rendering that template, rather than a copy of
+# it written out in Rust, keeps the prompt exactly what the model was
+# converted with. Pure Rust, and not behind `decisions`: the prompt is
+# checked by plain `cargo test`.
+minijinja = { version = "2", default-features = false, features = ["builtins", "json", "serde"] }
 
 # `browser::launch` hands Chrome its end of the DevTools pipe on file
 # descriptors 3 and 4 between fork and exec (`dup2`), and tells it to die with
 # this process (`prctl`). Already in the tree through half the workspace.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# On Apple Silicon, llama.cpp runs a decision model on the GPU through Metal
+# -- the one GPU backend this build carries.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+llama-cpp-sys-2 = { version = "0.1.161", optional = true, default-features = false, features = ["metal"] }
 
 [dev-dependencies]
 base64 = "0.22"

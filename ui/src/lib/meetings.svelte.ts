@@ -37,7 +37,7 @@ import type {
   ModelBenchmark,
   Recording,
   RecordingId,
-  SpeechModelInfo,
+  LocalModelInfo,
   VoiceprintId,
   VoiceprintInfo,
 } from './types'
@@ -98,7 +98,7 @@ class MeetingsState {
    * visible one.
    */
   recordingsError = $state<string | null>(null)
-  models = $state<SpeechModelInfo[]>([])
+  models = $state<LocalModelInfo[]>([])
   voiceprints = $state<VoiceprintInfo[]>([])
 
   #modelsTimer: ReturnType<typeof setInterval> | null = null

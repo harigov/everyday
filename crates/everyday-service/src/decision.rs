@@ -1,10 +1,12 @@
 //! Asking a decision model a question.
 //!
 //! A decision model -- Jev, from TypeSafe, directly or through OpenRouter;
-//! OpenAI's Decisions API -- does not write. It is handed some content and a
-//! question with a fixed set of answers, and answers with one of them and how
-//! sure it is. See [`everyday_core::llm::DecisionApi`] for the two request
-//! shapes and where each is served.
+//! OpenAI's Decisions API; one of the d3 models on this computer -- does not
+//! write. It is handed some content and a question with a fixed set of
+//! answers, and answers with one of them and how sure it is. See
+//! [`everyday_core::llm::DecisionApi`] for the two request shapes and where
+//! each is served. A model on this computer is not sent a request at all:
+//! [`choose`] hands it to [`crate::local::decide`].
 //!
 //! One question per request, of one kind -- a choice -- because that is the
 //! one thing this application asks one: which of somebody's categories a
@@ -63,9 +65,17 @@ pub async fn choose(
     instructions: &str,
     options: &[ChoiceOption],
 ) -> CommandResult<Choice> {
+    if access.config.is_local() {
+        let model = access.config.local_model().ok_or_else(|| {
+            CommandError::new(codes::INVALID, "that is not a model this build can run")
+        })?;
+        return crate::local::decide::choose(model, content, instructions, options).await;
+    }
+    let Some(endpoint) = access.config.endpoint() else {
+        return Err(CommandError::new(codes::INVALID, "the decision model has no address"));
+    };
     let body = request_body(access, content, instructions, options);
-    let mut request =
-        crate::http::client()?.post(access.config.endpoint()).timeout(DECISION_TIMEOUT).json(&body);
+    let mut request = crate::http::client()?.post(endpoint).timeout(DECISION_TIMEOUT).json(&body);
     if let Some(key) = &access.key {
         request = request.bearer_auth(key);
     }
@@ -93,7 +103,9 @@ pub fn request_body(
 ) -> Value {
     let model = access.config.model.trim();
     match access.config.api {
-        DecisionApi::TypeSafe => {
+        // A model on this computer is never posted to -- see `choose` -- but
+        // TypeSafe's is the shape llama.cpp's own server takes for one.
+        DecisionApi::TypeSafe | DecisionApi::Local => {
             // A choice without a description "is interpreted by its name
             // alone" -- sent as null rather than an empty string, which
             // would read as a description saying nothing.
@@ -148,7 +160,9 @@ pub fn request_body(
 /// its question, and may answer one with a refusal instead.
 pub fn parse_answer(api: DecisionApi, response: &Value) -> CommandResult<Choice> {
     let answer = match api {
-        DecisionApi::TypeSafe => response.get("answers").and_then(|a| a.get(QUESTION)),
+        DecisionApi::TypeSafe | DecisionApi::Local => {
+            response.get("answers").and_then(|a| a.get(QUESTION))
+        }
         DecisionApi::OpenAi => response.get("answers").and_then(Value::as_array).and_then(|a| {
             a.iter().find(|x| x.get("name").and_then(Value::as_str) == Some(QUESTION))
         }),

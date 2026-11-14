@@ -919,16 +919,19 @@
         set under Settings → Models -- sorting on the decision model if one is set and otherwise the
         small one, drafting ahead on the small one, summaries on the assistant's -- not as something
         you ask for in chat. Off until the "I understand" checkbox above is ticked, since they read
-        this account's mail the same way the assistant's own tools do.
+        this account's mail the same way the assistant's own tools do -- except categorising on a
+        decision model on this computer, which sends the mail nowhere.
       </p>
       {#each MAIL_AI_SWITCHES as sw (sw.key)}
         {@const acknowledged =
           providerAck != null && original.assistantProviderAcknowledged === providerAck}
-        <label class="mailai-row" class:disabled={!acknowledged}>
+        {@const sortsHere = sw.key === 'categorize' && models.settings?.decision?.api === 'local'}
+        {@const allowed = acknowledged || sortsHere}
+        <label class="mailai-row" class:disabled={!allowed}>
           <input
             type="checkbox"
             checked={original.mailAi?.[sw.key] ?? false}
-            disabled={!acknowledged || mailAiSaving}
+            disabled={!allowed || mailAiSaving}
             onchange={(e) => void setMailAi({ [sw.key]: e.currentTarget.checked })}
           />
           <span class="mailai-text">

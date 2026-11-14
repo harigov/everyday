@@ -3248,11 +3248,15 @@ export type ModelTier = 'large' | 'medium' | 'small'
 export type ModelSlot = ModelTier | 'decision'
 
 /**
- * Which request a decision model takes -- `everyday_core::llm::DecisionApi`.
+ * How a decision model is reached -- `everyday_core::llm::DecisionApi`.
  * `typeSafe` is TypeSafe's System One (Jev, directly or through OpenRouter);
- * `openAi` is OpenAI's Decisions API.
+ * `openAi` is OpenAI's Decisions API; `local` runs one of the
+ * `LocalDecisionModel`s on this computer, sent nothing at all.
  */
-export type DecisionApi = 'typeSafe' | 'openAi'
+export type DecisionApi = 'typeSafe' | 'openAi' | 'local'
+
+/** The decision models that run on this computer -- `LocalDecisionModel::id`. */
+export type LocalDecisionModel = 'd3Lite' | 'd3Nano' | 'd3Mini'
 
 /**
  * A decision model: it answers a question with one of a fixed set of options
@@ -3260,9 +3264,18 @@ export type DecisionApi = 'typeSafe' | 'openAi'
  */
 export interface DecisionConfig {
   api: DecisionApi
-  /** The full URL requests are posted to. `null`: the API's own maker's. */
+  /** The full URL requests are posted to. `null`: the API's own maker's.
+   *  Always `null` for a model on this computer. */
   url: string | null
+  /** The model there -- for `local`, a `LocalDecisionModel`. */
   model: string
+}
+
+/** How long a decision model on this computer takes over one message. */
+export interface DecisionBenchmark {
+  /** How long loading it took, when it was not already in memory. */
+  loadMs: number | null
+  msPerMessage: number
 }
 
 /** One model: where it is, and which to ask there. Flat on the wire. */
@@ -3293,8 +3306,11 @@ export interface ModelSettingsView {
   /**
    * What an account's mail acknowledgement must say for its mail to reach
    * these models -- every configured endpoint. Stored by a tick as-is.
+   * A decision model on this computer is not one.
    */
   acknowledgement: string
+  /** Whether this copy of Every Day can run a decision model itself. */
+  localDecisions: boolean
 }
 
 // ── The assistant ────────────────────────────────────────────────────────
@@ -4354,9 +4370,10 @@ export interface MeetingNow {
   event: MeetingOffer | null
 }
 
-/** A downloadable local model: a recogniser, or the speech kit. */
-export interface SpeechModelInfo {
-  /** `LocalModel` for a recogniser, or `"speechKit"`. */
+/** A downloadable model on this computer: a recogniser, the speech kit, or a
+ *  decision model. */
+export interface LocalModelInfo {
+  /** `LocalModel` for a recogniser, `"speechKit"`, or a `LocalDecisionModel`. */
   id: string
   name: string
   description: string

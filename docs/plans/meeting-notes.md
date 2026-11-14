@@ -233,6 +233,20 @@ anything above disagree, this section wins:
   summary is told that if the lines read like several people, it should
   credit the owner only when a line makes it clear.
 
+## Models in memory (Nov 2026)
+
+The speech kit and the recognisers used to be loaded once and kept until the
+app quit -- along with a load that had failed, so downloading a model after a
+failed first try needed a restart. Every model that runs on this computer
+now goes through `everyday_service::local::resident`: loaded on first use,
+shared while in use, and let go of once nobody has used it for 15 minutes
+(`IDLE_AFTER`) -- never while a pipeline still holds it, however long ago it
+was handed out. Loading one again takes a few seconds, the cost of not
+keeping a recogniser, the speech kit and a decision model in memory together
+all day because each was used once. A failed load is not kept. The model
+files moved from `meeting::models` to `local::files`, which now lists the
+decision models as well; see docs/plans/mail-sorting.md's "On this computer".
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it
@@ -345,7 +359,7 @@ per-vault. Each download is pinned by URL and SHA-256 in code.
  │     vad → transcribe → identify → merge → summarise → note    │
  │ meeting/transcribe/   {local, openai, gemini}.rs  one trait   │
  │ meeting/speech.rs     sherpa-onnx: vad, diarise, embed        │
- │ meeting/models.rs     download + checksum                     │
+ │ local/files.rs        download + checksum (all local models)  │
  └───────────────┬──────────────────────────────────────────────┘
  ┌─ everyday-core ▼─────────────────────────────────────────────┐
  │ meeting.rs   records; is_online_call(); the template filler;  │

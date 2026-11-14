@@ -525,6 +525,37 @@ fn moving_a_model_clears_the_mail_acknowledgements() {
     assert_eq!(vault.account(account.id).unwrap().assistant_provider_acknowledged, None);
 }
 
+/// Taking an endpoint away -- here, moving the decision model from a
+/// provider to this computer -- keeps an acknowledgement given for the
+/// longer list, moved to the shorter one: mail now goes to fewer places, not
+/// new ones. Adding one back clears it, as any new destination does.
+#[test]
+fn moving_a_model_to_fewer_places_keeps_the_mail_acknowledgements() {
+    use everyday_core::llm::{DecisionApi, DecisionConfig};
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let mut models = vault.model_settings().unwrap();
+    models.decision = Some(DecisionConfig::fresh());
+    vault.save_model_settings(&models).unwrap();
+    let both = vault.model_settings().unwrap().acknowledgement_name();
+    assert!(both.contains("typesafe"), "{both}");
+    let mut account =
+        everyday_core::Account::new(everyday_core::account::Provider::Custom, "me@example.com");
+    account.assistant_provider_acknowledged = Some(both);
+    vault.save_account(&account).unwrap();
+
+    models.decision =
+        Some(DecisionConfig { api: DecisionApi::Local, url: None, model: "d3Nano".into() });
+    vault.save_model_settings(&models).unwrap();
+    let alone = vault.model_settings().unwrap().acknowledgement_name();
+    assert!(!alone.contains("typesafe"), "{alone}");
+    assert_eq!(vault.account(account.id).unwrap().assistant_provider_acknowledged, Some(alone));
+
+    models.decision = Some(DecisionConfig::fresh());
+    vault.save_model_settings(&models).unwrap();
+    assert_eq!(vault.account(account.id).unwrap().assistant_provider_acknowledged, None);
+}
+
 /// Reading the models never writes them: the carry-over from the assistant's
 /// settings happens once, at unlock, and a lock and unlock later leaves a
 /// saved record exactly as it was.

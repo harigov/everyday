@@ -60,6 +60,7 @@ pub mod idempotency;
 pub mod jobs;
 pub mod keepintouch;
 pub mod llm;
+pub mod local;
 pub mod mailai;
 pub mod mailpreview;
 pub mod mailsort;

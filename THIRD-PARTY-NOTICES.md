@@ -52,6 +52,10 @@ Reproduced below in full:
   43. jpeg-encoder — © 2021 Volker Ströbel, https://github.com/vstroebel/jpeg-encoder, with portions from the Independent JPEG Group's software
   44. pdf.js — © Mozilla Foundation, https://github.com/mozilla/pdf.js, with the CMaps, fonts and image decoders it ships
   45. Yogurt — © 2026 Frigade, https://github.com/FrigadeHQ/yogurt — not a dependency: the meeting-notes echo check, recogniser clean-up, vocabulary and note prompt in `everyday-core/src/meeting` follow its approach, thresholds and word lists
+  46. llama.cpp and ggml — © 2023-2026 The ggml authors, https://github.com/ggml-org/llama.cpp
+  47. llama-cpp-sys-2 — © utilityai and the llama-cpp-rs contributors, https://github.com/utilityai/llama-cpp-rs
+  48. MiniJinja — © Armin Ronacher, https://github.com/mitsuhiko/minijinja
+  49. Decision 3.0 models d3-lite, d3-nano and d3-mini — © vLLM Semantic Router, fine-tuned from Qwen3.5 (© Alibaba Cloud), https://huggingface.co/vllm-sr
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -1705,7 +1709,7 @@ SOFTWARE.
 
 ## 32. sherpa-onnx
 
-`meeting::speech` and `meeting::models` (feature `speech`) load Silero VAD,
+`meeting::speech` and `local::files` (feature `speech`) load Silero VAD,
 pyannote's speaker segmentation, a speaker-embedding model, and both local
 recognisers through `sherpa-onnx` (https://github.com/k2-fsa/sherpa-onnx),
 Apache-2.0 licensed. It links its own native library statically; see
@@ -1952,7 +1956,7 @@ SOFTWARE.
 
 The speech kit's voice-activity detector is Silero VAD
 (https://github.com/snakers4/silero-vad), downloaded from sherpa-onnx's own
-`asr-models` release and pinned by SHA-256 in `meeting::models`. MIT
+`asr-models` release and pinned by SHA-256 in `local::files`. MIT
 licensed.
 
 MIT License
@@ -1984,7 +1988,7 @@ SOFTWARE.
 The speech kit's speaker-segmentation model is sherpa-onnx's export of
 pyannote's `segmentation-3.0` (https://huggingface.co/pyannote/segmentation-3.0),
 downloaded from sherpa-onnx's `speaker-segmentation-models` release and
-pinned by SHA-256 in `meeting::models`. MIT licensed; the licence text below
+pinned by SHA-256 in `local::files`. MIT licensed; the licence text below
 is copied from the file the release archive itself ships.
 
 MIT License
@@ -2018,18 +2022,18 @@ half of `SpeechKit::diarise`'s clustering) come from the 3D-Speaker project's
 ERes2Net model trained on VoxCeleb
 (https://github.com/modelscope/3D-Speaker), downloaded from sherpa-onnx's
 `speaker-recongition-models` release and pinned by SHA-256 in
-`meeting::models`. Apache-2.0 licensed; see entry 28 above for the licence
+`local::files`. Apache-2.0 licensed; see entry 28 above for the licence
 text, reproduced there rather than twice.
 
 ---
 
 ## 37. Parakeet TDT 0.6B v3 (model)
 
-One of the two local recognisers `meeting::models::LocalModel` offers is
+One of the two local recognisers `everyday_core::meeting::LocalModel` offers is
 NVIDIA's Parakeet TDT 0.6B v3, as sherpa-onnx exports it
 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), downloaded from
 sherpa-onnx's `asr-models` release (`sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`)
-and pinned by SHA-256 in `meeting::models`. Creative Commons
+and pinned by SHA-256 in `local::files`. Creative Commons
 Attribution 4.0 International (CC-BY-4.0) licensed -- unlike every other
 entry in this file, a model weights licence rather than a software one, which
 is why it asks for attribution rather than source redistribution: this
@@ -2439,7 +2443,7 @@ Creative Commons may be contacted at creativecommons.org.
 The other local recogniser is OpenAI's Whisper, `large-v3-turbo`, as
 sherpa-onnx exports it (https://github.com/openai/whisper), downloaded from
 sherpa-onnx's `asr-models` release (`sherpa-onnx-whisper-turbo`) and pinned
-by SHA-256 in `meeting::models`. MIT licensed, the same terms covering both
+by SHA-256 in `local::files`. MIT licensed, the same terms covering both
 the reference code and the published model weights.
 
 MIT License
@@ -2469,7 +2473,7 @@ SOFTWARE.
 ## 39. tar
 
 Two of the three model downloads arrive as `.tar.bz2` archives holding files
-this application does not want alongside the ones it does; `meeting::models`
+this application does not want alongside the ones it does; `local::files`
 unpacks them and extracts only the named members through `tar`
 (https://github.com/composefs/tar-rs), dual MIT/Apache-2.0 licensed.
 Reproduced here under the MIT terms.
@@ -3595,3 +3599,87 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+## 46. llama.cpp and ggml
+
+`local::decide` (feature `decisions`) runs the decision models that sort mail
+on this computer through llama.cpp and the ggml tensor library beneath it
+(https://github.com/ggml-org/llama.cpp), compiled from the source
+`llama-cpp-sys-2` ships and linked statically. MIT licensed.
+
+MIT License
+
+Copyright (c) 2023-2026 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 47. llama-cpp-sys-2
+
+The raw Rust bindings `local::llama` calls llama.cpp through
+(https://github.com/utilityai/llama-cpp-rs), dual-licensed MIT or
+Apache-2.0; used here under MIT.
+
+MIT License
+
+Copyright (c) utilityai and the llama-cpp-rs contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 48. MiniJinja
+
+`local::decide` renders a decision model's prompt from the Jinja template its
+GGUF file carries with MiniJinja (https://github.com/mitsuhiko/minijinja),
+© Armin Ronacher, Apache-2.0 licensed; see entry 32 above for the licence
+text, reproduced there rather than again.
+
+---
+
+## 49. Decision 3.0 models (d3-lite, d3-nano, d3-mini)
+
+The decision models `everyday_core::llm::LocalDecisionModel` offers are vLLM
+Semantic Router's Decision 3.0 models (https://huggingface.co/vllm-sr/d3-lite,
+`d3-nano`, `d3-mini`), fine-tuned from Alibaba Cloud's Qwen3.5 0.8B, 2B and 4B
+(https://huggingface.co/Qwen), as llama.cpp's own GGUF conversions
+(`ggml-org/vllm-d3-*-GGUF`), downloaded on request and pinned by SHA-256 in
+`local::files`. Model weights, Apache-2.0 licensed, as are the Qwen3.5 models
+they are fine-tuned from; see entry 32 above for the licence text. Used as
+published.
+

@@ -13,6 +13,10 @@ everyday-mcp.workspace = true
 # `speech`: local VAD, recognition, diarisation and speaker embeddings
 # through sherpa-onnx -- a paired server still runs the pipeline. See
 # docs/plans/meeting-notes.md and `everyday-service`'s own feature doc.
+# Not `decisions`: this crate is a default workspace member, and the feature
+# would build llama.cpp -- CMake, a C++ compiler -- on a plain `cargo test`.
+# A vault served from here sorts mail at a provider; the desktop app runs a
+# local decision model itself. See docs/plans/mail-sorting.md.
 everyday-service = { workspace = true, features = ["speech"] }
 everyday-vault.workspace = true
 serde.workspace = true

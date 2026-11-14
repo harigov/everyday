@@ -24,7 +24,7 @@
     LocalModel,
     MeetingSettings,
     Offer,
-    SpeechModelInfo,
+    LocalModelInfo,
     TranscriberConfig,
     VoiceprintInfo,
   } from '../lib/types'
@@ -116,7 +116,7 @@
 
   const localSpeech = $derived(meetings.view?.localSpeech ?? true)
 
-  function modelInfo(id: string): SpeechModelInfo | undefined {
+  function modelInfo(id: string): LocalModelInfo | undefined {
     return meetings.models.find((m) => m.id === id)
   }
 
@@ -825,38 +825,6 @@
 
   textarea.terms {
     resize: vertical;
-  }
-
-  .model-row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    padding: var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
-  .model-row.pick {
-    cursor: pointer;
-  }
-  .model-text {
-    display: flex;
-    flex: 1;
-    min-width: 0;
-    flex-direction: column;
-    gap: 2px;
-  }
-  .model-text small {
-    color: var(--fg-subtle);
-    font-size: var(--text-xs);
-  }
-  .model-text small.speed {
-    color: var(--accent);
-  }
-  .model-progress {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    min-width: 180px;
   }
 
   .pick-list {

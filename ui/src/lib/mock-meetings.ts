@@ -33,6 +33,7 @@ import { VaultError } from './types'
 import type {
   CalendarFilter,
   CaptureStatus,
+  DecisionBenchmark,
   EventRef,
   MeetingSettings,
   MeetingSettingsView,
@@ -43,7 +44,7 @@ import type {
   RecordingQuery,
   Segment,
   Speaker,
-  SpeechModelInfo,
+  LocalModelInfo,
   Stage,
   Transcript,
   VoiceprintId,
@@ -212,7 +213,7 @@ export async function mockTestTranscriber(): Promise<void> {
 
 // ── Speech models ────────────────────────────────────────────────────
 
-const speechModels: (SpeechModelInfo & { installed: boolean })[] = [
+const speechModels: (LocalModelInfo & { installed: boolean })[] = [
   {
     id: 'speechKit',
     name: 'Speech kit',
@@ -244,12 +245,59 @@ const speechModels: (SpeechModelInfo & { installed: boolean })[] = [
     progress: null,
     error: null,
   },
+  // The decision models share the catalogue, as in `local::files`; listed by
+  // `decision_models`, not `speech_models`.
+  {
+    id: 'd3Lite',
+    name: 'd3-lite',
+    description:
+      'The smallest and quickest, and the least sure: in testing it put about one plain message in ten in the wrong category.',
+    languages: 'English, best',
+    bytes: 1_082_017_408,
+    installed: false,
+    progress: null,
+    error: null,
+  },
+  {
+    id: 'd3Nano',
+    name: 'd3-nano',
+    description:
+      'Recommended. As good as d3-mini in testing, in about two thirds of the time and memory.',
+    languages: 'English, best',
+    bytes: 2_552_358_496,
+    installed: false,
+    progress: null,
+    error: null,
+  },
+  {
+    id: 'd3Mini',
+    name: 'd3-mini',
+    description:
+      'The largest and most accurate, and the slowest: several seconds a message on most computers.',
+    languages: 'English, best',
+    bytes: 3_707_523_584,
+    installed: false,
+    progress: null,
+    error: null,
+  },
 ]
+
+const DECISION_MODELS = ['d3Lite', 'd3Nano', 'd3Mini']
 
 const downloadTimers = new Map<string, ReturnType<typeof setInterval>>()
 
-export function mockSpeechModels(): SpeechModelInfo[] {
-  return speechModels.map((m) => ({ ...m }))
+export function mockSpeechModels(): LocalModelInfo[] {
+  return speechModels.filter((m) => !DECISION_MODELS.includes(m.id)).map((m) => ({ ...m }))
+}
+
+export function mockDecisionModels(): LocalModelInfo[] {
+  return speechModels.filter((m) => DECISION_MODELS.includes(m.id)).map((m) => ({ ...m }))
+}
+
+export async function mockBenchmarkDecisionModel(id: string): Promise<DecisionBenchmark> {
+  await new Promise((r) => setTimeout(r, 600))
+  const ms = id === 'd3Lite' ? 900 : id === 'd3Nano' ? 1800 : 4200
+  return { loadMs: 400, msPerMessage: ms }
 }
 
 export function mockDownloadSpeechModel(id: string): void {

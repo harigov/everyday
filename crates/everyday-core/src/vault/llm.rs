@@ -77,14 +77,21 @@ impl Vault {
     /// model points at any more are forgotten, so a key cannot linger out of
     /// sight and come back into use when a model is pointed back; and if the
     /// endpoints changed, every account's mail acknowledgement is cleared,
-    /// since what each person agreed to was "my mail may go to *these*".
+    /// since what each person agreed to was "my mail may go to *these*" --
+    /// unless the change only took endpoints away (a decision model moved to
+    /// this computer, a tier switched off). Somebody who agreed to more has
+    /// agreed to less, so an acknowledgement of the old list is moved to the
+    /// new one instead of being cleared out from under the mail features
+    /// that rely on it.
     pub fn save_model_settings(&self, settings: &ModelSettings) -> Result<()> {
         self.writable()?;
         settings.validate()?;
-        let before = self.write(|u| {
+        let (before, fewer) = self.write(|u| {
             let store = u.store.as_ref();
             carry_over(store)?;
-            let before = Models::read(store)?.settings.acknowledgement_name();
+            let old = Models::read(store)?.settings;
+            let before = old.acknowledgement_name();
+            let fewer = settings.endpoints().iter().all(|e| old.endpoints().contains(e));
             store.put_model_settings(settings)?;
             let endpoints = settings.endpoints();
             let mut keys = read_keys(store)?;
@@ -93,13 +100,16 @@ impl Vault {
             if keys.len() != had {
                 write_keys(store, &keys)?;
             }
-            Ok(before)
+            Ok((before, fewer))
         })?;
-        if before != settings.acknowledgement_name() && self.supports_accounts() {
+        let after = settings.acknowledgement_name();
+        if before != after && self.supports_accounts() {
             for mut account in self.accounts()? {
-                if account.assistant_provider_acknowledged.take().is_some() {
-                    self.save_account(&account)?;
+                let Some(ack) = account.assistant_provider_acknowledged.take() else { continue };
+                if fewer && ack == before {
+                    account.assistant_provider_acknowledged = Some(after.clone());
                 }
+                self.save_account(&account)?;
             }
         }
         Ok(())
@@ -123,7 +133,7 @@ impl Vault {
             let store = u.store.as_ref();
             carry_over(store)?;
             let settings = Models::read(store)?.settings;
-            let endpoint = settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))?;
+            let endpoint = key_endpoint(&settings, slot)?;
             let mut keys = read_keys(store)?;
             keys.insert(endpoint.to_string(), key.to_string());
             write_keys(store, &keys)
@@ -139,7 +149,7 @@ impl Vault {
             let store = u.store.as_ref();
             carry_over(store)?;
             let settings = Models::read(store)?.settings;
-            let endpoint = settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))?;
+            let endpoint = key_endpoint(&settings, slot)?;
             let mut keys = read_keys(store)?;
             if keys.remove(endpoint).is_some() {
                 write_keys(store, &keys)?;
@@ -215,12 +225,14 @@ impl Vault {
                 )),
                 other => other,
             })?;
-            let key = models.key_for(config.endpoint()).map(str::to_string);
+            // A model on this computer has no endpoint, so no key either.
+            let endpoint = config.endpoint();
+            let key = endpoint.and_then(|e| models.key_for(e)).map(str::to_string);
             if key.is_none() && config.needs_key() {
                 return Err(Error::Invalid(format!(
                     "no API key is set for the decision model's endpoint ({}); add one in \
                      Settings → Models",
-                    config.endpoint()
+                    endpoint.unwrap_or_default()
                 )));
             }
             Ok(DecisionAccess {
@@ -342,6 +354,16 @@ fn write_keys(store: &dyn JournalStore, keys: &ModelKeys) -> Result<()> {
     let bytes = serde_json::to_vec(keys)
         .map_err(|e| Error::Invalid(format!("the model keys could not be sealed: {e}")))?;
     secrets.put_secret(MODEL_KEYS_OWNER_KIND, MODEL_KEYS_OWNER_ID, &bytes)
+}
+
+/// Where a key set on `slot`'s card is filed: the endpoint it points at.
+/// A decision model on this computer points at none, and says so rather
+/// than reading as switched off.
+fn key_endpoint(settings: &ModelSettings, slot: ModelSlot) -> Result<&str> {
+    if slot == ModelSlot::Decision && settings.decision.as_ref().is_some_and(|d| d.is_local()) {
+        return Err(Error::Invalid("a decision model on this computer needs no key".into()));
+    }
+    settings.endpoint_of(slot).ok_or_else(|| switched_off(slot))
 }
 
 fn switched_off(slot: ModelSlot) -> Error {

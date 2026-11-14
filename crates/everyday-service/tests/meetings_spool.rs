@@ -9,7 +9,7 @@
 //! `spool::begin` refuses unless the settings say meeting notes are on and
 //! [`everyday_service::domains::meetings::view`] says the configured
 //! transcriber is usable, and that check calls straight through to
-//! `everyday_service::meeting::models::{installed, speech_kit_installed}` --
+//! `everyday_service::local::files::{installed, speech_kit_installed}` --
 //! which, for every backend, local or remote, requires the ~40 MB speech
 //! kit to be genuinely present on disk (VAD needs it before anything else
 //! can happen). This suite does not download that just to construct a

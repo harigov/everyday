@@ -107,6 +107,16 @@ provider and model name, configured in **Settings → Models**.
   - a stored level this build does not know reads as unset rather than
     failing the one sealed record every tier lives in.
 
+## The decision card's third way (Nov 2026)
+
+Beside TypeSafe's and OpenAI's request shapes, the Decision card can run a
+model on this computer: `DecisionApi::Local`, with `model` naming a
+`LocalDecisionModel`. It has no address and no key, so it is not one of
+`ModelSettings::endpoints`: switching to it clears nobody's acknowledgement,
+and switching back to a provider does. `set_model_key` on it says it needs
+none rather than "switched off". See docs/plans/mail-sorting.md's "On this
+computer" for the models and how they run.
+
 ## Not done
 
 - **A second wire protocol.** `Provider` still has one variant, OpenAI's chat

@@ -237,12 +237,14 @@ import {
 } from './mock-mail'
 import {
   mockActiveRecording,
+  mockBenchmarkDecisionModel,
   mockBenchmarkSpeechModel,
   mockCancelSpeechModelDownload,
   mockDeleteAllVoiceprints,
   mockDeleteRecording,
   mockDeleteSpeechModel,
   mockDeleteVoiceprint,
+  mockDecisionModels,
   mockDiscardRecording,
   mockDismissMeetingOffer,
   mockDownloadSpeechModel,
@@ -3757,8 +3759,10 @@ let modelSettings: ModelSettings = {
 }
 const modelKeys = new Set<string>(['https://api.openai.com/v1'])
 
-/** `DecisionConfig::endpoint`: the URL, or the API's own maker's. */
-function mockDecisionEndpoint(d: DecisionConfig): string {
+/** `DecisionConfig::endpoint`: the URL, or the API's own maker's -- none for
+ *  a model on this computer. */
+function mockDecisionEndpoint(d: DecisionConfig): string | null {
+  if (d.api === 'local') return null
   return (
     (d.url ?? '').replace(/\/+$/, '') ||
     (d.api === 'openAi'
@@ -3769,12 +3773,13 @@ function mockDecisionEndpoint(d: DecisionConfig): string {
 
 /** Every endpoint a configured card points at, sorted, each once. */
 function mockModelEndpoints(): string[] {
+  const decision = modelSettings.decision ? mockDecisionEndpoint(modelSettings.decision) : null
   return [
     ...new Set([
       ...[modelSettings.large, modelSettings.medium, modelSettings.small]
         .filter((t): t is LLMConfig => t != null)
         .map((t) => mockEndpoint(t.baseUrl)),
-      ...(modelSettings.decision ? [mockDecisionEndpoint(modelSettings.decision)] : []),
+      ...(decision ? [decision] : []),
     ]),
   ].sort()
 }
@@ -3789,6 +3794,7 @@ function modelSettingsView(): ModelSettingsView {
     settings: structuredClone(modelSettings),
     keyed: endpoints.filter((e) => modelKeys.has(e)),
     acknowledgement: endpoints.join(', '),
+    localDecisions: true,
   }
 }
 
@@ -3799,7 +3805,9 @@ function modelSlotEndpoint(args: Record<string, unknown>): string {
     if (!modelSettings.decision) {
       throw new VaultError('invalid', 'no decision model is configured')
     }
-    return mockDecisionEndpoint(modelSettings.decision)
+    const endpoint = mockDecisionEndpoint(modelSettings.decision)
+    if (!endpoint) throw new VaultError('invalid', 'a decision model on this computer needs no key')
+    return endpoint
   }
   const config = modelSettings[tier]
   if (!config) throw new VaultError('invalid', `no ${tier} model is configured`)
@@ -3811,7 +3819,11 @@ function mailSortingView(): MailSortingView {
   const d = modelSettings.decision
   return {
     sorting: mockMailSorting(),
-    decisionModel: d ? `${d.model.trim()} at ${mockDecisionEndpoint(d)}` : null,
+    decisionModel: !d
+      ? null
+      : d.api === 'local'
+        ? `${d.model.trim().replace(/^d3/, 'd3-').toLowerCase()} on this computer`
+        : `${d.model.trim()} at ${mockDecisionEndpoint(d)}`,
     older: mockOlderSortViews(),
   }
 }
@@ -6846,15 +6858,22 @@ export const mockInvoke = async <T>(
     case 'save_model_settings': {
       requireUnlocked()
       const before = modelSettingsView().acknowledgement
+      const beforeEndpoints = mockModelEndpoints()
       modelSettings = structuredClone(args.settings as ModelSettings)
       modelSettings.decision ??= null
       // As the real one: a key no model points at any more is forgotten.
       const inUse = new Set(mockModelEndpoints())
       for (const endpoint of [...modelKeys]) if (!inUse.has(endpoint)) modelKeys.delete(endpoint)
       // And clears every account's mail acknowledgement when the endpoints
-      // change -- see `Vault::save_model_settings`.
-      if (modelSettingsView().acknowledgement !== before) {
-        for (const account of accounts) account.assistantProviderAcknowledged = null
+      // change -- unless they only got fewer, when one given for the old
+      // list moves to the new one. See `Vault::save_model_settings`.
+      const after = modelSettingsView().acknowledgement
+      if (after !== before) {
+        const fewer = [...inUse].every((e) => beforeEndpoints.includes(e))
+        for (const account of accounts) {
+          const kept = fewer && account.assistantProviderAcknowledged === before
+          account.assistantProviderAcknowledged = kept ? after : null
+        }
       }
       return modelSettingsView() as T
     }
@@ -6869,6 +6888,25 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       modelKeys.delete(modelSlotEndpoint(args))
       return modelSettingsView() as T
+
+    case 'decision_models':
+      requireUnlocked()
+      return mockDecisionModels() as T
+    case 'download_decision_model':
+      requireUnlocked()
+      mockDownloadSpeechModel(str(args.id))
+      return undefined as T
+    case 'cancel_decision_model_download':
+      requireUnlocked()
+      mockCancelSpeechModelDownload(str(args.id))
+      return undefined as T
+    case 'delete_decision_model':
+      requireUnlocked()
+      mockDeleteSpeechModel(str(args.id))
+      return undefined as T
+    case 'benchmark_decision_model':
+      requireUnlocked()
+      return (await mockBenchmarkDecisionModel(str(args.id))) as T
 
     case 'list_conversations': {
       requireUnlocked()
