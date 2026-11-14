@@ -1,0 +1,1180 @@
+//! Microsoft Graph: the calendars behind a Microsoft account.
+//!
+//! Graph, not the Outlook-flavoured IMAP endpoint mail reads from -- a
+//! calendar is read over Graph even on an account whose mail is read over
+//! IMAP, which is why `Provider::Microsoft`'s OAuth preset asks for
+//! `Calendars.Read` alongside the IMAP/SMTP scopes rather than an
+//! Outlook-namespaced one. Graph tokens are also a *different resource*
+//! from the `outlook.office.com` one IMAP uses, which is the whole reason
+//! [`super::tokens::Resource::Graph`] and its own `TokenCache` key exist --
+//! see that module's doc.
+//!
+//! The primary calendar's events come from `calendarView/delta`, which
+//! hands back a `deltaLink` to resume from and marks a deleted occurrence
+//! with `"@removed": {"reason": "deleted"}` rather than simply omitting it
+//! -- the shape [`sync`]'s paging loop watches for. Every other calendar is
+//! polled with a plain, windowed `calendarView` and diffed against what was
+//! there before, the same width as [`super::sync_window`]: Graph's delta
+//! query is not guaranteed available on a calendar that is not the
+//! account's default, and the plan settles for the simpler, always-correct
+//! path there rather than probing for delta support per calendar.
+//!
+//! `Prefer: outlook.timezone="UTC"` on every request is what makes
+//! `start.dateTime`/`end.dateTime` parse as plain UTC instants without this
+//! module needing the Windows time zone names Graph would otherwise quote
+//! them in; where a zone name is still read back (`start.timeZone` itself,
+//! or a value from before this header existed on an older response cached
+//! by a proxy), [`karmayoga_core::ics::resolve_tzid`] is the same table
+//! `karmayoga-core`'s own feed parser uses to turn `"Pacific Standard Time"`
+//! into `"America/Los_Angeles"`.
+//!
+//! # A full delta has to compute its own deletions too
+//!
+//! `@removed` only ever describes what changed *since the token Graph was
+//! given*. A delta started fresh -- `since: None`, on a first sync or after
+//! the 410 [`sync`] falls back to on an expired `deltaLink` -- has no such
+//! token and so reports no `@removed` at all, even for an event deleted
+//! while this vault's old link was going stale. [`sync`] treats that case
+//! (and a non-primary calendar's windowed poll, which has no delta of its
+//! own at all) the same way `google.rs` treats its own 410: after the list
+//! comes back, [`super::missing_from_full_resync`] finds whatever this vault
+//! already had in the synced window that the fresh list did not re-mention,
+//! and removes it.
+//!
+//! # 403 is not a bad credential; 429 and 503 are retried
+//!
+//! Graph spends 403 on a calendar this account cannot read, not on a
+//! rejected token -- that is what 401 means. So only a 401 is
+//! [`codes::FORBIDDEN`] here, the code that moves the account to
+//! `NeedsSignIn` (`mod.rs::note_if_credential_is_bad`); a 403 sets this
+//! calendar's own `last_error` and leaves the account alone, the same as a
+//! timeout would. 429 (Graph's own rate limit) and 503 (a transient outage)
+//! are retried with a short backoff, honouring `Retry-After` when Graph
+//! sends one -- see [`get_json_full_url`], which shares its retry loop and
+//! backoff with `google.rs`'s own (`super::retry_after_delay`,
+//! `super::calendar_after_retry_after`).
+
+use std::sync::Arc;
+
+use karmayoga_core::Vault;
+use karmayoga_core::account::Account;
+use karmayoga_core::calendar::{
+    AccountCalendarSource, AccountSyncCursor, Attendee, Calendar, CalendarOrigin, Event,
+    EventStatus, SyncReport,
+};
+use karmayoga_core::id::CalendarId;
+use serde::Deserialize;
+use tokio::time::sleep;
+
+use super::tokens::{self, Credential, Resource};
+use super::{
+    RemoteCalendar, calendar_after_retry_after, deterministic_event_id, retry_after_delay,
+    sync_window,
+};
+use crate::error::{CommandError, CommandResult, codes};
+use crate::http;
+use crate::service::{Service, blocking};
+
+const API: &str = "https://graph.microsoft.com/v1.0";
+/// Graph's own alias for the account's default calendar, used as
+/// `remote_id` so [`sync`] can tell "read this one with delta" from "read
+/// this one with a windowed poll" without a second field on the record.
+const PRIMARY: &str = "primary";
+
+#[derive(Deserialize)]
+struct CalendarListResponse {
+    #[serde(default)]
+    value: Vec<GraphCalendarListItem>,
+}
+
+#[derive(Deserialize)]
+struct GraphCalendarListItem {
+    id: String,
+    #[serde(default)]
+    name: String,
+    color: Option<String>,
+    #[serde(default, rename = "isDefaultCalendar")]
+    is_default: bool,
+    #[serde(rename = "hexColor")]
+    hex_color: Option<String>,
+    /// Whether this account may add and change events here: false on a
+    /// colleague's calendar shared for reading, true on every one of the
+    /// account's own. Absent reads as true, the way a CalDAV collection's
+    /// silence does -- the first refused write is what tells the truth then.
+    #[serde(rename = "canEdit")]
+    can_edit: Option<bool>,
+}
+
+pub async fn discover(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+) -> CommandResult<Vec<RemoteCalendar>> {
+    let token = graph_bearer(svc, vault, account).await?;
+    let body: CalendarListResponse = get_json(&format!("{API}/me/calendars"), &token).await?;
+    Ok(body
+        .value
+        .into_iter()
+        .map(|item| RemoteCalendar {
+            writable: item.can_edit.unwrap_or(true),
+            remote_id: if item.is_default { PRIMARY.to_string() } else { item.id },
+            name: item.name,
+            // Graph's "named colour" (`lightBlue`, `auto`, ...) is not a hex
+            // triple the interface's swatches can use; `hexColor` is, when
+            // the tenant has set one, and is preferred over it.
+            color: item.hex_color.or(item.color).filter(|c| c.starts_with('#')),
+            source: AccountCalendarSource::Graph,
+        })
+        .collect())
+}
+
+pub async fn sync(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    calendar: &Calendar,
+) -> CommandResult<SyncReport> {
+    sync_with_base(svc, vault, account, calendar, API).await
+}
+
+/// [`sync`]'s own body, over `base` rather than the hardcoded [`API`] -- see
+/// `google.rs`'s `sync_with_base` for why this split exists.
+async fn sync_with_base(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    calendar: &Calendar,
+    base: &str,
+) -> CommandResult<SyncReport> {
+    let CalendarOrigin::Account { remote_id, .. } = &calendar.origin else {
+        return Err(CommandError::new(codes::INVALID, "not an account calendar"));
+    };
+    let token = graph_bearer(svc, vault, account).await?;
+
+    // `full_resync_window` is `Some` exactly when this sync's list cannot be
+    // trusted to have mentioned a deletion on its own -- a primary
+    // calendar's delta with no earlier token to resume from (a first sync,
+    // or the 410 fallback), and a non-primary calendar's windowed poll,
+    // which never has a delta at all. See the module doc.
+    let (upsert_raw, removed_raw, next_link, full_resync_window) = if remote_id == PRIMARY {
+        let since = calendar.account_sync.token.as_deref();
+        match delta_sync(base, &token, since).await {
+            Ok(page) => {
+                let window = if since.is_none() { Some(sync_window()) } else { None };
+                (page.0, page.1, page.2, window)
+            }
+            // Graph's 410: the delta link is too old to resume from. Start
+            // a fresh delta over the sync window, the same fallback
+            // `google.rs` takes on its own 410.
+            Err(e) if e.code == codes::CONFLICT => {
+                let window = sync_window();
+                let page = delta_sync(base, &token, None).await?;
+                (page.0, page.1, page.2, Some(window))
+            }
+            Err(e) => return Err(e),
+        }
+    } else {
+        let window = sync_window();
+        let page = windowed_sync(base, &token, remote_id).await?;
+        (page.0, page.1, page.2, Some(window))
+    };
+
+    let mut upsert = Vec::new();
+    let mut remove_ids: Vec<karmayoga_core::id::EventId> =
+        removed_raw.iter().map(|raw_id| deterministic_event_id(calendar.id, raw_id)).collect();
+    for item in &upsert_raw {
+        if let Some(event) = to_event(calendar.id, item, svc.now()) {
+            upsert.push(event);
+        } else {
+            remove_ids.push(deterministic_event_id(calendar.id, &item.id));
+        }
+    }
+
+    // A full list -- a fresh delta with nothing to resume from, or a
+    // non-primary calendar's plain windowed poll -- never speaks for a
+    // deletion on its own; see the module doc.
+    if let Some(window) = full_resync_window {
+        let kept: std::collections::HashSet<_> =
+            upsert.iter().map(|e| e.id).chain(remove_ids.iter().copied()).collect();
+        let stale = super::missing_from_full_resync(vault, calendar.id, window, &kept).await?;
+        remove_ids.extend(stale);
+    }
+
+    let cursor = AccountSyncCursor { token: next_link, ..Default::default() };
+    let vault = vault.clone();
+    let id = calendar.id;
+    blocking(move || Ok(vault.sync_account_calendar(id, &upsert, &remove_ids, cursor)?)).await
+}
+
+#[derive(Debug, Deserialize)]
+struct DeltaPage {
+    #[serde(default)]
+    value: Vec<GraphEvent>,
+    #[serde(rename = "@odata.nextLink")]
+    next_link: Option<String>,
+    #[serde(rename = "@odata.deltaLink")]
+    delta_link: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphEvent {
+    id: String,
+    #[serde(default)]
+    subject: String,
+    #[serde(rename = "bodyPreview", default)]
+    body_preview: String,
+    location: Option<GraphLocation>,
+    start: Option<GraphWhen>,
+    end: Option<GraphWhen>,
+    #[serde(rename = "isAllDay", default)]
+    is_all_day: bool,
+    #[serde(rename = "showAs", default)]
+    show_as: String,
+    #[serde(rename = "isCancelled", default)]
+    is_cancelled: bool,
+    organizer: Option<GraphAttendeeWrap>,
+    #[serde(default)]
+    attendees: Vec<GraphAttendeeWrap>,
+    #[serde(rename = "webLink", default)]
+    web_link: String,
+    #[serde(rename = "@removed")]
+    removed: Option<serde_json::Value>,
+    /// Set on every instance of a recurring event, to the id of the series
+    /// master they all expand from -- stable across occurrences, unlike
+    /// `id` itself. Absent on a one-off event. See [`Event::series`]
+    /// (`karmayoga_core::calendar`) and `detect::series_key`'s own doc.
+    #[serde(rename = "seriesMasterId")]
+    series_master_id: Option<String>,
+    /// The iCalendar UID, present on every event and shared by every
+    /// occurrence of a recurring one -- the fallback when
+    /// `seriesMasterId` is absent.
+    #[serde(rename = "iCalUId")]
+    i_cal_u_id: Option<String>,
+    /// Whether this account organised it -- [`Event::own`]. Left unknown
+    /// when an answer leaves it out, rather than guessed either way.
+    #[serde(rename = "isOrganizer")]
+    is_organizer: Option<bool>,
+    /// Graph's one reminder: whether it is on, and how long before.
+    #[serde(rename = "isReminderOn")]
+    is_reminder_on: Option<bool>,
+    #[serde(rename = "reminderMinutesBeforeStart")]
+    reminder_minutes_before_start: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphLocation {
+    #[serde(rename = "displayName", default)]
+    display_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphWhen {
+    #[serde(rename = "dateTime")]
+    date_time: String,
+    #[serde(rename = "timeZone")]
+    time_zone: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphAttendeeWrap {
+    #[serde(rename = "emailAddress")]
+    email_address: GraphEmailAddress,
+    /// `required`, `optional` or `resource` -- a room.
+    #[serde(rename = "type", default)]
+    kind: String,
+    status: Option<GraphResponseStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphResponseStatus {
+    /// `none`, `organizer`, `tentativelyAccepted`, `accepted`, `declined`
+    /// or `notResponded`.
+    #[serde(default)]
+    response: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphEmailAddress {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    address: String,
+}
+
+impl GraphAttendeeWrap {
+    fn label(&self) -> String {
+        if !self.email_address.name.is_empty() {
+            self.email_address.name.clone()
+        } else {
+            self.email_address.address.clone()
+        }
+    }
+
+    /// As [`Event::guests`] holds it; `None` for a room.
+    fn guest(&self) -> Option<Attendee> {
+        let email = self.email_address.address.trim();
+        if self.kind == "resource" || email.is_empty() {
+            return None;
+        }
+        let response = self.status.as_ref().and_then(|s| write::response(&s.response));
+        Some(Attendee {
+            email: email.to_string(),
+            name: self.email_address.name.trim().to_string(),
+            response,
+        })
+    }
+}
+
+/// `calendarView/delta` on the primary calendar: page through `@odata.nextLink`
+/// until Graph hands back `@odata.deltaLink` instead, which is the token to
+/// present next time. `since` is `None` on a first sync, which starts a
+/// fresh delta over [`super::sync_window`]; `Some(link)` on every later one,
+/// which resumes from exactly where the last sync left off and needs no
+/// window at all -- delta already knows what it has told this vault before.
+///
+/// `base` is [`API`] in production and a mock server's own address under
+/// test -- see this module's tests -- so `since: None`'s own request, the
+/// paging loop and the `@removed` handling can all be checked without
+/// reaching Graph at all. Ignored when `since` already names a full
+/// `@odata.nextLink`/`deltaLink`, which is already an absolute URL.
+async fn delta_sync(
+    base: &str,
+    token: &str,
+    since: Option<&str>,
+) -> CommandResult<(Vec<GraphEvent>, Vec<String>, Option<String>)> {
+    let mut url = match since {
+        Some(link) => link.to_string(),
+        None => {
+            let (from, to) = sync_window();
+            format!(
+                "{base}/me/calendarView/delta?startDateTime={}&endDateTime={}",
+                rfc3339_start(from),
+                rfc3339_start(to)
+            )
+        }
+    };
+    let mut items = Vec::new();
+    // Graph's own event ids for everything `"@removed"` marked -- turned
+    // into this vault's deterministic ids by `sync`, which is the one place
+    // that knows the calendar these belong to; this function stays
+    // calendar-agnostic, which is what lets it be tested (see the unit
+    // tests below) without a `CalendarId` in the fixture.
+    let mut removed = Vec::new();
+    let delta_link;
+    loop {
+        let page: DeltaPage = get_json_full_url(&url, token).await?;
+        for item in page.value {
+            if item.removed.is_some() {
+                removed.push(item.id);
+            } else {
+                items.push(item);
+            }
+        }
+        if let Some(next) = page.next_link {
+            url = next;
+            continue;
+        }
+        delta_link = page.delta_link;
+        break;
+    }
+    Ok((items, removed, delta_link))
+}
+
+/// A plain, windowed `calendarView` for a calendar that is not the primary
+/// one. No delta and nothing to page beyond what a single bounded window
+/// returns; [`sync`] diffs the result against what this vault already had
+/// inside that window, through [`super::missing_from_full_resync`], the same
+/// way a feed's whole-calendar replace does.
+async fn windowed_sync(
+    base: &str,
+    token: &str,
+    calendar_remote_id: &str,
+) -> CommandResult<(Vec<GraphEvent>, Vec<String>, Option<String>)> {
+    let (from, to) = sync_window();
+    let url = format!(
+        "{base}/me/calendars/{calendar_remote_id}/calendarView?startDateTime={}&endDateTime={}",
+        rfc3339_start(from),
+        rfc3339_start(to)
+    );
+    let mut items = Vec::new();
+    let mut next = Some(url);
+    while let Some(url) = next.take() {
+        let page: DeltaPage = get_json_full_url(&url, token).await?;
+        items.extend(page.value.into_iter().filter(|e| e.removed.is_none()));
+        next = page.next_link;
+    }
+    Ok((items, Vec::new(), None))
+}
+
+/// One Graph event, mapped into this vault's shape. `None` when the event
+/// is missing the one thing every occurrence needs -- a start -- which
+/// `sync` reads as "this id is no longer a usable event" and removes rather
+/// than drops silently.
+fn to_event(calendar_id: CalendarId, item: &GraphEvent, now: jiff::Timestamp) -> Option<Event> {
+    if item.is_cancelled {
+        return None;
+    }
+    let start = item.start.as_ref()?;
+    let end = item.end.as_ref().unwrap_or(start);
+    let start_zone = graph_zone(&start.time_zone);
+    let end_zone = graph_zone(&end.time_zone);
+    let start_ts = parse_graph_datetime(&start.date_time, &start_zone)?;
+    let end_ts = parse_graph_datetime(&end.date_time, &end_zone)?.max(start_ts);
+    let local_date = start_ts.to_zoned(start_zone.clone()).date();
+    let mut end_date = end_ts.to_zoned(end_zone).date();
+    // Graph's all-day `end.dateTime` is exclusive, like RFC 5545's.
+    if item.is_all_day && end_date > local_date {
+        end_date = end_date.yesterday().unwrap_or(end_date);
+    }
+
+    Some(Event {
+        id: deterministic_event_id(calendar_id, &item.id),
+        calendar_id,
+        uid: item.id.clone(),
+        title: if item.subject.is_empty() {
+            "(no title)".to_string()
+        } else {
+            item.subject.clone()
+        },
+        description: item.body_preview.clone(),
+        location: item.location.as_ref().map(|l| l.display_name.clone()).unwrap_or_default(),
+        start: start_ts,
+        end: end_ts,
+        local_date,
+        end_date: end_date.max(local_date),
+        tz: start.time_zone.clone(),
+        all_day: item.is_all_day,
+        status: EventStatus::Confirmed,
+        organizer: item.organizer.as_ref().map(GraphAttendeeWrap::label).unwrap_or_default(),
+        attendees: item.attendees.iter().map(GraphAttendeeWrap::label).collect(),
+        guests: item.attendees.iter().filter_map(GraphAttendeeWrap::guest).collect(),
+        url: item.web_link.clone(),
+        busy: !matches!(item.show_as.as_str(), "free" | "workingElsewhere"),
+        series: item.series_master_id.clone().or_else(|| item.i_cal_u_id.clone()),
+        own: item.is_organizer,
+        // Said nothing, said off, or said when.
+        alerts: match (item.is_reminder_on, item.reminder_minutes_before_start) {
+            (None, _) => None,
+            (Some(true), Some(minutes)) => {
+                Some(karmayoga_core::calendar::tidy_alerts(i32::try_from(minutes).ok()))
+            }
+            (Some(_), _) => Some(Vec::new()),
+        },
+        updated_at: now,
+    })
+}
+
+/// Graph's own zone name, resolved to an IANA one this application's own
+/// `jiff` can look up. `Prefer: outlook.timezone="UTC"` (every request this
+/// module makes carries it -- see [`get_json_full_url`]) means this is
+/// almost always literally `"UTC"`; the fallback through
+/// [`karmayoga_core::ics::resolve_tzid`] -- the same Windows-zone table a
+/// subscribed Outlook feed is read through -- covers a cached or
+/// unexpectedly-timezoned response rather than assuming one can never
+/// arrive.
+fn graph_zone(name: &str) -> jiff::tz::TimeZone {
+    let iana = karmayoga_core::ics::resolve_tzid(name).unwrap_or_else(|| name.to_string());
+    jiff::tz::TimeZone::get(&iana).unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+/// Graph's `dateTime` is a local wall-clock reading with no offset of its
+/// own -- `"2026-09-14T09:00:00.0000000"` -- meant to be read in whatever
+/// `timeZone` said alongside it.
+fn parse_graph_datetime(raw: &str, zone: &jiff::tz::TimeZone) -> Option<jiff::Timestamp> {
+    let trimmed = raw.split('.').next().unwrap_or(raw);
+    let dt = jiff::civil::DateTime::strptime("%Y-%m-%dT%H:%M:%S", trimmed).ok()?;
+    dt.to_zoned(zone.clone()).ok().map(|z| z.timestamp())
+}
+
+async fn graph_bearer(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+) -> CommandResult<String> {
+    match tokens::credential(svc, vault, account, Resource::Graph).await? {
+        Credential::Bearer(token) => Ok(token),
+        Credential::Basic(_) => {
+            Err(CommandError::new(codes::INVALID, "a Microsoft account must sign in with OAuth"))
+        }
+    }
+}
+
+fn rfc3339_start(d: jiff::civil::Date) -> String {
+    format!("{d}T00:00:00Z")
+}
+
+async fn get_json<T: serde::de::DeserializeOwned>(url: &str, token: &str) -> CommandResult<T> {
+    get_json_full_url(url, token).await
+}
+
+/// A GET with a bearer token and the `outlook.timezone` preference header,
+/// retrying a 429 or a 503 with a short backoff before giving up -- see the
+/// module doc's "403 is not a bad credential; 429 and 503 are retried".
+async fn get_json_full_url<T: serde::de::DeserializeOwned>(
+    url: &str,
+    token: &str,
+) -> CommandResult<T> {
+    let mut attempt = 0u32;
+    loop {
+        attempt += 1;
+        let response = http::client()?
+            .get(url)
+            .bearer_auth(token)
+            // What makes `GraphWhen::date_time` a plain UTC instant rather
+            // than a Windows-zoned local time -- see the module doc.
+            .header("Prefer", "outlook.timezone=\"UTC\"")
+            .send()
+            .await
+            .map_err(|e| {
+                CommandError::new(
+                    http::transport_code(&e),
+                    format!("could not reach Microsoft Graph: {e}"),
+                )
+            })?;
+        let status = response.status().as_u16();
+        if status == 401 {
+            return Err(CommandError::new(
+                codes::FORBIDDEN,
+                "Microsoft Graph refused this account's credential",
+            ));
+        }
+        if status == 403 {
+            // This account can reach Graph fine; this calendar specifically
+            // cannot be read. Not a credential problem -- see the module
+            // doc -- so it must not move the account to `NeedsSignIn`.
+            return Err(CommandError::new(
+                codes::NETWORK,
+                "Microsoft Graph refused this request: this account cannot read that calendar"
+                    .to_string(),
+            ));
+        }
+        if status == 429 || status == 503 {
+            let policy = calendar_after_retry_after();
+            if policy.gives_up_after(attempt) {
+                return Err(CommandError::new(
+                    codes::RATE_LIMITED,
+                    format!(
+                        "Microsoft Graph answered {status} too many times in a row; it will be \
+                         tried again on the next sync"
+                    ),
+                ));
+            }
+            let retry_after = retry_after_delay(response.headers());
+            sleep(retry_after.unwrap_or_else(|| policy.delay_for(attempt))).await;
+            continue;
+        }
+        if status == 410 {
+            // Graph's own token-expiry signal for a delta link, same idea as
+            // Google's: the caller has to start over. Surfaced as `CONFLICT`
+            // for the same reason `google.rs` uses it, though today only a
+            // primary-calendar delta sync can produce this -- a windowed poll
+            // never presents a token Graph could reject.
+            return Err(CommandError::new(
+                codes::CONFLICT,
+                "Microsoft Graph's delta link has expired",
+            ));
+        }
+        if !response.status().is_success() {
+            return Err(CommandError::new(
+                codes::NETWORK,
+                format!("Microsoft Graph answered {status}"),
+            ));
+        }
+        return response.json().await.map_err(|e| {
+            CommandError::new(
+                codes::NETWORK,
+                format!("could not read Microsoft Graph's answer: {e}"),
+            )
+        });
+    }
+}
+
+/// This source's [`super::CalendarProvider`] -- see `caldav.rs`'s own
+/// `CalDavProvider` for why this thin wrapper exists.
+pub(crate) struct GraphProvider;
+
+impl super::CalendarProvider for GraphProvider {
+    fn discover<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+    ) -> super::BoxFuture<'a, CommandResult<Vec<RemoteCalendar>>> {
+        Box::pin(discover(svc, vault, account))
+    }
+
+    fn sync<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+    ) -> super::BoxFuture<'a, CommandResult<SyncReport>> {
+        Box::pin(sync(svc, vault, account, calendar))
+    }
+
+    fn create<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        draft: &'a karmayoga_core::calendar::EventDraft,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::create(svc, vault, account, calendar, draft))
+    }
+
+    fn load<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a karmayoga_core::calendar::Event,
+    ) -> super::BoxFuture<'a, CommandResult<karmayoga_core::calendar::EditableEvent>> {
+        Box::pin(write::load(svc, vault, account, calendar, event))
+    }
+
+    fn update<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a karmayoga_core::calendar::Event,
+        draft: &'a karmayoga_core::calendar::EventDraft,
+        scope: karmayoga_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::update(svc, vault, account, calendar, event, draft, scope))
+    }
+
+    fn delete<'a>(
+        &'a self,
+        svc: &'a Arc<Service>,
+        vault: &'a Arc<Vault>,
+        account: &'a Account,
+        calendar: &'a Calendar,
+        event: &'a karmayoga_core::calendar::Event,
+        scope: karmayoga_core::calendar::EventScope,
+    ) -> super::BoxFuture<'a, CommandResult<()>> {
+        Box::pin(write::delete(svc, vault, account, calendar, event, scope))
+    }
+}
+
+/// Creating, changing and deleting events -- see `accountcal`'s module doc,
+/// "Writing". A child module rather than a sibling, so it shares this
+/// file's private request helpers instead of having them re-exported.
+#[path = "graph_write.rs"]
+mod write;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use karmayoga_core::mail::AttendeeResponse;
+
+    #[test]
+    fn windows_zone_names_resolve_through_the_shared_table() {
+        // The same table `karmayoga_core::ics` uses for a subscribed Outlook
+        // feed -- see `graph_zone`'s doc -- so a Windows zone name and its
+        // IANA equivalent must parse the same `dateTime` to the same instant.
+        let windows = parse_graph_datetime(
+            "2026-01-15T09:00:00.0000000",
+            &graph_zone("Pacific Standard Time"),
+        )
+        .unwrap();
+        let iana =
+            parse_graph_datetime("2026-01-15T09:00:00.0000000", &graph_zone("America/Los_Angeles"))
+                .unwrap();
+        assert_eq!(windows, iana);
+    }
+
+    #[test]
+    fn an_unrecognised_zone_name_falls_back_to_utc_rather_than_failing() {
+        let zone = graph_zone("Not A Real Zone");
+        let parsed = parse_graph_datetime("2026-01-15T09:00:00.0000000", &zone).unwrap();
+        let utc =
+            parse_graph_datetime("2026-01-15T09:00:00.0000000", &jiff::tz::TimeZone::UTC).unwrap();
+        assert_eq!(parsed, utc);
+    }
+
+    /// A two-page mock of `calendarView/delta`: page one has one live event
+    /// and one `"@removed"` one, page two (reached only through
+    /// `@odata.nextLink`) has one more live event and ends the page with
+    /// `@odata.deltaLink` -- the token [`delta_sync`] hands back to resume
+    /// from next time. Exercises paging and `@removed` handling together,
+    /// which is the shape a real incremental sync actually produces: a
+    /// deletion rarely lands alone on its own page.
+    async fn mock_delta_pages() -> String {
+        use axum::Json;
+        use axum::extract::State;
+        use axum::routing::get;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let next_link = format!("{base}/delta2");
+
+        let app = axum::Router::new()
+            .route(
+                "/delta1",
+                get(move || {
+                    let next_link = next_link.clone();
+                    async move {
+                        Json(serde_json::json!({
+                            "value": [
+                                {
+                                    "id": "evt-1",
+                                    "subject": "Kept",
+                                    "start": {"dateTime": "2026-09-14T09:00:00.0000000", "timeZone": "UTC"},
+                                    "end": {"dateTime": "2026-09-14T09:30:00.0000000", "timeZone": "UTC"},
+                                    "isAllDay": false,
+                                    "showAs": "busy",
+                                },
+                                {
+                                    "id": "evt-2-gone",
+                                    "@removed": {"reason": "deleted"},
+                                },
+                            ],
+                            "@odata.nextLink": next_link,
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/delta2",
+                get(move |State(base): State<String>| async move {
+                    Json(serde_json::json!({
+                        "value": [
+                            {
+                                "id": "evt-3",
+                                "subject": "Also kept",
+                                "start": {"dateTime": "2026-09-15T09:00:00.0000000", "timeZone": "UTC"},
+                                "end": {"dateTime": "2026-09-15T09:30:00.0000000", "timeZone": "UTC"},
+                                "isAllDay": false,
+                                "showAs": "busy",
+                            },
+                        ],
+                        "@odata.deltaLink": format!("{base}/delta-resume-token"),
+                    }))
+                }),
+            )
+            .with_state(base.clone());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("{base}/delta1")
+    }
+
+    #[tokio::test]
+    async fn delta_paging_collects_every_page_and_treats_removed_as_deletions() {
+        let first_page = mock_delta_pages().await;
+        // `since` already names a full `@odata.nextLink` here, so `base` is
+        // never consulted -- see `delta_sync`'s own doc.
+        let (items, removed, delta_link) =
+            delta_sync("unused-base", "token-does-not-matter-here", Some(&first_page))
+                .await
+                .expect("the mock server answers both pages");
+
+        assert_eq!(items.len(), 2, "one live event from each page");
+        assert_eq!(items[0].id, "evt-1");
+        assert_eq!(items[1].id, "evt-3");
+        assert_eq!(removed, vec!["evt-2-gone".to_string()]);
+        assert!(
+            delta_link.as_deref().is_some_and(|link| link.ends_with("/delta-resume-token")),
+            "the final page's deltaLink is what a later sync resumes from: {delta_link:?}"
+        );
+    }
+
+    // ---- finding 2: 403 is not a bad credential; 429 and 503 are retried --
+
+    async fn mock_status_then_ok(
+        first_status: axum::http::StatusCode,
+        retry_after: Option<&'static str>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU32>) {
+        use axum::Json;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                let calls_for_route = calls_for_route.clone();
+                async move {
+                    let call = calls_for_route.fetch_add(1, Ordering::SeqCst);
+                    if call == 0 {
+                        let mut resp = first_status.into_response();
+                        if let Some(ra) = retry_after {
+                            resp.headers_mut().insert(
+                                axum::http::header::RETRY_AFTER,
+                                axum::http::HeaderValue::from_static(ra),
+                            );
+                        }
+                        resp
+                    } else {
+                        Json(serde_json::json!({"value": []})).into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://127.0.0.1:{port}/x"), calls)
+    }
+
+    #[tokio::test]
+    async fn a_429_is_retried_honouring_retry_after_and_then_succeeds() {
+        let (url, calls) =
+            mock_status_then_ok(axum::http::StatusCode::TOO_MANY_REQUESTS, Some("0")).await;
+        let page: DeltaPage =
+            get_json_full_url(&url, "tok").await.expect("retried, then succeeded");
+        assert!(page.value.is_empty());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "one retry, then success");
+    }
+
+    #[tokio::test]
+    async fn a_503_is_also_retried_the_same_way() {
+        let (url, calls) =
+            mock_status_then_ok(axum::http::StatusCode::SERVICE_UNAVAILABLE, Some("0")).await;
+        let _: DeltaPage = get_json_full_url(&url, "tok").await.expect("retried, then succeeded");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_403_sets_this_calendars_failure_not_the_accounts_credential() {
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = calls.clone();
+        let app = axum::Router::new().route(
+            "/x",
+            get(move || {
+                calls_for_route.fetch_add(1, Ordering::SeqCst);
+                async { axum::http::StatusCode::FORBIDDEN.into_response() }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/x");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let err = get_json_full_url::<DeltaPage>(&url, "tok").await.unwrap_err();
+        assert_ne!(
+            err.code,
+            codes::FORBIDDEN,
+            "a calendar this account cannot read must not look like a bad credential"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "not a rate limit, so never retried");
+    }
+
+    #[tokio::test]
+    async fn a_401_is_still_reported_as_forbidden() {
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+
+        let app = axum::Router::new()
+            .route("/x", get(|| async { axum::http::StatusCode::UNAUTHORIZED.into_response() }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}/x");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let err = get_json_full_url::<DeltaPage>(&url, "tok").await.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
+    }
+
+    // ---- finding 1: a full delta after a 410 must compute its own
+    // deletions, for the primary calendar too --------------------------
+
+    /// `pub(super)` so the writing half's own tests (`graph_write.rs`) build
+    /// on the same one -- see `google.rs`'s `test_vault` for why it is not
+    /// simply shared with `tests/support/vault.rs`.
+    pub(super) fn test_vault() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = karmayoga_core::VaultConfig {
+            name: "Test".into(),
+            backend: "sqlite".into(),
+            settings: Default::default(),
+            password: None,
+            kdf: karmayoga_core::crypto::KdfParams::insecure_fast(),
+            auto_lock_seconds: 900,
+            forget_key_seconds: 0,
+        };
+        let vault = karmayoga_vault::create(dir.path(), config).unwrap();
+        let svc = Arc::new(Service::new());
+        let vault = svc.set(vault);
+        (svc, vault, dir)
+    }
+
+    #[tokio::test]
+    async fn a_full_delta_after_a_410_removes_an_event_the_fresh_list_no_longer_names() {
+        use axum::Json;
+        use axum::extract::Query;
+        use axum::response::IntoResponse;
+        use axum::routing::get;
+        use karmayoga_core::account::{Account, AccountSecret, AuthMethod, Provider};
+        use karmayoga_core::store::calendars::EventQuery;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let windowed_calls = std::sync::Arc::new(AtomicU32::new(0));
+        let calls_for_route = windowed_calls.clone();
+        let start = "2026-09-15T09:00:00.0000000".to_string();
+        let end = "2026-09-15T09:30:00.0000000".to_string();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let base = format!("http://127.0.0.1:{port}");
+        let base_for_route = base.clone();
+
+        let app = axum::Router::new()
+            .route(
+                "/token",
+                axum::routing::post(|| async {
+                    Json(serde_json::json!({
+                        "access_token": "access-1",
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                    }))
+                }),
+            )
+            .route(
+                "/me/calendarView/delta",
+                get(move |Query(_params): Query<std::collections::HashMap<String, String>>| {
+                    let calls_for_route = calls_for_route.clone();
+                    let start = start.clone();
+                    let end = end.clone();
+                    let base_for_route = base_for_route.clone();
+                    async move {
+                        let call = calls_for_route.fetch_add(1, Ordering::SeqCst);
+                        if call == 0 {
+                            // The first, genuine full delta: both events
+                            // exist, and its own deltaLink becomes "stale".
+                            let delta_link = format!("{base_for_route}/stale-delta");
+                            Json(serde_json::json!({
+                                "value": [
+                                    {"id": "evt-a", "subject": "Keeps",
+                                     "start": {"dateTime": start, "timeZone": "UTC"},
+                                     "end": {"dateTime": end, "timeZone": "UTC"},
+                                     "isAllDay": false, "showAs": "busy"},
+                                    {"id": "evt-b", "subject": "Deleted while stale",
+                                     "start": {"dateTime": start, "timeZone": "UTC"},
+                                     "end": {"dateTime": end, "timeZone": "UTC"},
+                                     "isAllDay": false, "showAs": "busy"},
+                                ],
+                                "@odata.deltaLink": delta_link,
+                            }))
+                            .into_response()
+                        } else {
+                            // The 410 fallback's own fresh, windowed delta:
+                            // evt-b is simply absent.
+                            Json(serde_json::json!({
+                                "value": [
+                                    {"id": "evt-a", "subject": "Keeps",
+                                     "start": {"dateTime": start, "timeZone": "UTC"},
+                                     "end": {"dateTime": end, "timeZone": "UTC"},
+                                     "isAllDay": false, "showAs": "busy"},
+                                ],
+                                "@odata.deltaLink": "http://unused/fresh-delta",
+                            }))
+                            .into_response()
+                        }
+                    }
+                }),
+            )
+            .route("/stale-delta", get(|| async { axum::http::StatusCode::GONE.into_response() }));
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+
+        let (svc, vault, _dir) = test_vault();
+        let mut account = Account::new(Provider::Microsoft, "person@example.com");
+        account.services.calendar = true;
+        account.auth = AuthMethod::OAuth {
+            client_id: "test-client".into(),
+            auth_url: "https://example.test/auth".into(),
+            token_url: format!("{base}/token"),
+            scopes: vec!["Calendars.Read".into()],
+        };
+        vault.save_account(&account).unwrap();
+        vault
+            .save_account_secret(
+                account.id,
+                &AccountSecret { refresh_token: Some("refresh-1".into()), ..Default::default() },
+            )
+            .unwrap();
+
+        let calendar = Calendar::from_account(
+            account.id,
+            account.provider,
+            AccountCalendarSource::Graph,
+            PRIMARY,
+            "Calendar",
+        );
+        vault.save_calendar(&calendar).unwrap();
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base).await.expect("first sync");
+        let after_first = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(after_first.len(), 2, "both events land on a genuine first sync");
+
+        let calendar = vault.calendar(calendar.id).unwrap();
+        assert!(
+            calendar.account_sync.token.as_deref().is_some_and(|t| t.ends_with("/stale-delta")),
+            "the first sync's own deltaLink is what the second sync tries to resume from: {:?}",
+            calendar.account_sync.token
+        );
+
+        sync_with_base(&svc, &vault, &account, &calendar, &base)
+            .await
+            .expect("second sync, after the 410 fallback");
+        let after_second = vault
+            .events(&EventQuery { calendar_id: Some(calendar.id), ..Default::default() })
+            .unwrap();
+        assert_eq!(
+            after_second.len(),
+            1,
+            "evt-b must be gone once the fresh full delta stopped naming it, even though \
+             Graph reported no @removed at all"
+        );
+        assert_eq!(after_second[0].uid, "evt-a");
+    }
+
+    // ---- Event::series mapping ----------------------------------------------
+
+    fn bare_graph_event(id: &str) -> GraphEvent {
+        GraphEvent {
+            id: id.to_string(),
+            subject: "Weekly standup".into(),
+            body_preview: String::new(),
+            location: None,
+            start: Some(GraphWhen {
+                date_time: "2026-09-16T09:00:00.0000000".into(),
+                time_zone: "UTC".into(),
+            }),
+            end: Some(GraphWhen {
+                date_time: "2026-09-16T09:30:00.0000000".into(),
+                time_zone: "UTC".into(),
+            }),
+            is_all_day: false,
+            show_as: "busy".into(),
+            is_cancelled: false,
+            organizer: None,
+            attendees: Vec::new(),
+            web_link: String::new(),
+            removed: None,
+            series_master_id: None,
+            i_cal_u_id: None,
+            is_organizer: None,
+            is_reminder_on: None,
+            reminder_minutes_before_start: None,
+        }
+    }
+
+    #[test]
+    fn a_reminder_that_is_on_is_the_events_alert_and_one_that_is_off_is_not() {
+        let mut item: GraphEvent = serde_json::from_value(serde_json::json!({
+            "id": "a",
+            "start": { "dateTime": "2026-09-16T09:00:00.0000000", "timeZone": "UTC" },
+            "end": { "dateTime": "2026-09-16T09:30:00.0000000", "timeZone": "UTC" },
+            "isReminderOn": true,
+            "reminderMinutesBeforeStart": 15,
+        }))
+        .unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, Some(vec![15]));
+        item.is_reminder_on = Some(false);
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, Some(vec![]), "switched off is said, and kept");
+        item.is_reminder_on = None;
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.alerts, None);
+    }
+
+    /// Guests keep their address and answer; a room is not a guest.
+    #[test]
+    fn attendees_become_guests_with_their_answers_and_rooms_are_left_out() {
+        let item: GraphEvent = serde_json::from_value(serde_json::json!({
+            "id": "a",
+            "start": { "dateTime": "2026-09-16T09:00:00.0000000", "timeZone": "UTC" },
+            "end": { "dateTime": "2026-09-16T09:30:00.0000000", "timeZone": "UTC" },
+            "attendees": [
+                { "type": "required", "status": { "response": "accepted" },
+                  "emailAddress": { "name": "Priya Raman", "address": "priya@example.com" } },
+                { "type": "optional", "status": { "response": "tentativelyAccepted" },
+                  "emailAddress": { "name": "", "address": "bob@example.com" } },
+                { "type": "required", "status": { "response": "declined" },
+                  "emailAddress": { "name": "Dev", "address": "dev@example.com" } },
+                { "type": "resource", "status": { "response": "accepted" },
+                  "emailAddress": { "name": "Room 4", "address": "room4@example.com" } }
+            ]
+        }))
+        .unwrap();
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        let guests: Vec<(&str, Option<AttendeeResponse>)> =
+            event.guests.iter().map(|g| (g.email.as_str(), g.response)).collect();
+        assert_eq!(
+            guests,
+            vec![
+                ("priya@example.com", Some(AttendeeResponse::Accepted)),
+                ("bob@example.com", Some(AttendeeResponse::Tentative)),
+                ("dev@example.com", Some(AttendeeResponse::Declined)),
+            ]
+        );
+    }
+
+    /// The finding this guards: `calendarView` mints a fresh `id` per
+    /// occurrence of a recurring event, so two occurrences of the same
+    /// series must still map to the same `Event::series` -- here,
+    /// `seriesMasterId`, which Graph keeps stable across every instance.
+    #[test]
+    fn series_master_id_becomes_the_events_series() {
+        let mut item = bare_graph_event("instance-1");
+        item.series_master_id = Some("master-abc".into());
+        item.i_cal_u_id = Some("040000008200...".into());
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.series.as_deref(), Some("master-abc"), "seriesMasterId wins");
+    }
+
+    /// `iCalUId` is present on every event and is the fallback when
+    /// `seriesMasterId` is absent -- a one-off event still gets a `series`,
+    /// harmlessly identical to its own durable id.
+    #[test]
+    fn i_cal_u_id_is_the_series_when_there_is_no_series_master_id() {
+        let mut item = bare_graph_event("evt-1");
+        item.i_cal_u_id = Some("040000008200...".into());
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.series.as_deref(), Some("040000008200..."));
+    }
+
+    #[test]
+    fn an_event_with_neither_field_has_no_series() {
+        let item = bare_graph_event("evt-1");
+        let event = to_event(CalendarId::new(), &item, jiff::Timestamp::now()).unwrap();
+        assert_eq!(event.series, None);
+    }
+
+    /// `isOrganizer` is what says whether the grid may offer a drag; an
+    /// answer that leaves it out leaves it unknown, not "theirs".
+    #[test]
+    fn is_organizer_becomes_whether_the_event_is_this_accounts_own() {
+        let mut item = bare_graph_event("evt-1");
+        let read = |item: &GraphEvent| to_event(CalendarId::new(), item, jiff::Timestamp::now());
+        assert_eq!(read(&item).unwrap().own, None, "not said, not guessed");
+        item.is_organizer = Some(true);
+        assert_eq!(read(&item).unwrap().own, Some(true));
+        item.is_organizer = Some(false);
+        assert_eq!(read(&item).unwrap().own, Some(false));
+    }
+}

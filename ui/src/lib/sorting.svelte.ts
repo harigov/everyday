@@ -1,5 +1,5 @@
 // Mail sorting: the categories a decision model sorts mail into, as somebody
-// wrote them -- `everyday_core::mail::sorting`.
+// wrote them -- `karmayoga_core::mail::sorting`.
 //
 // Read by Settings → Mail sorting, which edits them, and by the mail list,
 // which draws the name of the category a thread was sorted into beside it.

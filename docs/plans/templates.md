@@ -9,7 +9,7 @@
 
 ## The record
 
-`everyday_core::template::Template`: a name, `uses` (`journal`, `notes`,
+`karmayoga_core::template::Template`: a name, `uses` (`journal`, `notes`,
 `meetings`), an optional title pattern, a Markdown body and starting tags.
 It is sealed in its own `templates` table (schema v27, the shape of `skills`),
 reached through `NoteStore`. So `supports_templates` is the same as

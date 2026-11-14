@@ -3,7 +3,7 @@
 // the message was designed for a page of its own, and -- when it was not --
 // its colours moved onto the app's page.
 //
-// All of it happens here, at display, rather than in `everyday-mail`'s
+// All of it happens here, at display, rather than in `karmayoga-mail`'s
 // sanitiser at sync: which theme is on and whether the history is open are
 // this window's to know, and a body already stored is sealed exactly as it
 // was written and is never sanitised again, so a pass at sync would miss
@@ -205,7 +205,7 @@ function historyFollows(source: string): boolean {
   return HISTORY_FOLLOWS.has(id) || classesOf(source).some((c) => HISTORY_FOLLOWS.has(c))
 }
 
-/** The reply-header lines `everyday_mail::text::is_wrote_header` knows, in the
+/** The reply-header lines `karmayoga_mail::text::is_wrote_header` knows, in the
  *  same languages. */
 function isWroteLine(line: string): boolean {
   const lower = line.toLowerCase()
@@ -261,7 +261,7 @@ function linesOf(html: string, tokens: Token[]): Line[] {
 }
 
 /** An Outlook-style `From:`/`Sent:`/`To:`/`Subject:` block starting at
- *  `lines[at]` -- `everyday_mail::text::find_outlook_block`'s test, read from
+ *  `lines[at]` -- `karmayoga_mail::text::find_outlook_block`'s test, read from
  *  rendered lines. Any bold around a label is already gone by this point. */
 function isHeaderBlock(lines: Line[], at: number): boolean {
   const window = lines.slice(at, at + 6).map((l) => l.text)

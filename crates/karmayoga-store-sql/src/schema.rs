@@ -1,0 +1,1884 @@
+//! The database schema, and the migrations that reach it.
+//!
+//! Kept apart from the query code so that "what shape is the database" is one
+//! file you can read start to finish, rather than three constants buried
+//! between two hundred lines of `SELECT`. Each domain was added by a numbered
+//! step that leaves the ones before it alone -- see [`migrate`].
+//!
+//! # Two databases, one schema
+//!
+//! The DDL is generated rather than written out, because the alternative is
+//! two copies of it that drift. What varies is only the column types, and
+//! they come from [`Dialect`]: `BLOB`/`BYTEA`, `INTEGER`/`BIGINT`,
+//! `REAL`/`DOUBLE PRECISION`, `INTEGER`/`BOOLEAN`. Table names, column names,
+//! nullability, defaults, foreign keys and every index are identical, which
+//! is what lets one set of queries run against both.
+//!
+//! The steps are also numbered identically, so a Postgres database created
+//! today is at the same version a SQLite one written a year ago reaches. That
+//! matters for the obvious reason -- one `SCHEMA_VERSION` constant, one place
+//! to bump -- and for a less obvious one: it keeps a vault's records portable
+//! between the two, because there is only ever one shape they can be in.
+
+use crate::conn::Sql;
+use crate::dialect::Dialect;
+use karmayoga_core::error::{Error, Result};
+
+/// Schema the code in this crate expects. Bumped by adding a step below.
+pub const SCHEMA_VERSION: i64 = 27;
+
+/// How a driver remembers which step a database has reached.
+///
+/// SQLite has `PRAGMA user_version`, a free 32-bit integer in the file
+/// header. Postgres has nothing of the kind, so its driver keeps a
+/// one-row table. Neither belongs in this file, which is why this is a
+/// parameter and not a query.
+pub trait VersionStore {
+    fn schema_version(&self, conn: &mut dyn Sql) -> Result<i64>;
+    fn set_schema_version(&self, conn: &mut dyn Sql, version: i64) -> Result<()>;
+}
+
+/// Bring the database up to [`SCHEMA_VERSION`].
+///
+/// Stepped rather than all-or-nothing: a vault written by an earlier build has
+/// records in it, so a step *adds* its domain's tables beside whatever is
+/// already there rather than recreating the database. Every step after the
+/// first is one domain arriving -- see the `vN` functions below, which say
+/// which -- and none of them touches a table an earlier step made.
+///
+/// Each step is idempotent and runs in its own transaction, and the recorded
+/// version is only advanced once they all land.
+pub fn migrate(
+    conn: &mut dyn crate::conn::Connection,
+    dialect: Dialect,
+    versions: &dyn VersionStore,
+) -> Result<()> {
+    let version = versions.schema_version(conn)?;
+    // A database from a *newer* build is refused rather than opened.
+    //
+    // Nothing here can know what a later version did to the schema, and the
+    // failure is silent in the worst way: the steps below are all skipped,
+    // every query still parses against whatever columns happen to remain,
+    // and writes land in a shape the newer build did not expect. `Vault::open`
+    // already makes exactly this check against the header's format version;
+    // the store had been the one layer that would open anything.
+    if version > SCHEMA_VERSION {
+        return Err(Error::UnsupportedVaultVersion {
+            found: version as u32,
+            supported: SCHEMA_VERSION as u32,
+        });
+    }
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    for (index, statements) in steps(dialect).into_iter().enumerate() {
+        let step_version = index as i64 + 1;
+        if version >= step_version {
+            continue;
+        }
+        let mut tx = conn.begin()?;
+        for sql in &statements {
+            tx.execute(sql, &[])?;
+        }
+        tx.commit()?;
+    }
+    versions.set_schema_version(conn, SCHEMA_VERSION)
+}
+
+/// Every migration step, in order. Index 0 is version 1.
+pub fn steps(d: Dialect) -> Vec<Vec<String>> {
+    vec![
+        v1(d),
+        v2(d),
+        v3(d),
+        v4(d),
+        v5(d),
+        v6(d),
+        v7(d),
+        v8(d),
+        v9(d),
+        v10(d),
+        v11(d),
+        v12(d),
+        v13(d),
+        v14(d),
+        v15(d),
+        v16(d),
+        v17(d),
+        v18(d),
+        v19(d),
+        v20(),
+        v21(d),
+        v22(d),
+        v23(d),
+        v24(d),
+        v25(d),
+        v26(),
+        v27(d),
+    ]
+}
+
+/// The `blobs` table, for a backend that keeps attachments in the database.
+///
+/// Deliberately outside the numbered steps above, because it is not part of
+/// the record schema: it belongs to the media layer, exactly as the `media/`
+/// directory belongs to [`FileBlobStore`](karmayoga_core::FileBlobStore) and
+/// is created by it on open rather than by a migration. A SQLite vault never
+/// has this table; a Postgres one creates it the first time it is opened.
+pub fn blobs_table(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS blobs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 byte_len    {int} NOT NULL,
+                 created_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // Garbage collection asks "what is old enough to delete", which is a
+        // scan of this column and nothing else.
+        "CREATE INDEX IF NOT EXISTS blobs_by_age ON blobs (created_us)".into(),
+    ]
+}
+
+/// Version 1: the journal domain.
+fn v1(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean) = (d.blob(), d.int(), d.boolean());
+    let f = d.bool_default(false);
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS journals (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS entries (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 journal_id  TEXT    NOT NULL,
+                 local_date  TEXT    NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 starred     {boolean} NOT NULL DEFAULT {f},
+                 -- Vestigial. An entry could once be pinned to the top of
+                 -- the list; that affordance was wrong for a record of days
+                 -- and has been removed, so nothing writes or reads this
+                 -- column any more. It stays because a step never edits an
+                 -- earlier one: dropping it here would give a new vault a
+                 -- different shape from every vault already in existence,
+                 -- which is the one thing this file promises does not happen.
+                 pinned      {boolean} NOT NULL DEFAULT {f},
+                 data        {blob} NOT NULL,
+                 summary     {blob} NOT NULL
+             )"
+        ),
+        // The list view is always "this journal, newest first", so the
+        // covering index is (journal_id, local_date, created_us).
+        "CREATE INDEX IF NOT EXISTS entries_by_journal_date
+             ON entries (journal_id, local_date DESC, created_us DESC)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS entries_by_date
+             ON entries (local_date DESC, created_us DESC)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS entries_by_updated ON entries (updated_us DESC)".into(),
+    ]
+}
+
+/// Version 2: the task domain -- projects, tasks and time blocks.
+///
+/// No foreign keys between the three, deliberately. `project_id` and
+/// `parent_id` are plain columns because the cascades this domain wants are
+/// not the ones `ON DELETE CASCADE` gives: deleting a task must also take
+/// the *time blocks* pointing at it, which is a rule about a table the
+/// database cannot see the link to (the subject is inside the sealed
+/// payload; the columns beside it are a denormalised copy for the indexes).
+/// Keeping the whole cascade in one place in Rust is what stops half of it
+/// drifting.
+fn v2(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS projects (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 status       TEXT    NOT NULL,
+                 priority     {int} NOT NULL DEFAULT 0,
+                 due_date     TEXT,
+                 sort_order   {int} NOT NULL DEFAULT 0,
+                 created_us   {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 completed_us {int},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS tasks (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 project_id   TEXT,
+                 parent_id    TEXT,
+                 status       TEXT    NOT NULL,
+                 priority     {int} NOT NULL DEFAULT 0,
+                 start_date   TEXT,
+                 due_date     TEXT,
+                 sort_order   {int} NOT NULL DEFAULT 0,
+                 created_us   {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 completed_us {int},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // A board draws one project's top-level cards, split by status and
+        // in manual order: that is this index, exactly.
+        "CREATE INDEX IF NOT EXISTS tasks_by_project ON tasks (project_id, status, sort_order)"
+            .into(),
+        // Expanding a task to show its subtasks.
+        "CREATE INDEX IF NOT EXISTS tasks_by_parent ON tasks (parent_id, sort_order)".into(),
+        // "What is due this week", across every project.
+        "CREATE INDEX IF NOT EXISTS tasks_by_due ON tasks (due_date, status)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS time_blocks (
+                 id         TEXT    PRIMARY KEY NOT NULL,
+                 task_id    TEXT,
+                 project_id TEXT,
+                 local_date TEXT    NOT NULL,
+                 start_us   {int} NOT NULL,
+                 end_us     {int} NOT NULL,
+                 kind       TEXT    NOT NULL,
+                 data       {blob} NOT NULL
+             )"
+        ),
+        // The calendar query: one week, in time order.
+        "CREATE INDEX IF NOT EXISTS blocks_by_date ON time_blocks (local_date, start_us)".into(),
+        // "How long did this actually take?"
+        "CREATE INDEX IF NOT EXISTS blocks_by_task ON time_blocks (task_id, kind)".into(),
+    ]
+}
+
+/// Version 3: the calendar domain -- subscriptions and their events.
+///
+/// `events` *does* carry a foreign key, unlike the task tables, and for the
+/// reason those do not: here the cascade the database offers is exactly the
+/// cascade wanted. Unsubscribing takes the feed's events and nothing else,
+/// because nothing else in the vault points at an event -- they are a cache
+/// of what a server said, not a record anyone linked to.
+///
+/// Two date columns rather than one. A week query has to find a fortnight in
+/// Lisbon while standing in the middle of it, so the window test is an
+/// overlap -- `end_date >= from AND local_date <= to` -- and both sides of it
+/// need an index to sit on.
+fn v3(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean) = (d.blob(), d.int(), d.boolean());
+    let (f, t) = (d.bool_default(false), d.bool_default(true));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS calendars (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 visible     {boolean} NOT NULL DEFAULT {t},
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 synced_us   {int},
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS events (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 calendar_id TEXT    NOT NULL
+                                     REFERENCES calendars (id) ON DELETE CASCADE,
+                 local_date  TEXT    NOT NULL,
+                 end_date    TEXT    NOT NULL,
+                 start_us    {int} NOT NULL,
+                 end_us      {int} NOT NULL,
+                 all_day     {boolean} NOT NULL DEFAULT {f},
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // The calendar query: everything touching a window, in time order.
+        "CREATE INDEX IF NOT EXISTS events_by_window ON events (end_date, local_date, start_us)"
+            .into(),
+        // A sync replaces one feed's rows, and the sidebar counts them.
+        "CREATE INDEX IF NOT EXISTS events_by_calendar ON events (calendar_id)".into(),
+    ]
+}
+
+/// Version 4: the library domain -- shelves, the things on them, and the log.
+///
+/// Foreign keys, as the calendar tables have and the task tables do not, and
+/// for the calendar's reason: here the cascade the database offers is exactly
+/// the cascade wanted, and it reaches nothing outside these three tables.
+/// Deleting a shelf takes its items, deleting an item takes its log, and
+/// nothing else in the vault points at either. What is deliberately *not*
+/// cascaded is a cover: covers are content-addressed blobs, shared between
+/// records, and are reclaimed by the ordinary garbage collector on its grace
+/// period rather than deleted by whoever dropped the last reference.
+///
+/// Note what stays in the clear, which is only what an index is built from:
+/// `kind_id`, `status`, `rating`, `favourite`, `finished_on`, `year`, and a
+/// log row's `date` and `event`. Titles, creators, notes, tags, summaries,
+/// addresses, cover ids and the *names of the shelves themselves* are all
+/// sealed -- so the database says that somebody rated eleven things highly
+/// in March and never what any of them were.
+fn v4(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean) = (d.blob(), d.int(), d.boolean());
+    let (f, t) = (d.bool_default(false), d.bool_default(true));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS kinds (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 visible     {boolean} NOT NULL DEFAULT {t},
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS items (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 kind_id      TEXT    NOT NULL
+                                      REFERENCES kinds (id) ON DELETE CASCADE,
+                 status       TEXT    NOT NULL,
+                 rating       {int},
+                 favourite    {boolean} NOT NULL DEFAULT {f},
+                 year         {int},
+                 started_on   TEXT,
+                 finished_on  TEXT,
+                 sort_order   {int} NOT NULL DEFAULT 0,
+                 created_us   {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // A shelf draws one kind, split by status, in manual order: that is
+        // this index, exactly.
+        "CREATE INDEX IF NOT EXISTS items_by_kind ON items (kind_id, status, sort_order)".into(),
+        // "What did I get through this year", across every shelf.
+        "CREATE INDEX IF NOT EXISTS items_by_finished ON items (finished_on)".into(),
+        "CREATE INDEX IF NOT EXISTS items_by_updated ON items (updated_us DESC)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS logs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 item_id     TEXT    NOT NULL
+                                     REFERENCES items (id) ON DELETE CASCADE,
+                 event       TEXT    NOT NULL,
+                 local_date  TEXT    NOT NULL,
+                 created_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // One item's history, newest first.
+        "CREATE INDEX IF NOT EXISTS logs_by_item ON logs (item_id, local_date DESC)".into(),
+        // The year in review: every completion in a window.
+        "CREATE INDEX IF NOT EXISTS logs_by_date ON logs (local_date, event)".into(),
+    ]
+}
+
+/// Version 5: the tracking domain -- the readings a journal's trackers made.
+///
+/// One table, and no table for the trackers themselves: a `Tracker` is a
+/// setting of a journal and is saved inside that journal's sealed payload,
+/// which is what keeps "sertraline" out of the database and out of this
+/// schema. What lands here is the stream: which tracker, which day, at what
+/// time, how much.
+///
+/// `value` is a clear real column, and that is the whole point of the design.
+/// A year of readings is thousands of rows whose entire purpose is to be
+/// summed, averaged and counted; sealing the number would make every chart a
+/// full decrypt of the vault. What the column leaks is that tracker `7f3a...`
+/// was `500` at 08:12 -- never that `7f3a...` is a drug, because the name it
+/// maps to is sealed one table over.
+///
+/// `at_us` is nullable, and deliberately so. A reading always knows its day
+/// and only sometimes its minute: ticking "flossed" while writing up
+/// yesterday says something true about yesterday and nothing about 23:04.
+/// A defaulted timestamp there would put a pin on the calendar at an hour
+/// nothing happened and skew the first question anyone asks of this data --
+/// *when* do the migraines start -- so the unknown is stored as an unknown
+/// and `WHERE at_us IS NOT NULL` is how an hour-of-day query says what it
+/// means.
+///
+/// Four indexes, one per question actually asked:
+///
+/// | Index | Answers |
+/// |---|---|
+/// | `readings_by_tracker` | "this tracker, over this year" -- every chart |
+/// | `readings_by_day` | "everything on these seven days" -- the calendar |
+/// | `readings_by_journal` | "this journal, today" -- the chips under an entry |
+/// | `readings_by_entry` | detaching readings from an entry being deleted |
+fn v5(d: Dialect) -> Vec<String> {
+    let (blob, int, real) = (d.blob(), d.int(), d.real());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS readings (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 journal_id  TEXT    NOT NULL,
+                 tracker_id  TEXT    NOT NULL,
+                 entry_id    TEXT,
+                 local_date  TEXT    NOT NULL,
+                 at_us       {int},
+                 value       {real} NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS readings_by_tracker
+             ON readings (tracker_id, local_date, at_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_day ON readings (local_date, at_us)".into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_journal ON readings (journal_id, local_date)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_entry ON readings (entry_id)".into(),
+    ]
+}
+
+/// Version 6: the assistant -- its configuration, its threads, and what it
+/// was asked to remember.
+///
+/// The clear/sealed split every other version of this schema makes does not
+/// appear here, and its absence is the design. Versions 4 and 5 keep
+/// `status`, `rating`, `local_date` and `value` readable because an index on
+/// them is what makes a shelf or a chart one query instead of a full
+/// decrypt. Nothing in this domain is ever asked that sort of question: the
+/// panel wants one thread in order and the history list wants the newest
+/// threads, and `conversation_id` plus a timestamp answer both. So there is
+/// no reason to leave a single word of a conversation outside the envelope,
+/// and none is left. The database records that fourteen messages were
+/// exchanged on the 3rd and nothing at all about them -- which matters more
+/// here than anywhere else in the schema, because on the Postgres backend
+/// "the database" is a machine somebody else runs.
+///
+/// Two singleton tables, each pinned to one row by a `CHECK`. `agent_secret`
+/// is separate from `agent_settings` rather than a column in it so that
+/// reading the configuration -- which happens on every panel open -- cannot
+/// pick up the API key on the way past. They are sealed under different
+/// associated data for the same reason, so neither can be substituted for
+/// the other by anyone who can write to the database.
+///
+/// `messages` cascades from `conversations`, as `events` does from
+/// `calendars` and for the same reason: deleting a thread takes its turns
+/// and nothing else, because nothing else in the vault points at a message.
+/// What deliberately does *not* cascade is `memories`. A memory holds a
+/// `source_id` naming the conversation that taught it, and that pointer is
+/// allowed to dangle -- clearing your chat history must not silently make
+/// the assistant forget that you plan on Sundays. Which is also why
+/// `source_id` is not a column here at all: it lives inside the sealed
+/// payload, where a foreign key cannot reach it and try to enforce the
+/// cascade this domain does not want.
+fn v6(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS agent_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS agent_secret (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS conversations (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // The history pane: most recently used first.
+        "CREATE INDEX IF NOT EXISTS conversations_by_updated
+             ON conversations (updated_us DESC)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS messages (
+                 id              TEXT    PRIMARY KEY NOT NULL,
+                 conversation_id TEXT    NOT NULL
+                                         REFERENCES conversations (id) ON DELETE CASCADE,
+                 created_us      {int} NOT NULL,
+                 data            {blob} NOT NULL
+             )"
+        ),
+        // One thread, in order. `id` breaks ties because a tool result and
+        // the turn that asked for it can land in the same microsecond, and
+        // replaying them the wrong way round makes a model re-run the call.
+        // Ids are UUIDv7, so ordering by one orders by time anyway.
+        "CREATE INDEX IF NOT EXISTS messages_by_conversation
+             ON messages (conversation_id, created_us, id)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS memories (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS memories_by_created ON memories (created_us)".into(),
+    ]
+}
+
+/// Version 7: purpose -- the roles you play, the goals under them, and the
+/// pointer every other record now carries.
+///
+/// The pointer is a **side table** rather than a pair of columns on each of
+/// the five tables that can carry one, and that is worth explaining because
+/// two columns on `tasks` would obviously be faster to read.
+///
+/// Every step in this file is additive and idempotent: `CREATE TABLE IF NOT
+/// EXISTS` and nothing else. That is not a stylistic preference, it is what
+/// makes [`migrate`] safe to re-run, and it has to be re-runnable because the
+/// recorded version is only advanced once *every* step has landed -- so a
+/// process that dies between a step's commit and that final write replays the
+/// step on the next open. `ALTER TABLE ... ADD COLUMN` cannot be written
+/// idempotently in SQL both engines accept: Postgres has `IF NOT EXISTS` and
+/// SQLite does not, and a step that differs between the two dialects is
+/// exactly what `the_two_dialects_agree_about_everything_but_types` exists to
+/// prevent. So the pointer goes in a table of its own, where creating it is
+/// `IF NOT EXISTS` like everything else here.
+///
+/// The cost is three index lookups in
+/// [`time_by_purpose`](karmayoga_core::store::purpose::PurposeStore::time_by_purpose)
+/// instead of three column reads. The table is keyed by `(record_kind,
+/// record_id)` and holds a row only for records that actually carry a
+/// purpose, which in a real vault is a handful of projects and almost
+/// nothing else -- the whole point of inheritance is that you set it once
+/// high up. A join against a few hundred rows on a covering primary key is
+/// not the thing that will make that report slow.
+///
+/// A calendar's role lives here too, as a row whose `purpose_kind` is
+/// `role` -- a feed serves a role rather than one outcome, and giving it the
+/// same home as everything else means one table to sweep and one shape to
+/// reason about instead of a sixth column somewhere.
+///
+/// The sealed payload remains the source of truth for a record's purpose;
+/// this table is an *index* over what those payloads say, in the same sense
+/// that `entries.local_date` is an index over what the entry says. Reading
+/// one task never touches it. Only the reports do.
+///
+/// `trackers` is the other half of a change that started in version 5. The
+/// readings have been a table since then; their definitions were a field
+/// inside the sealed journal record, which is what made a tracker belong to
+/// one journal. Here they become records of their own, so a habit can be the
+/// measure of a goal and can be shown on whichever journals you like.
+///
+/// The clear/sealed split is the usual one. What the new tables leave
+/// readable is what an index is built from -- which role a goal is under,
+/// its status, its horizon, the ordering, the archived flag. Every word is
+/// sealed. The file can say that goal `7f3a` is active under role `91c0`
+/// and took three hours on Tuesday; it cannot say that `91c0` is "parent".
+fn v7(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS roles (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 archived    {boolean} NOT NULL DEFAULT {f},
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS goals (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 role_id      TEXT    NOT NULL,
+                 status       TEXT    NOT NULL,
+                 horizon      TEXT,
+                 sort_order   {int} NOT NULL DEFAULT 0,
+                 created_us   {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 completed_us {int},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // The Overview's sidebar: one role's goals, open ones first. There
+        // is deliberately no foreign key to `roles` -- a reference invites
+        // the cascade this domain refuses. See `PurposeStore::delete_role`.
+        "CREATE INDEX IF NOT EXISTS goals_by_role ON goals (role_id, status)".into(),
+        // The pointer. One row per record that carries one; no row at all is
+        // the common case and means unattributed.
+        "CREATE TABLE IF NOT EXISTS purposes (
+                 record_kind  TEXT NOT NULL,
+                 record_id    TEXT NOT NULL,
+                 purpose_kind TEXT NOT NULL,
+                 purpose_id   TEXT NOT NULL,
+                 PRIMARY KEY (record_kind, record_id)
+             )"
+        .into(),
+        // The reverse direction: everything filed against one goal, which is
+        // what `goal_activity` walks.
+        "CREATE INDEX IF NOT EXISTS purposes_by_target
+             ON purposes (purpose_kind, purpose_id, record_kind)"
+            .into(),
+        // Tracker definitions, out of the journal that used to hold them.
+        format!(
+            "CREATE TABLE IF NOT EXISTS trackers (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 archived     {boolean} NOT NULL DEFAULT {f},
+                 sort_order   {int} NOT NULL DEFAULT 0,
+                 created_us   {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS trackers_by_order ON trackers (sort_order, created_us)".into(),
+        // `readings`, rebuilt so a reading need not name a journal.
+        //
+        // Version 5 declared `journal_id` `NOT NULL` because a tracker was a
+        // field inside one journal's sealed record, so a reading always had
+        // one. Trackers are their own records from this version on, and a
+        // reading logged from the Overview -- from no journal page at all --
+        // has no journal to name. SQLite cannot drop a `NOT NULL`, so the
+        // column is widened the only way it can be.
+        //
+        // This is the one place in the file that does not merely add, and it
+        // is still idempotent, which is what the rest of the file's rule
+        // actually asks for. Replayed against a database where it has
+        // already run: the create is a no-op on a table that was renamed
+        // away and so is made afresh, the insert copies out of the current
+        // `readings`, the drop takes it, and the rename puts the copy back
+        // -- the same state again. The interrupted-halfway case cannot
+        // arise, because the whole step is one transaction and DDL is
+        // transactional in both engines.
+        //
+        // Postgres would accept `ALTER COLUMN ... DROP NOT NULL` and does
+        // not get it: one shape of the schema in both engines is worth more
+        // than one statement saved, and the drift guard below is what keeps
+        // that true.
+        format!(
+            "CREATE TABLE IF NOT EXISTS readings_v7 (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 journal_id  TEXT,
+                 tracker_id  TEXT    NOT NULL,
+                 entry_id    TEXT,
+                 local_date  TEXT    NOT NULL,
+                 at_us       {int},
+                 value       {real} NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )",
+            real = d.real()
+        ),
+        // Every column named on both sides, so a later reordering of one
+        // cannot silently shift the data into the wrong columns.
+        "INSERT INTO readings_v7
+             (id, journal_id, tracker_id, entry_id, local_date, at_us, value,
+              created_us, updated_us, data)
+         SELECT id, journal_id, tracker_id, entry_id, local_date, at_us, value,
+                created_us, updated_us, data
+         FROM readings"
+            .into(),
+        "DROP TABLE IF EXISTS readings".into(),
+        "ALTER TABLE readings_v7 RENAME TO readings".into(),
+        // Rebuilt after the copy rather than before it: a bulk insert into
+        // an unindexed table is one append per row instead of four B-tree
+        // updates.
+        "CREATE INDEX IF NOT EXISTS readings_by_tracker
+             ON readings (tracker_id, local_date, at_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_day ON readings (local_date, at_us)".into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_journal ON readings (journal_id, local_date)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS readings_by_entry ON readings (entry_id)".into(),
+    ]
+}
+
+/// Version 8: notes, the profile, and the assistant's routines.
+///
+/// Three additions and one singleton, all `CREATE TABLE IF NOT EXISTS`, so
+/// the step replays like every step since version 4.
+///
+/// `notes` is writing that is not a day: a title, a body, tags, and no
+/// journal and no date, because the day a recipe was typed is not how
+/// anybody finds it again. What it leaves readable is a pin and two
+/// timestamps, which is what orders the list. The *title* is sealed along
+/// with everything else, and that matters more here than it does for an
+/// entry -- a note is named, and its name is the part that would give it
+/// away. The file can say that somebody keeps eleven notes and pinned two.
+///
+/// It carries the same second sealed column `entries` does. A note is a
+/// document with photographs in it, and drawing a list of forty of them must
+/// not mean decrypting forty bodies to read forty titles.
+///
+/// `profile` is one row, pinned by a `CHECK` like `agent_settings` beside
+/// it, and it is the one table in this file with *nothing* in the clear.
+/// There is no index to build over a single row, and what is in it -- a
+/// name, a birthday, where somebody lives, a paragraph about their family --
+/// is the most identifying thing in the vault. It goes in the envelope
+/// whole.
+///
+/// `routines` and `routine_runs` are the assistant's standing work and its
+/// log. Clear on a routine: nothing but its timestamps, because a routine's
+/// trigger and instructions are read one at a time by a scheduler that
+/// already holds the key. Clear on a run: which routine it belongs to, when
+/// it started, and whether anybody has looked at it -- which is what the
+/// unseen count and the run log are ordered by. Sealed: what the routine is
+/// for and every word the assistant said about it. So the file can say that
+/// a routine ran at seven this morning and that nobody has read the result,
+/// and never that the routine is called "Morning brief".
+fn v8(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS notes (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 pinned      {boolean} NOT NULL DEFAULT {f},
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL,
+                 summary     {blob} NOT NULL
+             )"
+        ),
+        // The note list: pinned first, then most recently touched. The whole
+        // list is read and sorted in Rust -- ordering by title needs the
+        // title, which is sealed -- so this index exists for the common
+        // case of asking for the newest handful.
+        "CREATE INDEX IF NOT EXISTS notes_by_updated ON notes (pinned, updated_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS profile (
+                 id          {int} PRIMARY KEY NOT NULL CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS routines (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS routine_runs (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 routine_id   TEXT    NOT NULL,
+                 started_us   {int} NOT NULL,
+                 seen         {boolean} NOT NULL DEFAULT {f},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // One routine's log, newest first. No foreign key to `routines`, for
+        // the reason `goals` has none: a reference invites a cascade, and the
+        // cascade a routine wants -- take the runs, and the conversations
+        // behind them -- is more than a database can express on its own.
+        "CREATE INDEX IF NOT EXISTS runs_by_routine ON routine_runs (routine_id, started_us)"
+            .into(),
+        // The count on the app bar, and the list behind it.
+        "CREATE INDEX IF NOT EXISTS runs_unseen ON routine_runs (seen, started_us)".into(),
+    ]
+}
+
+/// Version 9: mail's groundwork, laid down ahead of the domain itself.
+///
+/// `docs/plans/mail.md` calls this phase 0 -- "the part of this plan that is
+/// not about mail at all" -- and its schema section says the rule this step
+/// follows: every later phase of that plan adds its tables to this same
+/// step, so a vault passes through one "mail exists now" migration rather
+/// than a fresh version for each phase, the way version 4 folded shelves,
+/// items and the log into a single arrival rather than three. Phase 0 laid
+/// two tables here because two things earlier work needs regardless of
+/// whether mail itself ever ships: a secret store that is not a singleton,
+/// and somewhere for a Postgres vault to put raw messages that is not a row
+/// per attachment-sized blob. Phase 1 -- accounts -- adds two more, on the
+/// same reasoning: an account is not mail either, and the calendar's
+/// "other people's calendars" phase (6) needs it regardless of whether the
+/// mail app it was built alongside ever ships to everyone.
+///
+/// `record_secrets` generalises the singleton `agent_secret` above -- a
+/// credential keyed by *who it belongs to* (`owner_kind`, `owner_id`,
+/// together the primary key) rather than pinned to the one row a `CHECK`
+/// allows. See [`karmayoga_core::store::secrets`] for the trait. `owner_kind`
+/// and `owner_id` sit in the clear, which is the same trade every other
+/// pointer column in this file makes: a lookup needs *something* to search
+/// on, and what leaks is that some record of that kind holds a credential,
+/// never the credential, and never which record -- the id is a UUID, as
+/// opaque here as `tracker_id` is in `readings`. What actually stops a
+/// secret sealed for one owner opening as another's is not secrecy of the
+/// columns but the associated data `record_secret_aad` builds from them,
+/// which the sealing key checks and a copied row cannot satisfy.
+///
+/// `mail_packs` is the Postgres answer to "where do raw messages live" --
+/// see [`karmayoga_core::packstore`]. A SQLite vault keeps its packs in files
+/// beside the database instead and never gains a row here, the same choice
+/// `blobs_table` makes for attachments and for the same reason: the database
+/// is on this machine, so a file the filesystem already buffers and syncs is
+/// cheaper than a column WAL-logging the same bytes twice. Unlike
+/// `blobs_table`, this table *is* one of the numbered steps rather than
+/// created on open -- the plan's own schema section lists it there, and
+/// keeping it out would need a second "does this table exist" check
+/// (`blobs_table`'s reason for existing) for a backend split that is
+/// per-*domain* here, not per-driver: every vault, on either database, ends
+/// up with the same tables after this step, and it is only mail's own store
+/// that chooses whether to ever write a row into this particular one. `seq`
+/// is a per-account arrival order, for whenever something later wants packs
+/// back in the order they were written rather than by id; `id` is what a
+/// `PackRef` actually names, and it is what `read` looks a row up by.
+///
+/// `accounts` is the vault-level record of a mailbox provider signed in to
+/// -- see [`karmayoga_core::account`] and
+/// [`karmayoga_core::store::accounts`]. It carries nothing in the clear
+/// beyond the two timestamps every table in this file has: unlike a task or
+/// an event, there is no list of accounts large enough, or queried finely
+/// enough, to make a clear column worth what it would leak. Its secret --
+/// the refresh token or password `AuthMethod` needs -- is never in this
+/// table at all; it lives in `record_secrets` above, under owner kind
+/// `"account"`, exactly like every other per-record credential this step
+/// introduced.
+///
+/// Phase 2 (and the draft/outbox records of phase 3) add the rest of this
+/// step: `mailboxes`, `mail_messages`, `message_mailboxes`, `threads`,
+/// `thread_mailboxes`, `bodies`, `drafts` and `ops` -- eight tables, all in
+/// the one migration this domain gets, per this function's own rule that a
+/// domain arrives once rather than a fresh version per phase. `messages` was
+/// not free to reuse -- version 6 already named the assistant's conversation
+/// turns that -- so the mail table is `mail_messages` throughout.
+/// `hidden_thread_mailboxes`, a ninth, joined later still additively: a
+/// marker table, not a mapping of its own, that says which
+/// `(thread, mailbox)` pairs an optimistic archive/trash/move has asked to
+/// have hidden from that mailbox's list ahead of the server confirming it
+/// -- see `karmayoga-store-sql::mail::write`'s `hide_thread_from_mailbox` for
+/// why this exists apart from `message_mailboxes`, which stays exactly as
+/// it was until the op actually executes.
+///
+/// Three more singletons-by-shape joined later still, one per later phase,
+/// each additive for the same reason: `mail_remote_image_settings` (phase 2,
+/// the standing remote-image allow-list), `mail_contacts` (phase 4, address
+/// autocomplete), and `mail_category_rules` (phase 7, the split inbox's
+/// per-account corrections). None of the three needed its own schema
+/// version -- a table this step's own rule already allows to arrive whenever
+/// its domain does, not a fresh migration for each.
+///
+/// The sync cursors the plan's schema section lists separately
+/// (`uidvalidity`, the highest uid, `highestmodseq`) live on `mailboxes`
+/// itself, as the plan allows: a mailbox is already the one row per folder a
+/// sync task reads before it opens a connection, so a second table naming
+/// the same three numbers by the same primary key would only be a join
+/// nothing needs.
+///
+/// What stays in the clear is exactly what an index is built from --
+/// `karmayoga-store-sql`'s own module docs carry the full table, and
+/// `karmayoga_core::store::mail`'s carry the reasoning. In one line each:
+/// a mailbox's role and cursors (a folder called "Sent" is not a secret, and
+/// a sync task has to read them before it has decrypted anything); a
+/// message's thread, date, packed flags, size, category and pack address;
+/// `message_mailboxes`' uid, which is the address a `FETCH` or a `STORE`
+/// actually names; a thread's own aggregates and, in `thread_mailboxes`, its
+/// per-mailbox view of the same three numbers; a draft's account, state,
+/// `in_reply_to` and origin *kind*; an op's account, state, origin kind and
+/// `not_before`. Every subject, every address, every label's and every
+/// folder's actual name, every body and every op's `target` stay sealed.
+///
+/// `account_calendars` is a pointer table in the shape `purposes` pioneered:
+/// a calendar's own row stays wherever `calendars` puts it, and this says
+/// only which account it came from, so that deleting an account can find
+/// every calendar it needs to leave dangling-free without a foreign key the
+/// backend would otherwise have to enforce by hand. It is empty until phase
+/// 6 gives `CalendarOrigin` an `Account` variant to write one from; it
+/// exists now, alongside `accounts` itself, because `AccountStore::
+/// delete_account` promises today to clear it, and a promise about a table
+/// that does not exist yet is not a promise this crate can keep.
+fn v9(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean) = (d.blob(), d.int(), d.boolean());
+    let f = d.bool_default(false);
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS record_secrets (
+                 owner_kind  TEXT NOT NULL,
+                 owner_id    TEXT NOT NULL,
+                 data        {blob} NOT NULL,
+                 PRIMARY KEY (owner_kind, owner_id)
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_packs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 account_id  TEXT    NOT NULL,
+                 seq         {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // One account's rows, in the order they arrived -- the only
+        // question this table is asked before the mail domain itself lands
+        // and gives it something to join against.
+        "CREATE INDEX IF NOT EXISTS mail_packs_by_account ON mail_packs (account_id, seq)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS accounts (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE TABLE IF NOT EXISTS account_calendars (
+             calendar_id  TEXT PRIMARY KEY NOT NULL,
+             account_id   TEXT NOT NULL
+         )"
+        .into(),
+        // What `AccountStore::delete_account` reads before it deletes: every
+        // calendar one account is behind.
+        "CREATE INDEX IF NOT EXISTS account_calendars_by_account \
+         ON account_calendars (account_id)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS mailboxes (
+                 id             TEXT    PRIMARY KEY NOT NULL,
+                 account_id     TEXT    NOT NULL,
+                 role           TEXT    NOT NULL,
+                 uidvalidity    {int} NOT NULL DEFAULT 0,
+                 uidnext        {int} NOT NULL DEFAULT 0,
+                 highest_modseq {int} NOT NULL DEFAULT 0,
+                 data           {blob} NOT NULL
+             )"
+        ),
+        // Every mailbox of one account -- what `list_mailboxes` reads, and
+        // what an account's cascade deletes by.
+        "CREATE INDEX IF NOT EXISTS mailboxes_by_account ON mailboxes (account_id)".into(),
+        // Named `mail_messages`, not `messages` -- version 6 already claimed
+        // that name for the assistant's conversation turns, and `IF NOT
+        // EXISTS` would otherwise silently keep *that* table's shape here,
+        // leaving every column below unrecognised.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_messages (
+                 id               TEXT    PRIMARY KEY NOT NULL,
+                 account_id       TEXT    NOT NULL,
+                 thread_id        TEXT    NOT NULL,
+                 date_us          {int} NOT NULL,
+                 flags            {int} NOT NULL DEFAULT 0,
+                 has_attachments  {boolean} NOT NULL DEFAULT {f},
+                 size             {int} NOT NULL DEFAULT 0,
+                 category         TEXT,
+                 pack_id          TEXT    NOT NULL,
+                 pack_offset      {int} NOT NULL,
+                 pack_len         {int} NOT NULL,
+                 data             {blob} NOT NULL
+             )"
+        ),
+        // One thread's messages, oldest first -- what `thread` reads, and
+        // what every aggregate recompute (ingest, a flag change, a removal)
+        // scans to recount a thread without decrypting it.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_thread ON mail_messages (thread_id, date_us)"
+            .into(),
+        // What an account's cascade deletes by, and what
+        // `attachment_blob_refs` would otherwise have to join `mailboxes`
+        // to find.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_account ON mail_messages (account_id)".into(),
+        // `remap_packs`' own lookup, once per moved frame during
+        // compaction: `WHERE account_id = ? AND pack_id = ? AND
+        // pack_offset = ? AND pack_len = ?`. Without this, only
+        // `mail_messages_by_account` narrows it at all, so compacting one
+        // pack -- tens of thousands of remapped frames -- means that many
+        // full scans of the account's every message, inside the one write
+        // transaction that also holds the vault's single writer. Version 9
+        // is unreleased (see this file's own module docs), so this lands in
+        // the same step that created the table rather than as a later
+        // migration.
+        "CREATE INDEX IF NOT EXISTS mail_messages_by_pack \
+         ON mail_messages (account_id, pack_id, pack_offset)"
+            .into(),
+        // `pending_bodies`' own filter, once per sync pass per mailbox:
+        // `WHERE mailbox membership AND pack_len = 0`, ordered by
+        // `date_us`. A *partial* index -- SQLite and Postgres both support
+        // one -- rather than a plain one on `pack_len` alone: a settled
+        // mailbox has zero pending bodies essentially always, so an index
+        // that only ever contains a pending message's row lets that common
+        // case cost nothing at all, instead of the `pack_len = 0` filter
+        // having to visit and reject every settled message in the mailbox
+        // (and sort whatever survived into a temp B-tree for `ORDER BY
+        // date_us`) on every single poll.
+        "CREATE INDEX IF NOT EXISTS mail_messages_pending_bodies \
+         ON mail_messages (date_us) WHERE pack_len = 0"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS message_mailboxes (
+                 message_id  TEXT NOT NULL,
+                 mailbox_id  TEXT NOT NULL,
+                 uid         {int} NOT NULL,
+                 PRIMARY KEY (message_id, mailbox_id)
+             )"
+        ),
+        // The uid is the address a `FETCH`, a `STORE` or a `UID SEARCH` diff
+        // actually names -- `message_by_uid`, `update_flags`,
+        // `update_labels`, `remove_uids` and `uid_set` all read through this.
+        "CREATE INDEX IF NOT EXISTS message_mailboxes_by_mailbox \
+         ON message_mailboxes (mailbox_id, uid)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS threads (
+                 id                TEXT    PRIMARY KEY NOT NULL,
+                 account_id        TEXT    NOT NULL,
+                 last_date_us      {int} NOT NULL,
+                 unread            {int} NOT NULL DEFAULT 0,
+                 category          TEXT,
+                 snoozed_until_us  {int},
+                 data              {blob} NOT NULL
+             )"
+        ),
+        // `threads_in_category` and the account cascade both read one
+        // account's threads, newest first; not named in the plan's own
+        // index list, which only names the mailbox-scoped read, but a query
+        // this trait exposes needs one covering index or it is a full scan
+        // of every thread in the vault.
+        "CREATE INDEX IF NOT EXISTS threads_by_account \
+         ON threads (account_id, last_date_us DESC, id)"
+            .into(),
+        // The snooze scheduler's own question: what wakes, and when.
+        "CREATE INDEX IF NOT EXISTS threads_by_snoozed ON threads (snoozed_until_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS thread_mailboxes (
+                 thread_id     TEXT NOT NULL,
+                 mailbox_id    TEXT NOT NULL,
+                 last_date_us  {int} NOT NULL,
+                 unread        {int} NOT NULL DEFAULT 0,
+                 PRIMARY KEY (thread_id, mailbox_id)
+             )"
+        ),
+        // The one index the plan names by hand: what an inbox actually
+        // pages over, keyset-paged by `(mailbox_id, last_date_us DESC,
+        // thread_id)`.
+        "CREATE INDEX IF NOT EXISTS thread_mailboxes_by_mailbox \
+         ON thread_mailboxes (mailbox_id, last_date_us DESC, thread_id)"
+            .into(),
+        // What `hide_thread_from_mailbox` marks before it deletes a
+        // `thread_mailboxes` row, and what `restore_thread_mailboxes`
+        // clears when it recomputes that row back -- see that function's
+        // own docs for the whole design. Not a snapshot of anything: the
+        // durable mapping it stands apart from, `message_mailboxes`, is
+        // never touched by the hide at all.
+        "CREATE TABLE IF NOT EXISTS hidden_thread_mailboxes (
+             thread_id   TEXT NOT NULL,
+             mailbox_id  TEXT NOT NULL,
+             PRIMARY KEY (thread_id, mailbox_id)
+         )"
+        .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS bodies (
+                 message_id  TEXT PRIMARY KEY NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS drafts (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 account_id   TEXT    NOT NULL,
+                 in_reply_to  TEXT,
+                 state        TEXT    NOT NULL,
+                 origin       TEXT    NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        // The compose list and the "what is this in reply to" lookup.
+        "CREATE INDEX IF NOT EXISTS drafts_by_account \
+         ON drafts (account_id, state, updated_us)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS ops (
+                 id             TEXT    PRIMARY KEY NOT NULL,
+                 account_id     TEXT    NOT NULL,
+                 state          TEXT    NOT NULL,
+                 origin         TEXT    NOT NULL,
+                 not_before_us  {int} NOT NULL,
+                 thread_id      TEXT,
+                 data           {blob} NOT NULL
+             )"
+        ),
+        // The drain loop's own query: one account's pending ops, due first.
+        "CREATE INDEX IF NOT EXISTS ops_by_account_state \
+         ON ops (account_id, state, not_before_us)"
+            .into(),
+        // "What did the assistant do" -- every op of one origin kind, in
+        // order.
+        "CREATE INDEX IF NOT EXISTS ops_by_origin ON ops (origin, not_before_us)".into(),
+        // A thread's own "recent actions" line: every op whose `OpTarget`
+        // named a thread directly, most recently due first. `thread_id` is
+        // `NULL` for an op targeting a `Draft` (or, if one is ever minted, a
+        // bare `Message`) -- see `karmayoga-store-sql::mail::mod`'s `Record`
+        // impl for `Op`, which is the one place this column is filled in,
+        // and this crate's own module docs for why it exists at all: an
+        // `OpTarget` is sealed, and version 9 is unreleased, so adding a
+        // clear column to this step rather than reaching for a full
+        // migration is the cheaper and equally correct fix.
+        "CREATE INDEX IF NOT EXISTS ops_by_thread ON ops (thread_id, not_before_us DESC)".into(),
+        // The standing remote-image allow-list --
+        // `karmayoga_core::mail::RemoteImageSettings` -- a one-row singleton in
+        // the shape `agent_settings` already is: a `CHECK` pins it to one row,
+        // so a second configuration fails at the database rather than being
+        // read back in whichever order.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_remote_image_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // The contact index -- `karmayoga_core::mail::ContactBook` -- a
+        // one-row singleton on the same shape as the table just above, for
+        // the same reason: `suggest_addresses` reads one small sealed row
+        // rather than a query over every message ever ingested.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_contacts (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        // Phase 7's split inbox: one row per account of
+        // `karmayoga_core::mail::CategoryRules`, the sealed corrections that
+        // outrank the rules `karmayoga_core::mail::categorize` runs at sync.
+        // Keyed by `account_id` rather than a singleton `id = 1` row, unlike
+        // the two tables just above -- a correction on one mailbox says
+        // nothing about another, so each account gets its own row rather
+        // than sharing the vault-wide list contacts and remote images do.
+        format!(
+            "CREATE TABLE IF NOT EXISTS mail_category_rules (
+                 account_id  TEXT PRIMARY KEY NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+    ]
+}
+
+/// Version 10: meeting notes -- recordings, transcripts, voiceprints, and
+/// the settings that decide what gets recorded. See
+/// `docs/plans/meeting-notes.md` and `karmayoga_core::meeting`'s own module
+/// docs for the design; this step is the storage half of it.
+///
+/// `meeting_settings` is a fourth singleton on the shape `agent_settings`,
+/// `profile` and `mail_remote_image_settings` already are -- a `CHECK` pins
+/// it to one row, so a vault that has never opened Settings → Meetings has a
+/// perfectly good answer without a row to read.
+///
+/// `recordings` is the pipeline's durable state *and*, once a recording
+/// reaches `done`, the history row that says which call a note came from --
+/// see `Recording`'s own docs for why it is both. Three columns stay in the
+/// clear, and they are the three the plan names for it: `stage`, so recovery
+/// can find every recording stuck mid-pipeline without unsealing a row it
+/// does not need to; `calendar_id`, copied out of the event a recording was
+/// of, nullable for a call that was started by hand rather than found on a
+/// calendar; and `started_us`, what the recording history is ordered by.
+/// Nothing else is readable -- not the event's title, not who was invited,
+/// not even whether a recording that has finished still has a note, which is
+/// why `note_id` stays inside the sealed payload rather than becoming a
+/// fifth clear column. `recordings_by_event` is `(calendar_id, started_us)`:
+/// there is no durable event id to index by (a feed event is re-minted on
+/// every sync, per `id.rs`'s own account of `EventId`), so "was this
+/// calendar's slot already recorded" is asked the way `EventRef`'s docs
+/// already say it has to be -- by calendar and by time, not by identity.
+/// `recordings_by_stage` is the second half of the recovery query above:
+/// `stage` alone is a handful of distinct values, so pairing it with
+/// `started_us` is what makes "the oldest recording still stuck
+/// transcribing" an index scan rather than a sort of everything that matches.
+///
+/// `transcripts` is what a call turns into, and what survives after the
+/// audio is gone. The only clear column is `note_id` -- never a subject, a
+/// name, or a word anyone said -- because the one question this table is
+/// ever asked besides "this transcript, by id" is "does this note have one",
+/// and `transcripts_by_note` answers it without a scan. It is a `UNIQUE`
+/// index rather than a plain one: a note has at most one transcript, ever,
+/// and letting the database refuse a second row for the same note is one
+/// less way a bug could leave two disagreeing about what was said.
+///
+/// `voiceprints` carries nothing at all in the clear beyond the timestamps
+/// every table in this file has. A voice is biometric data, and the sealed
+/// centroid vectors are exactly as much of an identity as the name beside
+/// them -- there is no index a search over a handful of voices would
+/// benefit from that would not also be a reason to decrypt them anyway, so
+/// `MeetingStore::list_voiceprints` returns everything and lets the caller
+/// sort what it has just decrypted.
+fn v10(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS meeting_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS recordings (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 stage        TEXT    NOT NULL,
+                 calendar_id  TEXT,
+                 started_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS recordings_by_event
+             ON recordings (calendar_id, started_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS recordings_by_stage
+             ON recordings (stage, started_us)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS transcripts (
+                 id       TEXT    PRIMARY KEY NOT NULL,
+                 note_id  TEXT    NOT NULL,
+                 data     {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS transcripts_by_note ON transcripts (note_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS voiceprints (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+    ]
+}
+
+/// Version 11: proposals -- work the assistant prepared and did not do. See
+/// `docs/plans/dreaming.md` and `karmayoga_core::proposal`.
+///
+/// Additive, like every step since 7. In the clear: the kind of record, the
+/// day it would be drawn on (so a calendar week finds its ghosts the way it
+/// finds `time_blocks`, by `target_date`), when it was made and when it
+/// expires, where it stands, and whether it has been looked at. Everything
+/// that says what the proposal *is* stays sealed. `outcome` leads the main
+/// index because every read that matters -- the ghosts, the sweep, the count
+/// -- asks for pending rows first.
+fn v11(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS proposals (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 kind         TEXT    NOT NULL,
+                 target_date  TEXT,
+                 made_us      {int} NOT NULL,
+                 expires_us   {int} NOT NULL,
+                 outcome      TEXT    NOT NULL,
+                 seen         {boolean} NOT NULL DEFAULT {f},
+                 data         {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS proposals_pending
+             ON proposals (outcome, kind, target_date)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS proposals_by_expiry ON proposals (outcome, expires_us)".into(),
+        "CREATE INDEX IF NOT EXISTS proposals_by_made ON proposals (made_us)".into(),
+    ]
+}
+
+/// Version 12: skills -- processes the assistant was given for a certain
+/// kind of request. See `karmayoga_core::agent::Skill`'s module docs,
+/// "Skills, and progressive disclosure".
+///
+/// One table, on the exact shape `routines` already is (`v8`, above): no
+/// clear/sealed split at all beyond the two timestamps every table in this
+/// file carries. A scheduler has to pick the due routine out of a whole
+/// table before it has decrypted anything, and still gets nothing to filter
+/// on there -- the trigger and `enabled` are both read out of `data`, the
+/// same place a skill's `enabled` is. Nothing here is ever asked "which
+/// skills are enabled" without the vault already open in front of it: the
+/// prompt builder reads the whole list and filters in Rust, the way
+/// `memories` already does for its three origins. So the database records
+/// only that some number of processes exist and when they were touched,
+/// never their names, their descriptions or whether they are switched on.
+fn v12(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS skills (
+             id          TEXT    PRIMARY KEY NOT NULL,
+             created_us  {int} NOT NULL,
+             updated_us  {int} NOT NULL,
+             data        {blob} NOT NULL
+         )"
+    )]
+}
+
+/// Version 13: chat -- the links through which the assistant answers a chat
+/// service, so a phone can reach it. See `docs/plans/chat.md` and
+/// `karmayoga_core::chat`.
+///
+/// One table, and it is `meeting_settings` (`v10`, above) again: a singleton
+/// pinned to one row by a `CHECK`, holding every link as a single sealed
+/// record. Nothing is in the clear -- not a homeserver's address, not the
+/// account the bot signs in as, not whose messages it answers -- because the
+/// only question ever asked of it is "all of them", on unlock and when
+/// somebody opens Settings → Chat, and neither can use an index. What a link
+/// signs in with is not here at all: it is sealed per link in `record_secrets`
+/// (`v9`), under the owner kind `"chat"`. And which chat a conversation came
+/// from is no new column on `conversations` either, for the reason `run_id`
+/// is not one: it is read only after the row is open, and the history list
+/// opens every row for its title anyway.
+fn v13(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS chat_settings (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
+}
+
+/// Version 14: the Feed -- the sources somebody follows, what the refresher
+/// learned about each, the stories they brought, and those stories' bodies.
+/// See `docs/plans/feed.md` and `karmayoga_core::news`.
+///
+/// Additive, like every step since 7. Four tables, because four things here
+/// are written by different hands at different rates:
+///
+/// - `news_sources` is what a person chose, and nothing a refresh learns is
+///   ever written to it. In the clear: nothing but its order and the two
+///   timestamps every table carries. Its address is sealed with its name --
+///   a private feed's address is a bearer credential, as a calendar's is.
+/// - `news_fetch` is what the refresher learned, keyed by its source, apart
+///   so that a rename made while a fetch is in flight cannot be overwritten
+///   by the fetch. In the clear: when it is next due, which is what the
+///   refresher sleeps until, and nothing else.
+/// - `news_stories` is the light half of each story. In the clear: which
+///   source it came from, a *keyed* hash of its address (so the column
+///   cannot be checked against a list of known addresses), when it was
+///   published, whether it is read, saved or expired, and -- for a
+///   newsletter -- which mail message it is, so its read state can be read
+///   through that message's `flags` rather than kept twice.
+/// - `news_bodies` is what each story said, read only when it is opened. In
+///   the clear: nothing but which story it belongs to.
+///
+/// The unique `(source_id, dedupe_key)` index is what makes a refresh
+/// idempotent: an insert that collides is a story already stored.
+fn v14(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_sources (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_fetch (
+                 source_id  TEXT    PRIMARY KEY NOT NULL,
+                 next_us    {int} NOT NULL,
+                 data       {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS news_fetch_by_due ON news_fetch (next_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_stories (
+                 id               TEXT    PRIMARY KEY NOT NULL,
+                 source_id        TEXT    NOT NULL,
+                 dedupe_key       TEXT    NOT NULL,
+                 published_us     {int} NOT NULL,
+                 is_read          {boolean} NOT NULL DEFAULT {f},
+                 saved            {boolean} NOT NULL DEFAULT {f},
+                 expired          {boolean} NOT NULL DEFAULT {f},
+                 mail_message_id  TEXT,
+                 created_us       {int} NOT NULL,
+                 data             {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS news_stories_by_source_key
+             ON news_stories (source_id, dedupe_key)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_source
+             ON news_stories (source_id, expired, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_time ON news_stories (expired, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_unread
+             ON news_stories (expired, is_read, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_saved ON news_stories (saved, published_us)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_key ON news_stories (dedupe_key)".into(),
+        "CREATE INDEX IF NOT EXISTS news_stories_by_mail ON news_stories (mail_message_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS news_bodies (
+                 story_id  TEXT    PRIMARY KEY NOT NULL,
+                 data      {blob} NOT NULL
+             )"
+        ),
+    ]
+}
+
+/// Version 15: background jobs -- work the assistant took on because a
+/// question needed more time than a turn. See `docs/plans/jobs.md` and
+/// `karmayoga_core::job`.
+///
+/// Additive. One table. In the clear: when a job was asked for and whether
+/// anybody has looked at it, which is what the list and the count on the app
+/// bar are ordered by. Sealed: its kind and question, where it stands, the
+/// conversation it came from, and everything it said -- so the file can say
+/// that the assistant was asked something at three and nobody has read the
+/// answer, and never what, or whether it worked.
+fn v15(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS jobs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 seen        {boolean} NOT NULL DEFAULT {f},
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS jobs_by_time ON jobs (created_us)".into(),
+        // The count on the app bar, and the list behind it.
+        "CREATE INDEX IF NOT EXISTS jobs_unseen ON jobs (seen, created_us)".into(),
+    ]
+}
+
+/// Version 16: the models -- which model each size of work runs on, and
+/// where. See `karmayoga_core::llm`.
+///
+/// One table, and it is `profile` (`v8`) again: a singleton pinned to one
+/// row by a `CHECK`, holding one sealed record, nothing in the clear. Not a
+/// column on `agent_settings`, because the models stopped being the
+/// assistant's -- research and the quick asks run on them too. Their keys are
+/// not here either: each is sealed per endpoint in `record_secrets` (`v9`),
+/// under the owner kind `"model-endpoint"`, and the one `agent_secret` held
+/// is moved there the first time an unlocked vault reads this row and finds
+/// it missing.
+fn v16(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS model_settings (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
+}
+
+/// Version 17: writing help -- every time the writing shortcut was used over
+/// text selected in another application, and what came of it. See
+/// `docs/plans/writing-tools.md` and `karmayoga_core::writing`.
+///
+/// Additive. One table. In the clear: only when it was asked, which is what
+/// the history is ordered by. Sealed: the text that was selected, where,
+/// what was asked of it, what came back and whether it was used.
+fn v17(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS writing_assists (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS writing_assists_by_time ON writing_assists (created_us)".into(),
+    ]
+}
+
+/// Version 18: mail sorting -- the categories a decision model sorts mail
+/// into, as somebody wrote them. See `karmayoga_core::mail::sorting`.
+///
+/// One singleton, in the shape `mail_remote_image_settings` and
+/// `mail_contacts` already are (`v9`): one row, pinned by a `CHECK`, holding
+/// one sealed record, nothing in the clear -- not even how many categories
+/// there are. Which category a thread was sorted into is sealed inside the
+/// thread's own record rather than a column here or on `threads`: it is
+/// what a row draws, never what a list is filtered by, and the tab a thread
+/// is filed under is already the clear `category` it has always had.
+fn v18(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS mail_sorting (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
+}
+
+/// Version 19: whether a thread is starred or has an attachment, on the rows
+/// a mailbox's list pages over -- what the list's Starred and Attachments
+/// filters read, the way Unread reads `unread` beside them.
+///
+/// Nothing new in the clear: `mail_messages` already holds both, as `flags` and
+/// `has_attachments`, and asking it per row is what this replaces. That table
+/// is large and the answer is scattered through it, so a filter matching little
+/// walked most of a mailbox's rows there, which on a cold disk is a read per
+/// thread. These rows are small and read in order.
+///
+/// Both are of the whole thread, so every mailbox's row says the same thing.
+///
+/// A rebuild rather than `ADD COLUMN` for the reason [`v7`]'s are: `readings`
+/// there is the same shape of step, with the same note on why replaying it is
+/// safe. The two sub-selects are not correlated, so each reads `mail_messages`
+/// through once rather than once per row.
+fn v19(d: Dialect) -> Vec<String> {
+    let (int, boolean, f) = (d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS thread_mailboxes_v19 (
+                 thread_id        TEXT NOT NULL,
+                 mailbox_id       TEXT NOT NULL,
+                 last_date_us     {int} NOT NULL,
+                 unread           {int} NOT NULL DEFAULT 0,
+                 starred          {boolean} NOT NULL DEFAULT {f},
+                 has_attachments  {boolean} NOT NULL DEFAULT {f},
+                 PRIMARY KEY (thread_id, mailbox_id)
+             )"
+        ),
+        "INSERT INTO thread_mailboxes_v19
+             (thread_id, mailbox_id, last_date_us, unread, starred, has_attachments)
+         SELECT thread_id, mailbox_id, last_date_us, unread,
+                thread_id IN (SELECT thread_id FROM mail_messages WHERE flags & 4 != 0),
+                thread_id IN (SELECT thread_id FROM mail_messages WHERE has_attachments)
+         FROM thread_mailboxes"
+            .into(),
+        "DROP TABLE IF EXISTS thread_mailboxes".into(),
+        "ALTER TABLE thread_mailboxes_v19 RENAME TO thread_mailboxes".into(),
+        "CREATE INDEX IF NOT EXISTS thread_mailboxes_by_mailbox \
+         ON thread_mailboxes (mailbox_id, last_date_us DESC, thread_id)"
+            .into(),
+    ]
+}
+
+/// Version 20: a reply moves a thread up the lists it is filed in.
+///
+/// `thread_mailboxes.last_date_us` was the newest message filed in the mailbox,
+/// and is now that or the newest the person sent in the thread, whichever is
+/// later, except in Trash, Spam and Drafts: see `recompute_thread_mailboxes`,
+/// which only reaches a thread the next time something is written to it. This
+/// brings the rest up to date.
+///
+/// Safe to replay: a row this has already moved is no longer older than what
+/// was sent. Only threads with something in Sent are read through, since this
+/// runs while the vault is opening.
+fn v20() -> Vec<String> {
+    let sent = "SELECT MAX(m.date_us) FROM mail_messages m \
+         JOIN message_mailboxes mm ON mm.message_id = m.id \
+         JOIN mailboxes mb ON mb.id = mm.mailbox_id \
+         WHERE m.thread_id = thread_mailboxes.thread_id AND mb.role = 'sent'";
+    vec![format!(
+        "UPDATE thread_mailboxes SET last_date_us = ({sent}) \
+         WHERE thread_id IN (SELECT m.thread_id FROM mail_messages m \
+             JOIN message_mailboxes mm ON mm.message_id = m.id \
+             JOIN mailboxes mb ON mb.id = mm.mailbox_id WHERE mb.role = 'sent') \
+           AND mailbox_id NOT IN \
+             (SELECT id FROM mailboxes WHERE role IN ('trash', 'spam', 'drafts')) \
+           AND last_date_us < ({sent})"
+    )]
+}
+
+/// Version 21: Settings → Mail writing, what the person has said about how
+/// mail is written for them. One sealed row, the way [`v18`]'s is.
+fn v21(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS mail_writing (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
+}
+
+/// Version 22: two sealed singletons, on the pattern of `mail_contacts`.
+///
+/// `keep_in_touch` is [`karmayoga_core::keepintouch::KeepInTouch`]: the settings
+/// and what a pass remembers between runs. `proposal_traces` is what is left of
+/// the proposals nobody accepted once they are deleted after a week, which is
+/// what keeps the weekly dream's stop list able to see past that week.
+fn v22(d: Dialect) -> Vec<String> {
+    let (int, blob) = (d.int(), d.blob());
+    ["keep_in_touch", "proposal_traces"]
+        .into_iter()
+        .map(|table| {
+            format!(
+                "CREATE TABLE IF NOT EXISTS {table} (
+                     id          {int} PRIMARY KEY CHECK (id = 1),
+                     data        {blob} NOT NULL
+                 )"
+            )
+        })
+        .collect()
+}
+
+/// Version 23: Money -- the banks somebody linked, the accounts they brought
+/// or that are kept by hand, each account's balance day by day, the
+/// transactions, and the categories and rules that sort them. See
+/// `docs/plans/money.md` and `karmayoga_core::money`.
+///
+/// Additive. Seven tables, because seven things here are written by
+/// different hands at different rates, as the Feed's four are:
+///
+/// - `money_links`: one sign-in at a bank. In the clear: its order and the
+///   two timestamps. Sealed: the bank's name, Plaid's item id. The access
+///   token is not here at all -- it is a `record_secrets` row.
+/// - `money_link_state`: what sync learned, apart from the link so a rename
+///   cannot be overwritten by a sync. In the clear: when it is next due.
+/// - `money_accounts`: in the clear, which link an account came through (so
+///   disconnecting can find them) and its order. Sealed: name, mask, kind,
+///   balances, the provider's id.
+/// - `money_balances`: one row per account per day. In the clear: which
+///   account and which day. The amount is sealed.
+/// - `money_txns`: in the clear, which account, a *keyed* hash of the
+///   provider's id (so the column cannot be matched against anything outside
+///   this vault), and the day -- which is what a month's report is read by.
+///   Never an amount, a payee or a word of a description.
+/// - `money_categories`, `money_rules`: their order and timestamps.
+///
+/// The unique `(account_id, dedupe_key)` index is what makes a sync and an
+/// import idempotent. Days are `YYYY-MM-DD` text, which sorts as dates do in
+/// both dialects.
+fn v23(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_links (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_link_state (
+                 link_id  TEXT    PRIMARY KEY NOT NULL,
+                 next_us  {int} NOT NULL,
+                 data     {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS money_link_state_by_due ON money_link_state (next_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_accounts (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 link_id     TEXT,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS money_accounts_by_link ON money_accounts (link_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_balances (
+                 account_id  TEXT    NOT NULL,
+                 day         TEXT    NOT NULL,
+                 data        {blob} NOT NULL,
+                 PRIMARY KEY (account_id, day)
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS money_balances_by_day ON money_balances (day)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_txns (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 account_id  TEXT    NOT NULL,
+                 dedupe_key  TEXT    NOT NULL,
+                 day         TEXT    NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS money_txns_by_account_key
+             ON money_txns (account_id, dedupe_key)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS money_txns_by_day ON money_txns (day, id)".into(),
+        "CREATE INDEX IF NOT EXISTS money_txns_by_account_day ON money_txns (account_id, day)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_categories (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS money_rules (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+    ]
+}
+
+/// Version 24: finding a message already stored by its `Message-ID`.
+///
+/// Sync matched a message seen in a second mailbox (Gmail's Sent and All
+/// Mail are the same message) only against what the running sync task had
+/// seen itself, so a mailbox read again by a fresh task stored every message
+/// in it a second time. `Message-ID` is sealed in the row, so `key` is a
+/// keyed hash of it (see `Vault::mail_message_key`): stable for one vault,
+/// telling nothing to anyone without its key. `mail_keyed_accounts` names the
+/// accounts whose existing messages have been keyed and their duplicates
+/// merged, which happens once.
+fn v24(_d: Dialect) -> Vec<String> {
+    vec![
+        "CREATE TABLE IF NOT EXISTS mail_message_keys (
+             account_id  TEXT NOT NULL,
+             key         TEXT NOT NULL,
+             message_id  TEXT NOT NULL,
+             PRIMARY KEY (account_id, key)
+         )"
+        .to_string(),
+        "CREATE INDEX IF NOT EXISTS mail_message_keys_by_message ON mail_message_keys (message_id)"
+            .to_string(),
+        "CREATE TABLE IF NOT EXISTS mail_keyed_accounts (
+             account_id  TEXT PRIMARY KEY NOT NULL
+         )"
+        .to_string(),
+    ]
+}
+
+/// Version 25: Screen time -- which app or site had somebody's attention,
+/// on which machine, and when; the labels a person gives apps and sites; the
+/// categories those are filed under; and the settings. See
+/// `docs/plans/screentime.md` and `karmayoga_core::screentime`.
+///
+/// Additive. Four tables:
+///
+/// - `screen_spans`: one unbroken run of one app or site. Not a record kind
+///   -- written by the thousand a day, never edited -- but sealed the same
+///   way, under its own id. In the clear: the *stream*, a keyed hash of the
+///   device and the collector that sent it (so a stream's last span is one
+///   indexed lookup, and the column cannot be matched against a machine's
+///   name), and when the run started and ended. Never the device, the app,
+///   the host or the title. `(stream, end_us)` answers "where did this
+///   collector leave off"; `(start_us)` and `(end_us)` answer a range, which
+///   asks for every span starting before its end and ending after its
+///   start; `(end_us)` is also what the sweep that clears old titles reads
+///   by.
+/// - `screen_apps`: a person's label for one app or site. Only the two
+///   timestamps are clear; the key it labels -- which *is* the app's id or
+///   the site's domain -- is sealed, so the vault finds a label by key after
+///   decrypting the list, which is a few hundred rows at most.
+/// - `screen_categories`: their order and timestamps.
+/// - `screen_settings`: a singleton on `meeting_settings`' shape.
+fn v25(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_spans (
+                 id        TEXT    PRIMARY KEY NOT NULL,
+                 stream    TEXT    NOT NULL,
+                 start_us  {int} NOT NULL,
+                 end_us    {int} NOT NULL,
+                 data      {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS screen_spans_by_stream ON screen_spans (stream, end_us)".into(),
+        "CREATE INDEX IF NOT EXISTS screen_spans_by_end ON screen_spans (end_us)".into(),
+        "CREATE INDEX IF NOT EXISTS screen_spans_by_start ON screen_spans (start_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_apps (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_categories (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS screen_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+    ]
+}
+
+/// Version 26: the accounts whose thread unread counts have been recomputed
+/// since a draft stopped counting as unread (`recount_draft_unread` in
+/// `mail::write`), so the scan that finds them runs once, as
+/// `mail_keyed_accounts` makes [`v24`]'s keying run once. Additive.
+fn v26() -> Vec<String> {
+    vec![
+        "CREATE TABLE IF NOT EXISTS mail_draft_recounted_accounts (
+             account_id  TEXT PRIMARY KEY NOT NULL
+         )"
+        .to_string(),
+    ]
+}
+
+/// Version 27: templates -- the shapes a journal entry, a note or a
+/// meeting's notes start from (`karmayoga_core::template`). Meeting templates
+/// used to be a list inside the sealed meeting settings; they move here on
+/// first read, which no SQL step can do because only something holding the
+/// key can open those settings. One table on the shape `skills` has (`v12`):
+/// nothing in the clear but the two timestamps, because a template's name
+/// and text say what somebody writes about every day.
+fn v27(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS templates (
+             id          TEXT    PRIMARY KEY NOT NULL,
+             created_us  {int} NOT NULL,
+             updated_us  {int} NOT NULL,
+             data        {blob} NOT NULL
+         )"
+    )]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_version_has_a_step() {
+        assert_eq!(steps(Dialect::Sqlite).len() as i64, SCHEMA_VERSION);
+        assert_eq!(steps(Dialect::Postgres).len() as i64, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn the_two_dialects_agree_about_everything_but_types() {
+        // The check that keeps the schemas from drifting: strip the type
+        // words out of both and what is left must be identical, table for
+        // table, column for column, index for index.
+        let normalise = |sqls: Vec<Vec<String>>| {
+            sqls.concat()
+                .join("\n")
+                .replace("BYTEA", "@blob")
+                .replace("BLOB", "@blob")
+                .replace("DOUBLE PRECISION", "@real")
+                .replace("REAL", "@real")
+                .replace("BOOLEAN", "@int")
+                .replace("BIGINT", "@int")
+                .replace("INTEGER", "@int")
+                .replace("TRUE", "@true")
+                .replace("FALSE", "@false")
+                .replace("DEFAULT 1", "DEFAULT @true")
+                .replace("DEFAULT 0", "DEFAULT @false")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(normalise(steps(Dialect::Sqlite)), normalise(steps(Dialect::Postgres)));
+    }
+
+    #[test]
+    fn no_query_hides_a_question_mark_in_a_literal() {
+        // `Dialect::bind` rewrites `?N` textually, which is only safe while
+        // no SQL in this crate has a `?` anywhere but a placeholder. The DDL
+        // is the part most likely to grow a CHECK constraint with prose in
+        // it, so it is checked here; the domain queries are checked by
+        // running the conformance suite against both dialects.
+        for sql in steps(Dialect::Postgres).concat().iter().chain(&blobs_table(Dialect::Postgres)) {
+            assert!(!sql.contains('?'), "DDL must not contain a question mark: {sql}");
+        }
+    }
+
+    #[test]
+    fn the_blobs_table_is_not_part_of_the_record_schema() {
+        // It belongs to the media layer and is created on open, so a vault
+        // that keeps its attachments in files never grows one. If it ever
+        // moves into a numbered step, this fails and says to think again.
+        let ddl = steps(Dialect::Postgres).concat().join(" ");
+        assert!(!ddl.contains("blobs"));
+    }
+}

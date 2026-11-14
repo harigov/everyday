@@ -1,4 +1,4 @@
-// Mirrors the serde representations in `everyday-core`. Kept hand-written
+// Mirrors the serde representations in `karmayoga-core`. Kept hand-written
 // rather than generated: the surface is small, and a hand-written type is a
 // place to document what the field *means* to the interface.
 //
@@ -222,7 +222,7 @@ export interface GoalActivity {
 //
 // What the Overview's mail, meeting and people widgets draw: a window of
 // each, counted in Rust because who a message is from and what an event is
-// called are sealed. See `everyday_core::insights` for the rules.
+// called are sealed. See `karmayoga_core::insights` for the rules.
 
 /** A window of mail. `received` is from somebody else; `sent` is yours. */
 export interface MailActivity {
@@ -569,7 +569,7 @@ export interface NoteSummary {
 
 // ── Templates ────────────────────────────────────────────────────────────
 //
-// One record for the journal, notes and meeting notes — `everyday_core::
+// One record for the journal, notes and meeting notes — `karmayoga_core::
 // template`. The body is Markdown: `{{date}}`, `{{weekday}}` and the rest are
 // filled in for the day; headings are kept, and the text under one is
 // guidance for whoever writes that section — the person in an entry or a
@@ -787,7 +787,7 @@ export interface RunQuery {
 // Work the assistant took on because a question needed more time than a
 // turn: it says so in the thread, the job runs on its own, and when it is
 // done the assistant comes back to that thread with an answer. Mirrors
-// `everyday_core::job`. See `docs/plans/jobs.md`.
+// `karmayoga_core::job`. See `docs/plans/jobs.md`.
 
 /**
  * What a job is, with its arguments. A task is one of the assistant's own
@@ -1215,7 +1215,7 @@ export class VaultError extends Error {
 
 // ── The task domain ──────────────────────────────────────────────────────
 //
-// Projects, tasks and blocks of time. Mirrors `everyday-core`'s `task`
+// Projects, tasks and blocks of time. Mirrors `karmayoga-core`'s `task`
 // module; see its docs for why subtasks are just tasks and why scheduled
 // time is a record rather than a field.
 
@@ -1455,7 +1455,7 @@ export interface TagCount {
 
 // ── The calendar domain ──────────────────────────────────────────────────
 //
-// Mirrors `everyday-core`'s `calendar` module. Two records only, because
+// Mirrors `karmayoga-core`'s `calendar` module. Two records only, because
 // most of a calendar already existed: time you schedule for yourself is a
 // `TimeBlock` (above), and what the calendar adds is other people's
 // calendars — a subscription, and the events read out of it.
@@ -1541,7 +1541,7 @@ export interface RemoteCalendarInfo extends RemoteCalendar {
 
 export type EventStatus = 'confirmed' | 'tentative' | 'cancelled'
 
-/** How often a repeat comes round. Mirrors `everyday-core`'s `recurrence`. */
+/** How often a repeat comes round. Mirrors `karmayoga-core`'s `recurrence`. */
 export type Frequency = 'daily' | 'weekly' | 'monthly' | 'yearly'
 
 /**
@@ -1693,9 +1693,9 @@ export interface ProviderInfo {
 }
 
 /**
- * A notification raised by the Rust shell, off `everyday://notify`.
+ * A notification raised by the Rust shell, off `karmayoga://notify`.
  *
- * Mirrors `everyday_app::notify::Notification`, and is deliberately a subset
+ * Mirrors `karmayoga_app::notify::Notification`, and is deliberately a subset
  * of the interface's own `NotifySpec`: the shell can say what happened, how
  * serious it is and how far it needs to reach, but it cannot hand across a
  * button, because the thing a button does lives on this side of the bridge.
@@ -1746,7 +1746,7 @@ export type { ChangeKind } from './generated/commands'
 // A mailbox provider signed in to. Not owned by the mail app -- mail and the
 // calendar's "other people's calendars" both borrow the same credential --
 // which is why this sits beside Purpose and the calendar rather than inside
-// either. Mirrors `everyday_core::account`; see that module for why almost
+// either. Mirrors `karmayoga_core::account`; see that module for why almost
 // nothing here is sensitive and the one thing that is (the credential
 // itself) never crosses the wire at all.
 
@@ -1814,7 +1814,7 @@ export interface MailAi {
   autoDraft: boolean
   summaries: boolean
   /** Suggested replies under an open thread, a draft from a few words, and
-   *  improving what was written -- `everyday_service::mailwrite`. Optional
+   *  improving what was written -- `karmayoga_service::mailwrite`. Optional
    *  because an account saved before it existed answers without it. */
   writing?: boolean
 }
@@ -1862,7 +1862,7 @@ export interface Account {
 
 /**
  * Which of an account's new mail is worth interrupting somebody for -- mirrors
- * `MailNotify` in `everyday-core`. `sorted` names categories of somebody's own
+ * `MailNotify` in `karmayoga-core`. `sorted` names categories of somebody's own
  * by `SortCategory.id`, which only a decision model files anything under.
  */
 export type MailNotify =
@@ -1908,7 +1908,7 @@ export interface MailProviderInfo extends Preset {
 // ── Mail ──────────────────────────────────────────────────────────────────
 //
 // Mailboxes, threads and the messages in them -- storage only, read-only,
-// for now. Mirrors `everyday_core::mail` and `everyday_core::store::mail`;
+// for now. Mirrors `karmayoga_core::mail` and `karmayoga_core::store::mail`;
 // see those for the two-views-of-a-thread design (a thread's own aggregates
 // versus its per-mailbox row in `thread_mailboxes`) and for which columns
 // stay sealed. `list_mailboxes`, `list_threads` and `get_thread` are the
@@ -2060,10 +2060,10 @@ export interface MailMessage {
 }
 
 /**
- * A thread, exactly as `everyday_core::mail::Thread` carries it.
+ * A thread, exactly as `karmayoga_core::mail::Thread` carries it.
  *
  * `snippet`, `starred` and `hasAttachments` are aggregates
- * `everyday_store_sql::mail::write::recompute_thread` keeps in step with the
+ * `karmayoga_store_sql::mail::write::recompute_thread` keeps in step with the
  * thread's own messages on every ingest, flag change and removal -- see that
  * function's own docs. They are what let a list row show a preview line, a
  * star and a paperclip without opening the thread first.
@@ -2092,13 +2092,13 @@ export interface Thread {
   aiSorted?: SortMark | null
 }
 
-/** `everyday_core::mail::SortMark`. */
+/** `karmayoga_core::mail::SortMark`. */
 export interface SortMark {
   messageCount: number
   at: string
 }
 
-/** `everyday_core::mail::SortedAs`. */
+/** `karmayoga_core::mail::SortedAs`. */
 export interface SortedAs {
   /** A `SortCategory.id`. One no longer in the list names nothing. */
   category: string
@@ -2106,7 +2106,7 @@ export interface SortedAs {
   message: MailMessageId
 }
 
-/** One of the categories mail is sorted into -- `everyday_core::mail::SortCategory`. */
+/** One of the categories mail is sorted into -- `karmayoga_core::mail::SortCategory`. */
 export interface SortCategory {
   /** Stable across renames. */
   id: string
@@ -2118,14 +2118,14 @@ export interface SortCategory {
   treatAs: MailCategory
 }
 
-/** Settings → Mail sorting -- `everyday_core::mail::MailSorting`. */
+/** Settings → Mail sorting -- `karmayoga_core::mail::MailSorting`. */
 export interface MailSorting {
   categories: SortCategory[]
   /** How many days back mail is sorted without being asked. */
   windowDays: number
 }
 
-/** Settings → Mail writing -- `everyday_core::mail::MailWriting`. */
+/** Settings → Mail writing -- `karmayoga_core::mail::MailWriting`. */
 export interface MailWriting {
   /** How they want to sound, in their own words. */
   instructions: string
@@ -2286,7 +2286,7 @@ export interface RecategorizeResult {
 }
 
 /** The standing, per-sender/per-domain allow-list a remote image is checked
- * against -- mirrors `everyday_core::mail::RemoteImageSettings`. The
+ * against -- mirrors `karmayoga_core::mail::RemoteImageSettings`. The
  * per-message one-off grant `allowRemoteImages` can also express is
  * deliberately not part of this: it lives in memory on the side that holds
  * the vault, for the one session that granted it, and this record never
@@ -2297,7 +2297,7 @@ export interface RemoteImageSettings {
 }
 
 /** Which part of the sync an account's task is doing right now. Mirrors
- * `everyday_service::mailsync::status::Phase`. */
+ * `karmayoga_service::mailsync::status::Phase`. */
 // No `attachments` phase: extracting them is folded into the bodies pass
 // rather than walking the mailbox again, so `Phase` in `mailsync/status.rs`
 // has nothing beyond `bodies` to report and this union must not offer a
@@ -2364,7 +2364,7 @@ export interface InboxSender {
 
 // ── Drafts and the outbox (phase 3) ─────────────────────────────────────
 //
-// Mirrors `everyday_core::mail`'s `Draft`, `Op` and the small enums either
+// Mirrors `karmayoga_core::mail`'s `Draft`, `Op` and the small enums either
 // carries. Who asked for an `Op` -- a person, the assistant in a named
 // conversation, a routine run, or an MCP client -- is `MailOrigin`, prefixed
 // the way `MailAddress` and `MailCategory` are to keep the word "origin"
@@ -2453,7 +2453,7 @@ export type OpState =
 
 /** One entry in the outbox: the local write already happened; this is what
  * still has to reach the server. See `crate::mail::outbox` for the state
- * machine and `crates/everyday-mail/src/outbox.rs` for what runs it. */
+ * machine and `crates/karmayoga-mail/src/outbox.rs` for what runs it. */
 export interface Op {
   id: OpId
   accountId: AccountId
@@ -2613,7 +2613,7 @@ export interface McpStatus {
 // ── Opening this vault in a browser ─────────────────────────────────────
 
 /** Which network web access answers on. Only Tailscale today; see
- *  `everyday_server::web::Network`. */
+ *  `karmayoga_server::web::Network`. */
 export type WebNetwork = {
   kind: 'tailscale'
   peers: 'sameUser' | { logins: string[] }
@@ -2697,7 +2697,7 @@ export type TrayMenuItem =
 // ── The badge on the application's icon ───────────────────────────────────
 //
 // What `set_badge` takes: which counts the shell adds up into the number on
-// the Dock or taskbar icon. Mirrors `everyday-app`'s `badge::BadgeSources`.
+// the Dock or taskbar icon. Mirrors `karmayoga-app`'s `badge::BadgeSources`.
 
 export interface BadgeSources {
   /**
@@ -2714,7 +2714,7 @@ export interface BadgeSources {
 
 // ── The library domain ───────────────────────────────────────────────────
 //
-// Mirrors `everyday-core`'s `library` module. Three records, and the middle
+// Mirrors `karmayoga-core`'s `library` module. Three records, and the middle
 // one is the point:
 //
 //   Kind ────── Item ────── LogEntry
@@ -2912,7 +2912,7 @@ export interface LogEntry {
 
 // ── Keeping in touch ─────────────────────────────────────────────────────
 //
-// Mirrors `everyday_core::keepintouch`. A person is an item on the Contacts
+// Mirrors `karmayoga_core::keepintouch`. A person is an item on the Contacts
 // shelf and a catch-up is a row in its log. See docs/plans/keep-in-touch.md.
 
 /** How a catch-up happened. `Via` on the Rust side; that name is the chat's here. */
@@ -3037,7 +3037,7 @@ export interface AddedItem {
 // ── Web search ───────────────────────────────────────────────────────────
 //
 // A facility rather than a feature of the library: `lib/websearch.ts` is the
-// class any component can reach for. Mirrors `everyday-core`'s `websearch`.
+// class any component can reach for. Mirrors `karmayoga-core`'s `websearch`.
 
 export interface SearchRequest {
   query: string
@@ -3083,7 +3083,7 @@ export interface SourceInfo {
 
 /**
  * One picture an image search found. Mirrors
- * `everyday_core::websearch::images::ImageResult`.
+ * `karmayoga_core::websearch::images::ImageResult`.
  *
  * Addresses only: nothing here is fetched until it is shown through
  * `api.imagePreview` or chosen through `api.fetchImage`.
@@ -3106,7 +3106,7 @@ export interface ImageResult {
 
 // ── Weather ──────────────────────────────────────────────────────────────
 //
-// Mirrors `everyday_core::weather` and `everyday_core::air_quality`. Read by
+// Mirrors `karmayoga_core::weather` and `karmayoga_core::air_quality`. Read by
 // both the `weather` command (the Overview's Weather widget) and, loosely --
 // it is never typed on that side -- the assistant's own `get_weather` tool,
 // which answers with the same JSON.
@@ -3183,7 +3183,7 @@ export interface AirQualityDay {
 /**
  * What's in the air beside the weather -- `WeatherReport.airQuality` is
  * `null` when this second, smaller request failed on its own; the rest of
- * the forecast is still returned. See `everyday_core::air_quality`'s "A
+ * the forecast is still returned. See `karmayoga_core::air_quality`'s "A
  * third request, allowed to fail on its own".
  */
 export interface AirQualityReport {
@@ -3212,7 +3212,7 @@ export interface WeatherReport {
 
 // ── The models ───────────────────────────────────────────────────────────
 //
-// Mirrors `everyday_core::llm`. Application settings rather than the
+// Mirrors `karmayoga_core::llm`. Application settings rather than the
 // assistant's: three sizes of work, each with its own endpoint and model.
 // Note what is *not* here: an API key. Keys are stored per endpoint and there
 // is no command that reads one back; `ModelSettingsView.keyed` says which
@@ -3238,7 +3238,7 @@ export interface LLMModelConfig {
   reasoningEffort: ReasoningEffort | null
 }
 
-/** How hard a reasoning model thinks -- `everyday_core::llm::ReasoningEffort`. */
+/** How hard a reasoning model thinks -- `karmayoga_core::llm::ReasoningEffort`. */
 export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** Which of the three models. */
@@ -3248,7 +3248,7 @@ export type ModelTier = 'large' | 'medium' | 'small'
 export type ModelSlot = ModelTier | 'decision'
 
 /**
- * How a decision model is reached -- `everyday_core::llm::DecisionApi`.
+ * How a decision model is reached -- `karmayoga_core::llm::DecisionApi`.
  * `typeSafe` is TypeSafe's System One (Jev, directly or through OpenRouter);
  * `openAi` is OpenAI's Decisions API; `local` runs one of the
  * `LocalDecisionModel`s on this computer, sent nothing at all.
@@ -3309,13 +3309,13 @@ export interface ModelSettingsView {
    * A decision model on this computer is not one.
    */
   acknowledgement: string
-  /** Whether this copy of Every Day can run a decision model itself. */
+  /** Whether this copy of Karma Yoga can run a decision model itself. */
   localDecisions: boolean
 }
 
 // ── The assistant ────────────────────────────────────────────────────────
 //
-// Mirrors `everyday_core::agent`. Which model it runs on is the models'
+// Mirrors `karmayoga_core::agent`. Which model it runs on is the models'
 // business, above.
 
 /**
@@ -3658,7 +3658,7 @@ export interface ConversationSummary extends Conversation {
 // ── Chat links ───────────────────────────────────────────────────────────
 //
 // The assistant, reached from a chat app on another device -- see
-// `docs/plans/chat.md` and `everyday_core::chat`. A link is one bot account
+// `docs/plans/chat.md` and `karmayoga_core::chat`. A link is one bot account
 // on one chat service, and the one person it answers.
 
 /** The chat a conversation arrived through. */
@@ -3692,7 +3692,7 @@ export type ChatService = { kind: 'matrix' } & MatrixLink
 export interface MatrixLink {
   /** Where the homeserver's client API answers, used exactly as given. */
   homeserver: string
-  /** The bot's own account: `@everyday:example.org`. */
+  /** The bot's own account: `@karmayoga:example.org`. */
   userId: string
   /** The one person it answers. Anybody else's messages and invitations are
    *  ignored, whatever room they arrive in. */
@@ -3819,7 +3819,7 @@ export interface Skill {
 // ── Proposals ────────────────────────────────────────────────────────────
 //
 // Work the assistant prepared and did not do. Mirrors
-// `everyday_core::proposal`. A proposal carries a whole record, never a tool
+// `karmayoga_core::proposal`. A proposal carries a whole record, never a tool
 // call, so it reads the same after an upgrade. See docs/plans/dreaming.md.
 
 export const PROPOSAL_KINDS = [
@@ -4029,8 +4029,8 @@ export type AgentEvent =
 
 // ── Taking your data out, and putting it back ─────────────────────────
 //
-// Mirrors `everyday_transfer` and `domains::transfer`. An archive is a zip
-// of Markdown, iCalendar and CSV -- there is no Every Day format in it --
+// Mirrors `karmayoga_transfer` and `domains::transfer`. An archive is a zip
+// of Markdown, iCalendar and CSV -- there is no Karma Yoga format in it --
 // and it crosses this boundary in chunks because a whole journal does not
 // fit in one reply. See `lib/transfer.svelte.ts` for the two loops.
 
@@ -4145,14 +4145,14 @@ export interface BegunSignIn {
  * same `signInId` again, renamed to say what it now means -- the account
  * form's `save_account` call is what claims the tokens waiting under it.
  * Nothing here ever carries a token itself; see
- * `crates/everyday-service/src/signin.rs`'s module doc.
+ * `crates/karmayoga-service/src/signin.rs`'s module doc.
  */
 export interface AwaitedSignIn {
   tokensSavedUnder: string
 }
 
 // ── Meeting notes ─────────────────────────────────────────────────────────
-// Mirrors `everyday_core::meeting`. See docs/plans/meeting-notes.md.
+// Mirrors `karmayoga_core::meeting`. See docs/plans/meeting-notes.md.
 
 /** Which side of a call audio came from: the microphone, or what the computer played. */
 export type Track = 'mic' | 'system'
@@ -4335,7 +4335,7 @@ export interface MeetingSettingsView {
 
 /**
  * A calendar meeting worth offering notes for, as the service describes it --
- * `everyday_service::events::MeetingOffer`. The shell turns one of these into
+ * `karmayoga_service::events::MeetingOffer`. The shell turns one of these into
  * a `MeetingOfferPayload` (see `api.ts`) by adding a `key`, a `source` and
  * the rest of what only it knows.
  */
@@ -4410,8 +4410,8 @@ export interface CaptureStatus {
 
 // ── The Feed ─────────────────────────────────────────────────────────────
 //
-// Mirrors `everyday_core::news` and the wire types of
-// `everyday-service/src/domains/news.rs`. "Feed" is the app; `news` is the
+// Mirrors `karmayoga_core::news` and the wire types of
+// `karmayoga-service/src/domains/news.rs`. "Feed" is the app; `news` is the
 // domain, because `feed` already means a subscribed calendar.
 
 /** Which Hacker News list a source follows. */
@@ -4569,7 +4569,7 @@ export interface NewsletterSender {
 
 // ── Money ────────────────────────────────────────────────────────────────
 //
-// `everyday_core::money`. Every amount is an integer of the currency's minor
+// `karmayoga_core::money`. Every amount is an integer of the currency's minor
 // unit (cents for USD, yen for JPY) -- never a float -- and a transaction's
 // sign is the budgeting one: negative is money out, positive is money in. A
 // liability account's balance is what is owed, positive. See
@@ -4892,7 +4892,7 @@ export interface Recurring {
 
 // ---- Screen time ---------------------------------------------------------
 //
-// Mirrors `everyday_core::screentime`. See `docs/plans/screentime.md`.
+// Mirrors `karmayoga_core::screentime`. See `docs/plans/screentime.md`.
 
 export type ScreenSpanId = string
 export type ScreenAppId = string

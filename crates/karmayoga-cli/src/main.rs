@@ -1,0 +1,37 @@
+//! `karmayoga` -- a command line front end to a journal vault.
+//!
+//! It exists for three reasons: scripted capture (`echo ... | karmayoga new`),
+//! export and inspection without launching a GUI, and as an end-to-end
+//! exercise of the whole stack on machines where the desktop shell cannot be
+//! built.
+
+mod app;
+mod args;
+mod format;
+mod mcp_pipe;
+mod serve;
+mod verbs;
+
+use args::Cli;
+use clap::Parser;
+
+fn main() -> std::process::ExitCode {
+    // A setting under the old prefix is read by nothing; say so rather than
+    // let it stop working in silence.
+    for (old, new) in karmayoga_core::legacy::old_environment() {
+        eprintln!("warning: {old} is no longer read; it is {new} now");
+    }
+    let cli = Cli::parse();
+    match app::run(cli) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: {e}");
+            let mut source = std::error::Error::source(&e);
+            while let Some(cause) = source {
+                eprintln!("  caused by: {cause}");
+                source = cause.source();
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
+}

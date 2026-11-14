@@ -27,7 +27,7 @@ reads; `toWire` strips it. `screen.svelte.ts` answers "what now" for the
 composer and the bar, and handles Settings, which stands in for an app rather
 than being one.
 
-The service (`everyday_core::agent::onscreen`) reads the references
+The service (`karmayoga_core::agent::onscreen`) reads the references
 leniently, looks each one up, and writes the paragraph the model reads:
 names from the vault rather than the wire, mail only when
 `agent::tools::mail::permits` says `read_thread` could read it, sender-written

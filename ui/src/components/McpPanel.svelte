@@ -20,7 +20,7 @@
   import Icon from './Icon.svelte'
   import MailActionsList from './MailActionsList.svelte'
 
-  // The domains a token can be narrowed to, in `everyday_service::domains::
+  // The domains a token can be narrowed to, in `karmayoga_service::domains::
   // meta::scope_of`'s order, labelled for what each one *grants* rather than
   // with the raw scope string a settings pane has no business showing.
   // `all`, `admin` and `any` are not here on purpose: `all` is what ticking
@@ -56,7 +56,7 @@
   let scopes = $state<Set<string>>(new Set(DOMAIN_SCOPES.map((d) => d.scope)))
   // Money is apart from the boxes above, and off until ticked: an agent
   // reaches it only through a token that names it, never through `all`
-  // (see `everyday-server`'s `mcp.rs`, "Money needs asking for by name").
+  // (see `karmayoga-server`'s `mcp.rs`, "Money needs asking for by name").
   // Every bank transaction is not something to hand over by default.
   let money = $state(false)
   const allScopesTicked = $derived(scopes.size === DOMAIN_SCOPES.length)

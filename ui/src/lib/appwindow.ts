@@ -4,7 +4,7 @@
 // one of them alone -- the todo list beside the editor you are writing in --
 // opened from the app's button in the app bar or from the palette. It is the
 // same interface in a second webview, with its own stores, talking to the
-// same vault; see `crates/everyday-app/src/windows.rs` for the shell's half.
+// same vault; see `crates/karmayoga-app/src/windows.rs` for the shell's half.
 //
 // Which window this is is known before anything is drawn, from the window's
 // own label (`app-todo`), so every module can read it as a constant rather

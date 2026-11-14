@@ -6,10 +6,10 @@
 > keeping:
 >
 > - **`web_search` is not a core tool.** The plan gave it a `Domain::Web` in
->   `everyday-core/src/agent/tools.rs`, which cannot work: that crate has no
+>   `karmayoga-core/src/agent/tools.rs`, which cannot work: that crate has no
 >   async runtime, no TLS stack and no way to open a socket, and the calendar
 >   and library features are both built to keep that true. It is declared in
->   `everyday-service`, beside the crate that does have those things, and
+>   `karmayoga-service`, beside the crate that does have those things, and
 >   registered onto the agent alongside the core catalogue. It is therefore
 >   absent from `list_tools`, which is honest — it is not a verb the CLI or
 >   the palette can run.
@@ -23,9 +23,9 @@
 >   canvas — toolbar, document, media, both load-bearing effects — is
 >   `RichText`, and the journal and the notes app each wrap it with their own
 >   page. Lifting it was the only way to keep one set of caret bugs.
-> - **The autounlock keychain helper lives in `everyday-vault`, not the
+> - **The autounlock keychain helper lives in `karmayoga-vault`, not the
 >   shell.** Two front ends want it: the desktop switch and
->   `everyday serve --keychain`. The vault crate is the assembly point and
+>   `karmayoga serve --keychain`. The vault crate is the assembly point and
 >   already owns the platform paths.
 > - **`RoutineRun` carries `routine_name` and `slot`.** Neither was in the
 >   plan's shape. The name so a log row still reads after a rename or a
@@ -73,7 +73,7 @@ already exists; none is a new subsystem beside the others.
    into this" is. The assistant reads and writes them as Markdown through
    the conversion the journal tools already use.
 3. **Routines.** A record in the vault: a trigger, an instruction in the
-   person's words, and a switch. A scheduler in `everyday-service` runs
+   person's words, and a switch. A scheduler in `karmayoga-service` runs
    them, one at a time, through the same turn the rail uses, as a caller of
    its own, with the whole tool catalogue. Every run is a conversation, so
    "why did it do that" has the same answer it has for a chat.
@@ -102,7 +102,7 @@ These were settled in discussion and the plan does not reopen them.
 
 - **The service is always running.** A daemon or server mode keeps the
   vault open for any client; the desktop app is the common host of it and
-  `everyday serve` is the headless one. Nothing here relies on a window
+  `karmayoga serve` is the headless one. Nothing here relies on a window
   being open, and nothing here builds a second process.
 - **The assistant acts while the app is locked.** "Locked" therefore has to
   mean the screen, not the key. A vault whose key is gone cannot run
@@ -301,7 +301,7 @@ on Tuesday, that a routine exists, that a run started at 07:00 and nobody
 has looked at it. What it never says: a note's title or a word of its body,
 what a routine is for, what a run reported, or anything at all about the
 person — the profile row is sealed whole, like a message. The leak table in
-`everyday-store-sql/src/lib.rs` gains four rows saying exactly this.
+`karmayoga-store-sql/src/lib.rs` gains four rows saying exactly this.
 
 Retention: `collect_garbage` keeps the last fifty runs per routine, deletes
 the conversations of the runs it drops, and walks notes for blob references
@@ -311,7 +311,7 @@ as it walks entries.
 
 `next_due(trigger, last_run_at, now, tz) -> Option<Timestamp>` and
 `is_due(…, grace_minutes) -> Due::Now | Due::Missed | Due::Later` live in
-`everyday-core/src/routine.rs`, take the clock as an argument, and are
+`karmayoga-core/src/routine.rs`, take the clock as an argument, and are
 tested on a table of cases: a weekday schedule across a weekend, a run that
 straddles a DST change, a routine that has never run, a routine missed by
 more than its grace. `Missed` writes a `Skipped` run with the reason, so a
@@ -542,13 +542,13 @@ routine, so a routine that fails every morning says so once.
 set is used.
 
 **Where it is spawned.** On the runtime the process already has, never a
-new one — the rule `everyday-server/src/lib.rs` states for the server. The
-desktop shell spawns it in `setup` beside the sink; `everyday serve` spawns
+new one — the rule `karmayoga-server/src/lib.rs` states for the server. The
+desktop shell spawns it in `setup` beside the sink; `karmayoga serve` spawns
 it after `start`; a remote-client window does not spawn it, because the
 machine holding the vault already has. `Service::close` stops it.
 
 **The window.** `CloseRequested` hides the window instead of destroying it
-when any routine is enabled or sharing is on; "Quit Every Day" in the tray
+when any routine is enabled or sharing is on; "Quit Karma Yoga" in the tray
 still quits, and quitting still locks. Hiding keeps the webview, which is
 what lets the existing notification path post to the notification centre
 with the window out of the way. The tray gains one line under the actions,
@@ -672,7 +672,7 @@ than the key written to a file. `Vault::unlock_with_wrapped` beside
 `unlock`; `bootstrap` tries it before showing the lock screen. The sentence
 beside the switch is the trade: *your vault is then as safe as your login
 on this computer, not as safe as your password.* Turning it off removes the
-wrapped key. `everyday serve` gets `--keychain` for the same thing on a
+wrapped key. `karmayoga serve` gets `--keychain` for the same thing on a
 headless machine.
 
 ### Phase 9 — Words
@@ -686,7 +686,7 @@ headless machine.
   "locks for everybody looking at it" and gains the two-lock sentence; the
   *What is not encrypted* section gains its four rows; the Status
   section's counts.
-- `everyday-store-sql/src/lib.rs` leak table and the `schema.rs` v8
+- `karmayoga-store-sql/src/lib.rs` leak table and the `schema.rs` v8
   rationale comment.
 - `docs/PLAN-server-and-actions.md`'s *Still to do*: the local socket in
   the desktop app is still not wired, and this plan does not wire it; say
@@ -707,8 +707,8 @@ headless machine.
   under one data key.
 - **Locking on system sleep.** No portable signal; the forget-key timer
   covers the case for anyone who wants it.
-- **The CLI.** `everyday routines` and `everyday note` need the socket
-  client that `everyday new`-through-a-running-app also needs; neither
+- **The CLI.** `karmayoga routines` and `karmayoga note` need the socket
+  client that `karmayoga new`-through-a-running-app also needs; neither
   exists and this plan does not build it.
 - **Routines that run in parallel.** One at a time keeps cost and the single
   writer honest.

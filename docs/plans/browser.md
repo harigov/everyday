@@ -1,7 +1,7 @@
 # A browser for the assistant
 
-> **Delivered (first part).** The code is `everyday_service::browser`, its
-> gate is `ConfirmGate::browser_call` in `everyday_service::agent`, the
+> **Delivered (first part).** The code is `karmayoga_service::browser`, its
+> gate is `ConfirmGate::browser_call` in `karmayoga_service::agent`, the
 > switch is `AgentSettings::browser`, and the cards are in
 > `ui/src/components/ToolCard.svelte`.
 
@@ -14,7 +14,7 @@ key, and type into a field.
 ## Decisions
 
 - **The person's own Chrome or Chromium, driven headless.** Found on `PATH`
-  (or in `/Applications` on macOS), or named by `EVERYDAY_BROWSER`. The app
+  (or in `/Applications` on macOS), or named by `KARMAYOGA_BROWSER`. The app
   does not ship or download a browser: that is hundreds of megabytes that
   need security updates every few weeks, and the installed one already gets
   them. With none installed, the tools are not offered, and the model is told

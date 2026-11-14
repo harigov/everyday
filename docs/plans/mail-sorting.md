@@ -1,10 +1,10 @@
 # Mail sorting on a decision model
 
-> **Delivered.** The code is `everyday_core::mail::sorting`, the `decision`
-> card in `everyday_core::llm`, `everyday_service::{decision, mailsort}`, the
+> **Delivered.** The code is `karmayoga_core::mail::sorting`, the `decision`
+> card in `karmayoga_core::llm`, `karmayoga_service::{decision, mailsort}`, the
 > `mailsorting` command domain, `ModelsPanel.svelte`'s Decision card and
 > `MailSortingPanel.svelte` (Settings → Mail sorting). Models that run on
-> this computer, added later, are `everyday_service::local`; see "On this
+> this computer, added later, are `karmayoga_service::local`; see "On this
 > computer" below.
 
 A *decision model* (TypeSafe's "System One": Jev; OpenAI's Decisions API)

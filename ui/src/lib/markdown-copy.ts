@@ -10,7 +10,7 @@
 // So the plain text is written as Markdown -- the same Markdown, character
 // for character, that `to_markdown` in `richtext.rs` exports a note as, and
 // which the Markdown vault stores. The two are line-for-line mirrors, and
-// `crates/everyday-core/tests/fixtures/markdown.json` is checked against
+// `crates/karmayoga-core/tests/fixtures/markdown.json` is checked against
 // both. Pasting back into the editor is untouched by any of this: it reads
 // the HTML beside the text.
 //

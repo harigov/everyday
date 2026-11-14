@@ -1,0 +1,35 @@
+[package]
+name = "karmayoga-vault"
+description = "Wires the Karma Yoga core to its storage backends and platform paths"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The one place a key may be kept between runs, and only when somebody has
+# said so: see `autounlock`. One API over the macOS keychain, the Windows
+# credential manager and the XDG secret service.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+karmayoga-core.workspace = true
+karmayoga-store-sqlite.workspace = true
+karmayoga-store-postgres.workspace = true
+directories = "6"
+# `legacy`: reading an old vault's header, and saying what it moved.
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# `testing` for `Vault::put_meeting_settings_as_an_older_build_did`, which
+# `tests/templates.rs` needs to stand for a vault an older build wrote.
+karmayoga-core = { workspace = true, features = ["testing"] }
+jiff.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+# Test-only: parsing the hostile `.eml` corpus and sanitising it the same
+# way the real sync engine does, so `tests/mail_tools.rs` ingests messages
+# that look like what a mailbox actually hands the vault rather than a
+# hand-built approximation of one.
+karmayoga-mail.workspace = true

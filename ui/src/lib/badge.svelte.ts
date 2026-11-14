@@ -6,7 +6,7 @@
 // over again (see `tray.svelte.ts`), for the same reason: the window can be
 // hidden with the process still running, and a count kept by a webview that
 // is not looking would go stale exactly when somebody glances at the Dock to
-// see whether anything arrived. See `crates/everyday-app/src/badge.rs`.
+// see whether anything arrived. See `crates/karmayoga-app/src/badge.rs`.
 
 import { api, hasShell } from './api'
 import { pref } from './prefs'
@@ -25,7 +25,7 @@ const TASKS: readonly BadgeSources['tasks'][] = ['off', 'due', 'open']
  * for what it no longer recognises rather than failing to parse at all.
  */
 const sourcesPref = pref<BadgeSources>(
-  'everyday.badge',
+  'karmayoga.badge',
   (raw) => {
     const stored = raw ? (JSON.parse(raw) as Partial<BadgeSources>) : {}
     return {

@@ -5,7 +5,7 @@
   // pasted in: for when no lookup finds the right edition, and nobody has a
   // picture of it to hand. What the search answers is addresses, and the
   // webview may not load an address from the internet -- the content security
-  // policy allows `data:` and `everyday:` and nothing remote -- so every
+  // policy allows `data:` and `karmayoga:` and nothing remote -- so every
   // thumbnail comes through `api.imagePreview`, fetched by the service on a
   // cover's terms and kept nowhere. Only the picture somebody picks is ever
   // stored, through `library.chooseCoverFrom`.

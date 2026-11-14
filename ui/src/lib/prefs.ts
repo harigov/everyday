@@ -1,12 +1,14 @@
 // Local, unencrypted settings: chrome the interface remembers about itself.
 //
-// A dozen keys, and two ways of spelling them. Nine follow `everyday.<name>`,
+// A dozen keys, and two ways of spelling them. Nine follow `karmayoga.<name>`,
 // one word per piece of chrome; the assistant rail's two came later, from a
-// different corner of the interface, as `everyday:<name>` -- a colon instead
+// different corner of the interface, as `karmayoga:<name>` -- a colon instead
 // of a dot. That inconsistency is recorded here rather than fixed: somebody's
 // browser already holds a value under one of these exact strings, and
-// renaming the key would not migrate it, it would lose it. A vault's worth of
-// remembered widths and view choices is not worth a tidier spelling.
+// renaming a key without carrying its value across would lose it. A vault's
+// worth of remembered widths and view choices is not worth a tidier spelling.
+// (The one rename these keys have had -- `everyday` to `karmayoga`, with the
+// product -- is carried across by `legacy.ts` before anything reads them.)
 //
 // What this file does fix is the six or so lines every site repeated around
 // that string: read it, decide whether what came back still means anything,
@@ -16,32 +18,32 @@
 
 /** Every key this file reads or writes, so a typo in one is a compile error. */
 export type PrefKey =
-  | 'everyday.theme'
-  | 'everyday.section'
-  | 'everyday.todo.view'
-  | 'everyday.calendar.view'
-  | 'everyday.library.view'
-  | 'everyday.library.capture'
-  | 'everyday.library.enrich'
-  | 'everyday.feed.filter'
-  | 'everyday.feed.folders.closed'
-  | 'everyday.feed.newsletters'
-  | 'everyday.money.view'
-  | 'everyday.screentime.view'
-  | 'everyday.screentime.range'
-  | 'everyday.screentime.devices'
-  | 'everyday.journal.calendar'
-  | 'everyday.overview.layout'
-  | 'everyday.overview.introduced'
-  | 'everyday.tray'
-  | 'everyday.tray.meeting'
-  | 'everyday.badge'
-  | 'everyday.sidebar.folded'
-  | 'everyday.mail.accounts.open'
-  | 'everyday.mail.list.only'
-  | 'everyday.mail.category'
-  | 'everyday:assistant-open'
-  | 'everyday:assistant-width'
+  | 'karmayoga.theme'
+  | 'karmayoga.section'
+  | 'karmayoga.todo.view'
+  | 'karmayoga.calendar.view'
+  | 'karmayoga.library.view'
+  | 'karmayoga.library.capture'
+  | 'karmayoga.library.enrich'
+  | 'karmayoga.feed.filter'
+  | 'karmayoga.feed.folders.closed'
+  | 'karmayoga.feed.newsletters'
+  | 'karmayoga.money.view'
+  | 'karmayoga.screentime.view'
+  | 'karmayoga.screentime.range'
+  | 'karmayoga.screentime.devices'
+  | 'karmayoga.journal.calendar'
+  | 'karmayoga.overview.layout'
+  | 'karmayoga.overview.introduced'
+  | 'karmayoga.tray'
+  | 'karmayoga.tray.meeting'
+  | 'karmayoga.badge'
+  | 'karmayoga.sidebar.folded'
+  | 'karmayoga.mail.accounts.open'
+  | 'karmayoga.mail.list.only'
+  | 'karmayoga.mail.category'
+  | 'karmayoga:assistant-open'
+  | 'karmayoga:assistant-width'
 
 export interface Pref<T> {
   /** The stored value, parsed and validated -- `fallback` for anything else. */

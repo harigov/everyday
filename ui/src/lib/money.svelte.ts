@@ -151,7 +151,7 @@ const LINK_GIVE_UP_MS = 31 * 60_000
  * constructor, so the app does not draw the overview and visibly flip.
  */
 const viewPref = pref<MoneyView>(
-  'everyday.money.view',
+  'karmayoga.money.view',
   (raw) => MONEY_VIEWS.find((v) => v === raw) ?? 'overview',
   'overview',
 )

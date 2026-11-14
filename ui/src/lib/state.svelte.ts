@@ -71,7 +71,7 @@ const TOUCH_MS = 15_000
  * and only by this machine's windows, so a phone looking at the same vault
  * defers nothing here.
  */
-const ACTIVE_AT = 'everyday.activeAt'
+const ACTIVE_AT = 'karmayoga.activeAt'
 
 function activeElsewhere(): number {
   try {
@@ -113,13 +113,13 @@ export { type Section, APP_ORDER as SECTIONS } from './apps'
 /** The theme the person chose. See `themes.ts` for the list and the contract. */
 export type Theme = ThemeChoice
 
-const themePref = pref<Theme>('everyday.theme', parseThemeChoice, 'system')
+const themePref = pref<Theme>('karmayoga.theme', parseThemeChoice, 'system')
 
 /** Named because `start` also runs a `?section=` override through it. */
 function parseSection(raw: string | null): Section | null {
   return APP_ORDER.includes(raw as Section) ? (raw as Section) : null
 }
-const sectionPref = pref<Section | null>('everyday.section', parseSection, null)
+const sectionPref = pref<Section | null>('karmayoga.section', parseSection, null)
 
 class AppState {
   screen = $state<Screen>('loading')
@@ -319,14 +319,14 @@ class AppState {
     // A mock build accepts `?theme=` so the interface can be reviewed in a
     // fixed theme without clicking through to Settings first.
     const forced = isMock ? new URLSearchParams(location.search).get('theme') : null
-    this.theme = parseThemeChoice(forced ?? localStorage.getItem('everyday.theme'))
+    this.theme = parseThemeChoice(forced ?? localStorage.getItem('karmayoga.theme'))
     this.applyTheme()
     // `?section=` alongside `?theme=`, and for the same reason: so the
     // interface can be opened straight to the app under review.
     const asked = isMock ? new URLSearchParams(location.search).get('section') : null
     // A window of one app shows that app, whatever the main window was last
     // left on. See `appwindow.ts`.
-    const section = pinned ?? parseSection(asked ?? localStorage.getItem('everyday.section'))
+    const section = pinned ?? parseSection(asked ?? localStorage.getItem('karmayoga.section'))
     if (section) this.section = section
     try {
       const boot = await api.bootstrap()
@@ -355,7 +355,7 @@ class AppState {
    * The link is what somebody copied from that machine's settings, or scanned.
    * It carries the address, a one-time code, and the certificate to pin -- so
    * the check that this is the right computer happens before anything secret
-   * is sent. See `everyday_server::client::RemoteClient::pair`.
+   * is sent. See `karmayoga_server::client::RemoteClient::pair`.
    */
   async connectRemote(link: string) {
     this.screen = 'loading'
@@ -1698,7 +1698,7 @@ export const app = new AppState()
 // that wrote.
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('storage', (e) => {
-    if (e.key !== 'everyday.theme') return
+    if (e.key !== 'karmayoga.theme') return
     app.theme = parseThemeChoice(e.newValue)
     app.applyTheme()
   })

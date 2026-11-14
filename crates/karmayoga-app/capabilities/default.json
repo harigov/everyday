@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities granted to the Karma Yoga window. Deliberately narrow: the webview has no network permission at all and its content security policy allows no outbound connection, so nothing it renders -- an entry, a task, an event fetched from a subscribed calendar, or a book cover downloaded into the vault -- can cause a request. Every socket in the application is opened by the Rust shell through src/http.rs, only for a calendar feed the user pasted in or a metadata lookup they asked for, and none of it is reachable from here. The one thing it may ask the shell to open is an https:// link in the system browser -- an OAuth sign-in page, chiefly; opener:allow-open-url carries no scope of its own, and without this one every URL is refused. The app-* windows are single apps opened in windows of their own (src/windows.rs): the same interface as the main window, so the same grant.",
+  "windows": ["main", "app-*"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-set-title",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message",
+    "dialog:allow-confirm",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }]
+    },
+    "notification:default"
+  ]
+}

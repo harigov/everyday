@@ -100,7 +100,7 @@ function shellPresent(): boolean {
  * their mind.
  *
  * In the desktop app that is the shell's save dialog, the file written by the
- * shell: a webview's own download of an `everyday:` address has nowhere to go,
+ * shell: a webview's own download of an `karmayoga:` address has nowhere to go,
  * so a plain link to one fails every way it can be followed. A browser, which
  * has no shell and does have downloads, gets the bytes as a file of its own.
  */

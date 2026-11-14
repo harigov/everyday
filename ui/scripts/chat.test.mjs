@@ -1,6 +1,6 @@
 // Behaviour checks for the pure rules behind Settings → Chat -- see
 // `src/lib/chat.ts`. The messages `validateMatrixLink` gives are pinned word
-// for word against `MatrixLink::validate` in `crates/everyday-core/src/chat.rs`,
+// for word against `MatrixLink::validate` in `crates/karmayoga-core/src/chat.rs`,
 // so changing one side without the other fails here.
 
 import assert from 'node:assert/strict'

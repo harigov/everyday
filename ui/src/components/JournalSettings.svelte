@@ -94,7 +94,7 @@
   // Which template a new day's entry starts from: a default, and rules for
   // particular days, tried in order. The templates themselves are edited in
   // Settings → Templates; this only chooses among them, the way the Meetings
-  // tab chooses a recording's. See `everyday_core::template::JournalTemplates`.
+  // tab chooses a recording's. See `karmayoga_core::template::JournalTemplates`.
 
   void templates.load()
 

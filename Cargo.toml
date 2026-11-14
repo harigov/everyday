@@ -1,43 +1,43 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/everyday-core",
-    "crates/everyday-store-sql",
-    "crates/everyday-store-sqlite",
-    "crates/everyday-store-postgres",
-    "crates/everyday-vault",
-    "crates/everyday-transfer",
-    "crates/everyday-mcp",
-    "crates/everyday-service",
-    "crates/everyday-server",
-    "crates/everyday-cli",
-    "crates/everyday-mail",
-    "crates/everyday-mailindex",
-    "crates/everyday-chat",
-    "crates/everyday-focus",
-    "crates/everyday-app",
+    "crates/karmayoga-core",
+    "crates/karmayoga-store-sql",
+    "crates/karmayoga-store-sqlite",
+    "crates/karmayoga-store-postgres",
+    "crates/karmayoga-vault",
+    "crates/karmayoga-transfer",
+    "crates/karmayoga-mcp",
+    "crates/karmayoga-service",
+    "crates/karmayoga-server",
+    "crates/karmayoga-cli",
+    "crates/karmayoga-mail",
+    "crates/karmayoga-mailindex",
+    "crates/karmayoga-chat",
+    "crates/karmayoga-focus",
+    "crates/karmayoga-app",
 ]
 
-# `everyday-app` is a workspace member -- it shares the lockfile and can be
-# built with `-p everyday-app` -- but it is not a *default* member, because
+# `karmayoga-app` is a workspace member -- it shares the lockfile and can be
+# built with `-p karmayoga-app` -- but it is not a *default* member, because
 # it links the platform webview (WebKitGTK on Linux) and would otherwise make
 # a plain `cargo test` fail on any machine without those headers installed.
 # Everything except the shell is portable Rust and always builds.
 default-members = [
-    "crates/everyday-core",
-    "crates/everyday-store-sql",
-    "crates/everyday-store-sqlite",
-    "crates/everyday-store-postgres",
-    "crates/everyday-vault",
-    "crates/everyday-transfer",
-    "crates/everyday-mcp",
-    "crates/everyday-service",
-    "crates/everyday-server",
-    "crates/everyday-cli",
-    "crates/everyday-mail",
-    "crates/everyday-mailindex",
-    "crates/everyday-chat",
-    "crates/everyday-focus",
+    "crates/karmayoga-core",
+    "crates/karmayoga-store-sql",
+    "crates/karmayoga-store-sqlite",
+    "crates/karmayoga-store-postgres",
+    "crates/karmayoga-vault",
+    "crates/karmayoga-transfer",
+    "crates/karmayoga-mcp",
+    "crates/karmayoga-service",
+    "crates/karmayoga-server",
+    "crates/karmayoga-cli",
+    "crates/karmayoga-mail",
+    "crates/karmayoga-mailindex",
+    "crates/karmayoga-chat",
+    "crates/karmayoga-focus",
 ]
 
 [workspace.package]
@@ -45,22 +45,22 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
-authors = ["Every Day contributors"]
+authors = ["Karma Yoga contributors"]
 
 [workspace.dependencies]
-everyday-core = { path = "crates/everyday-core" }
-everyday-store-sql = { path = "crates/everyday-store-sql" }
-everyday-store-sqlite = { path = "crates/everyday-store-sqlite" }
-everyday-store-postgres = { path = "crates/everyday-store-postgres" }
-everyday-vault = { path = "crates/everyday-vault" }
-everyday-transfer = { path = "crates/everyday-transfer" }
-everyday-mcp = { path = "crates/everyday-mcp" }
-everyday-service = { path = "crates/everyday-service" }
-everyday-server = { path = "crates/everyday-server" }
-everyday-mail = { path = "crates/everyday-mail" }
-everyday-mailindex = { path = "crates/everyday-mailindex" }
-everyday-chat = { path = "crates/everyday-chat" }
-everyday-focus = { path = "crates/everyday-focus" }
+karmayoga-core = { path = "crates/karmayoga-core" }
+karmayoga-store-sql = { path = "crates/karmayoga-store-sql" }
+karmayoga-store-sqlite = { path = "crates/karmayoga-store-sqlite" }
+karmayoga-store-postgres = { path = "crates/karmayoga-store-postgres" }
+karmayoga-vault = { path = "crates/karmayoga-vault" }
+karmayoga-transfer = { path = "crates/karmayoga-transfer" }
+karmayoga-mcp = { path = "crates/karmayoga-mcp" }
+karmayoga-service = { path = "crates/karmayoga-service" }
+karmayoga-server = { path = "crates/karmayoga-server" }
+karmayoga-mail = { path = "crates/karmayoga-mail" }
+karmayoga-mailindex = { path = "crates/karmayoga-mailindex" }
+karmayoga-chat = { path = "crates/karmayoga-chat" }
+karmayoga-focus = { path = "crates/karmayoga-focus" }
 
 tauri = "2"
 tauri-build = "2"
@@ -93,7 +93,7 @@ strip = true
 # What a release ships: `make dist`, and `.github/workflows/release.yml`.
 # Thin LTO over every crate and one codegen unit each -- what `release`
 # itself used to be, for a binary a little smaller and faster, at several
-# times the build. Under it, `everyday-service` alone took four minutes on
+# times the build. Under it, `karmayoga-service` alone took four minutes on
 # one core, and the app crate (whose cdylib is an LTO link of its own) and
 # the final LTO link two to three more each, on every rebuild.
 [profile.dist]

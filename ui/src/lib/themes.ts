@@ -20,7 +20,7 @@
 export type Scheme = 'light' | 'dark'
 
 export interface ThemeInfo {
-  /** The `data-theme` value, and what is kept in `everyday.theme`. */
+  /** The `data-theme` value, and what is kept in `karmayoga.theme`. */
   id: string
   name: string
   scheme: Scheme

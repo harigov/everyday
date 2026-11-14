@@ -1,4 +1,4 @@
-// Every Day Screen time: what the options page and the popup share. Both
+// Karma Yoga Screen time: what the options page and the popup share. Both
 // talk only to the background page, which owns the connection and the runs.
 
 "use strict";
@@ -28,7 +28,7 @@
 
   // One line on what is being counted right now.
   function liveText(status) {
-    if (!status.connected) return "Not connected to Every Day";
+    if (!status.connected) return "Not connected to Karma Yoga";
     const live = status.live;
     if (!live) return "Not counting yet";
     switch (live.reason) {
@@ -57,7 +57,7 @@
   function destination(status) {
     if (!status.connected) return "";
     return status.loopback
-      ? "the Every Day app on this computer"
+      ? "the Karma Yoga app on this computer"
       : status.endpoint;
   }
 

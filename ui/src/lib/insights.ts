@@ -5,7 +5,7 @@
 // into days when it meant weeks is a comb nobody can read. Both are tested
 // next door in `scripts/insights.test.mjs`.
 //
-// The counting itself is in Rust (`everyday_core::insights`), because who a
+// The counting itself is in Rust (`karmayoga_core::insights`), because who a
 // message is from and what a meeting is called are sealed. What is here is
 // the drawing: how a window becomes columns, and how two lists of people
 // become one.

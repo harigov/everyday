@@ -12,7 +12,7 @@
 >   finds a password, it ignores the session and empties the link's store.
 >   It then logs in as a new device and recovers the encryption identity from
 >   the saved recovery key. That is the only way out of a refused token. The
->   cost is that each fresh sign-in leaves the old "Every Day assistant"
+>   cost is that each fresh sign-in leaves the old "Karma Yoga assistant"
 >   device listed on the account; nothing logs it out yet.
 >
 > **The Matrix connector**
@@ -100,7 +100,7 @@ machine, reachable from their devices over Tailscale. Matrix is first.
 - **One small trait of our own, not a library.** Nothing in Rust abstracts
   several chat services and is mature — the candidates are 0.1 releases with
   no users, and ZeroClaw's good `Channel` trait is welded to its own runtime.
-  [`Connector`](../../crates/everyday-chat/src/connector.rs) is modelled on
+  [`Connector`](../../crates/karmayoga-chat/src/connector.rs) is modelled on
   ZeroClaw's and holds only what the relay uses. Matrix itself is also a way
   to reach other networks later (mautrix bridges bring Telegram, Signal and
   WhatsApp into Matrix rooms), with one caveat: bridged senders cannot be
@@ -129,30 +129,30 @@ machine, reachable from their devices over Tailscale. Matrix is first.
 ```text
  phone / Mac (Element)                         this machine
  ┌──────────────┐     ┌──────────┐     ┌───────────────────────────────────────┐
- │ owner writes │ ──▶ │ Conduit  │ ◀── │ everyday-chat                         │
+ │ owner writes │ ──▶ │ Conduit  │ ◀── │ karmayoga-chat                         │
  └──────────────┘     └──────────┘     │  matrix::MatrixConnector  (one link)  │
                                        │        │ Incoming      ▲ send/ask/typing│
                                        │        ▼               │               │
-                                       │  relay  ── chat_turn ──▶ everyday-service
+                                       │  relay  ── chat_turn ──▶ karmayoga-service
                                        └───────────────────────────────────────┘
 ```
 
 | Where | What |
 |---|---|
-| `everyday-core/src/chat.rs` | `ChatSettings`, `ChatLink`, `ChatService::Matrix(MatrixLink)`, `ChatSecret`, `Via`. |
-| `everyday-core/src/vault/chat.rs` | `chat_settings`, `save_chat_settings`, `chat_secret`, `save_chat_secret`, `delete_chat_secret`. |
-| `everyday-core` `AgentStore` + `everyday-store-sql` | `chat_settings` / `put_chat_settings`: one sealed singleton row in a new `chat_settings` table (schema v13), shaped like `meeting_settings`. |
-| `everyday-core` `Conversation.via` | Which chat a conversation arrived through. Absent for every other conversation. |
-| `everyday-core` `Vault::set_kept_for_chat` | The idle-timer rule above. |
-| `everyday-service/src/chat.rs` | `ChatRunner` (installed by the shell), `ChatHub`, `ChatState`/`ChatStatus`, `reconcile`, `state_dir`, `store_passphrase`, `Service::chat_turn`. |
-| `everyday-service/src/domains/chat.rs` | The commands below. |
-| `everyday-service/src/agent.rs` | `Turn.via`: the context sentence, and always-confirm. |
-| `everyday-chat/src/connector.rs` | The trait every service implements, and its vocabulary. |
-| `everyday-chat/src/relay.rs` | Everything between a chat and the assistant that is the same on every service. |
-| `everyday-chat/src/lib.rs` | `Runner` and `run_link`: one link's life, from sign-in to stop. |
-| `everyday-chat/src/matrix/` | The Matrix connector, on `matrix-sdk` 0.19. |
+| `karmayoga-core/src/chat.rs` | `ChatSettings`, `ChatLink`, `ChatService::Matrix(MatrixLink)`, `ChatSecret`, `Via`. |
+| `karmayoga-core/src/vault/chat.rs` | `chat_settings`, `save_chat_settings`, `chat_secret`, `save_chat_secret`, `delete_chat_secret`. |
+| `karmayoga-core` `AgentStore` + `karmayoga-store-sql` | `chat_settings` / `put_chat_settings`: one sealed singleton row in a new `chat_settings` table (schema v13), shaped like `meeting_settings`. |
+| `karmayoga-core` `Conversation.via` | Which chat a conversation arrived through. Absent for every other conversation. |
+| `karmayoga-core` `Vault::set_kept_for_chat` | The idle-timer rule above. |
+| `karmayoga-service/src/chat.rs` | `ChatRunner` (installed by the shell), `ChatHub`, `ChatState`/`ChatStatus`, `reconcile`, `state_dir`, `store_passphrase`, `Service::chat_turn`. |
+| `karmayoga-service/src/domains/chat.rs` | The commands below. |
+| `karmayoga-service/src/agent.rs` | `Turn.via`: the context sentence, and always-confirm. |
+| `karmayoga-chat/src/connector.rs` | The trait every service implements, and its vocabulary. |
+| `karmayoga-chat/src/relay.rs` | Everything between a chat and the assistant that is the same on every service. |
+| `karmayoga-chat/src/lib.rs` | `Runner` and `run_link`: one link's life, from sign-in to stop. |
+| `karmayoga-chat/src/matrix/` | The Matrix connector, on `matrix-sdk` 0.19. |
 | `ui/` | Settings → Chat; "via Matrix" in the assistant's history. |
-| `everyday-app`, `everyday-cli serve` | `service.set_chat_runner(Arc::new(everyday_chat::Runner))`. |
+| `karmayoga-app`, `karmayoga-cli serve` | `service.set_chat_runner(Arc::new(karmayoga_chat::Runner))`. |
 
 ## Storage
 
@@ -296,7 +296,7 @@ for a session I don't have. Try sending it again."
 - If the secret has a session and the store directory exists,
   `restore_session` is used.
 - Otherwise, with a password, the bot logs in with
-  `initial_device_display_name` "Every Day assistant", then saves the session
+  `initial_device_display_name` "Karma Yoga assistant", then saves the session
   and drops the password from the secret.
   - A session without a store is discarded. A session is never paired with a
     fresh crypto store.
@@ -402,12 +402,12 @@ turned off.
   of answers, the conversation choice, the catch-up rule and the room
   privacy rule.
 - The relay end to end with a fake `Connector` and the fake model pattern
-  from `everyday-service/tests/routines.rs`. This covers a reply, a
+  from `karmayoga-service/tests/routines.rs`. This covers a reply, a
   confirmation answered by reaction and by text, a timeout, `!new`, `!stop`,
   and an old message.
 - The service commands and `reconcile` with a fake `ChatRunner`.
-- `everyday-chat/tests/matrix_live.rs`, ignored unless
-  `EVERYDAY_TEST_MATRIX_URL` names a throwaway homeserver with open
+- `karmayoga-chat/tests/matrix_live.rs`, ignored unless
+  `KARMAYOGA_TEST_MATRIX_URL` names a throwaway homeserver with open
   registration. It registers a bot and an owner, and runs the whole path over
   encrypted Matrix with the fake model. Scenario 4 covers verification:
   - a stranger's to-device request is ignored;
@@ -465,7 +465,7 @@ sets these fields, and so do the assistant's `create_routine` and
 
 **How it fits together**
 
-- **The relay registers a `ChatOutlet`** (`everyday_service::chat`) for its
+- **The relay registers a `ChatOutlet`** (`karmayoga_service::chat`) for its
   link while it runs, and withdraws it when it stops. A routine's message,
   approval or question arrives through it as a `RoutineJob`. The job is
   queued on the owner's private room (`Connector::home`) in turn with

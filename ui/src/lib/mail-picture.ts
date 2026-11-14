@@ -3,7 +3,7 @@
 // Stored like any attachment -- `api.putBlob`, one of the draft's
 // `attachments` -- and drawn from this app's own address for that blob. The
 // `data-blob` attribute is what the backend looks for on the way out
-// (`compose::inline_pictures` in `everyday-mail`): each such `<img>` is
+// (`compose::inline_pictures` in `karmayoga-mail`): each such `<img>` is
 // pointed at a `cid:` part carrying the same bytes, so the recipient sees the
 // picture in the message rather than a file beside it.
 //

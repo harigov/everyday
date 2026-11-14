@@ -86,7 +86,7 @@ works because your "yes" in Matrix is a chat turn, not an unattended one.
   line, as `for:`, `remind:` and `reminded:`.
 - `JobTurn.context` lets each kind of job supply its own turn context. It
   used to be research's for every job.
-- `escape_markdown` moved from the chat relay into `everyday_service::chat`,
+- `escape_markdown` moved from the chat relay into `karmayoga_service::chat`,
   so reminders can use it too.
 - The calendar guidance no longer sends "a reminder at a time" to the
   calendar, because an event never pings anyone. It now points to

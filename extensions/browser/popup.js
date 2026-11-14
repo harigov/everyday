@@ -1,4 +1,4 @@
-// Every Day Screen time: the toolbar popup. Whether the extension is
+// Karma Yoga Screen time: the toolbar popup. Whether the extension is
 // connected, what it is counting right now, and the way to the options.
 
 "use strict";

@@ -1,6 +1,6 @@
 // Writing help's popup: the parts that are not drawing.
 //
-// The popup is its own page in its own window -- see `crates/everyday-app/
+// The popup is its own page in its own window -- see `crates/karmayoga-app/
 // src/writing/mod.rs` for why -- so it carries none of the main interface:
 // no stores, no router, no mock backend. What it needs to decide is here,
 // where `scripts/writing.test.mjs` can check it without a window.
@@ -85,9 +85,9 @@ export interface Trouble {
 export function trouble(code: string, message: string): Trouble {
   switch (code) {
     case 'no_vault':
-      return { message: 'Open your vault in Every Day first.', openMain: true }
+      return { message: 'Open your vault in Karma Yoga first.', openMain: true }
     case 'locked':
-      return { message: 'Every Day is locked. Unlock it, then try again.', openMain: true }
+      return { message: 'Karma Yoga is locked. Unlock it, then try again.', openMain: true }
     default:
       break
   }

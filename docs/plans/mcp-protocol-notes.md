@@ -107,7 +107,7 @@ Request params carry only `_meta`. Result:
     "supportedVersions": ["2026-07-28"],
     "capabilities": { "tools": {} },
     "_meta": {
-      "io.modelcontextprotocol/serverInfo": { "name": "Every Day", "version": "0.1.0" }
+      "io.modelcontextprotocol/serverInfo": { "name": "Karma Yoga", "version": "0.1.0" }
     },
     "instructions": "...",
     "ttlMs": 3600000,
@@ -237,7 +237,7 @@ For a tool with no arguments, prefer
 `{ "type": "object", "additionalProperties": false }`.
 
 Names: 1–128 chars, `[A-Za-z0-9_.-]` only. Every tool in
-`everyday-core/src/agent/tools.rs` already complies.
+`karmayoga-core/src/agent/tools.rs` already complies.
 
 ### `tools/call` result
 
@@ -314,7 +314,7 @@ subprocess. Nothing but protocol on stdout, ever. Modern clients probe with
 `server/discover` and fall back to `initialize` on any error that is not a
 recognized modern error.
 
-We do not implement this binding directly: `everyday mcp` is a pipe to the HTTP
+We do not implement this binding directly: `karmayoga mcp` is a pipe to the HTTP
 endpoint (see `docs/plans/mcp.md`, phase 3), so both eras arrive over HTTP and
 are answered in one place.
 

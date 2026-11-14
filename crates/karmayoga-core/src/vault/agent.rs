@@ -1,0 +1,347 @@
+//! The assistant: its configuration, the threads you have had with it, and
+//! what you asked it to remember.
+//!
+//! The sixth domain. Everything here needs an unlocked vault, like every
+//! other domain -- which is the whole argument for keeping the model keys in
+//! the vault rather than in the platform keychain. A locked vault is a vault
+//! whose assistant cannot read your tasks, so a key it could still spend
+//! would buy nothing and leak somewhere new. The keys themselves are the
+//! models', in [`super::llm`]; what is here are the doors each feature asks
+//! through.
+
+use super::Vault;
+use super::session::Domain;
+use crate::agent::{
+    AgentSettings, Conversation, MAX_INFERRED, MAX_MEMORIES, MAX_REJECTED, Memory, MemoryOrigin,
+    Message, Skill,
+};
+use crate::error::{Error, Result};
+use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
+use crate::llm::{ModelAccess, ModelTier};
+use crate::record::RecordKind;
+use crate::store::agent::{AgentStore, ConversationQuery};
+use crate::timestamped::Timestamped;
+
+impl Vault {
+    /// Does this vault's backend hold conversations at all?
+    pub fn supports_agent(&self) -> bool {
+        self.with_agent(|_| Ok(())).is_ok()
+    }
+
+    fn with_agent<T>(&self, f: impl FnOnce(&dyn AgentStore) -> Result<T>) -> Result<T> {
+        self.with_domain(Domain::Agent, |s| s.agent().map(f))
+    }
+
+    pub fn agent_settings(&self) -> Result<AgentSettings> {
+        self.with_agent(|a| a.settings())
+    }
+
+    /// Replace the assistant's settings.
+    ///
+    /// Carries the models over first if unlock did not: a record from before
+    /// they were application settings still names them, and writing this one
+    /// drops that copy -- see [`AgentSettings::legacy_models`] -- so they are
+    /// moved before anything can lose them.
+    pub fn save_agent_settings(&self, settings: &AgentSettings) -> Result<()> {
+        self.writable()?;
+        settings.validate()?;
+        self.carry_over_models()?;
+        self.with_agent(|a| a.put_settings(settings))
+    }
+
+    /// The settings and the model a turn runs on, for the one kind of caller
+    /// that needs both: an assistant turn about to be taken.
+    ///
+    /// `tier` is [`ModelTier::Medium`] for a conversation, a routine or a
+    /// dream, and [`ModelTier::Large`] for a research job, which runs on the
+    /// medium model when no large one is set. Fails when the assistant is
+    /// switched off, before the key is even read.
+    pub fn agent_credentials(&self, tier: ModelTier) -> Result<(AgentSettings, ModelAccess)> {
+        let settings = self.agent_settings()?;
+        if !settings.enabled {
+            return Err(Error::Invalid("the assistant is switched off".into()));
+        }
+        settings.validate()?;
+        let model = self.model_access(tier)?;
+        Ok((settings, model))
+    }
+
+    /// The small model, for a quick ask.
+    ///
+    /// A separate door because it opens on a different condition: the quick
+    /// asks do not consult [`AgentSettings::enabled`], and a person who wants
+    /// their shelves filled in but no resident assistant must be able to have
+    /// exactly that.
+    ///
+    /// Takes the ask's name and refuses one the policy has not allowed, so
+    /// the check cannot be left to a caller that forgot — this is the only
+    /// way a quick ask can get a credential, so it is the right place for the
+    /// gate.
+    pub fn quick_credentials(&self, name: &str) -> Result<ModelAccess> {
+        let settings = self.agent_settings()?;
+        if !settings.quick_asks.allows(name) {
+            return Err(Error::Invalid(format!("{name} is switched off")));
+        }
+        self.model_access(ModelTier::Small)
+    }
+
+    /// Whether a named quick ask could run right now: the policy allows it,
+    /// and the small model is configured and keyed.
+    pub fn quick_allows(&self, name: &str) -> bool {
+        self.quick_credentials(name).is_ok()
+    }
+
+    /// A model for one of mail's own features -- categorising, summarising,
+    /// drafting -- with no policy check of its own.
+    ///
+    /// The third door. `karmayoga_service::mailai`'s features are gated by
+    /// [`crate::mail::mail_ai_allowed`] against the *account* they are about
+    /// to touch, not by [`AgentSettings::enabled`] or
+    /// [`crate::quick::QuickPolicy`] — mail's own switch, per
+    /// `docs/plans/mail.md`'s phase 7. `mailai` calls this after its own gate
+    /// has already said yes, rather than being made to satisfy either of the
+    /// other two doors' unrelated conditions. Which tier is the feature's
+    /// call: sorting is small-model work and a summary is not.
+    pub fn mail_ai_credentials(&self, tier: ModelTier) -> Result<ModelAccess> {
+        self.model_access(tier)
+    }
+
+    // ---- conversations ---------------------------------------------------
+
+    pub fn conversations(&self, query: &ConversationQuery) -> Result<Vec<Conversation>> {
+        self.with_agent(|a| a.list_conversations(query))
+    }
+
+    pub fn conversation(&self, id: ConversationId) -> Result<Conversation> {
+        self.with_agent(|a| a.get_conversation(id))
+    }
+
+    pub fn save_conversation(&self, conversation: &Conversation) -> Result<()> {
+        self.writable()?;
+        self.with_agent(|a| a.put_conversation(conversation))?;
+        self.wrote(RecordKind::Conversation, conversation.id);
+        Ok(())
+    }
+
+    pub fn delete_conversation(&self, id: ConversationId) -> Result<()> {
+        self.writable()?;
+        self.with_agent(|a| a.delete_conversation(id))?;
+        self.wrote(RecordKind::Conversation, id);
+        Ok(())
+    }
+
+    pub fn messages(&self, id: ConversationId) -> Result<Vec<Message>> {
+        self.with_agent(|a| a.list_messages(id))
+    }
+
+    pub fn message_count(&self, id: ConversationId) -> Result<u64> {
+        self.with_agent(|a| a.count_messages(id))
+    }
+
+    /// Write a turn, and touch the thread it belongs to.
+    ///
+    /// The two go together because they are never wanted apart: a message
+    /// that did not move its conversation to the top of the history list is
+    /// a message somebody will fail to find again. The thread is also named
+    /// here, from the first thing the person typed -- see
+    /// [`Conversation::title_from`] for why that beats asking the model.
+    ///
+    /// A failure to update the conversation is not allowed to lose the
+    /// message: the turn is written first, and the touch is best-effort.
+    pub fn save_message(&self, message: &Message) -> Result<()> {
+        self.writable()?;
+        self.with_agent(|a| a.put_message(message))?;
+        self.wrote(RecordKind::Message, message.id);
+
+        let touched = self.conversation(message.conversation_id).and_then(|mut c| {
+            c.updated_at = message.created_at.max(c.updated_at);
+            if c.title.is_empty() && message.role == crate::agent::Role::User {
+                c.title = Conversation::title_from(&message.content);
+                // A picture sent with nothing said is named by its file,
+                // rather than leaving a thread with no name at all.
+                if c.title.is_empty()
+                    && let Some(picture) = message.attachments.first()
+                {
+                    c.title = Conversation::title_from(&picture.filename);
+                }
+            }
+            self.save_conversation(&c)
+        });
+        if let Err(e) = touched {
+            tracing::warn!(error = %e, "wrote a message but could not touch its conversation");
+        }
+        Ok(())
+    }
+
+    pub fn delete_message(&self, id: MessageId) -> Result<()> {
+        self.writable()?;
+        self.with_agent(|a| a.delete_message(id))?;
+        self.wrote(RecordKind::Message, id);
+        Ok(())
+    }
+
+    // ---- memory ----------------------------------------------------------
+
+    pub fn memories(&self) -> Result<Vec<Memory>> {
+        self.with_agent(|a| a.list_memories())
+    }
+
+    /// Write a memory, trimming its group if the ceiling has been reached.
+    ///
+    /// The trim happens here rather than being left to the assistant because
+    /// an agent asked to tidy up after itself does not, and the cost of not
+    /// doing it is paid on every request forever: memories are loaded into
+    /// the system prompt in full. Pinned memories -- the ones a person wrote
+    /// or edited by hand -- are never the ones dropped, which is the whole
+    /// reason that flag exists, and the memory just written is never the one
+    /// dropped either, which is what would otherwise happen at a ceiling of
+    /// one.
+    ///
+    /// Told and confirmed memories are one group, capped at [`MAX_MEMORIES`]
+    /// and evicted oldest-written first, exactly as before this method
+    /// learned about origins. Inferred memories are a second group, capped
+    /// at [`MAX_INFERRED`] and evicted oldest-*supported* first -- a `None`
+    /// counts as the oldest, and ties are broken by when it was written --
+    /// because the one yesterday's data confirmed is the one worth keeping.
+    /// Rejected memories are a third group, capped at [`MAX_REJECTED`] and
+    /// evicted oldest-written first, so the "do not assume" list stays a
+    /// fixed size without forgetting a rejection the moment a newer one
+    /// arrives.
+    ///
+    /// Returns every memory evicted, across all three groups, so a caller
+    /// can say what it forgot.
+    pub fn save_memory(&self, memory: &Memory) -> Result<Vec<Memory>> {
+        self.writable()?;
+        memory.validate()?;
+        self.with_agent(|a| a.put_memory(memory))?;
+        self.wrote(RecordKind::Memory, memory.id);
+
+        let existing = self.memories()?;
+
+        // Oldest-written first, which is the order `memories()` already
+        // returns -- filtering preserves it.
+        let told_and_confirmed: Vec<Memory> = existing
+            .iter()
+            .filter(|m| matches!(m.origin, MemoryOrigin::Told | MemoryOrigin::Confirmed))
+            .cloned()
+            .collect();
+        let mut evicted = self.evict_over_cap(told_and_confirmed, MAX_MEMORIES, memory.id)?;
+
+        // Oldest-*supported* first, not oldest-written. `None` sorts before
+        // any `Some`, which is exactly "a memory nothing has confirmed yet
+        // counts as the oldest".
+        let mut inferred: Vec<Memory> =
+            existing.iter().filter(|m| m.origin == MemoryOrigin::Inferred).cloned().collect();
+        inferred.sort_by(|a, b| {
+            a.last_supported.cmp(&b.last_supported).then_with(|| a.created_at.cmp(&b.created_at))
+        });
+        evicted.extend(self.evict_over_cap(inferred, MAX_INFERRED, memory.id)?);
+
+        let rejected: Vec<Memory> =
+            existing.iter().filter(|m| m.origin == MemoryOrigin::Rejected).cloned().collect();
+        evicted.extend(self.evict_over_cap(rejected, MAX_REJECTED, memory.id)?);
+
+        Ok(evicted)
+    }
+
+    /// Delete whatever in `group` is over `cap`, oldest first as `group` is
+    /// already ordered, skipping anything pinned and `keep`. Shared by the
+    /// three groups [`Vault::save_memory`] trims -- each passes its own
+    /// notion of "oldest first" in and gets the same arithmetic back.
+    fn evict_over_cap(
+        &self,
+        group: Vec<Memory>,
+        cap: usize,
+        keep: MemoryId,
+    ) -> Result<Vec<Memory>> {
+        if group.len() <= cap {
+            return Ok(Vec::new());
+        }
+        let over = group.len() - cap;
+        let mut evicted = Vec::new();
+        for m in group {
+            if evicted.len() == over {
+                break;
+            }
+            if m.pinned || m.id == keep {
+                continue;
+            }
+            self.with_agent(|a| a.delete_memory(m.id))?;
+            self.wrote(RecordKind::Memory, m.id);
+            evicted.push(m);
+        }
+        Ok(evicted)
+    }
+
+    /// Change who stands behind a memory: confirm an inferred one, agree
+    /// with it, strike it out, or put a confirmed one back to a plain told
+    /// fact. Stamps `updated_at` and saves through [`Vault::save_memory`] so
+    /// the usual caps apply, and returns the memory as saved.
+    ///
+    /// `Inferred` is refused whatever the memory's current origin: only a
+    /// dream infers, and a hand-set "inferred" fact would be an instruction
+    /// wearing the one heading that tells the model it might be wrong.
+    /// `Told` is only accepted coming from `Confirmed` or `Told` itself,
+    /// because a memory that was actually inferred or already struck out
+    /// has no "back to told" -- the dream never told it anything, and
+    /// letting a rejection quietly become a standing instruction would
+    /// defeat the point of rejecting it.
+    pub fn set_memory_origin(&self, id: MemoryId, origin: MemoryOrigin) -> Result<Memory> {
+        self.writable()?;
+        let mut memory = self
+            .memories()?
+            .into_iter()
+            .find(|m| m.id == id)
+            .ok_or_else(|| Error::NotFound { kind: "memory", id: id.to_string() })?;
+
+        match origin {
+            MemoryOrigin::Inferred => {
+                return Err(Error::Invalid(
+                    "a memory's origin cannot be set to inferred by hand; only a dream infers"
+                        .into(),
+                ));
+            }
+            MemoryOrigin::Told
+                if !matches!(memory.origin, MemoryOrigin::Confirmed | MemoryOrigin::Told) =>
+            {
+                return Err(Error::Invalid(
+                    "a memory can only be set back to told from confirmed or told".into(),
+                ));
+            }
+            MemoryOrigin::Told | MemoryOrigin::Confirmed | MemoryOrigin::Rejected => {}
+        }
+
+        memory.origin = origin;
+        memory.touch();
+        self.save_memory(&memory)?;
+        Ok(memory)
+    }
+
+    pub fn delete_memory(&self, id: MemoryId) -> Result<()> {
+        self.writable()?;
+        self.with_agent(|a| a.delete_memory(id))?;
+        self.wrote(RecordKind::Memory, id);
+        Ok(())
+    }
+
+    // ---- skills -----------------------------------------------------------
+
+    pub fn skills(&self) -> Result<Vec<Skill>> {
+        self.with_agent(|a| a.list_skills())
+    }
+
+    pub fn save_skill(&self, skill: &Skill) -> Result<()> {
+        self.writable()?;
+        skill.validate()?;
+        self.with_agent(|a| a.put_skill(skill))?;
+        self.wrote(RecordKind::Skill, skill.id);
+        Ok(())
+    }
+
+    pub fn delete_skill(&self, id: SkillId) -> Result<()> {
+        self.writable()?;
+        self.with_agent(|a| a.delete_skill(id))?;
+        self.wrote(RecordKind::Skill, id);
+        Ok(())
+    }
+}

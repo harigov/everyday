@@ -9,7 +9,7 @@
 // cell and the browser already knows which one the pointer is over.
 
 /** The drag type a day move carries. Its own, so a task's drop targets ignore it. */
-const DAY_MOVE = 'text/x-everyday-day-move'
+const DAY_MOVE = 'text/x-karmayoga-day-move'
 
 /** What was picked up, and the day it was picked up from. */
 export interface DayMove {

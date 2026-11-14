@@ -55,8 +55,8 @@
   <span class="eyebrow">Export</span>
   <p class="hint">
     A zip of plain files: your journal and notes as Markdown, your calendars as
-    <code>.ics</code>, your shelves and your tracking as CSV. Nothing in it needs Every Day to open,
-    and nothing in it is encrypted — keep it where you would keep the diary itself.
+    <code>.ics</code>, your shelves and your tracking as CSV. Nothing in it needs Karma Yoga to
+    open, and nothing in it is encrypted — keep it where you would keep the diary itself.
   </p>
 
   {#if transfer.parts === null}
@@ -123,7 +123,7 @@
 <section>
   <span class="eyebrow">Import</span>
   <p class="hint">
-    An archive Every Day exported, or a folder of Markdown zipped up by anything else. You will be
+    An archive Karma Yoga exported, or a folder of Markdown zipped up by anything else. You will be
     told what is in it before anything is read.
   </p>
 
@@ -274,7 +274,7 @@
     encryption taken off. A <i>backup</i> is the vault copied as it is, still sealed, still opening
     with the same password — and it keeps the things an export deliberately leaves out: your model
     keys, the devices you have paired, and the key the vault itself is locked with. That is
-    <code>everyday backup</code> on the command line.
+    <code>karmayoga backup</code> on the command line.
   </p>
 </section>
 

@@ -42,7 +42,7 @@
 >   within two,** by the worker reading its own job's status. That is what
 >   lets a tool, a command, the CLI or another device cancel a job none of
 >   them can reach directly.
-> - **`everyday serve` does not wait for a job on Ctrl-C;** the job is put
+> - **`karmayoga serve` does not wait for a job on Ctrl-C;** the job is put
 >   back in the queue and resumed, in its note, after the next unlock.
 > - **System lines are drawn in the thread now.** They were dropped on
 >   replay before, and "Research finished" has to be seen.
@@ -79,7 +79,7 @@ with.
    first writes a queued job and returns at once, so the assistant can say
    "I've started looking into this; I'll come back here when it's done" and
    the turn ends.
-3. **A worker.** One loop in `everyday-service` that picks queued jobs up
+3. **A worker.** One loop in `karmayoga-service` that picks queued jobs up
    and runs each through the same unattended turn a routine run uses, with
    a prompt, a budget and a gate policy that depend on the job's kind.
 4. **Coming back.** When a job finishes, the conversation that asked for it
@@ -192,7 +192,7 @@ for the interface, the CLI and MCP.
 
 ## The worker
 
-`everyday-service/src/jobs.rs`: one loop spawned beside the scheduler, not
+`karmayoga-service/src/jobs.rs`: one loop spawned beside the scheduler, not
 inside it. A routine's tick runs serially and a twenty-minute research
 must not make the seven o'clock brief late.
 

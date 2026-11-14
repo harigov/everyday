@@ -1,13 +1,13 @@
 // The one bridge a mail thread view needs between a stored message and the
 // sandboxed frame that shows it -- see
-// `crates/everyday-service/src/mailview.rs` for the Rust side this mirrors,
+// `crates/karmayoga-service/src/mailview.rs` for the Rust side this mirrors,
 // and `docs/plans/mail.md`'s "Rendering a message" for the shape both are
 // built from.
 //
 // The reason this file exists at all, rather than a thread view calling
-// `fetch('everyday://mail/body/…')` directly: the mock backend
+// `fetch('karmayoga://mail/body/…')` directly: the mock backend
 // (`ui/src/lib/mock.ts`) cannot answer that address. There is no
-// `everyday://` scheme in a plain browser tab -- `npm run dev`'s whole point
+// `karmayoga://` scheme in a plain browser tab -- `npm run dev`'s whole point
 // is running without a native build -- so something has to decide, once,
 // which world this session is in, rather than every call site re-deriving
 // it. Keep this the only place that decision is made.
@@ -21,10 +21,10 @@ import type { Frame } from './themes'
 /** What `<iframe sandbox srcdoc>` needs, whichever world this is running in.
  * Exactly one of `url` and `html` is set:
  *
- * - `url` (real mode): the `everyday://mail/body/{id}` address to
+ * - `url` (real mode): the `karmayoga://mail/body/{id}` address to
  *   `fetch()` -- never assign it straight to `iframe.src`. Fetching it is
  *   what lets the caller read the `X-Mail-Images-Hidden` response header
- *   `everyday-app/src/protocol.rs` and `everyday-server/src/routes.rs`
+ *   `karmayoga-app/src/protocol.rs` and `karmayoga-server/src/routes.rs`
  *   both set, which is how "images hidden — show / always show from this
  *   sender" is driven without parsing the document. Once fetched, assign
  *   the *text* to `iframe.srcdoc`.
@@ -65,8 +65,8 @@ export interface MockMailBody {
  * The origin every `mail/…` address hangs off, which is not the same string
  * on every platform.
  *
- * Tauri maps a custom scheme onto an ordinary `http://everyday.localhost`
- * origin on Windows and Android, where `everyday://` does not resolve at
+ * Tauri maps a custom scheme onto an ordinary `http://karmayoga.localhost`
+ * origin on Windows and Android, where `karmayoga://` does not resolve at
  * all and the scheme's own host (`mail`) has nowhere to ride but the first
  * path segment. `protocol.rs`'s `mail_path` accepts both shapes; `api.ts`'s
  * `mediaUrl` makes this same check for blobs. Getting it wrong is not a
@@ -77,12 +77,12 @@ export function mailOrigin(): string {
   // through the session's media token -- see `web.ts`.
   if (isWeb) return `${mediaBase()}/v1/mail`
   return navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
-    ? 'http://everyday.localhost/mail'
-    : 'everyday://mail'
+    ? 'http://karmayoga.localhost/mail'
+    : 'karmayoga://mail'
 }
 
 /**
- * Point a stored body's own `everyday://mail/…` addresses at the origin this
+ * Point a stored body's own `karmayoga://mail/…` addresses at the origin this
  * platform actually resolves.
  *
  * Remote-image and `cid:` addresses are written into the HTML once, by
@@ -93,8 +93,8 @@ export function mailOrigin(): string {
  */
 export function applyPlatformOrigin(html: string): string {
   const origin = mailOrigin()
-  if (origin === 'everyday://mail') return html
-  return allowWebOrigin(html.split('everyday://mail/').join(`${origin}/`))
+  if (origin === 'karmayoga://mail') return html
+  return allowWebOrigin(html.split('karmayoga://mail/').join(`${origin}/`))
 }
 
 /**
@@ -125,7 +125,7 @@ export function bodyDocument(messageId: string, mock: MockMailBody = {}): MailBo
   return { html: mockDocument(inner), imagesHidden: mock.imagesHidden ?? false }
 }
 
-/** The `everyday://mail/part/{message}/{identifier}` (or
+/** The `karmayoga://mail/part/{message}/{identifier}` (or
  * `mail/img/{token}?m={message}`) address for an attachment, an inline
  * `cid:` image, or a proxied remote image -- for an `<img src>` or a
  * download link inside the frame, or a chip beside it. `null` in mock
@@ -184,7 +184,7 @@ function placeholderImage(seed: string): string {
 
 /**
  * {@link partUrl}'s mock-mode counterpart, for an attachment chip: a
- * deterministic `data:` URL standing in for the bytes `everyday://mail/part`
+ * deterministic `data:` URL standing in for the bytes `karmayoga://mail/part`
  * would otherwise serve, so a thumbnail and a download link both have
  * something real to point at without a network request -- see this module's
  * own doc on why nothing here ever fetches. `null` in real mode, where
@@ -225,7 +225,7 @@ function mockDocument(inner: string): string {
 export function draftDocument(inner: string): string {
   return (
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src everyday: http://everyday.localhost data: blob:; style-src 'unsafe-inline'">` +
+    `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src karmayoga: http://karmayoga.localhost data: blob:; style-src 'unsafe-inline'">` +
     `<base target="_blank">` +
     `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.6}` +
     `img{max-width:100%;height:auto}</style>` +
@@ -277,7 +277,7 @@ export function quoteDocument(quotedHtml: string, dark: boolean, frame?: Frame):
     : safely(() => adaptToPage(quotedHtml, { background: page, text: fg }), quotedHtml)
   return applyPlatformOrigin(
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
-      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src everyday: http://everyday.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
+      `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src karmayoga: http://karmayoga.localhost data:; style-src 'unsafe-inline'; font-src data:">` +
       `<base target="_blank">` +
       `<style>:root{color-scheme:${paper ? 'light' : 'dark'}}` +
       `html{background:transparent}body{margin:0;${card}color:${fg};` +

@@ -1,4 +1,4 @@
-# Build settings for Every Day.
+# Build settings for Karma Yoga.
 #
 # `jobs` caps how many `rustc` processes cargo runs at once. The default is
 # one per core, which on a many-core machine can mean a dozen simultaneous

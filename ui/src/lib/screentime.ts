@@ -193,7 +193,7 @@ export function localZone(): string {
 }
 
 /** What a connection code starts with. */
-export const CONNECTION_PREFIX = 'everyday-screentime:'
+export const CONNECTION_PREFIX = 'karmayoga-screentime:'
 
 /** Base64url (no padding) of a string's UTF-8 -- how a connection code
  *  carries its JSON. The mock makes codes with it. */

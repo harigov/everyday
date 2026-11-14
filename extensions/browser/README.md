@@ -1,6 +1,6 @@
-# Every Day Screen time, for Chrome and Firefox
+# Karma Yoga Screen time, for Chrome and Firefox
 
-A small browser extension that tells Every Day which website had your
+A small browser extension that tells Karma Yoga which website had your
 attention: the active tab of the **focused** browser window, while you are
 **not idle** and the screen is **not locked**. Each site then shows in
 Screen time as an app of its own, and the browser keeps only the time no
@@ -32,8 +32,8 @@ set to `false`.
 
 ## Connect
 
-1. In Every Day, open **Settings → Screen time** and choose **Connect a browser**.
-2. Copy the code it shows (it starts with `everyday-screentime:`).
+1. In Karma Yoga, open **Settings → Screen time** and choose **Connect a browser**.
+2. Copy the code it shows (it starts with `karmayoga-screentime:`).
 3. Open the extension's options (right-click its toolbar button → Options, or
    the popup's **Options** link), paste the code and choose **Connect**.
 
@@ -52,7 +52,7 @@ until you connect it again with a new one.
 To the address in the code, every 30 seconds while something counts:
 
 - the site's host (`mail.google.com`), never the rest of the address,
-- the tab's title, unless Every Day is set not to keep titles (the app says
+- the tab's title, unless Karma Yoga is set not to keep titles (the app says
   so when the extension connects, and then none are sent),
 - when you started and stopped looking at it,
 - the browser's name (`Firefox`, `Chrome`, ...) and, for a sharing server,
@@ -63,7 +63,7 @@ To the address in the code, every 30 seconds while something counts:
 - Full addresses, page contents, history, keystrokes or screenshots.
 - Tabs in windows that are not focused, background tabs, and anything while
   the browser is not the focused app.
-- Anything after the idle time set in Every Day (3 minutes by default), or
+- Anything after the idle time set in Karma Yoga (3 minutes by default), or
   while the screen is locked. A focused tab that is playing sound keeps
   counting while you are idle, so a film you are watching counts.
 - Private windows, browser pages (`chrome://`, `about:`), extension pages,

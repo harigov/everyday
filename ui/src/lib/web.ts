@@ -1,14 +1,14 @@
 // The interface in a browser, talking to the machine that holds the vault.
 //
 // The third of `api.ts`'s backends, beside Tauri's bridge and the mock. The
-// server is `everyday-server`'s web access (see `docs/plans/web-access.md`):
+// server is `karmayoga-server`'s web access (see `docs/plans/web-access.md`):
 // the same command table the desktop shell calls, over HTTP, behind a
 // session the vault password opens.
 //
 // # What a request carries
 //
 // The session cookie, which the browser sends by itself and this script
-// never sees (it is HttpOnly). `X-Everyday-Protocol` on every API call,
+// never sees (it is HttpOnly). `X-KarmaYoga-Protocol` on every API call,
 // which is also what keeps another site's page from making one -- a custom
 // header needs a preflight, and nothing on the server answers one.
 //
@@ -53,7 +53,7 @@ let protocol = 0
 let mediaToken: string | null = null
 /** The vault's name, from the last hello, for a status this page makes up
  *  itself once it is signed out. */
-let vaultName = 'Every Day'
+let vaultName = 'Karma Yoga'
 
 // ── Addresses ────────────────────────────────────────────────────────────
 
@@ -102,7 +102,7 @@ async function failure(res: Response): Promise<VaultError> {
 const TAB = Math.random().toString(36).slice(2, 12)
 
 function headers(extra: Record<string, string> = {}): Record<string, string> {
-  return { 'X-Everyday-Protocol': String(protocol), 'X-Everyday-Tab': TAB, ...extra }
+  return { 'X-KarmaYoga-Protocol': String(protocol), 'X-KarmaYoga-Tab': TAB, ...extra }
 }
 
 async function post<T>(path: string, body: BodyInit | null, extra: Record<string, string> = {}) {
@@ -140,7 +140,7 @@ async function login(password: string): Promise<VaultStatus> {
   const answer = await post<{ mediaToken: string; status: VaultStatus }>(
     '/web/login',
     JSON.stringify({ password }),
-    { 'Content-Type': 'application/json', 'X-Everyday-Web': '1' },
+    { 'Content-Type': 'application/json', 'X-KarmaYoga-Web': '1' },
   )
   mediaToken = answer.mediaToken
   startEvents()
@@ -156,7 +156,7 @@ export async function signOut(): Promise<void> {
   try {
     await fetch('/web/logout', {
       method: 'POST',
-      headers: { 'X-Everyday-Web': '1' },
+      headers: { 'X-KarmaYoga-Web': '1' },
       credentials: 'same-origin',
     })
   } catch {
@@ -249,7 +249,7 @@ export async function webInvoke<T>(cmd: string, args?: Args, requestId?: string)
   if (!SERVICE_COMMANDS.has(cmd)) {
     const answer = SHELL[cmd]
     if (answer) return answer((args ?? {}) as Record<string, unknown>) as T
-    throw new VaultError('unsupported', 'That needs the Every Day app on a computer.')
+    throw new VaultError('unsupported', 'That needs the Karma Yoga app on a computer.')
   }
   return serviceCall<T>(cmd, (args ?? {}) as Record<string, unknown>, requestId)
 }
@@ -283,7 +283,7 @@ async function serviceCall<T>(
 
 function call<T>(cmd: string, args: Record<string, unknown>, requestId?: string): Promise<T> {
   const extra: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (requestId) extra['X-Everyday-Request'] = requestId
+  if (requestId) extra['X-KarmaYoga-Request'] = requestId
   return post<T>(`/v1/call/${encodeURIComponent(cmd)}`, JSON.stringify(args), extra)
 }
 

@@ -1,7 +1,7 @@
 // Which model each size of work runs on: Settings → Models, and what the
 // rest of the interface asks about it.
 //
-// Application settings rather than the assistant's -- `everyday_core::llm`.
+// Application settings rather than the assistant's -- `karmayoga_core::llm`.
 // Large writes up research, Medium is the assistant, Small does the quick
 // asks. Each has its own endpoint and model; a key belongs to an endpoint,
 // so two tiers at one endpoint share one, and `keyed` lists endpoints rather
@@ -59,7 +59,7 @@ class ModelsState {
     this.#localTimer = null
   }
 
-  /** Whether this copy of Every Day can run a decision model itself. */
+  /** Whether this copy of Karma Yoga can run a decision model itself. */
   get localDecisions(): boolean {
     return this.view?.localDecisions === true
   }

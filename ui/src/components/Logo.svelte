@@ -12,14 +12,6 @@
   // into whichever the browser saw first.
   const uid = $props.id()
 
-  // One card of the icon's stack, 12 units square and centred on the origin,
-  // with the icon's continuous corner (26%, 60% smoothing).
-  const CARD =
-    'M1.01-6c1.75 0 2.62 0 3.29.34a3.12 3.12 0 0 1 1.36 1.36c.34.67.34 1.54.34 3.29L6 1.01' +
-    'c0 1.75 0 2.62-.34 3.29a3.12 3.12 0 0 1-1.36 1.36c-.67.34-1.54.34-3.29.34L-1.01 6' +
-    'c-1.75 0-2.62 0-3.29-.34a3.12 3.12 0 0 1-1.36-1.36c-.34-.67-.34-1.54-.34-3.29L-6-1.01' +
-    'c0-1.75 0-2.62.34-3.29a3.12 3.12 0 0 1 1.36-1.36c.67-.34 1.54-.34 3.29-.34Z'
-
   // The tile, filling the whole box (22.5%, 60% smoothing).
   const TILE =
     'M15.36 0c3.02 0 4.54 0 5.69.59a5.4 5.4 0 0 1 2.36 2.36c.59 1.16.59 2.67.59 5.69L24 15.36' +
@@ -27,28 +19,28 @@
     'c-3.02 0-4.54 0-5.69-.59a5.4 5.4 0 0 1-2.36-2.36c-.59-1.16-.59-2.67-.59-5.69L0 8.64' +
     'c0-3.02 0-4.54.59-5.69a5.4 5.4 0 0 1 2.36-2.36c1.16-.59 2.67-.59 5.69-.59Z'
 
-  // Back to front, as on the icon: each card further down and to the right,
-  // and turned eight degrees more. On the tile they keep the icon's margin;
-  // the bare mark has no tile to keep a margin inside, so it fills the box.
-  const places = $derived(
-    tile
-      ? [
-          'translate(8.3 8.3) rotate(-8) scale(.875)',
-          'translate(12 12) scale(.875)',
-          'translate(15.7 15.7) rotate(8) scale(.875)',
-        ]
-      : ['translate(8 8) rotate(-8)', 'translate(12 12)', 'translate(16 16) rotate(8)'],
-  )
+  // One petal, pointing up from the sun's centre, as on the icon: from 6.2
+  // out to 10.2, pointed at both ends.
+  const PETAL = 'M0-6.2C1.05-7.35 1.15-8.95 0-10.2C-1.15-8.95-1.05-7.35 0-6.2Z'
+
+  // Seven, 24 degrees apart, the middle one tallest and the outer ones
+  // fainter -- the same fan as the icon's.
+  const PETALS = [-72, -48, -24, 0, 24, 48, 72].map((angle) => ({
+    angle,
+    stretch: 1 - Math.abs(angle) / 500,
+    opacity: 1 - Math.abs(angle) / 260,
+  }))
+
+  // On the tile the mark keeps a margin; bare, it fills the box.
+  const horizon = $derived(tile ? 14.2 : 14.5)
+  const scale = $derived(tile ? 0.82 : 1)
 </script>
 
 <!--
-  The same three cards as the application icon (crates/everyday-app/icons/icon.svg),
-  redrawn on a 24-unit grid. It is not a scaled-down copy. The icon's glyphs
-  are left off, because at 20px a sparkle, a tick and a pen nib are three
-  specks. And each card is cut away a little round the one in front of it
-  (the masks) instead of being separated by a shadow, because at this size
-  a shadow closes up into a smudge and the gap is what still reads as three
-  cards.
+  The same sunrise as the application icon (crates/karmayoga-app/icons/icon.svg),
+  redrawn on a 24-unit grid. It is not a scaled-down copy: at 20px the icon's
+  soft glow and blurred reflection close up into a smudge, so here the petals
+  are solid, the horizon is a clean line and the reflection is two strokes.
 -->
 <svg
   class="logo"
@@ -59,56 +51,54 @@
   aria-hidden="true"
   focusable="false"
 >
-  <defs>
-    <mask id="gap-back-{uid}" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
-      <rect width="24" height="24" fill="#fff" />
-      <path d={CARD} transform={places[1]} fill="#000" stroke="#000" stroke-width="1.8" />
-    </mask>
-    <mask id="gap-middle-{uid}" maskUnits="userSpaceOnUse" x="0" y="0" width="24" height="24">
-      <rect width="24" height="24" fill="#fff" />
-      <path d={CARD} transform={places[2]} fill="#000" stroke="#000" stroke-width="1.8" />
-    </mask>
-    {#if tile}
-      <linearGradient id="night-{uid}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#2a1f47" />
+  {#if tile}
+    <defs>
+      <clipPath id="tile-{uid}"><path d={TILE} /></clipPath>
+      <linearGradient id="sky-{uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#1b1840" />
+        <stop offset=".42" stop-color="#4a2a6a" />
+        <stop offset=".76" stop-color="#d4506a" />
+        <stop offset="1" stop-color="#ffae5a" />
+      </linearGradient>
+      <linearGradient id="water-{uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#3b2550" />
         <stop offset="1" stop-color="#120d22" />
       </linearGradient>
-      <linearGradient id="violet-{uid}" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#6f6cff" />
-        <stop offset="1" stop-color="#a557ff" />
+      <linearGradient id="sun-{uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#fff4c9" />
+        <stop offset=".55" stop-color="#ffc24a" />
+        <stop offset="1" stop-color="#ff8f2e" />
       </linearGradient>
-      <linearGradient id="coral-{uid}" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#ff4f8b" />
-        <stop offset="1" stop-color="#ff7a59" />
-      </linearGradient>
-      <linearGradient id="amber-{uid}" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="#ff8f2e" />
-        <stop offset="1" stop-color="#ffc24a" />
-      </linearGradient>
-    {/if}
-  </defs>
-  {#if tile}
-    <path d={TILE} fill="url(#night-{uid})" />
+    </defs>
+    <g clip-path="url(#tile-{uid})">
+      <rect width="24" height={horizon} fill="url(#sky-{uid})" />
+      <rect y={horizon} width="24" height={24 - horizon} fill="url(#water-{uid})" />
+    </g>
   {/if}
-  <!-- The bare mark steps its opacity down towards the back, the way the
-       icon's colours cool towards the back. -->
-  <g mask="url(#gap-back-{uid})">
-    <path
-      d={CARD}
-      transform={places[0]}
-      fill={tile ? `url(#violet-${uid})` : 'currentColor'}
-      opacity={tile ? 1 : 0.38}
-    />
+  <g transform="translate(12 {horizon}) scale({scale})">
+    {#each PETALS as petal (petal.angle)}
+      <path
+        d={PETAL}
+        transform="rotate({petal.angle}) scale(1 {petal.stretch})"
+        fill={tile ? '#ffe2a0' : 'currentColor'}
+        opacity={petal.opacity * (tile ? 0.9 : 1)}
+      />
+    {/each}
+    <path d="M-5 0A5 5 0 0 1 5 0Z" fill={tile ? `url(#sun-${uid})` : 'currentColor'} />
   </g>
-  <g mask="url(#gap-middle-{uid})">
-    <path
-      d={CARD}
-      transform={places[1]}
-      fill={tile ? `url(#coral-${uid})` : 'currentColor'}
-      opacity={tile ? 1 : 0.62}
-    />
+  <rect
+    x={tile ? 0 : 1.5}
+    y={horizon - 0.45}
+    width={tile ? 24 : 21}
+    height=".9"
+    rx=".45"
+    fill={tile ? '#ffd27a' : 'currentColor'}
+    opacity={tile ? 0.85 : 1}
+  />
+  <g fill={tile ? '#ffc24a' : 'currentColor'}>
+    <rect x="8.4" y={horizon + 2} width="7.2" height="1.1" rx=".55" opacity={tile ? 0.6 : 0.55} />
+    <rect x="9.9" y={horizon + 4.1} width="4.2" height="1" rx=".5" opacity={tile ? 0.38 : 0.32} />
   </g>
-  <path d={CARD} transform={places[2]} fill={tile ? `url(#amber-${uid})` : 'currentColor'} />
 </svg>
 
 <style>

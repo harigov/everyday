@@ -21,7 +21,7 @@ setting that widens that to "every interface".
 ## The four parts, and which of them grow
 
 ```text
-crates/everyday-server/src/web/
+crates/karmayoga-server/src/web/
   mod.rs        the switch: Config (web.json), start, status, the supervisor
   network.rs    WHO may connect      -- Network::Tailscale today
   cert.rs       WHICH certificate    -- Certificate::Tailscale today
@@ -84,7 +84,7 @@ Then the password, then a session.
   `verify_password`s an open one -- the password is checked every time,
   never skipped because the desktop already has the vault open.
 
-A success sets `__Host-everyday` (HttpOnly, Secure, SameSite=Strict,
+A success sets `__Host-karmayoga` (HttpOnly, Secure, SameSite=Strict,
 Path=/) and returns a **media token**. Sessions are bound to the peer
 address and to the vault whose password was typed: they end after an hour
 unused or twelve hours in all (swept every minute, not merely refused at
@@ -94,14 +94,14 @@ a running server. Their event streams end with them, after passing on
 whatever was already said -- `lockState` included.
 
 Every tab in a browser shares the one session. A tab sends its own id
-(`X-Everyday-Tab`), and writes are stamped `<session>.<tab>`, so the other
+(`X-KarmaYoga-Tab`), and writes are stamped `<session>.<tab>`, so the other
 tabs' streams still hear about them.
 
 No HSTS: it would bind the machine's tailnet name on every port, breaking
 any plain-HTTP service on that name for a year, and there is no plain-HTTP
 listener here for it to protect.
 
-The cookie carries every API call. Calls also carry `X-Everyday-Protocol`,
+The cookie carries every API call. Calls also carry `X-KarmaYoga-Protocol`,
 which a cross-site page cannot add without a preflight nothing here
 answers, so SameSite plus that header is the CSRF defence.
 
@@ -141,7 +141,7 @@ server without it is the mock, and anything else is web.
   Tailscale (and the first certificate, which can be an ACME round trip)
   happens on the supervisor, so it never holds the window's startup. Assets come from Tauri's
   embedded copy of the interface.
-- **`everyday serve --web`**: opt-in per run, as `--mcp` is; assets from
+- **`karmayoga serve --web`**: opt-in per run, as `--mcp` is; assets from
   `--web-ui DIR` (default: the repo's `ui/dist`).
 
 ## Setting it up

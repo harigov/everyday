@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the Every Day test suite inside a resource-capped cgroup.
+# Run the Karma Yoga test suite inside a resource-capped cgroup.
 #
 # Compiling and testing should never be able to destabilise the machine it
 # runs on. This wraps cargo in a transient systemd scope with a hard memory
@@ -7,17 +7,17 @@
 # rather than pushing the whole system into swap thrash.
 #
 #   ./scripts/test.sh                 # whole workspace
-#   ./scripts/test.sh -p everyday-core
+#   ./scripts/test.sh -p karmayoga-core
 #
 # Environment:
-#   EVERYDAY_TEST_MEM   hard memory cap for the scope   (default 6G)
-#   EVERYDAY_TEST_JOBS  parallel rustc jobs             (default 4)
-#   EVERYDAY_TEST_CPU   CPU quota, % of one core        (default 400%)
+#   KARMAYOGA_TEST_MEM   hard memory cap for the scope   (default 6G)
+#   KARMAYOGA_TEST_JOBS  parallel rustc jobs             (default 4)
+#   KARMAYOGA_TEST_CPU   CPU quota, % of one core        (default 400%)
 set -euo pipefail
 
-MEM="${EVERYDAY_TEST_MEM:-6G}"
-JOBS="${EVERYDAY_TEST_JOBS:-4}"
-CPU="${EVERYDAY_TEST_CPU:-400%}"
+MEM="${KARMAYOGA_TEST_MEM:-6G}"
+JOBS="${KARMAYOGA_TEST_JOBS:-4}"
+CPU="${KARMAYOGA_TEST_CPU:-400%}"
 
 cd "$(dirname "$0")/.."
 

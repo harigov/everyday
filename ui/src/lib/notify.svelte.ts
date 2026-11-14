@@ -73,7 +73,7 @@ async function tauriChannel(): Promise<OsChannel> {
       return granted
     },
     // Not the plugin's `sendNotification`, which on Linux reports success
-    // and delivers nothing: see `crates/everyday-app/src/notice.rs`. The
+    // and delivers nothing: see `crates/karmayoga-app/src/notice.rs`. The
     // shell answers once the desktop has, so a rejection is what lets the
     // caller put up a toast on a session with no notification service.
     send: (toast) => api.postNotification(toast.title, toast.body, toast.key),

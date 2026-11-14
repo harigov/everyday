@@ -1,0 +1,174 @@
+[package]
+name = "karmayoga-app"
+description = "Karma Yoga desktop application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+# Tauri builds mobile targets from a library, so the app lives in `lib.rs`
+# and `main.rs` is a two-line shim. This is what makes an iOS/Android target
+# a matter of `cargo tauri ios init` rather than a restructure.
+name = "karmayoga_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+karmayoga-core.workspace = true
+karmayoga-vault.workspace = true
+# `speech`: local VAD, recognition, diarisation and speaker embeddings
+# through sherpa-onnx -- the desktop build carries it. See
+# docs/plans/meeting-notes.md and `karmayoga-service`'s own feature doc.
+# `decisions`: sorting mail on a decision model run here through llama.cpp,
+# for somebody who would rather it went to no provider. See
+# docs/plans/mail-sorting.md.
+karmayoga-service = { workspace = true, features = ["speech", "decisions"] }
+karmayoga-server.workspace = true
+karmayoga-chat.workspace = true
+# This machine's screen time: which app has focus, idle, locked. See
+# `src/screentime.rs`.
+karmayoga-focus.workspace = true
+# Chunks of an archive arrive from the service base64'd inside JSON; the
+# shell decodes them straight into the file the user picked. Also the
+# browser extension's screen-time connection code (`src/screentime.rs`).
+base64 = "0.22"
+# This machine's default name in screen time, from its hostname. Already in
+# the build through `karmayoga-mail`.
+gethostname = "1.1"
+# `tray-icon` is not a default feature: it pulls in muda and the platform
+# status-item APIs, and an app without a tray should not carry them. See
+# `src/tray.rs`. On Linux it also wants libayatana-appindicator at runtime,
+# which is why the .deb declares it (tauri.conf.json) and `make setup`
+# installs its headers.
+tauri = { workspace = true, features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# Notifications on macOS and Windows, and the permission question on all of
+# them. On Linux it cannot post at all, under this build's features: see
+# `notice.rs`, which talks to the XDG notification service itself there.
+tauri-plugin-notification = "2"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tauri-plugin-single-instance = "2"
+# The OS-wide hotkey that raises the palette. Registered lazily and switchable
+# off, because a global shortcut is a claim on a key combination for the whole
+# desktop and not every desktop will honour it -- Wayland wants a portal. See
+# `hotkey.rs`.
+tauri-plugin-global-shortcut = "2"
+tokio = { version = "1.53.1", features = ["sync", "time"] }
+jiff.workspace = true
+# A device token is a bearer credential to an unlocked vault on another
+# machine, so it goes in the operating system's own store rather than in a
+# settings file. One API over the macOS keychain, the Windows credential
+# manager and the XDG secret service. See `remotes.rs` for what happens where
+# there is none.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# Two microphone-and-loopback streams, resampled and framed into 30 s chunks
+# and handed to the service. See `src/capture.rs` and
+# `docs/plans/meeting-notes.md`'s "Decisions already made". `build_input_stream`
+# on the *output* device is what gives loopback on every desktop: WASAPI
+# transparently enables its loopback mode, CoreAudio opens a process tap
+# (macOS 14.6+), and on Linux -- below -- the PipeWire host does the same
+# through the sink's monitor.
+cpal = "0.18"
+# Resampling whatever rate the device hands us (usually 44.1 or 48 kHz,
+# stereo) down to the 16 kHz mono every speech model in the plan wants. Pure
+# Rust, so it costs nothing on platforms this crate cannot test.
+rubato = "4"
+# rubato 4's `Resampler::process_into_buffer` reads and writes through this
+# crate's `Adapter`/`AdapterMut` traits rather than a bare slice; this is the
+# buffer-adapter crate rubato's own author publishes for exactly that, so
+# `capture.rs` isn't left implementing an unsafe trait by hand for one struct.
+audioadapter-buffers = "4"
+# WAV in and out for `capture::FileSink` -- the sink the capture spike
+# (`examples/capture.rs`) and `capture`'s own tests write chunks through
+# instead of the service. Not on the path anything shipped takes: the real
+# sink sends PCM straight to `append_recording_chunk`, never a file.
+hound = "3.5"
+
+# PipeWire is what makes the loopback trick work on Linux: cpal exposes a sink
+# node as a duplex device, and opening an *input* stream on it sets
+# `STREAM_CAPTURE_SINK`, handing back that sink's monitor. ALSA is not behind
+# a feature -- cpal always builds it as a target dependency on Linux -- so a
+# desktop with no PipeWire session still gets a working microphone, just no
+# system-audio track (`CaptureStatus::system_unavailable`). `pulseaudio` is
+# deliberately not enabled: its host needs a newer rustc than this workspace's
+# 1.85 MSRV. Building this feature wants PipeWire's development headers --
+# see `make setup` and `.github/workflows/check.yml`.
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { version = "0.18", features = ["pipewire"] }
+# The application icon's badge on Linux is one D-Bus signal --
+# `com.canonical.Unity.LauncherEntry.Update` -- sent on a connection held for
+# the life of the process; see `src/badge.rs` for why not through Tauri's own
+# `set_badge_count`. Already in the build: the opener and single-instance
+# plugins use the same crate, with the same default features.
+zbus = "5"
+# Who else has the microphone open: `micwatch` lists PipeWire's capture
+# streams to notice a call that is not on the calendar. The same version
+# cpal's `pipewire` host already builds.
+pipewire = "0.10"
+# Writing help on Wayland, and the global keys there: the GlobalShortcuts
+# portal claims a key for the whole desktop (no Wayland protocol lets an
+# application do it), and the RemoteDesktop portal is the one sanctioned way
+# for an application to press Ctrl+V into another. See `src/hotkey.rs` and
+# `src/writing/wayland.rs`. `screencast` only because ashpd's
+# `remote_desktop` module names its types; nothing here records a screen.
+# `wayland` so the main window can be named as the parent of the desktop's
+# shortcut dialog, which otherwise opens behind it.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts", "remote_desktop", "screencast", "wayland"] }
+# The webview's own toolkit, already in the build through Tauri. Writing help
+# reads the selection and places its popup through it directly: the
+# PRIMARY selection, the pointer's position on the overlay, and the
+# activation token that lets a window take focus on Wayland are none of them
+# things Tauri's window API reaches.
+gtk = "0.18"
+# X11's half of taking focus: presenting a window with the server's own
+# time, which focus-stealing prevention accepts. See `src/writing/desktop.rs`.
+gdkx11 = "0.18"
+futures-util = "0.3"
+# The main window's Wayland surface, for the portal dialog's parent. The
+# same version Tauri's windows implement.
+raw-window-handle = "0.6"
+
+# Writing help everywhere but Wayland: pressing Ctrl+C and Ctrl+V into the
+# application the text was selected in. XTest on X11, SendInput on Windows,
+# CGEvent on macOS. See `src/writing/desktop.rs`.
+[target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
+enigo = "0.6"
+
+# The clipboard where GTK is not the toolkit, text and images both, so that
+# what was on it can be put back. On Linux the GTK clipboard above serves
+# both display servers; this is built there too, unused, so that the
+# Windows and macOS path at least compiles where it is developed.
+arboard = "3"
+
+[dev-dependencies]
+# `protocol.rs`'s mail route tests build their URLs from a real
+# `sanitize::sanitize` call rather than a hand-assembled string, so the
+# routing they check is the exact shape the sync engine seals into a body.
+# Test-only: nothing in the shipped binary parses a message's HTML itself.
+karmayoga-mail.workspace = true
+# The capture spike (`examples/capture.rs`) only; nothing shipped bails out
+# through `anyhow`.
+anyhow = "1"
+# `tests/meeting_e2e.rs` runs a tiny local OpenAI-compatible HTTP stub for
+# the assistant's chat-completions call, the same reason `karmayoga-service`
+# already carries this as a dev-dependency for its own transcriber tests.
+axum = { version = "0.8", features = ["multipart"] }
+# The library dependency above only enables `sync`/`time`; the E2E test
+# needs a full multi-thread runtime with `#[tokio::test]` to drive real
+# capture, a spawned axum server and the pipeline's own async work side by
+# side. Cargo unifies this with the library's own `tokio` dependency for
+# test builds, so nothing shipped gains these features.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "process"] }
+tempfile = "3"
+
+[features]
+# Enabled by `tauri dev`/`tauri build`; keeps devtools out of releases.
+custom-protocol = ["tauri/custom-protocol"]

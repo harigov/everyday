@@ -1,4 +1,4 @@
-# Formatting settings for Every Day.
+# Formatting settings for Karma Yoga.
 #
 # One knob, and it is the one that matters here: `Max` lets rustfmt keep a
 # short struct literal, match arm or array on the line it fits on, rather than

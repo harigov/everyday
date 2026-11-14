@@ -1,5 +1,5 @@
 // The mock backend's templates: one list for the journal, notes and meeting
-// notes, standing in for `everyday_core::template` and the
+// notes, standing in for `karmayoga_core::template` and the
 // `domains::templates` commands. Placeholders, rules and lint follow the Rust
 // closely enough that the interface can be driven against them; the Rust is
 // the authority, and its tests are where the edge cases are pinned.

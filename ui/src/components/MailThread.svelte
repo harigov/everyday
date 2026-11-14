@@ -493,7 +493,7 @@
           {/if}
 
           {#if message.attachments.length > 0}
-            <!-- A button, not a link: following an `everyday:` address, however
+            <!-- A button, not a link: following an `karmayoga:` address, however
                  it is asked for, is a download the webview has nowhere to put.
                  See `mailApi.saveAttachment`. -->
             <div class="chips">

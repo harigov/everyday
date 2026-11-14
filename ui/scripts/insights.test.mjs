@@ -1,6 +1,6 @@
 // Behaviour checks for how the Overview draws mail and meetings.
 //
-// The counting is in Rust and tested there (`everyday_core::insights`). What
+// The counting is in Rust and tested there (`karmayoga_core::insights`). What
 // is left here is the drawing, and both of its rules fail quietly:
 //
 //   bucketing       a quarter drawn a column a day is a comb of ninety

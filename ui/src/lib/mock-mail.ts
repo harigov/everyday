@@ -10,7 +10,7 @@
 //
 // Reconciled against the real command surface: every write below takes the
 // same `threads: ThreadId[]` a batch op does and answers `Op[]`, matching
-// `crates/everyday-service/src/domains/mail.rs`; `Draft` is the real,
+// `crates/karmayoga-service/src/domains/mail.rs`; `Draft` is the real,
 // tagged-union-shaped record from `types.ts`, not the flat stand-in this
 // file used to carry. Two contracts nobody has shipped in Rust yet are
 // mocked here too, each marked with the same `TODO(i)`/`TODO(p)` this
@@ -631,7 +631,7 @@ seedPriorityThreads(seed)
 const OWN = new Set(['me@gmail.com', 'me@fastmail.com'])
 
 /**
- * `mail_activity`, over the seed: the rules `everyday_core::insights`
+ * `mail_activity`, over the seed: the rules `karmayoga_core::insights`
  * counts by, close enough for a page to be looked at -- received and sent
  * told apart by address, spam and drafts left out, days in local time.
  */
@@ -760,7 +760,7 @@ function messagesOf(threadId: ThreadId): MailMessage[] {
 
 /** Recomputes `thread(id)`'s own `starred`/`hasAttachments` aggregates from
  *  its current messages -- the mock's stand-in for
- *  `everyday_store_sql::mail::write::recompute_thread`, called after
+ *  `karmayoga_store_sql::mail::write::recompute_thread`, called after
  *  anything that could have changed either (starring, unstarring). */
 function recomputeThreadAggregates(id: ThreadId): void {
   const t = thread(id)
@@ -1078,7 +1078,7 @@ export function mockMessageBodyHtml(messageId: MailMessageId): string {
 // ── Actions ──────────────────────────────────────────────────────────
 //
 // Every real write command takes `threads: ThreadId[]` and answers `Op[]` --
-// see `crates/everyday-service/src/domains/mail.rs`'s `batch_op`. Mocked
+// see `crates/karmayoga-service/src/domains/mail.rs`'s `batch_op`. Mocked
 // the same shape here, one op per thread, already `done`: nothing in this
 // build reads the returned ops back, but the shape is worth keeping honest.
 
@@ -1282,7 +1282,7 @@ function mockSortedCategoryFor(category: MailCategory, i: number): string {
   }
 }
 
-/** `MailSorting::default()` in `crates/everyday-core/src/mail/sorting.rs`. */
+/** `MailSorting::default()` in `crates/karmayoga-core/src/mail/sorting.rs`. */
 export function mockDefaultSorting(): MailSorting {
   const c = (id: string, name: string, description: string, treatAs: MailCategory) => ({
     id,
@@ -1535,7 +1535,7 @@ export function mockNewDraft(opts: {
     cc,
     bcc: [],
     subject: original ? `${subjectPrefix}${original.subject.replace(/^(Re|Fwd): /, '')}` : '',
-    // The shape `quote_html` in `everyday-mail/src/compose.rs` writes, so
+    // The shape `quote_html` in `karmayoga-mail/src/compose.rs` writes, so
     // `mailwrite.ts`'s `splitQuoted` finds the quote here as it does there.
     bodyHtml: original
       ? `<p></p>${signature}<p>On ${new Date(original.date).toDateString()}, ${original.from.name || original.from.email} wrote:</p>` +
@@ -1788,7 +1788,7 @@ export function mockSyncAccount(_id: AccountId): void {
 /** A Gmail-style query, split into its operators and what is left over as
  *  plain words -- the same syntax the field's own hint offers
  *  (`MailView.svelte`'s operator hint) and the real `search_mail` is meant
- *  to answer for real once `everyday-mailindex` lands. */
+ *  to answer for real once `karmayoga-mailindex` lands. */
 interface ParsedSearchQuery {
   terms: string[]
   from?: string

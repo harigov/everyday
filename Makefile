@@ -1,4 +1,4 @@
-# Every Day -- one place for the commands you actually run.
+# Karma Yoga -- one place for the commands you actually run.
 #
 # `make` on its own lists the targets. Nothing here reimplements the scripts
 # or the toolchains; it only spares you remembering which of the four command
@@ -10,11 +10,11 @@
 # resolve here even with the CLI installed.
 export PATH := $(HOME)/.cargo/bin:$(PATH)
 
-APP_DIR := crates/everyday-app
+APP_DIR := crates/karmayoga-app
 UI_DIR  := ui
 
 # Extra arguments for the targets that forward them, e.g.
-#   make test ARGS="-p everyday-core"
+#   make test ARGS="-p karmayoga-core"
 #   make cli  ARGS="search rain"
 ARGS ?=
 
@@ -22,12 +22,12 @@ ARGS ?=
 .PHONY: help setup run dev ui build dist test test-speech test-postgres test-imap test-smtp test-mail test-caldav test-matrix lint check fix fmt cli icons desktop-entry undesktop-entry clean distclean
 
 help: ## Show this help
-	@echo "Every Day -- make <target>"
+	@echo "Karma Yoga -- make <target>"
 	@echo
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[1m%-10s\033[0m %s\n", $$1, $$2}'
 	@echo
-	@echo "  Pass arguments with ARGS, e.g. make test ARGS=\"-p everyday-core\""
+	@echo "  Pass arguments with ARGS, e.g. make test ARGS=\"-p karmayoga-core\""
 
 setup: ## Install prerequisites: system headers, Tauri CLI, npm packages
 	@if [ "$$(uname -s)" = Linux ]; then ./scripts/setup-linux.sh; fi
@@ -51,7 +51,7 @@ run: $(UI_DIR)/node_modules ## Run the desktop app in development, with hot relo
 dev: run ## Alias for `run`
 
 ui: $(UI_DIR)/node_modules ## Run the interface alone in a browser, on its mock backend
-	@echo "The interface falls back to an in-memory backend. Demo password: everyday"
+	@echo "The interface falls back to an in-memory backend. Demo password: karmayoga"
 	npm --prefix $(UI_DIR) run dev
 
 # Where cargo puts what it builds -- CARGO_TARGET_DIR moves it out of the
@@ -70,7 +70,7 @@ TARGET_DIR := $(or $(CARGO_TARGET_DIR),target)
 # is for the builds that run under a memory ceiling (`run`, `test`); these
 # do not, and most of a rebuild is a chain of three crates -- core, service,
 # the app -- each of whose sixteen codegen units waits on a free job. With
-# eight, a rebuild after a change to everyday-core took 160 s rather than
+# eight, a rebuild after a change to karmayoga-core took 160 s rather than
 # 223 s, and peaked at 5.6 GB, under what four jobs had needed under the
 # old profile. `make build JOBS=4` on a machine with less to spare.
 JOBS ?= 8
@@ -78,7 +78,7 @@ JOBS ?= 8
 build: $(UI_DIR)/node_modules ## Build the desktop app to run on this machine
 	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build --no-bundle
 	@echo
-	@echo "Built $(TARGET_DIR)/release/everyday-app"
+	@echo "Built $(TARGET_DIR)/release/karmayoga-app"
 
 dist: $(UI_DIR)/node_modules ## Build the installers the way a release does (slow)
 	cd $(APP_DIR) && CARGO_BUILD_JOBS=$(JOBS) cargo tauri build -- --profile dist
@@ -94,7 +94,7 @@ test: ## Run the test suite under a memory cap
 	@# and logs. Skipped when ARGS names a package, and when the headers to
 	@# build it are missing; CI installs them and runs it unconditionally.
 	@if [ -z "$(ARGS)" ] && { [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; }; then \
-		./scripts/test.sh -p everyday-app; \
+		./scripts/test.sh -p karmayoga-app; \
 	fi
 	@# Not the `speech` feature -- see `test-speech` below for why that is a
 	@# separate, opt-in target rather than folded in here.
@@ -104,22 +104,22 @@ test: ## Run the test suite under a memory cap
 # runs the same suite against a service container on every push; this is the
 # way to run it before pushing. The container is removed when it stops.
 test-postgres: ## Run the storage suite against a throwaway Postgres in Docker
-	@docker rm -f everyday-pgtest >/dev/null 2>&1 || true
-	docker run -d --rm --name everyday-pgtest \
-		-e POSTGRES_PASSWORD=test -e POSTGRES_DB=everyday_test \
+	@docker rm -f karmayoga-pgtest >/dev/null 2>&1 || true
+	docker run -d --rm --name karmayoga-pgtest \
+		-e POSTGRES_PASSWORD=test -e POSTGRES_DB=karmayoga_test \
 		-p 55432:5432 postgres:16-alpine
 	@echo "waiting for Postgres..."
 	@for i in $$(seq 1 60); do \
-		docker exec everyday-pgtest pg_isready -q && break; \
+		docker exec karmayoga-pgtest pg_isready -q && break; \
 		sleep 1; \
 	done
-	@EVERYDAY_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/everyday_test \
-		cargo test -p everyday-store-postgres; \
+	@KARMAYOGA_TEST_DATABASE_URL=postgresql://postgres:test@127.0.0.1:55432/karmayoga_test \
+		cargo test -p karmayoga-store-postgres; \
 	status=$$?; \
-	docker rm -f everyday-pgtest >/dev/null; \
+	docker rm -f karmayoga-pgtest >/dev/null; \
 	exit $$status
 
-# The IMAP adapter's suite (crates/everyday-mail/tests/imap_dovecot.rs),
+# The IMAP adapter's suite (crates/karmayoga-mail/tests/imap_dovecot.rs),
 # against a throwaway Dovecot -- the official image, confined and rootless,
 # which authenticates any username against the one password in
 # USER_PASSWORD and auto-creates that user's mailbox, so nothing here seeds
@@ -130,8 +130,8 @@ test-postgres: ## Run the storage suite against a throwaway Postgres in Docker
 # exists and why it is never on by default. The container is removed when
 # it stops.
 test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
-	@docker rm -f everyday-imaptest >/dev/null 2>&1 || true
-	docker run -d --rm --name everyday-imaptest \
+	@docker rm -f karmayoga-imaptest >/dev/null 2>&1 || true
+	docker run -d --rm --name karmayoga-imaptest \
 		-e USER_PASSWORD=testpass \
 		-p 15993:31993 -p 15143:31143 \
 		dovecot/dovecot:latest >/dev/null
@@ -140,20 +140,20 @@ test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
 		(exec 3<>/dev/tcp/127.0.0.1/15993) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
 		sleep 1; \
 	done; exit 1'
-	@EVERYDAY_TEST_IMAP=1 \
-		EVERYDAY_TEST_IMAP_HOST=127.0.0.1 \
-		EVERYDAY_TEST_IMAP_TLS_PORT=15993 \
-		EVERYDAY_TEST_IMAP_STARTTLS_PORT=15143 \
-		EVERYDAY_TEST_IMAP_USER=everyday \
-		EVERYDAY_TEST_IMAP_PASS=testpass \
-		cargo test -p everyday-mail --features insecure-test-tls --test imap_dovecot; \
+	@KARMAYOGA_TEST_IMAP=1 \
+		KARMAYOGA_TEST_IMAP_HOST=127.0.0.1 \
+		KARMAYOGA_TEST_IMAP_TLS_PORT=15993 \
+		KARMAYOGA_TEST_IMAP_STARTTLS_PORT=15143 \
+		KARMAYOGA_TEST_IMAP_USER=karmayoga \
+		KARMAYOGA_TEST_IMAP_PASS=testpass \
+		cargo test -p karmayoga-mail --features insecure-test-tls --test imap_dovecot; \
 	status=$$?; \
-	docker rm -f everyday-imaptest >/dev/null; \
+	docker rm -f karmayoga-imaptest >/dev/null; \
 	exit $$status
 
-# The SMTP client's suite (crates/everyday-mail/tests/smtp_mailpit.rs),
+# The SMTP client's suite (crates/karmayoga-mail/tests/smtp_mailpit.rs),
 # against a throwaway Mailpit -- the official image, which is given exactly
-# one SMTP credential (MP_SMTP_AUTH=everyday:testpass) so the suite can
+# one SMTP credential (MP_SMTP_AUTH=karmayoga:testpass) so the suite can
 # prove both that the right password is accepted and that a wrong one comes
 # back as this crate's own auth error, and exposes an HTTP API the test
 # reads delivered messages back through, so nothing here needs its own
@@ -164,9 +164,9 @@ test-imap: ## Run the IMAP adapter's suite against a throwaway Dovecot in Docker
 # against Dovecot's TLS, and `smtp.rs`'s `connect` uses the identical
 # `tokio1-rustls` configuration. The container is removed when it stops.
 test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
-	@docker rm -f everyday-smtptest >/dev/null 2>&1 || true
-	docker run -d --rm --name everyday-smtptest \
-		-e MP_SMTP_AUTH=everyday:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+	@docker rm -f karmayoga-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name karmayoga-smtptest \
+		-e MP_SMTP_AUTH=karmayoga:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
 		-p 11025:1025 -p 18025:8025 \
 		axllent/mailpit:latest >/dev/null
 	@echo "waiting for Mailpit..."
@@ -174,16 +174,16 @@ test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
 		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
 		sleep 1; \
 	done; exit 1'
-	@EVERYDAY_TEST_SMTP=1 \
-		EVERYDAY_TEST_SMTP_HOST=127.0.0.1 \
-		EVERYDAY_TEST_SMTP_PORT=11025 \
-		EVERYDAY_TEST_SMTP_API=http://127.0.0.1:18025 \
-		cargo test -p everyday-mail --features insecure-test-tls --test smtp_mailpit; \
+	@KARMAYOGA_TEST_SMTP=1 \
+		KARMAYOGA_TEST_SMTP_HOST=127.0.0.1 \
+		KARMAYOGA_TEST_SMTP_PORT=11025 \
+		KARMAYOGA_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p karmayoga-mail --features insecure-test-tls --test smtp_mailpit; \
 	status=$$?; \
-	docker rm -f everyday-smtptest >/dev/null; \
+	docker rm -f karmayoga-smtptest >/dev/null; \
 	exit $$status
 
-# `accountcal::caldav`'s suite (crates/everyday-service/tests/caldav_docker.rs),
+# `accountcal::caldav`'s suite (crates/karmayoga-service/tests/caldav_docker.rs),
 # against a throwaway Radicale -- Kozea's own image, GPL-3.0 licensed, which
 # is fine for a container this application never links: nothing here ships
 # Radicale, it only talks CalDAV to a copy of it that is deleted when the
@@ -196,10 +196,10 @@ test-smtp: ## Run the SMTP client's suite against a throwaway Mailpit in Docker
 # doc for why -- so nothing here does more than start the server and wait for
 # it to answer. The container is removed when it stops.
 test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in Docker
-	@docker rm -f everyday-caldavtest >/dev/null 2>&1 || true
+	@docker rm -f karmayoga-caldavtest >/dev/null 2>&1 || true
 	@tmp_htpasswd=$$(mktemp); \
-	printf 'everyday:testpass\n' > $$tmp_htpasswd; \
-	docker run -d --rm --name everyday-caldavtest \
+	printf 'karmayoga:testpass\n' > $$tmp_htpasswd; \
+	docker run -d --rm --name karmayoga-caldavtest \
 		-v $$tmp_htpasswd:/etc/radicale/users:ro \
 		-p 15232:5232 \
 		kozea/radicale:latest --hosts 0.0.0.0:5232 \
@@ -210,19 +210,19 @@ test-caldav: ## Run the CalDAV adapter's suite against a throwaway Radicale in D
 		curl -sf -o /dev/null http://127.0.0.1:15232/ && break; \
 		sleep 1; \
 	done; \
-	EVERYDAY_TEST_CALDAV=1 \
-		EVERYDAY_TEST_CALDAV_URL=http://127.0.0.1:15232 \
-		EVERYDAY_TEST_CALDAV_USER=everyday \
-		EVERYDAY_TEST_CALDAV_PASS=testpass \
-		cargo test -p everyday-service --test caldav_docker; \
+	KARMAYOGA_TEST_CALDAV=1 \
+		KARMAYOGA_TEST_CALDAV_URL=http://127.0.0.1:15232 \
+		KARMAYOGA_TEST_CALDAV_USER=karmayoga \
+		KARMAYOGA_TEST_CALDAV_PASS=testpass \
+		cargo test -p karmayoga-service --test caldav_docker; \
 	status=$$?; \
-	docker rm -f everyday-caldavtest >/dev/null; \
+	docker rm -f karmayoga-caldavtest >/dev/null; \
 	rm -f $$tmp_htpasswd; \
 	exit $$status
 
 test-matrix: ## Run the chat bot end to end against a throwaway Conduit in Docker
-	@docker rm -f everyday-matrixtest >/dev/null 2>&1 || true
-	@docker run -d --rm --name everyday-matrixtest \
+	@docker rm -f karmayoga-matrixtest >/dev/null 2>&1 || true
+	@docker run -d --rm --name karmayoga-matrixtest \
 		-p 127.0.0.1:16167:6167 \
 		-e CONDUIT_SERVER_NAME=chat-test.localhost \
 		-e CONDUIT_DATABASE_PATH=/var/lib/matrix-conduit/ \
@@ -238,27 +238,27 @@ test-matrix: ## Run the chat bot end to end against a throwaway Conduit in Docke
 		curl -sf -o /dev/null http://127.0.0.1:16167/_matrix/client/versions && break; \
 		sleep 1; \
 	done; \
-	EVERYDAY_TEST_MATRIX_URL=http://127.0.0.1:16167 \
-		cargo test -p everyday-chat --test matrix_live -- --nocapture; \
+	KARMAYOGA_TEST_MATRIX_URL=http://127.0.0.1:16167 \
+		cargo test -p karmayoga-chat --test matrix_live -- --nocapture; \
 	status=$$?; \
-	docker rm -f everyday-matrixtest >/dev/null; \
+	docker rm -f karmayoga-matrixtest >/dev/null; \
 	exit $$status
 
-# `everyday-service`'s own end-to-end suite
-# (crates/everyday-service/tests/mailsync_dovecot.rs) needs both servers at
+# `karmayoga-service`'s own end-to-end suite
+# (crates/karmayoga-service/tests/mailsync_dovecot.rs) needs both servers at
 # once -- a real IMAP account to sync, act on and read back from, and a real
 # SMTP relay to send through -- so this starts both throwaway containers
 # together rather than asking for two separate `make` invocations. Same
 # images, same credentials, same ports as `test-imap` and `test-smtp` above;
 # both are removed when either half of the suite finishes.
 test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dovecot and Mailpit
-	@docker rm -f everyday-imaptest everyday-smtptest >/dev/null 2>&1 || true
-	docker run -d --rm --name everyday-imaptest \
+	@docker rm -f karmayoga-imaptest karmayoga-smtptest >/dev/null 2>&1 || true
+	docker run -d --rm --name karmayoga-imaptest \
 		-e USER_PASSWORD=testpass \
 		-p 15993:31993 -p 15143:31143 \
 		dovecot/dovecot:latest >/dev/null
-	docker run -d --rm --name everyday-smtptest \
-		-e MP_SMTP_AUTH=everyday:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
+	docker run -d --rm --name karmayoga-smtptest \
+		-e MP_SMTP_AUTH=karmayoga:testpass -e MP_SMTP_AUTH_ALLOW_INSECURE=1 \
 		-p 11025:1025 -p 18025:8025 \
 		axllent/mailpit:latest >/dev/null
 	@echo "waiting for Dovecot and Mailpit..."
@@ -270,19 +270,19 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 		(exec 3<>/dev/tcp/127.0.0.1/18025) 2>/dev/null && exec 3<&- 3>&- && exit 0; \
 		sleep 1; \
 	done; exit 1'
-	@EVERYDAY_TEST_IMAP=1 \
-		EVERYDAY_TEST_IMAP_HOST=127.0.0.1 \
-		EVERYDAY_TEST_IMAP_TLS_PORT=15993 \
-		EVERYDAY_TEST_IMAP_STARTTLS_PORT=15143 \
-		EVERYDAY_TEST_IMAP_USER=everyday \
-		EVERYDAY_TEST_IMAP_PASS=testpass \
-		EVERYDAY_TEST_SMTP=1 \
-		EVERYDAY_TEST_SMTP_HOST=127.0.0.1 \
-		EVERYDAY_TEST_SMTP_PORT=11025 \
-		EVERYDAY_TEST_SMTP_API=http://127.0.0.1:18025 \
-		cargo test -p everyday-service --test mailsync_dovecot; \
+	@KARMAYOGA_TEST_IMAP=1 \
+		KARMAYOGA_TEST_IMAP_HOST=127.0.0.1 \
+		KARMAYOGA_TEST_IMAP_TLS_PORT=15993 \
+		KARMAYOGA_TEST_IMAP_STARTTLS_PORT=15143 \
+		KARMAYOGA_TEST_IMAP_USER=karmayoga \
+		KARMAYOGA_TEST_IMAP_PASS=testpass \
+		KARMAYOGA_TEST_SMTP=1 \
+		KARMAYOGA_TEST_SMTP_HOST=127.0.0.1 \
+		KARMAYOGA_TEST_SMTP_PORT=11025 \
+		KARMAYOGA_TEST_SMTP_API=http://127.0.0.1:18025 \
+		cargo test -p karmayoga-service --test mailsync_dovecot; \
 	status=$$?; \
-	docker rm -f everyday-imaptest everyday-smtptest >/dev/null; \
+	docker rm -f karmayoga-imaptest karmayoga-smtptest >/dev/null; \
 	exit $$status
 
 # The `speech` feature (`local::files`, `meeting::speech`,
@@ -290,7 +290,7 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 # sherpa-onnx, whose build script downloads a ~20 MB prebuilt native library
 # the first time it builds, unless `SHERPA_ONNX_LIB_DIR` or
 # `SHERPA_ONNX_ARCHIVE_DIR` is already set -- see
-# `crates/everyday-service/Cargo.toml`'s own comment on that dependency.
+# `crates/karmayoga-service/Cargo.toml`'s own comment on that dependency.
 # The `decisions` feature (`local::decide`; see docs/plans/mail-sorting.md)
 # compiles llama.cpp from source, which needs CMake (point `CMAKE` at one
 # that is not on PATH) and a C++ compiler.
@@ -300,8 +300,8 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 # separate `rust-speech` job, and the one job of the three there that `lint`
 # does not otherwise mirror.
 test-speech: ## Clippy and test the local-model features (downloads sherpa-onnx, builds llama.cpp)
-	cargo clippy -p everyday-service --all-targets --features speech,decisions -- -D warnings
-	cargo test -p everyday-service --features speech,decisions
+	cargo clippy -p karmayoga-service --all-targets --features speech,decisions -- -D warnings
+	cargo test -p karmayoga-service --features speech,decisions
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.
 # They are the same tools in the same order, so anything `fix` silences is
@@ -323,9 +323,9 @@ lint: $(UI_DIR)/node_modules ## Format check, clippy and interface typecheck -- 
 	@# The shell links the platform webview, so it is not a workspace default
 	@# member and cannot be linted on a machine without those headers.
 	@if [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
-		cargo clippy -p everyday-app --all-targets -- -D warnings; \
+		cargo clippy -p karmayoga-app --all-targets -- -D warnings; \
 	else \
-		echo "skipping everyday-app: WebKitGTK headers missing, run make setup"; \
+		echo "skipping karmayoga-app: WebKitGTK headers missing, run make setup"; \
 	fi
 	npm --prefix $(UI_DIR) run check
 	@# The generated client must be what the Rust command table says. The
@@ -348,7 +348,7 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	@# stash first if you want the changes separable.
 	cargo clippy --fix --all-targets --allow-dirty --allow-staged
 	@if [ "$$(uname -s)" != Linux ] || pkg-config --exists webkit2gtk-4.1 2>/dev/null; then \
-		cargo clippy --fix -p everyday-app --all-targets --allow-dirty --allow-staged; \
+		cargo clippy --fix -p karmayoga-app --all-targets --allow-dirty --allow-staged; \
 	fi
 	@# Formatting a Rust file can leave it in a shape clippy reads differently
 	@# and vice versa, so settle on the formatter.
@@ -356,7 +356,7 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 	@# Then the two generated artefacts, in the order they depend on: the
 	@# surface snapshot is written from the Rust table, and the client is
 	@# generated from the snapshot.
-	UPDATE_SURFACE=1 cargo test -p everyday-service --test surface
+	UPDATE_SURFACE=1 cargo test -p karmayoga-service --test surface
 	npm --prefix $(UI_DIR) run gen:api
 	@# Same order on this side: lint fixes first, formatter last.
 	npm --prefix $(UI_DIR) run lint:fix
@@ -365,14 +365,14 @@ fix: $(UI_DIR)/node_modules ## Apply every fix `lint` can make on its own
 fmt: ## Format Rust sources
 	cargo fmt --all
 
-cli: ## Run the everyday CLI, e.g. make cli ARGS="list"
-	cargo run -p everyday-cli -- $(ARGS)
+cli: ## Run the karmayoga CLI, e.g. make cli ARGS="list"
+	cargo run -p karmayoga-cli -- $(ARGS)
 
 # The PNG/ICO/ICNS set beside the master is generated, not hand-drawn: edit
 # icons/icon.svg and re-run this. The Tauri CLI rasterises the SVG itself
 # (resvg), which is the point -- ImageMagick's built-in SVG renderer silently
 # drops the gradient and hands back a black tile.
-icons: ## Regenerate the app icons from crates/everyday-app/icons/icon.svg
+icons: ## Regenerate the app icons from crates/karmayoga-app/icons/icon.svg
 	cd $(APP_DIR) && cargo tauri icon icons/icon.svg -o icons
 	@# Desktop only: the mobile sets Tauri also emits have no shell to go with.
 	rm -rf $(APP_DIR)/icons/android $(APP_DIR)/icons/ios

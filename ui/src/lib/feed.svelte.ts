@@ -83,7 +83,7 @@ export interface FeedFolder {
  * list would otherwise draw once as Unread and visibly flip.
  */
 const filterPref = pref<FeedFilter>(
-  'everyday.feed.filter',
+  'karmayoga.feed.filter',
   (raw) => FEED_FILTERS.find((f) => f === raw) ?? 'unread',
   'unread',
 )
@@ -96,7 +96,7 @@ const filterPref = pref<FeedFilter>(
  * a news setting: another device may offer it once more.
  */
 const newslettersPref = pref<boolean>(
-  'everyday.feed.newsletters',
+  'karmayoga.feed.newsletters',
   (raw) => raw === 'followed',
   false,
   () => 'followed',
@@ -118,7 +118,7 @@ function plural(n: number, one: string, many: string): string {
  * on every platform.
  *
  * The same reasoning as `mailview.ts`'s `mailOrigin`: Tauri maps a custom
- * scheme onto `http://everyday.localhost` on Windows and Android, where the
+ * scheme onto `http://karmayoga.localhost` on Windows and Android, where the
  * scheme's own host has nowhere to ride but the first path segment. Under
  * server mode the shell's protocol handler forwards to `/v1/news/body/{id}`
  * on the machine holding the vault, so the interface never builds that
@@ -127,12 +127,12 @@ function plural(n: number, one: string, many: string): string {
 function newsOrigin(): string {
   if (isWeb) return `${mediaBase()}/v1/news`
   return navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
-    ? 'http://everyday.localhost/news'
-    : 'everyday://news'
+    ? 'http://karmayoga.localhost/news'
+    : 'karmayoga://news'
 }
 
 /**
- * Point a stored body's own `everyday://news/img/…` addresses at the origin
+ * Point a stored body's own `karmayoga://news/img/…` addresses at the origin
  * this platform actually resolves.
  *
  * A body is sanitised once, when it is fetched, long before anybody knows
@@ -142,9 +142,9 @@ function newsOrigin(): string {
  */
 function applyNewsOrigin(html: string): string {
   const origin = newsOrigin()
-  return origin === 'everyday://news'
+  return origin === 'karmayoga://news'
     ? html
-    : allowWebOrigin(html.split('everyday://news/').join(`${origin}/`))
+    : allowWebOrigin(html.split('karmayoga://news/').join(`${origin}/`))
 }
 
 class FeedState {
@@ -818,7 +818,7 @@ class FeedState {
   /**
    * A story's body as a whole document for the sandboxed frame, and whether
    * its pictures were held back. Works against the mock backend too, which
-   * has no `everyday://` protocol to fetch from. `null` when it could not be
+   * has no `karmayoga://` protocol to fetch from. `null` when it could not be
    * loaded (the reason is shown the usual way).
    *
    * The document is already drawn for the window's light or dark theme and

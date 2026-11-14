@@ -1,3 +1,6 @@
+// First: an installation of Every Day's preferences move before any store
+// reads its own. See `lib/legacy.ts`.
+import './lib/legacy'
 import './styles/app.css'
 import { mount } from 'svelte'
 import App from './App.svelte'

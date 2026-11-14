@@ -1,0 +1,8 @@
+{
+  "uuid": "screentime@karmayogi.app",
+  "name": "Karma Yoga Screen time",
+  "description": "Tells the Karma Yoga app which application had your attention: the focused window, while you are not idle and the screen is not locked. It reports only to the app on this computer, or to your own Karma Yoga server, and is set up from Settings → Screen time in Karma Yoga.",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "session-modes": ["user", "unlock-dialog"],
+  "url": "https://github.com/harigov/everyday"
+}

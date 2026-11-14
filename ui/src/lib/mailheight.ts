@@ -809,7 +809,7 @@ function picture(
  *  one, which has nothing to be relative to here. */
 function pictureIsDrawn(parsed: Parsed, at: number): boolean {
   const src = attrOf(parsed, at, 'src') ?? ''
-  if (!/^(?:everyday:|https?:\/\/everyday\.localhost|data:)/i.test(src)) return false
+  if (!/^(?:karmayoga:|https?:\/\/karmayoga\.localhost|data:)/i.test(src)) return false
   return !(parsed.imagesHidden && src.includes('/mail/img/'))
 }
 

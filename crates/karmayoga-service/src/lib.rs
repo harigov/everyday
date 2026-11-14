@@ -1,0 +1,100 @@
+//! Everything a client can ask a vault to do, with no window in sight.
+//!
+//! This crate is the middle of the application. Below it, [`karmayoga_core`]
+//! knows about journals, encryption and storage and has no async runtime, no
+//! TLS stack and no way to open a socket. Above it sit the things that own a
+//! process: the desktop shell, the `serve` command, the command-line tool. This
+//! is what they all call.
+//!
+//! ```text
+//!   karmayoga-core      the domain: records, crypto, storage, iCalendar, search
+//!   karmayoga-vault     wires the core to a backend; platform paths
+//!   karmayoga-service   THIS: the command surface, the feeds, the assistant
+//!   karmayoga-app       a window, a tray, a media protocol
+//!   karmayoga-server    a socket, a certificate, and paired devices
+//!   karmayoga-cli       a terminal
+//! ```
+//!
+//! # One surface
+//!
+//! [`Service::call`] runs any command by name from JSON and answers with JSON.
+//! The interface calls it, the CLI calls it, the server exposes it over a
+//! socket and over TLS, and the assistant's tools sit beside it. There is
+//! deliberately no second API: a browser extension saving an article calls the
+//! same `add_item` the library's capture line calls, and inherits the same
+//! rules about what a lookup may overwrite.
+//!
+//! Not everything is JSON in and JSON out, and each exception has its own
+//! entry point rather than a special case inside `call`: attachments
+//! ([`Service::put_blob`], [`Service::blob_range`]), because a hundred
+//! megabytes of video should not be an array of numbers; a turn of the
+//! assistant ([`Service::send_message`]), because it answers with a stream
+//! rather than one value; and an export of a whole vault, which is JSON but
+//! chunked for the same reason an attachment is not one either -- see
+//! [`domains::transfer`] and [`transfers`].
+//!
+//! # What is deliberately absent
+//!
+//! Opening a vault, creating one, and deciding which one this session is about.
+//! Those decide what a service *is*, and they belong to whatever owns the
+//! process. A service is handed a vault; it does not go looking for one.
+
+pub mod accountcal;
+pub mod agent;
+pub mod arrivals;
+pub mod browser;
+pub mod calendar_refresh;
+pub mod chat;
+pub mod clock;
+pub mod command;
+pub mod covers;
+pub mod ctx;
+pub mod decision;
+pub(crate) mod delivery;
+pub mod domains;
+pub mod error;
+pub mod events;
+pub mod feeds;
+pub mod http;
+pub mod idempotency;
+pub mod jobs;
+pub mod keepintouch;
+pub mod llm;
+pub mod local;
+pub mod mailai;
+pub mod mailpreview;
+pub mod mailsort;
+pub mod mailsync;
+pub mod mailview;
+pub mod mailvoice;
+pub mod mailwrite;
+pub mod maps;
+pub mod meeting;
+pub mod money;
+pub mod news;
+pub mod outbox;
+pub mod pictures;
+pub mod quick;
+pub mod reminders;
+pub mod retry;
+pub(crate) mod runtime;
+pub mod scheduler;
+pub mod service;
+pub mod signin;
+pub mod supervisor;
+pub mod token_cache;
+pub mod touched;
+pub mod transfers;
+pub mod trouble;
+pub mod weather;
+pub(crate) mod weather_cache;
+pub mod webpage;
+pub mod websearch;
+pub mod writing_layout;
+
+pub use command::{Command, Signature};
+pub use ctx::{Caller, Ctx, Scope};
+pub use delivery::inert as inert_markdown;
+pub use error::{CommandError, CommandResult};
+pub use events::{Change, EventSink, Kind, Level, Notification, Op, Reach, Silent};
+pub use service::{PROTOCOL, Service, blocking};

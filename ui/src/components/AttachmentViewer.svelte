@@ -10,7 +10,7 @@
   // frame a message does, with the same sandbox and for the same reasons (see
   // the top of `MailThread.svelte`): no scripts, an opaque origin, and links
   // that leave for the browser. Everything else is drawn here from the part's
-  // own bytes at `everyday://mail/part/…`.
+  // own bytes at `karmayoga://mail/part/…`.
 
   import { untrack } from 'svelte'
   import { humanBytes } from '../lib/format'

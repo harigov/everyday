@@ -1,0 +1,77 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Karma Yoga",
+  "version": "0.1.0",
+  "identifier": "app.karmayogi.KarmaYoga",
+  "build": {
+    "frontendDist": "../../ui/dist",
+    "devUrl": "http://localhost:5273",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "../../ui" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "../../ui" }
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Karma Yoga",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 720,
+        "minHeight": 520,
+        "resizable": true,
+        "center": true,
+        "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "dragDropEnabled": false,
+        "theme": null
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' karmayoga: http://karmayoga.localhost data: blob:",
+        "media-src": "'self' karmayoga: http://karmayoga.localhost data: blob:",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self'",
+        "connect-src": "'self' ipc: http://ipc.localhost karmayoga: http://karmayoga.localhost",
+        "frame-src": "'self'",
+        "object-src": "'none'"
+      },
+      "assetProtocol": { "enable": false, "scope": [] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/64x64.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Productivity",
+    "shortDescription": "A private journal",
+    "longDescription": "Karma Yoga is a private journal with rich text, photos and video, pluggable storage and end-to-end encryption at rest.",
+    "copyright": "Copyright (c) 2026 Hari Govardhanam",
+    "license": "MIT",
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"],
+        "conflicts": ["every-day"],
+        "replaces": ["every-day"]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" }
+    }
+  }
+}

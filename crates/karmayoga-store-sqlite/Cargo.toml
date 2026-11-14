@@ -1,0 +1,21 @@
+[package]
+name = "karmayoga-store-sqlite"
+description = "SQLite driver for Karma Yoga's SQL storage backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+karmayoga-core.workspace = true
+karmayoga-store-sql.workspace = true
+rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
+jiff.workspace = true
+# Saying what happened when a vault's database is renamed (see `db_file`).
+tracing.workspace = true
+
+[dev-dependencies]
+karmayoga-core = { workspace = true, features = ["testing"] }
+karmayoga-store-sql = { workspace = true, features = ["testing"] }
+tempfile = "3"

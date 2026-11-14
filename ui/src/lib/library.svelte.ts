@@ -15,7 +15,7 @@
 //      Rust core (`websearch::apply`), where it is tested; this file does not
 //      get to have a second opinion about it.
 //   3. A picture is downloaded, never linked. Covers arrive as blob ids and
-//      are drawn through the `everyday://` protocol, so opening the app does
+//      are drawn through the `karmayoga://` protocol, so opening the app does
 //      not tell a stranger's server what is on your shelf.
 
 import { api } from './api'
@@ -79,11 +79,11 @@ export function statusesFor(filter: Filter): ItemStatus[] {
 export type View = 'grid' | 'list'
 
 const viewPref = pref<View | null>(
-  'everyday.library.view',
+  'karmayoga.library.view',
   (raw) => (raw === 'grid' || raw === 'list' ? raw : null),
   null,
 )
-const captureShelfPref = pref<KindId | null>('everyday.library.capture', (raw) => raw, null)
+const captureShelfPref = pref<KindId | null>('karmayoga.library.capture', (raw) => raw, null)
 
 /** Whoever is most overdue first, in the backend's order; everyone else after,
  *  in the order the shelf was read in. */

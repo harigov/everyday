@@ -2497,361 +2497,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "everyday-app"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "ashpd",
- "audioadapter-buffers",
- "axum",
- "base64 0.22.1",
- "cpal",
- "enigo",
- "everyday-chat",
- "everyday-core",
- "everyday-focus",
- "everyday-mail",
- "everyday-server",
- "everyday-service",
- "everyday-vault",
- "futures-util",
- "gdkx11",
- "gethostname",
- "gtk",
- "hound",
- "jiff",
- "keyring",
- "pipewire",
- "raw-window-handle",
- "rubato",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-notification",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "zbus",
-]
-
-[[package]]
-name = "everyday-chat"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "everyday-core",
- "everyday-service",
- "everyday-vault",
- "futures",
- "jiff",
- "matrix-sdk",
- "mime",
- "pulldown-cmark",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "everyday-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "everyday-chat",
- "everyday-core",
- "everyday-mcp",
- "everyday-server",
- "everyday-service",
- "everyday-transfer",
- "everyday-vault",
- "jiff",
- "mime_guess",
- "qrcode",
- "reqwest",
- "rpassword",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "everyday-core"
-version = "0.1.0"
-dependencies = [
- "argon2",
- "blake3",
- "chacha20poly1305",
- "fs4 1.1.0",
- "jiff",
- "psl",
- "rand 0.9.5",
- "schemars 1.2.2",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "everyday-focus"
-version = "0.1.0"
-dependencies = [
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation",
- "thiserror 2.0.20",
- "tracing",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-wlr",
- "windows-sys 0.61.2",
- "x11rb",
- "zbus",
-]
-
-[[package]]
-name = "everyday-mail"
-version = "0.1.0"
-dependencies = [
- "ammonia",
- "async-imap",
- "axum",
- "base64 0.22.1",
- "blake3",
- "calcard",
- "chrono",
- "css-inline",
- "everyday-core",
- "futures",
- "htmd",
- "html2text",
- "imap-proto",
- "jiff",
- "lettre",
- "lol_html",
- "mail-builder 1.0.0",
- "mail-parser",
- "oauth2",
- "oauth2-reqwest",
- "proptest",
- "rand 0.9.5",
- "reqwest",
- "rustls",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "socket2",
- "thiserror 2.0.20",
- "tokio",
- "tokio-rustls",
- "tracing",
- "url",
- "uuid",
- "zeroize",
-]
-
-[[package]]
-name = "everyday-mailindex"
-version = "0.1.0"
-dependencies = [
- "everyday-core",
- "jiff",
- "lru",
- "serde",
- "serde_json",
- "tantivy",
- "tempfile",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "everyday-mcp"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "everyday-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "axum-server",
- "base64 0.22.1",
- "blake3",
- "everyday-core",
- "everyday-mail",
- "everyday-mcp",
- "everyday-service",
- "everyday-vault",
- "futures",
- "hyper",
- "hyper-util",
- "jiff",
- "qrcode",
- "rand 0.9.5",
- "rcgen",
- "reqwest",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tower",
- "tower-service",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "everyday-service"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.22.1",
- "blake3",
- "bytes",
- "bzip2 0.6.1",
- "calcard",
- "chrono",
- "directories",
- "dom_query 0.28.0",
- "dom_smoothie",
- "encoding_rs",
- "everyday-core",
- "everyday-mail",
- "everyday-mailindex",
- "everyday-transfer",
- "everyday-vault",
- "feed-rs",
- "frizbee",
- "futures",
- "hound",
- "http",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "image",
- "jiff",
- "jpeg-encoder",
- "libc",
- "libdav",
- "llama-cpp-sys-2",
- "minijinja",
- "pulldown-cmark",
- "rand 0.9.5",
- "reqwest",
- "rig-agent",
- "rig-core",
- "roxmltree",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sherpa-onnx",
- "tar",
- "tempfile",
- "tokio",
- "tower-http",
- "tower-service",
- "tracing",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "everyday-store-postgres"
-version = "0.1.0"
-dependencies = [
- "everyday-core",
- "everyday-store-sql",
- "jiff",
- "postgres",
- "rustls",
- "rustls-platform-verifier",
- "tempfile",
- "tokio-postgres-rustls",
- "tracing",
-]
-
-[[package]]
-name = "everyday-store-sql"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "everyday-core",
- "jiff",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "everyday-store-sqlite"
-version = "0.1.0"
-dependencies = [
- "everyday-core",
- "everyday-store-sql",
- "jiff",
- "rusqlite",
- "tempfile",
-]
-
-[[package]]
-name = "everyday-transfer"
-version = "0.1.0"
-dependencies = [
- "crc32fast",
- "everyday-core",
- "everyday-vault",
- "flate2",
- "jiff",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "everyday-vault"
-version = "0.1.0"
-dependencies = [
- "directories",
- "everyday-core",
- "everyday-mail",
- "everyday-store-postgres",
- "everyday-store-sqlite",
- "jiff",
- "keyring",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "eyeball"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4495,6 +4140,362 @@ checksum = "5dea2b27dd239b2556ed7a25ba842fe47fd602e7fc7433c2a8d6106d4d9edd70"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "karmayoga-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "ashpd",
+ "audioadapter-buffers",
+ "axum",
+ "base64 0.22.1",
+ "cpal",
+ "enigo",
+ "futures-util",
+ "gdkx11",
+ "gethostname",
+ "gtk",
+ "hound",
+ "jiff",
+ "karmayoga-chat",
+ "karmayoga-core",
+ "karmayoga-focus",
+ "karmayoga-mail",
+ "karmayoga-server",
+ "karmayoga-service",
+ "karmayoga-vault",
+ "keyring",
+ "pipewire",
+ "raw-window-handle",
+ "rubato",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-notification",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "zbus",
+]
+
+[[package]]
+name = "karmayoga-chat"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "futures",
+ "jiff",
+ "karmayoga-core",
+ "karmayoga-service",
+ "karmayoga-vault",
+ "matrix-sdk",
+ "mime",
+ "pulldown-cmark",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "karmayoga-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "jiff",
+ "karmayoga-chat",
+ "karmayoga-core",
+ "karmayoga-mcp",
+ "karmayoga-server",
+ "karmayoga-service",
+ "karmayoga-transfer",
+ "karmayoga-vault",
+ "mime_guess",
+ "qrcode",
+ "reqwest",
+ "rpassword",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "karmayoga-core"
+version = "0.1.0"
+dependencies = [
+ "argon2",
+ "blake3",
+ "chacha20poly1305",
+ "fs4 1.1.0",
+ "jiff",
+ "psl",
+ "rand 0.9.5",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "karmayoga-focus"
+version = "0.1.0"
+dependencies = [
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "thiserror 2.0.20",
+ "tracing",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "windows-sys 0.61.2",
+ "x11rb",
+ "zbus",
+]
+
+[[package]]
+name = "karmayoga-mail"
+version = "0.1.0"
+dependencies = [
+ "ammonia",
+ "async-imap",
+ "axum",
+ "base64 0.22.1",
+ "blake3",
+ "calcard",
+ "chrono",
+ "css-inline",
+ "futures",
+ "htmd",
+ "html2text",
+ "imap-proto",
+ "jiff",
+ "karmayoga-core",
+ "lettre",
+ "lol_html",
+ "mail-builder 1.0.0",
+ "mail-parser",
+ "oauth2",
+ "oauth2-reqwest",
+ "proptest",
+ "rand 0.9.5",
+ "reqwest",
+ "rustls",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "socket2",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "karmayoga-mailindex"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "karmayoga-core",
+ "lru",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "karmayoga-mcp"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
+name = "karmayoga-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "axum-server",
+ "base64 0.22.1",
+ "blake3",
+ "futures",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "karmayoga-core",
+ "karmayoga-mail",
+ "karmayoga-mcp",
+ "karmayoga-service",
+ "karmayoga-vault",
+ "qrcode",
+ "rand 0.9.5",
+ "rcgen",
+ "reqwest",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "tower-service",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "karmayoga-service"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "blake3",
+ "bytes",
+ "bzip2 0.6.1",
+ "calcard",
+ "chrono",
+ "dom_query 0.28.0",
+ "dom_smoothie",
+ "encoding_rs",
+ "feed-rs",
+ "frizbee",
+ "futures",
+ "hound",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "image",
+ "jiff",
+ "jpeg-encoder",
+ "karmayoga-core",
+ "karmayoga-mail",
+ "karmayoga-mailindex",
+ "karmayoga-transfer",
+ "karmayoga-vault",
+ "libc",
+ "libdav",
+ "llama-cpp-sys-2",
+ "minijinja",
+ "pulldown-cmark",
+ "rand 0.9.5",
+ "reqwest",
+ "rig-agent",
+ "rig-core",
+ "roxmltree",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sherpa-onnx",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tower-http",
+ "tower-service",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "karmayoga-store-postgres"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "karmayoga-core",
+ "karmayoga-store-sql",
+ "postgres",
+ "rustls",
+ "rustls-platform-verifier",
+ "tempfile",
+ "tokio-postgres-rustls",
+ "tracing",
+]
+
+[[package]]
+name = "karmayoga-store-sql"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "jiff",
+ "karmayoga-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "karmayoga-store-sqlite"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "karmayoga-core",
+ "karmayoga-store-sql",
+ "rusqlite",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "karmayoga-transfer"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "jiff",
+ "karmayoga-core",
+ "karmayoga-vault",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "karmayoga-vault"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "jiff",
+ "karmayoga-core",
+ "karmayoga-mail",
+ "karmayoga-store-postgres",
+ "karmayoga-store-sqlite",
+ "keyring",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

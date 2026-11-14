@@ -1,7 +1,7 @@
 <script lang="ts">
   // Writing help's popup. One selection at a time: offer three things to do
   // with it, ask the model for the one picked, hand the answer to the shell
-  // to paste, and be gone. See `crates/everyday-app/src/writing/mod.rs`.
+  // to paste, and be gone. See `crates/karmayoga-app/src/writing/mod.rs`.
   import { invoke } from '@tauri-apps/api/core'
   import { listen } from '@tauri-apps/api/event'
   import { onMount, tick } from 'svelte'
@@ -150,8 +150,8 @@
 
   onMount(() => {
     const unlisten = [
-      listen<Selection>('everyday://writing/open', (e) => show(e.payload)),
-      listen('everyday://writing/close', () => reset()),
+      listen<Selection>('karmayoga://writing/open', (e) => show(e.payload)),
+      listen('karmayoga://writing/close', () => reset()),
     ]
     // A popup that has only just loaded missed the event that made it.
     void invoke<Selection | null>('writing_selection').then((s) => {
@@ -209,7 +209,7 @@
         <p class="status trouble" role="alert">{view.trouble.message}</p>
         <div class="actions">
           {#if view.trouble.openMain}
-            <button class="btn" onclick={() => invoke('writing_open_main')}>Open Every Day</button>
+            <button class="btn" onclick={() => invoke('writing_open_main')}>Open Karma Yoga</button>
           {/if}
           <button class="btn quiet" onclick={dismiss}>Close</button>
         </div>

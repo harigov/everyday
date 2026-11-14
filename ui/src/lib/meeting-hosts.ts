@@ -1,7 +1,7 @@
 // Which calendar events are meetings worth notes, and where their call is, in
 // TypeScript.
 //
-// A duplicate of `crates/everyday-core/src/meeting/detect.rs`'s own list and
+// A duplicate of `crates/karmayoga-core/src/meeting/detect.rs`'s own list and
 // logic, kept here because the event popover has to answer "is this a
 // meeting, and is there a link to join?" without a round trip to the backend -- it is deciding
 // whether to draw a button at all. `MEETING_HOSTS` must be kept in step with
@@ -11,7 +11,7 @@
 
 import type { CalendarEvent } from './types'
 
-/** Mirrors `everyday_core::meeting::detect::MEETING_HOSTS`. */
+/** Mirrors `karmayoga_core::meeting::detect::MEETING_HOSTS`. */
 export const MEETING_HOSTS: readonly string[] = [
   'meet.google.com',
   'zoom.us',

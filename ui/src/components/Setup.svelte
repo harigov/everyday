@@ -122,7 +122,7 @@
 <div class="setup scroll">
   <form class="card frost" onsubmit={submit}>
     <div class="mark"><Logo size={46} tile /></div>
-    <h1>Every Day</h1>
+    <h1>Karma Yoga</h1>
     <p class="sub">A private journal. Let's set it up.</p>
 
     <div class="modes" role="tablist">

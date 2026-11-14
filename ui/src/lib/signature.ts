@@ -2,7 +2,7 @@
 //
 // It has to survive being edited as what it is. `new_draft` writes it as
 // `<div data-signature="">` (`compose::signature_block` in
-// `everyday-core/src/mail/compose.rs`), and an editor that did not know that
+// `karmayoga-core/src/mail/compose.rs`), and an editor that did not know that
 // shape would flatten it into paragraphs like any others -- and then Improve
 // would rewrite somebody's job title, and "Write with AI" would replace it,
 // because nothing could say where their words stopped. It stays perfectly

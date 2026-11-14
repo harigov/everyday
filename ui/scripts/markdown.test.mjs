@@ -304,7 +304,7 @@ renders('if a <u and b> c', '<p>if a &lt;u and b&gt; c</p>', 'nor is an angle br
       '> You asked about this on Tuesday.',
       '',
       '```sh',
-      'everyday search rain',
+      'karmayoga search rain',
       '```',
     ].join('\n'),
   )
@@ -312,7 +312,10 @@ renders('if a <u and b> c', '<p>if a &lt;u and b&gt; c</p>', 'nor is an angle br
   assert.ok(html.includes('<ol><li><strong>Three tasks</strong> are overdue</li>'), html)
   assert.ok(html.includes('<code>Home</code>'), html)
   assert.ok(html.includes('<blockquote><p>You asked about this on Tuesday.</p></blockquote>'), html)
-  assert.ok(html.includes('<pre><code class="language-sh">everyday search rain</code></pre>'), html)
+  assert.ok(
+    html.includes('<pre><code class="language-sh">karmayoga search rain</code></pre>'),
+    html,
+  )
 }
 
 await close()

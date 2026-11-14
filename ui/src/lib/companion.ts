@@ -9,7 +9,7 @@
 // than the one somebody chose.
 //
 // The first rule is reading a stored choice. The vault keeps three words (see
-// `Companion` in `everyday-core`'s `agent.rs`) and a build is free to meet
+// `Companion` in `karmayoga-core`'s `agent.rs`) and a build is free to meet
 // one it has never heard of -- a breed a later build added, on a vault that
 // came from there. A word this list does not know is drawn as the default,
 // rather than refused, so the worst case is a different dog and never no

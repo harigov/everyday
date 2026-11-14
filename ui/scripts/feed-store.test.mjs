@@ -17,7 +17,7 @@ import { load, stubBrowser } from './harness.mjs'
 // A localStorage that remembers, for the one check that the chip is kept.
 // Every newsletter is taken as followed once already, so the seed's four
 // sources stay four until the check at the end that it is followed unasked.
-const stored = new Map([['everyday.feed.newsletters', 'followed']])
+const stored = new Map([['karmayoga.feed.newsletters', 'followed']])
 const opened = []
 
 stubBrowser({
@@ -112,7 +112,7 @@ assert.equal(feed.accent, '#0369a1', 'the Feed has an accent of its own')
 await feed.setFilter('all')
 assert.equal(feed.stories.length, 16, 'All is every story')
 assert.equal(
-  globalThis.localStorage.getItem('everyday.feed.filter'),
+  globalThis.localStorage.getItem('karmayoga.feed.filter'),
   'all',
   'the chip is kept on this device',
 )
@@ -436,7 +436,7 @@ assert.equal((await api.story('st-2')).saved, false)
 // ── bodies ───────────────────────────────────────────────────────────
 
 {
-  assert.equal(feed.bodyUrl({ id: 'st-1' }), 'everyday://news/body/st-1')
+  assert.equal(feed.bodyUrl({ id: 'st-1' }), 'karmayoga://news/body/st-1')
   const body = await feed.loadBody(await api.story('st-1'))
   assert.ok(body.html.startsWith('<!DOCTYPE html>'), 'a whole document for the frame')
   assert.ok(body.html.includes('For two centuries'), 'with the story in it')
@@ -485,12 +485,12 @@ await feed.flush()
 
 // ── every newsletter, followed once unasked ──────────────────────────
 
-stored.delete('everyday.feed.newsletters')
+stored.delete('karmayoga.feed.newsletters')
 await feed.start()
 await feed.following
 const newsletters = feed.sources.filter((s) => s.source.kind.type === 'newsletters')
 assert.equal(newsletters.length, 1, 'the Feed follows every newsletter in Mail the first time')
-assert.equal(stored.get('everyday.feed.newsletters'), 'followed')
+assert.equal(stored.get('karmayoga.feed.newsletters'), 'followed')
 await feed.deleteSource(newsletters[0].source.id)
 await feed.start()
 await feed.following

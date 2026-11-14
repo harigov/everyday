@@ -128,7 +128,7 @@ assert.equal(providerLabel('not a url'), 'not a url', 'an unparsable value is ec
 // ── endpointOf ────────────────────────────────────────────────────────
 //
 // The same table as `the_endpoint_is_spelt_as_the_interface_spells_it` in
-// crates/everyday-core/src/llm.rs: a model key is stored under the Rust
+// crates/karmayoga-core/src/llm.rs: a model key is stored under the Rust
 // side's string, so the pane can only say a card has one if it spells the
 // endpoint identically.
 

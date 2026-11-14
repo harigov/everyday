@@ -72,7 +72,7 @@
   const MAX_SHARE = 0.62
 
   const widthPref = pref<number>(
-    'everyday:assistant-width',
+    'karmayoga:assistant-width',
     (raw) => Number(raw) || DEFAULT_WIDTH,
     DEFAULT_WIDTH,
   )

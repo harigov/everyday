@@ -101,7 +101,7 @@ interface WeatherOutcome {
 const NO_WEATHER: WeatherOutcome = { report: null, noLocation: false, error: null }
 
 const layoutPref = pref<Widget[]>(
-  'everyday.overview.layout',
+  'karmayoga.overview.layout',
   (raw) => parseLayout(raw) ?? defaultLayout(),
   defaultLayout(),
   (widgets) => JSON.stringify($state.snapshot(widgets)),
@@ -109,7 +109,7 @@ const layoutPref = pref<Widget[]>(
 
 /** Which of `INTRODUCED` this page has already been shown -- see `introduce`. */
 const introducedPref = pref<string[]>(
-  'everyday.overview.introduced',
+  'karmayoga.overview.introduced',
   (raw) => {
     const parsed: unknown = raw ? JSON.parse(raw) : []
     return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : []

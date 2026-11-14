@@ -17,7 +17,7 @@
 <div class="wrap">
   <div class="card frost">
     <div class="mark"><Icon name="alert" size={28} weight={1.7} /></div>
-    <h1>Every Day could not start</h1>
+    <h1>Karma Yoga could not start</h1>
 
     {#if app.error}<p class="detail">{app.error}</p>{/if}
 

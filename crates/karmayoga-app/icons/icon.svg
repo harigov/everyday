@@ -1,0 +1,137 @@
+<!--
+  Karma Yoga — application mark. Master artwork; every PNG, .ico and .icns
+  beside this file is generated from it by `make icons`.
+
+  "Look to this day": the sun half risen over still water, at the moment a
+  day begins. Seven petals open around it — a lotus, and the sun's rays, and
+  the seven ranks from Shishya to Siddha, the middle one tallest. Below the
+  horizon the water holds the sun's reflection in three strokes, shortening
+  as they come forward. The sky runs from the night still overhead down
+  through plum and coral to the amber at the horizon; the water keeps the
+  night colours the old mark's tile had.
+
+  Built on Apple's icon grid so it sits level with the icons beside it: a
+  1024 canvas, an 824 tile with 100 of margin all round, and the shadow
+  falling into that margin. The tile is a continuous-corner squircle rather
+  than a rounded rect — radius 22.5% with Figma's 60% corner smoothing,
+  which is the curve macOS draws. GNOME's own icons keep a similar margin,
+  so the same file is right for the Linux dock.
+
+  At 32px and below the petals merge into a glow and what is left is a gold
+  half disc on a bright horizon between a dark sky and darker water, which
+  is still the mark.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <path id="tile" d="M627.36 100c103.83 0 155.75 0 195.41 20.21a185.4 185.4 0 0 1 81.02 81.02c20.21 39.66 20.21 91.58 20.21 195.41L924 627.36c0 103.83 0 155.75 -20.21 195.41a185.4 185.4 0 0 1 -81.02 81.02c-39.66 20.21 -91.58 20.21 -195.41 20.21L396.64 924c-103.83 0 -155.75 0 -195.41 -20.21a185.4 185.4 0 0 1 -81.02 -81.02c-20.21 -39.66 -20.21 -91.58 -20.21 -195.41L100 396.64c0 -103.83 0 -155.75 20.21 -195.41a185.4 185.4 0 0 1 81.02 -81.02c39.66 -20.21 91.58 -20.21 195.41 -20.21Z"/>
+    <clipPath id="clip"><use href="#tile"/></clipPath>
+    <!-- Everything above the horizon, for the sun and its petals. -->
+    <clipPath id="sky-only"><rect x="0" y="0" width="1024" height="600"/></clipPath>
+
+    <!-- One petal, pointing up from the sun's centre: a lotus petal, pointed
+         at both ends, from 180 out to 180 + its length. Scaled along its
+         length per petal. -->
+    <path id="petal" d="M0 -180C30 -214 34 -262 0 -300C-34 -262 -30 -214 0 -180Z"/>
+
+    <!-- macOS's two-part shadow under the tile: a tight contact shadow and
+         a soft one further down. Both land inside the 100 of margin. -->
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="125%" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="6" result="near"/>
+      <feOffset in="near" dy="4" result="near"/>
+      <feFlood flood-color="#000" flood-opacity=".22"/>
+      <feComposite in2="near" operator="in" result="near"/>
+      <feGaussianBlur in="SourceAlpha" stdDeviation="16" result="far"/>
+      <feOffset in="far" dy="14" result="far"/>
+      <feFlood flood-color="#000" flood-opacity=".26"/>
+      <feComposite in2="far" operator="in" result="far"/>
+      <feMerge>
+        <feMergeNode in="far"/>
+        <feMergeNode in="near"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="haze" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="60"/>
+    </filter>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+
+    <!-- Night overhead, then plum, coral and the amber at the horizon. -->
+    <linearGradient id="sky" x1="0" y1="100" x2="0" y2="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#1b1840"/>
+      <stop offset=".42" stop-color="#4a2a6a"/>
+      <stop offset=".76" stop-color="#d4506a"/>
+      <stop offset="1" stop-color="#ffae5a"/>
+    </linearGradient>
+    <!-- The water: the old mark's night, lit a little where it meets the sky. -->
+    <linearGradient id="water" x1="0" y1="600" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b2550"/>
+      <stop offset=".3" stop-color="#2a1f47"/>
+      <stop offset="1" stop-color="#120d22"/>
+    </linearGradient>
+    <!-- The sun: white-gold at the top, deepening to the interface's orange
+         where it meets the water. -->
+    <linearGradient id="sun" x1="0" y1="440" x2="0" y2="600" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff4c9"/>
+      <stop offset=".55" stop-color="#ffc24a"/>
+      <stop offset="1" stop-color="#ff8f2e"/>
+    </linearGradient>
+    <!-- Each petal: brightest at its root, fading as it opens outwards. -->
+    <linearGradient id="petal-fill" x1="0" y1="-180" x2="0" y2="-300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffe7a8"/>
+      <stop offset="1" stop-color="#ffd27a" stop-opacity=".55"/>
+    </linearGradient>
+    <linearGradient id="glint" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffc24a" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#ffd27a"/>
+      <stop offset="1" stop-color="#ffc24a" stop-opacity="0"/>
+    </linearGradient>
+    <!-- The tile's own edge: lit along the top, faintly dark along the
+         bottom, so it keeps an outline against a dark dock. -->
+    <linearGradient id="rim" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff" stop-opacity=".55"/>
+      <stop offset=".2" stop-color="#fff" stop-opacity=".08"/>
+      <stop offset=".8" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".12"/>
+    </linearGradient>
+  </defs>
+
+  <g filter="url(#drop)">
+    <g clip-path="url(#clip)">
+      <rect width="1024" height="600" fill="url(#sky)"/>
+      <rect y="600" width="1024" height="424" fill="url(#water)"/>
+
+      <!-- The light the sun spreads into the sky around it. -->
+      <g clip-path="url(#sky-only)">
+        <circle cx="512" cy="600" r="250" fill="#ffb35c" opacity=".55" filter="url(#haze)"/>
+
+        <!-- Seven petals, 24 degrees apart, the middle one tallest. -->
+        <g transform="translate(512 600)" fill="url(#petal-fill)">
+          <use href="#petal" transform="rotate(-72) translate(0 -8) scale(1 .86)" opacity=".72"/>
+          <use href="#petal" transform="rotate(-48) translate(0 -6) scale(1 .92)" opacity=".82"/>
+          <use href="#petal" transform="rotate(-24) translate(0 -3) scale(1 .97)" opacity=".92"/>
+          <use href="#petal" transform="scale(1 1.04)"/>
+          <use href="#petal" transform="rotate(24) translate(0 -3) scale(1 .97)" opacity=".92"/>
+          <use href="#petal" transform="rotate(48) translate(0 -6) scale(1 .92)" opacity=".82"/>
+          <use href="#petal" transform="rotate(72) translate(0 -8) scale(1 .86)" opacity=".72"/>
+        </g>
+
+        <circle cx="512" cy="600" r="150" fill="url(#sun)"/>
+      </g>
+
+      <!-- The horizon, where the sun's light lies along the water. -->
+      <rect x="100" y="597" width="824" height="6" fill="url(#glint)" opacity=".9"/>
+
+      <!-- The sun in the water: three strokes, shorter as they come
+           forward. -->
+      <g fill="#ffc24a" filter="url(#soft)">
+        <rect x="392" y="626" width="240" height="16" rx="8" opacity=".6"/>
+        <rect x="427" y="668" width="170" height="14" rx="7" opacity=".38"/>
+        <rect x="457" y="706" width="110" height="12" rx="6" opacity=".22"/>
+      </g>
+
+      <use href="#tile" fill="none" stroke="url(#rim)" stroke-width="6"/>
+    </g>
+  </g>
+</svg>

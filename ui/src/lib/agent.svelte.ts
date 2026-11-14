@@ -36,7 +36,7 @@ export type { ToolCard, Turn } from './agent'
 
 /** Whether the rail is showing. `'1'`/`'0'`, from before this file used `pref`. */
 const openPref = pref<boolean>(
-  'everyday:assistant-open',
+  'karmayoga:assistant-open',
   (raw) => raw === '1',
   false,
   (v) => (v ? '1' : '0'),
