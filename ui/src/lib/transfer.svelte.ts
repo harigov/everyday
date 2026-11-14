@@ -1,7 +1,7 @@
 // Taking your data out, and putting it back.
 //
 // Two loops and the state a dialog draws while they run. The archive is a zip
-// of Markdown, iCalendar and CSV -- there is no Every Day format in it -- and
+// of Markdown, iCalendar and CSV -- there is no Karma Yoga format in it -- and
 // what happens here is only moving it, because it does not fit in one reply.
 //
 // # Two ways out, one of them better
@@ -15,7 +15,7 @@
 // are held on the way.
 //
 // `api.isMock` takes the browser path too, which is what makes the whole of
-// this pane usable in `EVERYDAY_MOCK=1 npm run dev`.
+// this pane usable in `KARMAYOGA_MOCK=1 npm run dev`.
 
 import { api, isMock } from './api'
 import type { ArchiveManifest, ImportMode, ImportResult, PartInfo } from './types'

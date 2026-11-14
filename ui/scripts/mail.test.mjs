@@ -279,7 +279,7 @@ assert.equal(
 assert.deepEqual(
   CATEGORY_TABS.map((t) => t.key),
   ['priority', 'important', 'other', 'newsletter', 'notification'],
-  'Priority leads, ahead of Important -- mirrors Category::ALL in everyday_core::mail',
+  'Priority leads, ahead of Important -- mirrors Category::ALL in karmayoga_core::mail',
 )
 
 assert.equal(stepCategoryTab(null, 1), 'priority', 'All -> the first named tab')

@@ -1,0 +1,1735 @@
+//! Mail: mailboxes, messages, threads, bodies, drafts and the outbox.
+//!
+//! On exactly the terms every other domain in this module is: an optional
+//! store, reached through [`Vault::with_domain`], refusing to mutate when
+//! the vault holds no write claim. See [`crate::store::mail`] for the trait
+//! this mirrors and the two-views-of-a-thread design behind it.
+//!
+//! Phase 2 wired the read-only trio (`list_mailboxes`, `list_threads`,
+//! `get_thread`). Phase 3 adds the write surface: the batch thread actions
+//! (`apply_thread_ops`/`revert_thread_op`) and the draft lifecycle
+//! (`queue_draft_send`/`undo_send`/`save_draft_and_append`/`discard_draft`)
+//! `karmayoga_service::domains::mail`'s write commands are built on. What is
+//! still missing is the sync engine's own write path -- ingest, flag
+//! confirmation, reset -- which arrives with the account task that drives
+//! it.
+
+use super::Vault;
+use super::session::{Domain, pick_domain};
+use crate::error::{Error, Result};
+use crate::id::{AccountId, DraftId, MailMessageId, MailboxId, OpId, ThreadId};
+use crate::mail::{
+    Body, Category, CategoryMatch, CategoryRules, CategorySource, ContactBook, Draft, DraftState,
+    Mailbox, MailboxRole, Message, MessageFlags, Op, OpKind, OpState, OpTarget, Origin,
+    RemoteImageSettings, Thread, apply_optimistic,
+};
+use crate::packstore::{PackRef, PackStore};
+use crate::record::RecordKind;
+use crate::store::mail::{CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage};
+use crate::timestamped::Timestamped;
+use jiff::Timestamp;
+
+impl Vault {
+    /// Does this vault's backend store mail?
+    pub fn supports_mail(&self) -> bool {
+        self.with_mail(|_| Ok(())).is_ok()
+    }
+
+    fn with_mail<T>(&self, f: impl FnOnce(&dyn MailStore) -> Result<T>) -> Result<T> {
+        self.with_domain(Domain::Mail, |s| s.mail().map(f))
+    }
+
+    /// Reach the backend's own pack store, for a backend that keeps raw
+    /// messages in its tables rather than beside itself on disk -- Postgres,
+    /// chiefly. See [`crate::store::JournalStore::mail_packs`] for why this
+    /// is the exception rather than the rule: a local backend's pack store
+    /// is opened directly from [`Vault::store_root`] and never reaches this
+    /// method at all.
+    pub fn with_mail_packs<T>(&self, f: impl FnOnce(&dyn PackStore) -> Result<T>) -> Result<T> {
+        self.with_domain(Domain::Mail, |s| s.mail_packs().map(f))
+    }
+
+    /// A [`crate::packstore::ReferencedSnapshot`] safe to hand
+    /// [`PackStore::compact`] for `account` -- see
+    /// [`MailStore::referenced_snapshot`] for how it is built. What
+    /// `karmayoga_service::mailsync::task` calls before every compaction
+    /// attempt.
+    pub fn mail_referenced_snapshot(
+        &self,
+        packs: &dyn PackStore,
+        account: AccountId,
+    ) -> Result<crate::packstore::ReferencedSnapshot> {
+        self.with_mail(|m| m.referenced_snapshot(packs, account))
+    }
+
+    /// Rewrite the pack address of every message [`PackStore::compact`]
+    /// moved -- see [`MailStore::remap_packs`] for the whole contract this
+    /// is the vault-level entry point for.
+    pub fn remap_packs(&self, account: AccountId, remap: &[(PackRef, PackRef)]) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.remap_packs(account, remap))
+    }
+
+    // ---- mailboxes ----------------------------------------------------------
+
+    pub fn mailboxes(&self, account: AccountId) -> Result<Vec<Mailbox>> {
+        self.with_mail(|m| m.list_mailboxes(account))
+    }
+
+    pub fn mailbox(&self, id: MailboxId) -> Result<Mailbox> {
+        self.with_mail(|m| m.get_mailbox(id))
+    }
+
+    pub fn save_mailbox(&self, mailbox: &Mailbox) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_mailbox(mailbox))?;
+        self.wrote(RecordKind::Mailbox, mailbox.id);
+        Ok(())
+    }
+
+    /// See [`crate::store::mail::MailStore::delete_mailbox`] for what the
+    /// returned pairs are and why: whoever calls this is expected to tell
+    /// the pack store and the search index to forget each one, the same way
+    /// `karmayoga_service::mailsync::passes` already does for
+    /// [`Vault::remove_mail_uids`]'s own pairs.
+    pub fn delete_mailbox(&self, id: MailboxId) -> Result<Vec<(MailMessageId, PackRef)>> {
+        self.writable()?;
+        let removed = self.with_mail(|m| m.delete_mailbox(id))?;
+        self.wrote(RecordKind::Mailbox, id);
+        Ok(removed)
+    }
+
+    // ---- bulk header ingest ------------------------------------------------
+
+    pub fn ingest_mail(&self, account: AccountId, messages: Vec<IngestMessage>) -> Result<()> {
+        self.writable()?;
+        let key = self.derive_subkey(MAIL_MESSAGE_KEY_LABEL)?;
+        let keys: Vec<(String, MailMessageId)> = messages
+            .iter()
+            .filter(|i| keyable(&i.message.message_id_header))
+            .map(|i| (message_key(&key, &i.message.message_id_header), i.message.id))
+            .collect();
+        self.with_mail(|m| {
+            m.ingest(account, messages)?;
+            m.put_message_keys(account, &keys)
+        })
+    }
+
+    /// The keyed hash a `Message-ID` is found by -- BLAKE3 keyed under a
+    /// subkey of this vault's own, hex. Keyed for the reason `news_key` is:
+    /// the clear column it lives in cannot be checked against a list of known
+    /// ids. See the `mail_message_keys` table (schema v24).
+    pub fn mail_message_key(&self, message_id_header: &str) -> Result<String> {
+        Ok(message_key(&self.derive_subkey(MAIL_MESSAGE_KEY_LABEL)?, message_id_header))
+    }
+
+    /// The message already stored in `account` under this `Message-ID`, if
+    /// any -- what sync asks before storing a message it has not seen this
+    /// run, so a message filed in a second mailbox stays one row. `None` for
+    /// a message with no `Message-ID` of its own (its stand-in, `uid:N`,
+    /// names nothing outside one mailbox).
+    pub fn mail_message_by_header(
+        &self,
+        account: AccountId,
+        message_id_header: &str,
+    ) -> Result<Option<MailMessageId>> {
+        if !keyable(message_id_header) {
+            return Ok(None);
+        }
+        let key = self.mail_message_key(message_id_header)?;
+        self.with_mail(|m| m.message_by_key(account, &key))
+    }
+
+    /// Key `account`'s messages stored before keys existed, once, merging
+    /// every message stored more than once on the way -- the same
+    /// `Message-ID`, date and size: Gmail's Sent and All Mail copies of one
+    /// message, stored twice when a sync task that had not seen the first
+    /// met the second. Returns the rows merged away with their pack
+    /// addresses, for the caller to mark dead and take out of the search
+    /// index. Nothing, and no scan, once done.
+    pub fn key_existing_mail(&self, account: AccountId) -> Result<Vec<(MailMessageId, PackRef)>> {
+        self.writable()?;
+        if self.with_mail(|m| m.account_keyed(account))? {
+            return Ok(Vec::new());
+        }
+        let key = self.derive_subkey(MAIL_MESSAGE_KEY_LABEL)?;
+        // Per key: (id, date, size, has its raw bytes).
+        let mut by_key: std::collections::HashMap<
+            String,
+            Vec<(MailMessageId, Timestamp, u64, bool)>,
+        > = std::collections::HashMap::new();
+        self.with_mail(|m| {
+            m.each_message(account, &mut |message| {
+                if keyable(&message.message_id_header) {
+                    by_key
+                        .entry(message_key(&key, &message.message_id_header))
+                        .or_default()
+                        .push((message.id, message.date, message.size, message.pack.len > 0));
+                }
+            })
+        })?;
+        let mut removed = Vec::new();
+        let mut keys = Vec::with_capacity(by_key.len());
+        for (k, mut rows) in by_key {
+            // The one kept: downloaded already, then the first stored.
+            rows.sort_by_key(|(id, _, _, has_pack)| (!*has_pack, *id));
+            let (keep, date, size, _) = rows[0];
+            let same: Vec<MailMessageId> = rows[1..]
+                .iter()
+                .filter(|(_, d, s, _)| *d == date && *s == size)
+                .map(|(id, ..)| *id)
+                .collect();
+            if !same.is_empty() {
+                removed.extend(self.with_mail(|m| m.merge_messages(keep, &same))?);
+            }
+            keys.push((k, keep));
+        }
+        self.with_mail(|m| {
+            m.put_message_keys(account, &keys)?;
+            m.mark_account_keyed(account)
+        })?;
+        Ok(removed)
+    }
+
+    /// Threads whose unread count still counts a draft, recomputed -- see
+    /// [`MailStore::recount_draft_unread`]. Returns how many there were.
+    pub fn recount_draft_unread(&self, account: AccountId) -> Result<usize> {
+        self.writable()?;
+        self.with_mail(|m| m.recount_draft_unread(account))
+    }
+
+    // ---- flag / label changes, and removal -----------------------------------
+
+    pub fn update_message_flags(
+        &self,
+        mailbox: MailboxId,
+        uid: u32,
+        flags: MessageFlags,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.update_flags(mailbox, uid, flags))
+    }
+
+    pub fn update_message_labels(
+        &self,
+        mailbox: MailboxId,
+        uid: u32,
+        labels: Vec<String>,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.update_labels(mailbox, uid, labels))
+    }
+
+    /// See [`crate::store::mail::MailStore::remove_uids`] for what the
+    /// returned pairs are: every message this removal made genuinely dead,
+    /// paired with the pack address it was stored under. The caller is
+    /// expected to mark each one dead in the pack store and drop it from
+    /// the search index -- see `karmayoga_service::mailsync::passes`'s own
+    /// callers of this method for where that actually happens.
+    pub fn remove_mail_uids(
+        &self,
+        mailbox: MailboxId,
+        uids: &[u32],
+    ) -> Result<Vec<(MailMessageId, PackRef)>> {
+        self.writable()?;
+        self.with_mail(|m| m.remove_uids(mailbox, uids))
+    }
+
+    // ---- the inbox query ----------------------------------------------------
+
+    pub fn list_threads(
+        &self,
+        mailbox: MailboxId,
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ThreadPage> {
+        self.with_mail(|m| m.list_threads(mailbox, filter, cursor, limit))
+    }
+
+    /// Several mailboxes' threads as one list, newest first -- the unified
+    /// Inbox. See [`crate::store::mail::MailStore::list_threads_across`],
+    /// including why a thread filed in two of `mailboxes` is deduplicated
+    /// within a page but not across pages.
+    pub fn list_threads_across(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ThreadPage> {
+        self.with_mail(|m| m.list_threads_across(mailboxes, filter, cursor, limit))
+    }
+
+    /// See [`crate::store::mail::MailStore::threads_listed`].
+    pub fn threads_listed(
+        &self,
+        mailboxes: &[MailboxId],
+        filter: &ThreadFilter,
+        threads: &[ThreadId],
+    ) -> Result<Vec<ThreadId>> {
+        self.with_mail(|m| m.threads_listed(mailboxes, filter, threads))
+    }
+
+    pub fn threads_in_category(
+        &self,
+        account: AccountId,
+        category: Category,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> Result<ThreadPage> {
+        self.with_mail(|m| m.threads_in_category(account, category, cursor, limit))
+    }
+
+    // ---- thread detail ------------------------------------------------------
+
+    pub fn thread(&self, id: ThreadId) -> Result<(Thread, Vec<Message>)> {
+        self.with_mail(|m| m.thread(id))
+    }
+
+    /// Fold `others` into `keep` -- see
+    /// [`crate::store::mail::MailStore::merge_threads`].
+    pub fn merge_mail_threads(&self, keep: ThreadId, others: &[ThreadId]) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.merge_threads(keep, others))?;
+        self.wrote(RecordKind::Thread, keep);
+        for id in others {
+            self.wrote(RecordKind::Thread, *id);
+        }
+        Ok(())
+    }
+
+    pub fn mail_message(&self, id: MailMessageId) -> Result<Message> {
+        self.with_mail(|m| m.get_message(id))
+    }
+
+    // ---- bodies ------------------------------------------------------------
+
+    pub fn save_body(&self, body: &Body) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_body(body))
+    }
+
+    /// [`Vault::save_body`] for a whole batch -- see
+    /// [`MailStore::put_bodies`] for why the bodies pass calls this instead
+    /// of a loop.
+    pub fn save_bodies(&self, bodies: &[Body]) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_bodies(bodies))
+    }
+
+    pub fn body(&self, message_id: MailMessageId) -> Result<Body> {
+        self.with_mail(|m| m.get_body(message_id))
+    }
+
+    // ---- drafts ------------------------------------------------------------
+
+    pub fn save_draft(&self, draft: &Draft) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_draft(draft))?;
+        self.wrote(RecordKind::Draft, draft.id);
+        Ok(())
+    }
+
+    pub fn draft(&self, id: DraftId) -> Result<Draft> {
+        self.with_mail(|m| m.get_draft(id))
+    }
+
+    pub fn drafts(&self, account: AccountId) -> Result<Vec<Draft>> {
+        self.with_mail(|m| m.list_drafts(account))
+    }
+
+    /// `account`'s drafts being written or queued to send -- see
+    /// [`MailStore::list_open_drafts`].
+    pub fn open_drafts(&self, account: AccountId) -> Result<Vec<Draft>> {
+        self.with_mail(|m| m.list_open_drafts(account))
+    }
+
+    /// Take `ops` for running: each one still [`OpState::Pending`] *as
+    /// stored* becomes [`OpState::InFlight`], in one write, and comes back;
+    /// one that moved meanwhile -- a send stopped, undone or discarded
+    /// between the drain reading it and now -- is left as it is and not
+    /// returned. Writing the drain's own earlier copy instead put `InFlight`
+    /// over a `Cancelled` and sent what the person had just stopped.
+    pub fn claim_ops(&self, ops: &[Op]) -> Result<Vec<Op>> {
+        self.writable()?;
+        self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut claimed = Vec::with_capacity(ops.len());
+            for op in ops {
+                let mut stored = match mail.get_op(op.id) {
+                    Ok(stored) => stored,
+                    Err(Error::NotFound { .. }) => continue,
+                    Err(e) => return Err(e),
+                };
+                if !matches!(stored.state, OpState::Pending) {
+                    continue;
+                }
+                stored.transition_to(OpState::InFlight)?;
+                mail.update_op(&stored)?;
+                claimed.push(stored);
+            }
+            Ok(claimed)
+        })
+    }
+
+    /// Every `Send` of `account`'s waiting out a retry's backoff, due now:
+    /// what new server settings ask for, since the ones they failed with are
+    /// gone. One write, reading each op as stored, so an op a drain has
+    /// claimed meanwhile is left alone. Returns how many moved.
+    pub fn retry_sends_now(&self, account: AccountId, now: Timestamp) -> Result<usize> {
+        self.writable()?;
+        self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let horizon = now + jiff::SignedDuration::from_hours(24 * 366);
+            let mut moved = 0;
+            for mut op in mail.due_ops(account, horizon, 1_000)? {
+                if matches!(op.kind, OpKind::Send)
+                    && matches!(op.state, OpState::Pending)
+                    && op.attempts > 0
+                    && op.not_before > now
+                {
+                    op.not_before = now;
+                    mail.update_op(&op)?;
+                    moved += 1;
+                }
+            }
+            Ok(moved)
+        })
+    }
+
+    pub fn delete_draft(&self, id: DraftId) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.delete_draft(id))
+    }
+
+    /// Read `id`'s current [`Draft`], let `f` mutate exactly the fields it
+    /// names, and write the result back -- all under the one write guard
+    /// [`Vault::write`] takes for the whole call, so nothing else saving
+    /// this same draft (a person's own debounced autosave, landing on the
+    /// blocking pool at the same moment, most often) can interleave between
+    /// this read and this write and lose either side's change.
+    ///
+    /// `f` returns whether it actually changed anything; a `false` skips
+    /// the write (and the `updated_at` bump that would otherwise
+    /// accompany it) entirely, which is what lets a caller check a
+    /// condition -- "is this draft still queued under the op I think it
+    /// is" -- and walk away cleanly when it no longer holds, exactly the
+    /// way the bare read-then-save each of `karmayoga_service::outbox`'s
+    /// `set_draft_message_id`, `on_success`'s `Appended` arm and
+    /// `mark_draft_sent` used to before this existed, and the very race
+    /// [`Vault::apply_thread_ops`], [`Vault::queue_draft_send`] and
+    /// [`Vault::undo_send`] already avoid by holding the same guard for
+    /// their own multi-step writes. Returns the draft either way -- a
+    /// caller that skipped the write often still wants to see what is
+    /// actually there.
+    pub fn with_draft(&self, id: DraftId, f: impl FnOnce(&mut Draft) -> bool) -> Result<Draft> {
+        self.writable()?;
+        let mut wrote = false;
+        let draft = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut draft = mail.get_draft(id)?;
+            if f(&mut draft) {
+                draft.touch();
+                mail.put_draft(&draft)?;
+                wrote = true;
+            }
+            Ok(draft)
+        })?;
+        if wrote {
+            self.wrote(RecordKind::Draft, id);
+        }
+        Ok(draft)
+    }
+
+    /// Set message `id`'s [`crate::mail::Invite`] directly -- what
+    /// `karmayoga_service::domains::mail::respond_to_invite` calls once the
+    /// reply is queued, so [`crate::mail::Invite::my_response`] reflects the
+    /// answer immediately rather than waiting for a resync of the sent
+    /// reply's own copy.
+    pub fn set_message_invite(
+        &self,
+        id: MailMessageId,
+        invite: Option<crate::mail::Invite>,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(move |m| m.set_message_invite(id, invite))?;
+        self.wrote(RecordKind::MailMessage, id);
+        Ok(())
+    }
+
+    /// Undo `respond_to_invite`'s own optimistic write to `message_id`'s
+    /// [`crate::mail::Invite::my_response`], once the RSVP it queued has
+    /// failed permanently or been cancelled and the organiser was never
+    /// actually told. Clears the field back to `None` -- "not yet
+    /// responded" -- rather than restoring whatever it held before: nothing
+    /// durable remembers that earlier value (an [`Op`] is a table row with
+    /// no room for a snapshot of a message it does not even target), and
+    /// `None` is the truthful state once the one write that would have
+    /// justified anything else never reached the server. A message that
+    /// carries no invitation, or none any more, is left alone -- there is
+    /// nothing to revert, and this must never manufacture one.
+    pub fn revert_invite_response(&self, message_id: MailMessageId) -> Result<()> {
+        self.writable()?;
+        let changed = self.with_mail(|m| {
+            let message = m.get_message(message_id)?;
+            let Some(mut invite) = message.invite else { return Ok(false) };
+            invite.my_response = None;
+            m.set_message_invite(message_id, Some(invite))?;
+            Ok(true)
+        })?;
+        if changed {
+            self.wrote(RecordKind::MailMessage, message_id);
+        }
+        Ok(())
+    }
+
+    // ---- the outbox ----------------------------------------------------------
+
+    pub fn enqueue_op(&self, op: &Op) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.enqueue_op(op))?;
+        self.wrote(RecordKind::Op, op.id);
+        Ok(())
+    }
+
+    pub fn due_ops(&self, account: AccountId, now: Timestamp, limit: u32) -> Result<Vec<Op>> {
+        self.with_mail(|m| m.due_ops(account, now, limit))
+    }
+
+    /// The earliest `not_before` among `account`'s still-pending ops --
+    /// what the account task sleeps until, on top of its poll and `IDLE`
+    /// waits, so a send-at or undo-send op is drained the moment its window
+    /// expires. See [`MailStore::next_pending_op_at`].
+    pub fn next_pending_op_at(&self, account: AccountId) -> Result<Option<Timestamp>> {
+        self.with_mail(|m| m.next_pending_op_at(account))
+    }
+
+    /// Every op of `account`'s stranded [`crate::mail::OpState::InFlight`]
+    /// by a crash mid-drain. See [`MailStore::in_flight_ops`].
+    pub fn in_flight_ops(&self, account: AccountId) -> Result<Vec<Op>> {
+        self.with_mail(|m| m.in_flight_ops(account))
+    }
+
+    pub fn update_op(&self, op: &Op) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.update_op(op))?;
+        self.wrote(RecordKind::Op, op.id);
+        Ok(())
+    }
+
+    pub fn op(&self, id: OpId) -> Result<Op> {
+        self.with_mail(|m| m.get_op(id))
+    }
+
+    /// Every op of one origin kind -- `"person"`, `"assistant"`, `"routine"`
+    /// or `"mcp"` -- most recently due first. What "what did the assistant
+    /// do" reads.
+    pub fn ops_by_origin(&self, kind: &str, limit: u32) -> Result<Vec<Op>> {
+        self.with_mail(|m| m.ops_by_origin(kind, limit))
+    }
+
+    /// A thread's own "recent actions" -- see [`MailStore::ops_for_thread`].
+    pub fn ops_for_thread(&self, thread: ThreadId, limit: u32) -> Result<Vec<Op>> {
+        self.with_mail(|m| m.ops_for_thread(thread, limit))
+    }
+
+    // ---- resolution and reset ------------------------------------------------
+
+    /// Every `(mailbox, uid)` pair message `id` is currently filed under --
+    /// what the outbox executor's `Lookups` implementation resolves a
+    /// target against.
+    pub fn mail_message_locations(&self, id: MailMessageId) -> Result<Vec<(MailboxId, u32)>> {
+        self.with_mail(|m| m.message_locations(id))
+    }
+
+    /// See [`MailStore::thread_filings`].
+    pub fn mail_thread_filings(
+        &self,
+        threads: &[ThreadId],
+    ) -> Result<Vec<(ThreadId, MailMessageId, MailboxId, u32)>> {
+        self.with_mail(|m| m.thread_filings(threads))
+    }
+
+    pub fn message_by_uid(&self, mailbox: MailboxId, uid: u32) -> Result<Option<Message>> {
+        self.with_mail(|m| m.message_by_uid(mailbox, uid))
+    }
+
+    pub fn message_by_message_id_header(
+        &self,
+        account: AccountId,
+        message_id_header: &str,
+    ) -> Result<Option<Message>> {
+        self.with_mail(|m| m.message_by_message_id_header(account, message_id_header))
+    }
+
+    pub fn mail_uid_set(&self, mailbox: MailboxId) -> Result<Vec<u32>> {
+        self.with_mail(|m| m.uid_set(mailbox))
+    }
+
+    /// The uids in `mailbox` of every message not also filed in `other` --
+    /// see [`MailStore::uids_filed_without`].
+    pub fn mail_uids_filed_without(
+        &self,
+        mailbox: MailboxId,
+        other: MailboxId,
+    ) -> Result<Vec<u32>> {
+        self.with_mail(|m| m.uids_filed_without(mailbox, other))
+    }
+
+    /// Every message in `mailbox` still waiting for its body, with its uid
+    /// in that mailbox, newest first, capped at `limit` -- see
+    /// [`crate::store::mail::MailStore::pending_bodies`].
+    pub fn mail_pending_bodies(
+        &self,
+        mailbox: MailboxId,
+        limit: u32,
+    ) -> Result<Vec<(Message, u32)>> {
+        self.with_mail(|m| m.pending_bodies(mailbox, limit))
+    }
+
+    pub fn reset_mailbox(&self, mailbox: MailboxId) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.reset_mailbox(mailbox))
+    }
+
+    // ---- unread counts --------------------------------------------------------
+
+    pub fn mail_unread_counts(&self, account: AccountId) -> Result<Vec<(MailboxId, u64)>> {
+        self.with_mail(|m| m.unread_counts(account))
+    }
+
+    /// `mailbox`'s threads counted by category -- see
+    /// [`MailStore::category_counts`].
+    pub fn mail_category_counts(&self, mailbox: MailboxId) -> Result<Vec<CategoryCount>> {
+        self.with_mail(|m| m.category_counts(mailbox))
+    }
+
+    /// The messages of `threads` filed in `mailbox`, oldest first -- see
+    /// [`MailStore::messages_filed_in`].
+    pub fn mail_filed_in(&self, mailbox: MailboxId, threads: &[ThreadId]) -> Result<Vec<Message>> {
+        self.with_mail(|m| m.messages_filed_in(mailbox, threads))
+    }
+
+    /// `account`'s messages dated in `[from, to)`, spam left out -- see
+    /// [`MailStore::messages_between`].
+    pub fn mail_between(
+        &self,
+        account: AccountId,
+        from: Timestamp,
+        to: Timestamp,
+    ) -> Result<Vec<Message>> {
+        self.with_mail(|m| m.messages_between(account, from, to))
+    }
+
+    // ---- remote-image permissions --------------------------------------------
+
+    pub fn remote_image_settings(&self) -> Result<RemoteImageSettings> {
+        self.with_mail(|m| m.remote_image_settings())
+    }
+
+    pub fn save_remote_image_settings(&self, settings: &RemoteImageSettings) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_remote_image_settings(settings))
+    }
+
+    // ---- sorting by a decision model ---------------------------------------
+
+    /// The categories mail is sorted into -- see [`crate::mail::sorting`].
+    pub fn mail_sorting(&self) -> Result<crate::mail::MailSorting> {
+        self.with_mail(|m| m.mail_sorting())
+    }
+
+    /// Replace the categories. Mail already sorted keeps its label until it
+    /// is sorted again -- a category deleted here is simply drawn as nothing
+    /// -- because re-sorting is `sort_older_mail`'s, asked for, not a side
+    /// effect of fixing a typo.
+    pub fn save_mail_sorting(&self, sorting: &crate::mail::MailSorting) -> Result<()> {
+        self.writable()?;
+        sorting.validate()?;
+        self.with_mail(|m| m.put_mail_sorting(sorting))
+    }
+
+    // ---- what is said about writing ------------------------------------------
+
+    /// What the person has said about how mail is written for them -- see
+    /// [`crate::mail::writing`].
+    pub fn mail_writing(&self) -> Result<crate::mail::MailWriting> {
+        self.with_mail(|m| m.mail_writing())
+    }
+
+    pub fn save_mail_writing(&self, writing: &crate::mail::MailWriting) -> Result<()> {
+        self.writable()?;
+        writing.validate()?;
+        self.with_mail(|m| m.put_mail_writing(writing))
+    }
+
+    /// A decision model's answer for one message -- see
+    /// [`crate::store::mail::MailStore::sort_message`]. Answers whether
+    /// anything was written: a person's own mark is never replaced.
+    pub fn sort_mail_message(
+        &self,
+        id: MailMessageId,
+        category: Category,
+        sorted_as: &str,
+    ) -> Result<bool> {
+        self.writable()?;
+        let wrote = self.with_mail(|m| m.sort_message(id, category, sorted_as))?;
+        if wrote {
+            self.wrote(RecordKind::MailMessage, id);
+        }
+        Ok(wrote)
+    }
+
+    /// `account`'s Inbox, if it has one yet -- on Gmail, the `\Inbox`
+    /// label's row.
+    pub fn mail_inbox(&self, account: AccountId) -> Result<Option<MailboxId>> {
+        self.with_mail(|m| inbox_mailbox(m, account))
+    }
+
+    /// The sealed contact index -- see
+    /// [`crate::store::mail::MailStore::contacts`].
+    pub fn mail_contacts(&self) -> Result<ContactBook> {
+        self.with_mail(|m| m.contacts())
+    }
+
+    pub fn save_mail_contacts(&self, book: &ContactBook) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_contacts(book))
+    }
+
+    // ---- categorisation -----------------------------------------------------
+
+    pub fn category_rules(&self, account: AccountId) -> Result<CategoryRules> {
+        self.with_mail(|m| m.category_rules(account))
+    }
+
+    pub fn save_category_rules(&self, account: AccountId, rules: &CategoryRules) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.put_category_rules(account, rules))
+    }
+
+    /// Record a sender-address correction for `account` and sweep only the
+    /// messages it names through it — see
+    /// [`crate::store::mail::MailStore::correct_category`] for what "sweep"
+    /// costs, why it is accepted here, and why it reaches only `sender`'s
+    /// own mail rather than the whole account. Returns how many messages
+    /// changed, for a caller that wants to say so.
+    pub fn correct_mail_category(
+        &self,
+        account: AccountId,
+        sender: &str,
+        category: Category,
+    ) -> Result<u32> {
+        self.writable()?;
+        self.with_mail(|m| {
+            let mut rules = m.category_rules(account)?;
+            rules.set_sender(sender, category);
+            m.put_category_rules(account, &rules)?;
+            m.correct_category(account, CategoryMatch::Sender(sender.to_string()), category)
+        })
+    }
+
+    /// Re-run categorisation over `account`'s mail from scratch, against its
+    /// current corrections — the one-off `recategorize_mail` backfill.
+    pub fn recategorize_mail(&self, account: AccountId) -> Result<u32> {
+        self.writable()?;
+        self.with_mail(|m| {
+            let rules = m.category_rules(account)?;
+            m.recategorize(account, &rules)
+        })
+    }
+
+    /// Set one message's category directly, from a model's one-off answer —
+    /// see [`crate::store::mail::MailStore::set_message_category`] for why
+    /// this is deliberately not [`Vault::correct_mail_category`].
+    pub fn set_mail_message_category(&self, id: MailMessageId, category: Category) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_message_category(id, category))?;
+        self.wrote(RecordKind::MailMessage, id);
+        Ok(())
+    }
+
+    /// Mark one thread [`Category::Priority`] -- or, with `priority: false`,
+    /// back to [`Category::Important`] -- never a sender rule. That is
+    /// [`Vault::correct_mail_category`]'s job, through the existing
+    /// `set_thread_category` command; this is the other door the plan asks
+    /// for, "the person marks one thread... this thread only, no sender
+    /// rule."
+    ///
+    /// Sets the category of [`thread_priority_target`]'s answer --
+    /// ordinarily the thread's newest message that is not from one of the
+    /// account's own addresses (`account.address` plus every
+    /// [`crate::account::Identity::address`] in
+    /// [`crate::account::Account::identities`], compared
+    /// case-insensitively), falling back to the overall newest message when
+    /// every message in the thread is the account's own -- through
+    /// [`crate::store::mail::MailStore::set_message_category_with_source`]
+    /// naming [`CategorySource::Person`], so neither a rules backfill
+    /// ([`Vault::recategorize_mail`]) nor the model-assisted pass (through
+    /// [`Vault::set_mail_message_category`], whose underlying
+    /// [`crate::store::mail::MailStore::set_message_category`] carries the
+    /// guard) ever overwrites a person's own mark. See
+    /// `karmayoga_store_sql::mail::write::recompute_thread`'s
+    /// own docs for exactly how that one message's category becomes what
+    /// the thread shows, including the two things that already fall out of
+    /// it for free -- a thread whose newest *inbound* message is the one
+    /// just marked shows `Priority` the moment this call lands, and a
+    /// thread stops showing `Priority` on its own once the person's own
+    /// reply becomes the newest message -- and the one case that does not:
+    /// marking priority on a thread whose newest message is *already* the
+    /// person's own reply cannot make the thread show it, since that
+    /// already-sent reply, not the earlier inbound message this call
+    /// marks, is what a thread's category always mirrors.
+    pub fn set_thread_priority(&self, thread: ThreadId, priority: bool) -> Result<()> {
+        self.writable()?;
+        let target = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let (thread_row, messages) = mail.thread(thread)?;
+            let accounts = pick_domain(u.store.as_ref(), Domain::Accounts, |s| s.accounts())?;
+            let account = accounts.get_account(thread_row.account_id)?;
+            let own: std::collections::HashSet<String> =
+                std::iter::once(account.address.trim().to_lowercase())
+                    .chain(account.identities.iter().map(|i| i.address.trim().to_lowercase()))
+                    .collect();
+            let target = thread_priority_target(&messages, &own).ok_or_else(|| {
+                Error::Invalid("a thread with no messages has nothing to mark".into())
+            })?;
+            let category = if priority { Category::Priority } else { Category::Important };
+            mail.set_message_category_with_source(target, category, CategorySource::Person)?;
+            Ok(target)
+        })?;
+        self.wrote(RecordKind::MailMessage, target);
+        self.wrote(RecordKind::Thread, thread);
+        Ok(())
+    }
+
+    /// See
+    /// [`crate::store::mail::MailStore::set_thread_ai_categorize_asked`].
+    pub fn set_thread_ai_categorize_asked(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_categorize_asked(thread, message_count))
+    }
+
+    /// See
+    /// [`crate::store::mail::MailStore::set_thread_ai_auto_draft_asked`].
+    pub fn set_thread_ai_auto_draft_asked(
+        &self,
+        thread: ThreadId,
+        message_count: u32,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_auto_draft_asked(thread, message_count))
+    }
+
+    /// See [`crate::store::mail::MailStore::set_thread_ai_sorted`].
+    pub fn set_thread_ai_sorted(
+        &self,
+        thread: ThreadId,
+        mark: crate::mail::SortMark,
+    ) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_sorted(thread, mark))
+    }
+
+    /// See
+    /// [`crate::store::mail::MailStore::set_thread_ai_priority_asked`].
+    pub fn set_thread_ai_priority_asked(&self, thread: ThreadId, message_count: u32) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_ai_priority_asked(thread, message_count))
+    }
+
+    // ---- releasing a snooze -----------------------------------------------
+
+    /// Every thread, across every account, whose snooze has passed `now` --
+    /// what the minute scheduler reads once a tick to decide which threads
+    /// return to the inbox. See [`Vault::release_snooze`] for the write
+    /// half.
+    pub fn due_snoozed_threads(&self, now: Timestamp, limit: u32) -> Result<Vec<ThreadId>> {
+        self.with_mail(|m| m.due_snoozed_threads(now, limit))
+    }
+
+    /// Bring one snoozed thread back to the inbox -- clears
+    /// `Thread::snoozed_until`. No outbox op: snooze never told the server
+    /// anything to begin with, so there is nothing for the server to be
+    /// told is over either.
+    pub fn release_snooze(&self, thread: ThreadId) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_snoozed_until(thread, None))?;
+        self.wrote(RecordKind::Thread, thread);
+        Ok(())
+    }
+
+    // ---- batch thread actions ----------------------------------------------
+    //
+    // The one entry point every write command in `karmayoga_service::domains::mail`
+    // that acts on a batch of threads goes through: `docs/plans/mail.md`'s
+    // "What an action does" asks for one vault write per action, covering
+    // both the optimistic local change and the `Op` that tells the account
+    // task to make the server agree. A single [`Vault::write`] closure below
+    // is what makes that literally one write -- the vault's own state lock
+    // is held for the whole batch, so nothing else reading through this
+    // `Vault` ever observes a thread whose local row has changed but whose
+    // op has not been enqueued yet, or the other way round.
+
+    /// Apply `kind`'s local effect to every thread in `threads`, and enqueue
+    /// one [`Op`] per thread with `origin`. Returns the enqueued ops, so a
+    /// command can hand back change ids without a second read.
+    ///
+    /// What "local effect" means depends on `kind`:
+    ///
+    /// * [`OpKind::MarkRead`], `MarkUnread`, `Star`, `Unstar`, `Label` and
+    ///   `Unlabel` — [`apply_optimistic`] applied to every message of the
+    ///   thread in turn, written back through
+    ///   [`MailStore::set_message_flags`] or
+    ///   [`MailStore::set_message_labels`].
+    /// * [`OpKind::Archive`], `Trash` and `Move` — the thread is hidden from
+    ///   the account's Inbox mailbox (see
+    ///   [`MailStore::hide_thread_from_mailbox`]) if it is filed there. A
+    ///   thread reached through a view other than the inbox is not
+    ///   otherwise touched locally; the sync engine's own ingest of the
+    ///   op's eventual confirmation is what actually files it under its new
+    ///   home.
+    /// * [`OpKind::Snooze`] — [`MailStore::set_thread_snoozed_until`].
+    ///
+    /// [`OpKind::DeleteForever`] is refused with [`Error::Invalid`]: it names
+    /// the messages it deletes, which [`Vault::delete_forever`] and
+    /// [`Vault::empty_mailbox`] work out. [`OpKind::Send`] and
+    /// [`OpKind::AppendDraft`] are refused with
+    /// [`Error::Invalid`]: both target a [`crate::id::DraftId`], never a
+    /// thread, and belong to [`Vault::queue_draft_send`] and
+    /// [`Vault::save_draft_and_append`] instead.
+    pub fn apply_thread_ops(
+        &self,
+        threads: &[ThreadId],
+        kind: OpKind,
+        origin: Origin,
+    ) -> Result<Vec<Op>> {
+        if matches!(kind, OpKind::Send | OpKind::AppendDraft | OpKind::DiscardDraft) {
+            return Err(Error::Invalid(format!("{kind:?} does not target a thread")));
+        }
+        if matches!(kind, OpKind::DeleteForever { .. }) {
+            return Err(Error::Invalid(
+                "deleting for good names its messages: see Vault::delete_forever".into(),
+            ));
+        }
+        self.writable()?;
+        let ops = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut ops = Vec::with_capacity(threads.len());
+            for &thread_id in threads {
+                let (thread, messages) = mail.thread(thread_id)?;
+                apply_local_effect(mail, &thread, &messages, &kind)?;
+                let op = Op::new(
+                    thread.account_id,
+                    kind.clone(),
+                    OpTarget::Thread(thread_id),
+                    origin.clone(),
+                );
+                mail.enqueue_op(&op)?;
+                ops.push(op);
+            }
+            Ok(ops)
+        })?;
+        // Each thread is what every command built on this announces --
+        // `mark_read`, `star`, `archive` and the rest all declare
+        // `Thread/Updated` with the same thread ids their own arguments
+        // named. The messages `apply_local_effect` rewrote underneath and
+        // the `Op` each thread enqueued are exactly what `events.rs`'s
+        // `Kind::Thread` is documented to fold both of into: recording them
+        // here too would be truer to what was physically written, but would
+        // only ever restate the same thread id a second and third time.
+        for &thread_id in threads {
+            self.wrote(RecordKind::Thread, thread_id);
+        }
+        Ok(ops)
+    }
+
+    /// Delete for good what `threads` have in any of `from` -- each a Trash
+    /// or Spam, and [`Error::Invalid`] before anything is written if one is
+    /// not (see [`MailboxRole::empties`]). One [`OpKind::DeleteForever`] per
+    /// thread and mailbox it is listed in, naming the messages it has there
+    /// now.
+    ///
+    /// Mailboxes rather than a role, because what is on screen decides: the
+    /// "All accounts" Trash is every account's Trash at once, and an account
+    /// can have two mailboxes taken for Trash. A thread listed in none of
+    /// them is left alone -- a missing one, or one already waiting to be
+    /// deleted -- rather than queued for nothing: the hidden marker such an
+    /// op would leave behind would keep the thread out of that mailbox later,
+    /// once something of it really is filed there.
+    pub fn delete_forever(
+        &self,
+        threads: &[ThreadId],
+        from: &[MailboxId],
+        origin: Origin,
+    ) -> Result<Vec<Op>> {
+        self.writable()?;
+        let ops = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let boxes = from.iter().map(|&id| emptiable(mail, id)).collect::<Result<Vec<_>>>()?;
+            let mut ops = Vec::new();
+            for from in &boxes {
+                ops.extend(delete_forever_from(mail, from, Some(threads), &origin)?);
+            }
+            Ok(ops)
+        })?;
+        // Every thread asked about, as `apply_thread_ops` announces them: one
+        // left alone is a reload that finds nothing changed.
+        for &thread in threads {
+            self.wrote(RecordKind::Thread, thread);
+        }
+        Ok(ops)
+    }
+
+    /// Take copies of a draft off the server: what deleting a draft from its
+    /// thread does to the copies another device saved, or old autosaves. One
+    /// [`OpKind::DeleteForever`] per thread and mailbox, from the account's
+    /// Drafts where a copy is filed there and its All Mail otherwise (Gmail
+    /// keeps an archived old copy there), which the outbox sends to Gmail's
+    /// Trash or deletes elsewhere. A message that is no draft, or is filed in
+    /// neither, is left alone.
+    ///
+    /// Nothing is hidden first, unlike [`Vault::delete_forever`]: the thread
+    /// stays in Drafts with whatever draft it keeps, and the copies leave the
+    /// vault once the server has them gone.
+    pub fn delete_draft_copies(
+        &self,
+        messages: &[MailMessageId],
+        origin: Origin,
+    ) -> Result<Vec<Op>> {
+        self.writable()?;
+        let ops = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut by_place: std::collections::BTreeMap<
+                (AccountId, ThreadId, MailboxId),
+                Vec<MailMessageId>,
+            > = std::collections::BTreeMap::new();
+            for &id in messages {
+                let message: Message = mail.get_message(id)?;
+                let mailboxes = mail.list_mailboxes(message.account_id)?;
+                let filed: Vec<&Mailbox> = mail
+                    .message_locations(id)?
+                    .into_iter()
+                    .filter_map(|(mailbox, _)| mailboxes.iter().find(|m| m.id == mailbox))
+                    .collect();
+                let in_drafts = filed.iter().any(|m| m.role == MailboxRole::Drafts);
+                if !message.flags.draft && !in_drafts {
+                    continue;
+                }
+                let from = filed
+                    .iter()
+                    .find(|m| m.role == MailboxRole::Drafts)
+                    .or_else(|| filed.iter().find(|m| m.role == MailboxRole::All));
+                if let Some(from) = from {
+                    by_place
+                        .entry((message.account_id, message.thread_id, from.id))
+                        .or_default()
+                        .push(id);
+                }
+            }
+            let mut ops = Vec::with_capacity(by_place.len());
+            for ((account, thread, from), messages) in by_place {
+                let op = Op::new(
+                    account,
+                    OpKind::DeleteForever { from, messages },
+                    OpTarget::Thread(thread),
+                    origin.clone(),
+                );
+                mail.enqueue_op(&op)?;
+                ops.push(op);
+            }
+            Ok(ops)
+        })?;
+        for op in &ops {
+            if let OpTarget::Thread(thread) = op.target {
+                self.wrote(RecordKind::Thread, thread);
+            }
+        }
+        Ok(ops)
+    }
+
+    /// Delete for good every thread listed in `mailbox`, which must be a
+    /// Trash or Spam ([`Error::Invalid`] otherwise) -- "Empty Trash". One
+    /// [`OpKind::DeleteForever`] per thread, so the outbox sends them the way
+    /// it sends any bulk action: a run of them together, a `SELECT` and a few
+    /// commands for the lot.
+    ///
+    /// Everything listed, whatever the list on screen is filtered to, snoozed
+    /// threads included. What arrives after this returns is not touched: each
+    /// op names the messages it deletes.
+    pub fn empty_mailbox(&self, mailbox: MailboxId, origin: Origin) -> Result<Vec<Op>> {
+        self.writable()?;
+        let ops = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let from = emptiable(mail, mailbox)?;
+            delete_forever_from(mail, &from, None, &origin)
+        })?;
+        for op in &ops {
+            if let OpTarget::Thread(thread) = op.target {
+                self.wrote(RecordKind::Thread, thread);
+            }
+        }
+        Ok(ops)
+    }
+
+    /// Undo [`Vault::apply_thread_ops`]'s local effect for one thread, once
+    /// its op has failed permanently -- see
+    /// [`crate::mail::outbox::apply_optimistic`]'s own docs on why a
+    /// flag-changing op's exact undo is its logical opposite (`MarkRead`
+    /// undoes with `MarkUnread`, and so on) rather than a snapshot carried
+    /// forward from enqueue time: an [`Op`] is a table row that can survive
+    /// a restart, and nothing on it holds a message-by-message "what it was
+    /// before" to replay days later.
+    pub fn revert_thread_op(&self, thread: ThreadId, kind: &OpKind) -> Result<()> {
+        self.writable()?;
+        self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            match inverse_of(kind) {
+                Inverse::Flag(inverse) => {
+                    let (_, messages) = mail.thread(thread)?;
+                    for mut message in messages {
+                        apply_local_effect_one(mail, &mut message, &inverse)?;
+                    }
+                    Ok(())
+                }
+                // Only the Inbox marker the op set, never another op's:
+                // a thread split between Trash and the Inbox can have an
+                // archive and a delete forever waiting at once.
+                Inverse::UnhideInbox => {
+                    let (t, _) = mail.thread(thread)?;
+                    match inbox_mailbox(mail, t.account_id)? {
+                        Some(inbox) => mail.unhide_thread_from_mailbox(thread, inbox),
+                        None => Ok(()),
+                    }
+                }
+                Inverse::Unhide(mailbox) => mail.unhide_thread_from_mailbox(thread, mailbox),
+                Inverse::ClearSnooze => mail.set_thread_snoozed_until(thread, None),
+                Inverse::None => Ok(()),
+            }
+        })?;
+        self.wrote(RecordKind::Thread, thread);
+        Ok(())
+    }
+
+    // ---- sending and saving a draft -----------------------------------------
+
+    /// `draft`'s local write and its `Send` op, together: sets
+    /// `Draft::state` to [`DraftState::Queued`] naming the freshly enqueued
+    /// op, whose `not_before` is `not_before` — the undo-send window, or a
+    /// later moment for send-later. Returns the updated draft and the op.
+    pub fn queue_draft_send(
+        &self,
+        draft_id: DraftId,
+        not_before: Timestamp,
+        origin: Origin,
+    ) -> Result<(Draft, Op)> {
+        self.writable()?;
+        let result = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut draft = mail.get_draft(draft_id)?;
+            if !matches!(draft.state, DraftState::Editing) {
+                return Err(Error::Invalid(format!(
+                    "a draft in state {:?} cannot be queued to send",
+                    draft.state
+                )));
+            }
+            let op = Op::new(draft.account_id, OpKind::Send, OpTarget::Draft(draft_id), origin)
+                .not_before(not_before);
+            mail.enqueue_op(&op)?;
+            draft.state = DraftState::Queued { op: op.id };
+            draft.send_error = None;
+            draft.touch();
+            mail.put_draft(&draft)?;
+            Ok((draft, op))
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(result)
+    }
+
+    /// Cancel a queued send, provided its op is still [`OpState::Pending`],
+    /// has never actually been attempted, and its `not_before` has not yet
+    /// passed -- undo send's whole implementation.
+    ///
+    /// "Never actually been attempted" is its own check, separate from the
+    /// window: the drain loop's retry arm
+    /// (`karmayoga_service::outbox::drain_outbox`) returns a `Send` op that
+    /// failed with a *retryable* error to exactly `Pending`, with
+    /// `not_before` pushed out by the backoff schedule (thirty seconds up
+    /// to an hour) -- so `state == Pending && now < not_before` alone would
+    /// reopen the undo-send window for up to an hour after an attempt that
+    /// may already have reached the SMTP server. `karmayoga_mail::outbox::send`'s
+    /// own docs explain why: a `Network` error after `DATA`'s final `.`
+    /// looks, from here, identical to one before the server ever saw a
+    /// byte, so an op with `attempts > 0` (bumped the moment any attempt
+    /// fails) or a draft that already carries a minted `message_id`
+    /// (stamped, and persisted, immediately before that same attempt) has
+    /// to be treated as "may have gone out" for good -- undo can no longer
+    /// promise the thing it promises. Past that point the account task may
+    /// already be mid-send anyway, so this refuses with [`Error::Invalid`]
+    /// rather than risk racing it; the draft stays `Queued` and the caller
+    /// is told plainly why, with a distinct message for each reason a
+    /// person might otherwise mistake for "it's too late" -- an op that
+    /// simply failed and was never sent has nothing to undo, which is a
+    /// different thing to hear than "this may already be sent".
+    ///
+    /// `message_id` is deliberately left on `draft` when this *does*
+    /// succeed: the checks above already guarantee it is `None` whenever
+    /// undo is still possible (a `Send` op that has never been attempted
+    /// never reached the point in `send` that mints one), so there is
+    /// nothing to clear. Clearing it defensively here would cost the very
+    /// guarantee `docs/plans/mail.md`'s stable-`Message-ID` design exists
+    /// for: a *later* send of this same draft, after a genuine edit, still
+    /// deserves a fresh id of its own the first time `send` builds it, and
+    /// it gets one -- `send` only reuses `draft.message_id` when it is
+    /// already `Some`.
+    pub fn undo_send(&self, draft_id: DraftId, now: Timestamp) -> Result<Draft> {
+        self.writable()?;
+        let draft = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut draft = mail.get_draft(draft_id)?;
+            let DraftState::Queued { op: op_id } = draft.state else {
+                return Err(Error::Invalid("this draft is not queued to send".into()));
+            };
+            let mut op = mail.get_op(op_id)?;
+
+            if !matches!(op.state, OpState::Pending) {
+                let message = match &op.state {
+                    OpState::InFlight => {
+                        "this message is being sent right now and cannot be undone"
+                    }
+                    OpState::Cancelled => "this send has already been cancelled",
+                    OpState::Failed { permanent: true, .. } => {
+                        "this send already failed and was never sent; there is nothing to undo"
+                    }
+                    // `Pending` is excluded by the outer `matches!`, and
+                    // `Failed { permanent: false }` never actually reaches
+                    // `Queued`'s own op -- a retryable failure goes back to
+                    // `Pending`, not `Failed` -- but a future caller of
+                    // `transition_to` is not this match's business to
+                    // predict, so it still gets a true answer rather than
+                    // a wildcard borrowing `Done`'s.
+                    OpState::Done => "this message has already been sent",
+                    OpState::Failed { permanent: false, .. } | OpState::Pending => {
+                        "the undo-send window has passed; this message may already be sent"
+                    }
+                };
+                return Err(Error::Invalid(message.into()));
+            }
+            if op.attempts > 0 || draft.message_id.is_some() {
+                return Err(Error::Invalid(
+                    "this message has already been attempted and may have reached the server; \
+                     it can no longer be undone"
+                        .into(),
+                ));
+            }
+            if now >= op.not_before {
+                return Err(Error::Invalid(
+                    "the undo-send window has passed; this message may already be sent".into(),
+                ));
+            }
+
+            op.transition_to(OpState::Cancelled)?;
+            mail.update_op(&op)?;
+            draft.state = DraftState::Editing;
+            draft.touch();
+            mail.put_draft(&draft)?;
+            Ok(draft)
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(draft)
+    }
+
+    /// Stop trying to send a draft whose send has failed and is waiting to be
+    /// tried again, and give it back to be written -- what a person reaches
+    /// for when a send keeps failing. [`Vault::undo_send`] refuses here, and
+    /// rightly: a failed attempt may still have reached the server, so it is
+    /// not an undo. The draft keeps its `message_id`, so sending it again
+    /// first asks the server whether that attempt arrived after all.
+    ///
+    /// Refused unless the draft is queued, its op is still
+    /// [`OpState::Pending`] and has been attempted at least once.
+    pub fn stop_send(&self, draft_id: DraftId) -> Result<Draft> {
+        self.writable()?;
+        let draft = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut draft = mail.get_draft(draft_id)?;
+            let DraftState::Queued { op: op_id } = draft.state else {
+                return Err(Error::Invalid("this draft is not queued to send".into()));
+            };
+            let mut op = mail.get_op(op_id)?;
+            if !matches!(op.state, OpState::Pending) || op.attempts == 0 {
+                return Err(Error::Invalid(
+                    "only a send that failed and is waiting to be tried again can be stopped"
+                        .into(),
+                ));
+            }
+            op.transition_to(OpState::Cancelled)?;
+            mail.update_op(&op)?;
+            draft.state = DraftState::Editing;
+            draft.touch();
+            mail.put_draft(&draft)?;
+            Ok(draft)
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(draft)
+    }
+
+    /// Save `draft`, and — when `append` says to — enqueue an
+    /// [`OpKind::AppendDraft`] in the same write. The debounce that decides
+    /// `append` (no more than once every thirty seconds per draft) is
+    /// `karmayoga_service::domains::mail::save_draft`'s job, not this one's:
+    /// it needs to remember *when* a draft last appended across calls,
+    /// which is session state, not a vault write.
+    pub fn save_draft_and_append(
+        &self,
+        draft: &Draft,
+        append: bool,
+        origin: Origin,
+    ) -> Result<Option<Op>> {
+        self.writable()?;
+        let op = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            mail.put_draft(draft)?;
+            if !append {
+                return Ok(None);
+            }
+            let op =
+                Op::new(draft.account_id, OpKind::AppendDraft, OpTarget::Draft(draft.id), origin);
+            mail.enqueue_op(&op)?;
+            Ok(Some(op))
+        })?;
+        self.wrote(RecordKind::Draft, draft.id);
+        Ok(op)
+    }
+
+    /// Discard `draft`: [`DraftState::Discarded`], one write, plus an
+    /// [`OpKind::DiscardDraft`] op when the draft ever had a
+    /// [`Draft::server_copy`] -- a copy an earlier `AppendDraft` left on the
+    /// server does not go away just because this process stops thinking
+    /// about the draft locally, so the account task is told to remove it.
+    /// A draft discarded before its first autosave ever reached the server
+    /// has nothing to delete, so no op is enqueued for it. Uses `draft`'s
+    /// own [`Draft::origin`] for the op's, on the same reasoning
+    /// [`Vault::apply_thread_ops`]'s callers already lean on: whoever wrote
+    /// the draft is who this bookkeeping op is done on behalf of, and it
+    /// keeps this method's own signature exactly what every existing caller
+    /// already passes.
+    pub fn discard_draft(&self, draft_id: DraftId) -> Result<(Draft, Option<Op>)> {
+        self.writable()?;
+        let result = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            let mut draft = mail.get_draft(draft_id)?;
+            // A discard racing a still-pending `Send` must win: otherwise
+            // the op the person just asked to cancel by discarding drains
+            // anyway, mailing the very message they discarded, while the
+            // draft row itself already reads `Discarded`. This is exactly
+            // [`Vault::undo_send`]'s own `Pending` -> `Cancelled`
+            // transition, reached from a different door -- an op that has
+            // moved past `Pending` (already `InFlight`, or further) is left
+            // alone, on the same reasoning `undo_send` refuses past that
+            // point: the account task may already be mid-send, and racing
+            // it here would not stop anything. `send`'s own executor
+            // (`karmayoga_mail::outbox::send`) refuses to run at all against
+            // a `Discarded` draft regardless, as the last line of defence
+            // for exactly that race.
+            if let DraftState::Queued { op: op_id } = draft.state {
+                let mut queued = mail.get_op(op_id)?;
+                if matches!(queued.state, OpState::Pending) {
+                    queued.transition_to(OpState::Cancelled)?;
+                    mail.update_op(&queued)?;
+                }
+            }
+            draft.state = DraftState::Discarded;
+            draft.touch();
+            mail.put_draft(&draft)?;
+            let op = match &draft.server_copy {
+                Some(_) => {
+                    let op = Op::new(
+                        draft.account_id,
+                        OpKind::DiscardDraft,
+                        OpTarget::Draft(draft.id),
+                        draft.origin.clone(),
+                    );
+                    mail.enqueue_op(&op)?;
+                    Some(op)
+                }
+                None => None,
+            };
+            Ok((draft, op))
+        })?;
+        self.wrote(RecordKind::Draft, draft_id);
+        Ok(result)
+    }
+
+    /// Send `draft` from another account: a fresh draft on `account`, sent as
+    /// `identity`, holding what the person has written (`edited`, the compose
+    /// window's copy), and the old one discarded -- with its
+    /// [`OpKind::DiscardDraft`] when it had a copy on the old account's server.
+    /// Returns the new draft and that op.
+    ///
+    /// A new record rather than the old one re-pointed: the old one's
+    /// [`Draft::server_copy`] lives on the other account's server, and the
+    /// discard is what knows how to take it off there. Refused unless the
+    /// draft is still being written, `account` sends mail, and `identity` is
+    /// one of its addresses.
+    pub fn move_draft(
+        &self,
+        edited: &Draft,
+        account: AccountId,
+        identity: &str,
+    ) -> Result<(Draft, Option<Op>)> {
+        self.writable()?;
+        let target = self.account(account)?;
+        if !target.services.mail {
+            return Err(Error::Invalid(format!("{} does not send mail here", target.address)));
+        }
+        let identity = std::iter::once(&target.address)
+            .chain(target.identities.iter().map(|i| &i.address))
+            .find(|a| a.trim().eq_ignore_ascii_case(identity.trim()))
+            .cloned()
+            .ok_or_else(|| {
+                Error::Invalid(format!("{identity} is not an address of {}", target.address))
+            })?;
+        let old_id = edited.id;
+        let result = self.write(|u| {
+            let mail = pick_domain(u.store.as_ref(), Domain::Mail, |s| s.mail())?;
+            // A draft never saved yet has no row: only what was written moves.
+            let mut old = match mail.get_draft(old_id) {
+                Ok(old) => old,
+                Err(Error::NotFound { .. }) => {
+                    let mut moved = edited.clone();
+                    moved.id = DraftId::new();
+                    moved.account_id = account;
+                    moved.identity = identity;
+                    moved.server_copy = None;
+                    moved.message_id = None;
+                    moved.send_error = None;
+                    moved.recipients_changed_by = None;
+                    moved.state = DraftState::Editing;
+                    moved.touch();
+                    mail.put_draft(&moved)?;
+                    return Ok((moved, None));
+                }
+                Err(e) => return Err(e),
+            };
+            if !matches!(old.state, DraftState::Editing) {
+                return Err(Error::Invalid(format!(
+                    "a draft in state {:?} cannot move to another account",
+                    old.state
+                )));
+            }
+            let mut moved = Draft::new(account, identity, old.origin.clone());
+            moved.in_reply_to = edited.in_reply_to;
+            moved.to = edited.to.clone();
+            moved.cc = edited.cc.clone();
+            moved.bcc = edited.bcc.clone();
+            moved.subject = edited.subject.clone();
+            moved.body_html = edited.body_html.clone();
+            moved.attachments = edited.attachments.clone();
+            moved.calendar_part = edited.calendar_part.clone();
+            moved.recipients_changed_by = old.recipients_changed_by.clone();
+            moved.created_at = old.created_at;
+            mail.put_draft(&moved)?;
+
+            old.state = DraftState::Discarded;
+            old.touch();
+            mail.put_draft(&old)?;
+            let op = match &old.server_copy {
+                Some(_) => {
+                    let op = Op::new(
+                        old.account_id,
+                        OpKind::DiscardDraft,
+                        OpTarget::Draft(old.id),
+                        old.origin.clone(),
+                    );
+                    mail.enqueue_op(&op)?;
+                    Some(op)
+                }
+                None => None,
+            };
+            Ok((moved, op))
+        })?;
+        self.wrote(RecordKind::Draft, old_id);
+        self.wrote(RecordKind::Draft, result.0.id);
+        Ok(result)
+    }
+
+    /// Undo [`Vault::discard_draft`]: the same record back to
+    /// [`DraftState::Editing`], so whatever it remembers -- who last changed
+    /// its recipients among them -- comes back with it. A draft not discarded
+    /// is left as it is.
+    ///
+    /// A `DiscardDraft` op the discard queued is left to find this out for
+    /// itself when it comes due: `karmayoga_mail::outbox` deletes a server copy
+    /// only for a draft still `Discarded`. One that already ran leaves
+    /// [`Draft::server_copy`] naming a uid the server has no more, which the
+    /// next `AppendDraft` asks it to flag and it ignores.
+    pub fn restore_draft(&self, draft_id: DraftId) -> Result<Draft> {
+        self.with_draft(draft_id, |draft| {
+            if !matches!(draft.state, DraftState::Discarded) {
+                return false;
+            }
+            draft.state = DraftState::Editing;
+            true
+        })
+    }
+}
+
+/// What [`Vault::revert_thread_op`] undoes a given [`OpKind`] with.
+enum Inverse {
+    Flag(OpKind),
+    /// What an archive, trash or move hid: the account's Inbox.
+    UnhideInbox,
+    /// What a delete forever hid: the mailbox it was deleting from.
+    Unhide(MailboxId),
+    ClearSnooze,
+    /// [`OpKind::Snooze`]'s own moment has not been reverted-into by
+    /// anything but [`ClearSnooze`] above; this arm exists only so the
+    /// match in [`Vault::revert_thread_op`] is total without a wildcard
+    /// hiding a future [`OpKind`] this function has not been taught yet.
+    None,
+}
+
+/// The subkey [`Vault::mail_message_key`] hashes under.
+const MAIL_MESSAGE_KEY_LABEL: &str = "everyday.mail.message-id.v1";
+
+/// Is this a real `Message-ID`, rather than the `uid:N` stand-in sync gives a
+/// message that has none -- which names nothing outside its own mailbox?
+fn keyable(message_id_header: &str) -> bool {
+    !message_id_header.is_empty() && !message_id_header.starts_with("uid:")
+}
+
+fn message_key(key: &crate::crypto::SecretKey, message_id_header: &str) -> String {
+    blake3::keyed_hash(key.expose(), message_id_header.as_bytes()).to_hex()[..32].to_string()
+}
+
+fn inverse_of(kind: &OpKind) -> Inverse {
+    match kind {
+        OpKind::MarkRead => Inverse::Flag(OpKind::MarkUnread),
+        OpKind::MarkUnread => Inverse::Flag(OpKind::MarkRead),
+        OpKind::Star => Inverse::Flag(OpKind::Unstar),
+        OpKind::Unstar => Inverse::Flag(OpKind::Star),
+        OpKind::Label { label } => Inverse::Flag(OpKind::Unlabel { label: label.clone() }),
+        OpKind::Unlabel { label } => Inverse::Flag(OpKind::Label { label: label.clone() }),
+        OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => Inverse::UnhideInbox,
+        OpKind::DeleteForever { from, .. } => Inverse::Unhide(*from),
+        OpKind::Snooze { .. } => Inverse::ClearSnooze,
+        OpKind::Send | OpKind::AppendDraft | OpKind::DiscardDraft => Inverse::None,
+    }
+}
+
+/// [`Vault::apply_thread_ops`]'s per-thread dispatch: what a flag-changing
+/// kind does to every message, what an archive/trash/move kind does to the
+/// thread's place in the account's Inbox, what a snooze kind does to the
+/// thread itself.
+fn apply_local_effect(
+    mail: &dyn MailStore,
+    thread: &Thread,
+    messages: &[Message],
+    kind: &OpKind,
+) -> Result<()> {
+    if kind.is_flag_change() {
+        for message in messages {
+            let mut message = message.clone();
+            apply_local_effect_one(mail, &mut message, kind)?;
+        }
+        return Ok(());
+    }
+    match kind {
+        OpKind::Archive | OpKind::Trash | OpKind::Move { .. } => {
+            if let Some(inbox) = inbox_mailbox(mail, thread.account_id)? {
+                mail.hide_thread_from_mailbox(thread.id, inbox)?;
+            }
+        }
+        OpKind::Snooze { until } => {
+            mail.set_thread_snoozed_until(thread.id, Some(*until))?;
+        }
+        // `is_flag_change` above already took MarkRead/MarkUnread/Star/
+        // Unstar/Label/Unlabel; Send, AppendDraft and DiscardDraft never
+        // reach this function -- `apply_thread_ops` refuses them before its
+        // loop even starts.
+        OpKind::MarkRead
+        | OpKind::MarkUnread
+        | OpKind::Star
+        | OpKind::Unstar
+        | OpKind::Label { .. }
+        | OpKind::Unlabel { .. }
+        | OpKind::Send
+        | OpKind::AppendDraft
+        | OpKind::DiscardDraft
+        | OpKind::DeleteForever { .. } => {
+            unreachable!("handled above or refused before this is called")
+        }
+    }
+    Ok(())
+}
+
+/// [`apply_optimistic`], written back to storage -- the one-message half of
+/// [`apply_local_effect`], and the whole of what [`Vault::revert_thread_op`]
+/// needs for a flag-changing kind.
+fn apply_local_effect_one(
+    mail: &dyn MailStore,
+    message: &mut Message,
+    kind: &OpKind,
+) -> Result<()> {
+    let Some(_undo) = apply_optimistic(kind, message) else { return Ok(()) };
+    match kind {
+        OpKind::Label { .. } | OpKind::Unlabel { .. } => {
+            mail.set_message_labels(message.id, message.labels.clone())
+        }
+        _ => mail.set_message_flags(message.id, message.flags),
+    }
+}
+
+/// `id`'s mailbox, when it is one whose mail can be deleted for good -- see
+/// [`MailboxRole::empties`].
+fn emptiable(mail: &dyn MailStore, id: MailboxId) -> Result<Mailbox> {
+    let mailbox = mail.get_mailbox(id)?;
+    if !mailbox.role.empties() {
+        return Err(Error::Invalid(format!(
+            "mail in {} cannot be deleted forever",
+            mailbox.role.as_str()
+        )));
+    }
+    Ok(mailbox)
+}
+
+/// One [`OpKind::DeleteForever`] for each thread listed in `from` -- of
+/// `threads`, when given -- naming the messages it has there, each thread
+/// hidden from `from` and every op queued in one transaction. Ids only:
+/// nothing is decrypted to find them.
+fn delete_forever_from(
+    mail: &dyn MailStore,
+    from: &Mailbox,
+    threads: Option<&[ThreadId]>,
+    origin: &Origin,
+) -> Result<Vec<Op>> {
+    let mut by_thread: std::collections::BTreeMap<ThreadId, Vec<MailMessageId>> =
+        std::collections::BTreeMap::new();
+    for (thread, message) in mail.listed_messages_in(from.id, threads)? {
+        by_thread.entry(thread).or_default().push(message);
+    }
+    let ops: Vec<Op> = by_thread
+        .into_iter()
+        .map(|(thread, messages)| {
+            let kind = OpKind::DeleteForever { from: from.id, messages };
+            Op::new(from.account_id, kind, OpTarget::Thread(thread), origin.clone())
+        })
+        .collect();
+    mail.hide_and_enqueue(from.id, &ops)?;
+    Ok(ops)
+}
+
+fn inbox_mailbox(mail: &dyn MailStore, account: AccountId) -> Result<Option<MailboxId>> {
+    Ok(mail
+        .list_mailboxes(account)?
+        .into_iter()
+        .find(|m| m.role == MailboxRole::Inbox)
+        .map(|m| m.id))
+}
+
+/// Which message [`Vault::set_thread_priority`] marks: the newest in
+/// `messages` whose sender's address (trimmed, lower-cased) is not one of
+/// `own` -- the message the person is plausibly still waiting to answer --
+/// falling back to the overall newest message when every one in the thread
+/// is the account's own. `messages` is assumed oldest-first, the order
+/// [`crate::store::mail::MailStore::thread`] already returns it in, so
+/// "newest" is simply the last match scanning from the end. `None` only
+/// when `messages` itself is empty -- a thread with nothing in it has
+/// nothing to mark.
+fn thread_priority_target(
+    messages: &[Message],
+    own: &std::collections::HashSet<String>,
+) -> Option<MailMessageId> {
+    messages
+        .iter()
+        .rev()
+        .find(|m| !own.contains(&m.from.email.trim().to_lowercase()))
+        .or_else(|| messages.last())
+        .map(|m| m.id)
+}
+
+#[cfg(test)]
+mod priority_target_tests {
+    //! [`thread_priority_target`] on its own, with no vault or store in
+    //! sight -- the message-selection half of [`Vault::set_thread_priority`]
+    //! is pure, so it is tested that way; the write itself (that a person's
+    //! mark lands as [`CategorySource::Person`] and survives a model write
+    //! or a backfill) is the store conformance suite's job, proven there
+    //! against every backend alike -- see
+    //! `a_persons_own_mark_outranks_the_model_and_the_backfill` in
+    //! `crate::store::conformance::mail`.
+    use super::*;
+    use crate::id::PackId;
+    use crate::mail::Address;
+
+    fn message_from(thread: ThreadId, from: &str) -> Message {
+        let account = AccountId::new();
+        Message {
+            id: MailMessageId::new(),
+            account_id: account,
+            thread_id: thread,
+            message_id_header: String::new(),
+            date: Timestamp::now(),
+            from: Address::bare(from),
+            to: Vec::new(),
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            reply_to: Vec::new(),
+            subject: String::new(),
+            snippet: String::new(),
+            flags: MessageFlags::default(),
+            labels: Vec::new(),
+            has_attachments: false,
+            size: 0,
+            category: None,
+            category_source: CategorySource::Rules,
+            pack: PackRef { account: account.to_string(), pack: PackId::new(), offset: 0, len: 0 },
+            gmail: None,
+            invite: None,
+        }
+    }
+
+    fn own_addresses(addresses: &[&str]) -> std::collections::HashSet<String> {
+        addresses.iter().map(|a| a.to_lowercase()).collect()
+    }
+
+    #[test]
+    fn targets_the_newest_message_not_from_the_account_itself() {
+        let thread = ThreadId::new();
+        let them = message_from(thread, "them@example.com");
+        let my_reply = message_from(thread, "Me@Example.com");
+        let own = own_addresses(&["me@example.com"]);
+
+        assert_eq!(thread_priority_target(std::slice::from_ref(&them), &own), Some(them.id));
+        assert_eq!(
+            thread_priority_target(&[them.clone(), my_reply], &own),
+            Some(them.id),
+            "the person's own newest reply is skipped in favour of the message it answers"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_the_newest_message_when_every_one_is_the_accounts_own() {
+        let thread = ThreadId::new();
+        let first = message_from(thread, "me@example.com");
+        let second = message_from(thread, "me@example.com");
+        let own = own_addresses(&["me@example.com"]);
+
+        assert_eq!(
+            thread_priority_target(&[first, second.clone()], &own),
+            Some(second.id),
+            "nothing inbound to wait on, so the overall newest message is the fallback"
+        );
+    }
+
+    #[test]
+    fn an_empty_thread_has_nothing_to_mark() {
+        assert_eq!(thread_priority_target(&[], &own_addresses(&[])), None);
+    }
+}

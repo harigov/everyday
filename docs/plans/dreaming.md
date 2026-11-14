@@ -63,13 +63,13 @@ Three things, in dependency order, and a loop that closes over them.
    tool would have used. Declining, editing before accepting, and letting it
    expire are each recorded, because they are the signal the rest of this
    plan feeds on.
-2. **Inferred memory.** A [`Memory`](../../crates/everyday-core/src/agent.rs)
+2. **Inferred memory.** A [`Memory`](../../crates/karmayoga-core/src/agent.rs)
    gains a provenance: told by the person, inferred by a dream, confirmed
    after being inferred, or rejected. Inferred memories reach the prompt
    under a heading that says they may be wrong; rejected ones are kept as
    "do not assume" lines so a later dream cannot re-learn them. This is the
    one kind of draft the assistant may use before it is accepted.
-3. **The dream.** A built-in [`Routine`](../../crates/everyday-core/src/routine.rs)
+3. **The dream.** A built-in [`Routine`](../../crates/karmayoga-core/src/routine.rs)
    the application owns, in three scopes. The nightly one reads yesterday.
    The weekly one, on Sunday, reads the seven nightly outputs rather than
    the raw week. The monthly one reads the four weekly ones. It runs through
@@ -115,7 +115,7 @@ These were settled in discussion and the plan does not reopen them.
   thinking about their day, and the day is in the journal as much as the
   task list.
 - **Which *kinds* may be proposed is a policy**, shaped like
-  [`QuickPolicy`](../../crates/everyday-core/src/quick.rs): a set of denied
+  [`QuickPolicy`](../../crates/karmayoga-core/src/quick.rs): a set of denied
   kinds among task, block, memory, routine, note and mail. All on when
   dreaming is on; each refusable on its own.
 - **Proposals are drawn in place, styled as not-yet-real.** Not a queue in
@@ -132,7 +132,7 @@ These were settled in discussion and the plan does not reopen them.
 - **There is no calendar event to draft.** Events arrive only from feeds —
   a URL, an imported file, or an account calendar over CalDAV, Google or
   Graph — and nothing in the vault creates one. The draftable thing on the
-  grid is a *planned* [`TimeBlock`](../../crates/everyday-core/src/task.rs).
+  grid is a *planned* [`TimeBlock`](../../crates/karmayoga-core/src/task.rs).
   Writing events to somebody else's server is a separate project.
 - **Mail proposals point at the existing `Draft`.** It already carries an
   `Origin` saying who wrote it and a state machine of editing, queued, sent
@@ -183,7 +183,7 @@ DeclineReason  = NotNow | WrongTime | NeverThis | Other(String)
 
 - `caption` is the sentence the confirmation card already shows for a tool
   call — `describe()` in
-  [`tools/mod.rs`](../../crates/everyday-core/src/agent/tools/mod.rs) — stored
+  [`tools/mod.rs`](../../crates/karmayoga-core/src/agent/tools/mod.rs) — stored
   at creation so a proposal still reads after the tool that made it is
   renamed.
 - `why` is one line from the model, capped like a memory. It is the answer
@@ -196,7 +196,7 @@ DeclineReason  = NotNow | WrongTime | NeverThis | Other(String)
   the proposal's record and the saved record, both of which still exist.
   Nothing is stored twice.
 - `seen` is what the app-bar count is drawn from, exactly as
-  [`RoutineRun::seen`](../../crates/everyday-core/src/routine.rs) is.
+  [`RoutineRun::seen`](../../crates/karmayoga-core/src/routine.rs) is.
 
 ### Changes to existing records
 
@@ -223,7 +223,7 @@ AgentSettings {
   field existed reads as it always did. `Rejected` memories are kept and
   loaded, phrased "Do not assume: …", and count against no cap. `Inferred`
   memories have their own cap, [`MAX_INFERRED`](#caps), smaller than
-  [`MAX_MEMORIES`](../../crates/everyday-core/src/agent.rs), and are evicted
+  [`MAX_MEMORIES`](../../crates/karmayoga-core/src/agent.rs), and are evicted
   oldest-`last_supported`-first rather than oldest-created-first, because
   the one that was confirmed by yesterday's data is the one to keep.
 - `Routine::kind` defaults to `Custom`. A `Dream` routine is created by the
@@ -239,7 +239,7 @@ AgentSettings {
 ### Ids
 
 `ProposalId`, prefix `proposal`, in
-[`id.rs`](../../crates/everyday-core/src/id.rs) via `typed_id!`.
+[`id.rs`](../../crates/karmayoga-core/src/id.rs) via `typed_id!`.
 
 ### Schema, version 11
 
@@ -288,7 +288,7 @@ Set at creation, by kind, and never extended.
 | Mail | Whatever the `Draft` does; the proposal expires when the draft is discarded or sent by hand |
 | Delete | Seven days |
 
-A sweep in [`scheduler::tick`](../../crates/everyday-service/src/scheduler.rs)
+A sweep in [`scheduler::tick`](../../crates/karmayoga-service/src/scheduler.rs)
 marks the past-due pending rows `Expired`, beside the snooze release that
 already runs there. An expired proposal is not a declined one and is
 counted separately by the weekly dream — ignoring is a weaker signal than
@@ -334,17 +334,17 @@ change unless a test or the CLI writes one.
 
 Rust:
 
-- `crates/everyday-core/src/proposal.rs` (new): `Proposal`, `ProposalKind`,
+- `crates/karmayoga-core/src/proposal.rs` (new): `Proposal`, `ProposalKind`,
   `Payload`, `Record`, `Outcome`, `DeclineReason`, `ProposalPolicy`, with
   `new()`, `validate()`, `expiry_for(kind, record, now)`, and the caps.
   Unit tests in the style of `routine.rs`: expiry by kind, a policy denying
   a kind, `validate` refusing an empty caption.
-- `crates/everyday-core/src/store/proposals.rs` (new): `ProposalStore` —
+- `crates/karmayoga-core/src/store/proposals.rs` (new): `ProposalStore` —
   `list_proposals(&ProposalQuery)` (kind, outcome, date window, `about`),
   `get_proposal`, `put_proposal`, `delete_proposal`,
   `expire_proposals_before(instant)`, `mark_proposals_seen`,
   `count_pending`. `Capabilities.proposals: bool`.
-- `crates/everyday-store-sql/src/proposals.rs` (new) and `schema.rs`
+- `crates/karmayoga-store-sql/src/proposals.rs` (new) and `schema.rs`
   `v11(d)`. Test: a version-10 fixture opens, keeps its rows, and has the
   table.
 - Conformance: `store/conformance/proposals.rs` — CRUD, the query by
@@ -360,14 +360,14 @@ Rust:
   Then the proposal is marked `Accepted { saved_as, edited }`.
 - **Decline**, `Vault::decline_proposal(id, reason)`. **Expire**, the sweep.
 - **The parse-from-save split.** Every `Write` and `Destructive` tool in
-  [`agent/tools/`](../../crates/everyday-core/src/agent/tools/) that
+  [`agent/tools/`](../../crates/karmayoga-core/src/agent/tools/) that
   produces a record gets a `build_*` that returns the record without saving
   it, with `run_*` reduced to `build` then `save`. For `update_*` tools the
   build loads the current record, applies the arguments, and returns the
   after-image with the `updated_at` it started from. `delete_*` and
   `forget` build a `Delete`. `send_draft` builds a `SendMail`.
 - **Drafting mode.** `ToolContext` gains `drafting: bool`. In
-  [`dispatch`](../../crates/everyday-core/src/agent/tools/mod.rs), a `Read`
+  [`dispatch`](../../crates/karmayoga-core/src/agent/tools/mod.rs), a `Read`
   tool runs as before; a `Write` or `Destructive` tool has its `build_*`
   called, the result wrapped in a `Proposal` with `caption` from
   `describe()`, `why` from a new optional `why` argument every writing tool
@@ -386,10 +386,10 @@ Rust:
   in drafting mode against a seeded vault and asserts that no domain table
   changed and one proposal per call was written. This is the test that
   keeps the next tool honest.
-- Commands in [`domains/`](../../crates/everyday-service/src/domains/)
+- Commands in [`domains/`](../../crates/karmayoga-service/src/domains/)
   (new `proposals.rs`): `list_proposals`, `get_proposal`, `accept_proposal`,
   `decline_proposal`, `mark_proposals_seen`, `pending_proposals` (the count).
-  `Kind::Proposal` in [`events.rs`](../../crates/everyday-service/src/events.rs);
+  `Kind::Proposal` in [`events.rs`](../../crates/karmayoga-service/src/events.rs);
   accept also emits the change for the record it saved. Registered in the
   surface; `UPDATE_SURFACE=1` and `gen:api` as the header of
   `commands.ts` says.
@@ -439,7 +439,7 @@ Small, and mostly in the prompt builder.
 - `Memory::origin` and `last_supported`, with `Memory::new` defaulting to
   `Told`. `Vault::save_memory` enforces the two caps separately and the
   eviction order for `Inferred`.
-- [`system_prompt`](../../crates/everyday-core/src/agent.rs) splits the list:
+- [`system_prompt`](../../crates/karmayoga-core/src/agent.rs) splits the list:
   told and confirmed under the existing heading, as standing instructions;
   inferred under *"Things you have noticed about this person, which may be
   wrong; act on them lightly and do not repeat them back as facts"*; rejected
@@ -469,14 +469,14 @@ Rust:
   grace of 20 hours, *Weekly* at 03:30 on Sunday with a grace of 44 hours,
   *Monthly* at 04:00 on the first day of the month with a grace of 6 days —
   and enables or disables all three thereafter. The schedule is a plain
-  [`Trigger::Schedule`](../../crates/everyday-core/src/routine.rs); the long
+  [`Trigger::Schedule`](../../crates/karmayoga-core/src/routine.rs); the long
   grace is what turns "every night" into "as soon as the vault is unlocked
   after midnight", which is the "a few minutes after it starts" the idea
   began with, with no new trigger kind. The monthly one needs a day-of-month
   on `Schedule` — `day: Option<u8>` — which is the one addition to the
   trigger and gets its own rows in the table of cases at the foot of
   `routine.rs`.
-- `crates/everyday-core/src/dream.rs` (new): the app-owned prompt per
+- `crates/karmayoga-core/src/dream.rs` (new): the app-owned prompt per
   scope, and the **digest** builder. The digest is a struct with a
   Markdown rendering, built from queries that already exist:
 
@@ -509,7 +509,7 @@ Rust:
   every string from mail already carries.
 
   **Skills join the digest.** Added after the five phases above shipped, once
-  skills (`crates/everyday-core/src/agent.rs`) themselves existed. The
+  skills (`crates/karmayoga-core/src/agent.rs`) themselves existed. The
   skills section is ambient, like the inferred-memories list: every skill
   that exists, on or off, so a dream can see what is already there — and,
   crucially, which skills are switched off — before it proposes touching
@@ -549,7 +549,7 @@ Rust:
   Contacts shelf is never looked up on the web, and a dream has no web
   search, so a person's name goes no further than the assistant's own
   model.
-- **Leash.** In [`scheduler::execute`](../../crates/everyday-service/src/scheduler.rs),
+- **Leash.** In [`scheduler::execute`](../../crates/karmayoga-service/src/scheduler.rs),
   a `Dream` run gets `drafting: true` on its `ToolContext`, and the catalogue
   filtered to reads plus the writing tools whose kinds the policy allows,
   plus `remember`, `forget` (which drafts a `Delete` of a memory — the
@@ -606,7 +606,7 @@ Each falls out of the record existing and none is needed for the rest.
   button beside confirm and decline that parks the call as a proposal —
   `ProposalSource::Conversation`, no per-run cap. Built as a new `pub fn
   propose_call(ctx, name, arguments, source)` in
-  `crates/everyday-core/src/agent/tools/mod.rs`, rather than duplicating
+  `crates/karmayoga-core/src/agent/tools/mod.rs`, rather than duplicating
   `dispatch_drafting`'s logic in the service: it looks the tool up, refuses
   one with no `build`, and otherwise calls the same `build` and the same
   `finish_proposal` tail `dispatch_drafting` already used (which `propose`

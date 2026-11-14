@@ -1,6 +1,6 @@
 # Third-party notices
 
-Every Day itself is MIT (see LICENSE). It also ships two
+Karma Yoga itself is MIT (see LICENSE). It also ships two
 typefaces, embedded in the application binary as woff2 and declared in
 `ui/src/styles/fonts.css`. Both are under the SIL Open Font License 1.1,
 which requires this notice to travel with them.
@@ -51,7 +51,7 @@ Reproduced below in full:
   42. image — the image-rs developers, https://github.com/image-rs/image
   43. jpeg-encoder — © 2021 Volker Ströbel, https://github.com/vstroebel/jpeg-encoder, with portions from the Independent JPEG Group's software
   44. pdf.js — © Mozilla Foundation, https://github.com/mozilla/pdf.js, with the CMaps, fonts and image decoders it ships
-  45. Yogurt — © 2026 Frigade, https://github.com/FrigadeHQ/yogurt — not a dependency: the meeting-notes echo check, recogniser clean-up, vocabulary and note prompt in `everyday-core/src/meeting` follow its approach, thresholds and word lists
+  45. Yogurt — © 2026 Frigade, https://github.com/FrigadeHQ/yogurt — not a dependency: the meeting-notes echo check, recogniser clean-up, vocabulary and note prompt in `karmayoga-core/src/meeting` follow its approach, thresholds and word lists
   46. llama.cpp and ggml — © 2023-2026 The ggml authors, https://github.com/ggml-org/llama.cpp
   47. llama-cpp-sys-2 — © utilityai and the llama-cpp-rs contributors, https://github.com/utilityai/llama-cpp-rs
   48. MiniJinja — © Armin Ronacher, https://github.com/mitsuhiko/minijinja
@@ -292,7 +292,7 @@ SOFTWARE.
 
 ## 4. mail-parser
 
-`crates/everyday-mail/src/mime.rs` reads every message through `mail-parser`
+`crates/karmayoga-mail/src/mime.rs` reads every message through `mail-parser`
 (https://github.com/stalwartlabs/mail-parser), dual MIT/Apache-2.0 licensed;
 this project takes it under the MIT terms below.
 
@@ -326,7 +326,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## 5. lol_html
 
-`crates/everyday-mail/src/sanitize.rs` and `text.rs` use `lol_html`
+`crates/karmayoga-mail/src/sanitize.rs` and `text.rs` use `lol_html`
 (https://github.com/cloudflare/lol-html), BSD-3-Clause licensed, to rewrite
 and to strip elements in a message's HTML before it is shown or read.
 
@@ -362,7 +362,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## 6. ammonia
 
-`crates/everyday-mail/src/sanitize.rs` allow-lists a message's HTML through
+`crates/karmayoga-mail/src/sanitize.rs` allow-lists a message's HTML through
 `ammonia` (https://github.com/rust-ammonia/ammonia), dual MIT/Apache-2.0
 licensed; this project takes it under the MIT terms below.
 
@@ -390,7 +390,7 @@ SOFTWARE.
 
 ## 7. html2text
 
-`crates/everyday-mail/src/text.rs` converts a message's HTML to plain text
+`crates/karmayoga-mail/src/text.rs` converts a message's HTML to plain text
 through `html2text` (https://github.com/jugglerchris/rust-html2text), MIT
 licensed.
 
@@ -420,7 +420,7 @@ SOFTWARE.
 
 ## 8. htmd
 
-`crates/everyday-mail/src/text.rs` renders a message's HTML as Markdown, for
+`crates/karmayoga-mail/src/text.rs` renders a message's HTML as Markdown, for
 the assistant's prompts, through `htmd` (https://github.com/letmutex/htmd),
 Apache-2.0 licensed.
 
@@ -605,7 +605,7 @@ Apache-2.0 licensed.
 
 ## 9. async-imap
 
-`crates/everyday-mail/src/imap.rs` is built on `async-imap`
+`crates/karmayoga-mail/src/imap.rs` is built on `async-imap`
 (https://github.com/async-email/async-imap), dual MIT/Apache-2.0 licensed,
 the library chosen in `docs/plans/mail.md`'s "The libraries" for speaking
 IMAP: `IDLE`, `CONDSTORE`, `MOVE`, `UIDPLUS`, `COMPRESS`, pluggable SASL and
@@ -644,7 +644,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## 10. mail-builder
 
-`crates/everyday-mail/src/compose.rs` builds the RFC 5322 bytes this crate
+`crates/karmayoga-mail/src/compose.rs` builds the RFC 5322 bytes this crate
 sends through `mail-builder` (https://github.com/stalwartlabs/mail-builder),
 dual MIT/Apache-2.0 licensed, the sibling project to `mail-parser` above;
 this project takes it under the MIT terms below.
@@ -679,7 +679,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## 11. css-inline
 
-`crates/everyday-mail/src/compose.rs` inlines a compose message's CSS
+`crates/karmayoga-mail/src/compose.rs` inlines a compose message's CSS
 through `css-inline` (https://github.com/Stranger6667/css-inline), MIT
 licensed, so that a mail client which deletes `<style>` blocks still shows
 the compose editor's formatting. Remote stylesheet loading is switched off
@@ -711,7 +711,7 @@ SOFTWARE.
 
 ## 12. lettre
 
-`crates/everyday-mail/src/smtp.rs` sends every message through `lettre`
+`crates/karmayoga-mail/src/smtp.rs` sends every message through `lettre`
 (https://github.com/lettre/lettre), MIT licensed, the library chosen in
 `docs/plans/mail.md`'s "The libraries" for speaking SMTP: XOAUTH2, pooled
 connections, the same rustls this crate already pins for IMAP.
@@ -748,7 +748,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## 13. oauth2
 
-`crates/everyday-mail/src/oauth/client.rs` builds on `oauth2`
+`crates/karmayoga-mail/src/oauth/client.rs` builds on `oauth2`
 (https://github.com/ramosbugs/oauth2-rs) for the authorization-code-with-PKCE
 dance every mail account's sign-in goes through: the challenge and verifier,
 the authorization URL, and the token and refresh requests. Dual MIT/Apache-2.0;
@@ -826,11 +826,11 @@ DEALINGS IN THE SOFTWARE.
 
 ## 15. tantivy
 
-`crates/everyday-mailindex` is built on `tantivy`
+`crates/karmayoga-mailindex` is built on `tantivy`
 (https://github.com/quickwit-oss/tantivy), MIT licensed, the search engine
 chosen in `docs/plans/mail.md`'s "The libraries" for mail search: embedded
 rather than a service, incremental, and built around segment files that can
-be sealed individually — see `crates/everyday-mailindex/src/directory.rs`
+be sealed individually — see `crates/karmayoga-mailindex/src/directory.rs`
 for the sealed `Directory` this crate writes and reads tantivy's segments
 through. Reproduced below.
 
@@ -860,7 +860,7 @@ SOFTWARE.
 
 ## 16. lru
 
-`crates/everyday-mailindex/src/cache.rs` is built on `lru`
+`crates/karmayoga-mailindex/src/cache.rs` is built on `lru`
 (https://github.com/jeromefroe/lru-rs), MIT licensed, backing the
 size-capped store of decrypted segment files `directory.rs`'s sealed
 `Directory` keeps so that an immutable segment is decrypted at most once
@@ -894,7 +894,7 @@ SOFTWARE.
 
 ## 17. libdav
 
-`crates/everyday-service/src/accountcal/caldav.rs` is built on `libdav`
+`crates/karmayoga-service/src/accountcal/caldav.rs` is built on `libdav`
 (https://git.sr.ht/~whynothugo/libdav), ISC licensed, for CalDAV principal
 and calendar-home discovery, the `.well-known`/SRV bootstrap RFC 6764
 describes, and the etag-listing and multiget REPORTs an incremental sync
@@ -996,7 +996,7 @@ SOFTWARE.
 
 ## 20. frizbee
 
-`crates/everyday-service/src/mailsync/contacts.rs` uses `frizbee`
+`crates/karmayoga-service/src/mailsync/contacts.rs` uses `frizbee`
 (https://github.com/saghen/frizbee), MIT licensed, for `suggest_addresses`'s
 typo-tolerant fuzzy match over the contact index. Reproduced below.
 
@@ -1026,7 +1026,7 @@ SOFTWARE.
 
 ## 21. imap-proto
 
-`crates/everyday-mail/src/imap.rs` depends on `imap-proto`
+`crates/karmayoga-mail/src/imap.rs` depends on `imap-proto`
 (https://github.com/djc/tokio-imap), dual MIT/Apache-2.0 licensed, directly
 rather than only through `async-imap` above it: `ImapSession::headers` reads
 a raw `FETCH` attribute, `X-GM-THRID`, that async-imap's typed wrapper never
@@ -1064,8 +1064,8 @@ DEALINGS IN THE SOFTWARE.
 
 ## 22. chrono
 
-`crates/everyday-mail/src/invite.rs` and
-`crates/everyday-service/src/accountcal/caldav.rs` both sit at the one
+`crates/karmayoga-mail/src/invite.rs` and
+`crates/karmayoga-service/src/accountcal/caldav.rs` both sit at the one
 boundary where `calcard`'s own date types are `chrono`
 (https://github.com/chronotope/chrono) ones, converted to `jiff` immediately
 — `invite::to_jiff` and `caldav::to_jiff`, twins of each other — so the rest
@@ -1098,7 +1098,7 @@ THE SOFTWARE.
 
 ## 23. url
 
-`crates/everyday-mail/src/oauth/loopback.rs` parses the RFC 8252 loopback
+`crates/karmayoga-mail/src/oauth/loopback.rs` parses the RFC 8252 loopback
 redirect's query string with `url` (https://github.com/servo/rust-url), dual
 MIT/Apache-2.0 licensed. Reproduced here under the MIT terms.
 
@@ -1132,7 +1132,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## 24. http
 
-`crates/everyday-service/src/accountcal/caldav.rs` builds `libdav`'s
+`crates/karmayoga-service/src/accountcal/caldav.rs` builds `libdav`'s
 transport on `tower_service::Service<http::Request<String>>`, so this
 crate's request and response types (https://github.com/hyperium/http), dual
 MIT/Apache-2.0 licensed, are what that adapter is written against.
@@ -1276,7 +1276,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## 28. cpal
 
-`crates/everyday-app/src/capture.rs` opens the microphone and, through the
+`crates/karmayoga-app/src/capture.rs` opens the microphone and, through the
 same call on the default output device, the system's audio loopback, using
 `cpal` (https://github.com/RustAudio/cpal), Apache-2.0 licensed -- the
 library chosen in `docs/plans/meeting-notes.md`'s "The libraries" for
@@ -1713,7 +1713,7 @@ SOFTWARE.
 pyannote's speaker segmentation, a speaker-embedding model, and both local
 recognisers through `sherpa-onnx` (https://github.com/k2-fsa/sherpa-onnx),
 Apache-2.0 licensed. It links its own native library statically; see
-`crates/everyday-service/Cargo.toml`'s own comment on that dependency and
+`crates/karmayoga-service/Cargo.toml`'s own comment on that dependency and
 `.github/workflows/check.yml` for how CI caches the prebuilt archive it
 downloads at build time.
 
@@ -2029,7 +2029,7 @@ text, reproduced there rather than twice.
 
 ## 37. Parakeet TDT 0.6B v3 (model)
 
-One of the two local recognisers `everyday_core::meeting::LocalModel` offers is
+One of the two local recognisers `karmayoga_core::meeting::LocalModel` offers is
 NVIDIA's Parakeet TDT 0.6B v3, as sherpa-onnx exports it
 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), downloaded from
 sherpa-onnx's `asr-models` release (`sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`)
@@ -2561,7 +2561,7 @@ THE SOFTWARE.
 
 ## 42. image
 
-`crates/everyday-service/src/covers.rs` reads a cover -- JPEG, PNG, WebP,
+`crates/karmayoga-service/src/covers.rs` reads a cover -- JPEG, PNG, WebP,
 GIF or BMP -- and shrinks it to the size a cover is drawn at with `image`
 (https://github.com/image-rs/image), dual-licensed MIT or Apache-2.0, used
 here under MIT. Reproduced below.
@@ -2590,7 +2590,7 @@ SOFTWARE.
 
 ## 43. jpeg-encoder
 
-`crates/everyday-service/src/covers.rs` encodes every stored cover as a JPEG
+`crates/karmayoga-service/src/covers.rs` encodes every stored cover as a JPEG
 with `jpeg-encoder` (https://github.com/vstroebel/jpeg-encoder), licensed
 "(MIT OR Apache-2.0) AND IJG", used here under MIT and the IJG terms.
 
@@ -3573,7 +3573,7 @@ SOFTWARE.
 
 ## 45. Yogurt
 
-`crates/everyday-core/src/meeting/{echo,hallucination,vocab,prompt}.rs`
+`crates/karmayoga-core/src/meeting/{echo,hallucination,vocab,prompt}.rs`
 follow Yogurt's approach to echo detection, made-up recogniser lines,
 meeting vocabulary and the shape of a meeting note, and reuse its
 thresholds and word lists.
@@ -3674,7 +3674,7 @@ text, reproduced there rather than again.
 
 ## 49. Decision 3.0 models (d3-lite, d3-nano, d3-mini)
 
-The decision models `everyday_core::llm::LocalDecisionModel` offers are vLLM
+The decision models `karmayoga_core::llm::LocalDecisionModel` offers are vLLM
 Semantic Router's Decision 3.0 models (https://huggingface.co/vllm-sr/d3-lite,
 `d3-nano`, `d3-mini`), fine-tuned from Alibaba Cloud's Qwen3.5 0.8B, 2B and 4B
 (https://huggingface.co/Qwen), as llama.cpp's own GGUF conversions

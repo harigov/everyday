@@ -6,7 +6,7 @@
   //
   // Clicking goes through `openExternal` in the desktop app, because a plain
   // `target="_blank"` there would ask the webview to navigate rather than
-  // the system browser. Served to a browser by `everyday-server`, there is
+  // the system browser. Served to a browser by `karmayoga-server`, there is
   // no shell to ask, and the anchor's own default does the job.
 
   import { openExternal } from '../lib/open-external'

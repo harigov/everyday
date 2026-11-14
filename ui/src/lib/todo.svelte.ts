@@ -91,7 +91,7 @@ export type View = 'list' | 'board'
 export type { GroupBy }
 
 const viewPref = pref<View | null>(
-  'everyday.todo.view',
+  'karmayoga.todo.view',
   (raw) => (raw === 'list' || raw === 'board' ? raw : null),
   null,
 )

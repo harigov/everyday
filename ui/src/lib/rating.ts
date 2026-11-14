@@ -1,6 +1,6 @@
 // Ratings, on the way from storage to the screen and back.
 //
-// Scores are stored out of a hundred (see `everyday_core::library`) and shown
+// Scores are stored out of a hundred (see `karmayoga_core::library`) and shown
 // out of five, and these two functions are the only places that conversion
 // happens. Keeping them here rather than inline in a component is what makes
 // "four and a half stars, reloaded, is still four and a half stars" a

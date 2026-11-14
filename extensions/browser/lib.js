@@ -1,4 +1,4 @@
-// Every Day Screen time, the browser extension: the pure part.
+// Karma Yoga Screen time, the browser extension: the pure part.
 //
 // Nothing in this file touches `chrome.*`, storage or the network, so the
 // same file is loaded three ways:
@@ -47,7 +47,7 @@
 
   // What a connection code starts with. The rest is base64url (no padding)
   // of `{"endpoint": "...", "token": "...", "device": "..."}`.
-  const CODE_PREFIX = "everyday-screentime:";
+  const CODE_PREFIX = "karmayoga-screentime:";
 
   // Two observations of the same host further apart than this are two runs.
   // The background page looks at least every thirty seconds while anything

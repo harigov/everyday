@@ -30,7 +30,7 @@ const OPEN_DELAY_MS = 140
 const CLOSE_DELAY_MS = 320
 
 const foldedPref = pref<Section[]>(
-  'everyday.sidebar.folded',
+  'karmayoga.sidebar.folded',
   (raw) => {
     const list: unknown = JSON.parse(raw ?? '[]')
     // Anything not an app today is dropped rather than trusted: a section

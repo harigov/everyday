@@ -1,0 +1,754 @@
+//! [`run_account`]: one account's whole supervised task.
+//!
+//! Connect, sync every mailbox, drain the outbox, hold `IDLE` (or poll, on a
+//! server without it) until something changes or the account's own sync
+//! interval elapses ([`Account::sync_interval`], a minute unless the person
+//! chose otherwise -- see [`poll_interval`]), and do it all again -- for as
+//! long as the supervisor keeps this key alive. See `crate::supervisor`'s
+//! module doc for the restart-with-backoff and stop-on-lock machinery this
+//! task's `Result` and `Ok(Outcome::Done)` answers drive.
+//!
+//! # Telling an open window what a pass brought in
+//!
+//! Nothing a pass writes goes through a command, so nothing a command would
+//! announce is announced for it: left alone, a window showing the inbox
+//! keeps drawing the list it loaded before the new mail arrived. So once a
+//! pass has finished, the loop below asks the
+//! [`StatusRegistry`](crate::mailsync::status::StatusRegistry) whether
+//! `passes::sync_headers` marked anything changed on the way through, and
+//! if it did, raises one batch [`Kind::Thread`] change -- no `id`, which
+//! every client reads as "reload the list" -- for the whole pass.
+//!
+//! Generic over [`MailSession`] and over how a connection is made
+//! ([`run_account_with`]'s `connect`), so [`tests`](super::tests) can drive
+//! the whole state machine -- auth failure, a network error, a clean stop --
+//! against a fake session with no socket at all. [`run_account`] is the one
+//! production instance, built on [`karmayoga_mail::imap::ImapSession`].
+//!
+//! # Where the outbox is drained
+//!
+//! `crate::outbox`'s own module docs name three moments a drain should
+//! happen. [`drain_until_caught_up`], called once at the top of the loop
+//! below, is two of them at once: the loop's very first turn follows
+//! [`connect`](run_account_with)'s success directly ("after connecting"),
+//! and every later turn is reached only by falling out of the `IDLE`/poll
+//! `select!` at the bottom of the loop ("after every `IDLE` wake"). The
+//! third -- "whenever [`Service::outbox_notify`] fires" -- is its own arm in
+//! both of that `select!`'s branches, `continue`ing straight back round to
+//! the drain at the top rather than waiting out the rest of the poll or
+//! `IDLE` call.
+//!
+//! A fourth arm, [`sleep_until_due`], answers a moment none of those three
+//! cover: an op that is enqueued *not yet due* -- undo-send's five-to-thirty
+//! second window, send-at, a backed-off retry -- becomes due while this
+//! task is already parked in `IDLE` or the poll sleep, with nobody about to
+//! notify it and no reason for `IDLE` itself to fire. Without this, that op
+//! would simply wait for the sync interval (a minute by default, up to a
+//! day if the person chose that) or the next unrelated wake to come around.
+//! [`next_pending_wake`] reads the earliest `not_before` still `Pending` for
+//! this account once per loop turn, and the `select!`s race a sleep to
+//! exactly that instant alongside their other arms -- `None`, when nothing
+//! is pending, is a branch that simply never wins.
+//!
+//! # Cancelling `IDLE` without losing the connection
+//!
+//! [`MailSession::idle`] takes the session's own connection out for as long
+//! as the call lasts and only hands it back once the call itself returns --
+//! see [`karmayoga_mail::imap::ImapSession::idle`]'s own docs. Racing the
+//! call in a `tokio::select!` the way an earlier version of this loop did
+//! is exactly wrong, then: the instant any other arm wins, the idle future
+//! is dropped mid-flight, and with it the connection `session_mut` would
+//! need for the very next drain -- every op due right after an `IDLE` wake
+//! (which is most of them, since a nudge or an outbox notification is what
+//! wakes this loop) failed with a non-retryable "mid-IDLE" error and was
+//! reverted. [`wait_for_wake`] is this loop's one race of everything that
+//! should end an `IDLE` early; rather than racing it *against* the call,
+//! the loop below sends on a wake channel `session.idle` is watching and
+//! then awaits the call through to its own clean return, exactly the way
+//! this same loop already asks `idle` to stop for the supervisor's own
+//! `stop` signal. As defence in depth, a session found missing between
+//! drains -- which this fix means should no longer actually happen --
+//! reads as [`MailError::Network`] (retryable) rather than
+//! [`MailError::Protocol`] (permanent); see
+//! [`karmayoga_mail::imap::ImapSession::session_mut`]'s own docs.
+
+use std::future::Future;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use karmayoga_core::Vault;
+use karmayoga_core::account::{Account, DEFAULT_SYNC_MINUTES, EndpointSecurity};
+use karmayoga_core::id::AccountId;
+use karmayoga_mail::imap::{self, ImapSession, Security};
+use karmayoga_mail::session::{Credential, IdleEvent, MailError, MailSession};
+use tokio::sync::watch;
+
+use crate::error::CommandResult;
+use crate::events::{Change, Kind, Op};
+use crate::mailsync::discovery::{LabelMailboxes, SyncedMailbox};
+use crate::mailsync::ingest::ThreadIndex;
+use crate::mailsync::sender::LazySmtpSender;
+use crate::mailsync::status::Phase;
+use crate::mailsync::{credential, passes};
+use crate::service::Service;
+use crate::supervisor::{Outcome, TaskError, TaskResult};
+
+/// What [`poll_interval`] answers when it cannot read the account's own
+/// choice: [`DEFAULT_SYNC_MINUTES`], the same as an account that never made
+/// one. How often the task re-syncs even when nothing has told it to is
+/// otherwise the account's own [`Account::sync_interval`] -- the plan's
+/// "every N minutes for the other mailboxes", with N now the person's to
+/// choose, and what stands in for `IDLE` on a server, or an `IdleEvent`,
+/// that never fires.
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(DEFAULT_SYNC_MINUTES as u64 * 60);
+
+/// How long [`drain_until_caught_up`] waits between drain attempts while ops
+/// remain due, interruptibly -- "a few seconds is plenty" per
+/// `crate::outbox`'s own module docs. `not_before` is what actually paces
+/// retries and undo-send; this is only how promptly a due op is noticed.
+const OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(3);
+
+/// The one production instance of [`run_account_with`]: connects over real
+/// IMAP and sends over real SMTP, lazily. What
+/// [`crate::mailsync::wiring::ensure_account_task`] registers with the
+/// supervisor.
+pub async fn run_account(
+    svc: Arc<Service>,
+    vault: Arc<Vault>,
+    account_id: AccountId,
+    stop: watch::Receiver<bool>,
+) -> TaskResult {
+    run_account_with(svc, vault, account_id, stop, connect_over_imap, LazySmtpSender::new).await
+}
+
+async fn connect_over_imap(
+    account: Account,
+    credential: Credential,
+) -> karmayoga_mail::session::Result<ImapSession> {
+    let security = match account.imap.security {
+        EndpointSecurity::Tls => Security::Tls,
+        EndpointSecurity::StartTls => Security::StartTls,
+    };
+    imap::connect(&account.imap.host, account.imap.port, security, credential).await
+}
+
+/// One account's whole task, generic over the session type and how one is
+/// obtained, and over the sender type and how *it* is built -- see the
+/// module docs. `build_sender` is called once, after a live session is in
+/// hand, with the same `Account` [`connect`](Self) used -- production hands
+/// it [`LazySmtpSender::new`] directly, since that function's own signature
+/// already matches; a test hands it a closure building a fake.
+///
+/// Every attempt that ends in an error is counted towards the account's
+/// outage, and one that has gone on long enough is said -- see
+/// [`crate::trouble`]. Counted here, around the whole attempt, because an
+/// attempt ends in an error at a dozen places and a missed one would be an
+/// outage nobody hears about.
+pub async fn run_account_with<S, C, Fut, T, B>(
+    svc: Arc<Service>,
+    vault: Arc<Vault>,
+    account_id: AccountId,
+    stop: watch::Receiver<bool>,
+    connect: C,
+    build_sender: B,
+) -> TaskResult
+where
+    S: MailSession,
+    C: Fn(Account, Credential) -> Fut,
+    Fut: Future<Output = karmayoga_mail::session::Result<S>>,
+    T: karmayoga_mail::outbox::Sender,
+    B: FnOnce(Account, Arc<Service>, Arc<Vault>) -> T,
+{
+    let attempt =
+        run_attempt(svc.clone(), vault.clone(), account_id, stop, connect, build_sender).await;
+    if let Err(e) = &attempt {
+        // Never reached the server, as opposed to reached it and been refused:
+        // what `crate::trouble` needs to tell a machine that is offline from
+        // an account that has stopped.
+        let unreachable =
+            e.downcast_ref::<MailError>().is_some_and(|m| matches!(m, MailError::Network(_)));
+        crate::trouble::mail_failed(&svc, &vault, account_id, &e.to_string(), unreachable);
+    }
+    attempt
+}
+
+/// One attempt of [`run_account_with`]: connect, then pass, drain and wait
+/// until stopped or something fails.
+async fn run_attempt<S, C, Fut, T, B>(
+    svc: Arc<Service>,
+    vault: Arc<Vault>,
+    account_id: AccountId,
+    mut stop: watch::Receiver<bool>,
+    connect: C,
+    build_sender: B,
+) -> TaskResult
+where
+    S: MailSession,
+    C: Fn(Account, Credential) -> Fut,
+    Fut: Future<Output = karmayoga_mail::session::Result<S>>,
+    T: karmayoga_mail::outbox::Sender,
+    B: FnOnce(Account, Arc<Service>, Arc<Vault>) -> T,
+{
+    if *stop.borrow() {
+        return Ok(Outcome::Done);
+    }
+
+    // The account may have been deleted, or had mail switched off, between
+    // the supervisor deciding to (re)start this key and this attempt
+    // actually running.
+    let Ok(account) = vault.account(account_id) else { return Ok(Outcome::Done) };
+    if !account.services.mail {
+        return Ok(Outcome::Done);
+    }
+
+    let Some(packs) = svc.packs() else {
+        return Err(unavailable("the mail pack store is not open"));
+    };
+    let Some(index) = svc.mail_index() else {
+        return Err(unavailable("the mail search index is not open"));
+    };
+    let statuses = svc.mail_statuses().unwrap_or_default();
+    // Before connecting, so a long first scan leaves no session idling.
+    passes::key_existing_mail(
+        &vault,
+        account_id,
+        &packs,
+        &index,
+        svc.mail_unread_cache().as_ref(),
+        &statuses,
+    )
+    .await;
+    passes::recount_draft_unread(&vault, account_id, svc.mail_unread_cache().as_ref(), &statuses)
+        .await;
+    statuses.set_phase(account_id, Phase::Connecting, 0, 0);
+
+    let credential = match credential::resolve(&svc, &vault, &account).await {
+        credential::Resolved::Ready(c) => c,
+        credential::Resolved::NeedsSignIn(reason) => {
+            credential::mark_needs_sign_in(&vault, &account, &reason, svc.now());
+            crate::trouble::sign_in_needed(&svc, &vault, account_id);
+            statuses.set_idle(account_id);
+            return Ok(Outcome::Done);
+        }
+        credential::Resolved::Transient(message) => {
+            statuses.set_error(account_id, message.clone());
+            // The provider's sign-in endpoint could not be reached, or did not
+            // answer sensibly: as far as an outage goes, the server was not
+            // reached.
+            return Err(Box::new(MailError::Network(message)));
+        }
+    };
+
+    // The credential IMAP just rejected may be a cached access token that
+    // is merely stale -- forgotten so the *next* attempt (after the person
+    // signs in again, or on this same account's next restart) resolves a
+    // genuinely fresh one rather than handing out the same bad token again.
+    // See `crate::mailsync::sender`'s module docs for the equivalent
+    // reasoning on the SMTP side.
+    let mut session = match connect(account.clone(), credential).await {
+        Ok(session) => session,
+        Err(e) => {
+            return handle_session_error(&svc, &vault, &account, account_id, &statuses, e).await;
+        }
+    };
+
+    let identities: Vec<String> = crate::mailai::own_addresses(&account).into_iter().collect();
+    let ctx = passes::SyncContext {
+        vault: &vault,
+        account_id,
+        packs,
+        index,
+        statuses: &statuses,
+        attachment_cap_bytes: account.attachment_cap_bytes,
+        index_commit: passes::CommitPacer::new(),
+        unread_cache: svc.mail_unread_cache(),
+        contacts: svc.mail_contacts(),
+        identities,
+    };
+    let mut labels = LabelMailboxes::new(&vault, account_id);
+    let mut threads = ThreadIndex::new();
+    // `sync_account`'s way of waking this task early -- see
+    // `StatusRegistry::nudge`.
+    let mut nudged = statuses.subscribe(account_id);
+    // What a write command's `Service::notify_outbox` wakes -- see the
+    // module docs' "where the outbox is drained".
+    let outbox_notify = svc.outbox_notify(account_id);
+    let sender = build_sender(account.clone(), svc.clone(), vault.clone());
+
+    // Before this task's very first drain: any op a previous run of this
+    // same account left `InFlight` -- stranded by a crash between claiming
+    // it and recording how it went -- goes back to work now, rather than
+    // sitting forever waiting for a drain that already happened. See
+    // `crate::outbox`'s own module docs for why nothing else ever notices.
+    if let Err(e) = crate::outbox::recover_inflight_ops(&svc, account_id, &mut session).await {
+        statuses.set_error(account_id, e.to_string());
+        return Err(e.to_string().into());
+    }
+
+    // `None` on every fresh task, which is what gives the first idle moment
+    // after an unlock its one attempt regardless of how recently some
+    // *earlier* task for this account last compacted -- see
+    // `maybe_compact`'s own docs for the whole of the rate limit.
+    let mut last_compaction_attempt: Option<Instant> = None;
+
+    loop {
+        if *stop.borrow() {
+            return Ok(Outcome::Done);
+        }
+
+        if let Err(e) =
+            drain_until_caught_up(&svc, account_id, &mut session, &sender, &mut stop).await
+        {
+            statuses.set_error(account_id, e.to_string());
+            return Err(e.to_string().into());
+        }
+        if *stop.borrow() {
+            return Ok(Outcome::Done);
+        }
+
+        // Mail somebody wants to hear about is announced the moment its batch
+        // is stored -- see `announce_new_mail` -- rather than once every other
+        // mailbox and every body has been fetched too, which on a large
+        // account, or behind a message with a big attachment, is a while.
+        // Waited on beside the pass, never instead of it: the pass is only
+        // ever finished, not dropped.
+        let passed = {
+            let news = statuses.news(account_id);
+            let pass = passes::sync_once(&ctx, &mut session, &mut labels, &mut threads);
+            tokio::pin!(pass);
+            loop {
+                tokio::select! {
+                    passed = &mut pass => break passed,
+                    () = news.notified() => announce_new_mail(&svc, &statuses, account_id),
+                }
+            }
+        };
+        let mailboxes = match passed {
+            Ok(mailboxes) => mailboxes,
+            Err(e) => {
+                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                    .await;
+            }
+        };
+        let synced_at = svc.now();
+        credential::mark_ok(&vault, &account, synced_at);
+        statuses.set_synced(account_id, synced_at);
+        crate::trouble::mail_synced(&svc, &vault, account_id);
+        // See the module docs' "telling an open window": a background pass
+        // writes under no command, so this is the only announcement its new
+        // mail ever gets. One batch change for the whole pass -- not one per
+        // thread, since a first sync lands thousands and the window needs
+        // telling once -- and none at all for a pass that found nothing new,
+        // which with a one-minute interval is nearly every pass.
+        if statuses.take_changed(account_id) {
+            svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+        }
+        // Whatever was noted after the last announcement during the pass --
+        // the replies settled once every mailbox is stored, most often. Taken
+        // even when nothing was noted, so a pass that found none does not
+        // leave an earlier pass's note behind. See `arrivals`.
+        announce_new_mail(&svc, &statuses, account_id);
+        // New inbox mail is sorted now, not at the scheduler's next tick: under
+        // most notification rules it is the sorting that decides whether it is
+        // announced at all. Bodies are in by now, and the model reads them.
+        if statuses.take_arrived(account_id) {
+            svc.run_mail_passes(true);
+        }
+        statuses.set_phase(account_id, Phase::Idling, 0, 0);
+
+        // Between passes, with the bodies pass idle and the outbox already
+        // drained above: see `packstore`'s own module docs for why nowhere
+        // else is safe. Rate-limited internally; see `maybe_compact`'s own
+        // docs.
+        maybe_compact(
+            &vault,
+            &ctx.packs,
+            account_id,
+            &stop,
+            &mut last_compaction_attempt,
+            svc.instant(),
+        )
+        .await;
+
+        // Undo-send and send-at are both a `Pending` op whose `not_before`
+        // is the only thing standing between it and a drain; so is a
+        // backed-off retry. Waiting out the sync interval (or `IDLE`, which
+        // may not fire again for a while on a quiet mailbox) for one of
+        // those would mean a five-second undo window taking up to a minute
+        // -- or, on an account set to sync hourly, an hour -- to actually
+        // send. `next_wake` is `None` whenever nothing is pending, in which
+        // case its branch below never fires -- exactly the outcome racing it
+        // against `stop`, a nudge and a notify already gives the other
+        // branches.
+        let next_wake = next_pending_wake(&vault, account_id).await;
+
+        // Read every turn rather than once when the task started, so an
+        // interval changed in Settings applies from the very next wait
+        // without restarting the task -- and `save_account` nudges this task
+        // as it saves, ending whatever wait the old interval had it in.
+        let poll = poll_interval(&vault, account_id).await;
+
+        // `IDLE` on the inbox -- All Mail, on Gmail, since that is where its
+        // messages physically live -- re-issued (inside `ImapSession::idle`
+        // itself) every twenty-five minutes; this task's own `poll` is
+        // shorter unless the person chose otherwise, so the mailboxes `IDLE`
+        // says nothing about still get their `changes_since` sweep on a
+        // cadence, not only when the inbox happens to change.
+        let idle_target = idle_mailbox(&mailboxes);
+        let can_idle = session.capabilities().idle && idle_target.is_some();
+        if !can_idle {
+            match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll).await {
+                Wake::Stop => return Ok(Outcome::Done),
+                Wake::Nudge | Wake::OutboxNotify | Wake::Due | Wake::Poll => continue,
+            }
+        }
+
+        // `sync_once` above leaves the session `SELECT`ed on whichever
+        // mailbox its own last pass looked at -- almost never the inbox,
+        // since `discovery::discover` sorts it first and every mailbox
+        // after it is visited later. `IDLE` reports activity only for the
+        // mailbox currently selected, so without this, new inbox mail
+        // raises no `EXISTS` here at all and this task would sit `IDLE` on
+        // some other mailbox until the sync interval came back around.
+        if let Some(target) = idle_target {
+            let remote_name = target.remote_name.clone();
+            if let Err(e) = session.select(&remote_name).await {
+                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                    .await;
+            }
+        }
+
+        // `IDLE`, watching a wake channel this loop turn owns for exactly
+        // as long as the call lasts. `session.idle` sends `DONE` and hands
+        // the session back the moment `wake_rx` changes -- see
+        // `MailSession::idle`'s own docs -- so every reason this task has
+        // to stop waiting (the supervisor's `stop`, a nudge, an outbox
+        // notification, a due op's deadline, or simply the sync interval
+        // elapsing) ends the `IDLE` the same clean way, never by dropping
+        // the call outright the way racing it in a bare `select!` used to.
+        // Racing the call *itself* below is only ever won by `idle`
+        // finishing on its own account (real activity, or its own internal
+        // re-issue reporting an error) -- every other winner sends on
+        // `wake_tx` and then awaits `idle_call` through to completion
+        // rather than abandoning it.
+        let (wake_tx, wake_rx) = watch::channel(());
+        let idle_call = session.idle(wake_rx);
+        tokio::pin!(idle_call);
+        let (outcome, wake) = tokio::select! {
+            outcome = &mut idle_call => (outcome, None),
+            wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll) => {
+                let _ = wake_tx.send(());
+                (idle_call.await, Some(wake))
+            }
+        };
+        if matches!(wake, Some(Wake::Stop)) {
+            return Ok(Outcome::Done);
+        }
+        match outcome {
+            Ok(IdleEvent::Activity | IdleEvent::Stopped) => continue,
+            Err(e) => {
+                statuses.set_error(account_id, e.to_string());
+                return Err(Box::new(e));
+            }
+        }
+    }
+}
+
+/// Tell somebody about the mail noted since the last time this was asked, one
+/// notification for all of it, and tell an open window to draw it -- the
+/// notification is no use if clicking it opens a list without the message.
+fn announce_new_mail(
+    svc: &Arc<Service>,
+    statuses: &crate::mailsync::status::StatusRegistry,
+    account_id: AccountId,
+) {
+    let (new_mail, total) = statuses.take_new_mail(account_id);
+    if let Some(notice) =
+        crate::arrivals::new_mail_notice(&account_id.to_string(), &new_mail, total)
+    {
+        if statuses.take_changed(account_id) {
+            svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+        }
+        svc.events().notify(notice);
+    }
+}
+
+/// The mailbox [`run_account_with`] should `IDLE` on: the inbox, or -- on
+/// Gmail, where the inbox is a label rather than a place a message
+/// physically lives, see `crate::mailsync::discovery`'s own module docs --
+/// All Mail. `None` when this account has neither (a server this crate
+/// could not classify at all), in which case the caller falls back to
+/// polling instead.
+fn idle_mailbox(mailboxes: &[SyncedMailbox]) -> Option<&SyncedMailbox> {
+    mailboxes.iter().find(|m| {
+        matches!(
+            m.row.role,
+            karmayoga_core::mail::MailboxRole::Inbox | karmayoga_core::mail::MailboxRole::All
+        )
+    })
+}
+
+/// What every fallible step of this task's live loop -- connecting, one
+/// `sync_once`, selecting the inbox before `IDLE` -- already wants done with
+/// a [`MailError`]: forget a now-stale cached token and ask the person to
+/// sign in again on [`MailError::Auth`], record the server's own text and
+/// keep the account's status in step on [`MailError::Server`], and fall
+/// through to an ordinary retried [`Err`] for anything else (a network
+/// blink, a protocol mismatch this crate's own bug). Written once here
+/// rather than three times inline, since all three call sites want exactly
+/// this and nothing else.
+async fn handle_session_error(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    account_id: AccountId,
+    statuses: &crate::mailsync::status::StatusRegistry,
+    e: MailError,
+) -> TaskResult {
+    match e {
+        MailError::Auth(reason) => {
+            svc.token_cache().forget(&account_id.to_string()).await;
+            credential::mark_needs_sign_in(vault, account, &reason, svc.now());
+            crate::trouble::sign_in_needed(svc, vault, account_id);
+            statuses.set_idle(account_id);
+            Ok(Outcome::Done)
+        }
+        MailError::Server(message) => {
+            credential::mark_error(vault, account, &message, svc.now());
+            Err(message.into())
+        }
+        e => {
+            statuses.set_error(account_id, e.to_string());
+            // Boxed whole, so `run_account_with` can tell a server it never
+            // reached from one that refused.
+            Err(Box::new(e))
+        }
+    }
+}
+
+/// Every reason this task's own `select!`s stop waiting, named so
+/// [`wait_for_wake`]'s callers can tell them apart without repeating the
+/// five-armed race themselves.
+enum Wake {
+    Stop,
+    Nudge,
+    OutboxNotify,
+    Due,
+    Poll,
+}
+
+/// Race the supervisor's stop signal, a `sync_account` nudge, an outbox
+/// notification, a due-but-not-yet op's deadline, and `poll` -- this turn's
+/// sync interval, see [`poll_interval`] -- and report whichever fires first.
+/// The one place both of this task's `select!`s -- the no-`IDLE` poll sleep
+/// and the `IDLE` call's own wake channel -- build their race from, so the
+/// five arms are written once.
+async fn wait_for_wake(
+    stop: &mut watch::Receiver<bool>,
+    nudged: &mut watch::Receiver<()>,
+    outbox_notify: &tokio::sync::Notify,
+    next_wake: Option<Duration>,
+    poll: Duration,
+) -> Wake {
+    tokio::select! {
+        _ = stop.changed() => Wake::Stop,
+        _ = nudged.changed() => Wake::Nudge,
+        () = outbox_notify.notified() => Wake::OutboxNotify,
+        () = sleep_until_due(next_wake) => Wake::Due,
+        () = tokio::time::sleep(poll) => Wake::Poll,
+    }
+}
+
+/// How long this loop turn may wait before a full pass is due regardless:
+/// `account_id`'s own [`Account::sync_interval`], read fresh from the vault
+/// -- see its call site in [`run_account_with`] for why fresh rather than
+/// from the copy the task started with. Falls back to
+/// [`DEFAULT_POLL_INTERVAL`] when the read fails (an account deleted out
+/// from under the task, a vault mid-lock) rather than ending the task over
+/// it: the wait is the one thing here a read error must not make shorter or
+/// longer than an ordinary account's, and the next pass's own reads will
+/// notice anything that actually matters.
+async fn poll_interval(vault: &Arc<Vault>, account_id: AccountId) -> Duration {
+    crate::service::blocking({
+        let vault = vault.clone();
+        move || Ok(vault.account(account_id)?.sync_interval())
+    })
+    .await
+    .unwrap_or(DEFAULT_POLL_INTERVAL)
+}
+
+/// How long until `account_id`'s earliest still-[`OpState::Pending`] op is
+/// due, or `None` when the outbox has nothing pending at all --
+/// [`karmayoga_core::Vault::next_pending_op_at`] read once per loop turn and
+/// converted from a wall-clock instant to a duration the same way
+/// `crate::token_cache::deadline_from` converts a token's expiry, and
+/// clamped at zero for the same reason: a `not_before` that has already
+/// passed (the drain just above did not reach it because `DRAIN_BATCH`
+/// capped the page) must wake this `select!` at once, not underflow it.
+async fn next_pending_wake(vault: &Arc<Vault>, account_id: AccountId) -> Option<Duration> {
+    let at = crate::service::blocking({
+        let vault = vault.clone();
+        move || Ok(vault.next_pending_op_at(account_id)?)
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let remaining = jiff::Timestamp::now().duration_until(at);
+    Some(if remaining.is_negative() { Duration::ZERO } else { remaining.unsigned_abs() })
+}
+
+/// The `select!` branch built from [`next_pending_wake`]'s answer: a real
+/// sleep when there is a due time to wake for, or a future that never
+/// completes when there is none, so omitting this branch's effect entirely
+/// needs no `if` around the `select!` itself -- [`std::future::pending`] is
+/// exactly as inert as leaving the arm out.
+async fn sleep_until_due(remaining: Option<Duration>) {
+    match remaining {
+        Some(d) => tokio::time::sleep(d).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Drain `account_id`'s outbox, and keep draining -- on
+/// [`OUTBOX_RETRY_INTERVAL`], interruptibly -- for as long as
+/// [`crate::outbox::DrainReport::pending`] says there is more due work.
+/// Returns once a pass comes back short, or the moment `stop` fires. See the
+/// module docs' "where the outbox is drained" for the three moments this is
+/// reached from.
+async fn drain_until_caught_up<S: MailSession, T: karmayoga_mail::outbox::Sender>(
+    svc: &Arc<Service>,
+    account_id: AccountId,
+    session: &mut S,
+    sender: &T,
+    stop: &mut watch::Receiver<bool>,
+) -> CommandResult<()> {
+    loop {
+        let report = crate::outbox::drain_outbox(svc, account_id, session, sender).await?;
+        if !report.pending || *stop.borrow() {
+            return Ok(());
+        }
+        tokio::select! {
+            _ = stop.changed() => return Ok(()),
+            () = tokio::time::sleep(OUTBOX_RETRY_INTERVAL) => {}
+        }
+    }
+}
+
+/// How often [`maybe_compact`] is willing to even attempt compaction for
+/// one account -- "at most once an hour", per the plan. Also what gives the
+/// first idle moment after an unlock its one attempt: `last_attempt` starts
+/// `None` on every freshly started task, and [`compaction_due`] treats
+/// `None` as due immediately.
+const COMPACTION_MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Is it time for [`maybe_compact`] to attempt compaction again, given the
+/// last time it did? A free function, tested directly against synthetic
+/// [`Instant`]s rather than through a real hour of wall-clock time.
+pub(crate) fn compaction_due(last_attempt: Option<Instant>, now: Instant) -> bool {
+    last_attempt.is_none_or(|t| now.saturating_duration_since(t) >= COMPACTION_MIN_INTERVAL)
+}
+
+/// A one-line, content-free summary of one [`compact_account`] call, for
+/// [`maybe_compact`]'s own info-level log line -- bytes reclaimed and packs
+/// rewritten, nothing about what was in them.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct CompactionSummary {
+    pub(crate) bytes_reclaimed: u64,
+    pub(crate) packs_rewritten: usize,
+    pub(crate) packs_reclaimed: usize,
+}
+
+/// Compact `account_id`'s pack store when [`COMPACTION_MIN_INTERVAL`] has
+/// passed since the last attempt and doing so is actually worthwhile --
+/// see [`compact_account`] for the sequence this runs, and `packstore`'s
+/// own module docs for why nowhere but here, between an account's sync
+/// passes, is safe. `last_attempt` is a `run_account_with`-loop-local
+/// variable, stamped every time this runs whether or not it found anything
+/// to do, which is what makes the rate limit "at most once an hour" rather
+/// than "at most once an hour *that finds work*".
+async fn maybe_compact(
+    vault: &Arc<Vault>,
+    packs: &Arc<dyn karmayoga_core::packstore::PackStore>,
+    account_id: AccountId,
+    stop: &watch::Receiver<bool>,
+    last_attempt: &mut Option<Instant>,
+    now: Instant,
+) {
+    if !compaction_due(*last_attempt, now) {
+        return;
+    }
+    *last_attempt = Some(now);
+
+    match compact_account(vault, packs, account_id, stop).await {
+        Ok(Some(summary)) => {
+            tracing::info!(
+                account = %account_id,
+                bytes_reclaimed = summary.bytes_reclaimed,
+                packs_rewritten = summary.packs_rewritten,
+                packs_reclaimed = summary.packs_reclaimed,
+                "compacted the mail pack store"
+            );
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(account = %account_id, error = %e, "mail pack compaction failed");
+        }
+    }
+}
+
+/// The compaction sequence itself, off the account task's own thread:
+/// snapshot, `compact`, `remap_packs`, `drop_packs`, in that order -- see
+/// [`karmayoga_core::packstore::PackStore::compact`]'s own two-step contract
+/// for why the order matters and what a crash between any two of these
+/// steps recovers into on the *next* call. Returns `Ok(None)` when
+/// [`PackStore::compaction_worthwhile`] says there is nothing to do, which
+/// is the ordinary case on most wakes -- `karmayoga-store-sql`'s
+/// `TablePacks` always says so, making this a cheap no-op on Postgres.
+///
+/// Runs entirely on the blocking pool ([`crate::service::blocking`]) so a
+/// large rewrite never stalls this account's async task, and honours
+/// `stop` between packs (never mid-rewrite of one) via `compact`'s own
+/// `should_continue` callback -- a lock taken away mid-compaction still
+/// leaves every message readable, just with fewer packs reclaimed than a
+/// full run would have managed; the next attempt picks up the rest.
+///
+/// Exposed at `pub(crate)` rather than folded into [`maybe_compact`] so a
+/// test can call it directly, bypassing the hourly rate limit that
+/// function alone enforces.
+pub(crate) async fn compact_account(
+    vault: &Arc<Vault>,
+    packs: &Arc<dyn karmayoga_core::packstore::PackStore>,
+    account_id: AccountId,
+    stop: &watch::Receiver<bool>,
+) -> CommandResult<Option<CompactionSummary>> {
+    let vault = vault.clone();
+    let packs = packs.clone();
+    let stop = stop.clone();
+    crate::service::blocking(move || {
+        let account = account_id.to_string();
+        let snapshot = vault.mail_referenced_snapshot(packs.as_ref(), account_id)?;
+        if !packs.compaction_worthwhile(&account, &snapshot)? {
+            return Ok(None);
+        }
+        let should_continue = || !*stop.borrow();
+        let outcome = packs.compact(&account, &snapshot, &should_continue)?;
+        if outcome.is_empty() {
+            return Ok(Some(CompactionSummary::default()));
+        }
+        // The two-step contract's middle step: durably repoint everything
+        // that named an old address before anything old is ever dropped.
+        vault.remap_packs(account_id, &outcome.remap)?;
+        packs.drop_packs(&account, &outcome.obsolete)?;
+        Ok(Some(CompactionSummary {
+            bytes_reclaimed: outcome.bytes_reclaimed,
+            packs_rewritten: outcome.packs_rewritten,
+            packs_reclaimed: outcome.obsolete.len(),
+        }))
+    })
+    .await
+}
+
+fn unavailable(message: &str) -> TaskError {
+    let error: TaskError = message.to_string().into();
+    error
+}

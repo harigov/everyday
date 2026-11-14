@@ -22,23 +22,23 @@ section before this one if you are picking the work up.
 ## The shape
 
 ```
-everyday-core            gains: a sensitivity class per domain; the
+karmayoga-core            gains: a sensitivity class per domain; the
                          read-pool/single-writer store split
-everyday-vault           unchanged
-everyday-service   NEW   command bodies, feeds, websearch, agent harness, media
+karmayoga-vault           unchanged
+karmayoga-service   NEW   command bodies, feeds, websearch, agent harness, media
                          planning. One entry point: call(ctx, name, json) -> json.
                          Assembled from per-domain modules. Events out through a
                          sink trait. Owns the protocol version and the schema
                          export the interface's types are generated from.
-everyday-server    NEW   one router over the service, served on TLS/TCP for
+karmayoga-server    NEW   one router over the service, served on TLS/TCP for
                          remote clients and on a local socket for the CLI and the
                          browser-extension host. Pairing, scoped device tokens,
                          self-signed cert, listen address, audit.
-everyday-app             window, tray, everyday:// adapter, and ONE generic Tauri
+karmayoga-app             window, tray, karmayoga:// adapter, and ONE generic Tauri
                          command that either runs call() locally or forwards it.
-                         Embeds everyday-server behind a "Share" toggle and always
+                         Embeds karmayoga-server behind a "Share" toggle and always
                          serves the local socket.
-everyday-cli             gains `everyday serve`, `everyday do <tool>`, and the
+karmayoga-cli             gains `karmayoga serve`, `karmayoga do <tool>`, and the
                          ability to write through a running app via the socket.
 ui                       api.ts routes through the generic command; generated
                          types and client; the palette; the connect screen; the
@@ -82,7 +82,7 @@ with a message naming both versions, the way a newer schema is refused today.
 one connection for both SQLite and Postgres, so every read from every client
 would queue behind every other, and one slow query would stall them all.
 
-- In `everyday-store-sql`, split the single `Mutex<Box<dyn Connection>>` into a writer and a pool of readers behind the existing `Connection` trait. Writes take the writer; reads take any reader. The SQLite driver opens the pool in WAL mode, which allows many readers beside one writer. The Postgres driver hands out pooled connections.
+- In `karmayoga-store-sql`, split the single `Mutex<Box<dyn Connection>>` into a writer and a pool of readers behind the existing `Connection` trait. Writes take the writer; reads take any reader. The SQLite driver opens the pool in WAL mode, which allows many readers beside one writer. The Postgres driver hands out pooled connections.
 - The vault's own "one write lands at a time" rule is unchanged; it moves onto the writer.
 - Nothing holds a connection across a network await. Verify by reading every command that fetches: today the feed and the lookup both fetch first and save after, which is the pattern to keep.
 
@@ -92,13 +92,13 @@ waited for the other.
 
 **Done when** a read never waits for an unrelated read.
 
-## Phase 1: extract `everyday-service` (no behaviour change)
+## Phase 1: extract `karmayoga-service` (no behaviour change)
 
 **Goal.** The command bodies compile without Tauri, and the desktop shell calls
 them through one generic command. This is the refactor the README promised
 when it said a second shell would not be a rewrite.
 
-**Move out of `crates/everyday-app/src/`** into `crates/everyday-service/src/`:
+**Move out of `crates/karmayoga-app/src/`** into `crates/karmayoga-service/src/`:
 
 | From | To | Notes |
 |---|---|---|
@@ -153,7 +153,7 @@ they are bytes rather than JSON.
 `Change { kind, id, op, origin }` carries the caller so a client is not told
 about its own writes.
 
-**Schema export.** A `cargo run -p everyday-service --bin schema` (or a test
+**Schema export.** A `cargo run -p karmayoga-service --bin schema` (or a test
 that writes to a fixture) emits JSON schema for every command's arguments
 and result. `ui/scripts/gen-api.mjs` turns it into `ui/src/lib/generated/`
 containing the types that `types.ts` holds by hand today and a typed `api`
@@ -173,13 +173,13 @@ backend is untouched.
 
 **Tests.**
 
-- `everyday-service/tests/call.rs`: open a temp SQLite vault, `call("list_journals", {})`, `call("save_entry", …)` then `call("get_entry", …)`, an unknown name, a wrong-typed argument, a scope the context lacks, and the same write twice with one request id.
+- `karmayoga-service/tests/call.rs`: open a temp SQLite vault, `call("list_journals", {})`, `call("save_entry", …)` then `call("get_entry", …)`, an unknown name, a wrong-typed argument, a scope the context lacks, and the same write twice with one request id.
 - `make lint` and `make test` green. Run the app and walk each app once.
 
 **Done when** the desktop app behaves identically, the service crate has no
 `tauri` in its dependency tree, and the interface types are generated.
 
-## Phase 2: `everyday-server`
+## Phase 2: `karmayoga-server`
 
 **Goal.** One router serves an open vault to paired clients over TLS and to
 local processes over a socket.
@@ -197,11 +197,11 @@ local processes over a socket.
 | `POST /pair` | pairing code | in: `{ code, deviceName, scopes }`; out: `{ token, deviceId, scopes }` |
 | `POST /call/:name` | bearer or socket peer | JSON args in, JSON result out, `{ code, message }` on error; a `streams` command answers NDJSON |
 | `POST /blob` | same | raw body in, blob id out; sized so a chunked, resumable form can be added beside it |
-| `GET /blob/:id` | same | honours `Range`; uses `everyday_vault::media::plan` exactly as `protocol.rs` does |
+| `GET /blob/:id` | same | honours `Range`; uses `karmayoga_vault::media::plan` exactly as `protocol.rs` does |
 | `GET /events` | same | SSE: `notify`, `changed`, `lockState` |
 
-Every request carries `X-Everyday-Protocol: <n>`, `X-Everyday-Client: <deviceId>`
-and, on writes, `X-Everyday-Request: <id>`. A protocol mismatch is `426`
+Every request carries `X-KarmaYoga-Protocol: <n>`, `X-KarmaYoga-Client: <deviceId>`
+and, on writes, `X-KarmaYoga-Request: <id>`. A protocol mismatch is `426`
 naming both versions.
 
 **Auth.**
@@ -222,19 +222,19 @@ runs `auto_lock_if_idle` and emits `lockState`. `touch` from any client
 counts. `unlock` over the wire is allowed by default and is a setting,
 `allowRemoteUnlock`, in `server.json` with the listen address.
 
-**CLI.** `everyday serve --vault DIR --listen ADDR [--pair]`. `--pair` prints
+**CLI.** `karmayoga serve --vault DIR --listen ADDR [--pair]`. `--pair` prints
 the pairing URL and a QR code in the terminal. Starts locked unless
-`EVERYDAY_PASSWORD` is set. Every existing CLI command tries the local socket
-first and falls back to opening the vault itself, so `everyday new` while the
+`KARMAYOGA_PASSWORD` is set. Every existing CLI command tries the local socket
+first and falls back to opening the vault itself, so `karmayoga new` while the
 app is open writes through the app instead of coming up read-only.
 
 **Pairing URL.**
 
 ```
-everyday://pair?host=100.64.0.12:7397&fp=<hex>&code=<code>&name=<vault name>
+karmayoga://pair?host=100.64.0.12:7397&fp=<hex>&code=<code>&name=<vault name>
 ```
 
-**Tests.** `everyday-server/tests/`: start on `127.0.0.1:0` and on a temp
+**Tests.** `karmayoga-server/tests/`: start on `127.0.0.1:0` and on a temp
 socket with a temp vault; `hello`; pair then call `list_journals`; a wrong
 code; a revoked token; an expired token; a scope the token lacks; a protocol
 mismatch; upload a blob and read the middle of it with `Range`; SSE receives
@@ -251,11 +251,11 @@ test client can drive both transports.
 the interface does not know the difference beyond a status field.
 
 - `state.rs`: `enum Session { Local(Service), Remote(RemoteClient) }`. `AppState` holds one.
-- `remote.rs`: `RemoteClient` on `reqwest` with HTTP/2, one pooled connection, the pinned certificate and the bearer token. Methods mirror the service: `call`, `put_blob`, `blob_range`, `send_message` (reads NDJSON and pumps the Tauri channel), and an `events` task that re-emits SSE as window events: `everyday://notify`, `everyday://changed`, `everyday://lock-state`. Reconnects with backoff; after three failures emits a notice the interface draws as a condition.
+- `remote.rs`: `RemoteClient` on `reqwest` with HTTP/2, one pooled connection, the pinned certificate and the bearer token. Methods mirror the service: `call`, `put_blob`, `blob_range`, `send_message` (reads NDJSON and pumps the Tauri channel), and an `events` task that re-emits SSE as window events: `karmayoga://notify`, `karmayoga://changed`, `karmayoga://lock-state`. Reconnects with backoff; after three failures emits a notice the interface draws as a condition.
 - Certificate pinning: at pairing time fetch the certificate, check its fingerprint against the URL, store the PEM, and build the client with that certificate as its only root. Spike first: `rcgen` must put the IP in the SAN or `reqwest` will reject the name. Fallback is a custom rustls verifier comparing the fingerprint.
 - `remotes.json` in the app config dir holds `{ id, name, host, fingerprint, certPem }`. The token goes in the OS keychain via the `keyring` crate, never in the file.
 - New shell commands: `list_remotes`, `connect_remote(url | id)`, `forget_remote(id)`. `bootstrap` returns known remotes beside the local vault path.
-- `protocol.rs`: when the session is remote, `everyday://localhost/<id>` proxies to `GET /v1/blob/<id>` with the `Range` header passed through and the response headers passed back. The content security policy is unchanged.
+- `protocol.rs`: when the session is remote, `karmayoga://localhost/<id>` proxies to `GET /v1/blob/<id>` with the `Range` header passed through and the response headers passed back. The content security policy is unchanged.
 - **In-memory cache.** Blobs are content-addressed and immutable, so a cache keyed by blob id is always correct. The remote client keeps a bounded LRU of fetched ranges in memory (a few hundred megabytes at most, configurable), which makes scrubbing a video and scrolling a shelf of covers local after the first fetch. Nothing is written to disk; a disk cache is a later opt-in. The same LRU shape can hold the last result of read commands keyed by `(name, args)` and be invalidated by `changed` events; that is the second step and only if the call audit below shows it is needed.
 - `VaultStatus` gains `remote: Option<{ name, host }>`; the service returns `None`.
 - Interface: the picker gets "Connect to a computer…" with a paste field for the URL, and a list of known connections. Settings hides "change backend" and "open another vault" while remote. The connect screen states there is no offline mode.
@@ -293,7 +293,7 @@ laptop's settings.
 
 **Goal.** A change made from one window appears in the others.
 
-- The interface listens for `everyday://changed` and routes by kind to the refresh methods the stores already have: `app.requestRefresh`, and the reload paths in `todo`, `calendar`, `library`, `tracking`. Coalesced the way autosave refreshes already are.
+- The interface listens for `karmayoga://changed` and routes by kind to the refresh methods the stores already have: `app.requestRefresh`, and the reload paths in `todo`, `calendar`, `library`, `tracking`. Coalesced the way autosave refreshes already are.
 - Changes from this window are excluded server-side by origin, so nothing flickers.
 - A `lockState` event shows the lock screen or re-runs bootstrap.
 
@@ -320,13 +320,13 @@ whose class is `Secret`, whatever the settings say. Tool bodies that duplicate
 a command body are rewritten to call the command, so there is one
 implementation of "mark this book read". The service exposes `list_tools` and
 `run_tool(name, args)` with the same confirmation rule the assistant applies.
-CLI: `everyday do <tool> [json]`. The in-window palette calls the stores,
+CLI: `karmayoga do <tool> [json]`. The in-window palette calls the stores,
 because the stores are what update the screen; once phase 5 exists the two
 paths can converge.
 
 **6c. The OS hotkey.** `tauri-plugin-global-shortcut`, default
 `mod+shift+space`, changeable and switchable off in Settings. It raises the
-window and emits `everyday://palette`. Settings notes that Wayland needs a
+window and emits `karmayoga://palette`. Settings notes that Wayland needs a
 desktop portal and offers the tray as the fallback. A dedicated palette window
 that appears without raising the main one is a follow-up, once the in-app
 palette has settled what belongs in it.
@@ -397,7 +397,7 @@ stated reason rather than by omission.
 
 **1. The wire is declared, not derived.** The plan called for JSON Schema on
 every argument and result type, generated from serde. That means a
-`JsonSchema` derive on roughly forty types in `everyday-core`, which is a
+`JsonSchema` derive on roughly forty types in `karmayoga-core`, which is a
 large dependency in a crate that is deliberately small and has no derive
 macros in it today.
 
@@ -415,8 +415,8 @@ state; it is a change to the core crate and belongs in its own pull request.
 
 **2. Tools still have their own bodies.** The plan said a tool whose body
 duplicates a command's should be rewritten to call the command. It cannot, as
-things stand: the tool catalogue is in `everyday-core` and the commands are in
-`everyday-service`, which depends on it. Making tools call commands means
+things stand: the tool catalogue is in `karmayoga-core` and the commands are in
+`karmayoga-service`, which depends on it. Making tools call commands means
 moving 1,200 lines of catalogue up a layer.
 
 What was built instead: `list_tools` and `run_tool` on the command surface, so
@@ -456,7 +456,7 @@ deliberately left for the app that needs it:
 - **The browser-extension host.** The local socket it talks to is built and
   tested. The native-messaging host process is not — and neither, still, is
   the desktop app's own end of that socket: `serve_socket` is called by
-  `everyday serve` and by nothing else, so a local process cannot reach a
+  `karmayoga serve` and by nothing else, so a local process cannot reach a
   vault held by the window. The assistant's routines did not need it (the
   scheduler runs inside the same service), so it is still open.
 - **A resumable upload.** `POST /v1/blob` takes one body. The blob format is

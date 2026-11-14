@@ -4,14 +4,14 @@
 //
 // # Why `tauri-plugin-opener` and not a loopback plugin of its own
 //
-// `everyday-app`'s Cargo.toml already carries `tauri-plugin-opener`, granted
+// `karmayoga-app`'s Cargo.toml already carries `tauri-plugin-opener`, granted
 // exactly one permission (`opener:allow-open-url`, scoped to `https://*`) in
-// `crates/everyday-app/capabilities/default.json` -- nothing here adds a new
+// `crates/karmayoga-app/capabilities/default.json` -- nothing here adds a new
 // capability, it uses one that was already narrow. The scope is not
 // optional: the permission alone enables the command but allows no URL, and
 // every call then fails as if there were no shell at all. The loopback that catches
 // the browser's *answer* is a different concern entirely: see
-// `crates/everyday-mail/src/oauth/loopback.rs`'s module doc for why that is
+// `crates/karmayoga-mail/src/oauth/loopback.rs`'s module doc for why that is
 // a plain `TcpListener` rather than a Tauri plugin. This file is only the
 // "open a tab" half.
 //
@@ -24,7 +24,7 @@
 //     through the plugin;
 //   * `npm run dev`'s mock backend, running in a plain browser tab already --
 //     `window.open` is the nearest equivalent a tab has to "open a browser";
-//   * `everyday-server` serving this same build to a browser on another
+//   * `karmayoga-server` serving this same build to a browser on another
 //     machine, where there is no Tauri bridge to ask and nothing this
 //     process can open on the user's behalf at all.
 //
@@ -52,7 +52,7 @@ export async function openExternal(url: string): Promise<boolean> {
     await plugin.openUrl(url)
     return true
   } catch {
-    // No Tauri bridge to ask -- `everyday-server` serving this build to a
+    // No Tauri bridge to ask -- `karmayoga-server` serving this build to a
     // plain browser, most likely. Not an error: the caller's fallback is to
     // show `url` for the person to copy themselves.
     return false

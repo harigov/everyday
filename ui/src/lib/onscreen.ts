@@ -4,7 +4,7 @@
 // that "draft a reply turning this down" knows which email "this" is. It used
 // to be one sentence of prose built here -- `the mail app, thread "Re:
 // budget"` -- and the core now does that job instead: see
-// `crates/everyday-core/src/agent/onscreen.rs` for the three reasons, the
+// `crates/karmayoga-core/src/agent/onscreen.rs` for the three reasons, the
 // sharpest of which is that a sentence built in the interface handed a
 // subject line from an account the assistant may not read straight to the
 // model provider that switch exists to keep it from.

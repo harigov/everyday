@@ -4,7 +4,7 @@
 > agents against a contract laid down first: the records, the store trait,
 > the vault facade, schema v25 (v24 when laid down; main took v24 for mail
 > first), every exhaustive enum's arm, the
-> `everyday-focus` crate's API, the listener's `Forward` trait, the shell's
+> `karmayoga-focus` crate's API, the listener's `Forward` trait, the shell's
 > commands, and the interface's types and store. Read this for the
 > reasoning; read the code for what was done. What went differently from
 > the plan below, each for a reason worth keeping:
@@ -47,7 +47,7 @@
 > - **The shell never flips GNOME's `disable-user-extensions`**: that would
 >   turn every extension the person switched off back on. Status says so
 >   instead.
-> - **`everyday-focus` is its own crate**, small enough to cross-check for
+> - **`karmayoga-focus` is its own crate**, small enough to cross-check for
 >   Windows and macOS without a webview, and it was: clippy clean on
 >   `x86_64-pc-windows-gnu` and `aarch64-apple-darwin`. The Windows, macOS,
 >   X11, wlroots and KDE backends have never run on those desktops.
@@ -129,7 +129,7 @@ analytics. How long raw spans are kept is a setting; rollups are kept.
 ## Ingest API
 
 - `POST /api/usage/heartbeats`, which takes a batch.
-- A new **`Usage` scope** in `everyday_service::ctx::Scope`, write-only. A
+- A new **`Usage` scope** in `karmayoga_service::ctx::Scope`, write-only. A
   usage token can add heartbeats and nothing else, so a stolen one can do no
   more than add fake usage.
 - The same handler is served in two places:
@@ -163,7 +163,7 @@ says so once.
 
 ### In-process desktop collector (the app shell)
 
-The same heartbeats from inside `everyday-app`, one backend per platform:
+The same heartbeats from inside `karmayoga-app`, one backend per platform:
 
 | Platform          | Focused app                                    | Idle / lock                                   |
 |-------------------|------------------------------------------------|-----------------------------------------------|
@@ -236,7 +236,7 @@ Everything names an app or site by one string: `app:<app id lower-case>`
 or `site:<registrable domain>` (`site:<host>` when the domain's label has
 `split`). Sites are stored as the full host and grouped at report time, so
 a change of mind about splitting applies to every recorded day.
-`everyday_core::screentime::item_key` is the only maker of a key.
+`karmayoga_core::screentime::item_key` is the only maker of a key.
 
 ### Storage (v25)
 
@@ -293,12 +293,12 @@ past 2 MB, 409 `locked` while the vault is locked.
 ### Connection code
 
 What Settings → Screen time hands a browser extension, once:
-`everyday-screentime:` followed by base64url (no padding) of
+`karmayoga-screentime:` followed by base64url (no padding) of
 `{"endpoint": "http://127.0.0.1:7399", "token": "…", "device": "laptop"}`.
 
 ### The GNOME extension's config
 
-`$XDG_CONFIG_HOME/everyday/screentime-gnome.json`, written `0600` by the
+`$XDG_CONFIG_HOME/karmayoga/screentime-gnome.json`, written `0600` by the
 shell when it installs the extension:
 `{"endpoint": "http://127.0.0.1:7399", "token": "…", "device": "laptop",
 "fingerprint": ""}` -- `fingerprint` (SHA-256 of the server certificate,

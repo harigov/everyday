@@ -144,7 +144,7 @@ assert.equal(screentime.categoryOf(null), undefined)
 // ── ranges ───────────────────────────────────────────────────────────
 
 screentime.setRange('week')
-assert.equal(stored.get('everyday.screentime.range'), 'week', 'the range is remembered here')
+assert.equal(stored.get('karmayoga.screentime.range'), 'week', 'the range is remembered here')
 assert.equal(screentime.from, week.from)
 assert.equal(screentime.to, week.to)
 await until('the week loads', () => screentime.report?.from === week.from)
@@ -179,7 +179,7 @@ assert.ok(!items.has('app:gnome-shell'), 'an ignored app is left out of every to
 assert.equal(items.get('site:amazon.com')?.category, null, 'Amazon has no category')
 assert.equal(items.get('site:github.com')?.category, work.id, 'GitHub is suggested Work')
 assert.equal(items.get('site:github.com')?.suggested, true, 'as a suggestion')
-assert.equal(items.get('app:everyday')?.suggested, false, 'this app was filed by hand')
+assert.equal(items.get('app:karmayoga')?.suggested, false, 'this app was filed by hand')
 assert.ok(thirty.previousTotalSecs >= 0)
 assert.deepEqual(thirty.devices.map((d) => d.device).sort(), ['desktop', 'laptop'])
 
@@ -212,7 +212,7 @@ await until('this week again', () => screentime.report?.from === week.from)
 screentime.step(-1)
 await until('last week', () => screentime.report?.from === addDays(week.from, -7))
 screentime.setDevices(['desktop'])
-assert.equal(stored.get('everyday.screentime.devices'), '["desktop"]')
+assert.equal(stored.get('karmayoga.screentime.devices'), '["desktop"]')
 await until('narrowed to the desktop', () =>
   screentime.report?.devices.every((d) => d.device === 'desktop'),
 )
@@ -234,7 +234,7 @@ for (let back = 0; back < 7; back++) {
   if (screentime.timeline.runs.length > 0) break
 }
 assert.equal(screentime.view, 'timeline')
-assert.equal(stored.get('everyday.screentime.view'), 'timeline')
+assert.equal(stored.get('karmayoga.screentime.view'), 'timeline')
 const runs = screentime.timeline.runs
 assert.ok(runs.length > 0, 'a day this week has something on it')
 for (let i = 1; i < runs.length; i++) {

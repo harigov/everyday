@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Every Day Screen time",
+  "name": "Karma Yoga Screen time",
   "short_name": "Screen time",
   "version": "0.1.0",
-  "description": "Tells the Every Day app which website had your attention: the active tab of the focused window, while you are not idle.",
+  "description": "Tells the Karma Yoga app which website had your attention: the active tab of the focused window, while you are not idle.",
   "background": {
     "service_worker": "background.js",
     "scripts": ["lib.js", "background.js"]
@@ -21,7 +21,7 @@
   },
   "browser_specific_settings": {
     "gecko": {
-      "id": "screentime@everyday.journal",
+      "id": "screentime@karmayogi.app",
       "strict_min_version": "121.0"
     }
   }

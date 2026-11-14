@@ -88,7 +88,7 @@ section and the plan disagree, this section wins:
   up and then turned off is an answer, and offers nothing, as does
   `Offer::Off`.
 - **The microphone is a second way in.** The desktop shell watches for
-  another application taking the microphone (`everyday-app`'s `micwatch`;
+  another application taking the microphone (`karmayoga-app`'s `micwatch`;
   PipeWire on Linux -- macOS and Windows are not done yet). A capture stream
   counts only while it is *running*, not merely open, and never when it is
   ours: cpal does not copy our process id onto its streams, so its
@@ -98,7 +98,7 @@ section and the plan disagree, this section wins:
   recording is tied to it, or a plain recording if not. `mic_offer` in the
   settings turns this off on its own.
 - **The shell raises its own notification.** Each offer becomes an actionable
-  desktop notification from `everyday-app` (`offers.rs`, `notice.rs`), with
+  desktop notification from `karmayoga-app` (`offers.rs`, `notice.rs`), with
   buttons to take notes, to join and take notes (when the event has a link)
   and to say not now -- or, before meeting notes are set up, to set them up.
   Buttons are Linux-only for now (`org.freedesktop.Notifications` over
@@ -238,7 +238,7 @@ anything above disagree, this section wins:
 The speech kit and the recognisers used to be loaded once and kept until the
 app quit -- along with a load that had failed, so downloading a model after a
 failed first try needed a restart. Every model that runs on this computer
-now goes through `everyday_service::local::resident`: loaded on first use,
+now goes through `karmayoga_service::local::resident`: loaded on first use,
 shared while in use, and let go of once nobody has used it for 15 minutes
 (`IDLE_AFTER`) -- never while a pipeline still holds it, however long ago it
 was handed out. Loading one again takes a few seconds, the cost of not
@@ -346,13 +346,13 @@ per-vault. Each download is pinned by URL and SHA-256 in code.
 ## The shape of it
 
 ```
- ┌─ everyday-app (desktop only) ───────────────────────────────┐
+ ┌─ karmayoga-app (desktop only) ───────────────────────────────┐
  │ capture.rs   two cpal streams → 16 kHz mono i16 → 30 s       │
  │              frames, level meters, device-change handling    │
  │ commands     meeting_start / meeting_stop / meeting_levels   │
  └───────────────┬─────────────────────────────────────────────┘
                  │ meeting.append(recording, track, seq, pcm)   (in-process or remote)
- ┌─ everyday-service ▼──────────────────────────────────────────┐
+ ┌─ karmayoga-service ▼──────────────────────────────────────────┐
  │ meeting/watch.rs      the offer: events starting now          │
  │ meeting/spool.rs      sealed chunk files, crash recovery      │
  │ meeting/pipeline.rs   supervisor task, one per recording:     │
@@ -361,7 +361,7 @@ per-vault. Each download is pinned by URL and SHA-256 in code.
  │ meeting/speech.rs     sherpa-onnx: vad, diarise, embed        │
  │ local/files.rs        download + checksum (all local models)  │
  └───────────────┬──────────────────────────────────────────────┘
- ┌─ everyday-core ▼─────────────────────────────────────────────┐
+ ┌─ karmayoga-core ▼─────────────────────────────────────────────┐
  │ meeting.rs   records; is_online_call(); the template filler;  │
  │              prompt builder; chunk plan for map-reduce;       │
  │              merge of two tracks, echo removal; speaker       │

@@ -289,8 +289,8 @@ labels.push(
   label({ id: 'screen-app-hn', key: 'site:ycombinator.com', kind: 'site', name: 'Hacker News' }),
   label({ id: 'screen-app-shell', key: 'app:gnome-shell', kind: 'app', ignored: true }),
   label({
-    id: 'screen-app-everyday',
-    key: 'app:everyday',
+    id: 'screen-app-karmayoga',
+    key: 'app:karmayoga',
     kind: 'app',
     category: categoryIdOf('work'),
   }),
@@ -342,7 +342,7 @@ const THINGS: Thing[] = [
   app(
     'dev.zed.Zed',
     'Zed',
-    ['screentime.svelte.ts — everyday', 'report.rs — everyday', 'mock-screentime.ts — everyday'],
+    ['screentime.svelte.ts — karmayoga', 'report.rs — karmayoga', 'mock-screentime.ts — karmayoga'],
     8,
     45,
     { work: 9, evening: 2, weekend: 1 },
@@ -351,7 +351,7 @@ const THINGS: Thing[] = [
   app(
     'code',
     'Visual Studio Code',
-    ['money.rs — everyday', 'vault.rs — everyday', 'Cargo.toml — everyday'],
+    ['money.rs — karmayoga', 'vault.rs — karmayoga', 'Cargo.toml — karmayoga'],
     10,
     50,
     { work: 10 },
@@ -360,7 +360,7 @@ const THINGS: Thing[] = [
   app(
     'org.gnome.Ptyxis',
     '',
-    ['~/projects/everyday', 'cargo test — everyday', 'htop', 'ssh nas'],
+    ['~/projects/karmayoga', 'cargo test — karmayoga', 'htop', 'ssh nas'],
     2,
     15,
     { work: 7, evening: 1, weekend: 1 },
@@ -373,12 +373,12 @@ const THINGS: Thing[] = [
   app(
     'com.slack.Slack',
     'Slack',
-    ['#everyday — Slack', '#general — Slack', 'Direct messages — Slack'],
+    ['#karmayoga — Slack', '#general — Slack', 'Direct messages — Slack'],
     2,
     12,
     { work: 6, morning: 1 },
   ),
-  app('everyday', 'Every Day', ['Journal', 'Mail', 'Todo', 'Calendar'], 3, 20, {
+  app('karmayoga', 'Karma Yoga', ['Journal', 'Mail', 'Todo', 'Calendar'], 3, 20, {
     work: 3,
     morning: 3,
     evening: 3,
@@ -400,7 +400,7 @@ const THINGS: Thing[] = [
   }),
   site(
     'github.com',
-    ['Pull requests · everyday', 'Issues · everyday', 'everyday/crates at main · everyday'],
+    ['Pull requests · karmayoga', 'Issues · karmayoga', 'karmayoga/crates at main · karmayoga'],
     3,
     20,
     { work: 7, evening: 1, weekend: 1 },

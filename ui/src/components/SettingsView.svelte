@@ -161,7 +161,7 @@
       case 'wayland':
         return (
           what +
-          ' The desktop asks once which key to use and once whether Every Day may paste; change ' +
+          ' The desktop asks once which key to use and once whether Karma Yoga may paste; change ' +
           'the key in its own keyboard settings. Switched off, the key stays reserved there and ' +
           'does nothing.'
         )
@@ -471,7 +471,7 @@
                 onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
               />
               <span>
-                <b>Show Every Day in the {TRAY_WORD}</b>
+                <b>Show Karma Yoga in the {TRAY_WORD}</b>
                 <small>
                   <!-- What closing the window does follows from the icon being
                      up -- `showing`, the shell's own answer, which is what its
@@ -480,10 +480,10 @@
                      there is work to do and a hotkey to come back by, which is
                      more than a line here should try to say. -->
                   {#if tray.unavailable}
-                    This desktop session has no {TRAY_WORD} for Every Day to appear in.
+                    This desktop session has no {TRAY_WORD} for Karma Yoga to appear in.
                   {:else if tray.showing}
                     Start an entry, a task or an hour without coming back to the window. Closing the
-                    window keeps Every Day running here; quit it from this menu.
+                    window keeps Karma Yoga running here; quit it from this menu.
                   {:else}
                     Start an entry, a task or an hour without coming back to the window.
                   {/if}
@@ -505,7 +505,7 @@
                 <b>Show the next meeting in the {TRAY_WORD}</b>
                 <small>
                   {#if !tray.enabled}
-                    Only shown while Every Day is in the {TRAY_WORD}.
+                    Only shown while Karma Yoga is in the {TRAY_WORD}.
                   {:else}
                     The meeting you are in, or the next one starting soon today. Nothing is shown
                     while the vault is locked.
@@ -520,7 +520,7 @@
           <section>
             <span class="eyebrow">Icon badge</span>
             <p class="hint">
-              A number on Every Day's icon in the {DOCK_WORD}, adding up whatever you choose here.
+              A number on Karma Yoga's icon in the {DOCK_WORD}, adding up whatever you choose here.
               Nothing is shown while the vault is locked.
             </p>
             <div class="segmented">
@@ -584,7 +584,7 @@
                 onchange={(e) => setHotkey(e.currentTarget.checked)}
               />
               <span>
-                <b>Reach Every Day from anywhere with {hotkey.shortcut}</b>
+                <b>Reach Karma Yoga from anywhere with {hotkey.shortcut}</b>
                 <small>
                   {#if hotkeyNotice}
                     {hotkeyNotice}

@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const L = require("../lib.js");
 
-const PREFIX = "everyday-screentime:";
+const PREFIX = "karmayoga-screentime:";
 const code = (value) =>
   PREFIX + Buffer.from(JSON.stringify(value)).toString("base64url");
 
@@ -34,12 +34,12 @@ test("parseConnectionCode reads a loopback code", () => {
 test("parseConnectionCode reads a sharing server code, keeping its path", () => {
   const got = L.parseConnectionCode(
     code({
-      endpoint: "https://box.tail1234.ts.net/everyday/",
+      endpoint: "https://box.tail1234.ts.net/karmayoga/",
       token: "t",
       device: "desk",
     }),
   );
-  assert.equal(got.endpoint, "https://box.tail1234.ts.net/everyday");
+  assert.equal(got.endpoint, "https://box.tail1234.ts.net/karmayoga");
   assert.equal(got.loopback, false);
   assert.equal(got.device, "desk");
 });
@@ -143,7 +143,7 @@ test("isLoopback knows this computer from another", () => {
 test("originPattern gives a match pattern without the port", () => {
   assert.equal(L.originPattern("http://127.0.0.1:7399"), "http://127.0.0.1/*");
   assert.equal(
-    L.originPattern("https://box.tail1234.ts.net:8443/everyday"),
+    L.originPattern("https://box.tail1234.ts.net:8443/karmayoga"),
     "https://box.tail1234.ts.net/*",
   );
 });

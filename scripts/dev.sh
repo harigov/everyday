@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MEM="${EVERYDAY_DEV_MEM:-8G}"
+MEM="${KARMAYOGA_DEV_MEM:-8G}"
 
 # `cargo install` drops binaries in ~/.cargo/bin. rustup puts that on PATH;
 # a distro-packaged cargo (/usr/bin/cargo) does not, so add it ourselves.
@@ -20,7 +20,7 @@ if ! command -v cargo-tauri >/dev/null 2>&1; then
     exit 1
 fi
 
-cd crates/everyday-app
+cd crates/karmayoga-app
 if command -v systemd-run >/dev/null 2>&1 &&
    systemd-run --user --scope -q -p MemoryMax=64M -- /bin/true >/dev/null 2>&1; then
     exec systemd-run --user --scope --quiet --collect \

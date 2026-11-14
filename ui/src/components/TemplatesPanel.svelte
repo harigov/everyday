@@ -2,7 +2,7 @@
   // Templates: the shapes a journal entry, a note or a meeting's notes start
   // from. One list for all three, because "how I want my Monday page" and
   // "how I want a one-to-one written up" are the same kind of thing --
-  // `everyday_core::template` has the rules. Where a template is *chosen* is
+  // `karmayoga_core::template` has the rules. Where a template is *chosen* is
   // elsewhere: a journal's settings (a default, and rules for days), the
   // Meetings tab (the default for a recording), the notes app's New menu.
   //

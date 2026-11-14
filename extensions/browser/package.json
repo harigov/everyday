@@ -1,5 +1,5 @@
 {
-  "name": "everyday-screentime-browser",
+  "name": "karmayoga-screentime-browser",
   "private": true,
   "description": "Not a package: only here so node's test runner loads lib.js as a script (CommonJS) whatever the folders above say. Run the tests with `node --test extensions/browser/test/`.",
   "type": "commonjs"

@@ -1,6 +1,6 @@
 // Web search, for any component that wants it.
 //
-// The interface half of `everyday_core::websearch`. The Rust side builds
+// The interface half of `karmayoga_core::websearch`. The Rust side builds
 // every URL and parses every reply; the Tauri commands open the socket; this
 // file is what components actually hold, and it exists so that the four
 // things every caller of a network search needs -- debouncing, cancellation,

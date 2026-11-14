@@ -38,7 +38,7 @@
     x11: 'the X11 window manager’s active window',
     windows: 'Windows’ foreground window',
     macos: 'macOS’s frontmost app',
-    unsupported: 'nothing yet: this desktop is not one Every Day can watch',
+    unsupported: 'nothing yet: this desktop is not one Karma Yoga can watch',
   }
 
   const BROWSERS: { id: string; label: string }[] = [

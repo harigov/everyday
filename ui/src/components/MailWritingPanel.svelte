@@ -5,7 +5,7 @@
   // Beside Mail sorting and for the same reason: it is about the mail, and it
   // is the models that read it. The signature is not here, because that is one
   // per account and belongs with the account. See
-  // `everyday_core::mail::writing`.
+  // `karmayoga_core::mail::writing`.
 
   import { onDestroy } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
@@ -14,7 +14,7 @@
   import { panels } from '../lib/panels.svelte'
   import type { MailWriting } from '../lib/types'
 
-  /** `MAX_INSTRUCTIONS_CHARS` in `crates/everyday-core/src/mail/writing.rs`. */
+  /** `MAX_INSTRUCTIONS_CHARS` in `crates/karmayoga-core/src/mail/writing.rs`. */
   const MAX_INSTRUCTIONS = 4_000
 
   let draft = $state<MailWriting | null>(null)

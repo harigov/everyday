@@ -1,0 +1,578 @@
+//! The SQL storage backend, once, for every SQL database Karma Yoga speaks.
+//!
+//! This is where a vault's records actually live. It is one implementation of
+//! all five store traits, and it runs unchanged against SQLite on a laptop
+//! and against Postgres — including a Supabase project — over the network.
+//! The crates beside it (`karmayoga-store-sqlite`, `karmayoga-store-postgres`)
+//! are drivers: each supplies a connection, a [`Dialect`] and a handful of
+//! answers this crate cannot give for it, and gets the whole backend back.
+//!
+//! ```text
+//!   karmayoga-store-sql        the schema, the queries, the cascades, the
+//!                             clear/sealed split -- all of it, once
+//!     |
+//!     +-- karmayoga-store-sqlite    rusqlite + pragmas + VACUUM INTO
+//!     +-- karmayoga-store-postgres  postgres + TLS + a version table
+//! ```
+//!
+//! # What is encrypted, and what is not
+//!
+//! Entry and journal payloads are sealed with the vault's cipher before they
+//! reach the database, so the file — or the server — contains no readable
+//! journal text. Not in a page, not in the WAL, not in a freelist page left
+//! behind by a deleted row, and not on the wire.
+//!
+//! A small amount of structural metadata is stored in the clear, because it
+//! is what the indexes are built from:
+//!
+//! | Column | Leaks |
+//! |---|---|
+//! | `journal_id` | how many journals exist and how entries divide between them |
+//! | `local_date` | which days were written on |
+//! | `created_us`, `updated_us` | when entries were written and last edited |
+//! | `starred`, `pinned` | which entries are flagged |
+//! | `project_id`, `parent_id` | the *shape* of the task tree, not its contents |
+//! | task `status`, `priority`, `due_date` | how much work is outstanding and roughly when |
+//! | block `start_us`, `end_us`, `local_date`, `kind` | that time was booked, never to what |
+//! | event `calendar_id`, `local_date`, `end_date`, `start_us` | how many calendars, and which days have something on them |
+//! | item `kind_id`, `status`, `rating`, `favourite`, `year`, `finished_on` | how many shelves, how much is on each, and how you scored it |
+//! | log `item_id`, `event`, `local_date` | that something was got to the end of on a day, never what |
+//! | reading `tracker_id`, `local_date`, `at_us`, `value` | that something was recorded, when, and how much of it -- never what |
+//! | tracker `archived`, `sort_order` | how many things are tracked and which have been retired |
+//! | goal `role_id`, `status`, `horizon` | how many goals sit under each part of a life, how they are going, and roughly when they are wanted |
+//! | role `archived`, `sort_order` | how many parts a life is divided into |
+//! | `purposes` (`record_kind`, `record_id`, `purpose_kind`, `purpose_id`) | which records are filed against which goal -- never the name of either |
+//! | note `pinned`, `created_us`, `updated_us` | how many notes there are, which are pinned, and when they were touched -- never a title |
+//! | routine `created_us`, `updated_us` | how many standing jobs the assistant has |
+//! | run `routine_id`, `started_us`, `seen` | that a routine ran at seven and that nobody has read the result |
+//! | job `created_us`, `seen` | that the assistant was asked to look into something at three, and whether anybody has read what it found -- never what, how far it got or whether it worked |
+//! | writing assist `created_us` | that writing help was used at nine -- never on what, where, which kind or whether the answer was kept |
+//! | `record_secrets` (`owner_kind`, `owner_id`) | that some record of that kind holds a credential, never which one or what it is |
+//! | `mail_packs` (`account_id`, `seq`) | Postgres only -- one account's raw messages, in arrival order, never a message's own bytes outside the sealed `data` a `PackRef` addresses |
+//! | account `created_us`, `updated_us` | how many mailbox providers are signed in to, and roughly when -- never the address, the host, or a single credential |
+//! | `account_calendars` (`calendar_id`, `account_id`) | which calendar came from which account -- never either one's name -- written whenever `CalendarOrigin::Account` is saved, and what `delete_account`'s cascade reads to take the calendars with it |
+//! | mailbox `account_id`, `role`, `uidvalidity`, `uidnext`, `highest_modseq` | how many folders and labels a mailbox has, which is the inbox, and where sync last reached -- never a folder's actual name |
+//! | `mail_messages` `account_id`, `thread_id`, `date_us`, `flags`, `has_attachments`, `size`, `category`, pack address | when a message arrived, its read/starred/answered state (packed, see `MessageFlags::bits`), roughly how big it is, and where its raw bytes are -- never a subject, an address or a label. Named `mail_messages` rather than `messages` because version 6 already took that name for the assistant's own conversation turns |
+//! | `message_mailboxes` (`message_id`, `mailbox_id`, `uid`) | that a message is filed in a mailbox, and at what uid -- the address a `FETCH` or `STORE` actually names |
+//! | thread `account_id`, `last_date_us`, `unread`, `category`, `snoozed_until_us` | how many messages a thread has and how many are unread, never its subject or who is in it |
+//! | `thread_mailboxes` (`thread_id`, `mailbox_id`, `last_date_us`, `unread`, `starred`, `has_attachments`) | the same two numbers, per mailbox -- what an inbox actually pages over -- and whether anything in the thread is starred or has an attachment, which `mail_messages` already says |
+//! | `hidden_thread_mailboxes` (`thread_id`, `mailbox_id`) | which `(thread, mailbox)` pairs an optimistic archive, trash or move has asked to have hidden from that mailbox's list ahead of the server confirming it -- a marker, not a copy of `message_mailboxes`, which is untouched until the op actually runs |
+//! | `bodies` (`message_id`) | that a body exists for a message -- nothing about it; the sanitised HTML, the text and every part's filename are sealed |
+//! | draft `account_id`, `in_reply_to`, `state`, `origin`, `updated_us` | how many messages are being written, which is a reply to which, and by whom (the *kind* of writer only) -- never a word of one |
+//! | op `account_id`, `state`, `origin`, `not_before_us`, `thread_id` | that something is queued to reach a server, its outcome, who asked (the *kind* only), when it may run, and which thread it acts on (so a thread can show its own recent actions) -- never a message, a draft, or the op's own sealed `target` |
+//! | `mail_remote_image_settings` (singleton) | that a standing remote-image allow-list exists -- every sender and domain on it stays sealed |
+//! | `mail_contacts` (singleton) | that a contact index exists, for address autocomplete -- every address and name it has seen stays sealed |
+//! | `chat_settings` (singleton) | that chat links exist -- every homeserver, account and owner stays sealed |
+//! | `model_settings` (singleton) | that models are configured -- every endpoint and model name stays sealed |
+//! | `mail_category_rules` (`account_id`) | that one account has sealed corrections outranking the rules `categorize` runs at sync -- never what they are |
+//! | news source `sort_order`, `created_us`, `updated_us` | how many sources are followed and when they were added -- never a name, an address or a folder |
+//! | `news_fetch` (`source_id`, `next_us`) | when each source is next asked for news -- never what it said last time |
+//! | news story `source_id`, `dedupe_key`, `published_us`, `is_read`, `saved`, `expired`, `mail_message_id` | how many stories each source brought, when, and which were read or saved; the key is a *keyed* hash, so it cannot be matched against a list of known addresses; and which mail message a newsletter story is -- never a title, an address or a word of one |
+//! | `news_bodies` (`story_id`) | that a story's body has been kept -- nothing about it |
+//! | bank link `sort_order`, `created_us`, `updated_us` | how many banks are linked and when each was -- never the bank's name or Plaid's item id; the access token is not in this table at all but a sealed `record_secrets` row |
+//! | `money_link_state` (`link_id`, `next_us`) | when each bank is next synced -- never the cursor, the last error, or whether it wants signing in again |
+//! | bank account `link_id`, `sort_order`, `created_us`, `updated_us` | how many accounts there are, which bank each came through and which are kept by hand -- never a name, a mask, a kind, a balance, a limit or the provider's id |
+//! | `money_balances` (`account_id`, `day`) | which days an account's balance was recorded on -- never the balance |
+//! | `money_txns` `account_id`, `dedupe_key`, `day`, `created_us`, `updated_us` | how many transactions each account has and on which days, when each arrived and when it was last changed (so roughly when somebody sorted them); the key is a *keyed* hash, so it cannot be matched against a provider's transaction ids or a statement -- never an amount, a payee, a description, a category or a note |
+//! | money category `sort_order`, `created_us`, `updated_us` | how many categories there are -- never a name, a kind or a budget |
+//! | money rule `sort_order`, `created_us`, `updated_us` | how many rules there are -- never what one matches or what it does |
+//! | `screen_spans` `stream`, `start_us`, `end_us` | that some computer was in use from nine to five, and roughly how many machines and collectors there are; the stream is a *keyed* hash of a device and a collector, so it cannot be matched against a machine's name -- never which app, which site, which title or which device |
+//! | screen label `created_us`, `updated_us` | how many apps and sites somebody labelled, and when -- never which, or what they called them |
+//! | screen category `sort_order`, `created_us`, `updated_us` | how many categories screen time is filed under -- never a name or a colour |
+//! | `screen_settings` (singleton) | that screen time has been set up -- the idle limit, the retention and the browser list stay sealed |
+//!
+//! Titles, bodies, tags, locations, attachments and file names are all
+//! sealed. Someone with the database learns *that* you journalled on 14 July
+//! 2024 and never what you wrote. This is the same trade Day One makes, and
+//! it is what allows date-range queries and pagination to run as index scans
+//! rather than decrypting the entire vault on every keystroke.
+//!
+//! The task tables make the same trade for the same reason -- a board filters
+//! by status and a calendar by day, and both would otherwise decrypt every
+//! row on every draw. Task titles, descriptions and *tags* stay sealed, so
+//! the database says that four things are blocked and never what they are.
+//!
+//! The calendar tables go further than the others in one respect: a feed's
+//! *address* is sealed along with everything else. A subscription URL is a
+//! bearer credential -- anyone holding one can read that calendar for as long
+//! as it is not revoked -- so it never sits in a clear column, and neither
+//! does the name of the calendar it points at.
+//!
+//! ## What this means for a hosted database
+//!
+//! Sealing happens on this side of the connection, which is the whole reason
+//! a remote backend is offerable at all. Supabase holds ciphertext and the
+//! index columns above; it never holds a key, and there is no key for it to
+//! hold — the vault password never leaves the machine it is typed on. The
+//! honest statement of the trade is the table above: a hosted vault leaks its
+//! *shape* to whoever runs the server, in exactly the way a local one leaks
+//! it to whoever has the file.
+//!
+//! If that trade is not acceptable, the abstraction is the answer: a backend
+//! that seals the index columns too — at the cost of full scans — plugs in
+//! without the rest of the app noticing.
+//!
+//! # Where the code is
+//!
+//! ```text
+//!   lib.rs         the store itself, and the sealing helpers every
+//!                  domain shares
+//!   conn.rs        the two-method database a driver has to supply, and
+//!                  the `WHERE`-clause builder every filter is made of
+//!   record.rs      the id/columns/sealed-payload shape every table has,
+//!                  and the get/upsert/delete it buys a table that names it
+//!   dialect.rs     the five places SQLite and Postgres disagree
+//!   keyset.rs      page_after -- keyset paging, beside the offset form
+//!   schema.rs      the tables, and the migrations that reach them
+//!   blobs.rs       attachments, in a table, for a store with no local disk
+//!   journals.rs    impl JournalStore -- journals, entries, blobs
+//!   tasks.rs       impl TaskStore    -- projects, tasks, time blocks
+//!   calendars.rs   impl CalendarStore -- subscriptions and their events
+//!   library.rs     impl LibraryStore  -- shelves, items and the log
+//!   trackers.rs    impl TrackerStore  -- the readings a journal recorded
+//!   agent.rs       impl AgentStore    -- the assistant's threads and memory
+//! ```
+//!
+//! One [`SqlStore`] implements all six traits; the split is by domain, the
+//! same one `karmayoga_core::store` makes between the trait and its five
+//! optional siblings.
+
+// `pub` (not `mod accounts;`, private, the way every other single-domain
+// module here stays) for the same reason `mail` and `packs` are already
+// `pub`: `run_account_delete_cascade_regression`, below `testing`/`test`,
+// is a driver's own test-suite entry point, the same shape
+// `run_pack_store_suite` gives `packs`.
+pub mod accounts;
+pub(crate) mod blobs;
+pub mod conn;
+pub mod dialect;
+pub mod keyset;
+pub mod schema;
+
+mod agent;
+mod calendars;
+mod jobs;
+mod journals;
+mod library;
+pub mod mail;
+mod meetings;
+mod models;
+mod money;
+mod news;
+mod notes;
+pub mod packs;
+mod pool;
+mod profile;
+mod proposals;
+mod purpose;
+mod record;
+mod routines;
+mod screentime;
+mod secrets;
+mod tasks;
+mod trackers;
+mod writing;
+
+use conn::{Connection, Sql, Value};
+use dialect::Dialect;
+use karmayoga_core::blobstore::FileBlobStore;
+use karmayoga_core::crypto::Cipher;
+use karmayoga_core::error::{Error, Result};
+use karmayoga_core::id::{EntryId, TaskId};
+use karmayoga_core::model::{Entry, EntrySummary};
+use karmayoga_core::store::{BackendCapabilities, IntegrityJob, StoreContext, entry_aad};
+use pool::{Pool, ReadGuard};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+/// The handful of things this crate cannot answer for a particular database.
+///
+/// Everything a driver has to say beyond "here is a connection". Kept
+/// deliberately small: if a method lands here that is really a *query*, it
+/// belongs in a domain module written once instead.
+pub trait Driver: schema::VersionStore + Send + Sync {
+    /// Written into the vault header, so the right driver is chosen when the
+    /// vault is reopened. `"sqlite"`, `"postgres"`.
+    fn backend_id(&self) -> &'static str;
+
+    fn dialect(&self) -> Dialect;
+
+    /// Open another connection to the same database, for the read pool.
+    ///
+    /// `None` -- the default -- means this driver has only the one it was
+    /// opened with, and every read shares the write connection. That is the
+    /// old behaviour and remains correct; it is merely serial.
+    ///
+    /// The connection must come back configured exactly as the first one
+    /// was. Both databases keep some of that per *session* rather than per
+    /// database -- SQLite's `foreign_keys` and `busy_timeout` are pragmas on
+    /// a connection, Postgres's `search_path` is a session setting -- so a
+    /// reader that skipped them would answer different questions from the
+    /// writer, which is the worst kind of bug this pool could have.
+    fn connect(&self) -> Result<Option<Box<dyn Connection>>> {
+        Ok(None)
+    }
+
+    /// Most reader connections to keep. Ignored by a driver whose
+    /// [`connect`](Driver::connect) answers `None`.
+    ///
+    /// Four is chosen against what actually reads at once: a window drawing a
+    /// list while its assistant runs a tool, times a couple of clients. A
+    /// larger pool would mostly buy idle Postgres sessions.
+    fn read_pool_size(&self) -> usize {
+        4
+    }
+
+    /// Largest attachment this database will take, if it has a limit.
+    ///
+    /// `None` for a store whose media go to the filesystem. Postgres caps a
+    /// single value at 1 GB, so a backend keeping blobs in a column has a
+    /// real ceiling and should say so rather than fail at paste time.
+    fn max_blob_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    /// Force pending writes to durable storage. A no-op for a server, which
+    /// has already committed by the time it answered.
+    fn flush(&self, _conn: &mut dyn Sql) -> Result<()> {
+        Ok(())
+    }
+
+    /// Check the database's own consistency. See
+    /// [`JournalStore::check_integrity`](karmayoga_core::JournalStore::check_integrity).
+    fn check_integrity(&self, _conn: &mut dyn Sql) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
+    /// [`Driver::check_integrity`] on a connection of the job's own, never
+    /// one of the pool's. See
+    /// [`JournalStore::background_integrity_check`](karmayoga_core::JournalStore::background_integrity_check).
+    /// `None`, the default, for a driver with nothing to check.
+    fn background_integrity_check(&self, _cancel: Arc<AtomicBool>) -> Result<Option<IntegrityJob>> {
+        Ok(None)
+    }
+
+    /// Write a consistent copy of the database into `dir`.
+    ///
+    /// `root` is the directory the store owns, so a driver that also keeps
+    /// media on disk can copy that beside it. The default refuses, which is
+    /// the right answer for a database this process does not own the files
+    /// of: a hosted Postgres is backed up by whoever hosts it, and pretending
+    /// otherwise would produce a "backup" that was not one.
+    fn snapshot(&self, _conn: &mut dyn Sql, _root: &Path, _dir: &Path) -> Result<()> {
+        Err(Error::Unsupported("backing up this storage backend"))
+    }
+}
+
+/// Where this store keeps attachment payloads.
+///
+/// Two answers, because the right one depends on whether the database is on
+/// this machine. Both hold the *same sealed bytes* — the container format in
+/// [`karmayoga_core::blobstore`] — so the choice is about where, never about
+/// what.
+pub enum Media {
+    /// A directory of sealed files beside the database. What a local vault
+    /// wants: the database stays small, fast to open and cheap to back up,
+    /// and a range read into a video is a `seek`.
+    Files(FileBlobStore),
+    /// A `blobs` table. What a *remote* vault needs, because attachments in
+    /// a directory on one laptop are not in the vault at all — they are
+    /// missing from every other machine that opens it, and gone with the
+    /// laptop. See [`blobs`].
+    Table,
+}
+
+impl Media {
+    /// A directory of sealed files at `dir`.
+    pub fn files(dir: impl Into<PathBuf>, cipher: Arc<dyn Cipher>) -> Result<Self> {
+        Ok(Media::Files(FileBlobStore::open(dir, cipher)?))
+    }
+}
+
+/// A vault's records in a SQL database.
+pub struct SqlStore {
+    driver: Arc<dyn Driver>,
+    dialect: Dialect,
+    pool: Pool,
+    media: Media,
+    cipher: Arc<dyn Cipher>,
+    /// The directory this store owns, kept so `snapshot` can copy the media
+    /// tree beside the database it writes.
+    root: PathBuf,
+}
+
+impl SqlStore {
+    /// Migrate `conn` up to the current schema and wrap it as a store.
+    pub fn open(
+        driver: Arc<dyn Driver>,
+        mut conn: Box<dyn Connection>,
+        media: Media,
+        ctx: &StoreContext,
+    ) -> Result<Self> {
+        let dialect = driver.dialect();
+        // Migrate before the pool exists, on the connection that will become
+        // the writer. A reader opened mid-migration would see half a schema.
+        schema::migrate(conn.as_mut(), dialect, driver.as_ref())?;
+        if matches!(media, Media::Table) {
+            blobs::create_table(conn.as_mut(), dialect)?;
+        }
+        Ok(Self {
+            pool: Pool::new(driver.clone(), conn),
+            driver,
+            dialect,
+            media,
+            cipher: ctx.cipher.clone(),
+            root: ctx.root.clone(),
+        })
+    }
+
+    /// The four facts `capabilities()`'s default body cannot derive from the
+    /// domain accessors, for every driver of this crate. Every domain is
+    /// implemented on both databases, so the accessors on `JournalStore`
+    /// derive an all-true set of domain flags without this method saying so
+    /// directly -- it stays optional for the sake of backends that are not
+    /// this one, not because a SQL vault might be missing the todo app.
+    pub(crate) fn backend_capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            blobs: true,
+            transactional: true,
+            human_readable: false,
+            max_blob_bytes: self.driver.max_blob_bytes(),
+        }
+    }
+
+    /// The write connection. One at a time, which is the rule the vault's
+    /// own write lock has always promised.
+    ///
+    /// Every statement that changes anything goes through here, including
+    /// the read half of a read-modify-write: taking the value on a reader
+    /// and writing it back on the writer is exactly the race the conditional
+    /// save exists to prevent, and it would not be caught by it.
+    pub(crate) fn write(&self) -> MutexGuard<'_, Box<dyn Connection>> {
+        self.pool.write()
+    }
+
+    /// A connection to read on. Several reads may hold one at once.
+    ///
+    /// Do not hold it while taking another guard: see [`pool`].
+    pub(crate) fn read(&self) -> ReadGuard<'_> {
+        self.pool.read()
+    }
+
+    /// Borrow a read connection for SQL this crate does not own.
+    ///
+    /// The escape hatch, and deliberately a narrow one: a *domain* query
+    /// belongs in a module here, written once and run on both databases,
+    /// rather than at the far end of this. What it is for is a driver's own
+    /// tests and anything diagnostic -- which is also why it only exists
+    /// under the `testing` feature (or inside this crate's own tests): the
+    /// one caller of it today is `karmayoga-store-sqlite`'s test suite, and a
+    /// method that skips every domain module to run arbitrary SQL has no
+    /// business being reachable from the running app.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn with_read<R>(&self, f: impl FnOnce(&mut dyn Sql) -> Result<R>) -> Result<R> {
+        f(&mut self.read())
+    }
+
+    // ---- sealing --------------------------------------------------------
+
+    fn seal_entry(&self, e: &Entry) -> Result<(Vec<u8>, Vec<u8>)> {
+        let aad = entry_aad(e.id);
+        let data = self.cipher.seal(&aad, &serde_json::to_vec(e)?)?;
+        let summary = self.cipher.seal(&aad, &serde_json::to_vec(&e.summarize())?)?;
+        Ok((data, summary))
+    }
+
+    fn open_entry(&self, id: EntryId, sealed: &[u8]) -> Result<Entry> {
+        let plain = self.cipher.open(&entry_aad(id), sealed)?;
+        Ok(serde_json::from_slice(&plain)?)
+    }
+
+    fn open_summary(&self, id: EntryId, sealed: &[u8]) -> Result<EntrySummary> {
+        let plain = self.cipher.open(&entry_aad(id), sealed)?;
+        Ok(serde_json::from_slice(&plain)?)
+    }
+
+    pub(crate) fn seal<T: serde::Serialize>(&self, aad: &[u8], value: &T) -> Result<Vec<u8>> {
+        self.cipher.seal(aad, &serde_json::to_vec(value)?)
+    }
+
+    pub(crate) fn unseal<T: serde::de::DeserializeOwned>(
+        &self,
+        aad: &[u8],
+        sealed: &[u8],
+    ) -> Result<T> {
+        Ok(serde_json::from_slice(&self.cipher.open(aad, sealed)?)?)
+    }
+
+    /// Decrypt an `(id, data)` result set into whole records.
+    pub(crate) fn collect<T, I>(
+        &self,
+        rows: Vec<(String, Vec<u8>)>,
+        aad: impl Fn(I) -> Vec<u8>,
+    ) -> Result<Vec<T>>
+    where
+        T: serde::de::DeserializeOwned,
+        I: std::str::FromStr + Copy,
+        I::Err: std::fmt::Display,
+    {
+        rows.into_iter()
+            .map(|(id, sealed)| {
+                let id: I = id.parse().map_err(|e: I::Err| Error::Invalid(e.to_string()))?;
+                self.unseal(&aad(id), &sealed)
+            })
+            .collect()
+    }
+
+    // ---- cascades -------------------------------------------------------
+
+    /// Every task in the subtree rooted at `root`, `root` itself included.
+    ///
+    /// Walked breadth-first in Rust rather than as a recursive CTE so that
+    /// the cascade -- which has to reach the `time_blocks` table too -- is
+    /// one readable rule in one place. Subtrees are tens of rows, not
+    /// millions, so the extra round trips do not signify. (They are round
+    /// trips to a *server* on the Postgres backend, which raises the cost
+    /// without changing the answer: a subtree is still tens of rows, and the
+    /// alternative is two dialects' worth of recursive CTE to maintain.)
+    pub(crate) fn subtree(tx: &mut dyn Sql, root: TaskId) -> Result<Vec<String>> {
+        let mut out = vec![root.to_string()];
+        let mut frontier = vec![root.to_string()];
+        while !frontier.is_empty() {
+            let mut next = Vec::new();
+            for parent in &frontier {
+                let rows = tx.query("SELECT id FROM tasks WHERE parent_id = ?1", &vals![parent])?;
+                for row in rows {
+                    let kid = row.text(0)?;
+                    // A cycle would be corrupt data, but a corrupt vault
+                    // should not hang the app -- so believe the set, not the
+                    // shape.
+                    if !out.contains(&kid) {
+                        out.push(kid.clone());
+                        next.push(kid);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        Ok(out)
+    }
+
+    /// Delete these tasks and every time block booked against them.
+    pub(crate) fn purge_tasks(tx: &mut dyn Sql, ids: &[String]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let holes = placeholders(1, ids.len());
+        let args: Vec<Value> = ids.iter().map(|id| Value::Text(id.clone())).collect();
+        // The blocks are gone with the tasks, so their pointer rows go too.
+        // Collected before the delete, because afterwards there is nothing
+        // left to ask which blocks these were.
+        let blocks: Vec<String> = tx
+            .query(&format!("SELECT id FROM time_blocks WHERE task_id IN ({holes})"), &args)?
+            .into_iter()
+            .map(|r| r.text(0))
+            .collect::<Result<_>>()?;
+        tx.execute(&format!("DELETE FROM time_blocks WHERE task_id IN ({holes})"), &args)?;
+        tx.execute(&format!("DELETE FROM tasks WHERE id IN ({holes})"), &args)?;
+        crate::purpose::forget_purposes(tx, karmayoga_core::record::RecordKind::Block, &blocks)?;
+        crate::purpose::forget_purposes(tx, karmayoga_core::record::RecordKind::Task, ids)?;
+        Ok(())
+    }
+
+    /// Clear the entry pointer on any reading that names `entry`, inside
+    /// `tx`.
+    ///
+    /// Both copies of it: the clear column the index is built on, and the
+    /// one inside the sealed payload. Updating only the column would leave
+    /// the record disagreeing with itself, and the sealed copy is the one
+    /// that would be believed after a restore. See
+    /// [`rewrite_each`](SqlStore::rewrite_each) for why this is a
+    /// read-modify-reseal on the writer rather than a plain `UPDATE`.
+    ///
+    /// Takes the transaction rather than opening its own so that
+    /// `delete_entry` -- the only caller -- can detach the readings and
+    /// remove the entry's own row in one commit. The two used to be separate
+    /// transactions, which left a crash between them able to delete the
+    /// entry without ever detaching its readings, or the reverse.
+    pub(crate) fn detach_readings_from(&self, tx: &mut dyn Sql, entry: EntryId) -> Result<u64> {
+        self.rewrite_each::<karmayoga_core::tracker::Reading>(
+            tx,
+            "SELECT id, data FROM readings WHERE entry_id = ?1",
+            &vals![entry.to_string()],
+            |reading| reading.entry_id = None,
+        )
+    }
+
+    /// `ORDER BY <order_by>`, followed by this dialect's `LIMIT`/`OFFSET`.
+    ///
+    /// One call so that a list method's ordering and its pagination cannot
+    /// drift apart the way they had: three call sites wrote `format!("
+    /// LIMIT {limit}")` by hand and dropped the `OFFSET` clause
+    /// [`Dialect::limit_offset`] already knew how to spell, while others
+    /// called it directly. Always emitted, even when there is no limit and
+    /// no offset -- `LIMIT -1 OFFSET 0` and `LIMIT ALL OFFSET 0` are both
+    /// no-ops, and one shape for the clause is simpler than a conditional
+    /// one that has to agree with itself across every list method.
+    pub(crate) fn page(&self, sql: &mut String, order_by: &str, limit: Option<u32>, offset: u32) {
+        sql.push_str(" ORDER BY ");
+        sql.push_str(order_by);
+        sql.push_str(&self.dialect.limit_offset(limit, offset));
+    }
+}
+
+/// A mutex, whether or not a previous caller panicked holding it.
+///
+/// `lock().unwrap()` would turn one panic anywhere in this crate into a
+/// permanently unusable store: every later call would panic on the poison
+/// flag, and in the desktop shell that means a window that still looks fine
+/// while nothing it does can be saved. Poisoning is also the wrong signal
+/// here -- the state it warns about cannot arise. A panic can only escape
+/// mid-statement or mid-transaction, and a driver's transaction rolls back
+/// when it is dropped, so the connection an unwinding thread leaves behind is
+/// exactly the one it borrowed.
+pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// `?1, ?2, ...` for an `IN` list, starting at `from` (1-based).
+///
+/// The dialect rewrites these on the way out, so they are always written in
+/// SQLite's numbering here. See [`Dialect::bind`].
+pub(crate) fn placeholders(from: usize, count: usize) -> String {
+    (from..from + count).map(|n| format!("?{n}")).collect::<Vec<_>>().join(",")
+}
+
+/// Microseconds since the Unix epoch. Stored as an integer rather than an
+/// RFC 3339 string because string timestamps only sort correctly if the
+/// fractional-second width never varies, which is a fragile thing to rely on.
+pub(crate) fn to_us(ts: jiff::Timestamp) -> i64 {
+    ts.as_microsecond()
+}
+
+pub(crate) fn from_us(us: i64) -> jiff::Timestamp {
+    jiff::Timestamp::from_microsecond(us).unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+}
+
+/// `YYYY-MM-DD`, which sorts lexicographically as it sorts chronologically,
+/// so a text column is a usable index for date ranges.
+pub(crate) fn date_str(d: Option<jiff::civil::Date>) -> Option<String> {
+    d.map(|d| d.to_string())
+}
+
+pub(crate) fn id_str<T: std::fmt::Display>(id: Option<T>) -> Option<String> {
+    id.map(|i| i.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_in_list_numbers_its_holes_from_where_it_was_told_to() {
+        assert_eq!(placeholders(1, 3), "?1,?2,?3");
+        assert_eq!(placeholders(4, 2), "?4,?5");
+        assert_eq!(placeholders(1, 0), "");
+    }
+}

@@ -1,0 +1,43 @@
+[package]
+name = "karmayoga-chat"
+description = "Reach the assistant from a chat service: Matrix today"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+karmayoga-core.workspace = true
+karmayoga-service.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+async-trait = "0.1"
+futures = "0.3.34"
+# Replies are rendered to HTML here rather than by ruma's own `text_markdown`,
+# so that an image in the model's text arrives as a link and never as an
+# `<img>` the owner's client fetches by itself. See `matrix/speaking.rs`.
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+tokio = { version = "1.53.1", features = ["rt", "sync", "time", "macros"] }
+# 0.19 is the first line on rusqlite 0.40, the version the rest of the
+# workspace links; 0.18 and older pull rusqlite 0.37, and the two cannot share
+# a binary (`links = "sqlite3"`). It is also why the workspace needs Rust 1.96.
+matrix-sdk = { version = "0.19.1", default-features = false, features = [
+    "e2e-encryption",
+    "automatic-room-key-forwarding",
+    "sqlite",
+    "rustls-aws-lc-rs",
+    "markdown",
+] }
+
+[dev-dependencies]
+karmayoga-vault.workspace = true
+# The type of a picture `matrix_live` sends as the owner; matrix-sdk takes
+# one and does not re-export the crate.
+mime = "0.3"
+tempfile = "3"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "test-util"] }

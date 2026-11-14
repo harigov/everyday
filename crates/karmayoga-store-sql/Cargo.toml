@@ -1,0 +1,30 @@
+[package]
+name = "karmayoga-store-sql"
+description = "The SQL storage backend for Karma Yoga, shared by every SQL dialect it speaks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# Exposes `SqlStore::with_read`, the escape hatch a driver's own tests use
+# to run SQL this crate does not own. Drivers enable this in their
+# dev-dependencies, the same way `karmayoga-core`'s own `testing` feature
+# exposes `store::conformance`.
+testing = []
+
+[dependencies]
+karmayoga-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+tracing.workspace = true
+# A keyset cursor is JSON wrapped in base64, so it is a string a UI can hold
+# in a URL or a saved scroll position without knowing what is inside. See
+# `keyset::KeyCursor`.
+base64 = "0.22"
+
+[dev-dependencies]
+karmayoga-core = { workspace = true, features = ["testing"] }
+tempfile = "3"

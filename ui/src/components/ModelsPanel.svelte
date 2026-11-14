@@ -94,7 +94,7 @@
   /**
    * Every level any endpoint takes, in order. No per-model list: model names
    * are free text, and one that does not take a level says so when it is
-   * next asked -- see `ReasoningEffort` in `crates/everyday-core/src/llm.rs`.
+   * next asked -- see `ReasoningEffort` in `crates/karmayoga-core/src/llm.rs`.
    */
   const EFFORTS: { value: ReasoningEffort; label: string }[] = [
     { value: 'none', label: 'None' },
@@ -108,7 +108,7 @@
 
   /**
    * Small's levels: Low and below. The save refuses more
-   * (`SMALL_MAX_EFFORT` in `crates/everyday-core/src/llm.rs`), because a quick
+   * (`SMALL_MAX_EFFORT` in `crates/karmayoga-core/src/llm.rs`), because a quick
    * ask spends its few tokens and seconds thinking and never answers.
    */
   const SMALL_EFFORTS = EFFORTS.filter((e) => ['none', 'minimal', 'low'].includes(e.value))
@@ -521,7 +521,7 @@
         {#if here}
           {#if !models.localDecisions}
             <p class="hint">
-              This copy of Every Day cannot run a decision model itself. Choose a provider above.
+              This copy of Karma Yoga cannot run a decision model itself. Choose a provider above.
             </p>
           {/if}
           {#each models.local as m (m.id)}

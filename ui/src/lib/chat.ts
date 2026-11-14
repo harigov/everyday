@@ -54,7 +54,7 @@ const STATES: Record<ChatState, { label: string; tone: StatusPill['tone']; fallb
  * A `ChatStatus` as a word, a tone and a sentence.
  *
  * The detail is the connector's own sentence, verbatim -- "Signed in as
- * @everyday:example.org. Talking to @me:example.org." -- and only when it
+ * @karmayoga:example.org. Talking to @me:example.org." -- and only when it
  * has none (a link that is off, a connector that has not reported yet) does
  * this say what the state means instead.
  */
@@ -69,7 +69,7 @@ export function statusPill(status: ChatStatus): StatusPill {
  * Is this Matrix link fit to save? `null` means yes, otherwise the reason.
  *
  * The same checks, in the same order and in the same words, as
- * `MatrixLink::validate` in `crates/everyday-core/src/chat.rs`: a person
+ * `MatrixLink::validate` in `crates/karmayoga-core/src/chat.rs`: a person
  * gets the answer before a round trip rather than after one, and the two
  * sides do not give different reasons for the same mistake. Whitespace round
  * the fields is the caller's business -- the form trims before it asks --
@@ -248,7 +248,7 @@ export function quietNote(minutes: number): string {
 //
 // The owner verifies the bot the way they verify anybody in Element: both
 // sides show seven emoji, and a person says whether they are the same. The
-// bot has no screen, so its seven are shown here -- see `everyday_service::
+// bot has no screen, so its seven are shown here -- see `karmayoga_service::
 // chat`'s "Verifying the owner".
 
 /** A verification that has finished, one way or the other, and wants no
@@ -307,7 +307,7 @@ export function canStartVerification(view: ChatLinkView): boolean {
 
 // ── Naming a link ────────────────────────────────────────────────────────
 
-/** "@everyday:example.org → @me:example.org": the bot, and who it answers. */
+/** "@karmayoga:example.org → @me:example.org": the bot, and who it answers. */
 export function linkTitle(link: ChatLink): string {
   return `${link.service.userId || 'New bot'} → ${link.service.owner || '…'}`
 }

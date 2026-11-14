@@ -1,0 +1,50 @@
+[package]
+name = "karmayoga-core"
+description = "Domain model, crypto envelope, storage abstraction and search index for Karma Yoga"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+# Exposes `store::conformance`, the shared backend test battery. Backends
+# enable this in their dev-dependencies.
+testing = []
+# Derives `schemars::JsonSchema` on the record types, for
+# `ui/scripts/check-types-drift.mjs`'s generator (see
+# `crates/karmayoga-core/src/schema.rs`). Off by default: it is not part of
+# the shipped binary, only of a checked-in, on-demand-regenerated schema
+# file. See docs/plans/architecture-refactor.md, Phase 5.
+schema = ["dep:schemars"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+jiff.workspace = true
+blake3.workspace = true
+rand.workspace = true
+zeroize.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+tracing.workspace = true
+fs4 = { version = "1.1.0", default-features = false, features = ["sync"] }
+# Screen time groups a site's hosts by registrable domain (`mail.google.com`
+# -> `google.com`, `news.bbc.co.uk` -> `bbc.co.uk`). The Public Suffix List,
+# compiled in, so a report never puts a request on the network. See
+# `screentime::domain`.
+psl = "2"
+# `uuid1` and `jiff02` match this crate's own `uuid` and `jiff` versions, so
+# the typed ids and timestamps get a schema for free instead of a hand-written
+# one.
+schemars = { version = "1", optional = true, default-features = false, features = [
+    "std",
+    "derive",
+    "uuid1",
+    "jiff02",
+] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -9,7 +9,7 @@
 > laid down first. What went beyond the plan below, each for a reason:
 >
 > - **MCP needs `money` by name.** An MCP token is issued with `all` unless
->   narrowed, and most predate Money; `everyday-server::mcp` lists and runs
+>   narrowed, and most predate Money; `karmayoga-server::mcp` lists and runs
 >   money tools only for a token whose scopes name `money` (`Ctx::names`).
 >   Settings → MCP has a Money box, off by default. The window, the CLI and
 >   paired copies keep `all`'s meaning.
@@ -103,7 +103,7 @@
 - **Investment accounts show their balance only**; holdings are not read.
 - **Read-only, always.** Nothing in this app can move money.
 
-## Records (`everyday_core::money`)
+## Records (`karmayoga_core::money`)
 
 ```text
   BankLink ──── BankAccount ──── Txn ───── MoneyCategory
@@ -113,7 +113,7 @@
 
 - **Amounts** are `i64` minor units with an ISO currency beside them, never
   floats (`money::amount`). **Negative is money out.** Plaid's sign is the
-  opposite and is turned round once, in `everyday-service::money::plaid`.
+  opposite and is turned round once, in `karmayoga-service::money::plaid`.
 - A **liability** account's balance is what is owed, positive;
   `AccountKind::is_liability` subtracts it from net worth.
 - A **transaction has two halves**: the bank's (rewritten by every sync) and

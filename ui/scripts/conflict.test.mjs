@@ -7,7 +7,7 @@
 // mock nor the store it stands in for, because a change to either side left
 // the copy behind, agreeing with nothing else. Loading `mock.ts` itself
 // through the harness is what makes a broken conflict check in the real
-// backend show up here, rather than only in `EVERYDAY_MOCK=1 npm run dev`.
+// backend show up here, rather than only in `KARMAYOGA_MOCK=1 npm run dev`.
 
 import assert from 'node:assert/strict'
 import { load, stubBrowser } from './harness.mjs'
@@ -21,7 +21,7 @@ stubBrowser({ window: globalThis, location: new URL('http://localhost/') })
 const { module: mock, close } = await load('/src/lib/mock.ts')
 const { mockInvoke } = mock
 
-await mockInvoke('unlock', { password: 'everyday' })
+await mockInvoke('unlock', { password: 'karmayoga' })
 
 const id = 'e1'
 const entry = (over) => ({ id, ...over })

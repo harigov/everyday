@@ -1,6 +1,6 @@
 // The quick model, for any component that wants a suggestion.
 //
-// The interface half of `everyday_core::quick`. Rust builds every prompt,
+// The interface half of `karmayoga_core::quick`. Rust builds every prompt,
 // declares every schema and clamps every answer; the service opens the
 // socket; this file is what components hold, and it exists so that the four
 // things every caller of a suggestion needs are written once:

@@ -25,7 +25,7 @@
 >   model rejects the parameter can turn it back off.
 > - **`rig`'s `Extractor` could not be used.** It wants one Rust type per
 >   answer with `JsonSchema` derived at compile time; the schemas here are
->   values built from a catalogue. `everyday_service::quick` does by hand
+>   values built from a catalogue. `karmayoga_service::quick` does by hand
 >   what `Extractor` does internally — one dynamic `submit` tool carrying the
 >   job's schema, tool choice forced — which is the same trade `crate::agent`
 >   already made for its tools, for the same reason.
@@ -63,7 +63,7 @@ the vault hold two model names against one endpoint and one key.
 
 ## The setting
 
-[`AgentSettings`](../../crates/everyday-core/src/agent.rs) grows one field:
+[`AgentSettings`](../../crates/karmayoga-core/src/agent.rs) grows one field:
 
 ```rust
 pub struct AgentSettings {
@@ -131,16 +131,16 @@ not.
 The same split the app already makes twice, for the third time:
 
 ```
-  everyday_core::quick     builds the prompt, declares the schema, validates
+  karmayoga_core::quick     builds the prompt, declares the schema, validates
                            and clamps the answer — and cannot open a socket,
                            which is why all of it is under test
-  everyday_service::quick  owns the socket. One request, no tools, a short
+  karmayoga_service::quick  owns the socket. One request, no tools, a short
                            timeout, no retry
   ui/src/lib/quick.ts      the `quick` object components hold: debouncing,
                            cancellation, and a suggestion you can dismiss
 ```
 
-`everyday_core::quick` is a catalogue of **jobs**, in the shape
+`karmayoga_core::quick` is a catalogue of **jobs**, in the shape
 `agent/tools.rs` already uses for the tool catalogue: each job is a static
 record with a name, a prompt builder, a JSON schema, and a parse function
 that returns the domain type or nothing. The service never interprets a job;
@@ -299,8 +299,8 @@ and put the regenerate on a button.
 ## What to build, in what order
 
 **One — the plumbing.** `QuickConfig`, the settings pane row, the
-`everyday_core::quick` job catalogue with its schemas and validators, and
-`everyday_service::quick` with the socket, a short timeout and no retry. One
+`karmayoga_core::quick` job catalogue with its schemas and validators, and
+`karmayoga_service::quick` with the socket, a short timeout and no retry. One
 job to prove it: **L3**, making a shelf. It is self-contained, it is a form
 that already exists, a bad answer costs one edit, and it demonstrates the
 whole pipeline.
@@ -328,7 +328,7 @@ yet:
 - **L5, mapping an imported list's columns.** There is no CSV importer for a
   shelf. The mapping is the easy half; the importer that consumes it is a
   feature of its own.
-- **X1, mapping somebody else's front matter.** `everyday-transfer`'s import
+- **X1, mapping somebody else's front matter.** `karmayoga-transfer`'s import
   reads what its export wrote. Accepting an arbitrary folder — Obsidian, Day
   One, Bear — is the change; a column mapping is what it would need *after*
   that, not instead of it.

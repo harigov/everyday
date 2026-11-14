@@ -12,7 +12,7 @@
 // # Amounts
 //
 // Every amount is an integer of the currency's minor unit -- cents for
-// dollars, yen for yen, fils for dinars -- the way `everyday_core::money::
+// dollars, yen for yen, fils for dinars -- the way `karmayoga_core::money::
 // amount` keeps them. `minorExponent` is that module's table, copied, and
 // `parseMoney` is its `parse_decimal`, rule for rule: what somebody types into
 // a budget has to land on the same number the vault would have read from a

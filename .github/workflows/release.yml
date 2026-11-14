@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          version=$(node -p "require('./crates/everyday-app/tauri.conf.json').version")
+          version=$(node -p "require('./crates/karmayoga-app/tauri.conf.json').version")
           tag=${TAG_INPUT:-v$version}
 
           # Echoed to the log, not just the summary: the API does not record
@@ -216,7 +216,7 @@ jobs:
         run: npx --yes "$TAURI_CLI" --version
 
       - name: Build bundles
-        working-directory: crates/everyday-app
+        working-directory: crates/karmayoga-app
         env:
           BUNDLES: ${{ matrix.bundles }}
           RUST_TARGET: ${{ matrix.rust_target }}
@@ -265,7 +265,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: everyday-${{ matrix.name }}
+          name: karmayoga-${{ matrix.name }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
@@ -284,11 +284,11 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: everyday-*
+          pattern: karmayoga-*
           merge-multiple: true
 
       # GitHub rewrites characters it will not put in an asset name: the
-      # space in "Every Day_0.1.0_amd64.deb" silently becomes a dot on
+      # space in "Karma Yoga_0.1.0_amd64.deb" silently becomes a dot on
       # upload. Do that rename here instead, so the names recorded in
       # SHA256SUMS.txt are the names the assets actually end up with and
       # `sha256sum -c SHA256SUMS.txt` verifies a fresh download rather than
@@ -329,7 +329,7 @@ jobs:
             echo "$TAG exists; replacing its assets"
             gh release upload "$TAG" dist/* --clobber
           else
-            flags=(--title "Every Day $VERSION" --target "$GITHUB_SHA"
+            flags=(--title "Karma Yoga $VERSION" --target "$GITHUB_SHA"
                    --notes "$notes" --generate-notes)
             if [ "$MODE" = draft ]; then
               flags+=(--draft)

@@ -14,11 +14,11 @@ later pass can tell somebody which mistakes they keep making.
 
 | Half | Code | Does |
 |---|---|---|
-| Record | `everyday-core/src/writing.rs`, `store/writing.rs`, `vault/writing.rs`; table `writing_assists` (schema **v17**) | `WritingAssist { action, original, result, app, model, outcome, error }`. Sealed except `created_us`. |
-| Service | `everyday-service/src/domains/writing.rs` | `rewrite_selection` (medium model, keeps the record before and after asking, failures included; scope `Quick`, like a quick ask: it spends tokens and is not the assistant), `settle_writing_assist` and `list_writing_assists` (scope `All`: the history is text from any app, mail included). Needs an *unlocked* vault. |
-| Shell | `everyday-app/src/writing/{mod,wayland,desktop}.rs`, `portal.rs`, `hotkey.rs` | The key, the popup window, reading the selection, the paste. |
+| Record | `karmayoga-core/src/writing.rs`, `store/writing.rs`, `vault/writing.rs`; table `writing_assists` (schema **v17**) | `WritingAssist { action, original, result, app, model, outcome, error }`. Sealed except `created_us`. |
+| Service | `karmayoga-service/src/domains/writing.rs` | `rewrite_selection` (medium model, keeps the record before and after asking, failures included; scope `Quick`, like a quick ask: it spends tokens and is not the assistant), `settle_writing_assist` and `list_writing_assists` (scope `All`: the history is text from any app, mail included). Needs an *unlocked* vault. |
+| Shell | `karmayoga-app/src/writing/{mod,wayland,desktop}.rs`, `portal.rs`, `hotkey.rs` | The key, the popup window, reading the selection, the paste. |
 | Popup | `ui/writing.html`, `ui/src/writing/` | A second page and window, sharing nothing with the main one but `call`. |
-| Setting | `~/.config/everyday/writing.json` (0600) | On/off, the shortcut, the RemoteDesktop restore token. Per machine, not per vault. |
+| Setting | `~/.config/karmayoga/writing.json` (0600) | On/off, the shortcut, the RemoteDesktop restore token. Per machine, not per vault. |
 
 Outcomes: `pending` (answered, not yet used), `replaced` (Ctrl+V was
 pressed — not proof the target accepted it), `copied` (could not paste; left
@@ -30,7 +30,7 @@ since the paste would land wherever the keyboard went), `failed`.
 
 People noticed lost bullets and added or dropped line breaks before anything
 else (Nov 2026), so the layout is held three ways, in
-`everyday-service/src/writing_layout.rs`:
+`karmayoga-service/src/writing_layout.rs`:
 
 1. **The prompt** has a section of its own on layout (every line break,
    blank line, list marker and indent stays), and the message describes
@@ -94,10 +94,10 @@ client, so each has a workaround:
   arrived before the target had the keyboard. The clipboard is left
   holding the answer.
 - **Who is asking.** `register_host_app` is tried with the launching desktop
-  file and then `app.everyday.journal`; it only succeeds when a desktop
+  file and then `app.karmayogi.KarmaYoga`; it only succeeds when a desktop
   file of that name is installed. Unregistered, everything still works,
   filed under the empty app id. The installs we make today
-  (`Every Day.desktop`, `everyday-app.desktop`) do not register.
+  (`Karma Yoga.desktop`, `karmayoga-app.desktop`) do not register.
 - **The shortcut dialog's parent** is the main window's exported surface
   (`portal::parent_of`). Without it GNOME opened the dialog *behind* the
   window that had just appeared.

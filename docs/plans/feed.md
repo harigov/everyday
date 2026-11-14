@@ -7,8 +7,8 @@
 > the commits for what was done. What went differently from the plan below,
 > each for a reason worth keeping:
 >
-> - **Parsing lives in `everyday-service::news`, not the core.** The plan put
->   `feed-rs` in `everyday_core::news`; but `calcard` already set the
+> - **Parsing lives in `karmayoga-service::news`, not the core.** The plan put
+>   `feed-rs` in `karmayoga_core::news`; but `calcard` already set the
 >   precedent that a stranger's file format is parsed in the service, and
 >   the core has no XML, HTML or URL library to pull in. The core holds the
 >   records, `schedule` (the next-fetch arithmetic, pure and table-tested) and
@@ -44,7 +44,7 @@
 >   none was. `SourceKind::Newsletters` reads whatever Mail files under
 >   Newsletters (Trash and Spam left out), except a sender followed as a
 >   `Mail` source of their own. The Feed follows it once, unasked, the first
->   time it opens with a mail account (`everyday.feed.newsletters`, a
+>   time it opens with a mail account (`karmayoga.feed.newsletters`, a
 >   per-device pref: the vault has nowhere for a news setting), and not again
 >   once unfollowed. A message is one story whichever source found it first,
 >   so a sender followed later starts from their next issue.
@@ -118,10 +118,10 @@ below say why.
 
 - **"Feed" on screen, `news` in the code.** The word `feed` already means a
   calendar subscription throughout the tree:
-  `crates/everyday-service/src/feeds.rs`, `Service::feed_failed` and
+  `crates/karmayoga-service/src/feeds.rs`, `Service::feed_failed` and
   `feed_recovered`, and the notification key `feed:{id}`. A second meaning
   would make every search for it ambiguous. The domain is
-  `everyday_core::news`, its records are `Source` and `Story`, and it uses
+  `karmayoga_core::news`, its records are `Source` and `Story`, and it uses
   `Scope::News`, `Domain::News` and the `news_*` tables. The user never sees
   the code name.
 
@@ -144,7 +144,7 @@ below say why.
 - **Newsletters stay in Mail, and the Feed points at them.** No message is
   copied.
   - A newsletter story carries the `MailMessageId` it came from and is drawn
-    through the existing `everyday://mail/body/{id}` route, under Mail's
+    through the existing `karmayoga://mail/body/{id}` route, under Mail's
     remote-image rules unchanged. It *is* mail.
   - Its read state is the mail's seen flag, so marking it read in either app
     marks it read in both. That is also how the server hears about it.
@@ -164,7 +164,7 @@ below say why.
   applies here too: work should run whether or not anybody opened anything.
   - The refresher is one supervised task (`Supervisor::ensure("news", …)`). It
     stops on lock and restarts on unlock with the supervisor's backoff.
-  - It runs under `everyday serve` too.
+  - It runs under `karmayoga serve` too.
   - It is not a step in the scheduler's minute tick, because that tick runs
     routines serially for up to fifteen minutes and a slow routine would
     starve it.
@@ -186,7 +186,7 @@ below say why.
     draws the same line.
 
 - **HTML is sanitised once, at fetch, by Mail's sanitiser.**
-  `everyday_mail::sanitize` already rewrites remote images, strips behaviour
+  `karmayoga_mail::sanitize` already rewrites remote images, strips behaviour
   and reports tracking pixels. Its `Rewrite` is generalised so the route
   prefix becomes a parameter rather than the hard-coded `mail/img/{msg}`. A
   story's body is drawn in the same reused sandboxed `srcdoc` frame Mail
@@ -194,7 +194,7 @@ below say why.
 
 - **Images load when a story is opened, are cached, and can be switched off
   per source.** The webview's CSP makes hot-linking impossible anyway; every
-  image goes through `everyday://news/img/{story}/{token}` into the blob
+  image goes through `karmayoga://news/img/{story}/{token}` into the blob
   store.
   - For web feeds and Hacker News they are on by default. The publisher
     already sees every refresh, so the read-receipt argument that keeps Mail's
@@ -284,7 +284,7 @@ would be a second thing to keep in step for nothing.
 ### Ids
 
 `SourceId` (`"source"`) and `StoryId` (`"story"`) are added in
-`crates/everyday-core/src/id.rs` with `typed_id!` and re-exported from
+`crates/karmayoga-core/src/id.rs` with `typed_id!` and re-exported from
 `lib.rs`. Neither name is taken.
 
 ### Schema, version 13
@@ -320,7 +320,7 @@ mute words, authors, summaries, bodies and fetch state are sealed too.
 
 The file can say that somebody follows twenty-three sources and read forty
 stories on Tuesday, and never what any of them were. The "Leaks" table in
-`crates/everyday-store-sql/src/lib.rs` gets these rows.
+`crates/karmayoga-store-sql/src/lib.rs` gets these rows.
 
 **A newsletter's read state is read through a join:**
 `LEFT JOIN mail_messages m ON m.id = s.mail_message_id`, with the seen bit
@@ -367,10 +367,10 @@ This follows web search's three layers, so the part that decides things is
 the part under test:
 
 ```
-  everyday_core::news      parse (feed-rs), normalise, canonicalise, key,
+  karmayoga_core::news      parse (feed-rs), normalise, canonicalise, key,
                            mute-word filter, next-fetch arithmetic, OPML.
                            Opens no socket.
-  everyday_service::news   the supervised task, HTTP, sanitising, HTML→text,
+  karmayoga_service::news   the supervised task, HTTP, sanitising, HTML→text,
                            article extraction, images, discovery
   ui/src/lib/feed.svelte.ts  the app's store
 ```
@@ -391,7 +391,7 @@ the part under test:
   does not bring a third.
 - `roxmltree` is already a direct dependency and is enough for OPML.
 - Everything else already exists: `ammonia`, `lol_html`, `html2text` and
-  `htmd`, behind `everyday-mail`'s `sanitize` and `text`.
+  `htmd`, behind `karmayoga-mail`'s `sanitize` and `text`.
 
 ### The refresher
 
@@ -404,7 +404,7 @@ One loop, woken by the earliest `news_fetch.next_us` or by "Refresh now".
   reason to be that size.
 - Timeouts come from `http.rs`.
 - The feed client sends the honest user agent
-  (`EveryDay/<ver> (+https://github.com/everyday-app)`). Article extraction
+  (`KarmaYoga/<ver> (+https://github.com/karmayoga-app)`). Article extraction
   sends `webpage.rs`'s browser-like one, because sites block anything else.
 
 **The next fetch is a pure function**, `next_fetch(state, gaps, headers,
@@ -609,8 +609,8 @@ routine and builds no scheduler of its own.
   exported: news is not writing you would walk away with.
 - **Server, MCP, CLI.** Nothing beyond the per-domain slices. The server needs
   only the two `news/…` routes beside Mail's (`body/{story}`,
-  `img/{story}/{token}`) in `everyday-server/src/routes.rs`, and their twins
-  in `everyday-app/src/protocol.rs`. MCP reaches the tools through
+  `img/{story}/{token}`) in `karmayoga-server/src/routes.rs`, and their twins
+  in `karmayoga-app/src/protocol.rs`. MCP reaches the tools through
   `scope_of(Domain::News)`. The CLI stays journal-only.
 
 ## Phases
@@ -619,7 +619,7 @@ Each phase leaves `main` shippable, and nothing is visible until phase 3.
 
 ### Phase 1: the domain and its storage
 
-- `everyday-core`:
+- `karmayoga-core`:
   - `news.rs`: the records, `Timestamped`, `as_str()` for the closed enums.
   - `store/news.rs`: `NewsStore`, `StoryQuery` with `matches()` and
     `apply()`, the AAD labels.
@@ -628,7 +628,7 @@ Each phase leaves `main` shippable, and nothing is visible until phase 3.
   - `Domain::News`.
   - The pinned sealing strings.
   - The `schema.rs` bundle, with the schema JSON regenerated.
-- `everyday-store-sql`:
+- `karmayoga-store-sql`:
   - `news.rs`: `Record` impls, the cascades as explicit transactions, the
     newsletter join.
   - `v13`, and the Leaks table.
@@ -636,7 +636,7 @@ Each phase leaves `main` shippable, and nothing is visible until phase 3.
 
 ### Phase 2: web feeds, headless
 
-- `everyday_core::news`:
+- `karmayoga_core::news`:
   - parsing, normalising and canonicalising;
   - the keyed hash;
   - mute words;
@@ -645,10 +645,10 @@ Each phase leaves `main` shippable, and nothing is visible until phase 3.
 
   Fixtures cover RSS 2.0, RSS 1.0, Atom, JSON Feed, missing dates, duplicate
   guids, relative addresses, `xml:base`, a 6 MB feed and malformed XML.
-- `everyday-mail::sanitize`: `Rewrite` takes a prefix. Mail's own sanitise
+- `karmayoga-mail::sanitize`: `Rewrite` takes a prefix. Mail's own sanitise
   tests must stay green untouched, which is the check that the
   generalisation broke nothing.
-- `everyday_service::news`:
+- `karmayoga_service::news`:
   - the supervised refresher and conditional GET;
   - failure handling and notifications;
   - expiry;
@@ -677,7 +677,7 @@ Each phase leaves `main` shippable, and nothing is visible until phase 3.
   - shortcuts and tray rows;
   - the screen context;
   - an icon (Lucide's `rss`).
-- `everyday://news/body|img` on both transports.
+- `karmayoga://news/body|img` on both transports.
 - `mock.ts`: three sample sources, one deliberately failing, as the
   calendar's mock does, so both paths through the add sheet can be seen in
   `make ui`.
@@ -711,7 +711,7 @@ deliver an issue, see the story, mark it read, and confirm the server's
 ### Phase 6: the assistant, the Overview, export and search
 
 - The tool rows, the `untrusted_text` envelope, and the
-  `crates/everyday-vault/tests/tools/news.rs` tests.
+  `crates/karmayoga-vault/tests/tools/news.rs` tests.
 - The suggested routine.
 - The Reading widget.
 - The `Portable` with OPML round-tripping.
@@ -719,7 +719,7 @@ deliver an issue, see the story, mark it read, and confirm the server's
   - At first it is a scan over light records in the retention window: titles,
     summaries and source names, measured against 50,000 synthetic stories.
   - If that is slow, a second tantivy index beside Mail's, in
-    `everyday-mailindex`, reusing `SealedDirectory` under its own subkey.
+    `karmayoga-mailindex`, reusing `SealedDirectory` under its own subkey.
   - Row ciphertext rules out SQL full-text search, as it does everywhere
     else.
 

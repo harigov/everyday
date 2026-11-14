@@ -1,7 +1,7 @@
 // Repeats, in the words a person picks them in.
 //
 // The core holds a repeat as a small structure rather than as `RRULE` text
-// -- see `everyday-core`'s `recurrence` module for why -- and this file is
+// -- see `karmayoga-core`'s `recurrence` module for why -- and this file is
 // the interface's half of that: the handful of presets a "Repeat" menu
 // offers for a given start ("Every week on Tuesday", "Every month on the
 // second Tuesday"), the sentence a chosen rule reads as, and which preset,

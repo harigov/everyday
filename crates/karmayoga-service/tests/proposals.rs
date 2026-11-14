@@ -1,0 +1,381 @@
+//! Proposal commands end to end through the service, and the scheduler's
+//! sweep. See `karmayoga_core::proposal` and `docs/plans/dreaming.md`.
+
+#[allow(dead_code)]
+mod support;
+
+use std::sync::{Arc, Mutex};
+
+use jiff::Timestamp;
+use karmayoga_core::account::{Account, Provider};
+use karmayoga_core::mail::{Address, Draft, DraftState, Origin as MailOrigin};
+use karmayoga_core::proposal::{Outcome as ProposalOutcome, Payload, ProposedRecord};
+use karmayoga_core::{DraftId, Note, Proposal, Skill, Vault};
+use karmayoga_service::Service;
+use karmayoga_service::ctx::Ctx;
+use karmayoga_service::error::CommandError;
+use karmayoga_service::events::{Change, EventSink, Kind};
+use karmayoga_service::scheduler;
+use serde_json::{Value, json};
+
+fn service() -> (Arc<Service>, tempfile::TempDir) {
+    support::vault::service(None)
+}
+
+async fn call(svc: &Arc<Service>, name: &str, args: Value) -> Value {
+    svc.call(Ctx::local(), name, args).await.unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+async fn fails(svc: &Arc<Service>, name: &str, args: Value) -> CommandError {
+    svc.call(Ctx::local(), name, args).await.expect_err("expected a failure")
+}
+
+#[derive(Default)]
+struct Collector {
+    changes: Mutex<Vec<Change>>,
+}
+
+impl EventSink for Collector {
+    fn changed(&self, change: Change) {
+        self.changes.lock().unwrap().push(change);
+    }
+}
+
+fn seed_note_proposal(vault: &Vault, title: &str) -> Proposal {
+    let proposal = Proposal::new(
+        Payload::Create { record: ProposedRecord::Note(Note::written(title, "x")) },
+        "Create note",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+    proposal
+}
+
+fn seed_skill_proposal(vault: &Vault, name: &str) -> Proposal {
+    let mut skill = Skill::new(name);
+    skill.description = "Use when asked to do the thing.".into();
+    skill.instructions = "Do the thing.".into();
+    let proposal = Proposal::new(
+        Payload::Create { record: ProposedRecord::Skill(skill) },
+        "Create skill",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+    proposal
+}
+
+/// An account with nowhere to sync from -- these tests never open a real
+/// socket, only the vault and the outbox's own state machine.
+fn seed_account(vault: &Vault) -> karmayoga_core::AccountId {
+    let account = Account::new(Provider::Custom, "me@example.com");
+    let id = account.id;
+    vault.save_account(&account).unwrap();
+    id
+}
+
+/// A draft ready to send: one recipient, in `Editing`.
+fn seed_draft(vault: &Vault, account: karmayoga_core::AccountId) -> Draft {
+    let mut draft = Draft::new(account, "me@example.com", MailOrigin::Person);
+    draft.to = vec![Address::bare("someone@example.com")];
+    vault.save_draft(&draft).unwrap();
+    draft
+}
+
+#[tokio::test]
+async fn accept_proposal_saves_the_record_and_raises_both_changes() {
+    let (svc, _dir) = service();
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let vault = svc.get().unwrap();
+    let proposal = seed_note_proposal(&vault, "Trip notes");
+
+    let result = call(&svc, "accept_proposal", json!({ "id": proposal.id.to_string() })).await;
+    assert_eq!(result["outcome"]["type"].as_str(), Some("accepted"));
+
+    let changes = events.changes.lock().unwrap();
+    assert!(
+        changes.iter().any(|c| c.kind == Kind::Proposal),
+        "the command table's own change must still fire"
+    );
+    assert!(
+        changes.iter().any(|c| c.kind == Kind::Note),
+        "and a second change for the record it actually saved"
+    );
+}
+
+#[tokio::test]
+async fn accept_proposal_on_a_bad_reference_declines_and_reports_no_second_change() {
+    let (svc, _dir) = service();
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let vault = svc.get().unwrap();
+
+    let ghost_project = karmayoga_core::ProjectId::new();
+    let task = karmayoga_core::Task::new("Buy the paint").in_project(ghost_project);
+    let proposal = Proposal::new(
+        Payload::Create { record: ProposedRecord::Task(task) },
+        "Create task",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    let err = fails(&svc, "accept_proposal", json!({ "id": proposal.id.to_string() })).await;
+    assert_eq!(err.code, "invalid");
+
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(matches!(closed.outcome, ProposalOutcome::Declined { .. }));
+
+    // The command table raises `Proposal` for a write that fails just as
+    // much as one that succeeds -- `svc.call` runs the body and stops
+    // before it, so only the body's own emission is at stake here.
+    let changes = events.changes.lock().unwrap();
+    assert!(
+        !changes.iter().any(|c| c.kind == Kind::Task),
+        "nothing was saved, so nothing should be reported as a task change"
+    );
+}
+
+#[tokio::test]
+async fn accepting_a_skill_proposal_saves_it_and_raises_a_skill_change() {
+    let (svc, _dir) = service();
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let vault = svc.get().unwrap();
+    let proposal = seed_skill_proposal(&vault, "Plan a trip");
+
+    let result = call(&svc, "accept_proposal", json!({ "id": proposal.id.to_string() })).await;
+    assert_eq!(result["outcome"]["type"].as_str(), Some("accepted"));
+
+    let changes = events.changes.lock().unwrap();
+    assert!(
+        changes.iter().any(|c| c.kind == Kind::Proposal),
+        "the command table's own change must still fire"
+    );
+    assert!(
+        changes.iter().any(|c| c.kind == Kind::Skill),
+        "and a second change for the skill it actually saved"
+    );
+    drop(changes);
+
+    let saved = vault.skills().unwrap();
+    assert!(saved.iter().any(|s| s.name == "Plan a trip"));
+}
+
+#[tokio::test]
+async fn decline_proposal_through_the_command_table() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let proposal = seed_note_proposal(&vault, "Trip notes");
+
+    let result = call(
+        &svc,
+        "decline_proposal",
+        json!({ "id": proposal.id.to_string(), "reason": { "type": "wrongTime" } }),
+    )
+    .await;
+    assert_eq!(result["outcome"]["type"].as_str(), Some("declined"));
+    assert_eq!(result["outcome"]["reason"]["type"].as_str(), Some("wrongTime"));
+}
+
+#[tokio::test]
+async fn mark_proposals_seen_through_the_command_table() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let one = seed_note_proposal(&vault, "One");
+    let _two = seed_note_proposal(&vault, "Two");
+    assert_eq!(vault.unseen_proposals().unwrap(), 2);
+
+    call(&svc, "mark_proposals_seen", json!({ "ids": [one.id.to_string()] })).await;
+    assert_eq!(vault.unseen_proposals().unwrap(), 1);
+
+    call(&svc, "mark_proposals_seen", json!({})).await;
+    assert_eq!(vault.unseen_proposals().unwrap(), 0);
+}
+
+// ---- mail: the one payload the service handles itself ---------------------
+
+#[tokio::test]
+async fn accepting_a_send_mail_proposal_queues_the_draft_and_reports_it_changed() {
+    let (svc, _dir) = service();
+    let events = Arc::new(Collector::default());
+    svc.set_events(events.clone());
+    let vault = svc.get().unwrap();
+    let account = seed_account(&vault);
+    let draft = seed_draft(&vault, account);
+
+    let proposal = Proposal::new(
+        Payload::SendMail { draft_id: draft.id },
+        "Send mail",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    let result = call(&svc, "accept_proposal", json!({ "id": proposal.id.to_string() })).await;
+    assert_eq!(result["outcome"]["type"].as_str(), Some("accepted"));
+    assert_eq!(result["outcome"]["savedAs"].as_str(), Some(draft.id.to_string().as_str()));
+
+    let queued = vault.draft(draft.id).unwrap();
+    assert!(matches!(queued.state, DraftState::Queued { .. }), "{:?}", queued.state);
+
+    let changes = events.changes.lock().unwrap();
+    assert!(changes.iter().any(|c| c.kind == Kind::Proposal));
+    assert!(
+        changes.iter().any(
+            |c| c.kind == Kind::Draft && c.id.as_deref() == Some(draft.id.to_string().as_str())
+        ),
+        "the draft it queued must be reported too"
+    );
+}
+
+#[tokio::test]
+async fn accepting_a_send_mail_proposal_whose_draft_is_gone_declines_it() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+
+    let proposal = Proposal::new(
+        Payload::SendMail { draft_id: DraftId::new() },
+        "Send mail",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    let err = fails(&svc, "accept_proposal", json!({ "id": proposal.id.to_string() })).await;
+    assert_eq!(err.code, "not_found");
+
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(matches!(closed.outcome, ProposalOutcome::Declined { .. }), "{:?}", closed.outcome);
+}
+
+// ---- the scheduler's sweep --------------------------------------------------
+
+#[tokio::test]
+async fn the_sweep_expires_a_pending_proposal_past_its_own_deadline() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let mut proposal = seed_note_proposal(&vault, "Overdue");
+    proposal.expires_at = Timestamp::now() - jiff::SignedDuration::from_secs(1);
+    vault.save_proposal(&proposal).unwrap();
+
+    scheduler::tick(&svc).await;
+
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(matches!(closed.outcome, ProposalOutcome::Expired { .. }));
+}
+
+/// The same sweep, proven with a fake clock instead of a backdated
+/// `expires_at` -- the payoff of giving `Service` an injected clock
+/// (`docs/plans/architecture-refactor.md`, phase 9.2): this drives the same
+/// `scheduler::tick` a person's minute-by-minute wait would, through
+/// `Service::now()`, rather than pre-forging a `Proposal` already past its
+/// own deadline. A day short of a note proposal's own week-long expiry
+/// (`karmayoga_core::proposal::expiry_for`), a tick leaves it pending; moved a
+/// day past it, the very same tick closes it -- with nothing here ever
+/// actually sleeping, or touching the real wall clock at all.
+#[tokio::test]
+async fn a_fake_clock_proves_the_sweep_without_waiting_a_week_or_backdating_anything() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+
+    let made_at: Timestamp = "2026-01-01T00:00:00Z".parse().unwrap();
+    let clock = Arc::new(support::clock::FakeClock::at(made_at));
+    svc.set_clock(clock.clone());
+
+    let proposal = Proposal::new(
+        Payload::Create { record: ProposedRecord::Note(Note::written("Due next week", "x")) },
+        "Create note",
+        made_at,
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    // A day short of the week-long expiry `expiry_for` gives a Note: still
+    // pending.
+    clock.set(made_at + jiff::SignedDuration::from_hours(24 * 6));
+    scheduler::tick(&svc).await;
+    assert!(
+        vault.proposal(proposal.id).unwrap().is_pending(),
+        "six days into a seven-day expiry, the proposal must still be pending"
+    );
+
+    // A day past it: the same tick closes it, and since nobody accepted it in
+    // the week it was kept for, deletes it, leaving only a trace for the
+    // weekly dream's stop list.
+    clock.set(made_at + jiff::SignedDuration::from_hours(24 * 8));
+    scheduler::tick(&svc).await;
+    assert!(
+        vault.proposal(proposal.id).is_err(),
+        "eight days after it was made, an unanswered proposal must be gone"
+    );
+    let traces = vault.proposal_traces().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!((traces[0].kind, traces[0].made_at), (proposal.kind, made_at));
+}
+
+#[tokio::test]
+async fn a_task_due_today_expires_tonight_and_stays_answered_for_the_week() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let made_at: Timestamp = "2026-01-01T09:00:00Z".parse().unwrap();
+    let clock = Arc::new(support::clock::FakeClock::at(made_at));
+    svc.set_clock(clock.clone());
+
+    let mut task = karmayoga_core::Task::new("Call the plumber");
+    task.due_date = Some(jiff::civil::date(2026, 1, 1));
+    let proposal =
+        Proposal::new(Payload::Create { record: ProposedRecord::Task(task) }, "x", made_at, "UTC");
+    vault.save_proposal(&proposal).unwrap();
+
+    clock.set(made_at + jiff::SignedDuration::from_hours(24));
+    scheduler::tick(&svc).await;
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(matches!(closed.outcome, ProposalOutcome::Expired { .. }), "{:?}", closed.outcome);
+}
+
+#[tokio::test]
+async fn the_sweep_expires_a_mail_proposal_whose_draft_is_no_longer_editing() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let account = seed_account(&vault);
+    let mut draft = seed_draft(&vault, account);
+    draft.state = DraftState::Sent;
+    vault.save_draft(&draft).unwrap();
+
+    let proposal = Proposal::new(
+        Payload::SendMail { draft_id: draft.id },
+        "Send mail",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    scheduler::tick(&svc).await;
+
+    let closed = vault.proposal(proposal.id).unwrap();
+    assert!(matches!(closed.outcome, ProposalOutcome::Expired { .. }), "{:?}", closed.outcome);
+}
+
+#[tokio::test]
+async fn the_sweep_leaves_a_still_editing_mail_proposal_alone() {
+    let (svc, _dir) = service();
+    let vault = svc.get().unwrap();
+    let account = seed_account(&vault);
+    let draft = seed_draft(&vault, account);
+
+    let proposal = Proposal::new(
+        Payload::SendMail { draft_id: draft.id },
+        "Send mail",
+        Timestamp::now(),
+        "UTC",
+    );
+    vault.save_proposal(&proposal).unwrap();
+
+    scheduler::tick(&svc).await;
+
+    let untouched = vault.proposal(proposal.id).unwrap();
+    assert!(untouched.is_pending(), "a draft still being edited has nothing wrong with it yet");
+}

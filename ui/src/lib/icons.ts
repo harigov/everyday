@@ -452,7 +452,7 @@ export const ICONS = {
   cloud: '<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>',
 
   // The same cloud, with three drops: drizzle, rain and rain showers all
-  // read as this one shape, the way `describe` in `everyday_core::weather`
+  // read as this one shape, the way `describe` in `karmayoga_core::weather`
   // reads eleven WMO codes down into "light rain" and friends.
   rain:
     '<path d="M4 14.9A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.24"/>' +

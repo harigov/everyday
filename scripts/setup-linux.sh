@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # Install the system libraries the desktop shell links against on Linux.
 #
-# Only the GUI needs these. The core, the storage backends and the `everyday`
+# Only the GUI needs these. The core, the storage backends and the `karmayoga`
 # CLI are portable Rust and build without them -- which is why `cargo test`
 # works on a bare machine and `cargo tauri dev` does not.
 #
 # Three groups, for three reasons: the webview headers Tauri itself needs;
 # PipeWire's development headers, for `capture.rs`'s loopback track (cpal's
 # `pipewire` feature builds unconditionally on this target -- see
-# `crates/everyday-app/Cargo.toml`'s own comment); and libclang, because
+# `crates/karmayoga-app/Cargo.toml`'s own comment); and libclang, because
 # `libspa-sys`/`pipewire-sys` generate their bindings with `bindgen` at build
 # time, and `bindgen` needs a real `libclang` to parse PipeWire's C headers
 # against, not just the `clang` binary.
 set -euo pipefail
 
-echo "Every Day needs the platform webview development headers, PipeWire's"
+echo "Karma Yoga needs the platform webview development headers, PipeWire's"
 echo "headers, and libclang (for bindgen) to build its desktop shell. This"
 echo "installs them with your system package manager."
 echo

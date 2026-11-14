@@ -1,0 +1,476 @@
+//! Tracking, as a column of numbers per thing tracked.
+//!
+//! ```text
+//!   trackers/
+//!     trackers.csv     what is being tracked, and what a reading means
+//!     Weight.csv       date, time, value, note
+//!     Ibuprofen.csv
+//! ```
+//!
+//! A reading is a date and a number. That is a time series, and a time series
+//! belongs in a column -- one file per tracker, so `Weight.csv` opens in
+//! anything that draws a graph without first having to be filtered. A single
+//! `readings.csv` with a tracker column would be the database's shape rather
+//! than the question's.
+//!
+//! The definitions are separate because they are few and they are different
+//! in kind: what a tracker *is* -- a habit with a target, a dose with a unit,
+//! a scale out of five -- is a handful of rows that change about never, beside
+//! thousands that change daily. That split is the same one the vault makes,
+//! where a tracker is a sealed record and a reading is a row in the clear.
+//!
+//! A tracker's targets are one column, `; `-separated, each written
+//! `min..max per period` with either bound left out when there is none and
+//! `days` before `per` when it counts days rather than adding values up:
+//! `60..120 per week`, `..60 per day`, `3.. days per week`. Its source is
+//! `manual`, `time`, or `finished` with a shelf's id after it when it counts
+//! one shelf. A derived tracker's file holds no readings: they are worked
+//! out from the blocks and the library log, which travel on their own.
+//!
+//! Archives written before targets had a `target` column (a daily amount)
+//! and a `cadence` column (`3 per week`); both are still read.
+
+use super::doc;
+use super::index::{Namer, index_map, owner};
+use crate::text::{Csv, Table, safe_name};
+use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
+use karmayoga_core::store::JournalStore;
+use karmayoga_core::store::trackers::{ReadingQuery, TrackerStore};
+use karmayoga_core::tracker::{
+    Period, Reading, Tally, Target, Tracker, TrackerKind, TrackerSource,
+};
+use karmayoga_core::{JournalId, KindId, ReadingId, Result, TrackerId};
+use std::collections::BTreeMap;
+
+pub struct TrackersPart;
+pub static TRACKERS: TrackersPart = TrackersPart;
+
+static SPEC: Spec = Spec {
+    id: "trackers",
+    label: "Tracking",
+    summary: "What your days produced in numbers rather than in prose: habits, doses, \
+              weights, counts — every reading, with the day and minute it was taken.",
+    format: "CSV, one file per tracker",
+    media: false,
+    imports: true,
+};
+
+const INDEX: &str = "trackers.csv";
+const INDEX_COLUMNS: &[&str] = &[
+    "name",
+    "file",
+    "kind",
+    "unit",
+    "icon",
+    "color",
+    "default_value",
+    "targets",
+    "scale_max",
+    "source",
+    "on_calendar",
+    "purpose",
+    "archived",
+    "order",
+    "id",
+];
+const READING_COLUMNS: &[&str] = &["date", "time", "value", "unit", "note", "timezone", "id"];
+
+impl Portable for TrackersPart {
+    fn spec(&self) -> &'static Spec {
+        &SPEC
+    }
+
+    fn tally(&self, store: &dyn JournalStore) -> Result<Option<u64>> {
+        let Some(trackers) = store.trackers() else { return Ok(None) };
+        Ok(Some(trackers.list_readings(&ReadingQuery::default())?.len() as u64))
+    }
+
+    fn export(&self, store: &dyn JournalStore, out: &mut Files<'_>, _opts: &Options) -> Result<()> {
+        let Some(trackers) = store.trackers() else { return Ok(()) };
+        let definitions = trackers.list_trackers()?;
+        let readings = trackers.list_readings(&ReadingQuery::default())?;
+
+        let mut index = Csv::new(INDEX_COLUMNS);
+        let mut namer = Namer::new();
+        for tracker in &definitions {
+            let base = safe_name(&tracker.name);
+            let stem = namer.unique(&base, |b, _| format!("{b}-{}", tracker.id.short()));
+            let file = format!("{stem}.csv");
+
+            index.row(&[
+                tracker.name.clone(),
+                file.clone(),
+                tracker.kind.as_str().to_string(),
+                tracker.unit.clone(),
+                tracker.icon.clone(),
+                tracker.color.clone(),
+                tracker.default_value.to_string(),
+                targets_text(&tracker.targets),
+                tracker.scale_max.to_string(),
+                source_text(&tracker.source),
+                tracker.on_calendar.to_string(),
+                doc::purpose_text(tracker.purpose.as_ref()),
+                tracker.archived.to_string(),
+                tracker.sort_order.to_string(),
+                tracker.id.to_string(),
+            ]);
+
+            let mut csv = Csv::new(READING_COLUMNS);
+            let mut mine: Vec<&Reading> =
+                readings.iter().filter(|r| r.tracker_id == tracker.id).collect();
+            mine.sort_by_key(|r| (r.local_date, r.at));
+            for reading in &mine {
+                csv.row(&[
+                    reading.local_date.to_string(),
+                    // The minute, where there was one. A tracker without a
+                    // clock -- "did I meditate today" -- has readings whose
+                    // time is genuinely unknown, and an invented midnight
+                    // would be a fact nobody recorded.
+                    reading
+                        .at
+                        .map(|at| {
+                            let z = at.to_zoned(zone(&reading.tz));
+                            format!("{:02}:{:02}", z.hour(), z.minute())
+                        })
+                        .unwrap_or_default(),
+                    reading.value.to_string(),
+                    tracker.unit.clone(),
+                    reading.note.clone(),
+                    reading.tz.clone(),
+                    reading.id.to_string(),
+                ]);
+            }
+            out.records(&file, csv.finish(), mine.len() as u64)?;
+        }
+        if index.rows() > 0 {
+            out.text(INDEX, index.finish())?;
+        }
+        Ok(())
+    }
+
+    fn import(&self, store: &dyn JournalStore, src: &Part<'_>, mode: Mode) -> Result<Report> {
+        let mut report = Report::new(SPEC.id);
+        let Some(trackers) = store.trackers() else {
+            report.problem(SPEC.label, "this vault's backend does not track anything");
+            return Ok(report);
+        };
+
+        let mut by_file: BTreeMap<String, TrackerId> = index_map(src.text(INDEX), |row| {
+            match read_tracker(trackers, row, mode, &mut report) {
+                Ok(id) => Some((row.get("file").to_string(), id)),
+                Err(e) => {
+                    report.problem(INDEX, e);
+                    None
+                }
+            }
+        });
+
+        // A journal for readings that name one. Readings do not require it --
+        // the field is optional -- so this stays `None` rather than inventing
+        // a journal nobody asked for.
+        let journal: Option<JournalId> =
+            store.list_journals()?.iter().find(|j| !j.assistant).map(|j| j.id);
+
+        for (name, text) in src.documents(".csv") {
+            if name == INDEX {
+                continue;
+            }
+            let table = Table::parse(text);
+            if !table.has("value") {
+                report.problem(name, "no `value` column, so this is not a tracker");
+                continue;
+            }
+            let tracker = match owner(&mut by_file, name, || {
+                tracker_named(trackers, name.trim_end_matches(".csv"), &table)
+            }) {
+                Ok(id) => id,
+                Err(e) => {
+                    report.problem(name, e);
+                    continue;
+                }
+            };
+            for row in table.rows() {
+                match read_reading(trackers, &row, tracker, journal, mode, &mut report) {
+                    Ok(()) => {}
+                    Err(e) => report.problem(name, e),
+                }
+            }
+        }
+        Ok(report)
+    }
+}
+
+fn read_tracker(
+    trackers: &dyn TrackerStore,
+    row: &crate::text::Row<'_>,
+    mode: Mode,
+    report: &mut Report,
+) -> Result<TrackerId> {
+    let id = TrackerId::parse(row.get("id")).unwrap_or_else(|_| TrackerId::new());
+
+    let existing = trackers.get_tracker(id).ok();
+    let mut landing = land(
+        existing,
+        || Tracker::new(row.get("name"), tracker_kind(row.get("kind")).unwrap_or_default()),
+        mode,
+    );
+    let Some(tracker) = landing.as_mut() else {
+        report.landed(&landing);
+        return Ok(id);
+    };
+    tracker.id = id;
+    tracker.name = row.get("name").to_string();
+    tracker.kind = tracker_kind(row.get("kind")).unwrap_or(tracker.kind);
+    tracker.unit = row.get("unit").to_string();
+    if !row.get("icon").is_empty() {
+        tracker.icon = row.get("icon").to_string();
+    }
+    if !row.get("color").is_empty() {
+        tracker.color = row.get("color").to_string();
+    }
+    if let Some(value) = row.parse("default_value") {
+        tracker.default_value = value;
+    }
+    if let Some(max) = row.parse("scale_max") {
+        tracker.scale_max = max;
+    }
+    tracker.targets = parse_targets(row.get("targets"));
+    if tracker.targets.is_empty() {
+        // An archive from before targets, which had one column for each of
+        // the two things a target now says. The same order the vault folds
+        // them in: the cadence drove the streak, so it comes first.
+        tracker.targets.extend(cadence(row.get("cadence")));
+        if let Some(amount) = row.parse::<f64>("target").filter(|t| *t > 0.0) {
+            tracker.targets.push(Target::at_least(amount, Period::Day));
+        }
+    }
+    tracker.source = parse_source(row.get("source"));
+    tracker.on_calendar = row.flag("on_calendar");
+    tracker.purpose = doc::parse_purpose(row.get("purpose"));
+    tracker.archived = row.flag("archived");
+    if let Some(order) = row.parse("order") {
+        tracker.sort_order = order;
+    }
+    tracker.updated_at = jiff::Timestamp::now();
+    trackers.put_tracker(tracker)?;
+    report.landed(&landing);
+    Ok(id)
+}
+
+/// The tracker a file belongs to when no index named one.
+fn tracker_named(trackers: &dyn TrackerStore, name: &str, table: &Table) -> Result<TrackerId> {
+    let name = name.replace('-', " ");
+    if let Some(tracker) =
+        trackers.list_trackers()?.into_iter().find(|t| t.name.eq_ignore_ascii_case(&name))
+    {
+        return Ok(tracker.id);
+    }
+    let mut tracker = Tracker::new(&name, TrackerKind::Check);
+    // The unit is the same on every row of a tracker's file, so the first row
+    // that states one states the tracker's.
+    if let Some(unit) = table.rows().map(|r| r.get("unit").to_string()).find(|u| !u.is_empty()) {
+        tracker.unit = unit;
+        tracker.kind = TrackerKind::Amount;
+    }
+    trackers.put_tracker(&tracker)?;
+    Ok(tracker.id)
+}
+
+fn read_reading(
+    trackers: &dyn TrackerStore,
+    row: &crate::text::Row<'_>,
+    tracker_id: TrackerId,
+    journal_id: Option<JournalId>,
+    mode: Mode,
+    report: &mut Report,
+) -> Result<()> {
+    let id = ReadingId::parse(row.get("id")).unwrap_or_else(|_| ReadingId::new());
+    let existing = trackers.get_reading(id).ok();
+    // As in `read_time`: a reading already here is never asked for a valid
+    // date and value when the mode says to leave it alone, so this check
+    // comes before the ones that can fail.
+    if existing.is_some() && mode == Mode::Skip {
+        report.skipped += 1;
+        return Ok(());
+    }
+    let date: jiff::civil::Date = row
+        .parse("date")
+        .ok_or_else(|| karmayoga_core::Error::Invalid("a reading has no date".into()))?;
+    let value: f64 = row
+        .parse("value")
+        .ok_or_else(|| karmayoga_core::Error::Invalid("a reading has no number".into()))?;
+
+    let tz = match row.get("timezone") {
+        "" => "UTC".to_string(),
+        tz => tz.to_string(),
+    };
+    // `existing` can only be `None` or a record `mode` allows overwriting --
+    // the `Mode::Skip` case was ruled out above, before there was a valid
+    // date and value to build a fresh reading from.
+    let mut landing = land(existing, || Reading::on(tracker_id, date, value), mode);
+    let Some(reading) = landing.as_mut() else { return Ok(()) };
+    reading.id = id;
+    reading.tracker_id = tracker_id;
+    reading.journal_id = reading.journal_id.or(journal_id);
+    reading.local_date = date;
+    reading.value = value;
+    reading.tz = tz;
+    reading.note = row.get("note").to_string();
+    reading.at = clock(row.get("time"), date, &reading.tz);
+    reading.updated_at = jiff::Timestamp::now();
+    trackers.put_reading(reading)?;
+    report.landed(&landing);
+    Ok(())
+}
+
+/// `08:15` on `date` in `tz`, as an instant. `None` for a reading whose time
+/// was never known.
+fn clock(text: &str, date: jiff::civil::Date, tz: &str) -> Option<jiff::Timestamp> {
+    let (h, m) = text.trim().split_once(':')?;
+    let time = jiff::civil::Time::new(h.parse().ok()?, m.parse().ok()?, 0, 0).ok()?;
+    date.to_datetime(time).to_zoned(zone(tz)).ok().map(|z| z.timestamp())
+}
+
+fn zone(tz: &str) -> jiff::tz::TimeZone {
+    jiff::tz::TimeZone::get(tz).unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
+fn tracker_kind(name: &str) -> Option<TrackerKind> {
+    TrackerKind::parse(&name.trim().to_ascii_lowercase())
+}
+
+/// An old archive's `3 per week`, as the target it now is.
+fn cadence(text: &str) -> Option<Target> {
+    let (times, per) = text.trim().split_once(" per ")?;
+    let times: u32 = times.trim().parse().ok()?;
+    (times > 0).then(|| Target::days(times, Period::parse(per.trim()).unwrap_or(Period::Day)))
+}
+
+/// `60..120 per week; 3.. days per week`. See the module docs.
+fn targets_text(targets: &[Target]) -> String {
+    targets
+        .iter()
+        .map(|t| {
+            let bound = |b: Option<f64>| b.map(|v| v.to_string()).unwrap_or_default();
+            let days = if t.tally == Tally::Days { " days" } else { "" };
+            format!("{}..{}{days} per {}", bound(t.min), bound(t.max), t.per.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The reverse of [`targets_text`]. A piece that does not read is dropped
+/// rather than failing the row: the tracker and its readings are worth more
+/// than one unreadable target.
+fn parse_targets(text: &str) -> Vec<Target> {
+    text.split(';')
+        .filter_map(|piece| {
+            let (bounds, per) = piece.trim().split_once(" per ")?;
+            let (bounds, tally) = match bounds.trim().strip_suffix(" days") {
+                Some(b) => (b, Tally::Days),
+                None => (bounds.trim(), Tally::Value),
+            };
+            let (min, max) = bounds.split_once("..")?;
+            let bound = |b: &str| b.trim().parse::<f64>().ok();
+            let mut target =
+                Target { min: bound(min), max: bound(max), per: Period::parse(per.trim())?, tally };
+            target.normalize().then_some(target)
+        })
+        .collect()
+}
+
+fn source_text(source: &TrackerSource) -> String {
+    match source {
+        TrackerSource::Finished { kind_id: Some(kind) } => format!("finished {kind}"),
+        // What it counts after the word, as JSON: an app id is a file name
+        // on some platforms and may hold a space, so a space-separated form
+        // could not be read back.
+        TrackerSource::ScreenTime { category, item } => {
+            let what = serde_json::json!({ "category": category, "item": item });
+            format!("screenTime {what}")
+        }
+        other => other.as_str().to_string(),
+    }
+}
+
+/// Anything unrecognised reads as manual: a tracker somebody can at least
+/// go on recording, rather than one that silently counts nothing.
+fn parse_source(text: &str) -> TrackerSource {
+    let text = text.trim();
+    match text.split_once(' ').map_or((text, ""), |(a, b)| (a, b.trim())) {
+        ("time", _) => TrackerSource::Time,
+        ("finished", kind) => TrackerSource::Finished { kind_id: KindId::parse(kind).ok() },
+        ("screenTime", what) => {
+            #[derive(serde::Deserialize, Default)]
+            struct What {
+                #[serde(default)]
+                category: Option<karmayoga_core::ScreenCategoryId>,
+                #[serde(default)]
+                item: Option<String>,
+            }
+            let what: What = serde_json::from_str(what).unwrap_or_default();
+            TrackerSource::ScreenTime { category: what.category, item: what.item }
+        }
+        _ => TrackerSource::Manual,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_old_archives_cadence_reads_as_a_target() {
+        assert_eq!(cadence("3 per week"), Some(Target::days(3, Period::Week)));
+        assert!(cadence("").is_none());
+        assert!(cadence("0 per week").is_none(), "zero times is no habit at all");
+    }
+
+    #[test]
+    fn targets_read_the_way_they_are_written() {
+        let targets = vec![
+            Target::between(60.0, 120.0, Period::Week),
+            Target::at_most(60.0, Period::Day),
+            Target::days(3, Period::Week),
+            Target::at_least(12.0, Period::Year),
+            Target::at_least(1.5, Period::Quarter),
+        ];
+        let text = targets_text(&targets);
+        assert_eq!(
+            text,
+            "60..120 per week; ..60 per day; 3.. days per week; 12.. per year; 1.5.. per quarter"
+        );
+        assert_eq!(parse_targets(&text), targets);
+        assert!(parse_targets("").is_empty());
+        assert_eq!(
+            parse_targets("nonsense; ..60 per day"),
+            vec![Target::at_most(60.0, Period::Day)],
+            "one bad piece does not cost the rest"
+        );
+    }
+
+    #[test]
+    fn sources_read_the_way_they_are_written() {
+        let kind = KindId::new();
+        for source in [
+            TrackerSource::Manual,
+            TrackerSource::Time,
+            TrackerSource::Finished { kind_id: None },
+            TrackerSource::Finished { kind_id: Some(kind) },
+            TrackerSource::ScreenTime { category: None, item: None },
+            TrackerSource::ScreenTime {
+                category: Some(karmayoga_core::ScreenCategoryId::new()),
+                item: Some("app:my app.exe".into()),
+            },
+        ] {
+            assert_eq!(parse_source(&source_text(&source)), source);
+        }
+        assert_eq!(parse_source(""), TrackerSource::Manual);
+    }
+
+    #[test]
+    fn a_reading_with_no_clock_keeps_none_rather_than_midnight() {
+        assert!(clock("", jiff::civil::date(2026, 9, 10), "UTC").is_none());
+        assert!(clock("08:15", jiff::civil::date(2026, 9, 10), "UTC").is_some());
+    }
+}

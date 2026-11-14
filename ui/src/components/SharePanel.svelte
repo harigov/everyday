@@ -69,7 +69,7 @@
       <span>
         <b>Let other computers use this vault</b>
         <small>
-          Every Day on another machine connects to this one instead of opening a vault of its own.
+          Karma Yoga on another machine connects to this one instead of opening a vault of its own.
           Nothing is copied there.
         </small>
       </span>
@@ -102,7 +102,7 @@
           <div class="qr">{@html share.invitation.qrSvg}</div>
           <div class="invite-what">
             <p class="hint">
-              Paste this into Every Day on the other computer, or scan it. It works once, for five
+              Paste this into Karma Yoga on the other computer, or scan it. It works once, for five
               minutes.
             </p>
             <code class="link">{share.invitation.url}</code>

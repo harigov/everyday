@@ -44,7 +44,7 @@ const OUTLOOK_DESKTOP =
   '<p class="MsoNormal"><b>From: </b>Dustin Cook &lt;dustin@example.com&gt;<br>' +
   '<b>Sent: </b>Friday, October 30, 2026 4:14 PM<br><b>To: </b>Josh &lt;josh@example.com&gt;<br>' +
   '<b>Subject: </b>Re: Connecting</p></div><p class="MsoNormal">Let us go with Tuesday.</p>' +
-  '<p class="MsoNormal"><img src="everyday://mail/part/m/image001.png@01DB"></p></div>'
+  '<p class="MsoNormal"><img src="karmayoga://mail/part/m/image001.png@01DB"></p></div>'
 
 const OUTLOOK_WEB =
   '<div style="font-family:Aptos;font-size:12pt;color:rgb(0,0,0)">Thanks for this.</div>' +
@@ -263,8 +263,8 @@ for (const [html, want, why] of [
     true,
     'a tint',
   ],
-  ['<div style="background-image:url(everyday://mail/img/m/t)">Words</div>', true, 'a picture'],
-  ['<td background="everyday://mail/img/m/t">Words</td>', true, 'the old way to set one'],
+  ['<div style="background-image:url(karmayoga://mail/img/m/t)">Words</div>', true, 'a picture'],
+  ['<td background="karmayoga://mail/img/m/t">Words</td>', true, 'the old way to set one'],
   ['<style>@media (max-width:600px){td{display:block}}</style><p>Hi</p>', true, 'a breakpoint'],
   ['<style>@media (prefers-color-scheme:dark){p{color:#fff}}</style><p>Hi</p>', true, 'dark rules'],
   ['<style>body{background:#f4f4f4}</style><p>Hi</p>', true, 'a tinted page'],
@@ -416,7 +416,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
 {
   const SHEET =
     '<style>details>summary{display:none}pre{white-space:pre-wrap;margin:0 0 1em}</style>'
-  const PICTURE = 'src="everyday://mail/img/m/t"'
+  const PICTURE = 'src="karmayoga://mail/img/m/t"'
   const page = (inner) => `<html><head>${SHEET}</head><body>\n${inner}\n</body></html>`
   const guess = (inner, width, more = {}) =>
     measureBody({ html: page(inner), paper: false, imagesHidden: false, ...more })(width)
@@ -767,7 +767,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
   // A picture says what its markup could not once it has arrived, which is what
   // keeps the text below it from ending up past the bottom of the frame.
   {
-    const ADDRESS = 'everyday://mail/img/m/t'
+    const ADDRESS = 'karmayoga://mail/img/m/t'
     const of = (tag) =>
       measureBody({ html: page(`<img src="${ADDRESS}"${tag}>`), paper: false, imagesHidden: false })
     const arrived = (tag, width, height, at = 600) => {
@@ -803,8 +803,8 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
     assert.deepEqual(listed(one), [ADDRESS], 'a picture used twice is one request')
     assert.deepEqual(listed(one, true), [], 'and one nobody has allowed is not asked for')
     assert.deepEqual(
-      listed('<img src="everyday://mail/part/m/1"><img src="https://elsewhere.example/x.png">'),
-      ['everyday://mail/part/m/1'],
+      listed('<img src="karmayoga://mail/part/m/1"><img src="https://elsewhere.example/x.png">'),
+      ['karmayoga://mail/part/m/1'],
       'only what the frame could draw: its policy refuses the rest',
     )
   }
@@ -815,7 +815,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
     const picturesOf = (n) =>
       measureBody({
         html: page(
-          Array.from({ length: n }, (_, i) => `<img src="everyday://mail/part/m/${i}">`).join(''),
+          Array.from({ length: n }, (_, i) => `<img src="karmayoga://mail/part/m/${i}">`).join(''),
         ),
         paper: false,
         imagesHidden: false,
@@ -838,7 +838,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
     const stop = readPictures(heights, () => (told += 1), new Map(), newImage)
     assert.deepEqual(
       made.map((i) => i.src),
-      ['everyday://mail/part/m/0', 'everyday://mail/part/m/1', 'everyday://mail/part/m/2'],
+      ['karmayoga://mail/part/m/0', 'karmayoga://mail/part/m/1', 'karmayoga://mail/part/m/2'],
     )
     const before = heights(600)
     for (const image of made) {
@@ -891,7 +891,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
 
   // Text flows around a floated picture rather than starting below it.
   {
-    const FLOATED = '<img src="everyday://mail/part/m/f" width="200" height="300" align="left">'
+    const FLOATED = '<img src="karmayoga://mail/part/m/f" width="200" height="300" align="left">'
     const written = (text) => measureBody(withBody('', text))(600)
     const beside = (text) => measureBody(withBody('', `<p>${FLOATED}${text}</p>`))(600)
     assert.ok(beside('Hi') < 360, `a short line sits beside it: ${beside('Hi')}`)
@@ -905,13 +905,13 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
       'but only a few more, where starting below it would be its whole 300px',
     )
     // One with no room left beside it: what follows goes below, not a letter a line.
-    const WIDE = '<img src="everyday://mail/part/m/w" width="600" height="300" align="left">'
+    const WIDE = '<img src="karmayoga://mail/part/m/w" width="600" height="300" align="left">'
     const widest = (text) => measureBody(withBody('', `<p>${WIDE}${text}</p>`))(600)
     assert.ok(widest('Hello there friend') < 400, `words: ${widest('Hello there friend')}`)
     assert.ok(widest(`<a href="x">${'y'.repeat(120)}</a>`) < 450, 'a long address likewise')
     // A later, smaller picture does not inherit the room an earlier one took.
-    const small = '<img src="everyday://mail/part/m/s" width="20" height="40" align="left">'
-    const big = '<img src="everyday://mail/part/m/b" width="500" height="50" align="left">'
+    const small = '<img src="karmayoga://mail/part/m/s" width="20" height="40" align="left">'
+    const big = '<img src="karmayoga://mail/part/m/b" width="500" height="50" align="left">'
     assert.ok(
       measureBody(
         withBody('', `<p>${big}x</p><div style="height:100px"></div><p>${small}${words}</p>`),
@@ -1044,7 +1044,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
   // `display:block` that templates write on every picture.
   const hero =
     '<style>@media (max-width:600px){td{padding:0}}</style>' +
-    '<table width="600"><tr><td><img src="everyday://mail/img/m/t" width="600" style="display:block"></td></tr></table>'
+    '<table width="600"><tr><td><img src="karmayoga://mail/img/m/t" width="600" style="display:block"></td></tr></table>'
   for (const dark of [false, true]) {
     const shown = { ...options, dark }
     const hidden = renderBody(doc(hero), { ...shown, imagesHidden: true })
@@ -1054,7 +1054,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
     const allowed = renderBody(doc(hero), { ...shown, imagesHidden: false })
     assert.ok(!added(allowed.html).includes('/mail/img/'), 'until they are allowed')
   }
-  const written = renderBody(doc(`<div>hello</div><img src="everyday://mail/img/m/t">`), {
+  const written = renderBody(doc(`<div>hello</div><img src="karmayoga://mail/img/m/t">`), {
     ...options,
     imagesHidden: true,
   })
@@ -1100,7 +1100,7 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
 }
 
 {
-  const picture = '<img src="everyday://mail/img/m/t" width="200">'
+  const picture = '<img src="karmayoga://mail/img/m/t" width="200">'
   const hidden = { ...options, imagesHidden: true }
   const visible = renderBody(doc(`<p>Hi</p>${picture}`), hidden)
   assert.equal(visible.hidesImages, true, 'a hidden picture in view is offered')

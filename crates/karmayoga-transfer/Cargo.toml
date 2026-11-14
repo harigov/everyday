@@ -1,0 +1,29 @@
+[package]
+name = "karmayoga-transfer"
+description = "Getting a vault's contents out of it, and back in, in formats other programs read"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+karmayoga-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jiff.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+# Deflate for the archive, and its checksum. Neither is a new dependency:
+# both were already in the tree, so the archive costs this crate two `use`
+# lines and the build nothing at all. See `zip.rs` for why the container is
+# written here rather than taken from a crate.
+flate2 = "1"
+crc32fast = "1"
+
+[dev-dependencies]
+# The roundtrip test opens a real vault to export from and import into, which
+# needs a backend -- unlike the rest of this crate, which only ever sniffs a
+# blob's type and has not needed one since that moved to `karmayoga-core`.
+karmayoga-vault.workspace = true
+tempfile = "3"

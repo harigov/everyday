@@ -17,7 +17,7 @@
 
   let pendingDelete = $state<{ id: EntryId; title: string } | null>(null)
 
-  const showCalendarPref = onOffPref('everyday.journal.calendar')
+  const showCalendarPref = onOffPref('karmayoga.journal.calendar')
 
   /**
    * Whether the month is showing above the list.

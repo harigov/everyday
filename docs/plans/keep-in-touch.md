@@ -58,7 +58,7 @@ birthdays and festivals. What was settled in conversation before any code:
 
 ## The nightly pass
 
-`everyday_service::keepintouch`, on the scheduler's minute. The first tick
+`karmayoga_service::keepintouch`, on the scheduler's minute. The first tick
 after 02:30 local starts the day's pass, before the 03:00 nightly dream, and
 at a moment the app happens to be open rather than at an exact time, since
 this is a desktop app. Every minute before that, the only work is checking

@@ -1,7 +1,7 @@
 // The single boundary between the interface and the Rust core.
 //
 // Everything the UI can do to a vault goes through here, which means the
-// mock backend below is a complete substitute: `EVERYDAY_MOCK=1 npm run dev`
+// mock backend below is a complete substitute: `KARMAYOGA_MOCK=1 npm run dev`
 // runs the entire interface in a browser with no Rust, no vault and no
 // native dependencies. That is what makes the design workable on its own.
 
@@ -198,7 +198,7 @@ type Invoke = <T>(cmd: string, args?: InvokeArgs, requestId?: string) => Promise
 let invoke: Invoke = async () => {
   throw new VaultError(
     'unavailable',
-    'Every Day could not reach its storage backend. Your journal has not been ' +
+    'Karma Yoga could not reach its storage backend. Your journal has not been ' +
       'touched; this is a problem with the application, not with your data.',
   )
 }
@@ -405,28 +405,28 @@ if (SHELL) {
     // On this window, not `listen`'s every window: the shell asks each
     // window by name, and a window of one app closing must not take the
     // main window with it. See `windows.rs`.
-    void getCurrentWebviewWindow().listen('everyday://save-and-close', () => void handler())
+    void getCurrentWebviewWindow().listen('karmayoga://save-and-close', () => void handler())
   }
   onShellNotification = (handler) => {
-    void listen<ShellNotification>('everyday://notify', (event) => handler(event.payload))
+    void listen<ShellNotification>('karmayoga://notify', (event) => handler(event.payload))
   }
   onTrayAction = (handler) => {
-    void listen<string>('everyday://tray-action', (e) => handler(e.payload))
+    void listen<string>('karmayoga://tray-action', (e) => handler(e.payload))
   }
   onChange = (handler) => {
-    void listen<ChangeEvent>('everyday://changed', (e) => handler(e.payload))
+    void listen<ChangeEvent>('karmayoga://changed', (e) => handler(e.payload))
   }
   onLockState = (handler) => {
-    void listen<boolean>('everyday://lock-state', (e) => handler(e.payload))
+    void listen<boolean>('karmayoga://lock-state', (e) => handler(e.payload))
   }
   onPalette = (handler) => {
-    void listen('everyday://palette', () => handler())
+    void listen('karmayoga://palette', () => handler())
   }
   onOpenCalendar = (handler) => {
-    void listen('everyday://open-calendar', () => handler())
+    void listen('karmayoga://open-calendar', () => handler())
   }
   onShowInMain = (handler) => {
-    void listen<ShowInMain>('everyday://show-in-main', (e) => handler(e.payload))
+    void listen<ShowInMain>('karmayoga://show-in-main', (e) => handler(e.payload))
   }
   onMeetingStatus = (handler) => {
     void listen<CaptureStatus | null>('meeting-status', (e) => handler(e.payload))
@@ -611,7 +611,7 @@ function call<K extends keyof Commands>(
  * "not yet" case: Phase 2-4 of `docs/plans/mail.md` name a couple of
  * commands other agents are still landing, and `gen-api.mjs` cannot
  * generate a typed method for one that does not exist in
- * `crates/everyday-service/surface.json` yet -- once it does, that call
+ * `crates/karmayoga-service/surface.json` yet -- once it does, that call
  * site becomes a one-line typed method here instead, the same way every
  * meeting-notes command did when the pipeline landed. `meetings.svelte.ts`'s
  * "Dev-only mock triggers" are the other case, and never graduate: no
@@ -743,7 +743,7 @@ export const api = {
   /**
    * Raise a desktop notification. By name, not through `call`: it is the
    * shell's to post, and only `notify.svelte.ts` should be deciding to. See
-   * `crates/everyday-app/src/notice.rs` for why the plugin does not do it.
+   * `crates/karmayoga-app/src/notice.rs` for why the plugin does not do it.
    */
   postNotification: (title: string, body: string | null, key: string | null) =>
     invoke<void>('post_notification', { title, body, key }),
@@ -762,7 +762,7 @@ export const api = {
   /**
    * Writing help: a second OS-wide key, over text selected in any
    * application. Per machine, like the palette's key, and kept by the shell
-   * rather than the vault -- see `crates/everyday-app/src/writing/mod.rs`.
+   * rather than the vault -- see `crates/karmayoga-app/src/writing/mod.rs`.
    * Unanswered in mock mode, where the pane leaves the row out.
    */
   writingSettings: () => invoke<WritingSettings>('writing_settings'),
@@ -1096,7 +1096,7 @@ export const api = {
   /**
    * Choose what the number on the application's icon counts; nothing chosen
    * takes it off. The shell does the counting, and keeps it current with the
-   * window hidden -- see `crates/everyday-app/src/badge.rs`.
+   * window hidden -- see `crates/karmayoga-app/src/badge.rs`.
    */
   setBadge: (sources: BadgeSources) => invoke<void>('set_badge', { sources }),
 
@@ -1320,7 +1320,7 @@ export const api = {
    * on its longer side, as a JPEG -- and return its blob id.
    *
    * Nothing in the interface ever loads a remote image directly: the content
-   * security policy allows images from `'self'` and `everyday:` and nowhere
+   * security policy allows images from `'self'` and `karmayoga:` and nowhere
    * else, so a cover has to come home before it can be drawn.
    */
   fetchImage: (url: string) => call('fetchImage', { url }),
@@ -1842,7 +1842,7 @@ export const api = {
   // `news` is the domain -- `feed` already meant a subscribed calendar in the
   // Rust -- so the wire names say news and these say what the screen does.
   // Available only when `status.capabilities.news` is true. A story's body is
-  // not a command: it is served at `everyday://news/body/{id}`, which
+  // not a command: it is served at `karmayoga://news/body/{id}`, which
   // `feed.svelte.ts` fetches the way `mailview.ts` fetches a message.
 
   newsSources: () => call('listNewsSources', {}),
@@ -2002,7 +2002,7 @@ export const api = {
   // ── Accounts ───────────────────────────────────────────────────────
   //
   // A mailbox provider signed in to -- not owned by the mail app, see
-  // `everyday_core::account`'s module doc. `AccountView` never carries a
+  // `karmayoga_core::account`'s module doc. `AccountView` never carries a
   // secret; `hasPassword` and `signedIn` are the only things this interface
   // is ever told about one.
 
@@ -2050,7 +2050,7 @@ export const api = {
    * Wait for that sign-in to land. Resolves once the browser has come back
    * and the code has been exchanged, or rejects with a `CommandError` whose
    * `code` is one of `invalidGrant`, `invalidClient`, `provider`,
-   * `timedOut` or `cancelled` -- see `crates/everyday-service/src/signin.rs`.
+   * `timedOut` or `cancelled` -- see `crates/karmayoga-service/src/signin.rs`.
    * Safe to call again after a dropped connection; it does not consume
    * anything.
    */
@@ -2059,7 +2059,7 @@ export const api = {
   cancelOauthSignIn: (signInId: string) => call('cancelOauthSignIn', { signInId }),
   /**
    * Move a finished sign-in's tokens onto an account, sealed. The last step
-   * of the flow above -- see `crates/everyday-service/src/domains/
+   * of the flow above -- see `crates/karmayoga-service/src/domains/
    * accounts.rs`'s module doc for the hand-off this closes.
    */
   /**
@@ -2115,8 +2115,8 @@ export function mediaUrl(blob: string): string {
   // Tauri maps custom schemes to an http origin on Windows and Android.
   const base =
     navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
-      ? 'http://everyday.localhost'
-      : 'everyday://localhost'
+      ? 'http://karmayoga.localhost'
+      : 'karmayoga://localhost'
   return `${base}/${blob}`
 }
 

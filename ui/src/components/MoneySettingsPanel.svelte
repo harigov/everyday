@@ -3,7 +3,7 @@
   //
   // Plaid is the service between this app and a bank: it signs in to the
   // bank on the person's behalf and answers with accounts and transactions.
-  // Every Day has no Plaid account of its own -- the person brings theirs,
+  // Karma Yoga has no Plaid account of its own -- the person brings theirs,
   // so their bank data is never routed through anybody else's -- and these
   // are its two credentials and which of Plaid's environments they belong
   // to.
@@ -92,9 +92,9 @@
 <div class="panes">
   <p class="hint lead">
     Banks are connected through <b>Plaid</b>, the service many budgeting apps use to read accounts
-    and transactions from a bank. Every Day uses keys from your own Plaid account, so your bank data
-    goes from Plaid to this vault and nowhere else. Plaid's free personal-use plan covers ten bank
-    sign-ins. Connecting is read-only: nothing here can move money.
+    and transactions from a bank. Karma Yoga uses keys from your own Plaid account, so your bank
+    data goes from Plaid to this vault and nowhere else. Plaid's free personal-use plan covers ten
+    bank sign-ins. Connecting is read-only: nothing here can move money.
   </p>
 
   <section class="card" aria-labelledby="plaid-head">

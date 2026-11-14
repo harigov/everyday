@@ -94,14 +94,14 @@ import { TASK_STATUSES, isOpen } from './types'
 /** Default length of a block created by a click rather than a drag. */
 export const DEFAULT_BLOCK_MINUTES = 60
 /** Where the running timer is remembered across a reload. */
-const TIMER_KEY = 'everyday.calendar.timer'
+const TIMER_KEY = 'karmayoga.calendar.timer'
 /** Statuses with work left in them. Matches `TaskStatus::is_open` in the core. */
 const OPEN_STATUSES = TASK_STATUSES.filter(isOpen)
 
 export type View = 'day' | 'week' | 'month'
 
 const viewPref = pref<View | null>(
-  'everyday.calendar.view',
+  'karmayoga.calendar.view',
   (raw) => (raw === 'day' || raw === 'week' || raw === 'month' ? raw : null),
   null,
 )

@@ -226,7 +226,7 @@ assert.equal(categoryColor(c, cats), categoryColor(c, cats), 'and the same every
 
 const conn = { endpoint: 'http://127.0.0.1:7399', token: 'tok-123', device: 'laptop' }
 const code = CONNECTION_PREFIX + base64Url(JSON.stringify(conn))
-assert.ok(code.startsWith('everyday-screentime:'))
+assert.ok(code.startsWith('karmayoga-screentime:'))
 assert.ok(!code.includes('='), 'no padding')
 assert.ok(!/[+/]/.test(code.slice(CONNECTION_PREFIX.length)), 'the url-safe alphabet')
 assert.deepEqual(parseConnectionCode(code), conn)
@@ -245,9 +245,9 @@ assert.deepEqual(parseConnectionCode(`  ${code}\n`), conn, 'whitespace from a pa
 }
 const refused = [
   '',
-  'everyday-screentime:',
+  'karmayoga-screentime:',
   'not-a-code',
-  'everyday-pairing:' + base64Url(JSON.stringify(conn)),
+  'karmayoga-pairing:' + base64Url(JSON.stringify(conn)),
   CONNECTION_PREFIX + base64Url('not json'),
   CONNECTION_PREFIX + base64Url('"a string"'),
   CONNECTION_PREFIX + base64Url(JSON.stringify({ ...conn, token: '' })),

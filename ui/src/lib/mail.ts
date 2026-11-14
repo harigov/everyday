@@ -42,14 +42,14 @@ import type {
  * an HTML message's layout tables used to leave in it, and empty if that
  * is all it was.
  *
- * Mail synced before `everyday_mail::text::html_to_text` stopped drawing
+ * Mail synced before `karmayoga_mail::text::html_to_text` stopped drawing
  * table borders kept a snippet made of them -- a newsletter laid out in a
  * table began with its top border, two hundred `─` long -- and a list row
  * drew that as ruled lines under the subject. The snippet is sealed with
  * the message, so it is cleaned here, where it is drawn, rather than
  * waiting on mail that has already been fetched to be fetched again.
  *
- * The same goes for a reply stored before `everyday_mail::text`'s quote
+ * The same goes for a reply stored before `karmayoga_mail::text`'s quote
  * detection learned that its text renderer writes a bold label as
  * `**From: **`: its snippet ran straight on into the message it answered. That
  * header and everything after it is cut here, along with the renderer's bold
@@ -57,7 +57,7 @@ import type {
  *
  * The renderer writes a link as `[Forge][1]` too, with `[1]: https://...` at the
  * foot of the text, and a short message's snippet reaches that foot. Snippets
- * no longer keep either (`everyday_mail::text::snippet`), but one already stored
+ * no longer keep either (`karmayoga_mail::text::snippet`), but one already stored
  * does, and may be cut off part way through one, so here the words are kept and
  * the rest goes.
  */
@@ -719,7 +719,7 @@ export function parseTypedAddress(text: string): MailAddress | null {
 
 // ── (p) The split inbox: category tabs ─────────────────────────────────
 //
-// TODO(p): mirrors `Category::ALL`'s order in `everyday_core::mail` --
+// TODO(p): mirrors `Category::ALL`'s order in `karmayoga_core::mail` --
 // Priority, Important, Other, Newsletter, Notification -- which is also the
 // order `MailCategory` in `types.ts` declares its five members in. Written
 // out again here, as a value rather than derived from the type, because a
@@ -833,7 +833,7 @@ export function onlyEmptyLead(only: ReadonlySet<MailOnly>): string {
   return 'No attachments here.'
 }
 
-/** Which toggles each mailbox was left on, as `everyday.mail.list.only`
+/** Which toggles each mailbox was left on, as `karmayoga.mail.list.only`
  *  holds them. Anything unreadable, or no longer a toggle, is dropped. */
 export function parseOnlyPref(raw: string | null): Map<MailboxId, ReadonlySet<MailOnly>> {
   const parsed: unknown = raw ? JSON.parse(raw) : null
@@ -1205,7 +1205,7 @@ export function newestSyncedAt(
 
 /** Is every word of `query` somewhere in this sender's address or name,
  *  ignoring case -- `InboxSender::matches`' rule in
- *  `everyday_core::mail::cleanup`, applied to rows already on screen while
+ *  `karmayoga_core::mail::cleanup`, applied to rows already on screen while
  *  `inbox_senders` is asked the same thing. A blank `query` matches all. */
 export function senderMatches(sender: Pick<InboxSender, 'email' | 'name'>, query: string): boolean {
   const email = sender.email.toLowerCase()

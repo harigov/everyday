@@ -1,6 +1,6 @@
 // Keeping in touch, in words.
 //
-// The arithmetic is the backend's (`everyday_core::keepintouch`): who is due,
+// The arithmetic is the backend's (`karmayoga_core::keepintouch`): who is due,
 // how late, and in what order. This is only how the interface says it. See
 // docs/plans/keep-in-touch.md.
 

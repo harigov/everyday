@@ -147,7 +147,7 @@ assert.deepEqual(money.cashFlow, [], 'a year of cash flow is not read until Repo
 // ── panes, and remembering the last ──────────────────────────────────
 
 money.setView('reports')
-assert.equal(stored.get('everyday.money.view'), 'reports', 'the pane is kept on this device')
+assert.equal(stored.get('karmayoga.money.view'), 'reports', 'the pane is kept on this device')
 await until('the reports load', () => money.cashFlow.length === 12)
 assert.equal(money.cashFlow.at(-1).month, money.month, 'twelve months, ending with this one')
 

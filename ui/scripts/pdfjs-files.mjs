@@ -45,7 +45,7 @@ function shipped(folder, name) {
 
 export function pdfjsFiles() {
   return {
-    name: 'everyday-pdfjs-files',
+    name: 'karmayoga-pdfjs-files',
     configureServer(server) {
       server.middlewares.use(`/${PDFJS_PATH}`, (request, response, next) => {
         const path = decodeURIComponent((request.url ?? '').split('?')[0]).replace(/^\/+/, '')

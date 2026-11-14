@@ -32,7 +32,7 @@
   // ── Which folders are shut ────────────────────────────────────────────
 
   const closedPref = pref<string[]>(
-    'everyday.feed.folders.closed',
+    'karmayoga.feed.folders.closed',
     (raw) => {
       const parsed: unknown = raw ? JSON.parse(raw) : []
       return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []

@@ -147,8 +147,8 @@ assert.equal(suggestionsFresh(1_000, 1_000 + SUGGESTION_LASTS_MS), false)
 
 // ── splitQuoted / joinQuoted ─────────────────────────────────────────────
 //
-// Real shapes `compose::quote_html` (`everyday-mail/src/compose.rs`) and
-// `compose::quote_reply` (`everyday-core/src/mail/compose.rs`) both produce:
+// Real shapes `compose::quote_html` (`karmayoga-mail/src/compose.rs`) and
+// `compose::quote_reply` (`karmayoga-core/src/mail/compose.rs`) both produce:
 // an attribution paragraph immediately followed by a `<blockquote>`, with
 // nothing of the person's own after it.
 

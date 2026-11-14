@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Register (or with --remove, unregister) Every Day with the desktop, for the
+# Register (or with --remove, unregister) Karma Yoga with the desktop, for the
 # current user only. Pass a binary's path to register that build rather than
 # the one found under the target directory.
 #
@@ -20,11 +20,30 @@ APPS="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 ICONS="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
 # Matches the binary name, which is what GTK reports as the Wayland app id
 # (it defaults to the process name), and what the packaged .desktop file uses.
-ID="everyday-app"
+ID="karmayoga-app"
+# The bundle identifier. The desktop portals (global shortcuts, pasting into
+# other apps for writing help) only register an app id some desktop file is
+# named after, and `karmayoga-app` is not a valid one -- see `portal.rs`. So a
+# second, hidden entry carries this name for them; it never shows in a menu.
+BUNDLE_ID="app.karmayogi.KarmaYoga"
+# What Every Day, before the rename, was registered as: removed whichever way
+# this runs, so the old name's launcher, icons and portal entry go with it.
+OLD_IDS=("everyday-app" "app.everyday.journal")
+
+remove_old() {
+  for old in "${OLD_IDS[@]}"; do
+    if [ -e "$APPS/$old.desktop" ]; then
+      rm -f "$APPS/$old.desktop"
+      echo "Removed $APPS/$old.desktop (Every Day, before the rename)."
+    fi
+    find "$ICONS" -name "$old.png" -delete 2>/dev/null || true
+  done
+}
 
 if [ "${1:-}" = "--remove" ]; then
-  rm -f "$APPS/$ID.desktop"
+  rm -f "$APPS/$ID.desktop" "$APPS/$BUNDLE_ID.desktop"
   find "$ICONS" -name "$ID.png" -delete 2>/dev/null || true
+  remove_old
   echo "Removed $APPS/$ID.desktop and its icons."
 else
   root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -64,7 +83,7 @@ else
   cat > "$APPS/$ID.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=Every Day
+Name=Karma Yoga
 Comment=A private journal
 Exec=$bin
 Icon=$ID
@@ -73,7 +92,21 @@ Categories=Office;
 Terminal=false
 DESKTOP
 
-  for png in "$root/crates/everyday-app/icons"/*.png; do
+  # The portals' entry: the same program under the bundle id, hidden.
+  cat > "$APPS/$BUNDLE_ID.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Karma Yoga
+Comment=A private journal
+Exec=$bin
+Icon=$ID
+StartupWMClass=$ID
+NoDisplay=true
+Terminal=false
+DESKTOP
+  remove_old
+
+  for png in "$root/crates/karmayoga-app/icons"/*.png; do
     case "$(basename "$png")" in
       # Skip the Windows Store tiles and the @2x variant; only square icons
       # named for their own pixel size belong in the icon theme.
@@ -84,7 +117,7 @@ DESKTOP
     cp "$png" "$ICONS/${size}x${size}/apps/$ID.png"
   done
 
-  echo "Installed $APPS/$ID.desktop"
+  echo "Installed $APPS/$ID.desktop and $APPS/$BUNDLE_ID.desktop"
   echo "  Exec = $bin"
 fi
 

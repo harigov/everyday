@@ -153,7 +153,7 @@ logged from the Overview has neither.
 
 ### Ids
 
-`RoleId` and `GoalId` in `crates/everyday-core/src/id.rs` via `typed_id!`, and
+`RoleId` and `GoalId` in `crates/karmayoga-core/src/id.rs` via `typed_id!`, and
 re-exported from `lib.rs`.
 
 ### Schema, version 7
@@ -232,24 +232,24 @@ Net-new and additive. No visible change except a picker.
 
 Rust:
 
-- `crates/everyday-core/src/purpose.rs` (new): `Role`, `Goal`, `GoalStatus`,
+- `crates/karmayoga-core/src/purpose.rs` (new): `Role`, `Goal`, `GoalStatus`,
   `Purpose`, `PurposeMinutes`, `GoalActivity`, with `new()`, `set_status()`
   keeping `completed_at` honest, `searchable_text()`, and unit tests in the
   style of `task.rs`.
-- `crates/everyday-core/src/store/purpose.rs` (new): `PurposeStore` trait —
+- `crates/karmayoga-core/src/store/purpose.rs` (new): `PurposeStore` trait —
   `list_roles`, `get_role`, `put_role`, `delete_role`; `list_goals(&GoalQuery)`,
   `get_goal`, `put_goal`, `delete_goal`; `time_by_purpose`, `goal_activity`;
   `role_aad` / `goal_aad`. `JournalStore::purpose()` accessor defaulting to
   `None`; `Capabilities.goals: bool`.
 - `purpose: Option<Purpose>` on `Project`, `Task`, `TimeBlock`, `Entry`,
   `Item`; `role_id` on `Calendar`. Every `put_*` in
-  `crates/everyday-store-sql/src/{tasks,journals,library,calendars}.rs`
+  `crates/karmayoga-store-sql/src/{tasks,journals,library,calendars}.rs`
   writes the two clear columns.
 - `schema.rs`: `v7(d)`, including the `readings` rebuild now so there is one
   version 7, not two. Test: a version-6 fixture opens, keeps its rows, and
   has the new columns (model: `a_version_4_database_gains_the_readings_table_
   without_losing_entries`).
-- `crates/everyday-store-sql/src/purpose.rs` (new): the impl. The
+- `crates/karmayoga-store-sql/src/purpose.rs` (new): the impl. The
   `time_by_purpose` query is the one piece of real SQL; write it once in
   `where_clause` style so list and aggregate cover the same rows.
 - Conformance: `run_purpose_suite` in `store/conformance.rs` — role and goal
@@ -439,7 +439,7 @@ registration. Names follow the `delete_` rule the
   "Four apps, one vault" heading and the bar paragraph; the Status section's
   counts; "an analytics view over the readings above" leaves the not-yet-
   built list.
-- `crates/everyday-store-sql/src/lib.rs` clear/sealed table and the
+- `crates/karmayoga-store-sql/src/lib.rs` clear/sealed table and the
   `schema.rs` version-7 rationale comment.
 
 ## What is deliberately out

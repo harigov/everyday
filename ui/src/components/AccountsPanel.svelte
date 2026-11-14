@@ -2,7 +2,7 @@
   // Settings → Accounts: the mailbox providers this vault has signed in to.
   //
   // An account is not mail's own settings screen -- see
-  // `everyday_core::account`'s module doc -- so this is a tab of its own
+  // `karmayoga_core::account`'s module doc -- so this is a tab of its own
   // beside About You and the Assistant, not a section tucked under either.
   // The list, an "Add account" sheet, and a detail sheet to edit or remove
   // one are the whole of it; reading and sending mail is a later app.

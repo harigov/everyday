@@ -7,7 +7,7 @@
   // off is turned back on: the assistant may create, change and delete a
   // skill, but never re-enable one, which is why `editing.enabled` here has
   // no counterpart in what it can ask for. See
-  // `everyday_core::agent::Skill`'s module docs, "Skills, and progressive
+  // `karmayoga_core::agent::Skill`'s module docs, "Skills, and progressive
   // disclosure". A skill's name and description are the only part that
   // reaches every conversation, as an index the assistant is told to load
   // from before it acts on a matching request; the instructions themselves

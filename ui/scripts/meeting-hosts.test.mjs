@@ -2,7 +2,7 @@
 // is its call?" -- the copy the event popover uses so it can decide whether
 // to draw "Take notes" without a round trip to the backend. See
 // `meeting-hosts.ts`'s own doc for why this duplicates
-// `crates/everyday-core/src/meeting/detect.rs` rather than calling it.
+// `crates/karmayoga-core/src/meeting/detect.rs` rather than calling it.
 
 import assert from 'node:assert/strict'
 import { load } from './harness.mjs'

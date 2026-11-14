@@ -89,7 +89,7 @@ export const NEEDS = [
    * The forecast where you live: current conditions, wind, air quality, and
    * the next couple of days. Its own need rather than folded into `today`,
    * because it is the one read here that leaves the machine -- see
-   * `everyday_service::domains::weather`'s own doc on why it is not gated on
+   * `karmayoga_service::domains::weather`'s own doc on why it is not gated on
    * the assistant's "let it use the web" switch.
    */
   'weather',
@@ -357,7 +357,7 @@ export const WIDGETS = {
   //
   // Busy, timed events on the calendars you have left visible -- all-day,
   // cancelled and "free" events are not time spent, and the same meeting on
-  // two calendars is counted once. See `everyday_core::insights`.
+  // two calendars is counted once. See `karmayoga_core::insights`.
   topEvents: {
     label: 'What takes your calendar time',
     note: 'Events grouped by name, ranked by the hours they took.',
@@ -809,7 +809,7 @@ export function byTimeOrLast<T>(items: T[], timeOf: (item: T) => string | null):
 /**
  * Which weather icon (see `icons.ts`) a condition's own words call for.
  *
- * `describe` in `everyday_core::weather` is where the words come from --
+ * `describe` in `karmayoga_core::weather` is where the words come from --
  * WMO code 63 arrives as `"moderate rain"`, never as a bare number -- so
  * this only has to recognise a double handful of phrases, not fifty codes.
  * An unrecognised one (a wording this has not seen, or `"unknown (WMO code
@@ -849,14 +849,14 @@ const EUROPEAN_AQI_TIER: Record<string, AqiTier> = {
 }
 
 /**
- * Which of the six AQI bands `category` -- as `everyday_core::air_quality`
+ * Which of the six AQI bands `category` -- as `karmayoga_core::air_quality`
  * spells it, read case-insensitively -- falls into on `scale`. `null` for a
  * word this does not recognise, so a widget can fall back to no colour at
  * all rather than guess at one.
  *
  * Takes the scale rather than matching the word alone because the same word
  * is a different band on each one: European "Moderate" is its third band,
- * American "Moderate" is its second. See `everyday_core::air_quality`'s
+ * American "Moderate" is its second. See `karmayoga_core::air_quality`'s
  * `us_category`/`european_category`, which this mirrors in order rather
  * than in the band thresholds themselves -- those stay in the core, as
  * tested pure functions of their own, and the service already did the
@@ -870,7 +870,7 @@ export function aqiTier(scale: 'us' | 'european', category: string | null): AqiT
 
 // ── Storage ──────────────────────────────────────────────────────────────
 
-export const LAYOUT_KEY = 'everyday.overview.layout'
+export const LAYOUT_KEY = 'karmayoga.overview.layout'
 
 /**
  * Read a stored layout back, forgivingly.

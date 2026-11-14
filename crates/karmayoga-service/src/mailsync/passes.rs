@@ -1,0 +1,1578 @@
+//! The sync passes: headers, bodies (with attachments folded in, since both
+//! need the same raw bytes), and the discovery-plus-both-passes sweep that
+//! serves the first sync and every steady-state wake alike.
+//!
+//! # Why "three passes" is two functions
+//!
+//! `docs/plans/mail.md` describes headers, bodies and attachments as three
+//! passes. Here, attachments are extracted inside the bodies pass rather
+//! than as a separate walk over the mailbox: the plan's own words say the
+//! attachments pass "only extracts" from bytes "already inside the raw
+//! message", and [`bodies_pass`] already has those bytes in hand, decoded,
+//! for exactly as long as one message's processing takes. A third pass
+//! would mean fetching -- or re-decoding from the pack store -- the same raw
+//! bytes a second time for no reason this crate could find.
+//!
+//! # Resumability, without a numeric cursor
+//!
+//! Neither pass trusts a "how far did we get" counter. [`sync_headers`]
+//! asks the vault which UIDs it already has (via
+//! [`karmayoga_core::Vault::mail_uid_set`]) and only asks the server for the
+//! rest; [`bodies_pass`] asks which of *those* still carry
+//! [`crate::mailsync::ingest::pending_pack_ref`]'s sentinel and only fetches
+//! raw bytes for them. A process killed mid-batch leaves some messages
+//! ingested and some not, some bodies fetched and some not -- and the next
+//! attempt's first query already excludes everything that landed, so
+//! nothing is re-ingested as a duplicate and nothing already-fetched is
+//! fetched twice. This is also what makes the same two functions serve the
+//! first sync and a steady-state wake: a wake is simply a sync with very
+//! little left to do.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use futures::StreamExt;
+use karmayoga_core::id::{AccountId, BlobId, MailMessageId, MailboxId};
+use karmayoga_core::mail::categorize::{self, CategorizeInput};
+use karmayoga_core::mail::{Body, MailboxRole, Message, PartRef};
+use karmayoga_core::packstore::{PackRef, PackStore};
+use karmayoga_core::store::mail::IngestMessage;
+use karmayoga_core::{MailDoc, MailSearch, Vault};
+use karmayoga_mail::mime::Disposition;
+use karmayoga_mail::session::{MailSession, Result as SessionResult, SyncCursor, Uid, UidSet};
+
+use crate::mailsync::discovery::{self, LabelMailboxes, SyncedMailbox};
+use crate::mailsync::ingest::{self, ThreadIndex};
+use crate::mailsync::status::{Phase, StatusRegistry};
+
+/// Headers are fetched in batches of about this many UIDs -- "a few hundred"
+/// per the plan, matching the size a `UID FETCH` line stays comfortably
+/// short at.
+const HEADER_BATCH_SIZE: usize = 500;
+
+/// Bodies are fetched in batches of about this many messages at once.
+///
+/// The plan asks for batches "bounded by bytes" rather than by count; this
+/// bounds by count instead, which is simpler and -- since
+/// [`karmayoga_mail::imap::ImapSession::raw`] already sub-batches its own
+/// `BODY.PEEK[]` fetches at twenty messages internally -- still keeps any
+/// one round trip small. Revisit if a real mailbox's attachment-heavy
+/// messages ever make a hundred of them at once too much to hold in memory
+/// between the fetch and the blocking-pool pass below.
+const BODY_BATCH_SIZE: usize = 100;
+
+/// How many of the newest known uids on Gmail's All Mail
+/// [`refresh_gmail_labels`]'s fallback re-checks every pass, regardless of
+/// what `changes_since` reported moved. See that function's own docs.
+const GMAIL_LABEL_FALLBACK_N: usize = 50;
+
+/// What every pass needs, gathered once by [`crate::mailsync::task::run_account`]
+/// so a test can build the same shape without a live connection.
+pub struct SyncContext<'a> {
+    pub vault: &'a Arc<Vault>,
+    pub account_id: AccountId,
+    pub packs: Arc<dyn PackStore>,
+    pub index: Arc<dyn MailSearch>,
+    pub statuses: &'a StatusRegistry,
+    pub attachment_cap_bytes: Option<u64>,
+    /// Paces [`bodies_pass`]'s calls to [`MailSearch::commit`] -- see
+    /// [`CommitPacer`]. Built once by whoever builds the rest of this
+    /// context and reused across every `sync_once` call for the life of
+    /// the account task, so the cadence's five-second window is a fact
+    /// about the account's sync history as a whole, not reset on every
+    /// wake.
+    pub index_commit: CommitPacer,
+    /// Invalidated by [`sync_headers`] whenever it ingests or applies flag
+    /// changes -- see `crate::mailsync::unread_cache`'s module docs. `None`
+    /// is a valid answer, not a bug: a caller with nothing to invalidate
+    /// (most tests in [`super::tests`]) simply never sees a stale read,
+    /// because nothing here ever cached one for them either.
+    pub unread_cache: Option<Arc<crate::mailsync::unread_cache::UnreadCache>>,
+    /// Updated by [`sync_headers`] as it ingests, and persisted once at the
+    /// end of [`sync_once`] -- see `crate::mailsync::contacts`'s module
+    /// docs. `None` on the same terms `unread_cache` is.
+    pub contacts: Option<Arc<crate::mailsync::contacts::ContactIndex>>,
+    /// Every address this account answers to -- its own and every
+    /// [`karmayoga_core::account::Identity`]'s, lower-cased -- what
+    /// [`process_body`] hands to [`karmayoga_mail::invite::parse_invite`] so
+    /// [`karmayoga_core::mail::Invite::my_response`] can be filled in without
+    /// a second read of the account row for every message.
+    pub identities: Vec<String>,
+}
+
+/// Paces how often [`bodies_pass`] commits the search index, per the plan's
+/// own cadence: "the index... about every 2,000 docs or 5 seconds,
+/// whichever comes first". `sync_once` also commits once, unconditionally,
+/// at the very end of a pass, so nothing indexed is ever left uncommitted
+/// for longer than the shorter of this cadence and one pass's length.
+///
+/// # Why paced at all, rather than "every batch" or "once at the end"
+///
+/// Every batch (what this replaces) is simplest, but it means a tantivy
+/// `commit` -- which fsyncs a new segment -- runs once per
+/// [`BODY_BATCH_SIZE`] messages: for a giant first sync, thousands of small
+/// commits where a few hundred larger ones would do. Once at the end alone
+/// would leave a search box unable to find a message that arrived minutes
+/// ago on a big mailbox, which the plan's own "a search: 150ms for the
+/// first page" budget is measured against a *searchable* index, not one
+/// still waiting for a pass to finish. The 2,000/5s cadence is the balance
+/// the plan already struck; this is that balance, not a new one.
+///
+/// Interior-mutable because [`SyncContext`] is shared, immutably, across
+/// every call [`bodies_pass`] makes for however many mailboxes one pass
+/// touches, and across every pass this account task ever runs.
+pub struct CommitPacer(Mutex<PacerState>);
+
+struct PacerState {
+    docs_since_commit: u64,
+    since: Instant,
+}
+
+/// Docs since the last commit, above which [`CommitPacer::record`] says to
+/// commit regardless of how little time has passed.
+const COMMIT_DOC_THRESHOLD: u64 = 2_000;
+/// Time since the last commit, above which [`CommitPacer::record`] says to
+/// commit regardless of how few docs have landed.
+const COMMIT_TIME_THRESHOLD: Duration = Duration::from_secs(5);
+
+impl CommitPacer {
+    pub fn new() -> Self {
+        Self(Mutex::new(PacerState { docs_since_commit: 0, since: Instant::now() }))
+    }
+
+    /// Note that `added` more docs were just indexed, and say whether the
+    /// caller should commit now.
+    fn record(&self, added: u64) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.docs_since_commit += added;
+        let due = state.docs_since_commit >= COMMIT_DOC_THRESHOLD
+            || state.since.elapsed() >= COMMIT_TIME_THRESHOLD;
+        if due {
+            state.docs_since_commit = 0;
+            state.since = Instant::now();
+        }
+        due
+    }
+}
+
+impl Default for CommitPacer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Discover `ctx.account_id`'s mailboxes and run [`sync_headers`] then
+/// [`bodies_pass`] over every one of them, inbox first. What one first sync
+/// and one steady-state wake both are, from the caller's side.
+///
+/// Reaping each mailbox's vanished uids ([`reap_vanished`]) is its own
+/// third phase, after every mailbox has ingested its own new headers --
+/// not folded into the same loop [`sync_headers`] runs in. A message moved
+/// from one mailbox to another between two passes is `vanished` in the
+/// first and a `new_uids` header in the second; reaping the first
+/// mailbox's copy before the second has had a chance to rematch it by
+/// `Message-ID` would delete the only row [`ingest::resolve_header`] could
+/// have rematched against, minting a fresh id -- and a fresh body
+/// download -- for a message this account already has in full. See
+/// [`sync_headers`]'s own docs. [`reap_labels_off_all_mail`] follows it, on
+/// Gmail, for the rows sharing All Mail's uids.
+pub async fn sync_once<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    labels: &mut LabelMailboxes,
+    threads: &mut ThreadIndex,
+) -> SessionResult<Vec<SyncedMailbox>> {
+    let mut mailboxes = discovery::discover(ctx.vault, ctx.account_id, session).await?;
+    let mut vanished_by_mailbox = Vec::with_capacity(mailboxes.len());
+    let mut all_mail_read_whole = None;
+    for mailbox in &mut mailboxes {
+        let pass = sync_headers(ctx, session, mailbox, labels, threads).await?;
+        if pass.stored_all && mailbox.row.role == MailboxRole::All {
+            all_mail_read_whole = Some(mailbox.row.id);
+        }
+        vanished_by_mailbox.push(pass.vanished);
+    }
+    settle_reply_candidates(ctx);
+    for (mailbox, vanished) in mailboxes.iter().zip(&vanished_by_mailbox) {
+        reap_vanished(ctx, mailbox, vanished);
+    }
+    if let Some(all_mail) = all_mail_read_whole
+        && session.capabilities().gmail
+    {
+        reap_labels_off_all_mail(ctx, all_mail, &mailboxes);
+    }
+    for mailbox in &mailboxes {
+        bodies_pass(ctx, session, mailbox).await?;
+    }
+    let _ = ctx.index.commit();
+    if let Some(contacts) = &ctx.contacts {
+        contacts.persist_if_dirty(ctx.vault);
+    }
+    Ok(mailboxes)
+}
+
+/// Ask of each message held by
+/// [`StatusRegistry::note_reply_candidate`](crate::mailsync::status::StatusRegistry::note_reply_candidate)
+/// whether its thread has the account's own word in it, now that every mailbox
+/// in the pass is stored. Off Gmail the Inbox comes first and Sent after it, so
+/// asking any sooner would miss an answer from a phone followed by a reply to
+/// it, and a message is only new the once.
+fn settle_reply_candidates(ctx: &SyncContext<'_>) {
+    let candidates = ctx.statuses.take_reply_candidates(ctx.account_id);
+    if candidates.is_empty() {
+        return;
+    }
+    let own = ctx
+        .vault
+        .account(ctx.account_id)
+        .map(|account| crate::mailai::own_addresses(&account))
+        .unwrap_or_default();
+    for (message, arrival) in candidates {
+        if crate::arrivals::thread_has_own_message(ctx.vault, message, &own) {
+            ctx.statuses.note_new_mail(ctx.account_id, arrival);
+        }
+    }
+}
+
+/// What one [`sync_headers`] pass over a mailbox comes back with.
+pub struct HeadersPass {
+    /// The uids `changes_since` reported vanished, *not yet removed* -- see
+    /// [`reap_vanished`].
+    pub vanished: UidSet,
+    /// Whether every new header the server offered is now stored. `false` if
+    /// one could not be parsed or a batch could not be written, each of which
+    /// the pass logs and carries on past: the vault is then short of what the
+    /// mailbox holds, and missing from it means nothing until the next pass.
+    pub stored_all: bool,
+}
+
+/// `SELECT` `mailbox`, diff it against what the vault already has, and
+/// ingest headers for everything new -- in batches of
+/// [`HEADER_BATCH_SIZE`], newest first, committing each batch as it lands.
+/// See the module docs for why "committing" needs no cursor field beyond
+/// what [`karmayoga_core::Vault::ingest`] itself already made durable.
+///
+/// Returns, among what [`HeadersPass`] holds, the uids `changes_since`
+/// reported vanished from `mailbox`, *not yet removed* -- see
+/// [`reap_vanished`], which [`sync_once`] calls once every mailbox in the
+/// round has ingested its own new headers, for why deleting them here, inline,
+/// would be too early.
+///
+/// # The one mailbox this cannot tell apart from a stuck reset
+///
+/// `resuming_an_interrupted_reset`, below, is `0` for exactly "never
+/// synced", "mid-reset" and one more case this function has no durable
+/// signal for at all: a mailbox that has completed every pass it has ever
+/// run and simply has never once held a message. Nothing this crate stores
+/// about a mailbox distinguishes "empty because nothing has arrived yet"
+/// from "empty because a reset's wipe has not been followed by a single
+/// ingested header" -- both leave `known` and every uid this pass fetched
+/// empty, so the completion write below has nothing to derive a non-`0`
+/// `uidnext` from. Concretely: such a mailbox pays `reset_mailbox`'s
+/// (idempotent, cheap-on-nothing) wipe every pass, and the first batch of
+/// headers it ever does receive pays `force_db_rematch`'s per-header vault
+/// scan even though nothing was ever reset. Both are self-correcting --
+/// the moment one message lands, `uidnext` becomes real and this stops --
+/// and neither loses or duplicates a message, which is what the rest of
+/// this function's docs are actually guarding against. A durable
+/// mailbox-level flag would close this one gap too, at the cost of a
+/// schema column and the plumbing to reach it from here; this crate does
+/// not have that plumbing available today, and the gap it leaves is a few
+/// wasted queries on an edge case, not a correctness bug.
+pub async fn sync_headers<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &mut SyncedMailbox,
+    labels: &mut LabelMailboxes,
+    threads: &mut ThreadIndex,
+) -> SessionResult<HeadersPass> {
+    // Captured before a `UIDVALIDITY` reset zeroes `uidnext` below. A
+    // mailbox that has finished a pass has a real `uidnext`; one that has
+    // never been synced does not. See `arrivals::ingest_is_news`.
+    let mailbox_known = mailbox.row.uidnext != 0;
+    let state = session.select(&mailbox.remote_name).await?;
+
+    // A `UIDVALIDITY` change: forget this mailbox's membership and start
+    // fresh, rematching by `Message-ID` as headers arrive rather than
+    // trusting a uid that now means something else -- see
+    // `crate::mailsync::ingest`'s module docs.
+    //
+    // `just_reset` also has to stay `true` across a crash. The naive
+    // condition -- `mailbox.row.uidvalidity != 0 && ... != state.uidvalidity`
+    // -- is only ever true for the one attempt that *notices* the change;
+    // `reset_mailbox` durably zeroes `uidvalidity` (see its own docs), so a
+    // process killed anywhere in the headers loop below leaves the row's
+    // `UIDVALIDITY` at `0` on the very next attempt, which this naive
+    // condition cannot tell apart from a mailbox that has simply never
+    // been synced -- and a mailbox this function has never finished
+    // syncing gets `force_db_rematch = false`, silently minting a fresh id
+    // (and a fresh body download) for every message the crash left
+    // stranded, while the original row survives, orphaned, forever (see
+    // `resolve_header`'s own docs and this bug's regression test below).
+    //
+    // `resuming_an_interrupted_reset` closes that gap using only fields
+    // this row already has: `uidnext == 0` is otherwise true only for a
+    // mailbox that has never once reached this function's own completion
+    // at the bottom, which is the only place that ever writes a real,
+    // never-`0` `uidnext` back -- see that write's own docs for why it is
+    // never `0` for a mailbox that has ever finished a pass, *without*
+    // trusting the one thing that would otherwise make that false. Pairing
+    // that with `uidvalidity != 0` rules out "never synced" (whose
+    // `UIDVALIDITY` is still `0` too), leaving exactly "a reset started,
+    // stamped its new `UIDVALIDITY` right away, and this attempt never
+    // reached the bottom of this function to say it finished."
+    let uidvalidity_just_changed =
+        mailbox.row.uidvalidity != 0 && mailbox.row.uidvalidity != state.uidvalidity;
+    let resuming_an_interrupted_reset = mailbox.row.uidvalidity != 0 && mailbox.row.uidnext == 0;
+    let just_reset = uidvalidity_just_changed || resuming_an_interrupted_reset;
+    if just_reset {
+        // Idempotent either way: a fresh reset wipes membership that is
+        // there to wipe, and a resumed one wipes membership `reset_mailbox`
+        // already emptied last time.
+        let _ = ctx.vault.reset_mailbox(mailbox.row.id);
+        mailbox.row.uidvalidity = state.uidvalidity;
+        mailbox.row.uidnext = 0;
+        mailbox.row.highest_modseq = 0;
+        // Durable *now*, not deferred to this function's own save at the
+        // bottom: this is what keeps `uidnext == 0` (and so `just_reset`)
+        // true across a crash, right up until a full pass actually
+        // finishes and this function's own completion below writes a real
+        // `uidnext` over it.
+        let _ = ctx.vault.save_mailbox(&mailbox.row);
+    }
+    if mailbox.row.uidvalidity == 0 {
+        mailbox.row.uidvalidity = state.uidvalidity;
+    }
+
+    let cursor = SyncCursor {
+        uidvalidity: mailbox.row.uidvalidity,
+        // Unused by every adapter today (see `SyncCursor`'s own docs): what
+        // actually decides which uids are "new" is the vault's own
+        // membership, read fresh below, not this field.
+        highest_uid_seen: 0,
+        highestmodseq: (mailbox.row.highest_modseq != 0).then_some(mailbox.row.highest_modseq),
+    };
+    let known: UidSet =
+        ctx.vault.mail_uid_set(mailbox.row.id).unwrap_or_default().into_iter().collect();
+    let changes = session.changes_since(&cursor, &known).await?;
+
+    // Reaping `changes.vanished` happens later, once every mailbox in this
+    // round has had a chance to ingest its own new headers -- see
+    // `sync_once`'s own docs for why the order matters: a message moved to
+    // another mailbox between two passes is `vanished` here and `new_uids`
+    // there, and deleting it *here* first would mean the mailbox that is
+    // about to receive it has nothing left to rematch by `Message-ID`
+    // against, minting a fresh id (and a fresh body download) for a
+    // message this account already has in full.
+
+    // Every reported flag is written back only when it actually differs
+    // from what is already stored. Without `CONDSTORE` (see
+    // `ImapSession::changes_since`'s non-`CONDSTORE` branch),
+    // `flag_changes` is the *current* flags of every known uid, changed or
+    // not, so skipping an unchanged one is what keeps a mailbox that saw no
+    // real flag activity from paying for a full rewrite -- a decrypt, a
+    // re-seal, an upsert and a thread recompute per message -- on every
+    // single pass.
+    let mut any_flag_actually_changed = false;
+    for &(uid, flags, _modseq) in &changes.flag_changes {
+        let new_flags = ingest::mail_flags(flags);
+        let unchanged = ctx
+            .vault
+            .message_by_uid(mailbox.row.id, uid)
+            .ok()
+            .flatten()
+            .is_some_and(|m| m.flags == new_flags);
+        if unchanged {
+            continue;
+        }
+        any_flag_actually_changed = true;
+        let _ = ctx.vault.update_message_flags(mailbox.row.id, uid, new_flags);
+    }
+
+    // Gmail labels, on All Mail: see `refresh_gmail_labels`'s own docs for
+    // why a plain flag diff never notices a message archived, or
+    // relabelled, in another client, and for the two mechanisms below.
+    // `gmail_labels_changed` feeds `changed` below: the fallback re-check
+    // exists precisely for changes `changes_since` said nothing about, so
+    // without this the unread cache would stay stale exactly when this
+    // fallback is the only thing that noticed anything at all.
+    let mut gmail_labels_changed = false;
+    if session.capabilities().gmail && mailbox.row.role == MailboxRole::All {
+        let changed_uids: UidSet = changes.flag_changes.iter().map(|&(uid, _, _)| uid).collect();
+        if !changed_uids.is_empty()
+            && let Ok(changed) =
+                refresh_gmail_labels(ctx, session, mailbox, &changed_uids, labels).await
+        {
+            gmail_labels_changed |= changed;
+        }
+
+        let mut newest: Vec<Uid> = known.iter().collect();
+        newest.sort_unstable_by(|a, b| b.cmp(a));
+        newest.truncate(GMAIL_LABEL_FALLBACK_N);
+        let fallback: UidSet = newest.into_iter().filter(|u| !changed_uids.contains(*u)).collect();
+        if !fallback.is_empty()
+            && let Ok(changed) =
+                refresh_gmail_labels(ctx, session, mailbox, &fallback, labels).await
+        {
+            gmail_labels_changed |= changed;
+        }
+    }
+
+    let new_uids: Vec<Uid> = changes.new_uids.iter().collect();
+    // Kept apart from `new_uids` itself, which `discovery::newest_first_chunks`
+    // below consumes by value: this is the one piece of it the completion
+    // write at the bottom of this function still needs, once the batches
+    // it came from are gone. See that write's own docs for why.
+    let highest_new_uid = new_uids.iter().copied().max();
+    let total = new_uids.len() as u64;
+    let mut done = 0u64;
+    let mut stored_all = true;
+    // Whether a batch below has said the list changed as it stored new mail,
+    // so the end of the mailbox does not say it again for the same messages.
+    let mut marked_new = false;
+    ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
+
+    // The rules-based half of the split inbox -- see
+    // `karmayoga_core::mail::categorize`. Loaded once per mailbox rather than
+    // once per message: it is one small sealed row, and every message this
+    // call ingests is categorised against the same corrections.
+    let category_rules = ctx.vault.category_rules(ctx.account_id).unwrap_or_default();
+
+    for batch in discovery::newest_first_chunks(new_uids, HEADER_BATCH_SIZE) {
+        let uid_set: UidSet = batch.iter().copied().collect();
+        let mut headers = session.headers(&uid_set).await?;
+        // Newest first within the batch too, matching the plan's ordering.
+        headers.sort_by(|a, b| b.uid.cmp(&a.uid).then(b.internal_date.cmp(&a.internal_date)));
+
+        // Read per batch rather than once when the task started, so a change
+        // in Settings -- the rule, or an address added -- applies from the
+        // next mail in, and only when there is mail to ask it about.
+        let account = ctx.vault.account(ctx.account_id).ok();
+        let notify = account.as_ref().map(|a| a.mail_notify.clone()).unwrap_or_default();
+        let own = account.as_ref().map(crate::mailai::own_addresses).unwrap_or_default();
+        let mut ingest_batch = Vec::with_capacity(headers.len());
+        let mut arrivals = Vec::new();
+        for header in &headers {
+            let mut resolved = match ingest::resolve_header(
+                ctx.vault,
+                ctx.account_id,
+                header,
+                threads,
+                just_reset,
+            ) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        uid = header.uid,
+                        "could not parse a message header; skipping it"
+                    );
+                    stored_all = false;
+                    continue;
+                }
+            };
+            // The categorisation hook -- the whole of `passes.rs`'s part in
+            // the split inbox. See `categorize_new_message`'s own docs for
+            // what it does and, as importantly, what it deliberately leaves
+            // alone.
+            categorize_new_message(&mut resolved, &category_rules, ctx.contacts.as_deref());
+            // Held until the batch is stored, then noted for the account
+            // task, which announces it as soon as it wakes, beside the pass
+            // -- a headers batch is the wrong place to post, and a first
+            // sync of thousands of messages would otherwise post thousands
+            // of times. The decision of which messages are news at all lives
+            // in `arrivals`.
+            if crate::arrivals::ingest_is_news(&crate::arrivals::IngestFacts {
+                is_new: resolved.is_new,
+                unread: resolved.message.flags.unread(),
+                in_inbox: crate::arrivals::in_inbox(mailbox.row.role, &resolved.message.labels),
+                deleted: resolved.message.flags.deleted,
+                draft: resolved.message.flags.draft,
+                own: own.contains(&resolved.message.from.email.to_lowercase()),
+                mailbox_known,
+                sent_at: resolved.message.date,
+                now: jiff::Timestamp::now(),
+            }) {
+                arrivals.push((
+                    resolved.message.id,
+                    notify.wants_filed(resolved.message.category, None),
+                    crate::arrivals::NewMail {
+                        message_id: resolved.message.id.to_string(),
+                        from: crate::arrivals::sender_label(
+                            &resolved.message.from.name,
+                            &resolved.message.from.email,
+                        ),
+                        subject: resolved.message.subject.clone(),
+                    },
+                ));
+            }
+            ingest_batch.push(IngestMessage {
+                message: resolved.message.clone(),
+                mailbox: mailbox.row.id,
+                uid: header.uid,
+            });
+            // The contact index: only for a message this account has never
+            // stored before, so a steady-state resync (or a `UIDVALIDITY`
+            // reset's rematch) never double-counts one it has already
+            // learned from. `Sent` is the plain-IMAP case; Gmail never
+            // selects a folder called Sent at all (everything physically
+            // lives in All Mail -- see `discovery`'s own docs), so its own
+            // `\Sent` label is the same signal there.
+            // Drafts are excluded outright: a Drafts folder (or, on Gmail,
+            // a message carrying `\Draft`) is full of messages *from* the
+            // account itself, and recording the person's own address as
+            // someone they correspond with would climb their own address
+            // straight up their own autocomplete.
+            let is_draft = mailbox.row.role == MailboxRole::Drafts
+                || header.gmail.as_ref().is_some_and(|g| g.labels.iter().any(|l| l == "\\Draft"));
+            if resolved.is_new
+                && !is_draft
+                && let Some(contacts) = &ctx.contacts
+            {
+                let msg = &resolved.message;
+                let is_sent = mailbox.row.role == MailboxRole::Sent
+                    || header
+                        .gmail
+                        .as_ref()
+                        .is_some_and(|g| g.labels.iter().any(|l| l == "\\Sent"));
+                // Never the account's own address, on either side: a Sent
+                // message's own `To`/`Cc` can still name the account itself
+                // (a message someone sent to their own address on purpose),
+                // and a received message can arrive `From` an alias this
+                // very account also answers to.
+                let is_own_address =
+                    |email: &str| ctx.identities.iter().any(|i| i.eq_ignore_ascii_case(email));
+                if is_sent {
+                    for addr in msg.to.iter().chain(msg.cc.iter()) {
+                        if !is_own_address(&addr.email) {
+                            contacts.record_sent_to(&addr.email, &addr.name);
+                        }
+                    }
+                } else if !is_own_address(&msg.from.email) {
+                    contacts.record_received_from(&msg.from.email, &msg.from.name);
+                }
+            }
+            // The Gmail folder rule: All Mail carries every physical
+            // message, and its own `X-GM-LABELS` is where `\Inbox` and
+            // every user label come from -- see `crate::mailsync::discovery`.
+            // Not every label resolves to a row -- see
+            // `LabelMailboxes::resolve`'s own docs for which, and why.
+            if mailbox.row.role == MailboxRole::All
+                && let Some(gmail) = &header.gmail
+            {
+                for label in &gmail.labels {
+                    if let Some(label_row) = labels.resolve(ctx.vault, label) {
+                        ingest_batch.push(IngestMessage {
+                            message: resolved.message.clone(),
+                            mailbox: label_row.id,
+                            uid: header.uid,
+                        });
+                    }
+                }
+            }
+        }
+        let stored_any = !ingest_batch.is_empty();
+        match ctx.vault.ingest_mail(ctx.account_id, ingest_batch) {
+            // Only a stored message is news. One that failed to store comes
+            // back as new on the next pass, with a fresh id, and is noted
+            // then -- noting it now as well would announce it twice, the
+            // first time for mail that is not in the vault.
+            Ok(_) => {
+                // Marked before anything is noted: a notice is announced the
+                // moment it is noted, mid-pass, and takes this to tell an open
+                // list to draw what it names. Left to the end of the mailbox,
+                // as below, the banner came with nothing for the list to show
+                // until the whole pass was over.
+                if stored_any {
+                    if let Some(cache) = &ctx.unread_cache {
+                        cache.invalidate(ctx.account_id);
+                    }
+                    ctx.statuses.mark_changed(ctx.account_id);
+                    marked_new = true;
+                }
+                if !arrivals.is_empty() {
+                    ctx.statuses.mark_arrived(ctx.account_id);
+                }
+                for (message, wanted, arrival) in arrivals {
+                    ctx.statuses.note_arrival(&arrival.message_id, Instant::now());
+                    if wanted {
+                        ctx.statuses.note_new_mail(ctx.account_id, arrival);
+                    } else if notify.wants_replies() {
+                        ctx.statuses.note_reply_candidate(ctx.account_id, message, arrival);
+                    }
+                }
+            }
+            Err(e) => {
+                stored_all = false;
+                tracing::warn!(error = %e, "could not ingest a batch of headers");
+            }
+        }
+        // Saved as the pass goes, not only once `sync_once` finishes -- see
+        // `ContactIndex::persist_if_due` for what stopping half way used to
+        // lose.
+        if let Some(contacts) = &ctx.contacts {
+            contacts.persist_if_due(ctx.vault);
+        }
+
+        // `batch.len()`, not `headers.len()`: a uid the `SEARCH` at the top
+        // of this function saw but that vanished (an expunge racing this
+        // very sync) before the `FETCH` above ran is simply absent from
+        // `headers`, and counting only what came back would leave `done`
+        // permanently short of `total` -- a progress bar stuck just under
+        // 100%. Every uid this batch *asked for* is accounted for either
+        // way, ingested or not.
+        done += batch.len() as u64;
+        ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
+        // Yields between batches, per the plan's throttling rule, so a
+        // giant first sync never starves whatever else this runtime is
+        // doing between one `UID FETCH` and the next.
+        tokio::task::yield_now().await;
+    }
+
+    // `state.uidnext` is `UIDNEXT` off the wire, and `UIDNEXT` is an
+    // *optional* untagged response to `SELECT` -- RFC 3501 section 6.3.1
+    // marks it, unlike `UIDVALIDITY`, without the word "REQUIRED" -- so on
+    // a server that never sends it, `karmayoga_mail::imap`'s adapter reports
+    // a permanent `0` (see its own doc comment at that call site). Writing
+    // that `0` straight into `mailbox.row.uidnext` here used to be exactly
+    // what `resuming_an_interrupted_reset`, above, watches for, which made
+    // it true forever on such a server: not just a crash-interrupted pass
+    // but *every* pass, on *every* mailbox, would look unfinished, and each
+    // one would wipe the mailbox's membership and pay `force_db_rematch`'s
+    // per-header vault scan for messages that were never part of any reset
+    // at all -- silently, since nothing here ever surfaced an error.
+    //
+    // So this does not simply copy `state.uidnext` in. It takes the
+    // largest uid this pass actually knows the mailbox holds -- `known`,
+    // read at the top of this function, and `highest_new_uid`, salvaged
+    // above from the `new_uids` batches this loop just consumed -- one past
+    // it, and only widens that with `state.uidnext` when the server *did*
+    // report a real one larger still (an expunged uid this mailbox never
+    // locally knew about, say). The result is not literally `UIDNEXT` any
+    // more, but nothing outside this one check ever reads this field as
+    // one: it is written here, zeroed by the reset branch above, and
+    // compared to `0` by `resuming_an_interrupted_reset` above, and that is
+    // the whole of its job. That comparison now only ever sees `0` for a
+    // mailbox that either has never been synced, is mid-reset, or -- the
+    // one case this cannot fix without a durable flag of its own, see
+    // `sync_headers`'s own doc comment's "one mailbox this cannot tell
+    // apart from a stuck reset" section -- has never once held a single
+    // message.
+    let highest_known_uid = known.iter().max().into_iter().chain(highest_new_uid).max();
+    mailbox.row.uidnext =
+        highest_known_uid.map(|uid| uid.saturating_add(1)).unwrap_or(0).max(state.uidnext);
+    if let Some(modseq) = state.highestmodseq {
+        mailbox.row.highest_modseq = modseq;
+    }
+    let _ = ctx.vault.save_mailbox(&mailbox.row);
+
+    // Any of these can move a thread across the read/unread line -- a new
+    // message, a flag another client actually changed, one this account no
+    // longer has at all, or a Gmail label the fallback re-check above
+    // caught that `changes_since` itself said nothing about -- so the
+    // cached answer to `unread_counts` is stale the moment any of them is
+    // non-empty. See `crate::mailsync::unread_cache`'s module docs. Built
+    // from `any_flag_actually_changed`, not `!changes.flag_changes.is_empty()`:
+    // without `CONDSTORE`, that list is every known uid's *current* flags,
+    // changed or not, and invalidating on it regardless would mean the
+    // cache never survives a single non-`CONDSTORE` pass. New mail a batch
+    // already marked as it was stored is not counted twice.
+    let changed = (!changes.new_uids.is_empty() && !marked_new)
+        || any_flag_actually_changed
+        || !changes.vanished.is_empty()
+        || gmail_labels_changed;
+    if changed && let Some(cache) = &ctx.unread_cache {
+        cache.invalidate(ctx.account_id);
+    }
+    // The same "this mailbox's list is different now" the cache just heard,
+    // passed on to whoever is drawing it: `crate::mailsync::task` takes this
+    // when it announces new mail mid-pass, and again once the whole pass is
+    // over, raising one change event each time, so an open window reloads
+    // its thread list instead of showing what it had before the mail
+    // arrived. Marked here, not announced here, so a pass that touches six
+    // mailboxes says so once.
+    if changed {
+        ctx.statuses.mark_changed(ctx.account_id);
+    }
+
+    Ok(HeadersPass { vanished: changes.vanished, stored_all })
+}
+
+/// Actually remove every uid [`sync_headers`] reported vanished from
+/// `mailbox`, once every mailbox in this round has had its own chance to
+/// ingest new headers first -- see [`sync_once`]'s own docs for why the
+/// order matters and [`sync_headers`]'s own docs for what deferring this
+/// closes.
+fn reap_vanished(ctx: &SyncContext<'_>, mailbox: &SyncedMailbox, vanished: &UidSet) {
+    if vanished.is_empty() {
+        return;
+    }
+    let uids: Vec<Uid> = vanished.iter().collect();
+    if let Ok(removed) = ctx.vault.remove_mail_uids(mailbox.row.id, &uids) {
+        reap_dead_messages(ctx, &removed);
+    }
+}
+
+/// Take out of every Gmail label's list whatever All Mail no longer holds.
+///
+/// A message is filed under a label as [`sync_headers`] reads All Mail's
+/// headers, so nothing can be under a label without being in All Mail. A
+/// message that leaves it -- for Trash or Spam, or deleted -- comes back as one
+/// vanished uid from All Mail alone, and [`reap_vanished`] takes it out of that
+/// one row. Left at that, it stayed in the Inbox and under every label it had,
+/// and was counted there: a label's list went on showing it, and a reply
+/// bringing a deleted conversation back to the Inbox brought all of the deleted
+/// messages with it. The copy in Trash is a row of its own.
+///
+/// By asking the store rather than from this pass's vanished uids, so that what
+/// earlier passes left behind goes too. The caller only comes here when All
+/// Mail's headers pass stored everything it was offered (see
+/// [`HeadersPass::stored_all`]): a message missing from All Mail because its
+/// batch failed has not left. A label is what `repair_escaped_labels` says it
+/// is, in a row that is not a folder synced this pass and has never had a
+/// `uidnext`, which only selecting a folder writes.
+fn reap_labels_off_all_mail(
+    ctx: &SyncContext<'_>,
+    all_mail: MailboxId,
+    mailboxes: &[SyncedMailbox],
+) {
+    let Ok(rows) = ctx.vault.mailboxes(ctx.account_id) else { return };
+    let is_label = |row: &&karmayoga_core::mail::Mailbox| {
+        matches!(row.role, MailboxRole::Other | MailboxRole::Inbox)
+            && row.uidnext == 0
+            && !mailboxes.iter().any(|m| m.row.id == row.id)
+    };
+    let mut changed = false;
+    for label in rows.iter().filter(is_label) {
+        let Ok(gone) = ctx.vault.mail_uids_filed_without(label.id, all_mail) else { continue };
+        if gone.is_empty() {
+            continue;
+        }
+        if let Ok(removed) = ctx.vault.remove_mail_uids(label.id, &gone) {
+            reap_dead_messages(ctx, &removed);
+            changed = true;
+        }
+    }
+    // As `sync_headers` says it of its own changes: the unread counts and an
+    // open list are both out of date now.
+    if changed {
+        if let Some(cache) = &ctx.unread_cache {
+            cache.invalidate(ctx.account_id);
+        }
+        ctx.statuses.mark_changed(ctx.account_id);
+    }
+}
+
+/// The whole of `passes.rs`'s part in the split inbox: fill in `resolved`'s
+/// category if, and only if, it does not have one yet.
+///
+/// "Does not have one yet" is deliberately the entire condition. A message
+/// arriving for the first time has `category: None` (see
+/// [`ingest::resolve_header`]), so this is exactly the fresh-message case
+/// the plan's own words ask for -- "hook it into ingest so every new thread
+/// gets a category." A message that has *already* been categorised --
+/// re-ingested here because a second Gmail label named it, or resolved from
+/// [`ThreadIndex`]'s own memory after a `UIDVALIDITY` reset -- keeps
+/// whatever it already had, which is what stops this from quietly
+/// overwriting a model's answer or a person's own correction (both of which
+/// write through [`karmayoga_core::Vault::set_mail_message_category`] and
+/// [`karmayoga_core::Vault::correct_mail_category`] respectively, never
+/// through this path) the moment the same message is seen under a second
+/// mailbox.
+///
+/// Always on, and sends nothing anywhere -- see
+/// `karmayoga_core::mail::categorize`'s own module docs for the whole of the
+/// rules this runs.
+fn categorize_new_message(
+    resolved: &mut ingest::HeaderIngest,
+    rules: &karmayoga_core::mail::CategoryRules,
+    contacts: Option<&crate::mailsync::contacts::ContactIndex>,
+) {
+    if resolved.message.category.is_some() {
+        return;
+    }
+    let input = CategorizeInput {
+        from: &resolved.message.from.email,
+        list_id: resolved.list_id.as_deref(),
+        list_unsubscribe: resolved.list_unsubscribe.as_deref(),
+        precedence: resolved.precedence.as_deref(),
+        auto_submitted: resolved.auto_submitted.as_deref(),
+        gmail_labels: &resolved.message.labels,
+        ever_written_to: contacts.is_some_and(|c| c.has_sent_to(&resolved.message.from.email)),
+    };
+    resolved.message.category = Some(categorize::categorize(&input, rules));
+    resolved.message.category_source = karmayoga_core::mail::CategorySource::Rules;
+}
+
+/// Diff and apply Gmail's own label set for `uids` in `mailbox`, which must
+/// be All Mail on a Gmail account.
+///
+/// # Why All Mail needs this and a plain flag diff is not enough
+///
+/// `changes_since`'s `flag_changes` promises to report a change to the five
+/// IMAP flags this crate tracks (`\Seen`, `\Answered`, `\Flagged`,
+/// `\Draft`, `\Deleted`) -- see [`crate::mailsync::ingest::mail_flags`]. A
+/// Gmail label, `\Inbox` most of all, is not one of those flags; losing it
+/// -- a message archived in another client -- changes nothing
+/// `changes_since` was ever asked to diff. Gmail does bump a message's own
+/// `MODSEQ` on a label change the same way it does on a flag change, which
+/// is why `changes_since`'s own CONDSTORE diff already tells this pass
+/// *which* uids moved (in `flag_changes`, whether their IMAP flags actually
+/// differed or not) -- what this function adds is asking those uids what
+/// their labels are now, which `changes_since` has no way to answer on its
+/// own.
+///
+/// # The fallback, and why one exists at all
+///
+/// The plan's own risk table does not promise every server -- or a future
+/// Gmail change -- keeps bumping `MODSEQ` for a label-only change forever.
+/// [`sync_headers`] also calls this, unconditionally, for
+/// [`GMAIL_LABEL_FALLBACK_N`] of the newest known uids on every pass,
+/// whether or not `changes_since` reported anything about them -- a small,
+/// bounded re-check that catches a label change CONDSTORE ever missed
+/// within, at worst, a few poll cycles. "Newest" is approximated by uid,
+/// which is monotonically non-decreasing with arrival on every server this
+/// crate has met; a real per-message date would need a decrypt this pass
+/// is specifically trying to avoid paying for on every wake.
+///
+/// # Why this touches mailbox membership, not only `Message::labels`
+///
+/// `Message::labels` is the informational copy of a message's label set;
+/// what a mailbox's own list actually pages over is `message_mailboxes` --
+/// one row per label, minted the first time a header ingest sees it (see
+/// [`LabelMailboxes`] and `sync_headers`'s own header-ingest loop, which
+/// this mirrors). Calling only [`karmayoga_core::Vault::update_message_labels`]
+/// would update the field a search or a tool reads without moving the
+/// message out of the Inbox label's own list -- exactly the symptom this
+/// function exists to fix, so it diffs the old label set against the new
+/// one and adds or removes the matching `message_mailboxes` row for each
+/// side of the difference.
+///
+/// Returns whether anything actually changed for any of `uids` -- what the
+/// two call sites in [`sync_headers`] OR together into `gmail_labels_changed`
+/// for the unread-cache invalidation at the bottom of that function.
+async fn refresh_gmail_labels<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    uids: &UidSet,
+    labels: &mut LabelMailboxes,
+) -> SessionResult<bool> {
+    let headers = session.headers(uids).await?;
+    let mut changed_anything = false;
+    for header in &headers {
+        let Some(gmail) = &header.gmail else { continue };
+        let Ok(Some(current)) = ctx.vault.message_by_uid(mailbox.row.id, header.uid) else {
+            continue;
+        };
+        let old: std::collections::BTreeSet<&str> =
+            current.labels.iter().map(String::as_str).collect();
+        let new: std::collections::BTreeSet<&str> =
+            gmail.labels.iter().map(String::as_str).collect();
+        if old == new {
+            continue;
+        }
+        // Computed as owned strings, up front, rather than kept as the
+        // `old`/`new` borrows of `current.labels`/`gmail.labels` above:
+        // `current` is about to be given its own corrected `labels` below,
+        // and the borrow checker will not allow that while `old` is still
+        // in scope borrowing the very field being replaced.
+        let removed_labels: Vec<String> = old.difference(&new).map(|s| s.to_string()).collect();
+        let added_labels: Vec<String> = new.difference(&old).map(|s| s.to_string()).collect();
+        changed_anything = true;
+
+        let _ = ctx.vault.update_message_labels(mailbox.row.id, header.uid, gmail.labels.clone());
+        // The row this pass re-ingests under each *added* label must carry
+        // the label set `update_message_labels` just stored, not the one
+        // `current` was read with -- otherwise the ingest below overwrites
+        // the very write just above with the stale copy, reverting the
+        // label it was supposed to add and leaving this pass to repeat the
+        // same "change" forever. See this function's own regression test.
+        let mut current = current;
+        current.labels = gmail.labels.clone();
+
+        // Not every label resolves to a row -- see
+        // `LabelMailboxes::resolve`'s own docs for which, and why.
+        // `Message::labels`, updated above, has already recorded the
+        // change regardless.
+        for removed_label in &removed_labels {
+            if let Some(label_row) = labels.resolve(ctx.vault, removed_label)
+                && let Ok(removed) = ctx.vault.remove_mail_uids(label_row.id, &[header.uid])
+            {
+                reap_dead_messages(ctx, &removed);
+            }
+        }
+        for added_label in &added_labels {
+            if let Some(label_row) = labels.resolve(ctx.vault, added_label) {
+                let _ = ctx.vault.ingest_mail(
+                    ctx.account_id,
+                    vec![IngestMessage {
+                        message: current.clone(),
+                        mailbox: label_row.id,
+                        uid: header.uid,
+                    }],
+                );
+            }
+        }
+    }
+    Ok(changed_anything)
+}
+
+/// Once per account, before its first pass: key the messages stored before
+/// `Message-ID` keys existed, and merge those stored twice -- see
+/// [`Vault::key_existing_mail`]. Gmail's Sent and All Mail copies of one
+/// message became two rows whenever a sync task that had not seen one met
+/// the other; every one of a thread's sent replies then showed twice.
+///
+/// A decrypting scan of every message the account has, so it runs on the
+/// blocking pool, with what the merge leaves dead taken out of the pack store
+/// and the search index there too.
+pub async fn key_existing_mail(
+    vault: &Arc<Vault>,
+    account: AccountId,
+    packs: &Arc<dyn PackStore>,
+    index: &Arc<dyn MailSearch>,
+    unread_cache: Option<&Arc<crate::mailsync::unread_cache::UnreadCache>>,
+    statuses: &StatusRegistry,
+) {
+    let (vault, packs, index) = (vault.clone(), packs.clone(), index.clone());
+    let merged = tokio::task::spawn_blocking(move || {
+        let removed = vault.key_existing_mail(account)?;
+        if !removed.is_empty() {
+            let refs: Vec<PackRef> = removed.iter().map(|(_, r)| r.clone()).collect();
+            if let Err(e) = packs.mark_dead(&refs) {
+                tracing::warn!(error = %e, "could not mark a merged message's pack frame dead");
+            }
+            let keys: Vec<String> = removed.iter().map(|(id, _)| id.to_string()).collect();
+            if let Err(e) = index.delete(&keys).and_then(|()| index.commit()) {
+                tracing::warn!(error = %e, "could not remove a merged message from the search index");
+            }
+        }
+        Ok::<_, karmayoga_core::Error>(removed.len())
+    })
+    .await;
+    match merged {
+        Ok(Ok(0)) => {}
+        Ok(Ok(merged)) => {
+            tracing::info!(merged, "merged messages stored twice");
+            if let Some(cache) = unread_cache {
+                cache.invalidate(account);
+            }
+            statuses.mark_changed(account);
+        }
+        // Tried again by the next task; until then a message met in a second
+        // mailbox is still matched by its key if it has one.
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not key this account's stored mail"),
+        Err(e) => tracing::warn!(error = %e, "keying this account's stored mail stopped"),
+    }
+}
+
+/// Once per account, before its first pass: bring the unread counts of
+/// threads holding a draft up to date, now that a draft is not counted --
+/// see [`Vault::recount_draft_unread`]. Done once per account, then a lookup.
+pub async fn recount_draft_unread(
+    vault: &Arc<Vault>,
+    account: AccountId,
+    unread_cache: Option<&Arc<crate::mailsync::unread_cache::UnreadCache>>,
+    statuses: &StatusRegistry,
+) {
+    let vault = vault.clone();
+    match tokio::task::spawn_blocking(move || vault.recount_draft_unread(account)).await {
+        Ok(Ok(0)) => {}
+        Ok(Ok(threads)) => {
+            tracing::info!(threads, "recounted unread without drafts");
+            if let Some(cache) = unread_cache {
+                cache.invalidate(account);
+            }
+            statuses.mark_changed(account);
+        }
+        Ok(Err(e)) => tracing::warn!(error = %e, "could not recount unread without drafts"),
+        Err(e) => tracing::warn!(error = %e, "recounting unread without drafts stopped"),
+    }
+}
+
+/// What [`reap_vanished`] and [`refresh_gmail_labels`] both call once
+/// [`karmayoga_core::Vault::remove_mail_uids`] has told them which messages
+/// just became genuinely dead -- no mailbox names them any more, not merely
+/// the one this pass just touched (see that method's own docs). Marks each
+/// one's pack frame dead, so [`PackStore::compact`] can reclaim it later,
+/// and drops it from the search index.
+///
+/// Does not commit the index itself: [`sync_once`] already commits it
+/// unconditionally once at the end of every pass (see that function's own
+/// docs), which is what makes this deletion visible to a search without a
+/// second commit here.
+///
+/// Best-effort, on the same terms every other write in these two passes
+/// already is (see the `let _ =` beside every other vault call around this
+/// one): a pack or index update that fails leaves an orphaned frame or a
+/// stale hit behind, not a wrong answer to any read the vault's own
+/// rows -- already updated by the `remove_mail_uids` call this follows --
+/// disagree with.
+fn reap_dead_messages(ctx: &SyncContext<'_>, removed: &[(MailMessageId, PackRef)]) {
+    if removed.is_empty() {
+        return;
+    }
+    let refs: Vec<PackRef> = removed.iter().map(|(_, r)| r.clone()).collect();
+    if let Err(e) = ctx.packs.mark_dead(&refs) {
+        tracing::warn!(error = %e, "could not mark a removed message's pack frame dead");
+    }
+    let keys: Vec<String> = removed.iter().map(|(id, _)| id.to_string()).collect();
+    if let Err(e) = ctx.index.delete(&keys) {
+        tracing::warn!(error = %e, "could not remove a message from the search index");
+    }
+}
+
+/// Fetch raw bytes for every message in `mailbox` still carrying
+/// [`ingest::pending_pack_ref`]'s sentinel, and turn each into a sealed pack
+/// entry, a sanitised [`Body`] and a searchable [`MailDoc`].
+///
+/// The CPU-heavy half of each message -- MIME parsing, HTML sanitising, the
+/// quoted/signature heuristics, attachment extraction -- runs on the
+/// blocking pool, one batch at a time, so a first sync never runs that work
+/// on the same task a command handler needs to make progress. Bounded by
+/// [`BODY_BATCH_SIZE`] rather than a semaphore of its own: batches are
+/// already processed one at a time, so the "bounded parallelism" the plan
+/// asks for is, today, bounded at one batch in flight.
+pub async fn bodies_pass<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+) -> SessionResult<()> {
+    let pending = pending_messages(ctx.vault, mailbox.row.id);
+    if pending.is_empty() {
+        return Ok(());
+    }
+    // `sync_headers`, run for every mailbox just before this pass starts,
+    // leaves the session `SELECT`ed on whichever mailbox it looked at last
+    // -- almost never this one. `raw` fetches by uid within the *selected*
+    // mailbox, so this has to point the session back here first.
+    session.select(&mailbox.remote_name).await?;
+    let total = pending.len() as u64;
+    let mut done = 0u64;
+    ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);
+
+    for batch in pending.chunks(BODY_BATCH_SIZE) {
+        let uid_set: UidSet = batch.iter().map(|(_, uid)| *uid).collect();
+        let mut raw_by_uid: HashMap<Uid, Vec<u8>> = HashMap::new();
+        {
+            let mut stream = session.raw(&uid_set).await?;
+            while let Some(item) = stream.next().await {
+                let (uid, bytes) = item?;
+                raw_by_uid.insert(uid, bytes);
+            }
+        }
+
+        let vault = ctx.vault.clone();
+        let packs = ctx.packs.clone();
+        let account_id = ctx.account_id;
+        let mailbox_id = mailbox.row.id;
+        let attachment_cap = ctx.attachment_cap_bytes;
+        let identities = ctx.identities.clone();
+        let batch_owned: Vec<(Message, Uid)> = batch.to_vec();
+        let docs = tokio::task::spawn_blocking(move || {
+            // Every message this batch actually got raw bytes for, in
+            // order -- sealed in *one* `append_batch` call below rather
+            // than one per message, which is the whole reason this batch
+            // exists: `PackStore::append_batch` flushes once per call, so
+            // a hundred separate calls here would cost a hundred `fsync`s
+            // for what one batch of a hundred messages needs only one of.
+            let present: Vec<(Message, Uid, &Vec<u8>)> = batch_owned
+                .iter()
+                .filter_map(|(message, uid)| {
+                    raw_by_uid.get(uid).map(|raw| (message.clone(), *uid, raw))
+                })
+                .collect();
+            let raws: Vec<&[u8]> = present.iter().map(|(_, _, raw)| raw.as_slice()).collect();
+            let Ok(sealed) = packs.append_batch(&account_id.to_string(), &raws) else {
+                return Vec::new();
+            };
+
+            let mut processed = Vec::with_capacity(present.len());
+            for ((message, uid, raw), pack) in present.into_iter().zip(sealed) {
+                processed.push(process_body_contained(
+                    vault.as_ref(),
+                    uid,
+                    message,
+                    raw,
+                    pack,
+                    attachment_cap,
+                    &identities,
+                ));
+            }
+            // `message` in `processed` is the snapshot `pending_messages`
+            // took *before* the network fetch above -- for a big first
+            // sync, potentially long before it, since this batch may have
+            // sat behind others. Anything that landed locally in the
+            // meantime (a person reading the message, the model setting
+            // its category) is not on it. Re-reading each row fresh here
+            // and bringing forward only the four fields this pass actually
+            // owns -- `pack`, `snippet`, `has_attachments`, `invite` --
+            // rather than upserting the stale snapshot whole, is what
+            // stops that write from reverting `flags`, `labels`,
+            // `category` and `category_source` back to whatever the
+            // headers pass originally saw. See this function's own
+            // regression test.
+            let refreshed: Vec<(IngestMessage, MailDoc)> = processed
+                .iter()
+                .map(|(message, uid, body)| {
+                    let mut fresh =
+                        vault.mail_message(message.id).unwrap_or_else(|_| message.clone());
+                    fresh.pack = message.pack.clone();
+                    fresh.snippet = message.snippet.clone();
+                    fresh.has_attachments = message.has_attachments;
+                    fresh.invite = message.invite.clone();
+                    let doc = mail_doc(account_id, mailbox_id, &fresh, &body.model_text());
+                    (IngestMessage { message: fresh, mailbox: mailbox_id, uid: *uid }, doc)
+                })
+                .collect();
+            // One upsert for the whole batch rather than one per message --
+            // `karmayoga-store-sql`'s own `upsert_batched` is what keeps this
+            // off the vault's single writer lock for the length of a giant
+            // first sync, the same reasoning `MailStore::ingest`'s own docs
+            // give for accepting a `Vec` rather than one message at a time.
+            let (ingests, docs): (Vec<IngestMessage>, Vec<MailDoc>) = refreshed.into_iter().unzip();
+            let _ = vault.ingest_mail(account_id, ingests);
+            let bodies: Vec<Body> = processed.iter().map(|(_, _, body)| body.clone()).collect();
+            let _ = vault.save_bodies(&bodies);
+            docs
+        })
+        .await
+        .unwrap_or_default();
+
+        let indexed = docs.len() as u64;
+        if !docs.is_empty() {
+            let _ = ctx.index.index(&docs);
+            // Paced rather than committed every batch: about every 2,000
+            // docs or every five seconds, whichever comes first, per the
+            // plan's own cadence -- see `CommitPacer`. `sync_once` commits
+            // once more, unconditionally, at the end of the whole pass, so
+            // nothing indexed here is ever left uncommitted for longer than
+            // that.
+            if ctx.index_commit.record(indexed) {
+                let _ = ctx.index.commit();
+            }
+        }
+
+        done += batch.len() as u64;
+        ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);
+        tokio::task::yield_now().await;
+    }
+
+    Ok(())
+}
+
+/// Every message in `mailbox` whose pack is still
+/// [`ingest::pending_pack_ref`]'s sentinel, newest first.
+///
+/// Reads [`Vault::mail_pending_bodies`] -- a query over `mail_messages`'s
+/// clear `pack_len` column -- rather than the shape this used to be: every
+/// uid in the mailbox, decrypted one at a time, just to ask each one
+/// whether it was still pending. A mailbox that is mostly *not* pending
+/// (the ordinary steady state, once a first sync has finished) used to pay
+/// for a full decrypt of every message in it on every single pass; this
+/// pays only for the ones actually still waiting.
+fn pending_messages(vault: &Vault, mailbox_id: MailboxId) -> Vec<(Message, Uid)> {
+    // No mailbox has anywhere near this many messages still pending at
+    // once in practice -- a first sync's headers pass alone is chunked at
+    // `HEADER_BATCH_SIZE` -- so one call already gets everything this pass
+    // needs; `limit` exists on the trait for a caller that wants to bound
+    // one query's cost more tightly than "effectively unlimited".
+    const PENDING_QUERY_LIMIT: u32 = 1_000_000;
+    vault.mail_pending_bodies(mailbox_id, PENDING_QUERY_LIMIT).unwrap_or_default()
+}
+
+/// [`process_body`], with a panic anywhere inside it turned into the blank
+/// body a message that fails to parse already gets.
+///
+/// `process_body` hands a stranger's bytes to a MIME parser and two HTML
+/// libraries, and one message that makes any of them panic must not cost
+/// the other ninety-nine in its batch. Without this, the panic fails the
+/// whole `spawn_blocking` call, nothing in the batch is written, and every
+/// later pass downloads the same hundred messages again, appends them to
+/// the pack store again, and panics again -- for ever. The panic hook
+/// still prints the panic itself.
+fn process_body_contained(
+    vault: &Vault,
+    uid: Uid,
+    message: Message,
+    raw: &[u8],
+    pack: PackRef,
+    attachment_cap_bytes: Option<u64>,
+    identities: &[String],
+) -> (Message, Uid, Body) {
+    let blank = (message.clone(), pack.clone());
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        process_body(vault, uid, message, raw, pack, attachment_cap_bytes, identities)
+    }))
+    .unwrap_or_else(|_| {
+        let (mut message, pack) = blank;
+        tracing::warn!(message = %message.id, "reading a message body panicked; keeping it blank");
+        message.pack = pack;
+        message.snippet = String::new();
+        message.has_attachments = false;
+        message.invite = None;
+        let body = Body {
+            message_id: message.id,
+            html_sanitised: String::new(),
+            text: String::new(),
+            quoted_ranges: Vec::new(),
+            signature_range: None,
+            parts: Vec::new(),
+            remote_images: Vec::new(),
+        };
+        (message, uid, body)
+    })
+}
+
+/// One message's raw bytes, already sealed by [`bodies_pass`]'s single
+/// batched [`PackStore::append_batch`] call, turned into a sanitised body --
+/// run on the blocking pool, which collects the results of a whole batch
+/// before writing any of it, so a giant first sync costs one upsert per
+/// batch rather than one per message. Infallible: a message that fails to
+/// *parse* still gets an (empty) body rather than being skipped, since its
+/// raw bytes are sealed either way and a blank preview is a smaller failure
+/// than refetching for ever.
+fn process_body(
+    vault: &Vault,
+    uid: Uid,
+    mut message: Message,
+    raw: &[u8],
+    pack: karmayoga_core::packstore::PackRef,
+    attachment_cap_bytes: Option<u64>,
+    identities: &[String],
+) -> (Message, Uid, Body) {
+    message.pack = pack;
+
+    let mut remote_images = Vec::new();
+    // Phase 6's "invitations in mail": when this message carries a
+    // `text/calendar` part, parse it into the banner a thread draws above
+    // the message. Deliberately the smallest addition this match can carry
+    // -- everything else in this function is unchanged from before phase 6.
+    let mut invite = None;
+    let (html_sanitised, plain, parts, has_attachments) = match karmayoga_mail::mime::parse(raw) {
+        Ok(parsed) => {
+            invite = parsed
+                .calendar
+                .as_deref()
+                .and_then(|calendar| karmayoga_mail::invite::parse_invite(calendar, identities));
+            let html_sanitised = parsed.html.as_deref().map_or_else(String::new, |html| {
+                let rewrite = karmayoga_mail::sanitize::Rewrite::new(message.id.to_string());
+                let sanitised = karmayoga_mail::sanitize::sanitize(html, &rewrite);
+                // What `mailview::remote_image` looks a token up in: without
+                // it, every image a message names would answer "no such
+                // remote image" even once its sender is trusted.
+                remote_images = sanitised
+                    .remote_images
+                    .into_iter()
+                    .map(|r| karmayoga_core::mail::RemoteImage {
+                        original_url: r.original_url,
+                        token: r.token,
+                        cached_blob: None,
+                    })
+                    .collect();
+                sanitised.html
+            });
+            // The HTML part wins wherever there is one, even when the
+            // message also carried a `text/plain` alternative -- and it is
+            // read through `html_to_text` rather than taken as it stands.
+            //
+            // # Why the plain part is not simply preferred
+            //
+            // Whatever ends up here is what every reader that is not a
+            // person sees: the snippet, the search index, and -- through
+            // `Body::text` -- the assistant and MCP. A person sees
+            // `html_sanitised` in the frame. If those two come from
+            // different parts of the same message, a sender chooses what
+            // each of them reads, which is the whole of the attack: ship a
+            // benign `text/html` part and a hostile `text/plain` one, and
+            // the instruction the person can never see is the only thing
+            // the model is given. Deriving both from the same part closes
+            // that, and `html_to_text` is what makes the derived text agree
+            // with what the frame actually shows -- it drops
+            // `display:none`, white-on-white and commented-out text, none
+            // of which `sanitize` removes, because hiding text is not by
+            // itself an XSS risk and the frame is entitled to render a
+            // sender's own styling.
+            //
+            // The cost is that a carefully written `text/plain` alternative
+            // is passed over for a machine rendering of the HTML beside it.
+            // That is the right trade: the plain part is only better when
+            // the sender is honest, and it is precisely a dishonest sender
+            // this has to hold against.
+            let plain = match parsed.html.as_deref() {
+                Some(html) => karmayoga_mail::text::html_to_text(html),
+                None => parsed.text.clone().unwrap_or_default(),
+            };
+
+            let put = |bytes: &[u8]| vault.put_blob(bytes).ok();
+            let parts = part_refs(raw, &parsed.parts, attachment_cap_bytes, put);
+            let has_attachments = parts
+                .iter()
+                .any(|part| crate::mailview::is_attachment(part, &html_sanitised, message.id));
+            (html_sanitised, plain, parts, has_attachments)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, message = %message.id, "could not parse a message body");
+            (String::new(), String::new(), Vec::new(), false)
+        }
+    };
+
+    let quoted_ranges: Vec<(u32, u32)> = karmayoga_mail::text::quoted_ranges(&plain)
+        .into_iter()
+        .map(|r| (r.start as u32, r.end as u32))
+        .collect();
+    let signature_range =
+        karmayoga_mail::text::signature_range(&plain).map(|r| (r.start as u32, r.end as u32));
+
+    message.snippet = karmayoga_mail::text::snippet(&plain);
+    message.has_attachments = has_attachments;
+    message.invite = invite;
+
+    let body = Body {
+        message_id: message.id,
+        html_sanitised,
+        text: plain,
+        quoted_ranges,
+        signature_range,
+        parts,
+        remote_images,
+    };
+
+    (message, uid, body)
+}
+
+/// How many of one message's parts [`part_refs`] stores as blobs at sync
+/// time, counted in order from the first.
+///
+/// A sender decides how many parts a message has, and every stored part is
+/// a hash, an encryption and a write of its own; without a ceiling, one
+/// message cut into tens of thousands of tiny parts costs that many blob
+/// writes before its batch can be saved. Real mail has a handful -- a few
+/// hundred is already a newsletter's worth of inline images. A part past
+/// this is not lost: it is listed like any other with no blob, which the
+/// thread view draws as an attachment chip with a "Download" button
+/// (`domains::mail::fetch_attachment` reads it out of the stored raw
+/// message on demand) and the frame as an image that has not loaded.
+const MAX_STORED_PARTS: usize = 500;
+
+/// [`process_body`]'s [`PartRef`] for every one of `parts` -- the leaf parts
+/// [`karmayoga_mail::mime::parse`] found in `raw`, in its order, which is
+/// the order `domains::mail::fetch_attachment` indexes them by.
+///
+/// A part gets a blob, through `put`, when it is among the first
+/// [`MAX_STORED_PARTS`] and within `attachment_cap_bytes`; any other part is
+/// listed with none. Every part's bytes come from one
+/// [`karmayoga_mail::mime::PartReader`], not a parse per part -- see its own
+/// docs for what that cost. `put` is the vault's `put_blob` outside tests.
+fn part_refs(
+    raw: &[u8],
+    parts: &[karmayoga_mail::mime::Part],
+    attachment_cap_bytes: Option<u64>,
+    mut put: impl FnMut(&[u8]) -> Option<BlobId>,
+) -> Vec<PartRef> {
+    // `parts` came from parsing these same bytes, so this cannot fail where
+    // that did not; if it somehow does, every part is simply left unstored.
+    let reader = karmayoga_mail::mime::PartReader::new(raw).ok();
+    let mut refs = Vec::with_capacity(parts.len());
+    for (index, part) in parts.iter().enumerate() {
+        let stored = index < MAX_STORED_PARTS
+            && attachment_cap_bytes.is_none_or(|cap| (part.size as u64) <= cap);
+        let blob = match &reader {
+            Some(reader) if stored => reader.bytes(&part.part_id).ok().and_then(&mut put),
+            _ => None,
+        };
+        refs.push(PartRef {
+            cid: part.content_id.clone(),
+            filename: part.filename.clone(),
+            mime_type: part.content_type.clone(),
+            size: part.size as u64,
+            blob,
+            attached: part.disposition == Disposition::Attachment,
+        });
+    }
+    refs
+}
+
+/// A [`MailDoc`] for `message`, filed under `mailbox_id`. Shared by
+/// [`process_body`] (which has just computed `body_text` itself) and
+/// `crate::domains::mailsync::rebuild_mail_index` (which reads it back out
+/// of an already-sealed [`Body`] via [`Body::model_text`]).
+pub(crate) fn mail_doc(
+    account_id: AccountId,
+    mailbox_id: MailboxId,
+    message: &Message,
+    body_text: &str,
+) -> MailDoc {
+    MailDoc {
+        message_key: message.id.to_string(),
+        thread_key: message.thread_id.to_string(),
+        account: account_id.to_string(),
+        mailboxes: vec![mailbox_id.to_string()],
+        from: display_address(&message.from),
+        to: message.to.iter().map(display_address).collect::<Vec<_>>().join(", "),
+        cc: message.cc.iter().map(display_address).collect::<Vec<_>>().join(", "),
+        subject: message.subject.clone(),
+        body_text: body_text.to_string(),
+        labels: message.labels.clone(),
+        date: message.date,
+        has_attachment: message.has_attachments,
+        unread: message.flags.unread(),
+        starred: message.flags.flagged,
+    }
+}
+
+fn display_address(a: &karmayoga_core::mail::Address) -> String {
+    if a.name.is_empty() { a.email.clone() } else { format!("{} <{}>", a.name, a.email) }
+}
+
+#[cfg(test)]
+mod pacer_tests {
+    use super::*;
+
+    #[test]
+    fn commits_once_the_doc_threshold_is_reached() {
+        let pacer = CommitPacer::new();
+        assert!(!pacer.record(COMMIT_DOC_THRESHOLD - 1), "not due yet");
+        assert!(pacer.record(1), "crossing the threshold is due");
+        // The counter resets: a further single doc is not due again
+        // immediately.
+        assert!(!pacer.record(1));
+    }
+
+    #[test]
+    fn commits_once_the_time_threshold_is_reached() {
+        let pacer = CommitPacer::new();
+        {
+            let mut state = pacer.0.lock().unwrap();
+            state.since = Instant::now() - COMMIT_TIME_THRESHOLD - Duration::from_millis(1);
+        }
+        assert!(pacer.record(1), "old enough to be due even with almost no docs");
+    }
+
+    #[test]
+    fn a_single_doc_well_within_both_thresholds_is_not_due() {
+        let pacer = CommitPacer::new();
+        assert!(!pacer.record(1));
+    }
+}
+
+#[cfg(test)]
+mod part_ref_tests {
+    use super::*;
+
+    /// `BlobId::of` stands in for the vault's own `put_blob`, which
+    /// content-addresses the same way, so a test can say which bytes each
+    /// part was stored with without opening a vault.
+    fn content_address(bytes: &[u8]) -> Option<BlobId> {
+        Some(BlobId::of(bytes))
+    }
+
+    /// A message of `count` tiny text parts, the shape a sender uses to make
+    /// one message cost as many part reads as it likes.
+    fn many_parts(count: usize) -> Vec<u8> {
+        let mut raw = String::from(
+            "From: a@example.com\r\nTo: b@example.com\r\nSubject: Many\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n",
+        );
+        for i in 0..count {
+            raw.push_str(&format!("--b\r\nContent-Type: text/plain\r\n\r\npart {i}\r\n"));
+        }
+        raw.push_str("--b--\r\n");
+        raw.into_bytes()
+    }
+
+    #[test]
+    fn an_ordinary_message_stores_each_part_with_the_bytes_part_bytes_gives_it() {
+        let raw = b"From: a@example.com\r\n\
+To: b@example.com\r\n\
+Subject: Attach\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"b\"\r\n\
+\r\n\
+--b\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+see the attached picture\r\n\
+--b\r\n\
+Content-Type: image/png\r\n\
+Content-Disposition: attachment; filename=\"pic.png\"\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+aGVsbG8=\r\n\
+--b--\r\n";
+        let parsed = karmayoga_mail::mime::parse(raw).unwrap();
+        let refs = part_refs(raw, &parsed.parts, None, content_address);
+        assert_eq!(refs.len(), parsed.parts.len());
+        assert!(refs.iter().any(|r| r.attached), "its picture was sent as an attachment");
+        for (stored, part) in refs.iter().zip(&parsed.parts) {
+            let bytes = karmayoga_mail::mime::part_bytes(raw, &part.part_id).unwrap();
+            assert_eq!(stored.blob, Some(BlobId::of(&bytes)), "part {}", part.part_id);
+            assert_eq!(stored.mime_type, part.content_type);
+            assert_eq!(stored.size, part.size as u64);
+        }
+
+        // The per-part size cap still holds: the five-byte picture is
+        // stored, the longer text part is listed without a blob.
+        let refs = part_refs(raw, &parsed.parts, Some(5), content_address);
+        let picture = refs.iter().find(|r| r.mime_type == "image/png").unwrap();
+        let text = refs.iter().find(|r| r.mime_type == "text/plain").unwrap();
+        assert!(picture.blob.is_some());
+        assert_eq!(text.blob, None);
+    }
+
+    /// The flag a thread row and the list's Attachments filter read says what the
+    /// chips under the message say.
+    #[test]
+    fn a_message_is_flagged_for_what_gets_a_chip() {
+        fn flagged(disposition: &str) -> bool {
+            let raw = format!(
+                "From: a@example.com\r\nTo: b@example.com\r\nSubject: s\r\nMIME-Version: 1.0\r\n\
+                 Content-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\n\
+                 Content-Type: text/plain\r\n\r\nhello\r\n--b\r\n{disposition}\r\n\r\n\
+                 aGVsbG8=\r\n--b--\r\n"
+            );
+            let parsed = karmayoga_mail::mime::parse(raw.as_bytes()).unwrap();
+            part_refs(raw.as_bytes(), &parsed.parts, None, content_address).iter().any(|part| {
+                crate::mailview::is_attachment(part, "", karmayoga_core::id::MailMessageId::new())
+            })
+        }
+        assert!(flagged(
+            "Content-Type: application/pdf\r\nContent-Disposition: attachment; filename=\"a.pdf\""
+        ));
+        assert!(
+            flagged("Content-Type: text/csv\r\nContent-Disposition: attachment"),
+            "nameless, and still a file"
+        );
+        assert!(
+            !flagged(
+                "Content-Type: application/pkcs7-signature\r\n\
+                 Content-Disposition: attachment; filename=\"smime.p7s\""
+            ),
+            "marked as an attachment, and nothing to show for it"
+        );
+    }
+
+    #[test]
+    fn only_the_first_parts_up_to_the_cap_are_stored_and_every_part_is_still_listed() {
+        let count = MAX_STORED_PARTS + 100;
+        let raw = many_parts(count);
+        let parsed = karmayoga_mail::mime::parse(&raw).unwrap();
+        assert_eq!(parsed.parts.len(), count);
+
+        let mut puts = 0;
+        let refs = part_refs(&raw, &parsed.parts, None, |bytes| {
+            puts += 1;
+            content_address(bytes)
+        });
+        assert_eq!(puts, MAX_STORED_PARTS, "nothing past the cap is even read");
+        assert_eq!(refs.len(), count, "a part past the cap is listed, just not stored");
+        assert!(refs[..MAX_STORED_PARTS].iter().all(|r| r.blob.is_some()));
+        assert!(refs[MAX_STORED_PARTS..].iter().all(|r| r.blob.is_none()));
+        // And what was stored is still the right part, in the right place.
+        let last = &parsed.parts[MAX_STORED_PARTS - 1];
+        let bytes = karmayoga_mail::mime::part_bytes(&raw, &last.part_id).unwrap();
+        assert_eq!(refs[MAX_STORED_PARTS - 1].blob, Some(BlobId::of(&bytes)));
+    }
+}

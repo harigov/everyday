@@ -20,7 +20,7 @@
 //
 // Handlers stay on this side. What crosses to Rust is a description --
 // labels, ids, enabled flags -- and what comes back is the id that was
-// chosen. See `crates/everyday-app/src/tray.rs`.
+// chosen. See `crates/karmayoga-app/src/tray.rs`.
 
 import { api, hasShell, onOpenCalendar, onTrayAction } from './api'
 import { onOffPref } from './prefs'
@@ -33,7 +33,7 @@ import type { TrayMenuItem } from './types'
 export interface TrayAction {
   /**
    * Stable and unique across every app. Prefix it with the app's name --
-   * `todo:add` -- and do not start it with `everyday:`, which the shell
+   * `todo:add` -- and do not start it with `karmayoga:`, which the shell
    * keeps for its own two entries.
    */
   id: string
@@ -59,9 +59,9 @@ export interface TrayAction {
 export type TrayEntry =
   TrayAction | { separator: true } | { label: string; enabled?: boolean; items: TrayEntry[] }
 
-const showPref = onOffPref('everyday.tray')
+const showPref = onOffPref('karmayoga.tray')
 /** Off by default -- see `SettingsView.svelte`'s second tray toggle. */
-const meetingPref = onOffPref('everyday.tray.meeting', false)
+const meetingPref = onOffPref('karmayoga.tray.meeting', false)
 
 /**
  * The rows an app offers right now, as tray entries: the tray's own, or with

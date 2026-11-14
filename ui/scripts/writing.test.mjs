@@ -54,7 +54,7 @@ assert.equal(choiceForKey('x'), undefined)
 // ── what went wrong ──────────────────────────────────────────────────────
 
 assert.deepEqual(trouble('locked', 'vault is locked'), {
-  message: 'Every Day is locked. Unlock it, then try again.',
+  message: 'Karma Yoga is locked. Unlock it, then try again.',
   openMain: true,
 })
 assert.equal(trouble('no_vault', 'no vault is open').openMain, true)

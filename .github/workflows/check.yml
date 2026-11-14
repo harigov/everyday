@@ -39,7 +39,7 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
-    # The `-p everyday-app` steps build llama.cpp from source, for the
+    # The `-p karmayoga-app` steps build llama.cpp from source, for the
     # desktop app's local decision models (`decisions`).
     timeout-minutes: 40
 
@@ -54,7 +54,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_PASSWORD: test
-          POSTGRES_DB: everyday_test
+          POSTGRES_DB: karmayoga_test
         ports:
           - 5432:5432
         options: >-
@@ -74,7 +74,7 @@ jobs:
           rustup default stable
           rustc --version
 
-      # `everyday-app` links the platform webview. It is not a default
+      # `karmayoga-app` links the platform webview. It is not a default
       # workspace member for that reason, so a plain `cargo test` skips it --
       # which means its tests and its lints run *nowhere* unless this job
       # installs the headers and asks for it by name. It is the crate holding
@@ -120,15 +120,15 @@ jobs:
         run: |
           set -euo pipefail
           cargo clippy --all-targets -- -D warnings
-          cargo clippy -p everyday-app --all-targets -- -D warnings
+          cargo clippy -p karmayoga-app --all-targets -- -D warnings
 
       - name: Tests
         env:
-          EVERYDAY_TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/everyday_test
+          KARMAYOGA_TEST_DATABASE_URL: postgresql://postgres:test@127.0.0.1:5432/karmayoga_test
         run: |
           set -euo pipefail
           cargo test
-          cargo test -p everyday-app
+          cargo test -p karmayoga-app
 
   rust-speech:
     name: Rust (local models)
@@ -159,7 +159,7 @@ jobs:
           rustup default stable
           rustc --version
 
-      # No webview here, but `everyday-vault` stores keys through `keyring`,
+      # No webview here, but `karmayoga-vault` stores keys through `keyring`,
       # whose Secret Service backend links libdbus.
       - name: Build dependencies
         run: |
@@ -183,7 +183,7 @@ jobs:
       # directory holding the still-compressed archive, by its exact
       # filename) is set -- see that crate's build script, and this
       # workspace's `sherpa-onnx` dependency comment in
-      # `crates/everyday-service/Cargo.toml`. Read from the committed
+      # `crates/karmayoga-service/Cargo.toml`. Read from the committed
       # `Cargo.lock` rather than hand-pinned here a second time, so a version
       # bump in `Cargo.toml` cannot silently leave this step caching (and
       # therefore validating nothing against) a stale archive.
@@ -219,12 +219,12 @@ jobs:
       - name: Clippy
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo clippy -p everyday-service --all-targets --features speech,decisions -- -D warnings
+        run: cargo clippy -p karmayoga-service --all-targets --features speech,decisions -- -D warnings
 
       - name: Tests
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo test -p everyday-service --features speech,decisions
+        run: cargo test -p karmayoga-service --features speech,decisions
 
   ui:
     name: Interface

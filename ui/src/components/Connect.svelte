@@ -18,7 +18,7 @@
   let busy = $state(false)
 
   const known = $derived(app.remotes)
-  const ready = $derived(link.trim().startsWith('everyday://pair?'))
+  const ready = $derived(link.trim().startsWith('karmayoga://pair?'))
 
   async function connect() {
     if (!ready || busy) return
@@ -74,7 +74,7 @@
     <input
       type="text"
       bind:value={link}
-      placeholder="everyday://pair?host=…"
+      placeholder="karmayoga://pair?host=…"
       spellcheck="false"
       autocomplete="off"
       disabled={busy}

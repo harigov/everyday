@@ -372,7 +372,7 @@
   // folders are wanted. Remembered per device, like the sidebar's own fold.
 
   const openPref = pref<AccountId[]>(
-    'everyday.mail.accounts.open',
+    'karmayoga.mail.accounts.open',
     (raw) => {
       const parsed: unknown = raw ? JSON.parse(raw) : []
       return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []

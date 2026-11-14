@@ -6,7 +6,7 @@
   // the model is shown -- they are the options it picks between -- so the
   // description is where somebody says what should and should not count.
   // The tab is what the rest of the app understands: Priority, Important,
-  // Other, Newsletters, Notifications. See `everyday_core::mail::sorting`.
+  // Other, Newsletters, Notifications. See `karmayoga_core::mail::sorting`.
   //
   // Recent mail is sorted unasked; older mail only from the button at the
   // bottom, because sorting somebody's whole archive on a settings change is

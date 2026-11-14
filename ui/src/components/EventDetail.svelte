@@ -238,7 +238,7 @@
   }
 
   function onTaskDragStart(e: DragEvent, task: Task) {
-    e.dataTransfer?.setData('text/x-everyday-task', task.id)
+    e.dataTransfer?.setData('text/x-karmayoga-task', task.id)
     if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
   }
 

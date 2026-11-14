@@ -22,8 +22,8 @@ import type { Account } from './types'
  * `new_draft` always writes the quoted parent as one paragraph -- "On
  * {date}, {name} wrote:" -- immediately followed by a `<blockquote>` with
  * nothing of the person's own after it (`compose::quote_html` in
- * `everyday-mail/src/compose.rs`; `compose::quote_reply` in
- * `everyday-core/src/mail/compose.rs` for the assistant's own tool, in the
+ * `karmayoga-mail/src/compose.rs`; `compose::quote_reply` in
+ * `karmayoga-core/src/mail/compose.rs` for the assistant's own tool, in the
  * same shape). That pair, anchored to the *end* of the string so a
  * blockquote nested inside an older quote cannot end the match early, is
  * the only seam worth matching on: the attribution text itself is a name
