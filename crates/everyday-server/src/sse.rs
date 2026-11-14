@@ -89,8 +89,64 @@ impl Broadcaster {
         &self,
         me: String,
     ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>> + use<>> {
+        Sse::new(self.events(me)).keep_alive(KeepAlive::new().interval(KEEPALIVE))
+    }
+
+    /// [`Broadcaster::stream`], ending once `until` turns true -- for a
+    /// browser, whose stream must end with its session rather than carry on
+    /// telling a signed-out page what changed. See `crate::web`.
+    ///
+    /// Whatever was already sent before `until` turned is delivered first.
+    /// That is not a nicety: the vault locking says `lockState` and *then*
+    /// ends every session, and a stream that ended on the second without
+    /// passing on the first left the page to find out by failing to
+    /// reconnect.
+    pub fn stream_until(
+        &self,
+        me: String,
+        until: tokio::sync::watch::Receiver<bool>,
+    ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>> + use<>> {
+        Sse::new(self.events_until(me, until)).keep_alive(KeepAlive::new().interval(KEEPALIVE))
+    }
+
+    fn events_until(
+        &self,
+        me: String,
+        until: tokio::sync::watch::Receiver<bool>,
+    ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> + use<> {
         let rx = self.tx.subscribe();
-        let stream = futures::stream::unfold(rx, move |mut rx| {
+        futures::stream::unfold((rx, until, me), |(mut rx, mut until, me)| async move {
+            loop {
+                let next = tokio::select! {
+                    // Biased, events first: anything already in the channel
+                    // when the session ends still goes out.
+                    biased;
+                    received = rx.recv() => received,
+                    _ = until.wait_for(|ended| *ended) => return None,
+                };
+                match next {
+                    Ok(event) => {
+                        if event.origin().is_some_and(|origin| origin == me) {
+                            continue;
+                        }
+                        return Some((Ok(encode(&event)), (rx, until, me)));
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        let sse = Event::default().event("lagged").data(n.to_string());
+                        return Some((Ok(sse), (rx, until, me)));
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return None,
+                }
+            }
+        })
+    }
+
+    fn events(
+        &self,
+        me: String,
+    ) -> impl Stream<Item = Result<Event, std::convert::Infallible>> + use<> {
+        let rx = self.tx.subscribe();
+        futures::stream::unfold(rx, move |mut rx| {
             let me = me.clone();
             async move {
                 loop {
@@ -99,11 +155,7 @@ impl Broadcaster {
                             if event.origin().is_some_and(|origin| origin == me) {
                                 continue;
                             }
-                            let sse = Event::default()
-                                .event(event.name())
-                                .json_data(&event)
-                                .unwrap_or_else(|_| Event::default().comment("unencodable"));
-                            return Some((Ok(sse), rx));
+                            return Some((Ok(encode(&event)), rx));
                         }
                         // Fell behind. Say so rather than skipping silently: a
                         // client that missed a change has a stale list and must
@@ -116,8 +168,7 @@ impl Broadcaster {
                     }
                 }
             }
-        });
-        Sse::new(stream).keep_alive(KeepAlive::new().interval(KEEPALIVE))
+        })
     }
 
     fn send(&self, event: Outgoing) {
@@ -130,6 +181,14 @@ impl Broadcaster {
     pub fn listeners(&self) -> usize {
         self.tx.receiver_count()
     }
+}
+
+/// One event as a server-sent event: its name, and itself as JSON.
+fn encode(event: &Outgoing) -> Event {
+    Event::default()
+        .event(event.name())
+        .json_data(event)
+        .unwrap_or_else(|_| Event::default().comment("unencodable"))
 }
 
 impl EventSink for Broadcaster {
@@ -186,5 +245,37 @@ impl EventSink for Fanout {
         for sink in &self.0 {
             sink.meeting_offer(offer.clone());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::StreamExt;
+
+    /// The order the vault locking happens in: `lockState` is said, then the
+    /// session ends. The stream must carry the first before it stops for the
+    /// second.
+    #[tokio::test]
+    async fn what_was_said_before_a_session_ended_still_goes_out() {
+        let broadcaster = Broadcaster::new();
+        let (ended, until) = tokio::sync::watch::channel(false);
+        let stream = broadcaster.events_until("web-me".into(), until);
+        broadcaster.lock_state(true);
+        let _ = ended.send(true);
+        let events: Vec<String> =
+            stream.map(|e| format!("{:?}", e.unwrap())).collect::<Vec<_>>().await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert!(events[0].contains("lockState"), "{events:?}");
+    }
+
+    #[tokio::test]
+    async fn a_session_that_has_ended_hears_nothing_more() {
+        let broadcaster = Broadcaster::new();
+        let (ended, until) = tokio::sync::watch::channel(false);
+        let stream = broadcaster.events_until("web-me".into(), until);
+        let _ = ended.send(true);
+        let events: Vec<_> = stream.collect().await;
+        assert!(events.is_empty());
     }
 }

@@ -60,7 +60,14 @@ export const pinned: Section | null = await find()
  * from everybody else's -- see `live.svelte.ts`, and `ctx_for` in the shell.
  * The main window's are `local`, as they always were.
  */
-export const ownOrigin: string = pinned ? `window:${PREFIX}${pinned}` : 'local'
+export const ownOrigin: string = pinned
+  ? `window:${PREFIX}${pinned}`
+  : // A browser on web access: the server already leaves this session's own
+    // writes out of its stream, and `local` is the desktop window's -- whose
+    // writes this page must not mistake for its own.
+    shell || import.meta.env.DEV
+    ? 'local'
+    : 'web'
 
 /**
  * Can an app be opened in a window of its own from here? Not from a window

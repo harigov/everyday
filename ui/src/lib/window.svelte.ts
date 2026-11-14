@@ -21,7 +21,9 @@ type TauriWindow = import('@tauri-apps/api/window').Window
 
 class WindowControls {
   /** Whether the app draws the controls itself -- everywhere but macOS. */
-  readonly drawn = !mac
+  // Nor in a browser on web access, whose window is the browser's own. (The
+  // mock dev build keeps them, so they can be designed without the shell.)
+  readonly drawn = !mac && (shell || import.meta.env.DEV)
   /** Drives the middle button: maximise, or restore once maximised. */
   maximized = $state(false)
 

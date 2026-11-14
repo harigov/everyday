@@ -8,7 +8,7 @@
 // is not looking would go stale exactly when somebody glances at the Dock to
 // see whether anything arrived. See `crates/everyday-app/src/badge.rs`.
 
-import { api, isMock } from './api'
+import { api, hasShell } from './api'
 import { pref } from './prefs'
 import type { BadgeSources } from './types'
 
@@ -48,7 +48,7 @@ class Badge {
 
   /** Is there a shell to put a badge on an icon? False in the browser mock. */
   get supported(): boolean {
-    return !isMock
+    return hasShell
   }
 
   /** Tell the shell what to count, now and whenever the choice changes. Once. */

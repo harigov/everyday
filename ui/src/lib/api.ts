@@ -150,12 +150,21 @@ import type {
   VerificationAnswer,
   VoiceprintId,
   VoiceprintInfo,
+  WebStatus,
   WritingSettings,
 } from './types'
 import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
 import type { Commands } from './generated/commands'
 import type { Section } from './apps'
+import {
+  mediaBase as webMediaBase,
+  onWebChange,
+  onWebLockState,
+  onWebNotification,
+  webInvoke,
+  webSendMessage,
+} from './web'
 
 // Decided at BUILD time, not run time.
 //
@@ -167,7 +176,15 @@ import type { Section } from './apps'
 // that cannot reach Tauri must fail loudly, not quietly serve a fake journal
 // with sample entries in it: for a journal app, that failure mode is
 // indistinguishable from having lost everything.
-const MOCK = import.meta.env.DEV && !('__TAURI_INTERNALS__' in window)
+/** Inside the desktop app's webview, with its shell to talk to. */
+const SHELL = '__TAURI_INTERNALS__' in window
+const MOCK = import.meta.env.DEV && !SHELL
+/**
+ * A built interface in an ordinary browser: served by the machine holding
+ * the vault, over web access (`docs/plans/web-access.md`), and talking to it
+ * through `web.ts`.
+ */
+const WEB = !SHELL && !MOCK
 
 /**
  * `args` is a bag of named arguments for every command but one. `put_blob`
@@ -381,7 +398,7 @@ export let sendMessage: (
   throw new VaultError('unavailable', 'The assistant could not reach its backend.')
 }
 
-if (!MOCK) {
+if (SHELL) {
   const { listen } = await import('@tauri-apps/api/event')
   const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow')
   onSaveAndClose = (handler) => {
@@ -475,6 +492,15 @@ if (!MOCK) {
       throw new VaultError('unknown', String(raw))
     }
   }
+} else if (WEB) {
+  // Three of the events above arrive on web access's own stream, and the
+  // rest -- the tray, the palette's OS-wide key, windows of one app, meeting
+  // capture -- have nothing in a browser to come from.
+  invoke = webInvoke
+  sendMessage = webSendMessage
+  onChange = onWebChange
+  onLockState = onWebLockState
+  onShellNotification = onWebNotification
 } else {
   const {
     mockInvoke,
@@ -536,6 +562,10 @@ export function newRequestId(): string {
 }
 
 export const isMock = MOCK
+/** A browser on web access, with no desktop shell behind it. */
+export const isWeb = WEB
+/** The desktop shell is here: a tray, windows, files saved by the shell. */
+export const hasShell = SHELL
 
 /**
  * The zone this window reckons days in, for a command that buckets instants
@@ -698,6 +728,15 @@ export const api = {
    * before it can ask.
    */
   mcpIssueToken: (scopes: string[]) => invoke<string>('mcp_issue_token', { scopes }),
+
+  // ── Opening this vault in a browser ────────────────────────────────
+  //
+  // The desktop half of web access: the switch in Settings -> Vault. The
+  // browser half is `web.ts`. See `docs/plans/web-access.md`.
+
+  webStatus: () => invoke<WebStatus>('web_status'),
+  webStart: (opts: { port?: number | null }) => invoke<WebStatus>('web_start', opts),
+  webStop: () => invoke<WebStatus>('web_stop'),
 
   // ── The OS-wide hotkey ─────────────────────────────────────────────
 
@@ -2064,6 +2103,7 @@ export const api = {
  */
 export function mediaUrl(blob: string): string {
   if (MOCK) return mockMediaUrl(blob)
+  if (WEB) return `${webMediaBase()}/v1/blob/${blob}`
   // Tauri maps custom schemes to an http origin on Windows and Android.
   const base =
     navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')

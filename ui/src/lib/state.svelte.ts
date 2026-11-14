@@ -5,7 +5,8 @@
 // stay declarative and the save/lock logic lives in one auditable spot.
 
 import { tick } from 'svelte'
-import { api, isMock, newRequestId } from './api'
+import { api, isMock, isWeb, newRequestId } from './api'
+import { signOut } from './web'
 import { APP_ORDER, APPS, type Section } from './apps'
 import { pinned } from './appwindow'
 import { AUTOSAVE_MS } from './autosave'
@@ -769,6 +770,11 @@ class AppState {
     try {
       await this.flushAll()
       this.#teardown()
+      // In a browser on web access, a dark screen is a signed-out session
+      // too: the cookie that could have carried on reading is ended on the
+      // server, so coming back needs the password whoever is holding the
+      // phone. `verify_password` then opens a fresh one -- see `web.ts`.
+      if (isWeb) await signOut()
       this.screenOnly = true
       this.screen = 'locked'
     } finally {

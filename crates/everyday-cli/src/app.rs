@@ -64,6 +64,8 @@ pub fn run(cli: Cli) -> Result<()> {
         no_tls,
         mcp,
         mcp_listen,
+        web,
+        web_ui,
         keychain,
     } = &cli.command
     {
@@ -111,6 +113,8 @@ pub fn run(cli: Cli) -> Result<()> {
                 no_tls: *no_tls,
                 mcp: *mcp,
                 mcp_listen: mcp_listen.as_deref(),
+                web: *web,
+                web_ui: web_ui.as_deref(),
             },
         );
     }

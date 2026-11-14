@@ -117,6 +117,13 @@ assert.deepEqual(new Set(targetsFor(['task', 'item'])), new Set(['todo', 'librar
 assert.deepEqual(targetsFor(['conversation', 'memory']), [])
 assert.deepEqual(targetsFor(['conversation', 'task']), ['todo'])
 assert.deepEqual(targetsFor(['transcript']), [])
+// A kind the service raises that no command declares, so the generated
+// `ChangeKind` and `RELOADS` do not name it: a supervised task's status when
+// the vault unlocks, a sync pass's mailbox. It reloads nothing, and it does
+// not stop the rest of the batch from reloading -- it used to come back as an
+// `undefined` target, called as a function.
+assert.deepEqual(targetsFor(['backgroundTask', 'mailbox']), [])
+assert.deepEqual(targetsFor(['backgroundTask', 'task']), ['todo'])
 
 // What is followed and what it brought are one store's: a first refresh of a
 // new source raises both, and the sidebar's counts and the list move

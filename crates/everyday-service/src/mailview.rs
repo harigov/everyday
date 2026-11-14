@@ -1003,6 +1003,21 @@ mod tests {
         message.id
     }
 
+    /// What a browser on web access relies on: `allowWebOrigin` in
+    /// `ui/src/lib/mailview.ts` adds the page's own origin to this document's
+    /// `img-src`, which it finds inside the CSP meta tag -- the address a
+    /// body's pictures are rewritten to in a browser is not one of the two
+    /// origins named here. Reword the policy freely; keep it in that tag,
+    /// with an `img-src`, or every picture in a browser goes blank.
+    #[test]
+    fn the_csp_is_in_a_meta_tag_with_an_img_src_a_browser_can_extend() {
+        let doc = page("<p>hi</p>", "");
+        let tag = "<meta http-equiv=\"Content-Security-Policy\" content=\"";
+        let start = doc.find(tag).expect("the CSP meta tag") + tag.len();
+        let content = &doc[start..start + doc[start..].find('"').expect("the attribute's end")];
+        assert!(content.contains("img-src "), "{content}");
+    }
+
     #[test]
     fn a_body_document_never_contains_script_and_always_carries_the_csp() {
         // Run through the real sync-time sanitiser first -- exactly what a
