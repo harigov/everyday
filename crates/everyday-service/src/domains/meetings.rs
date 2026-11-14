@@ -32,14 +32,12 @@ use crate::service::{Service, blocking};
 use base64::Engine;
 use everyday_core::id::EventId;
 use everyday_core::meeting::{
-    MeetingSettings, NoteTemplate, Recording, Stage, Track, TranscriberConfig, Transcript,
-    Voiceprint,
+    MeetingSettings, Recording, Stage, Track, TranscriberConfig, Transcript, Voiceprint,
 };
 use everyday_core::store::meetings::RecordingQuery;
 use everyday_core::{Error, NoteId, RecordingId, TemplateId, Vault, VoiceprintId};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 // ---- wire shapes ----------------------------------------------------------
@@ -329,28 +327,6 @@ pub(crate) fn view(
     })
 }
 
-/// Non-empty names, non-empty bodies, and no two templates sharing an id --
-/// the shape a settings save must refuse outright. Placeholder problems
-/// (an unknown `{{...}}`, unbalanced braces) are a different kind of wrong:
-/// worth flagging as the editor types, never worth refusing a save over, so
-/// they are [`everyday_core::meeting::template::lint`]'s job instead, run
-/// through [`lint_meeting_template`] rather than here.
-fn validate_templates(templates: &[NoteTemplate]) -> everyday_core::Result<()> {
-    let mut ids = HashSet::new();
-    for t in templates {
-        if t.name.trim().is_empty() {
-            return Err(Error::Invalid("a template needs a name".into()));
-        }
-        if t.body.trim().is_empty() {
-            return Err(Error::Invalid(format!("{:?} has no body", t.name)));
-        }
-        if !ids.insert(t.id) {
-            return Err(Error::Invalid("two templates cannot share an id".into()));
-        }
-    }
-    Ok(())
-}
-
 /// The key a transcriber request should carry, whichever backend is
 /// configured.
 ///
@@ -398,7 +374,6 @@ async fn save_meeting_settings(
     let vault = svc.require()?;
     blocking(move || {
         let mut settings = args.settings;
-        validate_templates(&settings.templates)?;
         settings.vocabulary = everyday_core::meeting::vocab::clean_terms(&settings.vocabulary);
 
         // Refused when the save would leave meeting notes on with nothing
@@ -444,36 +419,6 @@ async fn set_transcriber_key(
         Ok(view(&vault, vault.meeting_settings()?)?)
     })
     .await
-}
-
-/// Mint a template without saving it. The id is the core's to allocate, for
-/// the reason `new_routine` and `new_note` already give.
-///
-/// A fresh template, starting from the built-in one's body so nobody faces
-/// an empty box.
-async fn new_meeting_template(
-    _svc: Arc<Service>,
-    _ctx: Ctx,
-    _args: Nothing,
-) -> CommandResult<NoteTemplate> {
-    let starter = everyday_core::meeting::template::starter();
-    Ok(NoteTemplate { id: TemplateId::new(), name: "New template".into(), body: starter.body })
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LintTemplate {
-    pub body: String,
-}
-
-/// What is wrong with a template body, in words, for the editor to show as
-/// it is typed. Pure: the core decides, and nothing is saved.
-async fn lint_meeting_template(
-    _svc: Arc<Service>,
-    _ctx: Ctx,
-    args: LintTemplate,
-) -> CommandResult<Vec<String>> {
-    Ok(everyday_core::meeting::template::lint(&args.body))
 }
 
 async fn list_recordings(
@@ -703,17 +648,6 @@ pub static COMMANDS: &[crate::command::Command] = &[
         // check `tests/surface.rs` runs against every command's struct.
         signature: &[("key", "string | null", false)],
         run: set_transcriber_key,
-    },
-    command! {
-        name: "new_meeting_template", scope: Meetings, effect: Read,
-        args: Nothing, returns: "NoteTemplate", signature: &[],
-        run: new_meeting_template,
-    },
-    command! {
-        name: "lint_meeting_template", scope: Meetings, effect: Read,
-        args: LintTemplate, returns: "string[]",
-        signature: &[("body", "string", true)],
-        run: lint_meeting_template,
     },
     command! {
         name: "list_recordings", scope: Meetings, effect: Read,
@@ -1006,26 +940,5 @@ mod tests {
         assert!(usable(&t, false, false, false, false, true).is_err());
         assert!(usable(&t, false, true, false, false, false).is_err());
         assert!(usable(&t, false, true, false, false, true).is_ok());
-    }
-
-    #[test]
-    fn templates_need_a_name_a_body_and_a_unique_id() {
-        let a = NoteTemplate {
-            id: TemplateId::new(),
-            name: "Standup".into(),
-            body: "# {{title}}".into(),
-        };
-        let mut b = a.clone();
-        b.id = TemplateId::new();
-        validate_templates(&[a.clone(), b]).expect("two distinct templates are fine");
-
-        let blank_name = NoteTemplate { name: String::new(), ..a.clone() };
-        assert!(validate_templates(&[blank_name]).is_err());
-
-        let blank_body = NoteTemplate { body: String::new(), ..a.clone() };
-        assert!(validate_templates(&[blank_body]).is_err());
-
-        let dup = a.clone();
-        assert!(validate_templates(&[a, dup]).is_err());
     }
 }

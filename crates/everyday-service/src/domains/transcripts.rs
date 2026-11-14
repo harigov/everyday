@@ -335,7 +335,11 @@ async fn rewrite_meeting_note(
     };
 
     let (tz_fallback, budget) = tz_and_budget(&vault, &settings).await?;
-    let template = settings.template(Some(template_id));
+    let template = blocking({
+        let vault = vault.clone();
+        move || Ok(vault.meeting_template(Some(template_id)))
+    })
+    .await?;
 
     let facts = Facts {
         title: recording

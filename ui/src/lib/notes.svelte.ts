@@ -25,7 +25,16 @@ import { DocBinding } from './store/doc-binding'
 import { latest } from './store/latest'
 import { applySingleChange, patchOneFromChange } from './store/live-patch'
 import { guardedRefresh } from './store/refresh'
-import type { Note, NoteHit, NoteId, NoteSort, NoteSummary, Proposal, ProposalId } from './types'
+import type {
+  Note,
+  NoteHit,
+  NoteId,
+  NoteSort,
+  NoteSummary,
+  Proposal,
+  ProposalId,
+  TemplateId,
+} from './types'
 
 /** How many notes a list loads at once. A drawer, not a database. */
 const PAGE = 500
@@ -298,13 +307,18 @@ class NotesState {
     }
   }
 
-  /** Make one, save it, and open it. */
-  async create(title = '') {
+  /**
+   * Make one, save it, and open it -- blank, or started from a template
+   * filled in for today. Saved at once either way: a note started from a
+   * template was asked for by name, unlike a journal's day, which starts
+   * from one on its own (see `#untouched` in `state.svelte.ts`).
+   */
+  async create(title = '', templateId: TemplateId | null = null) {
     if (!app.supportsNotes) return
     await this.flush()
     try {
-      const note = await api.newNote()
-      note.title = title
+      const note = await api.newNote(templateId)
+      if (title || !templateId) note.title = title
       await api.saveNote(note, null)
       this.open = note
       this.selected = note.id

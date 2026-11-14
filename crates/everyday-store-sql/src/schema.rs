@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use everyday_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 26;
+pub const SCHEMA_VERSION: i64 = 27;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -115,6 +115,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v24(d),
         v25(d),
         v26(),
+        v27(d),
     ]
 }
 
@@ -1803,6 +1804,25 @@ fn v26() -> Vec<String> {
          )"
         .to_string(),
     ]
+}
+
+/// Version 27: templates -- the shapes a journal entry, a note or a
+/// meeting's notes start from (`everyday_core::template`). Meeting templates
+/// used to be a list inside the sealed meeting settings; they move here on
+/// first read, which no SQL step can do because only something holding the
+/// key can open those settings. One table on the shape `skills` has (`v12`):
+/// nothing in the clear but the two timestamps, because a template's name
+/// and text say what somebody writes about every day.
+fn v27(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS templates (
+             id          TEXT    PRIMARY KEY NOT NULL,
+             created_us  {int} NOT NULL,
+             updated_us  {int} NOT NULL,
+             data        {blob} NOT NULL
+         )"
+    )]
 }
 
 #[cfg(test)]

@@ -340,7 +340,9 @@ impl TryFrom<RecordKind> for Domain {
     fn try_from(kind: RecordKind) -> Result<Domain, ()> {
         match kind {
             RecordKind::Journal | RecordKind::Entry => Ok(Domain::Journals),
-            RecordKind::Note => Ok(Domain::Notes),
+            // Templates are stored beside notes, and the notes tools are
+            // where the assistant reads them.
+            RecordKind::Note | RecordKind::Template => Ok(Domain::Notes),
             RecordKind::Project | RecordKind::Task | RecordKind::Block => Ok(Domain::Tasks),
             RecordKind::Calendar | RecordKind::Event => Ok(Domain::Calendars),
             RecordKind::Kind | RecordKind::Item | RecordKind::Log => Ok(Domain::Library),

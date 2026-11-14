@@ -189,7 +189,7 @@ impl Vault {
         // one. See `super::meetings::rebuild_meeting_index`.
         super::meetings::rebuild_meeting_index(store.as_ref(), &mut index)?;
 
-        *self.state_write() = Some(Unlocked { store, index, cipher });
+        *self.state_write() = Some(Unlocked { store, index, cipher, templates_moved: false });
         self.touch();
 
         // A vault from before the models were application settings has them

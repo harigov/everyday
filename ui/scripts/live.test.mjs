@@ -44,6 +44,7 @@ const KINDS = [
   'journal',
   'entry',
   'note',
+  'template',
   'routine',
   'routineRun',
   'job',

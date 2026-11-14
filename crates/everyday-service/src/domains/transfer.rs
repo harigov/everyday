@@ -294,6 +294,7 @@ fn kinds_of(part: &str) -> &'static [Kind] {
     match part {
         "journal" => &[Kind::Journal, Kind::Entry],
         "notes" => &[Kind::Note],
+        "templates" => &[Kind::Template],
         "todo" => &[Kind::Project, Kind::Task, Kind::Block],
         "calendar" => &[Kind::Calendar, Kind::Event],
         "library" => &[Kind::Shelf, Kind::Item, Kind::Log],

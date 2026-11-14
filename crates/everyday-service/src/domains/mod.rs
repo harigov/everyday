@@ -38,6 +38,7 @@ pub mod screentime;
 pub mod signin;
 pub mod speech;
 pub mod tasks;
+pub mod templates;
 pub mod trackers;
 pub mod transcripts;
 pub mod transfer;
@@ -90,6 +91,7 @@ pub fn catalog() -> &'static [&'static Command] {
             screentime::COMMANDS,
             meetings::COMMANDS,
             notes::COMMANDS,
+            templates::COMMANDS,
             trackers::COMMANDS,
             purpose::COMMANDS,
             routines::COMMANDS,

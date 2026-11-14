@@ -43,6 +43,7 @@ fn all_kinds() -> Vec<Kind> {
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
+        Kind::Template,
         Kind::Project,
         Kind::Task,
         Kind::Block,
@@ -95,6 +96,7 @@ fn assert_every_kind_is_named(k: Kind) {
         Kind::Journal
         | Kind::Entry
         | Kind::Note
+        | Kind::Template
         | Kind::Project
         | Kind::Task
         | Kind::Block

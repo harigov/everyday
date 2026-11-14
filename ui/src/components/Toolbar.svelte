@@ -3,8 +3,38 @@
   import Icon from './Icon.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import type { IconName } from '../lib/icons'
+  import { menu } from '../lib/menu.svelte'
+  import { templates } from '../lib/templates.svelte'
+  import type { Template, TemplateUse } from '../lib/types'
 
-  let { editor }: { editor: Editor | null } = $props()
+  let {
+    editor,
+    templateFor,
+    oninsert,
+  }: {
+    editor: Editor | null
+    /**
+     * Offer "Insert template" with the templates kept for this place. The
+     * caller fills the chosen one in -- it knows the day and the journal --
+     * and puts it at the caret.
+     */
+    templateFor?: TemplateUse
+    oninsert?: (template: Template) => void
+  } = $props()
+
+  $effect(() => {
+    if (templateFor) void templates.ensure()
+  })
+
+  const offered = $derived(templateFor ? templates.for(templateFor) : [])
+
+  function pickTemplate(e: MouseEvent) {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    menu.showAt(box.left, box.bottom + 4, [
+      { kind: 'heading', label: 'Insert template' },
+      ...offered.map((t) => ({ label: t.name, run: () => oninsert?.(t) })),
+    ])
+  }
 
   // Re-read the editor's mark/node state after a transaction, so the buttons
   // reflect the caret rather than the last click.
@@ -197,6 +227,20 @@
       {/each}
     </div>
   {/each}
+  {#if editor && oninsert && offered.length > 0}
+    <span class="sep" aria-hidden="true"></span>
+    <div class="group">
+      <button
+        class="tool"
+        title="Insert template"
+        aria-label="Insert template"
+        aria-haspopup="menu"
+        onclick={pickTemplate}
+      >
+        <Icon name="layers" size={19} weight={1.6} />
+      </button>
+    </div>
+  {/if}
 </div>
 
 {#if linkOpen}

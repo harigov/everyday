@@ -171,6 +171,14 @@ fn render_journal(journal: &Journal) -> String {
         .flag("assistant", journal.assistant)
         .set("created", doc::stamp(journal.created_at))
         .set("updated", doc::stamp(journal.updated_at));
+    // Which template each day starts from, as JSON on one line: the rules
+    // have more shape than a front-matter list can carry, and the ids they
+    // name come back with the `templates` part.
+    if !journal.templates.is_empty()
+        && let Ok(json) = serde_json::to_string(&journal.templates)
+    {
+        front.set("templates", json);
+    }
     format!("{}# {}\n\n{}\n", front.render(), journal.name, journal.description)
 }
 
@@ -213,6 +221,13 @@ fn read_journal(
     }
     if let Some(order) = fields.parse("order") {
         journal.sort_order = order;
+    }
+    match fields.get("templates").map(serde_json::from_str) {
+        Some(Ok(templates)) => journal.templates = templates,
+        Some(Err(e)) => {
+            report.problem(name, format!("its template choices could not be read: {e}"))
+        }
+        None => {}
     }
     // The assistant's own journal comes back as its own -- one only, so a
     // second exported from another vault lands as an ordinary journal.

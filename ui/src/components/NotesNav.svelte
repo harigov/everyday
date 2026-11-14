@@ -12,6 +12,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { meetings } from '../lib/meetings.svelte'
   import { notes, SORTS } from '../lib/notes.svelte'
+  import { templates } from '../lib/templates.svelte'
   import { plural } from '../lib/format'
   import { proposals, recordAs } from '../lib/proposals.svelte'
   import type { NoteSummary } from '../lib/types'
@@ -79,9 +80,28 @@
     ])
   }
 
+  void templates.ensure()
+  const noteTemplates = $derived(templates.for('notes'))
+
+  /** One row per template offered for notes, each starting a note from it. */
+  function templateItems(): MenuItem[] {
+    return noteTemplates.map((t) => ({ label: t.name, run: () => void notes.create('', t.id) }))
+  }
+
+  function pickTemplate(e: MouseEvent) {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    menu.showAt(box.left, box.bottom + 4, [
+      { kind: 'heading', label: 'New note from template' },
+      ...templateItems(),
+    ])
+  }
+
   function navMenu(): MenuItem[] {
     return tidyMenu([
       { label: 'New note', icon: 'plus', hint: 'Ctrl+N', run: () => void notes.create() },
+      ...(noteTemplates.length
+        ? [{ label: 'New note from template', icon: 'layers' as const, items: templateItems() }]
+        : []),
       ...(meetings.supported
         ? [{ label: 'Record a call', icon: 'mic' as const, run: () => (recordSheet = true) }]
         : []),
@@ -140,6 +160,17 @@
         onclick={() => (recordSheet = true)}
       >
         <Icon name="mic" size={15} />
+      </button>
+    {/if}
+    {#if noteTemplates.length}
+      <button
+        class="side-add"
+        title="New note from template"
+        aria-label="New note from template"
+        aria-haspopup="menu"
+        onclick={pickTemplate}
+      >
+        <Icon name="layers" size={15} />
       </button>
     {/if}
     <button

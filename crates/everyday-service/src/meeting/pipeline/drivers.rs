@@ -345,7 +345,11 @@ pub(crate) async fn do_summarise_and_write(
         })
         .await?
     };
-    let template = settings.template(Some(recording.template_id));
+    let template = {
+        let vault = vault.clone();
+        let asked = recording.template_id;
+        blocking(move || Ok(vault.meeting_template(Some(asked)))).await?
+    };
     let loopback = {
         let vault = vault.clone();
         blocking(move || {

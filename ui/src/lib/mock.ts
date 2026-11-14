@@ -75,7 +75,9 @@ import type {
   RoutineInfo,
   RoutineRun,
   RunQuery,
+  RoutineTemplate,
   Template,
+  TemplateUse,
   Trigger,
   Weekday,
   NoteQuery,
@@ -249,7 +251,6 @@ import {
   mockGetTranscript,
   mockListRecordings,
   mockListVoiceprints,
-  mockLintMeetingTemplate,
   mockMeetingOfferAnswer,
   mockMeetingOffers,
   mockMeetingSettings,
@@ -259,7 +260,6 @@ import {
   mockMeetingStatus,
   mockMeetingStop,
   mockNameSpeaker,
-  mockNewMeetingTemplate,
   mockOnMeetingOffer,
   mockOnMeetingOfferFailed,
   mockOnMeetingOfferSetup,
@@ -278,6 +278,16 @@ import {
   mockTriggerStillOn,
   mockTriggerSystemSilent,
 } from './mock-meetings'
+import {
+  mockDeleteTemplate,
+  mockLintTemplate,
+  mockNewTemplate,
+  mockRenderTemplate,
+  mockSaveTemplate,
+  mockStartEntry,
+  mockTemplate,
+  mockTemplates,
+} from './mock-templates'
 
 const PASSWORD = 'everyday'
 
@@ -1448,6 +1458,12 @@ const journals: Journal[] = [
     description: 'The ordinary days',
     sortOrder: 0,
     shownTrackers: ['t-walk', 't-vitd', 't-head', 't-run', 't-read'],
+    // Today's page from the daily template, Sundays' from the weekly one --
+    // see mock-templates.ts.
+    templates: {
+      default: 'tpl-daily',
+      rules: [{ when: { kind: 'weekdays', days: [7] }, template: 'tpl-weekly' }],
+    },
     createdAt: iso(400),
     updatedAt: iso(1),
   },
@@ -1912,7 +1928,7 @@ function nextSlot(t: Extract<Trigger, { type: 'schedule' }>): string {
   return next.toISOString()
 }
 
-const TEMPLATES: Template[] = [
+const TEMPLATES: RoutineTemplate[] = [
   {
     name: 'Morning brief',
     instructions:
@@ -4818,9 +4834,9 @@ export const mockInvoke = async <T>(
       return found as T
     }
 
-    case 'new_note':
+    case 'new_note': {
       requireUnlocked()
-      return {
+      const blank = {
         id: `n-${nextId++}`,
         title: '',
         body: { type: 'doc', content: [{ type: 'paragraph' }] },
@@ -4829,7 +4845,44 @@ export const mockInvoke = async <T>(
         attachments: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      } satisfies Note as T
+      } satisfies Note
+      const templateId = args.templateId as string | null | undefined
+      if (!templateId) return blank as T
+      const template = mockTemplate(templateId)
+      if (!template) throw new VaultError('notFound', 'template not found')
+      const filled = mockRenderTemplate(template, day(0), null)
+      return { ...blank, title: filled.title, body: filled.body, tags: filled.tags } as T
+    }
+
+    // ── templates ──
+    case 'list_templates':
+      requireUnlocked()
+      return mockTemplates() as T
+    case 'new_template':
+      requireUnlocked()
+      return mockNewTemplate((args.uses as TemplateUse[] | undefined) ?? []) as T
+    case 'save_template': {
+      requireUnlocked()
+      const template = args.template as Template
+      mockSaveTemplate(template)
+      return undefined as T
+    }
+    case 'delete_template':
+      requireUnlocked()
+      mockDeleteTemplate(args.id as string)
+      return undefined as T
+    case 'lint_template':
+      requireUnlocked()
+      return mockLintTemplate(args.template as Template) as T
+    case 'render_template': {
+      requireUnlocked()
+      const journal = journals.find((j) => j.id === args.journalId)
+      return mockRenderTemplate(
+        args.template as Template,
+        (args.date as string | null | undefined) ?? day(0),
+        journal?.name ?? null,
+      ) as T
+    }
 
     case 'save_note':
     case 'save_note_force': {
@@ -5132,7 +5185,7 @@ export const mockInvoke = async <T>(
     case 'new_entry': {
       requireUnlocked()
       const now = new Date()
-      return {
+      const blank = {
         id: `e-${nextId++}`,
         journalId: args.journalId as string,
         title: '',
@@ -5144,7 +5197,13 @@ export const mockInvoke = async <T>(
         tags: [],
         starred: false,
         attachments: [],
-      } satisfies Entry as T
+      } satisfies Entry
+      // Started from the journal's template for the day, as the real
+      // `new_entry` does.
+      return mockStartEntry(
+        blank,
+        journals.find((j) => j.id === blank.journalId),
+      ) as T
     }
 
     case 'save_entry': {
@@ -7952,12 +8011,6 @@ export const mockInvoke = async <T>(
     case 'set_transcriber_key':
       requireUnlocked()
       return mockSetTranscriberKey((args.key as string | null | undefined) ?? null) as T
-    case 'new_meeting_template':
-      requireUnlocked()
-      return mockNewMeetingTemplate() as T
-    case 'lint_meeting_template':
-      requireUnlocked()
-      return mockLintMeetingTemplate(str(args.body)) as T
     case 'preview_meeting_template':
       requireUnlocked()
       return (await mockPreviewMeetingTemplate(str(args.body))) as T

@@ -136,7 +136,6 @@ import type {
   NoteId,
   NoteQuery,
   NoteSummary,
-  NoteTemplate,
   OnScreen,
   Op,
   OpmlImportReport,
@@ -176,6 +175,7 @@ import type {
   RefreshReport,
   RemoteCalendarInfo,
   RemoteImageSettings,
+  RenderedTemplate,
   ReplySuggestions,
   Role,
   RoleId,
@@ -185,6 +185,7 @@ import type {
   RoutineInfo,
   RoutineRun,
   RoutineRunId,
+  RoutineTemplate,
   RunQuery,
   ScheduledSend,
   ScreenApp,
@@ -223,6 +224,7 @@ import type {
   TaskStatus,
   Template,
   TemplateId,
+  TemplateUse,
   ThreadDetail,
   ThreadFilter,
   ThreadId,
@@ -368,6 +370,7 @@ export interface Commands {
   deleteSkill: { args: { id: SkillId }; result: void }
   deleteSpeechModel: { args: { id: string }; result: void }
   deleteTask: { args: { id: TaskId }; result: void }
+  deleteTemplate: { args: { id: TemplateId }; result: void }
   deleteThreadDraft: { args: { draft?: DraftId; copies: MailMessageId[] }; result: void }
   deleteTracker: { args: { id: TrackerId }; result: number }
   deleteTransactions: { args: { ids: TxnId[] }; result: void }
@@ -453,7 +456,7 @@ export interface Commands {
   keepInTouchStatus: { args: Record<string, never>; result: KeepInTouchStatus }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
-  lintMeetingTemplate: { args: { body: string }; result: string[] }
+  lintTemplate: { args: { template: Template }; result: string[] }
   listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
   listAccounts: { args: Record<string, never>; result: AccountView[] }
   listBankAccounts: { args: Record<string, never>; result: BankAccount[] }
@@ -497,6 +500,7 @@ export interface Commands {
   listStories: { args: { query: StoryQuery }; result: StoryPage }
   listTags: { args: Record<string, never>; result: string[] }
   listTasks: { args: { query: TaskQuery }; result: Task[] }
+  listTemplates: { args: Record<string, never>; result: Template[] }
   listThreads: {
     args: {
       mailbox: MailboxId
@@ -586,9 +590,8 @@ export interface Commands {
   newJournal: { args: { name: string }; result: Journal }
   newKind: { args: { name: string; singular: string }; result: Kind }
   newLog: { args: { itemId: ItemId; event: LogEvent }; result: LogEntry }
-  newMeetingTemplate: { args: Record<string, never>; result: NoteTemplate }
   newMemory: { args: Record<string, never>; result: Memory }
-  newNote: { args: Record<string, never>; result: Note }
+  newNote: { args: { templateId?: TemplateId | null }; result: Note }
   newProject: { args: { name: string }; result: Project }
   newRole: { args: { name: string }; result: Role }
   newRoutine: { args: Record<string, never>; result: Routine }
@@ -597,6 +600,7 @@ export interface Commands {
     args: { projectId?: ProjectId | null; parentId?: TaskId | null; status?: TaskStatus | null }
     result: Task
   }
+  newTemplate: { args: { uses?: TemplateUse[] }; result: Template }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   newsletterSenders: { args: { days?: number | null }; result: NewsletterSender[] }
   noteTags: { args: Record<string, never>; result: string[] }
@@ -659,6 +663,10 @@ export interface Commands {
   }
   refreshNews: { args: { source?: NewsSourceId | null }; result: RefreshReport[] }
   removeChatLink: { args: { id: ChatLinkId }; result: void }
+  renderTemplate: {
+    args: { template: Template; date?: string | null; journalId?: JournalId | null }
+    result: RenderedTemplate
+  }
   respondToInvite: {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
     result: void
@@ -674,7 +682,7 @@ export interface Commands {
     args: { text: string; action: WritingAction; app?: string | null }
     result: WritingAssist
   }
-  routineTemplates: { args: Record<string, never>; result: Template[] }
+  routineTemplates: { args: Record<string, never>; result: RoutineTemplate[] }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runKeepInTouch: { args: Record<string, never>; result: PassReport }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
@@ -731,6 +739,7 @@ export interface Commands {
   saveStories: { args: { ids: StoryId[]; saved: boolean }; result: void }
   saveTask: { args: { task: Task }; result: void }
   saveTasks: { args: { tasks: Task[] }; result: void }
+  saveTemplate: { args: { template: Template }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
   scheduledSends: { args: { account?: AccountId | null }; result: ScheduledSend[] }
   screenTimeCollector: { args: Record<string, never>; result: CollectorConfig }
@@ -920,6 +929,7 @@ export const COMMAND_NAMES = {
   deleteSkill: 'delete_skill',
   deleteSpeechModel: 'delete_speech_model',
   deleteTask: 'delete_task',
+  deleteTemplate: 'delete_template',
   deleteThreadDraft: 'delete_thread_draft',
   deleteTracker: 'delete_tracker',
   deleteTransactions: 'delete_transactions',
@@ -968,7 +978,7 @@ export const COMMAND_NAMES = {
   keepInTouchStatus: 'keep_in_touch_status',
   label: 'label',
   libraryStats: 'library_stats',
-  lintMeetingTemplate: 'lint_meeting_template',
+  lintTemplate: 'lint_template',
   listAccountCalendars: 'list_account_calendars',
   listAccounts: 'list_accounts',
   listBankAccounts: 'list_bank_accounts',
@@ -1009,6 +1019,7 @@ export const COMMAND_NAMES = {
   listStories: 'list_stories',
   listTags: 'list_tags',
   listTasks: 'list_tasks',
+  listTemplates: 'list_templates',
   listThreads: 'list_threads',
   listThreadsAcross: 'list_threads_across',
   listTools: 'list_tools',
@@ -1052,7 +1063,6 @@ export const COMMAND_NAMES = {
   newJournal: 'new_journal',
   newKind: 'new_kind',
   newLog: 'new_log',
-  newMeetingTemplate: 'new_meeting_template',
   newMemory: 'new_memory',
   newNote: 'new_note',
   newProject: 'new_project',
@@ -1060,6 +1070,7 @@ export const COMMAND_NAMES = {
   newRoutine: 'new_routine',
   newSkill: 'new_skill',
   newTask: 'new_task',
+  newTemplate: 'new_template',
   newTracker: 'new_tracker',
   newsletterSenders: 'newsletter_senders',
   noteTags: 'note_tags',
@@ -1101,6 +1112,7 @@ export const COMMAND_NAMES = {
   recordScreenTime: 'record_screen_time',
   refreshNews: 'refresh_news',
   removeChatLink: 'remove_chat_link',
+  renderTemplate: 'render_template',
   respondToInvite: 'respond_to_invite',
   restoreDraft: 'restore_draft',
   retryRecording: 'retry_recording',
@@ -1155,6 +1167,7 @@ export const COMMAND_NAMES = {
   saveStories: 'save_stories',
   saveTask: 'save_task',
   saveTasks: 'save_tasks',
+  saveTemplate: 'save_template',
   saveTracker: 'save_tracker',
   scheduledSends: 'scheduled_sends',
   screenTimeCollector: 'screen_time_collector',
@@ -1314,6 +1327,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_skill',
   'delete_speech_model',
   'delete_task',
+  'delete_template',
   'delete_thread_draft',
   'delete_tracker',
   'delete_transactions',
@@ -1362,7 +1376,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'keep_in_touch_status',
   'label',
   'library_stats',
-  'lint_meeting_template',
+  'lint_template',
   'list_account_calendars',
   'list_accounts',
   'list_bank_accounts',
@@ -1403,6 +1417,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_stories',
   'list_tags',
   'list_tasks',
+  'list_templates',
   'list_threads',
   'list_threads_across',
   'list_tools',
@@ -1446,7 +1461,6 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_journal',
   'new_kind',
   'new_log',
-  'new_meeting_template',
   'new_memory',
   'new_note',
   'new_project',
@@ -1454,6 +1468,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'new_routine',
   'new_skill',
   'new_task',
+  'new_template',
   'new_tracker',
   'newsletter_senders',
   'note_tags',
@@ -1495,6 +1510,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'record_screen_time',
   'refresh_news',
   'remove_chat_link',
+  'render_template',
   'respond_to_invite',
   'restore_draft',
   'retry_recording',
@@ -1549,6 +1565,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_stories',
   'save_task',
   'save_tasks',
+  'save_template',
   'save_tracker',
   'scheduled_sends',
   'screen_time_collector',
@@ -1694,6 +1711,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_skill',
   'delete_speech_model',
   'delete_task',
+  'delete_template',
   'delete_thread_draft',
   'delete_tracker',
   'delete_transactions',
@@ -1788,6 +1806,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_stories',
   'save_task',
   'save_tasks',
+  'save_template',
   'save_tracker',
   'seed_roles',
   'send_draft',
@@ -1889,6 +1908,7 @@ export const CHANGE_KINDS = {
   delete_skill: 'skill',
   delete_speech_model: 'settings',
   delete_task: 'task',
+  delete_template: 'template',
   delete_thread_draft: 'draft',
   delete_tracker: 'tracker',
   delete_transactions: 'txn',
@@ -1970,6 +1990,7 @@ export const CHANGE_KINDS = {
   save_stories: 'story',
   save_task: 'task',
   save_tasks: 'task',
+  save_template: 'template',
   save_tracker: 'tracker',
   seed_roles: 'role',
   send_draft: 'draft',

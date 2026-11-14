@@ -93,8 +93,10 @@ typed_id!(ProposalId, "proposal");
 typed_id!(WritingId, "writing");
 
 // Meeting notes. A `RecordingId` names one call being (or once) recorded, a
-// `TranscriptId` what was said in it, a `VoiceprintId` a voice, and a
-// `TemplateId` a note shape. See `crate::meeting`.
+// `TranscriptId` what was said in it, and a `VoiceprintId` a voice. See
+// `crate::meeting`. A `TemplateId` names a shape to start writing from --
+// an entry, a note or a meeting's notes -- and lives here because meetings
+// were the first to have one. See `crate::template`.
 typed_id!(RecordingId, "recording");
 typed_id!(TranscriptId, "transcript");
 typed_id!(VoiceprintId, "voiceprint");

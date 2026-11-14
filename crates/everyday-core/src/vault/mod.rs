@@ -52,6 +52,7 @@ mod routines;
 mod screentime;
 mod session;
 mod tasks;
+mod templates;
 #[cfg(test)]
 mod tests;
 pub mod touched;

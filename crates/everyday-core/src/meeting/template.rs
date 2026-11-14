@@ -1,10 +1,12 @@
-//! Note templates.
+//! What a template means in a meeting note.
 //!
-//! A template is Markdown. Placeholders (`{{title}}`, `{{date}}`, `{{start}}`,
-//! `{{end}}`, `{{duration}}`, `{{organizer}}`, `{{attendees}}`,
-//! `{{present}}`, `{{calendar}}`) are filled by code before the model sees
-//! anything. After that, a heading is kept verbatim and the text under it is
-//! an instruction the model replaces with content.
+//! Templates themselves are [`crate::template::Template`]s, shared with the
+//! journal and notes. What is particular to a meeting is here: its own
+//! placeholders (`{{title}}`, `{{start}}`, `{{end}}`, `{{duration}}`,
+//! `{{organizer}}`, `{{attendees}}`, `{{present}}`, `{{calendar}}`) on top
+//! of the day's, all filled by code before the model sees anything; the
+//! check that the model kept every heading; the details block written above
+//! whatever the template says; and the built-in starter.
 //!
 //! One heading is not kept verbatim: `{{topics}}` (at any level) stands for
 //! any number of sections at that level, one per topic the meeting covered,
@@ -13,12 +15,15 @@
 //! ("Key points", "Decisions"), which tear a decision away from the topic it
 //! settled. See [`TOPICS`].
 
+use super::EventRef;
 use super::identify::parse_attendee;
-use super::{EventRef, NoteTemplate};
 use crate::id::TemplateId;
+use crate::template::{MEETING_PLACEHOLDERS, Template, TemplateUse, parse_placeholder};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 use std::collections::HashSet;
+
+pub use crate::template::headings;
 
 /// What placeholders are filled from.
 #[derive(Debug, Clone, Default)]
@@ -39,10 +44,6 @@ pub struct Facts {
     /// IANA zone to write times in.
     pub tz: String,
 }
-
-/// Every placeholder [`fill`] knows how to replace.
-const KNOWN_PLACEHOLDERS: &[&str] =
-    &["title", "date", "start", "end", "duration", "organizer", "attendees", "present", "calendar"];
 
 /// The heading text that stands for one section per topic -- see the module
 /// doc. Left in place by [`fill`]; never required verbatim by
@@ -65,12 +66,19 @@ pub fn is_topics_heading(heading: &str) -> bool {
 /// the same one.
 const STARTER_TEMPLATE_UUID: uuid::Uuid = uuid::uuid!("01980000-0000-7000-8000-6d656574696e");
 
-/// The template a new install starts with.
-pub fn starter() -> NoteTemplate {
-    NoteTemplate {
+/// The template a new install starts with, and what a meeting falls back to
+/// when every template offered for meetings has been deleted.
+pub fn starter() -> Template {
+    let now = Timestamp::now();
+    Template {
         id: TemplateId(STARTER_TEMPLATE_UUID),
         name: "Meeting notes".to_string(),
+        uses: vec![TemplateUse::Meetings],
+        title: String::new(),
         body: STARTER_BODY.to_string(),
+        tags: Vec::new(),
+        created_at: now,
+        updated_at: now,
     }
 }
 
@@ -141,7 +149,7 @@ Bullets. What was raised and left unsettled, and who follows up if anyone said.
 /// Bring the starter template up to date wherever it was never edited:
 /// same id, and a body that is word for word an earlier starter's. One
 /// somebody changed is theirs, and is left alone.
-pub fn upgrade_starter(templates: &mut [NoteTemplate]) {
+pub fn upgrade_starter(templates: &mut [Template]) {
     for t in templates.iter_mut() {
         if t.id == TemplateId(STARTER_TEMPLATE_UUID)
             && OLD_STARTER_BODIES.contains(&t.body.as_str())
@@ -151,45 +159,37 @@ pub fn upgrade_starter(templates: &mut [NoteTemplate]) {
     }
 }
 
-/// Replace every known placeholder. Unknown `{{…}}` are left alone.
+/// Replace every placeholder a meeting knows -- its own and the day's, the
+/// day being the meeting's -- and leave the rest as typed.
 pub fn fill(body: &str, facts: &Facts) -> String {
-    let mut out = String::with_capacity(body.len());
-    let mut rest = body;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after_open = &rest[start + 2..];
-        let Some(end) = after_open.find("}}") else {
-            // No closing brace anywhere after this: nothing more to fill.
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let key_raw = &after_open[..end];
-        let key = key_raw.trim().to_ascii_lowercase();
-        match placeholder_value(&key, facts) {
-            Some(value) => out.push_str(&value),
-            None => {
-                out.push_str("{{");
-                out.push_str(key_raw);
-                out.push_str("}}");
+    let tz = resolved_tz(&facts.tz);
+    let day = event_times(facts).0.map(|start| start.to_zoned(tz.clone()).date());
+    crate::template::fill_with(body, |raw| {
+        let p = parse_placeholder(raw)?;
+        if MEETING_PLACEHOLDERS.contains(&p.name.as_str()) {
+            if p.offset.is_some() || p.format.is_some() {
+                return None;
             }
+            return Some(placeholder_value(&p.name, facts, &tz));
         }
-        rest = &after_open[end + 2..];
-    }
-    out.push_str(rest);
-    out
+        if crate::template::DATE_PLACEHOLDERS.contains(&p.name.as_str()) {
+            // No day known at all: blank, as `{{start}}` is, rather than the
+            // placeholder left lying in a note.
+            return Some(match day {
+                Some(day) => crate::template::date_value(raw, day)?,
+                None => String::new(),
+            });
+        }
+        None
+    })
 }
 
-fn placeholder_value(key: &str, facts: &Facts) -> Option<String> {
-    if !KNOWN_PLACEHOLDERS.contains(&key) {
-        return None;
-    }
-    let tz = resolved_tz(&facts.tz);
+fn placeholder_value(key: &str, facts: &Facts, tz: &TimeZone) -> String {
     let (start, end) = event_times(facts);
-    Some(match key {
+    match key {
         "title" => facts.title.clone(),
-        "date" => start.map(|s| format_date(s, &tz)).unwrap_or_default(),
-        "start" => start.map(|s| format_time(s, &tz)).unwrap_or_default(),
-        "end" => end.map(|e| format_time(e, &tz)).unwrap_or_default(),
+        "start" => start.map(|s| format_time(s, tz)).unwrap_or_default(),
+        "end" => end.map(|e| format_time(e, tz)).unwrap_or_default(),
         "duration" => match (start, end) {
             (Some(s), Some(e)) => format_duration(e.as_second() - s.as_second()),
             _ => String::new(),
@@ -200,8 +200,8 @@ fn placeholder_value(key: &str, facts: &Facts) -> Option<String> {
         }
         "present" => facts.present.join(", "),
         "calendar" => facts.event.as_ref().map(|e| e.calendar_name.clone()).unwrap_or_default(),
-        _ => unreachable!("checked against KNOWN_PLACEHOLDERS above"),
-    })
+        _ => String::new(),
+    }
 }
 
 /// The event's own start/end if there is one, else the recording's.
@@ -253,34 +253,6 @@ fn display_name(raw: &str) -> String {
 
 fn attendees_display(attendees: &[String]) -> String {
     attendees.iter().map(|a| display_name(a)).collect::<Vec<_>>().join(", ")
-}
-
-/// The headings of a (filled) template, in order, as written (`## Decisions`).
-///
-/// ATX headings only (`#` to `######`), and not ones inside a fenced code
-/// block -- a template that shows its own Markdown as an example must not
-/// have that example mistaken for a real heading.
-pub fn headings(body: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut in_fence = false;
-    for line in body.lines() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_fence = !in_fence;
-            continue;
-        }
-        if in_fence {
-            continue;
-        }
-        let hashes = trimmed.chars().take_while(|&c| c == '#').count();
-        if (1..=6).contains(&hashes) {
-            let after = &trimmed[hashes..];
-            if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
-                out.push(trimmed.trim_end().to_string());
-            }
-        }
-    }
-    out
 }
 
 /// What a heading says, for telling whether two are the same: without its
@@ -481,33 +453,6 @@ fn when_line(facts: &Facts, tz: &TimeZone) -> Option<String> {
     }
 }
 
-/// Unknown placeholders and other problems, for the settings editor.
-pub fn lint(body: &str) -> Vec<String> {
-    let mut issues = Vec::new();
-
-    if body.matches("{{").count() != body.matches("}}").count() {
-        issues.push("Unbalanced braces: {{ and }} do not match.".to_string());
-    }
-
-    let mut rest = body;
-    while let Some(start) = rest.find("{{") {
-        let after_open = &rest[start + 2..];
-        let Some(end) = after_open.find("}}") else { break };
-        let key_raw = &after_open[..end];
-        let key = key_raw.trim().to_ascii_lowercase();
-        if !KNOWN_PLACEHOLDERS.contains(&key.as_str()) && key != "topics" {
-            issues.push(format!("Unknown placeholder {{{{{key_raw}}}}}"));
-        }
-        rest = &after_open[end + 2..];
-    }
-
-    if headings(body).is_empty() {
-        issues.push("This template has no headings.".to_string());
-    }
-
-    issues
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,14 +610,6 @@ mod tests {
     }
 
     #[test]
-    fn lint_finds_unknown_placeholders_unbalanced_braces_and_missing_headings() {
-        let issues = lint("no headings, {{oops}}, and {{ still open");
-        assert!(issues.iter().any(|i| i.contains("oops")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.contains("Unbalanced")), "{issues:?}");
-        assert!(issues.iter().any(|i| i.contains("no headings")), "{issues:?}");
-    }
-
-    #[test]
     fn details_name_each_person_once_with_the_answers_worth_saying() {
         use crate::mail::AttendeeResponse;
         use crate::meeting::people::Invitee;
@@ -701,12 +638,13 @@ mod tests {
 
     #[test]
     fn an_unedited_starter_is_upgraded_and_an_edited_one_is_not() {
-        let old = NoteTemplate { body: OLD_STARTER_BODIES[0].to_string(), ..starter() };
-        let edited = NoteTemplate { body: "## Mine\n".into(), ..starter() };
-        let other = NoteTemplate {
+        let old = Template { body: OLD_STARTER_BODIES[0].to_string(), ..starter() };
+        let edited = Template { body: "## Mine\n".into(), ..starter() };
+        let other = Template {
             id: TemplateId::new(),
             body: OLD_STARTER_BODIES[0].to_string(),
             name: "Copy".into(),
+            ..starter()
         };
         let mut templates = vec![old, edited, other];
         upgrade_starter(&mut templates);
@@ -728,7 +666,7 @@ mod tests {
     #[test]
     fn every_earlier_starter_is_upgraded() {
         for old in OLD_STARTER_BODIES {
-            let mut templates = vec![NoteTemplate { body: old.to_string(), ..starter() }];
+            let mut templates = vec![Template { body: old.to_string(), ..starter() }];
             upgrade_starter(&mut templates);
             assert_eq!(templates[0].body, STARTER_BODY);
         }
@@ -769,7 +707,22 @@ mod tests {
 
     #[test]
     fn lint_is_quiet_about_a_clean_template() {
-        assert!(lint(&starter().body).is_empty());
+        assert!(crate::template::lint(&starter()).is_empty());
+    }
+
+    #[test]
+    fn the_days_placeholders_are_the_meetings_day() {
+        // 14:00Z on the 16th is the 16th in London; a meeting at 23:30Z on
+        // the 16th is already the 17th in Tokyo.
+        assert_eq!(fill("{{weekday}} {{week}} {{date+1d:%-d}}", &facts()), "Wednesday 38 17");
+        let mut late = facts();
+        late.event.as_mut().unwrap().start = "2026-09-16T23:30:00Z".parse().unwrap();
+        late.event.as_mut().unwrap().end = "2026-09-17T00:00:00Z".parse().unwrap();
+        late.tz = "Asia/Tokyo".into();
+        assert_eq!(fill("{{date}}", &late), "Thursday 17 September 2026");
+        let mut none = facts();
+        none.event = None;
+        assert_eq!(fill("[{{date}}] {{title:%A}}", &none), "[] {{title:%A}}");
     }
 
     #[test]

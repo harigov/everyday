@@ -58,6 +58,9 @@ export const SETTINGS_TABS = [
   // `docs/plans/screentime.md`.
   'screentime',
   'meetings',
+  // The shapes an entry, a note or a meeting's notes start from -- one list
+  // for all three. See TemplatesPanel.
+  'templates',
   // Settings for the Contacts shelf's catch-ups -- see KeepInTouchPanel.
   'keepintouch',
   'data',

@@ -18,6 +18,9 @@ everyday-store-postgres.workspace = true
 directories = "6"
 
 [dev-dependencies]
+# `testing` for `Vault::put_meeting_settings_as_an_older_build_did`, which
+# `tests/templates.rs` needs to stand for a vault an older build wrote.
+everyday-core = { workspace = true, features = ["testing"] }
 jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true

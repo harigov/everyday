@@ -15,13 +15,24 @@
   import { untrack } from 'svelte'
   import { api } from '../lib/api'
   import { app } from '../lib/state.svelte'
+  import { panels } from '../lib/panels.svelte'
+  import { templates } from '../lib/templates.svelte'
+  import { todayIso } from '../lib/time'
   import { tracking } from '../lib/tracking.svelte'
   import { describeTarget, isManual } from '../lib/tracker'
   import { KIND_COPY, TRACKER_PRESETS, fromPreset } from '../lib/tracker-presets'
   import { TRACKER_ICON_GROUPS } from '../lib/tracker-icons'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { DEFAULT_COLORS } from '../lib/colors'
-  import type { Journal, Target, Tracker, TrackerKind } from '../lib/types'
+  import type {
+    Journal,
+    JournalTemplates,
+    Target,
+    TemplateRule,
+    Tracker,
+    TrackerKind,
+    When,
+  } from '../lib/types'
   import { TRACKER_KINDS } from '../lib/types'
   import Icon from './Icon.svelte'
   import TrackerIcon from './TrackerIcon.svelte'
@@ -76,6 +87,135 @@
   async function save() {
     draft.updatedAt = new Date().toISOString()
     await app.saveJournal($state.snapshot(draft))
+  }
+
+  // ── Templates ─────────────────────────────────────────────────────────
+  //
+  // Which template a new day's entry starts from: a default, and rules for
+  // particular days, tried in order. The templates themselves are edited in
+  // Settings → Templates; this only chooses among them, the way the Meetings
+  // tab chooses a recording's. See `everyday_core::template::JournalTemplates`.
+
+  void templates.load()
+
+  const WEEKDAYS: [number, string, string][] = [
+    [1, 'M', 'Monday'],
+    [2, 'T', 'Tuesday'],
+    [3, 'W', 'Wednesday'],
+    [4, 'T', 'Thursday'],
+    [5, 'F', 'Friday'],
+    [6, 'S', 'Saturday'],
+    [7, 'S', 'Sunday'],
+  ]
+  const MONTH_NAMES = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ]
+  const NTH: [number, string][] = [
+    [1, 'First'],
+    [2, 'Second'],
+    [3, 'Third'],
+    [4, 'Fourth'],
+    [5, 'Fifth'],
+    [-1, 'Last'],
+  ]
+  const WHEN_KINDS: { kind: When['kind']; label: string }[] = [
+    { kind: 'weekdays', label: 'Days of the week' },
+    { kind: 'everyWeeks', label: 'Every few weeks' },
+    { kind: 'monthDay', label: 'Day of the month' },
+    { kind: 'nthWeekday', label: 'Weekday of the month' },
+    { kind: 'yearDay', label: 'Date each year' },
+  ]
+
+  const jt = $derived<JournalTemplates>(draft.templates ?? {})
+  const rules = $derived<TemplateRule[]>(jt.rules ?? [])
+
+  /** Templates offered for the journal, plus `current` if it is not one. */
+  function choices(current: string | null | undefined) {
+    const offered = templates.for('journal')
+    const extra = templates.byId(current)
+    return extra && !offered.includes(extra) ? [...offered, extra] : offered
+  }
+
+  async function setTemplates(next: JournalTemplates) {
+    const tidy: JournalTemplates = {}
+    if (next.default) tidy.default = next.default
+    if (next.rules?.length) tidy.rules = next.rules
+    draft.templates = tidy.default || tidy.rules ? tidy : undefined
+    await save()
+  }
+
+  function freshWhen(kind: When['kind']): When {
+    switch (kind) {
+      case 'weekdays':
+        return { kind, days: [7] }
+      case 'everyWeeks':
+        return { kind, every: 2, from: todayIso(), days: [5] }
+      case 'monthDay':
+        return { kind, day: 1 }
+      case 'nthWeekday':
+        return { kind, nth: 1, day: 1 }
+      case 'yearDay':
+        return { kind, month: 12, day: 31 }
+    }
+  }
+
+  function addRule() {
+    // Only one offered for the journal: a meeting template's text is
+    // instructions to a model, and no day should start with those unasked.
+    const first = templates.for('journal')[0]
+    if (!first) return
+    void setTemplates({
+      ...jt,
+      rules: [...rules, { when: freshWhen('weekdays'), template: first.id }],
+    })
+  }
+
+  function setRule(i: number, rule: TemplateRule) {
+    void setTemplates({ ...jt, rules: rules.map((r, j) => (j === i ? rule : r)) })
+  }
+
+  function removeRule(i: number) {
+    void setTemplates({ ...jt, rules: rules.filter((_, j) => j !== i) })
+  }
+
+  function moveRule(i: number, by: -1 | 1) {
+    const j = i + by
+    if (j < 0 || j >= rules.length) return
+    const next = rules.slice()
+    ;[next[i], next[j]] = [next[j]!, next[i]!]
+    void setTemplates({ ...jt, rules: next })
+  }
+
+  /** Days with `d` flipped. A rule on no days at all is refused by the core. */
+  function flipDay(days: number[], d: number, allowNone: boolean): number[] | null {
+    const next = days.includes(d) ? days.filter((x) => x !== d) : [...days, d].sort((a, b) => a - b)
+    return next.length || allowNone ? next : null
+  }
+
+  function clampInt(raw: string, min: number, max: number, fallback: number): number {
+    const n = Math.round(Number(raw))
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback
+  }
+
+  function ordinal(n: number): string {
+    if (n % 100 >= 11 && n % 100 <= 13) return 'th'
+    return ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'
+  }
+
+  function openTemplates() {
+    onclose()
+    panels.openSettings('templates')
   }
 
   /** Does this journal draw a chip for it? */
@@ -262,6 +402,24 @@
   }
 </script>
 
+{#snippet dayPicker(days: number[], allowNone: boolean, set: (days: number[]) => void)}
+  <div class="days" role="group" aria-label="Days of the week">
+    {#each WEEKDAYS as [n, short, long] (n)}
+      <button
+        class="day"
+        class:on={days.includes(n)}
+        aria-pressed={days.includes(n)}
+        aria-label={long}
+        title={long}
+        onclick={() => {
+          const next = flipDay(days, n, allowNone)
+          if (next) set(next)
+        }}>{short}</button
+      >
+    {/each}
+  </div>
+{/snippet}
+
 <svelte:window
   onkeydown={(e: KeyboardEvent) => {
     if (e.key !== 'Escape') return
@@ -322,6 +480,227 @@
         </div>
       </div>
     </section>
+
+    <!-- ── Template ────────────────────────────────────────────────── -->
+    {#if templates.enabled}
+      <section>
+        <h3>Template</h3>
+        <p class="hint">
+          What a new day's entry starts with. The first rule that matches the day wins; any other
+          day starts from the default.
+          <button class="inline" onclick={openTemplates}>Edit templates</button>
+        </p>
+
+        <label class="lbl">
+          {rules.length ? 'Any other day' : 'Every day'}
+          <select
+            class="text"
+            value={jt.default ?? ''}
+            onchange={(e) => void setTemplates({ ...jt, default: e.currentTarget.value || null })}
+          >
+            <option value="">A blank page</option>
+            {#each choices(jt.default) as t (t.id)}
+              <option value={t.id}>{t.name}</option>
+            {/each}
+          </select>
+        </label>
+
+        {#if rules.length}
+          <ul class="rules">
+            {#each rules as rule, i (i)}
+              {@const w = rule.when}
+              <li class="rule">
+                <div class="when">
+                  <select
+                    class="text"
+                    aria-label="When"
+                    value={w.kind}
+                    onchange={(e) =>
+                      setRule(i, {
+                        ...rule,
+                        when: freshWhen(e.currentTarget.value as When['kind']),
+                      })}
+                  >
+                    {#each WHEN_KINDS as k (k.kind)}
+                      <option value={k.kind}>{k.label}</option>
+                    {/each}
+                  </select>
+
+                  {#if w.kind === 'weekdays'}
+                    {@render dayPicker(w.days, false, (days) =>
+                      setRule(i, { ...rule, when: { ...w, days } }),
+                    )}
+                  {:else if w.kind === 'everyWeeks'}
+                    <div class="params">
+                      every
+                      <input
+                        class="text num"
+                        type="number"
+                        min="1"
+                        max="52"
+                        aria-label="Weeks apart"
+                        value={w.every}
+                        onchange={(e) =>
+                          setRule(i, {
+                            ...rule,
+                            when: { ...w, every: clampInt(e.currentTarget.value, 1, 52, w.every) },
+                          })}
+                      />
+                      weeks, counting from the week of
+                      <input
+                        class="text date"
+                        type="date"
+                        aria-label="Counting from"
+                        value={w.from}
+                        onchange={(e) =>
+                          e.currentTarget.value &&
+                          setRule(i, { ...rule, when: { ...w, from: e.currentTarget.value } })}
+                      />
+                    </div>
+                    {@render dayPicker(w.days, true, (days) =>
+                      setRule(i, { ...rule, when: { ...w, days } }),
+                    )}
+                  {:else if w.kind === 'monthDay'}
+                    <div class="params">
+                      <select
+                        class="text"
+                        aria-label="Day of the month"
+                        value={w.day}
+                        onchange={(e) =>
+                          setRule(i, {
+                            ...rule,
+                            when: { ...w, day: Number(e.currentTarget.value) },
+                          })}
+                      >
+                        {#each Array.from({ length: 31 }, (_, n) => n + 1) as n (n)}
+                          <option value={n}>The {n}{ordinal(n)}</option>
+                        {/each}
+                        <option value={-1}>The last day</option>
+                      </select>
+                    </div>
+                  {:else if w.kind === 'nthWeekday'}
+                    <div class="params">
+                      <select
+                        class="text"
+                        aria-label="Which one"
+                        value={w.nth}
+                        onchange={(e) =>
+                          setRule(i, {
+                            ...rule,
+                            when: { ...w, nth: Number(e.currentTarget.value) },
+                          })}
+                      >
+                        {#each NTH as [n, label] (n)}<option value={n}>{label}</option>{/each}
+                      </select>
+                      <select
+                        class="text"
+                        aria-label="Weekday"
+                        value={w.day}
+                        onchange={(e) =>
+                          setRule(i, {
+                            ...rule,
+                            when: { ...w, day: Number(e.currentTarget.value) },
+                          })}
+                      >
+                        {#each WEEKDAYS as [n, , long] (n)}<option value={n}>{long}</option>{/each}
+                      </select>
+                    </div>
+                  {:else if w.kind === 'yearDay'}
+                    <div class="params">
+                      <select
+                        class="text"
+                        aria-label="Month"
+                        value={w.month}
+                        onchange={(e) => {
+                          const month = Number(e.currentTarget.value)
+                          const last = new Date(2024, month, 0).getDate()
+                          setRule(i, { ...rule, when: { ...w, month, day: Math.min(w.day, last) } })
+                        }}
+                      >
+                        {#each MONTH_NAMES as name, m (name)}<option value={m + 1}>{name}</option
+                          >{/each}
+                      </select>
+                      <input
+                        class="text num"
+                        type="number"
+                        min="1"
+                        max={new Date(2024, w.month, 0).getDate()}
+                        aria-label="Day"
+                        value={w.day}
+                        onchange={(e) =>
+                          setRule(i, {
+                            ...rule,
+                            when: {
+                              ...w,
+                              day: clampInt(
+                                e.currentTarget.value,
+                                1,
+                                new Date(2024, w.month, 0).getDate(),
+                                w.day,
+                              ),
+                            },
+                          })}
+                      />
+                    </div>
+                  {/if}
+                </div>
+
+                <div class="use">
+                  <span class="dim">start from</span>
+                  <select
+                    class="text"
+                    aria-label="Template"
+                    value={rule.template}
+                    onchange={(e) => setRule(i, { ...rule, template: e.currentTarget.value })}
+                  >
+                    {#if !templates.byId(rule.template)}
+                      <option value={rule.template}>A deleted template</option>
+                    {/if}
+                    {#each choices(rule.template) as t (t.id)}
+                      <option value={t.id}>{t.name}</option>
+                    {/each}
+                  </select>
+                  <button
+                    class="mini"
+                    aria-label="Move up"
+                    disabled={i === 0}
+                    onclick={() => moveRule(i, -1)}
+                  >
+                    <span class="up"><Icon name="chevron" size={13} /></span>
+                  </button>
+                  <button
+                    class="mini"
+                    aria-label="Move down"
+                    disabled={i === rules.length - 1}
+                    onclick={() => moveRule(i, 1)}
+                  >
+                    <span class="down"><Icon name="chevron" size={13} /></span>
+                  </button>
+                  <button class="mini" aria-label="Remove rule" onclick={() => removeRule(i)}>
+                    <Icon name="close" size={13} />
+                  </button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
+        {#if templates.loaded && templates.for('journal').length === 0}
+          <p class="hint">
+            No template is offered for the journal yet.
+            <button class="inline" onclick={openTemplates}>Make one</button>
+          </p>
+        {:else}
+          <button
+            class="btn btn-outline"
+            disabled={templates.for('journal').length === 0}
+            onclick={addRule}
+          >
+            <Icon name="plus" size={13} /> Add a rule for some days
+          </button>
+        {/if}
+      </section>
+    {/if}
 
     <!-- ── Tracking ────────────────────────────────────────────────── -->
     {#if enabled}
@@ -748,6 +1127,114 @@
   }
   .text.mid {
     font-variant-numeric: tabular-nums;
+  }
+
+  .rules {
+    display: grid;
+    gap: var(--sp-3);
+    margin: 0 0 var(--sp-3);
+    padding: 0;
+    list-style: none;
+  }
+
+  .rule {
+    display: grid;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+  }
+
+  .rule .text {
+    margin-top: 0;
+  }
+
+  .when,
+  .params,
+  .use {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+  }
+
+  .when > select.text,
+  .use > select.text {
+    width: auto;
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+
+  .when > .params {
+    flex: 1 1 16rem;
+  }
+
+  .params > select.text {
+    width: auto;
+    flex: 1 1 6rem;
+    min-width: 0;
+  }
+
+  .text.num {
+    width: 4.5rem;
+  }
+
+  .text.date {
+    width: auto;
+  }
+
+  .days {
+    display: flex;
+    gap: 4px;
+  }
+
+  .day {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
+  .day.on {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--bg);
+  }
+
+  .dim {
+    color: var(--fg-subtle);
+  }
+
+  .mini {
+    display: inline-grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--radius-sm);
+    color: var(--fg-subtle);
+  }
+
+  .mini:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--bg-hover);
+  }
+
+  .mini:disabled {
+    opacity: 0.35;
+  }
+
+  .inline {
+    color: var(--accent);
+    font: inherit;
+  }
+
+  .inline:hover {
+    text-decoration: underline;
   }
 
   .swatches {

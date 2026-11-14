@@ -28,6 +28,11 @@ pub(super) struct Unlocked {
     /// for the vault password a second time. Dropped, with the key inside
     /// it, by [`Vault::lock`].
     pub(super) cipher: Arc<dyn Cipher>,
+    /// The meeting settings' old template list is known to have been moved
+    /// into the templates table -- see `Vault::migrate_meeting_templates`.
+    /// Held here so the check costs nothing after the first read of a
+    /// session, and set under the write lock the move itself runs under.
+    pub(super) templates_moved: bool,
 }
 
 /// Which optional facade a call wants from the backend.

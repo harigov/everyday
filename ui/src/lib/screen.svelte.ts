@@ -60,6 +60,8 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   screentime:
     'the Screen time tab, whether this computer records which app or site is in use, and how',
   meetings: 'the Meetings tab',
+  templates:
+    'the Templates tab, the shapes their journal entries, notes and meeting notes start from',
   keepintouch: 'the Keeping in touch tab, how often to keep up with people',
   data: 'the Data tab, import and export',
   vault: 'the Vault tab',

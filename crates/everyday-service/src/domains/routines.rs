@@ -352,7 +352,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     },
     command! {
         name: "routine_templates", scope: Agent, effect: Read,
-        args: Nothing, returns: "Template[]", signature: &[],
+        args: Nothing, returns: "RoutineTemplate[]", signature: &[],
         run: routine_templates,
     },
 ];

@@ -11,9 +11,11 @@ use crate::command;
 use crate::ctx::Ctx;
 use crate::error::CommandResult;
 use crate::service::Service;
-use everyday_core::NoteId;
+use everyday_core::model::{local_date_in, system_tz};
 use everyday_core::note::{Note, NoteSummary};
 use everyday_core::store::notes::NoteQuery;
+use everyday_core::template::Context;
+use everyday_core::{NoteId, TemplateId};
 use jiff::Timestamp;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -46,6 +48,15 @@ pub struct ForceNote {
     pub note: Note,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewNote {
+    /// Start it from this template, filled in for today. Absent for a blank
+    /// note.
+    #[serde(default)]
+    pub template_id: Option<TemplateId>,
+}
+
 async fn list_notes(svc: Arc<Service>, _ctx: Ctx, args: Notes) -> CommandResult<Vec<NoteSummary>> {
     svc.on_vault(move |vault| vault.notes(&args.query)).await
 }
@@ -54,13 +65,25 @@ async fn get_note(svc: Arc<Service>, _ctx: Ctx, args: NoteRef) -> CommandResult<
     svc.on_vault(move |vault| vault.note(args.id)).await
 }
 
-/// Mint a note without saving it.
+/// Mint a note without saving it, blank or started from a template.
 ///
 /// The same shape as `new_entry`: the id and the timestamps are the core's to
 /// make, never the interface's, and an empty note that was never typed into
 /// should not be a row.
-async fn new_note(_svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Note> {
-    Ok(Note::new(""))
+async fn new_note(svc: Arc<Service>, _ctx: Ctx, args: NewNote) -> CommandResult<Note> {
+    let Some(id) = args.template_id else {
+        return Ok(Note::new(""));
+    };
+    svc.on_vault(move |vault| {
+        let template = vault.template(id)?;
+        let today = local_date_in(Timestamp::now(), &system_tz());
+        let filled = template.render(&Context { date: today, journal: None });
+        let mut note = Note::new(filled.title);
+        note.body = filled.body;
+        note.tags = filled.tags;
+        Ok(note)
+    })
+    .await
 }
 
 async fn save_note(svc: Arc<Service>, _ctx: Ctx, args: SaveNote) -> CommandResult<()> {
@@ -95,7 +118,8 @@ pub static COMMANDS: &[crate::command::Command] = &[
     },
     command! {
         name: "new_note", scope: Notes, effect: Read,
-        args: Nothing, returns: "Note", signature: &[],
+        args: NewNote, returns: "Note",
+        signature: &[("templateId", "TemplateId | null", false)],
         run: new_note,
     },
     command! {

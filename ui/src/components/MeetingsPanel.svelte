@@ -17,11 +17,12 @@
   import { humanBytes, plural, relativeTime } from '../lib/format'
   import { meetings } from '../lib/meetings.svelte'
   import { formatRealtimeFactor, isTooSlow } from '../lib/meetings-format'
+  import { panels } from '../lib/panels.svelte'
   import { purpose } from '../lib/purpose.svelte'
+  import { templates } from '../lib/templates.svelte'
   import type {
     LocalModel,
     MeetingSettings,
-    NoteTemplate,
     Offer,
     SpeechModelInfo,
     TranscriberConfig,
@@ -175,55 +176,20 @@
     draft.skippedSeries = draft.skippedSeries.filter((s) => s !== uid)
   }
 
-  // ── Templates ───────────────────────────────────────────────────────
+  // ── Template ────────────────────────────────────────────────────────
+  //
+  // Templates are one list now, shared with the journal and notes and edited
+  // in Settings → Templates. All that is the meetings' own is which one a
+  // recording is written up from when nobody picked one.
 
-  let editingTemplateId = $state<string | null>(null)
-  const editingTemplate = $derived(draft?.templates.find((t) => t.id === editingTemplateId) ?? null)
-  let lintMessages = $state<string[]>([])
-  let linting = $state(false)
-  let previewing = $state(false)
-  let previewText = $state<string | null>(null)
-  let previewError = $state<string | null>(null)
-  let pendingTemplateDelete = $state<NoteTemplate | null>(null)
+  void templates.load()
 
-  async function addTemplate() {
-    if (!draft) return
-    const t = await meetings.newTemplate()
-    draft.templates = [...draft.templates, t]
-    editingTemplateId = t.id
-  }
-
-  function deleteTemplate(t: NoteTemplate) {
-    if (!draft || draft.templates.length <= 1) return
-    draft.templates = draft.templates.filter((x) => x.id !== t.id)
-    if (draft.defaultTemplate === t.id) draft.defaultTemplate = draft.templates[0]?.id ?? null
-    if (editingTemplateId === t.id) editingTemplateId = null
-    pendingTemplateDelete = null
-  }
-
-  async function lintNow() {
-    if (!editingTemplate) return
-    linting = true
-    try {
-      lintMessages = await meetings.lintTemplate(editingTemplate.body)
-    } finally {
-      linting = false
-    }
-  }
-
-  async function previewNow() {
-    if (!editingTemplate) return
-    previewing = true
-    previewError = null
-    previewText = null
-    try {
-      previewText = await meetings.previewTemplate(editingTemplate.body)
-    } catch (e) {
-      previewError = e instanceof Error ? e.message : String(e)
-    } finally {
-      previewing = false
-    }
-  }
+  /** Offered for meetings, plus whatever the default names if it is not. */
+  const meetingTemplates = $derived.by(() => {
+    const offered = templates.for('meetings')
+    const current = templates.byId(draft?.defaultTemplate)
+    return current && !offered.includes(current) ? [...offered, current] : offered
+  })
 
   // ── Voices ──────────────────────────────────────────────────────────
 
@@ -590,85 +556,25 @@
     </section>
 
     <section>
-      <span class="eyebrow">Templates</span>
-      <div class="presets">
-        {#each draft.templates as t (t.id)}
-          <button
-            class="chip"
-            class:on={editingTemplateId === t.id}
-            onclick={() => {
-              editingTemplateId = t.id
-              lintMessages = []
-              previewText = null
-              previewError = null
-            }}
-          >
-            {t.name}
-            {#if draft.defaultTemplate === t.id}<Icon name="star" size={11} />{/if}
-          </button>
-        {/each}
-        <button class="btn" onclick={() => void addTemplate()}>
-          <Icon name="plus" size={13} /> Add
+      <span class="eyebrow">Template</span>
+      <label class="setting">
+        <span>Write notes from</span>
+        <select bind:value={draft.defaultTemplate}>
+          {#if meetingTemplates.length === 0}
+            <option value={null}>The built-in meeting notes</option>
+          {/if}
+          {#each meetingTemplates as t (t.id)}
+            <option value={t.id}>{t.name}</option>
+          {/each}
+        </select>
+      </label>
+      <p class="hint">
+        Shared with the journal and notes: a heading is kept as written, and the text under it tells
+        the model what to write there.
+        <button class="linkish" onclick={() => panels.openSettings('templates')}>
+          Edit templates
         </button>
-      </div>
-
-      {#if editingTemplate}
-        {@const t = editingTemplate}
-        <label class="setting">
-          <span>Name</span>
-          <input
-            value={t.name}
-            oninput={(e) => (t.name = e.currentTarget.value)}
-            spellcheck="false"
-          />
-        </label>
-        <div class="row">
-          <button
-            class="btn"
-            disabled={draft.defaultTemplate === t.id}
-            onclick={() => draft && (draft.defaultTemplate = t.id)}
-          >
-            {draft.defaultTemplate === t.id ? 'Default template' : 'Make default'}
-          </button>
-          <button
-            class="btn"
-            disabled={draft.templates.length <= 1}
-            title={draft.templates.length <= 1 ? 'The last template cannot be deleted' : ''}
-            onclick={() => (pendingTemplateDelete = t)}
-          >
-            Delete
-          </button>
-        </div>
-        <textarea
-          class="body"
-          rows="12"
-          value={t.body}
-          oninput={(e) => (t.body = e.currentTarget.value)}
-          spellcheck="false"
-        ></textarea>
-        <p class="hint">
-          <code>{'{{title}}'}</code> <code>{'{{date}}'}</code> <code>{'{{start}}'}</code>
-          <code>{'{{end}}'}</code> <code>{'{{duration}}'}</code> <code>{'{{organizer}}'}</code>
-          <code>{'{{attendees}}'}</code> <code>{'{{present}}'}</code> <code>{'{{calendar}}'}</code>
-          — a heading is kept as written; the text under it is an instruction the model replaces. A heading
-          of <code>{'{{topics}}'}</code> becomes one section per topic discussed.
-        </p>
-        <div class="row">
-          <button class="btn" disabled={linting} onclick={() => void lintNow()}>
-            {linting ? 'Checking…' : 'Check for problems'}
-          </button>
-          <button class="btn" disabled={previewing} onclick={() => void previewNow()}>
-            {previewing ? 'Rendering…' : 'Preview'}
-          </button>
-        </div>
-        {#if lintMessages.length > 0}
-          <ul class="lint">
-            {#each lintMessages as m (m)}<li>{m}</li>{/each}
-          </ul>
-        {/if}
-        {#if previewError}<p class="notice err">{previewError}</p>{/if}
-        {#if previewText}<pre class="preview">{previewText}</pre>{/if}
-      {/if}
+      </p>
     </section>
 
     <section>
@@ -774,16 +680,6 @@
   </div>
 {/snippet}
 
-{#if pendingTemplateDelete}
-  <ConfirmDialog
-    title="Delete this template?"
-    detail={`"${pendingTemplateDelete.name}" will be gone. Notes already written from it keep their text.`}
-    confirmLabel="Delete template"
-    onconfirm={() => deleteTemplate(pendingTemplateDelete!)}
-    oncancel={() => (pendingTemplateDelete = null)}
-  />
-{/if}
-
 {#if pendingVoiceDelete}
   <ConfirmDialog
     title="Delete this voice?"
@@ -855,6 +751,14 @@
     overflow-wrap: anywhere;
   }
 
+  .linkish {
+    color: var(--accent);
+    font: inherit;
+  }
+  .linkish:hover {
+    text-decoration: underline;
+  }
+
   .presets {
     display: flex;
     flex-wrap: wrap;
@@ -892,7 +796,8 @@
     color: var(--fg-muted);
   }
   input,
-  textarea {
+  textarea,
+  select {
     width: 100%;
     min-width: 0;
     padding: var(--sp-2) var(--sp-3);
@@ -911,7 +816,8 @@
     accent-color: var(--accent);
   }
   input:focus,
-  textarea:focus {
+  textarea:focus,
+  select:focus {
     outline: none;
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);
@@ -919,31 +825,6 @@
 
   textarea.terms {
     resize: vertical;
-  }
-
-  textarea.body {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    line-height: var(--leading-normal);
-    resize: vertical;
-  }
-
-  pre.preview {
-    padding: var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-sunken);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-
-  ul.lint {
-    margin: 0;
-    padding-left: var(--sp-5);
-    color: var(--warning, var(--fg-muted));
-    font-size: var(--text-sm);
   }
 
   .model-row {
@@ -1096,14 +977,6 @@
     box-shadow: var(--shadow-sm);
   }
 
-  code {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    padding: 1px 4px;
-    border-radius: 4px;
-    background: var(--bg-sunken);
-  }
-
   .save {
     display: flex;
     align-items: center;
@@ -1118,8 +991,5 @@
     min-width: 0;
     font-size: var(--text-sm);
     color: var(--fg-muted);
-  }
-  .notice.err {
-    color: var(--danger);
   }
 </style>

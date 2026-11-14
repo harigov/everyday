@@ -135,7 +135,9 @@ import type {
   TaskId,
   TaskQuery,
   TaskStatus,
+  Template,
   TemplateId,
+  TemplateUse,
   ThreadFilter,
   InboxSendersArgs,
   ThreadId,
@@ -778,8 +780,6 @@ export const api = {
   meetingSettings: () => call('meetingSettings', {}),
   saveMeetingSettings: (settings: MeetingSettings) => call('saveMeetingSettings', { settings }),
   setTranscriberKey: (key: string | null) => call('setTranscriberKey', { key }),
-  newMeetingTemplate: () => call('newMeetingTemplate', {}),
-  lintMeetingTemplate: (body: string) => call('lintMeetingTemplate', { body }),
   /** Renders with the real model -- may be slow, and may fail. */
   previewMeetingTemplate: (body: string) => call('previewMeetingTemplate', { body }),
   /** Probe the configured transcriber backend. Rejects with the failure text. */
@@ -969,7 +969,8 @@ export const api = {
 
   notes: (query: NoteQuery = {}) => call('listNotes', { query }),
   note: (id: NoteId) => call('getNote', { id }),
-  newNote: () => call('newNote', {}),
+  /** A note to start: blank, or from a template filled in for today. */
+  newNote: (templateId: TemplateId | null = null) => call('newNote', { templateId }),
   /**
    * Save a note, refusing to overwrite an edit made since `expect` was read.
    *
@@ -985,6 +986,25 @@ export const api = {
   saveNoteForce: (note: Note) => call('saveNoteForce', { note }),
   deleteNote: (id: NoteId) => call('deleteNote', { id }),
   noteTags: () => call('noteTags', {}),
+
+  // ── Templates ──
+  //
+  // One list for the journal, notes and meeting notes. Applying one is not
+  // here: `newEntry` and `newNote` fill a template in themselves.
+
+  templates: () => call('listTemplates', {}),
+  /** A template with an id and starting text, not saved. */
+  newTemplate: (uses: TemplateUse[] = []) => call('newTemplate', { uses }),
+  saveTemplate: (template: Template) => call('saveTemplate', { template }),
+  deleteTemplate: (id: TemplateId) => call('deleteTemplate', { id }),
+  /** What is wrong with it, in words. Never a reason a save is refused. */
+  lintTemplate: (template: Template) => call('lintTemplate', { template }),
+  /** Filled in for `date` (today when null), as "Insert template" puts it. */
+  renderTemplate: (
+    template: Template,
+    date: string | null = null,
+    journalId: JournalId | null = null,
+  ) => call('renderTemplate', { template, date, journalId }),
 
   /**
    * Import a file the user dropped or picked; returns its content address.

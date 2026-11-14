@@ -592,7 +592,10 @@ impl TranscriberConfig {
     }
 }
 
-/// A note shape. See [`template`] for what the body means.
+/// A meeting template as builds before shared templates stored it: inside
+/// [`MeetingSettings`]. Read once, moved into the templates table as a
+/// [`crate::template::Template`] offered for meetings, and never written
+/// again -- see [`MeetingSettings::legacy_templates`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
@@ -600,6 +603,23 @@ pub struct NoteTemplate {
     pub id: TemplateId,
     pub name: String,
     pub body: String,
+}
+
+impl NoteTemplate {
+    /// The shared record this becomes.
+    pub fn into_template(self) -> crate::template::Template {
+        let now = jiff::Timestamp::now();
+        crate::template::Template {
+            id: self.id,
+            name: self.name,
+            uses: vec![crate::template::TemplateUse::Meetings],
+            title: String::new(),
+            body: self.body,
+            tags: Vec::new(),
+            created_at: now,
+            updated_at: now,
+        }
+    }
 }
 
 /// Everything the meetings feature is configured by. Sealed in the vault.
@@ -624,7 +644,30 @@ pub struct MeetingSettings {
     pub use_assistant_key: bool,
     /// BCP-47-ish language code, or `None` to detect.
     pub language: Option<String>,
-    pub templates: Vec<NoteTemplate>,
+    /// Where meeting templates were kept before they became shared
+    /// [`crate::template::Template`]s: written by older builds, read once
+    /// by `Vault::migrate_meeting_templates`, which moves them into the
+    /// templates table and sets [`MeetingSettings::templates_moved`].
+    ///
+    /// Seeded with the starter by [`Default`], as it always was, so a vault
+    /// that has never saved meeting settings moves the starter in too --
+    /// which is how a new vault comes to have one. Written empty once moved,
+    /// rather than left out, so a saved row reads back exactly as it was and
+    /// an older build opening it finds an empty list (and falls back to its
+    /// own starter) rather than a default one.
+    #[serde(rename = "templates")]
+    pub legacy_templates: Vec<NoteTemplate>,
+    /// Set once [`MeetingSettings::legacy_templates`] has been moved, after
+    /// which it is ignored. Needed beside the emptied list because a payload
+    /// that names no list at all -- a form that never knew of it -- is given
+    /// the seeded starter by `Default`, and only this says not to move it
+    /// back in after somebody deleted it. Owned by the vault:
+    /// `Vault::save_meeting_settings` never lets a caller turn it off.
+    pub templates_moved: bool,
+    /// The template a recording is written up from when nobody picked one.
+    /// A [`crate::template::Template`]'s id; see
+    /// [`crate::template::for_meeting`] for what happens when it names one
+    /// that is gone.
     pub default_template: Option<TemplateId>,
     /// Off by default: voiceprints are biometric data.
     pub voiceprints: bool,
@@ -639,17 +682,15 @@ pub struct MeetingSettings {
 }
 
 impl Default for MeetingSettings {
-    // Seeds `templates` with [`template::starter`], so a fresh install
-    // offers one template rather than none. `#[serde(default)]` on this
-    // struct means *every* JSON decode of a `MeetingSettings`, not just a
-    // genuinely absent settings row, builds one of these first and overlays
-    // whatever the payload actually named on top -- so a fully-populated,
-    // already-saved settings row calls this too, and simply has its
-    // `templates` overwritten by its own. [`MeetingSettings::template`]
-    // falls back to `starter` regardless whenever `templates` is empty, for
-    // a settings row saved before this field existed at all.
+    // Seeds `legacy_templates` with the starter, so a fresh install moves
+    // one template into the table rather than none. `#[serde(default)]` on
+    // this struct means *every* JSON decode of a `MeetingSettings`, not just
+    // a genuinely absent settings row, builds one of these first and
+    // overlays whatever the payload actually named on top -- which is why
+    // `templates_moved`, not an empty list, is what says the move is done.
     fn default() -> Self {
         let starter = template::starter();
+        let starter = NoteTemplate { id: starter.id, name: starter.name, body: starter.body };
         Self {
             enabled: false,
             offer: Offer::Ask,
@@ -660,26 +701,13 @@ impl Default for MeetingSettings {
             use_assistant_key: false,
             language: None,
             default_template: Some(starter.id),
-            templates: vec![starter],
+            legacy_templates: vec![starter],
+            templates_moved: false,
             voiceprints: false,
             auto_stop: true,
             summary_budget: None,
             vocabulary: Vec::new(),
         }
-    }
-}
-
-impl MeetingSettings {
-    /// The template to use: the one asked for, else the default, else the
-    /// first, else the built-in starter.
-    pub fn template(&self, id: Option<TemplateId>) -> NoteTemplate {
-        let pick = |want: Option<TemplateId>| {
-            want.and_then(|w| self.templates.iter().find(|t| t.id == w).cloned())
-        };
-        pick(id)
-            .or_else(|| pick(self.default_template))
-            .or_else(|| self.templates.first().cloned())
-            .unwrap_or_else(template::starter)
     }
 }
 

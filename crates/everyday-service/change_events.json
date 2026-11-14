@@ -61,6 +61,18 @@
       ]
     },
     {
+      "command": "save_template",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "template",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_profile",
       "events": [
         {

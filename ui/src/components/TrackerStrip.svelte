@@ -357,7 +357,7 @@
           <LogReading
             {journalId}
             {date}
-            entryId={app.entry?.id ?? null}
+            entryId={app.storedEntryId}
             onclose={() => (logging = false)}
           />
         </div>
