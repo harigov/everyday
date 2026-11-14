@@ -17,6 +17,7 @@ import { pref } from './prefs'
 import { windowControls } from './window.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
+import { mergeTags } from './tags'
 import { todayIso } from './time'
 import type {
   Bootstrap,
@@ -244,6 +245,25 @@ class AppState {
    * and has never successfully written.
    */
   #baseVersion: string | null = null
+  /**
+   * The open entry, when it was started from a template and the vault does
+   * not have it yet.
+   *
+   * A day started from a template holds the template and nothing of the
+   * person's. Writing that would file a day nobody wrote -- a row in the
+   * list, a page insights and dreams read as theirs -- so it stays in the
+   * editor until something is typed into it, and one left untouched is
+   * simply dropped. A blank page is still saved the moment it is made, as
+   * it always was.
+   *
+   * Two markers, because "nothing typed yet" ends on the first keystroke and
+   * "not in the vault" only when that keystroke's save lands: `#untouched`
+   * says whether a write should happen at all, `#unstored` that the first
+   * one is a create -- and that until it lands, the list cannot show the
+   * page and must not be read as having lost it.
+   */
+  #untouched = $state<EntryId | null>(null)
+  #unstored = $state<EntryId | null>(null)
   /**
    * The `updatedAt` and request id of the write currently being attempted.
    *
@@ -796,6 +816,8 @@ class AppState {
     this.#saveTimer = null
     this.#retryDelay = null
     this.#baseVersion = null
+    this.#untouched = null
+    this.#unstored = null
     this.conflict = false
     for (const reset of this.#resetHooks) reset()
     this.entry = null
@@ -1032,7 +1054,10 @@ class AppState {
       this.#lastListRefresh = Date.now()
       await this.refreshRows()
       // Keep a selection if it is still in view; otherwise open the newest.
-      if (!this.entries.some((e) => e.id === this.selectedEntry)) {
+      // A page started from a template that the vault does not have yet is
+      // never in the list, and is kept all the same -- while the list is
+      // still one it belongs in. Picking another journal leaves it.
+      if (!this.entries.some((e) => e.id === this.selectedEntry) && !this.#heldPageInView()) {
         const first = this.entries[0]
         if (first) await this.openEntry(first.id)
         else {
@@ -1045,12 +1070,28 @@ class AppState {
     }
   }
 
+  /** The unsaved templated page is open and the list on screen is one it
+   *  would be in: its own journal or all of them, not starred-only. */
+  #heldPageInView(): boolean {
+    const entry = this.entry
+    if (!entry || this.#unstored !== entry.id || this.selectedEntry !== entry.id) return false
+    return (
+      !this.showStarredOnly &&
+      (this.selectedJournal === null || this.selectedJournal === entry.journalId)
+    )
+  }
+
   async openEntry(id: EntryId) {
     // Never let a pending autosave land after we have switched documents,
     // and do not leave the row we are switching away from showing the title
     // it had a few seconds ago.
     await this.flush()
     await this.settleList()
+    // Leaving a page started from a template that nothing was typed into
+    // drops it; it was never written. (One that was typed into was written
+    // by the flush above.) See `#untouched`.
+    if (this.#untouched !== id) this.#untouched = null
+    if (this.#unstored !== id) this.#unstored = null
     this.selectedEntry = id
     try {
       this.entry = await api.entry(id)
@@ -1115,13 +1156,20 @@ class AppState {
     }
 
     let entry: Entry
+    let templated = false
     try {
       entry = await api.newEntry(journalId)
-      await api.saveEntry(entry, null)
+      // The backend fills in the journal's template for the day; a page that
+      // came back with anything on it is held unsaved -- see `#untouched`.
+      templated = !!entry.title.trim() || !isBlankDoc(entry.body)
+      if (!templated) await api.saveEntry(entry, null)
     } catch (e) {
       return void (await handle(e))
     }
-    this.#baseVersion = entry.updatedAt
+    this.#untouched = templated ? entry.id : null
+    this.#unstored = templated ? entry.id : null
+    // Nothing stored yet means the first write is a create.
+    this.#baseVersion = templated ? null : entry.updatedAt
     this.conflict = false
     this.entry = entry
     this.selectedEntry = entry.id
@@ -1160,6 +1208,9 @@ class AppState {
    * keystroke. Only the delay is shared, so all three agree on it.
    */
   scheduleSave() {
+    // Something was typed, so a page started from a template is somebody's
+    // writing now and is saved like any other.
+    if (this.#untouched === this.entry?.id) this.#untouched = null
     // The text has moved, so any write still being retried is superseded: it
     // must not be answered from the record, because the record holds the
     // *older* text. A new stamp is minted by the next attempt.
@@ -1179,6 +1230,47 @@ class AppState {
    * over an edit nobody else touched. Ctrl+S landing on top of an autosave,
    * or the close handshake landing on top of either, is all it took.
    */
+  /**
+   * Add a page that was never written to the day's entry that turned up in
+   * the meantime, and open that one: its text after theirs, its tags and
+   * pictures added, its title only if theirs has none. Nothing typed is
+   * lost, and the day stays one entry.
+   */
+  async #mergeInto(id: EntryId, page: Entry) {
+    const day = await api.entry(id)
+    const theirs = day.body.content ?? []
+    const mine = $state.snapshot(page.body).content ?? []
+    day.body = { ...day.body, content: [...theirs, ...mine] }
+    if (!day.title.trim()) day.title = page.title
+    day.tags = mergeTags(day.tags, page.tags)
+    day.attachments = [...day.attachments, ...page.attachments]
+    const expect = day.updatedAt
+    day.updatedAt = new Date().toISOString()
+    await api.saveEntry(day, expect)
+    this.#untouched = null
+    this.#unstored = null
+    if (this.entry?.id === page.id) {
+      this.entry = day
+      this.selectedEntry = day.id
+      this.#baseVersion = day.updatedAt
+    }
+    notify.info("Today's entry had already been started", {
+      body: 'What you wrote here was added to the end of it.',
+      key: 'entry-today',
+    })
+  }
+
+  /**
+   * Write the open entry now, even if it is a page started from a template
+   * that nothing has been typed into -- for what reads it back from the vault
+   * ("Read the day back", "Suggest a title"), which has nothing to read
+   * otherwise.
+   */
+  commit(): Promise<void> {
+    if (this.#untouched === this.entry?.id) this.#untouched = null
+    return this.flush()
+  }
+
   flush(): Promise<void> {
     if (this.#saveTimer) {
       clearTimeout(this.#saveTimer)
@@ -1196,6 +1288,9 @@ class AppState {
     // only be refused again, and the author has a choice in front of them.
     if (this.conflict) return
     this.syncBody()
+    // A page that still holds only its template is not written -- see
+    // `#untouched`.
+    if (this.#untouched === entry.id) return
     this.saving = true
     try {
       // One stamp per *logical* write, reused by every retry of it.
@@ -1210,8 +1305,29 @@ class AppState {
       // text moves under it.
       this.#writeStamp ??= { updatedAt: new Date().toISOString(), requestId: newRequestId() }
       const stamp = this.#writeStamp
+      // The first write of a page held unsaved is a create, and the day may
+      // have been started meanwhile -- by another window, or the assistant
+      // -- since nothing of this one was there for them to find. One entry
+      // per journal per day holds by adding this page to that one rather
+      // than filing a second.
+      if (this.#unstored === entry.id) {
+        const twin = (
+          await api.entries({
+            journalId: entry.journalId,
+            from: entry.localDate,
+            to: entry.localDate,
+            limit: 1,
+          })
+        )[0]
+        if (twin && twin.id !== entry.id) {
+          this.#writeStamp = null
+          await this.#mergeInto(twin.id, entry)
+          return
+        }
+      }
       entry.updatedAt = stamp.updatedAt
       await api.saveEntry($state.snapshot(entry), this.#baseVersion, stamp.requestId)
+      if (this.#unstored === entry.id) this.#unstored = null
       this.#writeStamp = null
       this.#baseVersion = entry.updatedAt
       this.lastSaved = entry.updatedAt
@@ -1283,6 +1399,24 @@ class AppState {
     }
   }
 
+  /** The open entry was started from a template and nothing has been typed
+   *  into it, so it has not been written. See `#untouched`. */
+  get untouched(): boolean {
+    return this.#untouched !== null && this.#untouched === this.entry?.id
+  }
+
+  /**
+   * The open entry's id, if the vault has it -- what a reading, the
+   * assistant or anything else that stores a pointer to "this entry" should
+   * use. `null` for a page that has not been written yet: a pointer to it
+   * would name nothing once the page was left.
+   */
+  get storedEntryId(): EntryId | null {
+    const entry = this.entry
+    if (!entry || this.#unstored === entry.id) return null
+    return entry.id
+  }
+
   /** True while a failed save is still being retried. */
   get saveFailing(): boolean {
     return this.#retryDelay !== null
@@ -1349,6 +1483,12 @@ class AppState {
       this.entry = null
       this.selectedEntry = null
     }
+    if (this.#unstored === id) {
+      // Never written, so there is nothing to delete but the page itself.
+      this.#untouched = null
+      this.#unstored = null
+      return void (await this.refreshEntries())
+    }
     try {
       await api.deleteEntry(id)
     } catch (e) {
@@ -1367,6 +1507,15 @@ class AppState {
    * holds summaries, and writing one back would drop the body.
    */
   async #editEntry(id: EntryId, change: (entry: Entry) => void) {
+    // The open page has not been written yet: change it and let the write
+    // path create it, which is the one place the day is checked for a twin.
+    if (this.entry?.id === id && this.#unstored === id) {
+      change(this.entry)
+      this.#untouched = null
+      await this.flush()
+      await this.refreshEntries()
+      return
+    }
     try {
       // The same object, when it is the open one: mutating it is what puts
       // the star on the entry behind the list without a second read.
@@ -1504,7 +1653,9 @@ class AppState {
     return {
       view: this.showStarredOnly ? 'starred entries' : null,
       within: seen('journal', this.selectedJournal, this.journal?.name ?? ''),
-      open: seen('entry', entry?.id, entry?.title ?? ''),
+      // Not a page that has not been written: the assistant would be handed
+      // an id no tool can find.
+      open: seen('entry', this.storedEntryId, entry?.title ?? ''),
       query: this.query,
     }
   }
@@ -1533,3 +1684,10 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 // apply it to. Here rather than in that file so it depends on nothing, which
 // is what lets `autosave.ts` be tested without a window. See its header.
 setPolicy({ lock: () => app.lock(), report: (message) => (app.error = message) })
+
+/** Whether a document is the empty page a new entry starts as: nothing, or one
+ *  empty paragraph. Anything else came from a template. */
+function isBlankDoc(doc: Entry['body']): boolean {
+  const blocks = (doc.content ?? []) as { type?: string; content?: unknown[] }[]
+  return blocks.every((b) => b.type === 'paragraph' && !b.content?.length)
+}

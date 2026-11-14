@@ -3,15 +3,16 @@
 use serde_json::{Value, json};
 
 use super::{
-    Args, Built, Tool, ToolContext, delete_built, describe_by_id, done, flag, limit_arg, list,
-    load_by_id, run_delete, schema, text,
+    Args, Built, Tool, ToolContext, delete_built, describe_by_id, done, empty_schema, flag,
+    limit_arg, list, load_by_id, run_delete, schema, text,
 };
 use crate::error::{Error, Result};
-use crate::id::NoteId;
+use crate::id::{NoteId, TemplateId};
 use crate::note::{Note, NoteSummary};
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::richtext::RichDoc;
 use crate::store::notes::{NoteQuery, NoteSort};
+use crate::template::{Context, Template};
 use crate::timestamped::Timestamped;
 
 pub(super) static TOOLS: &[Tool] = &[
@@ -41,17 +42,42 @@ pub(super) static TOOLS: &[Tool] = &[
         run_get_note
     ),
     tool!(
+        "list_templates",
+        Read,
+        Notes,
+        empty_schema(),
+        "The templates they keep: shapes a journal entry, a note or a meeting's notes \
+         start from, each with where it is offered and its text. In the text, {{date}}, \
+         {{weekday}}, {{week}} and the like are filled in for the day it is used, and the \
+         line under each heading is a prompt the writer answers. To start writing from \
+         one, pass its name to create_entry or create_note as `template`.",
+        run_list_templates
+    ),
+    tool!(
         "create_note",
         Write,
         Notes,
         schema(
             vec![
                 ("title", text("What to call it. Worth setting: notes are found by name.")),
-                ("body", text("The text. Markdown: paragraphs, headings, lists, tables.")),
+                (
+                    "body",
+                    text(
+                        "The text. Markdown: paragraphs, headings, lists, tables. Required \
+                         unless a template is given, after whose text it goes."
+                    )
+                ),
+                (
+                    "template",
+                    text(
+                        "Start it from this template, by name or id from list_templates, \
+                         filled in for today."
+                    )
+                ),
                 ("tags", list("Tags to attach.")),
                 ("pinned", flag("Keep it at the top of the list.")),
             ],
-            &["body"]
+            &[]
         ),
         "Write a note. This is where anything longer than a couple of paragraphs \
          belongs \u{2014} a report, a plan, a summary, a list of what you found. Prefer it \
@@ -147,23 +173,81 @@ fn run_get_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }))
 }
 
+fn run_list_templates(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
+    let templates = ctx.vault.templates()?;
+    Ok(json!({
+        "count": templates.len(),
+        "templates": templates.iter().map(|t| json!({
+            "id": t.id.to_string(),
+            "name": t.name,
+            "for": t.uses,
+            "title": t.title,
+            "tags": t.tags,
+            "text": t.body,
+        })).collect::<Vec<_>>(),
+    }))
+}
+
+/// A template named by id or by name -- case and spacing aside, the way
+/// `read_skill` finds a skill.
+pub(super) fn find_template(ctx: &ToolContext<'_>, wanted: &str) -> Result<Template> {
+    let all = ctx.vault.templates()?;
+    if let Ok(id) = TemplateId::parse(wanted.trim())
+        && let Some(t) = all.iter().find(|t| t.id == id)
+    {
+        return Ok(t.clone());
+    }
+    let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    all.into_iter().find(|t| norm(&t.name) == norm(wanted)).ok_or_else(|| {
+        Error::Invalid(format!("there is no template called {wanted:?}: list_templates names them"))
+    })
+}
+
+/// A template's text filled in for `ctx`, with `body` after it -- the body
+/// of an entry or a note started from one. Markdown.
+pub(super) fn templated_body(template: &Template, ctx: &Context, body: Option<&str>) -> String {
+    let filled = crate::template::fill(&template.body, ctx);
+    match body.map(str::trim).filter(|b| !b.is_empty()) {
+        Some(body) => format!("{}\n\n{body}", filled.trim_end()),
+        None => filled,
+    }
+}
+
 /// Everything `create_note` does to build the record, without saving it --
 /// the half `run_create_note` and `build_create_note` share.
-fn note_from_create_args(args: &Args<'_>) -> Result<Note> {
-    let mut note = Note::written(args.opt_str("title").unwrap_or_default(), args.str("body")?);
-    note.tags = args.strings("tags");
+fn note_from_create_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Note> {
+    let title = args.opt_str("title").unwrap_or_default();
+    let mut note = match args.opt_str("template") {
+        Some(wanted) => {
+            let template = find_template(ctx, wanted)?;
+            let today = crate::model::local_date_in(jiff::Timestamp::now(), ctx.tz);
+            let fill = Context { date: today, journal: None };
+            let mut note = Note::written(
+                if title.is_empty() {
+                    crate::template::fill(&template.title, &fill).trim().to_string()
+                } else {
+                    title.to_string()
+                },
+                &templated_body(&template, &fill, args.opt_str("body")),
+            );
+            note.tags = template.tags.clone();
+            note
+        }
+        None => Note::written(title, args.str("body")?),
+    };
+    crate::template::merge_tags(&mut note.tags, args.strings("tags"));
     note.pinned = args.bool_or("pinned", false);
     Ok(note)
 }
 
 fn run_create_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
-    let note = note_from_create_args(args)?;
+    let note = note_from_create_args(ctx, args)?;
     ctx.vault.save_note(&note, None)?;
     done("created", "note", &note.display_title(), note.id.to_string())
 }
 
-fn build_create_note(_ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
-    let note = note_from_create_args(args)?;
+fn build_create_note(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
+    let note = note_from_create_args(ctx, args)?;
     let caption = format!("Create note: {}", note.display_title());
     Ok(Built {
         payload: Payload::Create { record: ProposedRecord::Note(note) },

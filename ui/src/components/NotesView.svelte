@@ -8,8 +8,9 @@
   // caret behave identically in both.
 
   import { onDestroy } from 'svelte'
-  import { app } from '../lib/state.svelte'
+  import { app, handle } from '../lib/state.svelte'
   import { notes } from '../lib/notes.svelte'
+  import { insertFilled, templates } from '../lib/templates.svelte'
   import { focusOnMount } from '../lib/focus'
   import { plural, relativeTime } from '../lib/format'
   import { renderMarkdown } from '../lib/markdown'
@@ -22,7 +23,7 @@
   import ConfirmDialog from './ConfirmDialog.svelte'
   import TranscriptPanel from './TranscriptPanel.svelte'
   import NoteProposalPreview from './NoteProposalPreview.svelte'
-  import type { Attachment, Purpose, QuickTaskDraft, RichDoc } from '../lib/types'
+  import type { Attachment, Purpose, QuickTaskDraft, RichDoc, Template } from '../lib/types'
   import { api } from '../lib/api'
   import { purpose as purposeStore } from '../lib/purpose.svelte'
   import { ask, quick, slot } from '../lib/quick.svelte'
@@ -44,6 +45,21 @@
     if (!target) return
     target.attachments = [...target.attachments, a]
     notes.edited()
+  }
+
+  /** A template filled in for today, at the caret -- the journal editor's
+   *  `insertTemplate`, for a note: a title only into an empty one, tags added. */
+  async function insertTemplate(t: Template) {
+    const target = notes.open
+    if (!target || !editor) return
+    try {
+      const filled = await templates.render(t)
+      if (notes.open !== target || !editor) return
+      insertFilled(editor, target, filled)
+      notes.edited()
+    } catch (e) {
+      await handle(e)
+    }
   }
 
   function commitTag() {
@@ -217,7 +233,7 @@
       </div>
     {/if}
 
-    <Toolbar {editor} />
+    <Toolbar {editor} templateFor="notes" oninsert={(t: Template) => void insertTemplate(t)} />
 
     <div class="scroll canvas">
       <div class="page">

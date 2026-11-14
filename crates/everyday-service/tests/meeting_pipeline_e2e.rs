@@ -408,7 +408,7 @@ async fn run_once(
         configure_assistant(&vault, openai_key);
     }
 
-    let mut settings = MeetingSettings {
+    let settings = MeetingSettings {
         transcriber: Some(transcriber),
         voiceprints: false,
         ..MeetingSettings::default()
@@ -416,9 +416,6 @@ async fn run_once(
     vault.save_meeting_settings(&settings).unwrap();
     if matches!(settings.transcriber, Some(TranscriberConfig::OpenAi { .. })) {
         vault.set_transcriber_key(Some(openai_key)).unwrap();
-        // Read back so the in-memory copy this test still holds (used below
-        // for `settings.template`) agrees with what is actually saved.
-        settings = vault.meeting_settings().unwrap();
     }
 
     let event = EventRef {
@@ -435,7 +432,7 @@ async fn run_once(
         calendar_name: "Work".into(),
         series: None,
     };
-    let mut recording = Recording::new("Design sync", Some(event), settings.template(None).id);
+    let mut recording = Recording::new("Design sync", Some(event), vault.meeting_template(None).id);
     recording.stage = Stage::Transcribing;
 
     let audio = Arc::new(FileAudio::new(workdir.path().join("audio")));

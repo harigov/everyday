@@ -2690,6 +2690,25 @@
   },
   "Journal": {
     "$defs": {
+      "JournalTemplates": {
+        "description": "Which template a journal starts each day's entry from.\n\nThe rules are tried in order and the first that matches the entry's date\nwins; when none does, `default`; when there is none, a blank page. A rule\nor a default naming a template that has since been deleted is passed\nover rather than pruned, the way a journal's tracker ids are: deleting a\ntemplate should not have to rewrite every journal that used it.",
+        "properties": {
+          "default": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/$defs/TemplateRule"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
       "Period": {
         "description": "The calendar span a [`Target`] is counted over.\n\nCalendar-aligned rather than rolling: \"this week\" starts on the week's\nfirst day and \"this year\" on the first of January, because that is how\npeople plan, and a rolling seven days never says when it starts over.\nWhich day a week starts on is a setting of the interface, so anything\nhere that needs it takes it as a parameter.",
         "enum": [
@@ -2781,6 +2800,23 @@
             "default": "value"
           }
         },
+        "type": "object"
+      },
+      "TemplateRule": {
+        "description": "One of a journal's rules: on these days, this template.",
+        "properties": {
+          "template": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "when": {
+            "$ref": "#/$defs/When"
+          }
+        },
+        "required": [
+          "when",
+          "template"
+        ],
         "type": "object"
       },
       "Tracker": {
@@ -2974,6 +3010,143 @@
             "type": "object"
           }
         ]
+      },
+      "When": {
+        "description": "When a [`TemplateRule`] applies. Weekdays are ISO-numbered: 1 is Monday,\n7 is Sunday.",
+        "oneOf": [
+          {
+            "description": "On these days of the week.",
+            "properties": {
+              "days": {
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "const": "weekdays",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "days"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Every `every` weeks, counted from the week `from` falls in, on these\ndays of it -- every day of it when `days` is empty. Counted from a\nday rather than by the ISO week's parity, which goes wrong every year\nthat has a week 53.",
+            "properties": {
+              "days": {
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "every": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "from": {
+                "format": "date",
+                "type": "string"
+              },
+              "kind": {
+                "const": "everyWeeks",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "every",
+              "from",
+              "days"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "On this day of the month, or the last day of it for -1.",
+            "properties": {
+              "day": {
+                "format": "int8",
+                "maximum": 127,
+                "minimum": -128,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "monthDay",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "day"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "On the `nth` `day` of the month -- 1 to 5, or -1 for the last.",
+            "properties": {
+              "day": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "nthWeekday",
+                "type": "string"
+              },
+              "nth": {
+                "format": "int8",
+                "maximum": 127,
+                "minimum": -128,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "nth",
+              "day"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "On this date every year.",
+            "properties": {
+              "day": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "yearDay",
+                "type": "string"
+              },
+              "month": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "month",
+              "day"
+            ],
+            "type": "object"
+          }
+        ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3018,6 +3191,10 @@
         "description": "Manual ordering in the sidebar; ties broken by `name`.",
         "format": "int32",
         "type": "integer"
+      },
+      "templates": {
+        "$ref": "#/$defs/JournalTemplates",
+        "description": "Which template each day's entry starts from: a default, and rules for\nparticular days. See [`JournalTemplates`]."
       },
       "trackers": {
         "description": "Definitions written by a build before trackers became vault records.\n\nRead once, on unlock, moved into the trackers table, and then left\nempty forever. It is kept — rather than dropped, which `serde` would\ndo silently — so that the move can happen at all: this field is the\nonly place those definitions exist, and they are inside a sealed\npayload that no SQL migration can read.",
@@ -8999,6 +9176,84 @@
       "updatedAt"
     ],
     "title": "Task",
+    "type": "object"
+  },
+  "Template": {
+    "$defs": {
+      "TemplateUse": {
+        "description": "Where a template is offered.",
+        "oneOf": [
+          {
+            "const": "journal",
+            "description": "Starting a journal entry: a journal's default and its rules.",
+            "type": "string"
+          },
+          {
+            "const": "notes",
+            "description": "\"New note from template\", and inserting one into a note.",
+            "type": "string"
+          },
+          {
+            "const": "meetings",
+            "description": "Writing up a recorded meeting. The model fills it in.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "A template. See the module docs for what the body means.",
+    "properties": {
+      "body": {
+        "description": "Markdown. See the module docs.",
+        "type": "string"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "description": "What to call it -- \"Daily page\", \"Weekly review\", \"One-to-one\".",
+        "type": "string"
+      },
+      "tags": {
+        "default": [],
+        "description": "Tags the entry or note starts with.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "title": {
+        "default": "",
+        "description": "A title for the entry or note it starts, placeholders allowed --\n\"Week {{week}} review\". Empty leaves it untitled, so the first line\nstands in, as for any entry. Meeting notes ignore it: they are titled\nfor what was discussed.",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "uses": {
+        "default": [],
+        "description": "Where it is offered. Empty is allowed: a template kept for later and\noffered nowhere. A journal rule that names a template still applies\nwhatever this says -- the rule was the choice; this decides only what\nthe pickers list.",
+        "items": {
+          "$ref": "#/$defs/TemplateUse"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "body",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Template",
     "type": "object"
   },
   "Thread": {

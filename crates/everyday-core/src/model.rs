@@ -7,6 +7,7 @@
 use crate::id::{BlobId, EntryId, JournalId, TrackerId};
 use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
+use crate::template::JournalTemplates;
 use crate::timestamped::Timestamped;
 use crate::tracker::Tracker;
 use jiff::{Timestamp, civil::Date};
@@ -51,6 +52,10 @@ pub struct Journal {
     /// payload that no SQL migration can read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trackers: Vec<Tracker>,
+    /// Which template each day's entry starts from: a default, and rules for
+    /// particular days. See [`JournalTemplates`].
+    #[serde(default, skip_serializing_if = "JournalTemplates::is_empty")]
+    pub templates: JournalTemplates,
     /// The assistant's own journal, rather than one of the person's: notes
     /// it leaves itself, filed under the day they are about -- what a weekly
     /// plan wants raised on Thursday, what a quarterly review thought of the
@@ -80,6 +85,7 @@ impl Journal {
             sort_order: 0,
             shown_trackers: Vec::new(),
             trackers: Vec::new(),
+            templates: JournalTemplates::default(),
             assistant: false,
             created_at: now,
             updated_at: now,

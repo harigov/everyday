@@ -16,6 +16,7 @@ pub fn run_note_suite(store: &dyn JournalStore) {
     a_notes_purpose_survives_and_goes_with_it(store);
     garbage_collection_keeps_pictures_in_notes(store);
     unicode_survives_a_note_round_trip(store);
+    templates_round_trip_in_the_order_they_were_made(store);
 
     note_cleanup(store);
     eprintln!("--- note suite passed ---");
@@ -31,6 +32,43 @@ fn note_cleanup(store: &dyn JournalStore) {
         n.delete_note(note.id).expect("delete_note");
     }
     assert!(n.list_notes(&NoteQuery::default()).unwrap().is_empty(), "cleanup left notes behind");
+    for template in n.list_templates().expect("list_templates") {
+        n.delete_template(template.id).expect("delete_template");
+    }
+    assert!(n.list_templates().unwrap().is_empty(), "cleanup left templates behind");
+}
+
+fn templates_round_trip_in_the_order_they_were_made(store: &dyn JournalStore) {
+    use crate::template::{Template, TemplateUse};
+    let n = note_store(store);
+    assert!(n.list_templates().unwrap().is_empty(), "a fresh store must have no templates");
+
+    let mut first = Template::new("Daily page");
+    first.uses = vec![TemplateUse::Journal, TemplateUse::Notes];
+    first.title = "{{weekday}} \u{2014} Wochenrückblick".into();
+    first.body = "## Heute\nWas war gut?\n".into();
+    first.tags = vec!["daily".into()];
+    first.created_at = "2026-01-01T00:00:00Z".parse().unwrap();
+    let mut second = Template::new("One-to-one");
+    second.uses = vec![TemplateUse::Meetings];
+    second.body = "## Summary\nWhat was settled.\n".into();
+    second.created_at = "2026-01-02T00:00:00Z".parse().unwrap();
+    // Written newest first, listed oldest first.
+    n.put_template(&second).expect("put_template");
+    n.put_template(&first).expect("put_template");
+    n.put_template(&first).expect("put_template is idempotent");
+
+    let listed = n.list_templates().expect("list_templates");
+    assert_eq!(listed, vec![first.clone(), second.clone()], "every field, oldest first");
+
+    let mut edited = first.clone();
+    edited.body = "## Changed\n".into();
+    n.put_template(&edited).expect("put_template");
+    assert_eq!(n.list_templates().unwrap()[0].body, "## Changed\n");
+
+    n.delete_template(first.id).expect("delete_template");
+    n.delete_template(first.id).expect("deleting what is gone is not an error");
+    assert_eq!(n.list_templates().unwrap(), vec![second]);
 }
 
 fn seeded_note(store: &dyn JournalStore, title: &str, body: &str) -> Note {

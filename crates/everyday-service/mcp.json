@@ -125,7 +125,7 @@
         "additionalProperties": false,
         "properties": {
           "body": {
-            "description": "The entry text. Markdown: paragraphs, headings, lists.",
+            "description": "The entry text. Markdown: paragraphs, headings, lists. Required unless a template is given, after whose text it goes.",
             "type": "string"
           },
           "date": {
@@ -143,14 +143,17 @@
             },
             "type": "array"
           },
+          "template": {
+            "description": "Start it from a template, filled in for its date: a name or id from list_templates, or \"journal\" for the one this journal starts that day's entry from.",
+            "type": "string"
+          },
           "title": {
             "description": "Optional heading. Omit and the first line becomes one.",
             "type": "string"
           }
         },
         "required": [
-          "journal_id",
-          "body"
+          "journal_id"
         ],
         "type": "object"
       },
@@ -425,7 +428,7 @@
         "additionalProperties": false,
         "properties": {
           "body": {
-            "description": "The text. Markdown: paragraphs, headings, lists, tables.",
+            "description": "The text. Markdown: paragraphs, headings, lists, tables. Required unless a template is given, after whose text it goes.",
             "type": "string"
           },
           "pinned": {
@@ -439,14 +442,16 @@
             },
             "type": "array"
           },
+          "template": {
+            "description": "Start it from this template, by name or id from list_templates, filled in for today.",
+            "type": "string"
+          },
           "title": {
             "description": "What to call it. Worth setting: notes are found by name.",
             "type": "string"
           }
         },
-        "required": [
-          "body"
-        ],
+        "required": [],
         "type": "object"
       },
       "scope": "notes",
@@ -2221,6 +2226,20 @@
       "scope": "tasks",
       "sensitivity": "ordinary",
       "title": "List tasks"
+    },
+    {
+      "domain": "notes",
+      "effect": "read",
+      "name": "list_templates",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "notes",
+      "sensitivity": "ordinary",
+      "title": "List templates"
     },
     {
       "domain": "mail",

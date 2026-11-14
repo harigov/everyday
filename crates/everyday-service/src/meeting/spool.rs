@@ -334,7 +334,7 @@ pub fn begin(svc: &Arc<Service>, args: BeginArgs) -> CommandResult<Recording> {
         None => (None, "Recording".to_string()),
     };
     let title = args.title.filter(|t| !t.trim().is_empty()).unwrap_or(default_title);
-    let template_id = args.template_id.unwrap_or_else(|| settings.template(None).id);
+    let template_id = args.template_id.unwrap_or_else(|| vault.meeting_template(None).id);
 
     let mut recording = Recording::new(title, event_ref, template_id);
     recording.automatic = args.automatic;

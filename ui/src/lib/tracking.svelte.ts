@@ -241,7 +241,9 @@ class TrackingState {
         value,
         date: this.#date,
         at: at ?? null,
-        entryId: app.entry?.id ?? null,
+        // Not a page that has not been written yet: the reading belongs to
+        // the day either way, and a pointer to an unsaved page would dangle.
+        entryId: app.storedEntryId,
       })
       await this.refresh()
     } catch (e) {

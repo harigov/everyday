@@ -38,7 +38,6 @@ import type {
   MeetingSettingsView,
   ModelBenchmark,
   Note,
-  NoteTemplate,
   Recording,
   RecordingId,
   RecordingQuery,
@@ -51,6 +50,7 @@ import type {
   VoiceprintInfo,
 } from './types'
 import type { MeetingOfferAnswer, MeetingOfferPayload } from './api'
+import { mockTemplate, mockTemplates } from './mock-templates'
 
 // ── Small local helpers, independent of mock.ts's own ──────────────────
 
@@ -75,38 +75,6 @@ function para(...lines: string[]) {
   }))
 }
 
-// ── The placeholder cheat sheet, per docs/plans/meeting-notes.md ───────
-
-const DEFAULT_TEMPLATE_BODY = `# {{title}}
-{{date}}, {{start}}–{{end}} · {{present}}
-
-## Summary
-Three sentences: what the call was for and where it landed.
-
-## Decisions
-Bullets. Only what was actually agreed, with who agreed it.
-
-## Action items
-- [ ] Owner — what — by when, only if a date was said.
-`
-
-const BRIEF_TEMPLATE_BODY = `# {{title}}
-{{date}} · {{present}}
-
-## Summary
-Two sentences.
-
-## Action items
-- [ ] Owner — what — by when, only if a date was said.
-`
-
-// ── Templates ────────────────────────────────────────────────────────
-
-const templates: NoteTemplate[] = [
-  { id: 'tpl-default', name: 'Default', body: DEFAULT_TEMPLATE_BODY },
-  { id: 'tpl-brief', name: 'Brief', body: BRIEF_TEMPLATE_BODY },
-]
-
 // ── Settings ─────────────────────────────────────────────────────────
 
 let settings: MeetingSettings = {
@@ -118,8 +86,8 @@ let settings: MeetingSettings = {
   transcriber: null,
   useAssistantKey: false,
   language: null,
-  templates,
   defaultTemplate: 'tpl-default',
+  templatesMoved: true,
   voiceprints: false,
   autoStop: true,
   summaryBudget: null,
@@ -178,7 +146,7 @@ export function mockMeetingSettings(): MeetingSettingsView {
 
 export function mockSaveMeetingSettings(next: MeetingSettings): MeetingSettingsView {
   const previous = settings
-  settings = { ...next, templates: next.templates.length ? next.templates : templates }
+  settings = { ...next, templatesMoved: true }
   const v = view()
   if (next.enabled && !v.usable) {
     // Mirrors the real command's own refusal: enabling with nothing to
@@ -193,49 +161,6 @@ export function mockSaveMeetingSettings(next: MeetingSettings): MeetingSettingsV
 export function mockSetTranscriberKey(key: string | null): MeetingSettingsView {
   hasKey = key != null && key.trim().length > 0
   return view()
-}
-
-export function mockNewMeetingTemplate(): NoteTemplate {
-  const t: NoteTemplate = {
-    id: newId('tpl'),
-    name: 'Untitled template',
-    body: DEFAULT_TEMPLATE_BODY,
-  }
-  return t
-}
-
-const KNOWN_PLACEHOLDERS = [
-  'title',
-  'date',
-  'start',
-  'end',
-  'duration',
-  'organizer',
-  'attendees',
-  'present',
-  'calendar',
-]
-
-export function mockLintMeetingTemplate(body: string): string[] {
-  const warnings: string[] = []
-  const used = [...body.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1]!)
-  for (const name of used) {
-    if (!KNOWN_PLACEHOLDERS.includes(name)) {
-      warnings.push(`{{${name}}} is not a placeholder this template understands.`)
-    }
-  }
-  if (!body.includes('#')) warnings.push('No heading at all — the note will have no title line.')
-  // A heading with nothing under it before the next heading (or the end).
-  const lines = body.split('\n')
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!
-    if (!line.startsWith('#')) continue
-    const rest = lines.slice(i + 1)
-    const next = rest.findIndex((l) => l.startsWith('#'))
-    const body_ = (next === -1 ? rest : rest.slice(0, next)).join('').trim()
-    if (!body_) warnings.push(`“${line.replace(/^#+\s*/, '')}” has nothing under it.`)
-  }
-  return warnings
 }
 
 function fillPlaceholders(body: string): string {
@@ -703,7 +628,10 @@ export function mockNameSpeaker(opts: {
 }
 
 export async function mockRewriteMeetingNote(noteId: string, templateId: string): Promise<string> {
-  const tpl = templates.find((t) => t.id === templateId) ?? templates[0]!
+  const tpl =
+    mockTemplate(templateId) ??
+    mockTemplates().find((t) => t.uses.includes('meetings')) ??
+    mockTemplates()[0]!
   await new Promise((r) => setTimeout(r, 500))
   const t = transcripts.get(noteId)
   const present = t
@@ -790,7 +718,7 @@ export function mockMeetingStart(opts: {
     startedAt: new Date().toISOString(),
     endedAt: null,
     stage: { type: 'recording' },
-    templateId: opts.templateId ?? settings.defaultTemplate ?? templates[0]!.id,
+    templateId: opts.templateId ?? settings.defaultTemplate ?? 'tpl-default',
     automatic: opts.automatic ?? false,
     chunks: [],
     partial: [],

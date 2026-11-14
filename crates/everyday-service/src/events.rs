@@ -152,6 +152,9 @@ pub enum Kind {
     Entry,
     /// Writing that is not a day. See `everyday_core::note`.
     Note,
+    /// A shape an entry, a note or a meeting's notes start from. See
+    /// `everyday_core::template`.
+    Template,
     Project,
     Task,
     Block,
@@ -255,6 +258,7 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Journal => Ok(RecordKind::Journal),
             Kind::Entry => Ok(RecordKind::Entry),
             Kind::Note => Ok(RecordKind::Note),
+            Kind::Template => Ok(RecordKind::Template),
             Kind::Project => Ok(RecordKind::Project),
             Kind::Task => Ok(RecordKind::Task),
             Kind::Block => Ok(RecordKind::Block),
@@ -314,6 +318,7 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::Journal => Ok(Kind::Journal),
             RecordKind::Entry => Ok(Kind::Entry),
             RecordKind::Note => Ok(Kind::Note),
+            RecordKind::Template => Ok(Kind::Template),
             RecordKind::Project => Ok(Kind::Project),
             RecordKind::Task => Ok(Kind::Task),
             RecordKind::Block => Ok(Kind::Block),
@@ -531,10 +536,11 @@ mod tests {
     //! the docs on those impls name.
     use super::*;
 
-    const RECORD_KINDS: [Kind; 37] = [
+    const RECORD_KINDS: [Kind; 38] = [
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
+        Kind::Template,
         Kind::Project,
         Kind::Task,
         Kind::Block,

@@ -138,6 +138,7 @@ pub trait Portable: Send + Sync {
 pub static PARTS: &[&dyn Portable] = &[
     &parts::journal::JOURNAL,
     &parts::notes::NOTES,
+    &parts::templates::TEMPLATES,
     &parts::tasks::TASKS,
     &parts::calendar::CALENDAR,
     &parts::library::LIBRARY,

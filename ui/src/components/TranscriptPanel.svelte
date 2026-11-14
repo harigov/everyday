@@ -15,6 +15,7 @@
   import { formatOffset, speakerColor, speakerNameStyle } from '../lib/meetings-format'
   import { meetings } from '../lib/meetings.svelte'
   import { notes } from '../lib/notes.svelte'
+  import { templates as templateStore } from '../lib/templates.svelte'
   import type { EventRef, NoteId, RecordingId, Segment, Speaker, Transcript } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
@@ -153,14 +154,21 @@
   }
 
   void meetings.load()
-  const templates = $derived(meetings.view?.settings.templates ?? [])
+  void templateStore.load()
+  // Offered for meetings first; anything else after, since a template meant
+  // for the journal can still shape a call's notes if somebody wants it to.
+  const templates = $derived([
+    ...templateStore.for('meetings'),
+    ...templateStore.all.filter((t) => !t.uses.includes('meetings')),
+  ])
 
   function openRewrite() {
     offerRewrite = false
     rewriteError = null
     rewritePreview = null
     previewBodySnapshot = null
-    rewriteTemplateId = rewriteTemplateId ?? templates[0]?.id ?? null
+    rewriteTemplateId =
+      rewriteTemplateId ?? meetings.view?.settings.defaultTemplate ?? templates[0]?.id ?? null
   }
 
   /** The note's body right now, as a plain value cheap to compare later --

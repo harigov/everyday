@@ -120,6 +120,7 @@ pub mod screentime;
 pub mod search;
 pub mod store;
 pub mod task;
+pub mod template;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 pub mod timestamped;
@@ -220,6 +221,7 @@ pub use task::{
     Assignee, BlockKind, BlockSubject, EventReminders, Priority, Project, ProjectStatus,
     ProjectTaskCount, ReminderSettings, ReminderTo, Task, TaskStats, TaskStatus, TimeBlock,
 };
+pub use template::{JournalTemplates, Template, TemplateRule, TemplateUse, When};
 pub use timestamped::Timestamped;
 pub use tracker::{
     Aggregate, Period, Reading, Standing, Tally, Target, Tracker, TrackerKind, TrackerSource,

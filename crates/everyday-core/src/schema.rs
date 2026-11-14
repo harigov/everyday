@@ -49,6 +49,7 @@ pub fn bundle() -> Value {
         schema_of::<crate::model::Journal>("Journal"),
         schema_of::<crate::model::Entry>("Entry"),
         schema_of::<crate::note::Note>("Note"),
+        schema_of::<crate::template::Template>("Template"),
         schema_of::<crate::task::Project>("Project"),
         schema_of::<crate::task::Task>("Task"),
         schema_of::<crate::task::TimeBlock>("TimeBlock"),

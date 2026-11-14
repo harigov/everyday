@@ -121,12 +121,26 @@ pub(super) static TOOLS: &[Tool] = &[
         schema(
             vec![
                 ("journal_id", text("Which journal to file it in. From list_journals.")),
-                ("body", text("The entry text. Markdown: paragraphs, headings, lists.")),
+                (
+                    "body",
+                    text(
+                        "The entry text. Markdown: paragraphs, headings, lists. Required \
+                         unless a template is given, after whose text it goes."
+                    )
+                ),
+                (
+                    "template",
+                    text(
+                        "Start it from a template, filled in for its date: a name or id \
+                         from list_templates, or \"journal\" for the one this journal \
+                         starts that day's entry from."
+                    )
+                ),
                 ("title", text("Optional heading. Omit and the first line becomes one.")),
                 ("date", day("File it under this day instead of today. Back-dating is fine.")),
                 ("tags", list("Tags to attach.")),
             ],
-            &["journal_id", "body"]
+            &["journal_id"]
         ),
         "Write a new journal entry. Use this when asked to record, draft or write \
          something up \u{2014} not for a task, which is create_task.",
@@ -639,12 +653,39 @@ fn run_create_entry(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     }
 
     let mut entry = Entry::new(journal_id, ctx.tz);
-    entry.body = RichDoc::from_markdown(args.str("body")?);
-    entry.title = args.opt_str("title").unwrap_or_default().to_string();
-    entry.tags = args.strings("tags");
     if let Some(d) = args.opt_date("date")? {
         entry.local_date = d;
     }
+    match args.opt_str("template") {
+        Some(wanted) => {
+            let template = if wanted.trim().eq_ignore_ascii_case("journal") {
+                ctx.vault.journal_template(&journal, entry.local_date)?.ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "{} starts that day's entry blank: name a template from \
+                         list_templates, or write the body yourself",
+                        journal.name
+                    ))
+                })?
+            } else {
+                super::notes::find_template(ctx, wanted)?
+            };
+            crate::template::start_entry(&mut entry, &template, &journal);
+            let fill = crate::template::Context {
+                date: entry.local_date,
+                journal: Some(journal.name.clone()),
+            };
+            entry.body = RichDoc::from_markdown(&super::notes::templated_body(
+                &template,
+                &fill,
+                args.opt_str("body"),
+            ));
+        }
+        None => entry.body = RichDoc::from_markdown(args.str("body")?),
+    }
+    if let Some(title) = args.opt_str("title") {
+        entry.title = title.to_string();
+    }
+    crate::template::merge_tags(&mut entry.tags, args.strings("tags"));
 
     ctx.vault.save_entry(&entry, None)?;
     done(

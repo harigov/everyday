@@ -1543,6 +1543,26 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "TemplateId"
+        }
+      ],
+      "changes": {
+        "kind": "template",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_template",
+      "orScope": null,
+      "returns": "void",
+      "scope": "templates",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "draft",
           "required": false,
           "type": "DraftId"
@@ -2516,17 +2536,17 @@
     {
       "args": [
         {
-          "name": "body",
+          "name": "template",
           "required": true,
-          "type": "string"
+          "type": "Template"
         }
       ],
       "changes": null,
       "effect": "read",
-      "name": "lint_meeting_template",
+      "name": "lint_template",
       "orScope": null,
       "returns": "string[]",
-      "scope": "meetings",
+      "scope": "templates",
       "sensitive": false,
       "streams": false
     },
@@ -3080,6 +3100,17 @@
       "orScope": null,
       "returns": "Task[]",
       "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_templates",
+      "orScope": null,
+      "returns": "Template[]",
+      "scope": "templates",
       "sensitive": false,
       "streams": false
     },
@@ -3980,17 +4011,6 @@
       "args": [],
       "changes": null,
       "effect": "read",
-      "name": "new_meeting_template",
-      "orScope": null,
-      "returns": "NoteTemplate",
-      "scope": "meetings",
-      "sensitive": false,
-      "streams": false
-    },
-    {
-      "args": [],
-      "changes": null,
-      "effect": "read",
       "name": "new_memory",
       "orScope": null,
       "returns": "Memory",
@@ -3999,7 +4019,13 @@
       "streams": false
     },
     {
-      "args": [],
+      "args": [
+        {
+          "name": "templateId",
+          "required": false,
+          "type": "TemplateId | null"
+        }
+      ],
       "changes": null,
       "effect": "read",
       "name": "new_note",
@@ -4089,6 +4115,23 @@
       "orScope": null,
       "returns": "Task",
       "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "uses",
+          "required": false,
+          "type": "TemplateUse[]"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "new_template",
+      "orScope": null,
+      "returns": "Template",
+      "scope": "templates",
       "sensitive": false,
       "streams": false
     },
@@ -4866,6 +4909,33 @@
     {
       "args": [
         {
+          "name": "template",
+          "required": true,
+          "type": "Template"
+        },
+        {
+          "name": "date",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "journalId",
+          "required": false,
+          "type": "JournalId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "render_template",
+      "orScope": null,
+      "returns": "RenderedTemplate",
+      "scope": "templates",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "messageId",
           "required": true,
           "type": "MailMessageId"
@@ -5010,7 +5080,7 @@
       "effect": "read",
       "name": "routine_templates",
       "orScope": null,
-      "returns": "Template[]",
+      "returns": "RoutineTemplate[]",
       "scope": "agent",
       "sensitive": false,
       "streams": false
@@ -6000,6 +6070,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "tasks",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "template",
+          "required": true,
+          "type": "Template"
+        }
+      ],
+      "changes": {
+        "kind": "template",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_template",
+      "orScope": null,
+      "returns": "void",
+      "scope": "templates",
       "sensitive": false,
       "streams": false
     },

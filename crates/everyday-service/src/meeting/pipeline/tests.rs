@@ -392,7 +392,7 @@ fn seed_recording(
         calendar_name: "Work".into(),
         series: None,
     };
-    let mut recording = Recording::new("Design sync", Some(event), settings.template(None).id);
+    let mut recording = Recording::new("Design sync", Some(event), vault.meeting_template(None).id);
     recording.stage = Stage::Transcribing;
     for seq in 0..mic_chunks {
         audio.put(recording.id, Track::Mic, seq, samples(ms_to_samples(2_000)));
@@ -862,7 +862,7 @@ async fn a_five_person_call_split_into_many_voices_comes_back_as_the_people_invi
         guest("dev@x.com", "Dev Patel", AttendeeResponse::Declined),
         guest("eve@x.com", "", AttendeeResponse::NeedsAction),
     ];
-    let mut recording = Recording::new("Design sync", Some(event), settings.template(None).id);
+    let mut recording = Recording::new("Design sync", Some(event), vault.meeting_template(None).id);
     recording.stage = Stage::Summarising;
     for chunk in 0..12u32 {
         let at = u64::from(chunk) * 30_000;
@@ -926,11 +926,10 @@ async fn a_five_person_call_split_into_many_voices_comes_back_as_the_people_invi
 #[tokio::test]
 async fn without_local_speech_the_other_end_stays_others() {
     let (_dir, vault) = test_vault();
-    let settings = vault.meeting_settings().unwrap();
     let mut recording = Recording::new(
         "Design sync",
         Some(event_with(vec!["Priya Raman <priya@x.com>", "Bob Lee <bob@x.com>"])),
-        settings.template(None).id,
+        vault.meeting_template(None).id,
     );
     recording.stage = Stage::Summarising;
     recording.partial.push(TrackSegment {
@@ -961,12 +960,12 @@ async fn without_local_speech_the_other_end_stays_others() {
 #[tokio::test]
 async fn a_repeating_meeting_tags_every_note_with_its_name() {
     let (_dir, vault) = test_vault();
-    let settings = vault.meeting_settings().unwrap();
     let event = event_with(vec!["Priya Raman <priya@x.com>"]);
 
     let first_note = everyday_core::Note::written("Design sync", "earlier");
     vault.save_note(&first_note, None).unwrap();
-    let mut first = Recording::new("Design sync", Some(event.clone()), settings.template(None).id);
+    let mut first =
+        Recording::new("Design sync", Some(event.clone()), vault.meeting_template(None).id);
     first.stage = Stage::Done;
     first.note_id = Some(first_note.id);
     vault.save_recording(&first).unwrap();
@@ -974,7 +973,7 @@ async fn a_repeating_meeting_tags_every_note_with_its_name() {
     let write = |start: &str| {
         let mut e = event.clone();
         e.start = start.parse().unwrap();
-        let mut r = Recording::new("Design sync", Some(e), settings.template(None).id);
+        let mut r = Recording::new("Design sync", Some(e), vault.meeting_template(None).id);
         r.stage = Stage::Summarising;
         r.partial.push(TrackSegment {
             track: Track::Mic,
@@ -1010,11 +1009,10 @@ async fn a_repeating_meeting_tags_every_note_with_its_name() {
 #[tokio::test]
 async fn without_the_model_too_many_voices_fold_into_others() {
     let (_dir, vault) = test_vault();
-    let settings = vault.meeting_settings().unwrap();
     let mut recording = Recording::new(
         "Design sync",
         Some(event_with(vec!["Priya Raman <priya@x.com>", "Bob Lee <bob@x.com>"])),
-        settings.template(None).id,
+        vault.meeting_template(None).id,
     );
     recording.stage = Stage::Summarising;
     for chunk in 0..6u32 {

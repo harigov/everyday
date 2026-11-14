@@ -166,6 +166,7 @@ impl TryFrom<RecordKind> for ProposalKind {
             RecordKind::Log => Ok(ProposalKind::Log),
             RecordKind::Journal
             | RecordKind::Entry
+            | RecordKind::Template
             | RecordKind::Project
             | RecordKind::Calendar
             | RecordKind::Event
@@ -443,6 +444,7 @@ impl TryFrom<RecordKind> for AboutKind {
             RecordKind::Goal => Ok(AboutKind::Goal),
             RecordKind::Item => Ok(AboutKind::Item),
             RecordKind::Journal
+            | RecordKind::Template
             | RecordKind::Project
             | RecordKind::Calendar
             | RecordKind::Kind

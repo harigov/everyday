@@ -55,6 +55,15 @@ pub enum Scope {
     /// without the other -- a browser extension that clips a page into a note
     /// has no business reading anybody's diary.
     Notes,
+    /// Templates: the shapes a journal entry, a note or a meeting's notes
+    /// start from.
+    ///
+    /// Its own scope rather than a corner of `Journals`, `Notes` or
+    /// `Meetings`, because one template serves all three: a client that
+    /// edits the list has no business reading any of them for it. Starting
+    /// an entry or a note from a template does not need it -- `new_entry`
+    /// and `new_note` fill their own in.
+    Templates,
     Tasks,
     Calendars,
     Library,
@@ -174,6 +183,7 @@ impl Scope {
             Scope::All => "all",
             Scope::Journals => "journals",
             Scope::Notes => "notes",
+            Scope::Templates => "templates",
             Scope::Tasks => "tasks",
             Scope::Calendars => "calendars",
             Scope::Library => "library",
@@ -202,6 +212,7 @@ impl Scope {
         Scope::All,
         Scope::Journals,
         Scope::Notes,
+        Scope::Templates,
         Scope::Tasks,
         Scope::Calendars,
         Scope::Library,

@@ -27,6 +27,7 @@ use everyday_core::store::trackers::ReadingQuery;
 use everyday_core::task::{
     BlockKind, BlockSubject, Priority, Project, Task, TaskStatus, TimeBlock,
 };
+use everyday_core::template::{JournalTemplates, Template, TemplateRule, TemplateUse, When};
 use everyday_core::tracker::{Reading, Tracker, TrackerKind};
 use everyday_core::{EventId, Vault, VaultConfig};
 use everyday_transfer::{Mode, Options, zip};
@@ -52,7 +53,19 @@ fn vault(dir: &std::path::Path) -> Vault {
 fn fill(vault: &Vault) {
     let role = Role::new("Parent");
     let goal = Goal::new(role.id, "Viya rides without stabilisers");
-    let journal = Journal::new("Personal");
+    let mut journal = Journal::new("Personal");
+    // A template the journal starts its Sundays from, which has to come back
+    // with the journal still pointing at it.
+    let mut weekly = Template::new("Weekly review");
+    weekly.uses = vec![TemplateUse::Journal];
+    weekly.title = "Week {{week}}".into();
+    weekly.body = "## What went well\nAnd why.\n".into();
+    weekly.tags = vec!["review".into()];
+    vault.save_template(&weekly).unwrap();
+    journal.templates = JournalTemplates {
+        default: None,
+        rules: vec![TemplateRule { when: When::Weekdays { days: vec![7] }, template: weekly.id }],
+    };
     let mut entry = Entry::new(journal.id, "Europe/London");
     entry.title = "Morning: a start".into();
     entry.body = RichDoc::from_markdown("It **rained**.\n\n- one\n- two\n");
@@ -184,7 +197,9 @@ fn a_vault_comes_back_out_of_its_own_archive() {
     assert!(archive.contains("README.md"));
     let inspected = everyday_transfer::inspect(&archive).unwrap();
     let ids: Vec<&str> = inspected.parts.iter().map(|p| p.id.as_str()).collect();
-    for expected in ["journal", "notes", "todo", "calendar", "library", "trackers", "purpose"] {
+    for expected in
+        ["journal", "notes", "templates", "todo", "calendar", "library", "trackers", "purpose"]
+    {
         assert!(ids.contains(&expected), "{expected} is missing from {ids:?}");
     }
 
@@ -266,6 +281,18 @@ fn a_vault_comes_back_out_of_its_own_archive() {
             // The pointer on the entry has to resolve to the goal that came
             // out of the same archive, or the attribution is decoration.
             assert_eq!(entry.purpose, Some(Purpose::Goal { id: goals[0].id }));
+
+            let templates = store.notes().unwrap().list_templates()?;
+            let weekly = templates.iter().find(|t| t.name == "Weekly review").expect("template");
+            assert_eq!(weekly.body, "## What went well\nAnd why.\n");
+            assert_eq!(weekly.title, "Week {{week}}");
+            assert_eq!(weekly.uses, vec![TemplateUse::Journal]);
+            assert_eq!(weekly.tags, vec!["review".to_string()]);
+            let journal =
+                store.list_journals()?.into_iter().find(|j| j.name == "Personal").unwrap();
+            assert_eq!(journal.templates.rules.len(), 1, "the journal's rules came back");
+            assert_eq!(journal.templates.rules[0].template, weekly.id);
+            assert_eq!(journal.templates.rules[0].when, When::Weekdays { days: vec![7] });
 
             let calendars = store.calendars().unwrap();
             assert_eq!(calendars.list_calendars()?.len(), 1);

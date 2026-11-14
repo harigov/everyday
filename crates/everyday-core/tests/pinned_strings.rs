@@ -257,6 +257,14 @@ fn note_aad_label_is_pinned() {
     );
 }
 
+#[test]
+fn template_aad_label_is_pinned() {
+    assert_eq!(
+        store::notes::template_aad(id::<TemplateId>()),
+        b"everyday.template.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+}
+
 // ---- proposals ----------------------------------------------------------
 
 #[test]

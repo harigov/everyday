@@ -88,6 +88,8 @@ export interface Journal {
    * move can happen at all.
    */
   trackers?: Tracker[]
+  /** Which template each day's entry starts from. Absent for a blank page. */
+  templates?: JournalTemplates
   /**
    * The assistant's own journal: notes it leaves itself, filed under the day
    * they are about. At most one; only the backend sets it, and a save keeps
@@ -565,6 +567,61 @@ export interface NoteSummary {
   updatedAt: string
 }
 
+// ── Templates ────────────────────────────────────────────────────────────
+//
+// One record for the journal, notes and meeting notes — `everyday_core::
+// template`. The body is Markdown: `{{date}}`, `{{weekday}}` and the rest are
+// filled in for the day; headings are kept, and the text under one is
+// guidance for whoever writes that section — the person in an entry or a
+// note, the model in a meeting note.
+
+/** Where a template is offered. */
+export type TemplateUse = 'journal' | 'notes' | 'meetings'
+
+export interface Template {
+  id: TemplateId
+  name: string
+  /** Where it is offered. Empty: kept, offered nowhere. */
+  uses: TemplateUse[]
+  /** A title for the entry or note, placeholders allowed. Empty: untitled. */
+  title: string
+  body: string
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+/** A template filled in for a day: what a new entry or note starts with. */
+export interface RenderedTemplate {
+  title: string
+  body: RichDoc
+  tags: string[]
+}
+
+/**
+ * When a journal rule applies. Weekdays are ISO-numbered: 1 is Monday, 7 is
+ * Sunday. `everyWeeks` counts from the week `from` falls in; empty `days`
+ * there means every day of that week. `monthDay` and `nthWeekday` take -1 for
+ * the last.
+ */
+export type When =
+  | { kind: 'weekdays'; days: number[] }
+  | { kind: 'everyWeeks'; every: number; from: string; days: number[] }
+  | { kind: 'monthDay'; day: number }
+  | { kind: 'nthWeekday'; nth: number; day: number }
+  | { kind: 'yearDay'; month: number; day: number }
+
+export interface TemplateRule {
+  when: When
+  template: TemplateId
+}
+
+/** Rules tried in order, first match wins; then the default; then blank. */
+export interface JournalTemplates {
+  default?: TemplateId | null
+  rules?: TemplateRule[]
+}
+
 /**
  * Who the vault belongs to.
  *
@@ -836,7 +893,7 @@ export interface RoutineInfo extends Routine {
  * it. They come from the service because the assistant offers them too — asked
  * to set up a morning brief, it should propose what the plus button does.
  */
-export interface Template {
+export interface RoutineTemplate {
   name: string
   instructions: string
   trigger: Trigger
@@ -4192,12 +4249,6 @@ export type TranscriberConfig =
   | { type: 'google'; model: string }
   | { type: 'compatible'; baseUrl: string; model: string }
 
-export interface NoteTemplate {
-  id: TemplateId
-  name: string
-  body: string
-}
-
 export interface MeetingSettings {
   enabled: boolean
   offer: Offer
@@ -4209,8 +4260,11 @@ export interface MeetingSettings {
   transcriber?: TranscriberConfig | null
   useAssistantKey: boolean
   language?: string | null
-  templates: NoteTemplate[]
+  /** The template a recording is written up from when nobody picked one. */
   defaultTemplate?: TemplateId | null
+  /** Whether the old in-settings template list has moved to the shared
+   *  templates. The vault's to set; a save cannot turn it off. */
+  templatesMoved?: boolean
   voiceprints: boolean
   autoStop: boolean
   summaryBudget?: number | null

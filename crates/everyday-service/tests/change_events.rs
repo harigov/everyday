@@ -339,6 +339,10 @@ async fn every_offline_write_announces_what_was_written_down() {
     note2["title"] = json!("Forced note");
     run(&svc, &h, "save_note_force", json!({ "note": note2 })).await;
 
+    let mut template = call(&svc, &h, "new_template", json!({ "uses": ["journal"] })).await;
+    template["name"] = json!("Daily page");
+    run(&svc, &h, "save_template", json!({ "template": template })).await;
+
     run(&svc, &h, "save_profile", json!({ "profile": Profile::default() })).await;
 
     // ---- tasks, projects, blocks --------------------------------------

@@ -31,7 +31,8 @@ use crate::id::{
     AccountId, BlockId, CalendarId, ConversationId, DraftId, EntryId, EventId, GoalId, ItemId,
     JobId, JournalId, KindId, LogId, MailMessageId, MailboxId, MemoryId, MessageId, NewsSourceId,
     NoteId, OpId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
-    SkillId, StoryId, TaskId, ThreadId, TrackerId, TranscriptId, VoiceprintId, WritingId,
+    SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, VoiceprintId,
+    WritingId,
 };
 
 /// The kind of one persisted record — every table `everyday-store-sql`
@@ -46,6 +47,8 @@ pub enum RecordKind {
     Journal,
     Entry,
     Note,
+    /// A shape to start writing from -- see [`crate::template::Template`].
+    Template,
     Project,
     Task,
     Block,
@@ -128,6 +131,7 @@ impl RecordKind {
             RecordKind::Journal => "journal",
             RecordKind::Entry => "entry",
             RecordKind::Note => "note",
+            RecordKind::Template => "template",
             RecordKind::Project => "project",
             RecordKind::Task => "task",
             RecordKind::Block => "block",
@@ -192,6 +196,7 @@ impl RecordKind {
             RecordKind::Calendar => Some("calendar"),
             RecordKind::Tracker => Some("tracker"),
             RecordKind::Journal
+            | RecordKind::Template
             | RecordKind::Event
             | RecordKind::Kind
             | RecordKind::Log
@@ -243,6 +248,7 @@ impl RecordKind {
             RecordKind::Journal
             | RecordKind::Entry
             | RecordKind::Note
+            | RecordKind::Template
             | RecordKind::Project
             | RecordKind::Task
             | RecordKind::Block
@@ -299,6 +305,7 @@ impl RecordKind {
             RecordKind::Journal => "journal",
             RecordKind::Entry => "entry",
             RecordKind::Note => "note",
+            RecordKind::Template => "template",
             RecordKind::Project => "project",
             RecordKind::Task => "task",
             RecordKind::Block => "block",
@@ -387,6 +394,17 @@ impl RecordDescriptor for crate::note::Note {
     }
     fn aad(id: Self::Id) -> Vec<u8> {
         crate::store::notes::note_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::template::Template {
+    const KIND: RecordKind = RecordKind::Template;
+    type Id = TemplateId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::notes::template_aad(id)
     }
 }
 
@@ -851,6 +869,7 @@ mod tests {
         check::<crate::model::Journal>(id());
         check::<crate::model::Entry>(id());
         check::<crate::note::Note>(id());
+        check::<crate::template::Template>(id());
         check::<crate::task::Project>(id());
         check::<crate::task::Task>(id());
         check::<crate::task::TimeBlock>(id());
@@ -907,10 +926,11 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 42] = [
+    const ALL: [RecordKind; 43] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
+        RecordKind::Template,
         RecordKind::Project,
         RecordKind::Task,
         RecordKind::Block,

@@ -11,10 +11,18 @@
 //! and pinned two of them, and never what any of them is about -- which
 //! matters more here than it does for entries, because a note is named and
 //! the name is the part that gives it away.
+//!
+//! Templates live here too -- the shapes an entry, a note or a meeting's
+//! notes start from (see [`crate::template`]). They are writing about
+//! writing, they need nothing a backend that holds notes cannot already do,
+//! and a backend that cannot hold notes has nowhere for a meeting note or a
+//! templated page to go either. In the clear only the two timestamps; the
+//! name, the text and where each is offered are sealed.
 
 use crate::Result;
-use crate::id::NoteId;
+use crate::id::{NoteId, TemplateId};
 use crate::note::{Note, NoteSummary};
+use crate::template::Template;
 use serde::{Deserialize, Serialize};
 
 /// How a note list is ordered.
@@ -154,11 +162,29 @@ pub trait NoteStore: Send + Sync {
         }
         Ok(counts.into_iter().collect())
     }
+
+    // ---- templates ------------------------------------------------------
+
+    /// Every template, oldest first -- the order the Templates list and
+    /// every picker show them in, so a list does not reshuffle with
+    /// whatever order a backend happens to return rows in.
+    fn list_templates(&self) -> Result<Vec<Template>>;
+
+    /// Idempotent: saving the same template twice leaves one.
+    fn put_template(&self, template: &Template) -> Result<()>;
+
+    /// Deleting a template that is not there is not an error.
+    fn delete_template(&self, id: TemplateId) -> Result<()>;
 }
 
 /// Additional authenticated data for a sealed note payload.
 pub fn note_aad(id: NoteId) -> Vec<u8> {
     format!("everyday.note.v1:{id}").into_bytes()
+}
+
+/// Additional authenticated data for a sealed template.
+pub fn template_aad(id: TemplateId) -> Vec<u8> {
+    format!("everyday.template.v1:{id}").into_bytes()
 }
 
 #[cfg(test)]

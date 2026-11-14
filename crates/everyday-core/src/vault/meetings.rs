@@ -65,17 +65,121 @@ impl Vault {
 
     // ---- settings ---------------------------------------------------------
 
-    /// The starter template comes back up to date if it was never edited --
-    /// see [`crate::meeting::template::upgrade_starter`].
     pub fn meeting_settings(&self) -> Result<MeetingSettings> {
-        let mut settings = self.with_meetings(|m| m.meeting_settings())?;
-        crate::meeting::template::upgrade_starter(&mut settings.templates);
-        Ok(settings)
+        self.with_meetings(|m| m.meeting_settings())
     }
 
+    /// Save the meeting settings.
+    ///
+    /// Whether the templates have been moved out of them is the vault's to
+    /// say, never the caller's: the move happens first, and the flag that
+    /// records it is set whatever came in. A form that knows nothing of the
+    /// flag -- or an older window -- would otherwise save it as unset, and
+    /// the next read would move the starter template back in after somebody
+    /// had deleted it. Written under the write lock the move runs under, so
+    /// the two cannot interleave.
     pub fn save_meeting_settings(&self, settings: &MeetingSettings) -> Result<()> {
         self.writable()?;
-        self.with_meetings(|m| m.put_meeting_settings(settings))
+        let mut settings = settings.clone();
+        if self.supports_templates() {
+            self.migrate_meeting_templates()?;
+            settings.templates_moved = true;
+            settings.legacy_templates.clear();
+        }
+        self.write(|u| {
+            pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?
+                .put_meeting_settings(&settings)
+        })
+    }
+
+    /// Move the templates older builds kept inside the meeting settings into
+    /// the templates table, offered for meetings. Returns how many moved.
+    ///
+    /// Runs at most once per vault: it sets
+    /// [`MeetingSettings::templates_moved`], and an id the table already has
+    /// is skipped, so a move interrupted halfway finishes the next time
+    /// rather than doubling anything. The read, the writes and the settings
+    /// written back all happen under one write lock -- so a settings save
+    /// cannot land in between and be overwritten -- and the session then
+    /// remembers the move is done, so later reads pay nothing for it. Called
+    /// from [`Vault::templates`], which every reader goes through, rather
+    /// than on unlock: a vault whose owner never opens a template never pays
+    /// for it.
+    pub fn migrate_meeting_templates(&self) -> Result<usize> {
+        if !self.supports_meetings() || !self.supports_templates() || !self.is_writable() {
+            return Ok(0);
+        }
+        if self.read(|u| Ok(u.templates_moved))? {
+            return Ok(0);
+        }
+        let moved = self.write(|u| {
+            if u.templates_moved {
+                return Ok(Vec::new());
+            }
+            let meetings = pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?;
+            let notes = pick_domain(u.store.as_ref(), Domain::Notes, |s| s.notes())?;
+            let mut settings = meetings.meeting_settings()?;
+            let mut moved = Vec::new();
+            if !settings.templates_moved {
+                let existing: Vec<crate::id::TemplateId> =
+                    notes.list_templates()?.into_iter().map(|t| t.id).collect();
+                let base = jiff::Timestamp::now();
+                let legacy = std::mem::take(&mut settings.legacy_templates);
+                for (i, legacy) in legacy.into_iter().enumerate() {
+                    if existing.contains(&legacy.id) {
+                        continue;
+                    }
+                    let mut template = legacy.into_template();
+                    // A microsecond apart, so "oldest first" keeps the order
+                    // the settings listed them in -- the first was the
+                    // fallback default.
+                    template.created_at = base
+                        .checked_add(jiff::SignedDuration::from_micros(i as i64))
+                        .unwrap_or(base);
+                    template.updated_at = template.created_at;
+                    crate::meeting::template::upgrade_starter(std::slice::from_mut(&mut template));
+                    notes.put_template(&template)?;
+                    moved.push(template.id);
+                }
+                settings.templates_moved = true;
+                meetings.put_meeting_settings(&settings)?;
+            }
+            u.templates_moved = true;
+            Ok(moved)
+        })?;
+        for id in &moved {
+            self.wrote(RecordKind::Template, *id);
+        }
+        Ok(moved.len())
+    }
+
+    /// Write meeting settings exactly as given, the move's flag and the old
+    /// list included -- what an older build did. Only for testing the move;
+    /// the session forgets the move was done, as a fresh unlock would.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn put_meeting_settings_as_an_older_build_did(
+        &self,
+        settings: &MeetingSettings,
+    ) -> Result<()> {
+        self.write(|u| {
+            u.templates_moved = false;
+            pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?
+                .put_meeting_settings(settings)
+        })
+    }
+
+    /// The meeting settings' templates as shared ones, when they have not
+    /// been moved -- for a vault that cannot be written to, which lists them
+    /// without moving them. Empty once they have been.
+    pub(super) fn unmoved_meeting_templates(&self) -> Result<Vec<crate::template::Template>> {
+        if !self.supports_meetings() {
+            return Ok(Vec::new());
+        }
+        let settings = self.meeting_settings()?;
+        if settings.templates_moved {
+            return Ok(Vec::new());
+        }
+        Ok(settings.legacy_templates.into_iter().map(|t| t.into_template()).collect())
     }
 
     // ---- the transcriber's own key -----------------------------------------

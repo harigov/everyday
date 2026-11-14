@@ -72,6 +72,7 @@
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
   import SkillsPanel from './SkillsPanel.svelte'
+  import TemplatesPanel from './TemplatesPanel.svelte'
   import Icon from './Icon.svelte'
   import type { IconName } from '../lib/icons'
   import type { BadgeSources, HotkeyStatus, WritingSettings } from '../lib/types'
@@ -218,6 +219,9 @@
     // it is a tab here rather than a pane of the app.
     { id: 'screentime', label: 'Screen time', icon: 'hourglass' },
     { id: 'meetings', label: 'Meetings', icon: 'mic' },
+    // After Meetings and not under it: one list serves the journal, notes and
+    // meeting notes alike, and each of those picks from it in its own place.
+    { id: 'templates', label: 'Templates', icon: 'layers' },
     // Beside Meetings: another thing the app does with your days on its own,
     // reading the Library's Contacts shelf rather than a calendar.
     { id: 'keepintouch', label: 'Keeping in touch', icon: 'people' },
@@ -256,6 +260,7 @@
       .filter((t) => (t.id !== 'routines' && t.id !== 'runs') || app.supportsRoutines)
       .filter((t) => t.id !== 'proposals' || app.supportsProposals)
       .filter((t) => t.id !== 'meetings' || meetings.supported)
+      .filter((t) => t.id !== 'templates' || app.supportsNotes)
       .filter((t) => t.id !== 'money' || app.supportsMoney)
       .filter((t) => t.id !== 'screentime' || app.supportsScreenTime)
       .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
@@ -432,6 +437,8 @@
       <ScreenTimeSettingsPanel />
     {:else if tab === 'meetings'}
       <MeetingsPanel />
+    {:else if tab === 'templates'}
+      <TemplatesPanel />
     {:else if tab === 'keepintouch'}
       <KeepInTouchPanel />
     {:else if tab === 'profile'}

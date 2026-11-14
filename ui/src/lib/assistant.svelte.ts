@@ -28,7 +28,7 @@ import type {
   RoutineInfo,
   RoutineRun,
   RoutineRunId,
-  Template,
+  RoutineTemplate,
 } from './types'
 
 /** How many runs the log shows. A log, not a database. */
@@ -48,7 +48,7 @@ class AssistantState {
   routines = $state<RoutineInfo[]>([])
   runs = $state<RoutineRun[]>([])
   memories = $state<Memory[]>([])
-  templates = $state<Template[]>([])
+  templates = $state<RoutineTemplate[]>([])
   /** Runs nobody has looked at. Drawn on the app bar. */
   unseen = $state(0)
   loading = $state(false)
@@ -213,7 +213,7 @@ class AssistantState {
    * the packaged webview does not always have, and would mint a v4 where
    * everything else in the vault is v7.
    */
-  async draft(template?: Template) {
+  async draft(template?: RoutineTemplate) {
     if (!app.supportsRoutines) return
     try {
       const blank = await api.newRoutine()

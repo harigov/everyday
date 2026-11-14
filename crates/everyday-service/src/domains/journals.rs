@@ -121,12 +121,24 @@ async fn get_entry(svc: Arc<Service>, _ctx: Ctx, args: EntryRef) -> CommandResul
 }
 
 /// A blank entry, filed under today in the machine's own time zone.
+/// Mint today's entry without saving it, started from its journal's
+/// template for the day if it has one -- see
+/// `everyday_core::template::JournalTemplates`.
+///
+/// A template that cannot be read is not a reason to refuse a blank page:
+/// the entry comes back empty and the failure is logged.
 async fn new_entry(svc: Arc<Service>, _ctx: Ctx, args: NewEntry) -> CommandResult<Entry> {
-    let _ = svc.require()?;
+    let vault = svc.require()?;
     let tz = system_tz();
     let mut entry = Entry::new(args.journal_id, &tz);
     entry.local_date = local_date_in(entry.created_at, &tz);
-    Ok(entry)
+    blocking(move || {
+        if let Err(e) = vault.start_entry_from_template(&mut entry) {
+            tracing::warn!(error = %e, "could not start the entry from its template");
+        }
+        Ok(entry)
+    })
+    .await
 }
 
 /// Save an entry, refusing to overwrite a change made since it was loaded.

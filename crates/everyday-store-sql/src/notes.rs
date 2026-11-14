@@ -21,11 +21,12 @@
 //! about where an untitled note goes.
 
 use everyday_core::error::{Error, Result};
-use everyday_core::id::NoteId;
+use everyday_core::id::{NoteId, TemplateId};
 use everyday_core::note::{Note, NoteSummary};
 use everyday_core::purpose::Purpose;
 use everyday_core::record::RecordKind;
-use everyday_core::store::notes::{NoteQuery, NoteStore, note_aad};
+use everyday_core::store::notes::{NoteQuery, NoteStore, note_aad, template_aad};
+use everyday_core::template::Template;
 
 use crate::conn::{SqlExt, ToValue, Value};
 use crate::purpose::{forget_purposes, set_purpose};
@@ -49,6 +50,20 @@ impl Record for Note {
 
     fn purpose(&self) -> Option<&Purpose> {
         self.purpose.as_ref()
+    }
+}
+
+/// A template is written through the generic upsert: one sealed column and
+/// the two timestamps, the shape `skills` has. See the module docs of
+/// `everyday_core::store::notes` for why it lives beside notes.
+impl Record for Template {
+    const TABLE: &'static str = "templates";
+
+    fn columns(&self) -> Vec<(&'static str, Value)> {
+        vec![
+            ("created_us", to_us(self.created_at).to_value()),
+            ("updated_us", to_us(self.updated_at).to_value()),
+        ]
     }
 }
 
@@ -170,5 +185,20 @@ impl NoteStore for SqlStore {
     fn all_notes(&self) -> Result<Vec<Note>> {
         let rows = self.read().records("SELECT id, data FROM notes ORDER BY created_us", &[])?;
         self.collect(rows, note_aad)
+    }
+
+    fn list_templates(&self) -> Result<Vec<Template>> {
+        let rows =
+            self.read().records("SELECT id, data FROM templates ORDER BY created_us, id", &[])?;
+        self.collect(rows, template_aad)
+    }
+
+    fn put_template(&self, template: &Template) -> Result<()> {
+        self.upsert(template)
+    }
+
+    fn delete_template(&self, id: TemplateId) -> Result<()> {
+        self.delete_by_id::<Template>(id)?;
+        Ok(())
     }
 }

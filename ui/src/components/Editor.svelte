@@ -4,7 +4,8 @@
   // draws too -- so a photograph dropped into an entry and a photograph
   // dropped into a note go through one media path and one set of caret bugs.
   import { onDestroy } from 'svelte'
-  import { app } from '../lib/state.svelte'
+  import { app, handle } from '../lib/state.svelte'
+  import { insertFilled, templates } from '../lib/templates.svelte'
   import { longDate, plural, relativeTime } from '../lib/format'
   import RichText from './RichText.svelte'
   import Toolbar from './Toolbar.svelte'
@@ -15,7 +16,7 @@
   import EmptyState from './EmptyState.svelte'
   import Icon from './Icon.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
-  import type { Attachment, Entry, QuickReading, RichDoc } from '../lib/types'
+  import type { Attachment, Entry, QuickReading, RichDoc, Template } from '../lib/types'
   import { api } from '../lib/api'
   import { ask, quick, slot } from '../lib/quick.svelte'
   import { tracking } from '../lib/tracking.svelte'
@@ -57,7 +58,7 @@
     // is what makes "write a sentence, press the button" work rather than
     // asking about the entry as it was a moment ago.
     app.syncBody()
-    await app.flush()
+    await app.commit()
 
     // Through the slot, and `track` rather than `run` because this presses
     // two jobs at once and each has its own switch -- naming either one to
@@ -141,7 +142,7 @@
     const target = app.entry
     if (!target) return
     app.syncBody()
-    await app.flush()
+    await app.commit()
     const suggested = await ask('journal.title', () => api.quickEntryTitle(target.id))
     title = suggested ?? ''
   }
@@ -151,6 +152,25 @@
     if (!target) return
     target.attachments = [...target.attachments, a]
     app.scheduleSave()
+  }
+
+  /**
+   * Put a template, filled in for this entry's day and journal, at the caret.
+   * A title it carries is taken only into an empty title, and its tags are
+   * added to the ones already there -- inserting is adding to what was
+   * written, never replacing it.
+   */
+  async function insertTemplate(t: Template) {
+    const target = app.entry
+    if (!target || !editor) return
+    try {
+      const filled = await templates.render(t, target.localDate, target.journalId)
+      if (app.entry !== target || !editor) return
+      insertFilled(editor, target, filled)
+      app.scheduleSave()
+    } catch (e) {
+      await handle(e)
+    }
   }
 
   onDestroy(() => {
@@ -194,7 +214,7 @@
     role="region"
     aria-label="Entry editor"
   >
-    <Toolbar {editor} />
+    <Toolbar {editor} templateFor="journal" oninsert={(t: Template) => void insertTemplate(t)} />
 
     <div class="scroll canvas">
       <div class="page">
@@ -300,6 +320,7 @@
       <span class="dot">·</span>
       <span>
         {#if storing}Storing {storing}…
+        {:else if app.untouched}From a template — saved once you write in it
         {:else if app.saving}Saving…
         {:else if app.lastSaved}Saved {relativeTime(app.lastSaved)}
         {:else}Edited {relativeTime(entry.updatedAt)}{/if}

@@ -35,7 +35,6 @@ import type {
   MeetingSettings,
   MeetingSettingsView,
   ModelBenchmark,
-  NoteTemplate,
   Recording,
   RecordingId,
   SpeechModelInfo,
@@ -240,18 +239,6 @@ class MeetingsState {
 
   test(): Promise<void> {
     return api.testTranscriber()
-  }
-
-  newTemplate(): Promise<NoteTemplate> {
-    return api.newMeetingTemplate()
-  }
-
-  lintTemplate(body: string): Promise<string[]> {
-    return api.lintMeetingTemplate(body)
-  }
-
-  previewTemplate(body: string): Promise<string> {
-    return api.previewMeetingTemplate(body)
   }
 
   // ── Recordings, refreshed by a `recording` change from `live.svelte.ts` ──

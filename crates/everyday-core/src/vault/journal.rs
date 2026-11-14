@@ -28,6 +28,7 @@ impl Vault {
 
     pub fn save_journal(&self, journal: &Journal) -> Result<()> {
         self.writable()?;
+        journal.templates.validate()?;
         // Tracker definitions are tidied here rather than trusted from the
         // caller. They arrive from a form, they are read by charts, and
         // "the scale is at least 1 and the target is a finite number" is an

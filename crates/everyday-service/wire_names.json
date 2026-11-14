@@ -114,6 +114,7 @@
     "journal",
     "entry",
     "note",
+    "template",
     "project",
     "task",
     "block",

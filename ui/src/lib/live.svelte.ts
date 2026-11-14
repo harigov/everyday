@@ -36,6 +36,7 @@ import { purpose } from './purpose.svelte'
 import { screentime } from './screentime.svelte'
 import { isSettingsTab, panels } from './panels.svelte'
 import { app } from './state.svelte'
+import { templates } from './templates.svelte'
 import { todo } from './todo.svelte'
 import { targets as goalTargets } from './targets.svelte'
 import { tracking } from './tracking.svelte'
@@ -73,6 +74,9 @@ export const RELOAD = {
   todo: () => todo.refresh(),
   calendar: () => calendar.refreshIfOpen(),
   notes: () => notes.refresh(),
+  // The one list of templates, which Settings, a journal's settings and both
+  // editors read. Only once something has read it since unlock.
+  templates: () => templates.liveRefresh(),
   assistant: () => assistant.refresh(),
   // Work the assistant is doing in the background: a job moving from queued
   // to running to done, a line of progress, a cancel from another window.
@@ -193,6 +197,7 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   journal: 'journals',
   entry: 'entries',
   note: 'notes',
+  template: 'templates',
   project: 'todo',
   task: 'todo',
   block: 'calendar',
