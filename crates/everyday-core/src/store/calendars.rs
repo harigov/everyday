@@ -78,12 +78,8 @@ impl EventQuery {
         {
             return false;
         }
-        if !self.text.trim().is_empty()
-            && !e.searchable_text().to_lowercase().contains(&self.text.trim().to_lowercase())
-        {
-            return false;
-        }
-        true
+        self.text.trim().is_empty()
+            || e.searchable_text().to_lowercase().contains(&self.text.trim().to_lowercase())
     }
 
     /// Filter and order a materialised list: chronological, all-day events
