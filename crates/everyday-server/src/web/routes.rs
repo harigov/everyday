@@ -696,10 +696,10 @@ mod tests {
     #[tokio::test]
     async fn a_session_named_by_the_client_is_not_believed() {
         let rig = rig(Some(PASSWORD), Config::default());
-        let opened = rig.state.sessions.open(
-            PEER.parse::<SocketAddr>().unwrap().ip(),
-            rig.service.get().unwrap().path(),
-        );
+        let opened = rig
+            .state
+            .sessions
+            .open(PEER.parse::<SocketAddr>().unwrap().ip(), rig.service.get().unwrap().path());
         let response = send(
             &rig,
             post("/v1/call/status")
@@ -826,7 +826,11 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         let vault = everyday_vault::create(
             other.path(),
-            everyday_core::VaultConfig { name: "Other".into(), password: None, ..Default::default() },
+            everyday_core::VaultConfig {
+                name: "Other".into(),
+                password: None,
+                ..Default::default()
+            },
         )
         .unwrap();
         rig.service.set(vault);
@@ -837,8 +841,12 @@ mod tests {
                 .await;
         assert_eq!(picture.status(), StatusCode::UNAUTHORIZED);
         let hello = json_of(
-            send(&rig, get("/web/hello").header("cookie", &cookie).body(Body::empty()).unwrap(), PEER)
-                .await,
+            send(
+                &rig,
+                get("/web/hello").header("cookie", &cookie).body(Body::empty()).unwrap(),
+                PEER,
+            )
+            .await,
         )
         .await;
         assert_eq!(hello["signedIn"], false);

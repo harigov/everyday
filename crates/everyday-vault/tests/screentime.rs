@@ -22,10 +22,16 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
 
-/// Two hours ago, to the second: far enough back that a run of a few
+/// The top of the hour two hours ago: far enough back that a run of a few
 /// minutes never reaches the future, near enough to be inside any backlog.
+///
+/// On the hour, not to the second: two hours back to the second put the
+/// start in the last minutes before UTC midnight once a day (run at 01:58
+/// UTC), and a test's run then crossed into the next day, where the day it
+/// asked for cut it short.
 fn base() -> Timestamp {
-    Timestamp::from_second(Timestamp::now().as_second() - 2 * 3600).unwrap()
+    let two_hours_ago = Timestamp::now().as_second() - 2 * 3600;
+    Timestamp::from_second(two_hours_ago - two_hours_ago.rem_euclid(3600)).unwrap()
 }
 
 fn plus(at: Timestamp, secs: i64) -> Timestamp {

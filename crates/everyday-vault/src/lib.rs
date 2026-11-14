@@ -104,18 +104,38 @@ pub fn config_dir() -> PathBuf {
 /// keychain, and it cannot be left to each test to remember that -- the
 /// pointer to the last vault was overwritten by every test that opened a
 /// `Service` for a week before anybody noticed. `cfg(test)` does not reach
-/// across crates, so this asks where the running executable is instead:
-/// cargo, and nextest after it, put every unit and integration test binary
-/// in `target/<profile>/deps`, beside a `.fingerprint` directory, and nothing
-/// a person runs lives there.
+/// across crates, so this asks where the running executable is instead --
+/// see [`is_test_binary`] for where cargo puts one.
 pub fn under_test() -> bool {
     static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *UNDER_TEST.get_or_init(|| {
-        let Ok(exe) = std::env::current_exe() else { return false };
-        let Some(deps) = exe.parent() else { return false };
-        deps.file_name().is_some_and(|n| n == "deps")
-            && deps.parent().is_some_and(|profile| profile.join(".fingerprint").is_dir())
-    })
+    *UNDER_TEST.get_or_init(|| std::env::current_exe().is_ok_and(|exe| is_test_binary(&exe)))
+}
+
+/// Does `exe` sit where cargo puts a test binary, and nothing a person runs?
+///
+/// Two layouts, because cargo changed it under us:
+///
+/// * Before 1.100, and nextest: `target/<profile>/deps/<binary>`, beside
+///   `target/<profile>/.fingerprint`.
+/// * Cargo 1.100's build directory: `target/<profile>/build/<package>/<hash>/out/<binary>`,
+///   beside `<hash>/fingerprint`.
+///
+/// Knowing only the first, every test run on 1.100 believed it was not one
+/// -- and so read and wrote the person's own last-vault pointer, settings
+/// and keychain. `a_test_never_sees_the_real_directories` is what noticed.
+/// What a person runs, `cargo run` included, is the binary cargo copies up
+/// to `target/<profile>/`, in neither place.
+fn is_test_binary(exe: &Path) -> bool {
+    let named = |dir: &Path, name: &str| dir.file_name().is_some_and(|n| n == name);
+    let Some(dir) = exe.parent() else { return false };
+    if named(dir, "deps") {
+        return dir.parent().is_some_and(|profile| profile.join(".fingerprint").is_dir());
+    }
+    named(dir, "out")
+        && dir.parent().is_some_and(|unit| {
+            unit.join("fingerprint").is_dir()
+                && unit.parent().and_then(Path::parent).is_some_and(|build| named(build, "build"))
+        })
 }
 
 /// Where a test binary's "platform" directories are, in place of the real
@@ -238,6 +258,28 @@ pub fn validate_password(password: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_test_binary_is_recognised_in_both_of_cargos_layouts_and_nothing_else_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let profile = dir.path().join("target/debug");
+        // Before cargo 1.100.
+        std::fs::create_dir_all(profile.join("deps")).unwrap();
+        std::fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+        assert!(is_test_binary(&profile.join("deps/paths-0123abcd")));
+        // Cargo 1.100's build directory.
+        let unit = profile.join("build/everyday-vault/3360b76dd1fa11d8");
+        std::fs::create_dir_all(unit.join("out")).unwrap();
+        std::fs::create_dir_all(unit.join("fingerprint")).unwrap();
+        assert!(is_test_binary(&unit.join("out/paths-3360b76dd1fa11d8")));
+        // What a person runs: the binary cargo copies up, an installed one,
+        // and an `out` directory that is not cargo's.
+        assert!(!is_test_binary(&profile.join("everyday")));
+        assert!(!is_test_binary(Path::new("/usr/bin/everyday")));
+        let stray = dir.path().join("somewhere/out");
+        std::fs::create_dir_all(&stray).unwrap();
+        assert!(!is_test_binary(&stray.join("everyday")));
+    }
 
     #[test]
     fn a_recorded_vault_path_round_trips() {

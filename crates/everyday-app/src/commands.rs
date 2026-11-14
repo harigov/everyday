@@ -823,8 +823,10 @@ pub async fn web_start(
         config.port = port;
     }
     let registry = state.registry()?;
-    let status =
-        state.web().start(state.service(), registry, crate::web::assets(&app), config, true).await?;
+    let status = state
+        .web()
+        .start(state.service(), registry, crate::web::assets(&app), config, true)
+        .await?;
     state.recompose_events();
     Ok(status)
 }

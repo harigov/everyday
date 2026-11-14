@@ -106,7 +106,11 @@ impl Refusal {
 }
 
 /// Whether `who` may connect under `peers`, given who owns this machine.
-fn judge(peers: &TailnetPeers, owner: Option<Owner>, who: &super::tailscale::WhoIs) -> Result<(), String> {
+fn judge(
+    peers: &TailnetPeers,
+    owner: Option<Owner>,
+    who: &super::tailscale::WhoIs,
+) -> Result<(), String> {
     let device = who.node.name.trim_end_matches('.');
     if who.node.tags.as_ref().is_some_and(|t| !t.is_empty()) {
         return Err(format!("{device} is a tagged device, which belongs to nobody"));
