@@ -285,20 +285,23 @@ test-mail: ## Run the mail sync engine's end-to-end suite against throwaway Dove
 	docker rm -f everyday-imaptest everyday-smtptest >/dev/null; \
 	exit $$status
 
-# The `speech` feature (`meeting::models`, `meeting::speech`,
+# The `speech` feature (`local::files`, `meeting::speech`,
 # `meeting::transcribe::local`; see docs/plans/meeting-notes.md) links
 # sherpa-onnx, whose build script downloads a ~20 MB prebuilt native library
 # the first time it builds, unless `SHERPA_ONNX_LIB_DIR` or
 # `SHERPA_ONNX_ARCHIVE_DIR` is already set -- see
 # `crates/everyday-service/Cargo.toml`'s own comment on that dependency.
-# Neither `test` nor `lint` below build it, on purpose: a plain clone's first
-# `make test` must not need that download or a native toolchain it may not
-# have. This is the manual equivalent of .github/workflows/check.yml's
+# The `decisions` feature (`local::decide`; see docs/plans/mail-sorting.md)
+# compiles llama.cpp from source, which needs CMake (point `CMAKE` at one
+# that is not on PATH) and a C++ compiler.
+# Neither `test` nor `lint` below build them, on purpose: a plain clone's
+# first `make test` must not need that download or a native toolchain it may
+# not have. This is the manual equivalent of .github/workflows/check.yml's
 # separate `rust-speech` job, and the one job of the three there that `lint`
 # does not otherwise mirror.
-test-speech: ## Clippy and test the `speech` feature (downloads sherpa-onnx's native library)
-	cargo clippy -p everyday-service --all-targets --features speech -- -D warnings
-	cargo test -p everyday-service --features speech
+test-speech: ## Clippy and test the local-model features (downloads sherpa-onnx, builds llama.cpp)
+	cargo clippy -p everyday-service --all-targets --features speech,decisions -- -D warnings
+	cargo test -p everyday-service --features speech,decisions
 
 # The pair to reach for: `lint` says what is wrong, `fix` fixes what it can.
 # They are the same tools in the same order, so anything `fix` silences is

@@ -1,23 +1,31 @@
-//! The local speech models: what can be downloaded, where it goes, and
-//! whether it is there.
+//! The files of every model that runs on this computer: what can be
+//! downloaded, where it goes, and whether it is there.
 //!
-//! Not behind the `speech` feature: settings has to be able to say what a
-//! build without local speech would need, and whether a model is present is
-//! a question about files, not about sherpa-onnx.
+//! Not behind the `speech` or `decisions` features: settings has to be able
+//! to say what a build without them would need, and whether a model is
+//! present is a question about files, not about sherpa-onnx or llama.cpp.
+//! Keeping a loaded one in memory is [`super::resident`]'s business.
 //!
 //! # The catalogue
 //!
-//! Three downloads, per `docs/plans/meeting-notes.md`'s "The libraries" and
+//! Two kinds of model ([`ModelKind`]), one list.
+//!
+//! **Speech**, per `docs/plans/meeting-notes.md`'s "The libraries" and
 //! "Models": [`SPEECH_KIT_ID`] (Silero VAD, pyannote `segmentation-3.0`, and
 //! a small English speaker-embedding model -- shared by both recognisers and
 //! needed from phase 2 on) and the two local recognisers named by
-//! [`LocalModel`]. Every file is pinned by URL, byte count and SHA-256,
-//! checked by downloading each one and hashing what arrived -- see this
-//! phase's report for the exact commands run. Two of the three are `.tar.bz2`
-//! archives holding files this application does not want (Python export
-//! scripts, a licence file, test WAVs); [`Source::Archive`] downloads the
-//! whole archive, checks *its* hash, and extracts only the named members,
-//! each checked again on its own.
+//! [`LocalModel`]. Two of the three are `.tar.bz2` archives holding files
+//! this application does not want (Python export scripts, a licence file,
+//! test WAVs); [`Source::Archive`] downloads the whole archive, checks *its*
+//! hash, and extracts only the named members, each checked again on its own.
+//!
+//! **Decision**, per `docs/plans/mail-sorting.md`: the three
+//! [`LocalDecisionModel`]s, each one GGUF file from llama.cpp's own
+//! conversions, fetched from a fixed revision of its repository rather than
+//! from whatever `main` says today.
+//!
+//! Every file is pinned by URL, byte count and SHA-256, checked by
+//! downloading each one and hashing what arrived.
 //!
 //! # Where they live
 //!
@@ -55,6 +63,7 @@
 //! per model at a time -- calling [`start_download`] again for a model
 //! already downloading, or already installed, is a no-op.
 
+use everyday_core::llm::LocalDecisionModel;
 use everyday_core::meeting::LocalModel;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -65,7 +74,7 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
 /// The speech kit's id in the catalogue and on the wire. See
-/// `ui/src/lib/types.ts`'s `SpeechModelInfo.id`.
+/// `ui/src/lib/types.ts`'s `LocalModelInfo.id`.
 pub const SPEECH_KIT_ID: &str = "speechKit";
 
 /// The id [`LocalModel`] serialises as, and the id the catalogue and the
@@ -127,11 +136,23 @@ impl Source {
     }
 }
 
-/// One downloadable model: the speech kit, or a recogniser.
+/// What a model is for -- which settings pane lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelKind {
+    /// Meeting notes: the speech kit and the recognisers.
+    Speech,
+    /// Sorting mail: the [`LocalDecisionModel`]s.
+    Decision,
+}
+
+/// One downloadable model: the speech kit, a recogniser, or a decision
+/// model.
 #[derive(Debug)]
 pub struct ModelSpec {
-    /// [`SPEECH_KIT_ID`], or a [`local_model_id`].
+    /// [`SPEECH_KIT_ID`], a [`local_model_id`], or a
+    /// [`LocalDecisionModel::id`].
     pub id: &'static str,
+    pub kind: ModelKind,
     pub name: &'static str,
     pub description: &'static str,
     pub languages: &'static str,
@@ -275,10 +296,48 @@ const WHISPER_TURBO_SOURCES: &[Source] = &[Source::Archive {
     ],
 }];
 
-/// Every downloadable model, in the order the settings pane lists them.
-pub static CATALOGUE: [ModelSpec; 3] = [
+/// The decision models are one GGUF each, from llama.cpp's own conversions
+/// (`ggml-org/vllm-d3-*-GGUF` on Hugging Face) of vLLM Semantic Router's
+/// Decision 3.0 models. The revision in each URL is that repository's
+/// commit on the day it was pinned; the SHA-256 is Hugging Face's own LFS
+/// object id for the file, checked against a download of it. d3-lite and
+/// d3-nano are 8-bit (llama.cpp publishes nothing smaller for them); d3-mini
+/// is 4-bit, its smallest, at little cost to its answers.
+const D3_LITE_SOURCES: &[Source] = &[Source::File {
+    url: "https://huggingface.co/ggml-org/vllm-d3-lite-GGUF/resolve/0d544132bc35075d6346013f56454ea6dc19e640/vllm-d3-lite-Q8_0.gguf",
+    file: ModelFile {
+        dest: DECISION_MODEL_FILE,
+        sha256: "14e1d3ad398bdc245b5afe42e4e2a90e12b17fac699d3ab28c3b7632aaacc827",
+        bytes: 1_082_017_408,
+    },
+}];
+
+const D3_NANO_SOURCES: &[Source] = &[Source::File {
+    url: "https://huggingface.co/ggml-org/vllm-d3-nano-GGUF/resolve/f2256dfaff5b8337e8bf67ca064aeef18ee14a79/vllm-d3-nano-Q8_0.gguf",
+    file: ModelFile {
+        dest: DECISION_MODEL_FILE,
+        sha256: "a4d7563d9622a4c34cc7276a3381c3e27a25bbf8d4c0f5ee2f1404fc89ce2ab9",
+        bytes: 2_552_358_496,
+    },
+}];
+
+const D3_MINI_SOURCES: &[Source] = &[Source::File {
+    url: "https://huggingface.co/ggml-org/vllm-d3-mini-GGUF/resolve/8b29fd3b87373ea85fa59cc2f26251c1591d771a/vllm-d3-mini-Q4_K_M.gguf",
+    file: ModelFile {
+        dest: DECISION_MODEL_FILE,
+        sha256: "1e5e5a87dd6903b6d8585331eee94a2f01d5069e369b143e1dceb9de51ba2902",
+        bytes: 3_707_523_584,
+    },
+}];
+
+/// What a decision model's one file is called inside its directory.
+const DECISION_MODEL_FILE: &str = "model.gguf";
+
+/// Every downloadable model, in the order the settings panes list them.
+pub static CATALOGUE: [ModelSpec; 6] = [
     ModelSpec {
         id: SPEECH_KIT_ID,
+        kind: ModelKind::Speech,
         name: "Speech kit",
         description: "Voice detection, speaker segmentation and speaker embeddings. Needed by both recognisers below, and downloaded once for either.",
         languages: "Any",
@@ -286,6 +345,7 @@ pub static CATALOGUE: [ModelSpec; 3] = [
     },
     ModelSpec {
         id: "parakeetV3",
+        kind: ModelKind::Speech,
         name: "Parakeet TDT 0.6B v3",
         description: "Several times faster than real time on a laptop CPU.",
         languages: "English and the major European languages",
@@ -293,10 +353,35 @@ pub static CATALOGUE: [ModelSpec; 3] = [
     },
     ModelSpec {
         id: "whisperTurbo",
+        kind: ModelKind::Speech,
         name: "Whisper large-v3-turbo",
         description: "Slower than Parakeet, and heavier, but understands far more languages.",
         languages: "Any language Whisper supports",
         sources: WHISPER_TURBO_SOURCES,
+    },
+    ModelSpec {
+        id: "d3Lite",
+        kind: ModelKind::Decision,
+        name: "d3-lite",
+        description: "The smallest and quickest, and the least sure: in testing it put about one plain message in ten in the wrong category.",
+        languages: "English, best",
+        sources: D3_LITE_SOURCES,
+    },
+    ModelSpec {
+        id: "d3Nano",
+        kind: ModelKind::Decision,
+        name: "d3-nano",
+        description: "Recommended. As good as d3-mini in testing, in about two thirds of the time and memory.",
+        languages: "English, best",
+        sources: D3_NANO_SOURCES,
+    },
+    ModelSpec {
+        id: "d3Mini",
+        kind: ModelKind::Decision,
+        name: "d3-mini",
+        description: "The largest and most accurate, and the slowest: several seconds a message on most computers.",
+        languages: "English, best",
+        sources: D3_MINI_SOURCES,
     },
 ];
 
@@ -306,6 +391,22 @@ pub fn catalogue() -> &'static [ModelSpec] {
 
 pub fn spec(id: &str) -> Option<&'static ModelSpec> {
     CATALOGUE.iter().find(|s| s.id == id)
+}
+
+/// The models of one kind, in catalogue order.
+pub fn catalogue_of(kind: ModelKind) -> impl Iterator<Item = &'static ModelSpec> {
+    CATALOGUE.iter().filter(move |s| s.kind == kind)
+}
+
+/// This decision model's file, downloaded and checked.
+pub fn decision_installed(model: LocalDecisionModel) -> bool {
+    spec(model.id()).is_some_and(is_installed)
+}
+
+/// Where this decision model's GGUF is, once [`decision_installed`].
+pub fn decision_model_path(model: LocalDecisionModel) -> Option<PathBuf> {
+    let spec = spec(model.id())?;
+    is_installed(spec).then(|| spec.dir().join(DECISION_MODEL_FILE))
 }
 
 /// The VAD, segmentation and embedding models, all present and checked.
@@ -388,9 +489,9 @@ pub fn last_error(id: &str) -> Option<String> {
 }
 
 /// Whether `id` is installed, its progress if a download is running, and its
-/// last error if the last one failed -- everything `domains::speech`'s
-/// `speech_models` command reads to build one `SpeechModelInfo`. `None` when
-/// `id` is not in the catalogue.
+/// last error if the last one failed -- everything the `speech_models` and
+/// `decision_models` commands read to build one `LocalModelInfo`. `None`
+/// when `id` is not in the catalogue.
 pub struct Status {
     pub installed: bool,
     pub progress: Option<(u64, u64)>,
@@ -466,15 +567,26 @@ pub fn cancel_download(id: &str) {
 }
 
 /// Remove `id`'s files, cancelling a running download first.
+///
+/// The model's own files go first and the marker last, so a file that will
+/// not go -- one still open on Windows -- leaves the model installed and
+/// whole, rather than a marker gone and gigabytes left behind it.
 pub fn delete(id: &str) -> Result<(), String> {
     let spec = spec(id).ok_or_else(|| format!("there is no such model: {id}"))?;
     cancel_download(id);
     let dir = spec.dir();
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir)
-            .map_err(|e| format!("could not remove {}: {e}", dir.display()))?;
+    if !dir.exists() {
+        return Ok(());
     }
-    Ok(())
+    for file in spec.files() {
+        let path = dir.join(file.dest);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("could not remove {}: {e}", path.display())),
+        }
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("could not remove {}: {e}", dir.display()))
 }
 
 #[derive(Debug)]
@@ -554,11 +666,13 @@ fn spec_sources(spec: &'static ModelSpec) -> &'static [Source] {
     spec.sources
 }
 
-/// Longest a single model download may sit idle or in flight. Generous: a
-/// 550 MB archive on a slow link is still a download somebody asked for, not
-/// one that should be timed out from under them the way an ordinary fetch
-/// in `crate::http` is.
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// Longest a model download may go without receiving a byte. Not a limit
+/// on the whole download: a decision model is several gigabytes, and on a
+/// slow link that is still a download somebody asked for, not one that
+/// should be timed out from under them the way an ordinary fetch in
+/// `crate::http` is. A server that has stopped sending is caught by this
+/// instead.
+const STALL_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// This module's own client, separate from [`crate::http::client`]. That one
@@ -574,7 +688,7 @@ fn download_client() -> Result<&'static reqwest::Client, String> {
         .get_or_init(|| {
             reqwest::Client::builder()
                 .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(DOWNLOAD_TIMEOUT)
+                .read_timeout(STALL_TIMEOUT)
                 .user_agent(concat!(
                     "EveryDay/",
                     env!("CARGO_PKG_VERSION"),
@@ -910,6 +1024,17 @@ mod tests {
     }
 
     #[test]
+    fn every_local_decision_model_has_a_catalogue_entry_of_its_kind() {
+        for model in LocalDecisionModel::ALL {
+            let spec = spec(model.id()).unwrap_or_else(|| panic!("{} is missing", model.id()));
+            assert_eq!(spec.kind, ModelKind::Decision);
+            assert_eq!(spec.name, model.name());
+        }
+        assert_eq!(catalogue_of(ModelKind::Decision).count(), LocalDecisionModel::ALL.len());
+        assert!(catalogue_of(ModelKind::Speech).all(|s| spec(s.id).is_some()));
+    }
+
+    #[test]
     fn every_source_names_at_least_one_file_and_a_lowercase_hash() {
         for spec in catalogue() {
             assert!(!spec.files().is_empty(), "{} has no files", spec.id);
@@ -931,6 +1056,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let spec = ModelSpec {
             id: "test-model",
+            kind: ModelKind::Speech,
             name: "Test",
             description: "",
             languages: "",

@@ -23,7 +23,10 @@ everyday-vault.workspace = true
 # `speech`: local VAD, recognition, diarisation and speaker embeddings
 # through sherpa-onnx -- the desktop build carries it. See
 # docs/plans/meeting-notes.md and `everyday-service`'s own feature doc.
-everyday-service = { workspace = true, features = ["speech"] }
+# `decisions`: sorting mail on a decision model run here through llama.cpp,
+# for somebody who would rather it went to no provider. See
+# docs/plans/mail-sorting.md.
+everyday-service = { workspace = true, features = ["speech", "decisions"] }
 everyday-server.workspace = true
 everyday-chat.workspace = true
 # This machine's screen time: which app has focus, idle, locked. See

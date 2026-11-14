@@ -1,9 +1,9 @@
 //! The local speech models: what can be downloaded, downloading it, and a
-//! quick benchmark. See `meeting::models` and, for the model-dependent
+//! quick benchmark. See `local::files` and, for the model-dependent
 //! commands, `meeting::speech` (feature `speech`).
 //!
 //! `speech_models` works, and answers truthfully, in a build without the
-//! `speech` feature -- see `meeting::models`' own doc on why it is not
+//! `speech` feature -- see `local::files`' own doc on why it is not
 //! feature-gated. Only [`benchmark_speech_model`], which has to actually run
 //! a recogniser, is feature-gated; the other writes here move files around
 //! and need nothing sherpa-onnx provides.
@@ -24,15 +24,15 @@
 use crate::command;
 use crate::ctx::Ctx;
 use crate::error::{CommandError, CommandResult, codes};
-use crate::meeting::models;
+use crate::local::files::{self as models, ModelKind};
 use crate::service::Service;
 use everyday_core::meeting::LocalModel;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// `(name, TypeScript type, required)` args this domain reuses. See
-/// `ui/src/lib/types.ts`'s `SpeechModelInfo`, `ModelBenchmark`.
-const MODEL_REF_SIG: &[(&str, &str, bool)] = &[("id", "string", true)];
+/// `ui/src/lib/types.ts`'s `LocalModelInfo`, `ModelBenchmark`.
+pub(crate) const MODEL_REF_SIG: &[(&str, &str, bool)] = &[("id", "string", true)];
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,10 +41,12 @@ pub struct DownloadProgress {
     pub total: u64,
 }
 
-/// Mirrors `SpeechModelInfo` in `ui/src/lib/types.ts`.
+/// One downloadable model on this computer, for the pane that lists it --
+/// meeting notes' recognisers here, the decision models in
+/// `domains::models`. Mirrors `LocalModelInfo` in `ui/src/lib/types.ts`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SpeechModelInfo {
+pub struct LocalModelInfo {
     pub id: String,
     pub name: String,
     pub description: String,
@@ -57,9 +59,9 @@ pub struct SpeechModelInfo {
     pub error: Option<String>,
 }
 
-fn info(spec: &models::ModelSpec) -> SpeechModelInfo {
+pub(crate) fn info(spec: &models::ModelSpec) -> LocalModelInfo {
     let status = models::status(spec.id);
-    SpeechModelInfo {
+    LocalModelInfo {
         id: spec.id.to_string(),
         name: spec.name.to_string(),
         description: spec.description.to_string(),
@@ -87,6 +89,15 @@ pub struct ModelRef {
     pub id: String,
 }
 
+/// `id`, when it is one of the speech models -- the catalogue holds
+/// decision models too, which this pane has no business downloading.
+fn speech_id(id: &str) -> CommandResult<&str> {
+    match models::spec(id) {
+        Some(spec) if spec.kind == ModelKind::Speech => Ok(id),
+        _ => Err(CommandError::new(codes::INVALID, format!("{id} is not a speech model"))),
+    }
+}
+
 fn parse_local_model(id: &str) -> CommandResult<LocalModel> {
     match id {
         "parakeetV3" => Ok(LocalModel::ParakeetV3),
@@ -99,12 +110,12 @@ async fn speech_models(
     _svc: Arc<Service>,
     _ctx: Ctx,
     _args: super::Nothing,
-) -> CommandResult<Vec<SpeechModelInfo>> {
-    Ok(models::catalogue().iter().map(info).collect())
+) -> CommandResult<Vec<LocalModelInfo>> {
+    Ok(models::catalogue_of(ModelKind::Speech).map(info).collect())
 }
 
 async fn download_speech_model(_svc: Arc<Service>, _ctx: Ctx, args: ModelRef) -> CommandResult<()> {
-    models::start_download(&args.id).map_err(|e| CommandError::new(codes::INVALID, e))
+    models::start_download(speech_id(&args.id)?).map_err(|e| CommandError::new(codes::INVALID, e))
 }
 
 async fn cancel_speech_model_download(
@@ -112,12 +123,16 @@ async fn cancel_speech_model_download(
     _ctx: Ctx,
     args: ModelRef,
 ) -> CommandResult<()> {
-    models::cancel_download(&args.id);
+    // Nothing to stop is not a failure -- and a decision model's download is
+    // not this pane's to stop.
+    if speech_id(&args.id).is_ok() {
+        models::cancel_download(&args.id);
+    }
     Ok(())
 }
 
 async fn delete_speech_model(_svc: Arc<Service>, _ctx: Ctx, args: ModelRef) -> CommandResult<()> {
-    models::delete(&args.id).map_err(|e| CommandError::new(codes::INVALID, e))
+    models::delete(speech_id(&args.id)?).map_err(|e| CommandError::new(codes::INVALID, e))
 }
 
 #[cfg(feature = "speech")]
@@ -130,7 +145,7 @@ async fn benchmark_speech_model(
     use everyday_core::meeting::SAMPLE_RATE;
 
     let model = parse_local_model(&args.id)?;
-    let recogniser = speech::recogniser(model)?;
+    let recogniser = speech::recogniser_async(model).await?;
 
     // Ten seconds of deterministic pseudo-noise. A recogniser's own forward
     // pass costs the same whether the audio is speech or not -- it is a
@@ -175,7 +190,7 @@ async fn benchmark_speech_model(
 pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "speech_models", scope: Meetings, effect: Read,
-        args: super::Nothing, returns: "SpeechModelInfo[]", signature: &[],
+        args: super::Nothing, returns: "LocalModelInfo[]", signature: &[],
         run: speech_models,
     },
     command! {

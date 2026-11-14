@@ -17,8 +17,8 @@
 //!
 //! [`usable`] decides whether the switch may be turned on from plain
 //! booleans -- whether a local recogniser and the speech kit are installed
-//! -- rather than calling [`crate::meeting::models::installed`] or
-//! [`crate::meeting::models::speech_kit_installed`] itself, so the decision
+//! -- rather than calling [`crate::local::files::installed`] or
+//! [`crate::local::files::speech_kit_installed`] itself, so the decision
 //! stays unit tested without a real vault or a real download. [`view`] is
 //! the one place, reached only once a transcriber is actually configured,
 //! that calls the real thing.
@@ -269,17 +269,16 @@ fn usable(
     }
 }
 
-/// What [`usable`] needs from `meeting::models` for one transcriber choice --
+/// What [`usable`] needs from `local::files` for one transcriber choice --
 /// the one place this module calls into the speech agent's stubs. Only
 /// reached once a transcriber is actually configured, so the common "not set
 /// up yet" case never touches them.
 fn installation_state(transcriber: &TranscriberConfig) -> (bool, bool) {
     match transcriber {
-        TranscriberConfig::Local { model } => (
-            crate::meeting::models::installed(*model),
-            crate::meeting::models::speech_kit_installed(),
-        ),
-        _ => (false, crate::meeting::models::speech_kit_installed()),
+        TranscriberConfig::Local { model } => {
+            (crate::local::files::installed(*model), crate::local::files::speech_kit_installed())
+        }
+        _ => (false, crate::local::files::speech_kit_installed()),
     }
 }
 

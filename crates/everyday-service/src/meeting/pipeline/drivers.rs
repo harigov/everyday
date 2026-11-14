@@ -148,7 +148,7 @@ pub(crate) async fn transcribe_pending(
     };
 
     #[cfg(feature = "speech")]
-    let kit = transcription_kit(id);
+    let kit = transcription_kit(id).await;
 
     transcribe_stage(
         vault,
@@ -248,7 +248,7 @@ pub(crate) async fn do_identify(
     };
 
     #[cfg(feature = "speech")]
-    let kit = speech::speech_kit().ok();
+    let kit = speech::speech_kit_async().await.ok();
     #[cfg(feature = "speech")]
     let embedding_model = kit.as_ref().map(|k| k.embedding_model().to_string()).unwrap_or_default();
     #[cfg(not(feature = "speech"))]
@@ -318,7 +318,7 @@ pub(crate) async fn do_summarise_and_write(
     };
 
     #[cfg(feature = "speech")]
-    let kit = speech::speech_kit().ok();
+    let kit = speech::speech_kit_async().await.ok();
     #[cfg(feature = "speech")]
     let embedding_model = kit.as_ref().map(|k| k.embedding_model().to_string()).unwrap_or_default();
     #[cfg(not(feature = "speech"))]

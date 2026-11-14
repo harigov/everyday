@@ -48,7 +48,7 @@ impl LocalTranscriber {
         chunk: &SpeechChunk,
         hints: &Hints,
     ) -> CommandResult<Vec<RawSegment>> {
-        let kit = speech::speech_kit()?;
+        let kit = speech::speech_kit_async().await?;
         let samples = chunk.samples.clone();
         let turns = blocking({
             let kit = kit.clone();
@@ -56,7 +56,7 @@ impl LocalTranscriber {
         })
         .await?;
 
-        let recogniser = speech::recogniser(self.model)?;
+        let recogniser = speech::recogniser_async(self.model).await?;
         let language = hints.language.clone();
         let mut segments = Vec::with_capacity(turns.len());
         for (start_ms, end_ms) in turns {

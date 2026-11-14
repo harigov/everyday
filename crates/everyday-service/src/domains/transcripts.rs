@@ -235,7 +235,7 @@ async fn probe(transcriber: &dyn Transcriber) -> CommandResult<()> {
 
 #[cfg(feature = "speech")]
 async fn test_local(model: everyday_core::meeting::LocalModel) -> CommandResult<()> {
-    let recogniser = speech::recogniser(model)?;
+    let recogniser = speech::recogniser_async(model).await?;
     blocking(move || {
         let silence = vec![0i16; everyday_core::meeting::SAMPLE_RATE as usize];
         recogniser.transcribe(&silence, None);
@@ -732,7 +732,7 @@ async fn enrol_voice(
     let samples: Vec<i16> =
         bytes.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
 
-    let kit = speech::speech_kit()?;
+    let kit = speech::speech_kit_async().await?;
     let embedding = blocking({
         let kit = kit.clone();
         move || enrol_embedding(&kit, &samples)

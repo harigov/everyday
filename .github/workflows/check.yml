@@ -39,7 +39,9 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The `-p everyday-app` steps build llama.cpp from source, for the
+    # desktop app's local decision models (`decisions`).
+    timeout-minutes: 40
 
     # A throwaway Postgres, so the storage conformance suite runs against
     # *both* SQL dialects rather than only the one that needs no server. The
@@ -129,20 +131,23 @@ jobs:
           cargo test -p everyday-app
 
   rust-speech:
-    name: Rust (speech)
+    name: Rust (local models)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
-    # Local speech (`meeting::models`, `meeting::speech`,
-    # `meeting::transcribe::local`; see docs/plans/meeting-notes.md) is its
-    # own job rather than a step in `rust` above, for two reasons: it needs
-    # no Postgres service, and its one real cost -- `sherpa-onnx`'s prebuilt
-    # native library, a ~20 MB archive -- is worth caching on its own key
-    # rather than folded into `rust`'s `Cargo.lock`-keyed one, where it would
-    # be re-downloaded on every dependency bump unrelated to it. `rust`'s own
-    # `cargo test` stays feature-less, per this crate's own doc on why: a
-    # plain `cargo test` -- what anyone cloning the repo runs first -- must
-    # not need a 500 MB model download or a native toolchain it may not have.
+    # Local speech (`local::files`, `meeting::speech`,
+    # `meeting::transcribe::local`; see docs/plans/meeting-notes.md) and
+    # local decision models (`local::decide`; see docs/plans/mail-sorting.md)
+    # are their own job rather than a step in `rust` above, for two reasons:
+    # they need no Postgres service, and the one real cost of speech --
+    # `sherpa-onnx`'s prebuilt native library, a ~20 MB archive -- is worth
+    # caching on its own key rather than folded into `rust`'s
+    # `Cargo.lock`-keyed one, where it would be re-downloaded on every
+    # dependency bump unrelated to it. llama.cpp, behind `decisions`, is
+    # compiled from source with the runner's own CMake. `rust`'s own `cargo
+    # test` stays feature-less, per this crate's own doc on why: a plain
+    # `cargo test` -- what anyone cloning the repo runs first -- must not
+    # need a 500 MB model download or a native toolchain it may not have.
     steps:
       - uses: actions/checkout@v4
 
@@ -214,12 +219,12 @@ jobs:
       - name: Clippy
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo clippy -p everyday-service --all-targets --features speech -- -D warnings
+        run: cargo clippy -p everyday-service --all-targets --features speech,decisions -- -D warnings
 
       - name: Tests
         env:
           SHERPA_ONNX_ARCHIVE_DIR: /home/runner/.cache/sherpa-onnx-archives
-        run: cargo test -p everyday-service --features speech
+        run: cargo test -p everyday-service --features speech,decisions
 
   ui:
     name: Interface

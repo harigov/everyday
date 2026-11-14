@@ -11,10 +11,12 @@
 //!                  vad → transcribe → identify → merge → summarise → note
 //!   transcribe   one trait, three remote backends and a local one
 //!   speech       sherpa-onnx: vad, recognise, diarise, embed (feature `speech`)
-//!   models       what can be downloaded, and downloading it
 //! ```
+//!
+//! The model files themselves -- what can be downloaded, and downloading it
+//! -- are [`crate::local::files`], shared with every other model that runs
+//! on this computer.
 
-pub mod models;
 pub mod pipeline;
 #[cfg(feature = "speech")]
 pub mod speech;

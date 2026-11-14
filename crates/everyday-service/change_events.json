@@ -1285,6 +1285,18 @@
       ]
     },
     {
+      "command": "cancel_decision_model_download",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "dismiss_meeting_offer",
       "events": []
     },
@@ -1686,6 +1698,10 @@
     {
       "name": "delete_bank_link",
       "reason": "tells Plaid to forget the bank's sign-in before forgetting it here"
+    },
+    {
+      "name": "download_decision_model",
+      "reason": "a real network download of 1-4 GB"
     },
     {
       "name": "download_speech_model",

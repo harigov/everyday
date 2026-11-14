@@ -18,14 +18,17 @@
   import {
     KNOWN_DECISION_ENDPOINTS,
     KNOWN_LLM_ENDPOINTS,
+    LOCAL_DECISION_MODEL,
     decisionEndpointOf,
     decisionProviderLabel,
     endpointOf,
     providerLabel,
   } from '../lib/accounts'
   import { isLoopback } from '../lib/agent'
+  import { humanBytes } from '../lib/format'
   import { models } from '../lib/models.svelte'
   import { quick } from '../lib/quick.svelte'
+  import { quietly } from '../lib/state.svelte'
   import type {
     DecisionApi,
     DecisionConfig,
@@ -37,6 +40,7 @@
     ReasoningEffort,
   } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Meter from './Meter.svelte'
 
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
   // be what the next message is sent to.
@@ -70,6 +74,7 @@
   void models.refresh().then((ok) => {
     if (ok && models.settings) draft = structuredClone($state.snapshot(models.settings))
   })
+  void models.refreshLocal().catch(quietly)
   void quick.load()
 
   type Card = {
@@ -157,15 +162,21 @@
   }
 
   /**
-   * The decision model: off, or Jev from TypeSafe to start with. Not a tier
-   * -- there is no temperature or effort to set, and its address is the full
-   * URL a request is posted to, because the places that serve one do not
-   * agree on a path.
+   * The decision model: off, or -- to start with -- d3-nano on this
+   * computer, where this copy of the app can run one, and Jev from TypeSafe
+   * where it cannot. Not a tier -- there is no temperature
+   * or effort to set, and at a provider its address is the full URL a
+   * request is posted to, because the places that serve one do not agree on
+   * a path.
    */
   function toggleDecision(on: boolean) {
     if (!draft) return
     const first = KNOWN_DECISION_ENDPOINTS[0]!
-    draft.decision = on ? { api: first.api, url: first.url, model: first.model } : null
+    draft.decision = !on
+      ? null
+      : models.localDecisions
+        ? { api: 'local', url: null, model: LOCAL_DECISION_MODEL }
+        : { api: first.api, url: first.url, model: first.model }
   }
 
   function pickDecision(d: DecisionConfig, preset: (typeof KNOWN_DECISION_ENDPOINTS)[number]) {
@@ -175,6 +186,44 @@
     d.model = preset.model
   }
 
+  function pickLocal(d: DecisionConfig) {
+    // Clicking the chip that is already on keeps the model picked under it.
+    if (d.api === 'local') return
+    d.api = 'local'
+    d.url = null
+    d.model = LOCAL_DECISION_MODEL
+  }
+
+  /** A decision model's own timing, by id: what "Check speed" last said. */
+  let timing = $state<string | null>(null)
+  let timed = $state<Record<string, string>>({})
+
+  async function checkSpeed(id: string) {
+    timing = id
+    try {
+      const b = await models.benchmarkLocal(id)
+      const seconds = b.msPerMessage / 1000
+      timed = {
+        ...timed,
+        [id]: `About ${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)} s a message on this computer.`,
+      }
+    } catch (e) {
+      timed = { ...timed, [id]: e instanceof Error ? e.message : String(e) }
+    } finally {
+      timing = null
+    }
+  }
+
+  async function onLocal(action: () => Promise<void>) {
+    clearNotice()
+    try {
+      await action()
+    } catch (e) {
+      notice = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  /** The request formats a provider takes; a model here takes none. */
   const DECISION_APIS: { value: DecisionApi; label: string }[] = [
     { value: 'typeSafe', label: 'TypeSafe System One (Jev, and Jev on OpenRouter)' },
     { value: 'openAi', label: 'OpenAI Decisions' },
@@ -244,7 +293,7 @@
         const key = keys[card.tier].trim()
         if (key && draft[card.tier]) await models.setKey(card.tier, key)
       }
-      if (keys.decision.trim() && draft.decision) {
+      if (keys.decision.trim() && draft.decision && draft.decision.api !== 'local') {
         await models.setKey('decision', keys.decision.trim())
       }
       keys = { large: '', medium: '', small: '', decision: '' }
@@ -436,22 +485,32 @@
       </div>
       <p class="hint">
         Sorting mail into your own categories, under Settings → Mail sorting. A decision model does
-        not write: it is shown a message and your categories, and picks one — in a fraction of a
-        second, for a fraction of what a chat model costs.
+        not write: it is shown a message and your categories, and picks one. At a provider that
+        takes a fraction of a second and a fraction of what a chat model costs; on this computer it
+        costs nothing, takes a second or a few, and your mail never leaves it.
       </p>
       {#if !draft.decision}
         <p class="hint">Off: mail is sorted on the Small model, into the five inbox tabs.</p>
       {:else}
         {@const decision = draft.decision}
-        {@const endpoint = decisionEndpointOf(decision)}
-        {@const local = isLoopback(decision.url)}
-        {@const keyed = models.hasKeyAt(endpoint)}
-        <div class="presets" role="group" aria-label="Decision provider">
-          {#each KNOWN_DECISION_ENDPOINTS as preset (preset.label)}
+        {@const here = decision.api === 'local'}
+        <div class="presets" role="group" aria-label="Where the decision model runs">
+          {#if models.localDecisions || here}
             <button
               class="chip"
-              class:on={endpoint === preset.url}
-              aria-pressed={endpoint === preset.url}
+              class:on={here}
+              aria-pressed={here}
+              onclick={() => pickLocal(decision)}
+            >
+              On this computer
+            </button>
+          {/if}
+          {#each KNOWN_DECISION_ENDPOINTS as preset (preset.label)}
+            {@const on = !here && decisionEndpointOf(decision) === preset.url}
+            <button
+              class="chip"
+              class:on
+              aria-pressed={on}
               onclick={() => pickDecision(decision, preset)}
             >
               {preset.label}
@@ -459,63 +518,124 @@
           {/each}
         </div>
 
-        <label class="setting">
-          <span>Request format</span>
-          <select
-            value={decision.api}
-            onchange={(e) => (decision.api = e.currentTarget.value as DecisionApi)}
-          >
-            {#each DECISION_APIS as api (api.value)}
-              <option value={api.value}>{api.label}</option>
-            {/each}
-          </select>
-        </label>
+        {#if here}
+          {#if !models.localDecisions}
+            <p class="hint">
+              This copy of Every Day cannot run a decision model itself. Choose a provider above.
+            </p>
+          {/if}
+          {#each models.local as m (m.id)}
+            <label class="model-row pick">
+              <input
+                type="radio"
+                name="decision-model"
+                checked={decision.model === m.id}
+                onchange={() => (decision.model = m.id)}
+              />
+              <div class="model-text">
+                <b>{m.name}</b>
+                <small>{m.description} · {humanBytes(m.bytes)}</small>
+                {#if timed[m.id]}<small class="speed">{timed[m.id]}</small>{/if}
+                {#if m.error}<small class="failed">The download failed: {m.error}</small>{/if}
+              </div>
+              {#if m.progress}
+                <div class="model-progress">
+                  <Meter
+                    label="Downloading"
+                    value={m.progress.done / m.progress.total}
+                    note={`${humanBytes(m.progress.done)} of ${humanBytes(m.progress.total)}`}
+                  />
+                  <button class="btn" onclick={() => void onLocal(() => models.cancelLocal(m.id))}
+                    >Cancel</button
+                  >
+                </div>
+              {:else if m.installed}
+                <button
+                  class="btn"
+                  disabled={timing === m.id}
+                  onclick={() => void checkSpeed(m.id)}
+                >
+                  {timing === m.id ? 'Checking…' : 'Check speed'}
+                </button>
+                <button class="btn" onclick={() => void onLocal(() => models.deleteLocal(m.id))}
+                  >Delete</button
+                >
+              {:else}
+                <button class="btn" onclick={() => void onLocal(() => models.downloadLocal(m.id))}
+                  >Download</button
+                >
+              {/if}
+            </label>
+          {/each}
+          <p class="hint">
+            Runs here, so your mail goes nowhere: no account's “I understand” is needed, only
+            sorting switched on for it under Settings → Accounts. Nothing is sorted until the model
+            you pick is downloaded. It is loaded when mail is sorted, and let go of after 15 minutes
+            unused.
+          </p>
+        {:else}
+          {@const endpoint = decisionEndpointOf(decision) ?? ''}
+          {@const local = isLoopback(decision.url)}
+          {@const keyed = models.hasKeyAt(endpoint)}
+          <label class="setting">
+            <span>Request format</span>
+            <select
+              value={decision.api}
+              onchange={(e) => (decision.api = e.currentTarget.value as DecisionApi)}
+            >
+              {#each DECISION_APIS as api (api.value)}
+                <option value={api.value}>{api.label}</option>
+              {/each}
+            </select>
+          </label>
 
-        <label class="setting">
-          <span>Server</span>
-          <input
-            value={decision.url ?? ''}
-            oninput={(e) => (decision.url = e.currentTarget.value.trim() || null)}
-            placeholder={decisionEndpointOf({ api: decision.api, url: null })}
-            spellcheck="false"
-          />
-        </label>
-        <p class="hint">The whole address requests are posted to, path and all.</p>
+          <label class="setting">
+            <span>Server</span>
+            <input
+              value={decision.url ?? ''}
+              oninput={(e) => (decision.url = e.currentTarget.value.trim() || null)}
+              placeholder={decisionEndpointOf({ api: decision.api, url: null }) ?? ''}
+              spellcheck="false"
+            />
+          </label>
+          <p class="hint">The whole address requests are posted to, path and all.</p>
 
-        <label class="setting">
-          <span>Model name</span>
-          <input
-            bind:value={decision.model}
-            placeholder={KNOWN_DECISION_ENDPOINTS.find((k) => k.api === decision.api)?.model}
-            spellcheck="false"
-          />
-        </label>
+          <label class="setting">
+            <span>Model name</span>
+            <input
+              bind:value={decision.model}
+              placeholder={KNOWN_DECISION_ENDPOINTS.find((k) => k.api === decision.api)?.model}
+              spellcheck="false"
+            />
+          </label>
 
-        {#if keyed}
-          <div class="stored">
-            <span>
-              <Icon name="lock" size={14} />
-              A key for {decisionProviderLabel(decision)} is stored.
-            </span>
-            {#if models.settings?.decision && decisionEndpointOf(models.settings.decision) === endpoint}
-              <button class="link" onclick={() => void removeKey('decision')}>Remove</button>
-            {/if}
-          </div>
+          {#if keyed}
+            <div class="stored">
+              <span>
+                <Icon name="lock" size={14} />
+                A key for {decisionProviderLabel(decision)} is stored.
+              </span>
+              {#if models.settings?.decision && decisionEndpointOf(models.settings.decision) === endpoint}
+                <button class="link" onclick={() => void removeKey('decision')}>Remove</button>
+              {/if}
+            </div>
+          {/if}
+          <label class="setting">
+            <span>{keyed ? 'Replace the key' : 'API key'}</span>
+            <input
+              type="password"
+              bind:value={keys.decision}
+              placeholder={local ? 'Not needed for a model on this machine' : 'Its API key'}
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          <p class="hint">
+            Switching it on, or moving it to another provider, changes where mail may go, so each
+            account's “I understand” under Settings → Accounts needs ticking again before anything
+            is sorted.
+          </p>
         {/if}
-        <label class="setting">
-          <span>{keyed ? 'Replace the key' : 'API key'}</span>
-          <input
-            type="password"
-            bind:value={keys.decision}
-            placeholder={local ? 'Not needed for a model on this machine' : 'Its API key'}
-            spellcheck="false"
-            autocomplete="off"
-          />
-        </label>
-        <p class="hint">
-          Switching it on, or moving it, changes where mail may go, so each account's “I understand”
-          under Settings → Accounts needs ticking again before anything is sorted.
-        </p>
       {/if}
     </section>
 
@@ -641,9 +761,14 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 16%, transparent);
   }
-  input[type='checkbox'] {
+  input[type='checkbox'],
+  input[type='radio'] {
     width: auto;
     padding: 0;
+  }
+  input[type='radio'] {
+    flex: none;
+    accent-color: var(--accent);
   }
 
   .stored {

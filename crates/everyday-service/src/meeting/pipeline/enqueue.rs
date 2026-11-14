@@ -102,12 +102,12 @@ pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u3
 /// synthetic chunks whole: on a machine with the models installed, voice
 /// detection would otherwise find no speech in them and send nothing at all.
 #[cfg(feature = "speech")]
-pub(crate) fn transcription_kit(id: RecordingId) -> Option<Arc<SpeechKit>> {
+pub(crate) async fn transcription_kit(id: RecordingId) -> Option<Arc<SpeechKit>> {
     #[cfg(test)]
     if test_hooks::skips_vad(id) {
         return None;
     }
     #[cfg(not(test))]
     let _ = id;
-    speech::speech_kit().ok()
+    speech::speech_kit_async().await.ok()
 }

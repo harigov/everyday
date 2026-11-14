@@ -519,7 +519,7 @@ pub struct CalendarFilter {
     pub role_ids: Vec<crate::id::RoleId>,
 }
 
-/// The local recognisers on offer. See `everyday_service::meeting::models`.
+/// The local recognisers on offer. See `everyday_service::local::files`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]

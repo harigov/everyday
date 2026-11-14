@@ -476,6 +476,23 @@
       ],
       "changes": null,
       "effect": "read",
+      "name": "benchmark_decision_model",
+      "orScope": null,
+      "returns": "DecisionBenchmark",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
       "name": "benchmark_speech_model",
       "orScope": null,
       "returns": "ModelBenchmark",
@@ -508,6 +525,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "money",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "cancel_decision_model_download",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -817,6 +854,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "decision_models",
+      "orScope": null,
+      "returns": "LocalModelInfo[]",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "id",
@@ -999,6 +1047,26 @@
       },
       "effect": "destructive",
       "name": "delete_conversation",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_decision_model",
       "orScope": null,
       "returns": "void",
       "scope": "agent",
@@ -1731,6 +1799,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "download_decision_model",
+      "orScope": null,
+      "returns": "void",
+      "scope": "agent",
       "sensitive": false,
       "streams": false
     },
@@ -6767,7 +6855,7 @@
       "effect": "read",
       "name": "speech_models",
       "orScope": null,
-      "returns": "SpeechModelInfo[]",
+      "returns": "LocalModelInfo[]",
       "scope": "meetings",
       "sensitive": false,
       "streams": false

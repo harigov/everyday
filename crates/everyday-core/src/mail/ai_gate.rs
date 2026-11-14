@@ -109,6 +109,26 @@ pub fn mail_ai_allowed(
     Ok(())
 }
 
+impl crate::llm::DecisionAccess {
+    /// [`mail_ai_allowed`] for this decision model. One on this computer is
+    /// asked only the feature's own switch: the acknowledgement is consent
+    /// to mail going to a provider, and a local model sends it nowhere --
+    /// [`crate::llm::ModelSettings::endpoints`] does not even list it.
+    pub fn mail_allowed(
+        &self,
+        account: &Account,
+        feature: MailAiFeature,
+    ) -> Result<(), MailAiRefusal> {
+        if self.config.is_local() {
+            if !feature.switched_on(account) {
+                return Err(MailAiRefusal::FeatureOff);
+            }
+            return Ok(());
+        }
+        mail_ai_allowed(account, &self.acknowledgement, feature)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +227,32 @@ mod tests {
         assert_eq!(
             mail_ai_allowed(&account, "https://api.openai.com/v1", MailAiFeature::Categorize),
             Ok(())
+        );
+    }
+
+    /// A decision model on this computer needs the switch and nothing else;
+    /// one at a provider still needs the acknowledgement on top.
+    #[test]
+    fn a_local_decision_model_needs_the_switch_but_no_acknowledgement() {
+        use crate::llm::{DecisionAccess, DecisionApi, DecisionConfig};
+        let access = |api: DecisionApi, model: &str| DecisionAccess {
+            config: DecisionConfig { api, url: None, model: model.into() },
+            key: None,
+            acknowledgement: "https://api.openai.com/v1".into(),
+        };
+        let local = access(DecisionApi::Local, "d3Lite");
+        let remote = access(DecisionApi::TypeSafe, "jev-latest");
+
+        let off = account_with(MailAi::default(), None);
+        assert_eq!(
+            local.mail_allowed(&off, MailAiFeature::Categorize),
+            Err(MailAiRefusal::FeatureOff)
+        );
+        let on = account_with(MailAi { categorize: true, ..MailAi::default() }, None);
+        assert_eq!(local.mail_allowed(&on, MailAiFeature::Categorize), Ok(()));
+        assert_eq!(
+            remote.mail_allowed(&on, MailAiFeature::Categorize),
+            Err(MailAiRefusal::NotAcknowledged)
         );
     }
 

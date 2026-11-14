@@ -469,6 +469,45 @@ textarea.field {
   background: var(--bg-selected);
 }
 
+/* ── Downloadable models ───────────────────────────────────────────────
+   One row per model that runs on this computer -- meeting notes' recognisers,
+   the decision models under Settings → Models: what it is, its size, and
+   download, progress or delete at the end. */
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.model-row.pick {
+  cursor: pointer;
+}
+.model-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.model-text small {
+  color: var(--fg-subtle);
+  font-size: var(--text-xs);
+}
+.model-text small.speed {
+  color: var(--accent);
+}
+.model-text small.failed {
+  color: var(--danger, var(--fg-muted));
+}
+.model-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 180px;
+}
+
 /* ── Pane headings ─────────────────────────────────────────────────────
    The name over a list or a page -- "All inboxes", "Today", "Everything" --
    and the one quiet line under it that says how much is there. Sized once,

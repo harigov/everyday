@@ -25,7 +25,7 @@
 #![cfg(feature = "speech")]
 
 use everyday_core::meeting::{LocalModel, SAMPLE_RATE};
-use everyday_service::meeting::models;
+use everyday_service::local::files as models;
 use everyday_service::meeting::speech;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

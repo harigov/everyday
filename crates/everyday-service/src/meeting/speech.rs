@@ -1,5 +1,5 @@
 //! sherpa-onnx: voice activity detection, diarisation, speaker embeddings and
-//! local recognition. Feature `speech` only -- see `meeting::models` for the
+//! local recognition. Feature `speech` only -- see `local::files` for the
 //! files this loads and `docs/plans/meeting-notes.md`'s "The libraries".
 //!
 //! # Blocking
@@ -12,21 +12,24 @@
 //!
 //! # Sharing
 //!
-//! [`speech_kit`] and [`recogniser`] each load their models once, the first
-//! time either is asked for, and cache the result behind an [`Arc`] --
-//! cloning an `Arc<SpeechKit>` or `Arc<Recogniser>` is cheap, and every
-//! caller in one process is meant to share the same one rather than loading
-//! a second copy. Loading is expensive (hundreds of megabytes of ONNX
-//! weights); running inference on an already-loaded model is not, and the
+//! [`speech_kit`] and [`recogniser`] each load their models the first time
+//! either is asked for, and keep them behind an [`Arc`] -- cloning an
+//! `Arc<SpeechKit>` or `Arc<Recogniser>` is cheap, and every caller in one
+//! process is meant to share the same one rather than loading a second
+//! copy. Both are [`Resident`]s: once nobody has used one for
+//! [`crate::local::resident::IDLE_AFTER`], it is let go of, and the next
+//! call loads it again. Loading is expensive (hundreds of megabytes of ONNX
+//! weights, a few seconds); running inference on an already-loaded model is
+//! not, and the
 //! `Mutex` each wrapper keeps around its native objects only ever serialises
 //! that part -- see [`SpeechKit`] and [`Recogniser`]'s own docs for why the
 //! `Mutex` is there at all given sherpa-onnx's own `Send`/`Sync` impls.
 
 use crate::error::{CommandError, CommandResult, codes};
-use crate::meeting::models::{self, RecogniserPaths};
+use crate::local::files::{self as models, RecogniserPaths};
+use crate::local::resident::Resident;
 use everyday_core::meeting::{LocalModel, SAMPLE_RATE};
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// How long a merged gap of silence may be before it still counts as one
 /// speech turn. Below `docs/plans/meeting-notes.md`'s own numbers for "Who
@@ -73,7 +76,7 @@ fn l2_normalise(mut v: Vec<f32>) -> Vec<f32> {
     v
 }
 
-/// The speech kit, loaded from `meeting::models::speech_kit_paths`: voice
+/// The speech kit, loaded from `local::files::speech_kit_paths`: voice
 /// activity detection, offline speaker diarisation, and speaker embeddings.
 ///
 /// # Why a `Mutex` around objects sherpa-onnx already marks `Send + Sync`
@@ -318,10 +321,23 @@ fn merge_close(mut segments: Vec<(u64, u64)>, gap_ms: u64) -> Vec<(u64, u64)> {
     merged
 }
 
-/// [`SpeechKit`], loaded once and shared. See this module's doc on sharing.
+/// [`SpeechKit`], loaded on first use and shared. See this module's doc on
+/// sharing.
 pub fn speech_kit() -> CommandResult<Arc<SpeechKit>> {
-    static KIT: OnceLock<CommandResult<Arc<SpeechKit>>> = OnceLock::new();
-    KIT.get_or_init(|| SpeechKit::load().map(Arc::new)).clone()
+    static KIT: Resident<(), SpeechKit> = Resident::new("speech kit");
+    KIT.get((), SpeechKit::load)
+}
+
+/// [`speech_kit`] from async code. Loading it again after it was let go of
+/// takes seconds, which belong on a blocking thread, not a runtime worker.
+pub async fn speech_kit_async() -> CommandResult<Arc<SpeechKit>> {
+    crate::service::blocking(speech_kit).await
+}
+
+/// [`recogniser`] from async code, for the same reason as
+/// [`speech_kit_async`].
+pub async fn recogniser_async(model: LocalModel) -> CommandResult<Arc<Recogniser>> {
+    crate::service::blocking(move || recogniser(model)).await
 }
 
 /// A local recogniser for one [`LocalModel`]: a transducer (Parakeet) or
@@ -432,14 +448,11 @@ impl Recogniser {
     }
 }
 
-/// A [`Recogniser`] for `model`, loaded once and shared. See this module's
-/// doc on sharing.
+/// A [`Recogniser`] for `model`, loaded on first use and shared. See this
+/// module's doc on sharing.
 pub fn recogniser(model: LocalModel) -> CommandResult<Arc<Recogniser>> {
-    static CACHE: OnceLock<Mutex<HashMap<LocalModel, CommandResult<Arc<Recogniser>>>>> =
-        OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = cache.lock().unwrap();
-    map.entry(model).or_insert_with(|| Recogniser::load(model).map(Arc::new)).clone()
+    static RECOGNISERS: Resident<LocalModel, Recogniser> = Resident::new("speech recogniser");
+    RECOGNISERS.get(model, || Recogniser::load(model))
 }
 
 #[cfg(test)]

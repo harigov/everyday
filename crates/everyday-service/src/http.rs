@@ -18,7 +18,7 @@
 //! months later.
 //!
 //! Two other things in this application open a socket on purpose rather than
-//! coming through here. [`crate::meeting::models`] downloads a model archive
+//! coming through here. [`crate::local::files`] downloads a model archive
 //! that can run to hundreds of megabytes over its own client, on its own
 //! long timeout, because this one's thirty-second budget would abort a real
 //! download before it finished -- see that module's doc for why its caution

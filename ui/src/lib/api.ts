@@ -1508,6 +1508,14 @@ export const api = {
   setModelKey: (tier: ModelSlot, key: string) => call('setModelKey', { tier, key }),
   clearModelKey: (tier: ModelSlot) => call('clearModelKey', { tier }),
 
+  /** The decision models that run on this computer, and whether each is here. */
+  decisionModels: () => call('decisionModels', {}),
+  downloadDecisionModel: (id: string) => call('downloadDecisionModel', { id }),
+  cancelDecisionModelDownload: (id: string) => call('cancelDecisionModelDownload', { id }),
+  deleteDecisionModel: (id: string) => call('deleteDecisionModel', { id }),
+  /** Loads it if it is not in memory, then times a few made-up messages. */
+  benchmarkDecisionModel: (id: string) => call('benchmarkDecisionModel', { id }),
+
   conversations: (limit?: number) => call('listConversations', { limit }),
 
   /** Mints an unsaved thread; the first message is what saves it. */

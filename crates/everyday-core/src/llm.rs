@@ -290,6 +290,21 @@ where
     Ok(parsed.ok())
 }
 
+/// Read a stored decision model, taking one this build cannot read as none.
+///
+/// For the reason [`known_effort`] gives: the decision card lives in the one
+/// sealed record every tier is in, and a [`DecisionApi`] written by a newer
+/// build would otherwise fail the whole record -- no model for any tier.
+/// (A build from before [`DecisionApi::Local`] does fail on one saved by
+/// this one; this is what spares the next variant.)
+fn known_decision<'de, D>(d: D) -> std::result::Result<Option<DecisionConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
+    Ok(serde_json::from_value(raw).ok())
+}
+
 /// How hard a reasoning model is asked to think, as `reasoning_effort` on a
 /// chat completions request.
 ///
@@ -496,7 +511,8 @@ impl LLMConfig {
     }
 }
 
-/// Which request shape a decision model takes.
+/// How a decision model is reached: which request shape it takes, or that
+/// it runs here.
 ///
 /// A decision model ("System One", in TypeSafe's words) does not write. It
 /// is handed some content and a set of typed questions -- pick one of these
@@ -505,12 +521,16 @@ impl LLMConfig {
 ///
 /// - **TypeSafe's** `POST /v1/systemone`: a `state`, and `questions` keyed by
 ///   name, each with `criteria`. OpenRouter serves Jev at
-///   `/api/alpha/decisions` with exactly this body.
+///   `/api/alpha/decisions` with exactly this body, and so does llama.cpp's
+///   own server for a model somebody runs themselves.
 /// - **OpenAI's** `POST /v1/decisions`: an `input`, and `questions` as a list,
 ///   each naming itself, with `choices`.
 ///
 /// The address is separate ([`DecisionConfig::url`]): the same shape is
 /// served at more than one place, and which place is somebody's choice.
+///
+/// The third way is no request at all: [`DecisionApi::Local`] runs one of the
+/// [`LocalDecisionModel`]s in this process, from a file downloaded once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DecisionApi {
@@ -519,15 +539,23 @@ pub enum DecisionApi {
     TypeSafe,
     /// OpenAI's Decisions API.
     OpenAi,
+    /// On this computer: [`DecisionConfig::model`] names a
+    /// [`LocalDecisionModel`]. There is no address and no key, and nothing
+    /// leaves the machine -- so a local model is not one of
+    /// [`ModelSettings::endpoints`], and no account's mail acknowledgement
+    /// has to name it.
+    Local,
 }
 
 impl DecisionApi {
     /// Where requests go when [`DecisionConfig::url`] is unset: the
-    /// shape's own maker.
-    pub fn default_url(self) -> &'static str {
+    /// shape's own maker. `None` for a model on this computer, which is
+    /// not sent anything.
+    pub fn default_url(self) -> Option<&'static str> {
         match self {
-            Self::TypeSafe => "https://api.typesafe.ai/v1/systemone",
-            Self::OpenAi => "https://api.openai.com/v1/decisions",
+            Self::TypeSafe => Some("https://api.typesafe.ai/v1/systemone"),
+            Self::OpenAi => Some("https://api.openai.com/v1/decisions"),
+            Self::Local => None,
         }
     }
 
@@ -536,12 +564,63 @@ impl DecisionApi {
         match self {
             Self::TypeSafe => "jev-latest",
             Self::OpenAi => "gpt-6-luna",
+            Self::Local => LocalDecisionModel::default().id(),
+        }
+    }
+}
+
+/// The decision models that run on this computer: downloaded once, kept on
+/// disk beside vaults, and run through llama.cpp when mail is sorted. See
+/// `everyday_service::local` for the files and the runtime.
+///
+/// All three are vLLM Semantic Router's Decision 3.0 models (Apache-2.0,
+/// fine-tuned from Qwen3.5), as llama.cpp's own GGUF conversions. They take
+/// the same prompt and are read the same way; only their size differs, and
+/// with it how much they get right and how long each answer takes. d3-nano
+/// is where a model on this computer starts: on fifty clear-cut messages
+/// against the starting categories it got none wrong, as d3-mini did, where
+/// d3-lite got five, in about two thirds of d3-mini's time (see
+/// docs/plans/mail-sorting.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum LocalDecisionModel {
+    /// d3-lite: 0.8B parameters, a 1.1 GB download.
+    D3Lite,
+    /// d3-nano: 2B parameters, a 2.6 GB download.
+    #[default]
+    D3Nano,
+    /// d3-mini: 4B parameters, a 3.7 GB download.
+    D3Mini,
+}
+
+impl LocalDecisionModel {
+    pub const ALL: [Self; 3] = [Self::D3Lite, Self::D3Nano, Self::D3Mini];
+
+    /// What [`DecisionConfig::model`] says for this model, and its id in
+    /// the downloadable catalogue.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::D3Lite => "d3Lite",
+            Self::D3Nano => "d3Nano",
+            Self::D3Mini => "d3Mini",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.id() == id.trim())
+    }
+
+    /// As a person would name it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::D3Lite => "d3-lite",
+            Self::D3Nano => "d3-nano",
+            Self::D3Mini => "d3-mini",
         }
     }
 }
 
 /// A decision model: which request shape, at which address, and which
-/// model there.
+/// model there -- or which model on this computer.
 ///
 /// Not an [`LLMConfig`]. There is no temperature, no token cap and no
 /// reasoning effort to set -- a decision model answers with probabilities,
@@ -555,11 +634,13 @@ pub struct DecisionConfig {
     #[serde(default)]
     pub api: DecisionApi,
     /// Overrides [`DecisionApi::default_url`]. Stored with no trailing
-    /// slash; see [`DecisionConfig::endpoint`].
+    /// slash; see [`DecisionConfig::endpoint`]. Always `None` for a model on
+    /// this computer.
     #[serde(default)]
     pub url: Option<String>,
     /// As the endpoint spells it: `jev-latest`, `typesafe/jev-1.13`,
-    /// `gpt-6-luna`.
+    /// `gpt-6-luna`. For [`DecisionApi::Local`], a
+    /// [`LocalDecisionModel::id`].
     pub model: String,
 }
 
@@ -573,22 +654,50 @@ impl DecisionConfig {
     /// The URL requests are posted to, trailing slash removed -- and what
     /// its key is stored under, spelt as [`LLMProviderConfig::endpoint`]
     /// spells a base URL, so one address typed two ways finds one key.
-    pub fn endpoint(&self) -> &str {
+    /// `None` for a model on this computer, which has neither.
+    pub fn endpoint(&self) -> Option<&str> {
+        if self.is_local() {
+            return None;
+        }
         self.url
             .as_deref()
             .map(|u| u.trim_end_matches('/'))
             .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| self.api.default_url())
+            .or_else(|| self.api.default_url())
+    }
+
+    /// Whether this model runs on this computer rather than at an address.
+    pub fn is_local(&self) -> bool {
+        self.api == DecisionApi::Local
+    }
+
+    /// Which model on this computer, when it is one and the name is one
+    /// this build knows.
+    pub fn local_model(&self) -> Option<LocalDecisionModel> {
+        if self.is_local() { LocalDecisionModel::from_id(&self.model) } else { None }
     }
 
     /// Whether a key is needed: always, except on this machine.
     pub fn needs_key(&self) -> bool {
-        Provider::OpenAi.needs_key(self.url.as_deref())
+        !self.is_local() && Provider::OpenAi.needs_key(self.url.as_deref())
     }
 
     /// The same address rules as a chat model's -- https unless local, one
-    /// address, no spaces -- and a model name.
+    /// address, no spaces -- and a model name. A model on this computer has
+    /// no address, and must be one of the [`LocalDecisionModel`]s.
     pub fn validate(&self) -> Result<()> {
+        if self.is_local() {
+            if self.url.as_deref().is_some_and(|u| !u.trim().is_empty()) {
+                return Err(Error::Invalid("a model on this computer has no address".into()));
+            }
+            if self.local_model().is_none() {
+                return Err(Error::Invalid(format!(
+                    "{:?} is not one of the models that run on this computer",
+                    self.model.trim()
+                )));
+            }
+            return Ok(());
+        }
         LLMProviderConfig { provider: Provider::OpenAi, base_url: self.url.clone() }.validate()?;
         if self.model.trim().is_empty() {
             return Err(Error::Invalid("a model name is required".into()));
@@ -656,8 +765,9 @@ pub struct ModelSettings {
     pub small: Option<LLMConfig>,
     /// What sorts mail into the categories under Settings → Mail sorting, in
     /// place of Small. `None` leaves sorting on Small, as before there was
-    /// one. See [`DecisionConfig`].
-    #[serde(default)]
+    /// one. See [`DecisionConfig`]. One this build cannot read -- a way of
+    /// reaching a model added later -- reads as `None`: see [`known_decision`].
+    #[serde(default, deserialize_with = "known_decision")]
     pub decision: Option<DecisionConfig>,
 }
 
@@ -705,7 +815,7 @@ impl ModelSettings {
             ModelSlot::Large => self.large.as_ref().map(LLMConfig::endpoint),
             ModelSlot::Medium => Some(self.medium.endpoint()),
             ModelSlot::Small => self.small.as_ref().map(LLMConfig::endpoint),
-            ModelSlot::Decision => self.decision.as_ref().map(DecisionConfig::endpoint),
+            ModelSlot::Decision => self.decision.as_ref().and_then(DecisionConfig::endpoint),
         }
     }
 
@@ -734,13 +844,14 @@ impl ModelSettings {
     }
 
     /// Every endpoint a configured tier -- or the decision model -- points
-    /// at, sorted, each once.
+    /// at, sorted, each once. A decision model on this computer points at
+    /// none.
     pub fn endpoints(&self) -> Vec<&str> {
         let mut all: Vec<&str> = ModelTier::ALL
             .iter()
             .filter_map(|t| self.get(*t))
             .map(LLMConfig::endpoint)
-            .chain(self.decision.as_ref().map(DecisionConfig::endpoint))
+            .chain(self.decision.as_ref().and_then(DecisionConfig::endpoint))
             .collect();
         all.sort_unstable();
         all.dedup();
@@ -755,11 +866,13 @@ impl ModelSettings {
     /// the sentence a person agreed to is "my mail may go to these" and every
     /// tier can carry mail -- the assistant's tools on Medium, a research
     /// job's on Large, sorting on Small or the decision model, whose address
-    /// is in the list once it is switched on. A change to any endpoint stops it
-    /// matching, which is the point: somebody who acknowledged OpenAI did
-    /// not acknowledge the gateway Large was moved to afterwards. Unconfigured
-    /// tiers are left out, so a vault whose tiers share one endpoint names
-    /// that endpoint alone -- exactly what it named before there were tiers.
+    /// is in the list once it is switched on (a decision model on this
+    /// computer has none, and sends mail nowhere). A change to any endpoint
+    /// stops it matching, which is the point: somebody who acknowledged
+    /// OpenAI did not acknowledge the gateway Large was moved to afterwards.
+    /// Unconfigured tiers are left out, so a vault whose tiers share one
+    /// endpoint names that endpoint alone -- exactly what it named before
+    /// there were tiers.
     ///
     /// The interface stores this string in an account when a box is ticked
     /// -- taken from `model_settings`'s own answer rather than worked out
@@ -1130,6 +1243,39 @@ mod tests {
         assert!(s.validate().is_err(), "a key is not sent over plain http");
     }
 
+    /// A model on this computer is sent nothing: no endpoint, no key, and
+    /// nothing for an acknowledgement to name -- so switching to one must
+    /// not clear anybody's tick, and switching back to a provider must.
+    #[test]
+    fn a_decision_model_on_this_computer_is_no_endpoint() {
+        let mut s = ModelSettings::default();
+        let before = s.acknowledgement_name();
+        let local = |model: &str| DecisionConfig {
+            api: DecisionApi::Local,
+            url: None,
+            model: model.into(),
+        };
+        s.decision = Some(local("d3Nano"));
+        assert_eq!(s.endpoint_of(ModelSlot::Decision), None);
+        assert_eq!(s.acknowledgement_name(), before);
+        assert!(s.validate().is_ok());
+        let d = s.decision.as_ref().unwrap();
+        assert!(!d.needs_key());
+        assert_eq!(d.local_model(), Some(LocalDecisionModel::D3Nano));
+
+        for id in LocalDecisionModel::ALL.map(LocalDecisionModel::id) {
+            assert!(local(id).validate().is_ok(), "{id}");
+        }
+        let err = local("jev-latest").validate().unwrap_err().to_string();
+        assert!(err.contains("this computer"), "{err}");
+        let mut with_address = local("d3Lite");
+        with_address.url = Some("http://127.0.0.1:8080/v1/systemone".into());
+        assert!(with_address.validate().is_err(), "a local model has no address");
+
+        assert_eq!(serde_json::to_value(DecisionApi::Local).unwrap(), "local");
+        assert_eq!(DecisionApi::Local.default_model(), LocalDecisionModel::default().id());
+    }
+
     #[test]
     fn a_vault_saved_before_decision_models_reads_without_one() {
         let s: ModelSettings = serde_json::from_value(serde_json::json!({
@@ -1142,6 +1288,19 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "model": "jev-latest" })).unwrap();
         assert_eq!(d.api, DecisionApi::TypeSafe);
         assert_eq!(serde_json::to_value(DecisionApi::OpenAi).unwrap(), "openAi");
+    }
+
+    /// A decision model reached some way a later build added reads as none,
+    /// and the tiers beside it still read.
+    #[test]
+    fn a_decision_model_this_build_cannot_read_leaves_the_tiers_readable() {
+        let s: ModelSettings = serde_json::from_value(serde_json::json!({
+            "medium": { "provider": "openAi", "model": "gpt-5.1-mini" },
+            "decision": { "api": "somethingNewer", "model": "x" }
+        }))
+        .unwrap();
+        assert_eq!(s.decision, None);
+        assert_eq!(s.medium.model.model, "gpt-5.1-mini");
     }
 
     #[test]

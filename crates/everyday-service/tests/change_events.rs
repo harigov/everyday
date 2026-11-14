@@ -58,10 +58,11 @@
 //!   ICS-bearing invite written into the local pack store -- more raw-byte
 //!   plumbing than this net is trying to buy -- and its own reply queues an
 //!   outbound send.
-//! - **A model download**: `download_speech_model` (a real ~40MB fetch).
-//!   `cancel_speech_model_download` is *not* skipped: cancelling a download
-//!   that was never started is a harmless, fully local no-op, and its
-//!   `change:` still fires.
+//! - **A model download**: `download_speech_model` (a real ~40MB fetch) and
+//!   `download_decision_model` (a real 1-4 GB one).
+//!   `cancel_speech_model_download` and `cancel_decision_model_download` are
+//!   *not* skipped: cancelling a download that was never started is a
+//!   harmless, fully local no-op, and its `change:` still fires.
 //! - **The meeting-notes pipeline**: `begin_recording` refuses outright
 //!   unless the configured transcriber's speech kit is genuinely present on
 //!   disk (see `tests/meetings_spool.rs`'s own doc on exactly this).
@@ -269,6 +270,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("check_sending", "signs in to the account's real outgoing mail server"),
     ("create_event", "writes to an account calendar's server over the network"),
     ("delete_bank_link", "tells Plaid to forget the bank's sign-in before forgetting it here"),
+    ("download_decision_model", "a real network download of 1-4 GB"),
     ("download_speech_model", "a real ~40MB network download"),
     ("edit_thread_draft", "needs a draft's copy synced from a server to carry on writing"),
     ("enrol_voice", "needs the speech/voice model kit to embed real audio"),
@@ -861,6 +863,7 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "set_transcriber_key", json!({ "key": "fake-key" })).await;
     run(&svc, &h, "cancel_speech_model_download", json!({ "id": "nonexistent-model" })).await;
+    run(&svc, &h, "cancel_decision_model_download", json!({ "id": "d3Lite" })).await;
     run(
         &svc,
         &h,

@@ -49,7 +49,8 @@ use everyday_core::meeting::{
 use everyday_core::{CalendarId, RecordingId, Vault};
 use everyday_service::error::CommandResult;
 use everyday_service::events::Silent;
-use everyday_service::meeting::{models, pipeline};
+use everyday_service::local::files as models;
+use everyday_service::meeting::pipeline;
 
 fn enabled() -> bool {
     std::env::var("EVERYDAY_TEST_E2E").as_deref() == Ok("1")

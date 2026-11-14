@@ -11,7 +11,7 @@ use crate::mailsort::OlderSortView;
 use crate::service::{Service, blocking};
 use everyday_core::Vault;
 use everyday_core::id::AccountId;
-use everyday_core::mail::{MailAiFeature, MailSorting, mail_ai_allowed};
+use everyday_core::mail::{MailAiFeature, MailSorting};
 use jiff::SignedDuration;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -23,9 +23,10 @@ use super::Nothing;
 #[serde(rename_all = "camelCase")]
 pub struct MailSortingView {
     pub sorting: MailSorting,
-    /// The decision model sorting runs on, as `model at address` -- `None`
-    /// when none is switched on, in which case the categories wait and the
-    /// small model sorts into the five tabs as before.
+    /// The decision model sorting runs on, as `model at address`, or
+    /// `model on this computer` -- `None` when none is switched on, in which
+    /// case the categories wait and the small model sorts into the five tabs
+    /// as before.
     pub decision_model: Option<String>,
     /// Asked-for sorts of older mail still running.
     pub older: Vec<OlderSortView>,
@@ -33,8 +34,17 @@ pub struct MailSortingView {
 
 fn view(svc: &Service, vault: &Vault) -> everyday_core::Result<MailSortingView> {
     let sorting = vault.mail_sorting()?;
-    let decision_model =
-        vault.model_settings()?.decision.map(|d| format!("{} at {}", d.model.trim(), d.endpoint()));
+    let decision_model = vault.model_settings()?.decision.map(|d| match d.endpoint() {
+        Some(endpoint) => format!("{} at {endpoint}", d.model.trim()),
+        None => match d.local_model() {
+            // Said here, since nothing is sorted until it can be asked.
+            Some(m) => match crate::local::decide::not_ready(m) {
+                Some(why) => format!("{} on this computer ({why})", m.name()),
+                None => format!("{} on this computer", m.name()),
+            },
+            None => format!("{} on this computer", d.model.trim()),
+        },
+    });
     let mut older: Vec<OlderSortView> =
         svc.mail_older_sorts().iter().map(|(a, s)| OlderSortView::of(*a, s)).collect();
     older.sort_by_key(|o| o.account_id.to_string());
@@ -109,6 +119,14 @@ async fn sort_older_mail(
                 format!("sorting older mail needs a decision model: {e}"),
             )
         })?;
+        if let Some(model) = decision.config.local_model()
+            && let Some(why) = crate::local::decide::not_ready(model)
+        {
+            return Err(CommandError::new(
+                codes::INVALID,
+                format!("sorting older mail needs {}, which is {why}", model.name()),
+            ));
+        }
         let accounts = match args.account {
             Some(id) => vec![vault.account(id)?],
             None => vault.accounts()?,
@@ -116,9 +134,7 @@ async fn sort_older_mail(
         let allowed: Vec<_> = accounts
             .into_iter()
             .filter(|a| a.services.mail)
-            .filter(|a| {
-                mail_ai_allowed(a, &decision.acknowledgement, MailAiFeature::Categorize).is_ok()
-            })
+            .filter(|a| decision.mail_allowed(a, MailAiFeature::Categorize).is_ok())
             .collect();
         if allowed.is_empty() {
             return Err(CommandError::new(

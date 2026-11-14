@@ -44,7 +44,11 @@ impl FakeDecisions {
 /// The subject a request was about, in either shape.
 fn subject_of(api: DecisionApi, body: &Value) -> String {
     match api {
-        DecisionApi::TypeSafe => body["state"]["subject"].as_str().unwrap_or("").to_string(),
+        // A model on this computer is never posted to; TypeSafe's is the
+        // shape llama.cpp's own server would take for one.
+        DecisionApi::TypeSafe | DecisionApi::Local => {
+            body["state"]["subject"].as_str().unwrap_or("").to_string()
+        }
         DecisionApi::OpenAi => body["input"]
             .as_str()
             .and_then(|t| t.lines().find_map(|l| l.strip_prefix("subject: ")))
@@ -125,7 +129,7 @@ async fn fake_decisions(api: DecisionApi) -> FakeDecisions {
                 };
                 seen.lock().unwrap().push(Seen { authorization, body });
                 let answer = match api {
-                    DecisionApi::TypeSafe => json!({
+                    DecisionApi::TypeSafe | DecisionApi::Local => json!({
                         "model": "jev-latest",
                         "answers": { "category": { "type": "choice", "choice": pick, "confidence": 0.9 } },
                         "usage": { "input_tokens": 100, "output_tokens": 10 },
@@ -145,7 +149,7 @@ async fn fake_decisions(api: DecisionApi) -> FakeDecisions {
         }
     });
     let path = match api {
-        DecisionApi::TypeSafe => "/v1/systemone",
+        DecisionApi::TypeSafe | DecisionApi::Local => "/v1/systemone",
         DecisionApi::OpenAi => "/v1/decisions",
     };
     FakeDecisions { url: format!("http://127.0.0.1:{port}{path}"), seen, _shutdown: tx }

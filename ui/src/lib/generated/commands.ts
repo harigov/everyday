@@ -44,6 +44,7 @@ import type {
   ConversationId,
   ConversationSummary,
   CsvMapping,
+  DecisionBenchmark,
   DeclineReason,
   Draft,
   DraftId,
@@ -91,6 +92,7 @@ import type {
   LinkCheck,
   LinkStart,
   LinkSummary,
+  LocalModelInfo,
   LogEntry,
   LogEvent,
   LogId,
@@ -208,7 +210,6 @@ import type {
   SkillId,
   SourceInfo,
   SourceSummary,
-  SpeechModelInfo,
   StoreStats,
   Story,
   StoryId,
@@ -313,9 +314,11 @@ export interface Commands {
     }
     result: Recording
   }
+  benchmarkDecisionModel: { args: { id: string }; result: DecisionBenchmark }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
   cancelBankLink: { args: { session: string }; result: void }
+  cancelDecisionModelDownload: { args: { id: string }; result: void }
   cancelJob: { args: { id: JobId }; result: Job }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
   cancelSpeechModelDownload: { args: { id: string }; result: void }
@@ -335,6 +338,7 @@ export interface Commands {
     args: { name: string; kind: AccountKind; currency: string }
     result: BankAccount
   }
+  decisionModels: { args: Record<string, never>; result: LocalModelInfo[] }
   declineProposal: { args: { id: ProposalId; reason?: DeclineReason | null }; result: Proposal }
   deleteAccount: { args: { id: AccountId }; result: void }
   deleteAllVoiceprints: { args: Record<string, never>; result: void }
@@ -344,6 +348,7 @@ export interface Commands {
   deleteBlockSeries: { args: { id: BlockId; scope: SeriesScope }; result: BlockId[] }
   deleteCalendar: { args: { id: CalendarId }; result: void }
   deleteConversation: { args: { id: ConversationId }; result: void }
+  deleteDecisionModel: { args: { id: string }; result: void }
   deleteEntry: { args: { id: EntryId }; result: void }
   deleteEvent: { args: { id: EventId; scope?: EventScope }; result: void }
   deleteForever: { args: { threads: ThreadId[]; from: MailboxId[] }; result: Op[] }
@@ -382,6 +387,7 @@ export interface Commands {
     args: { calendarId: CalendarId; uid: string; series?: string | null; never: boolean }
     result: void
   }
+  downloadDecisionModel: { args: { id: string }; result: void }
   downloadSpeechModel: { args: { id: string }; result: void }
   draftWithAi: {
     args: {
@@ -803,7 +809,7 @@ export interface Commands {
     args: { account?: AccountId | null; days?: number | null; again?: boolean }
     result: MailSortingView
   }
-  speechModels: { args: Record<string, never>; result: SpeechModelInfo[] }
+  speechModels: { args: Record<string, never>; result: LocalModelInfo[] }
   star: { args: { threads: ThreadId[] }; result: Op[] }
   startBankLink: { args: { linkId?: BankLinkId | null }; result: LinkStart }
   startChatVerification: { args: { id: ChatLinkId }; result: void }
@@ -875,9 +881,11 @@ export const COMMAND_NAMES = {
   awaitOauthSignIn: 'await_oauth_sign_in',
   beginOauthSignIn: 'begin_oauth_sign_in',
   beginRecording: 'begin_recording',
+  benchmarkDecisionModel: 'benchmark_decision_model',
   benchmarkSpeechModel: 'benchmark_speech_model',
   calendarProviders: 'calendar_providers',
   cancelBankLink: 'cancel_bank_link',
+  cancelDecisionModelDownload: 'cancel_decision_model_download',
   cancelJob: 'cancel_job',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
   cancelSpeechModelDownload: 'cancel_speech_model_download',
@@ -894,6 +902,7 @@ export const COMMAND_NAMES = {
   conversationMessages: 'conversation_messages',
   createEvent: 'create_event',
   createManualAccount: 'create_manual_account',
+  decisionModels: 'decision_models',
   declineProposal: 'decline_proposal',
   deleteAccount: 'delete_account',
   deleteAllVoiceprints: 'delete_all_voiceprints',
@@ -903,6 +912,7 @@ export const COMMAND_NAMES = {
   deleteBlockSeries: 'delete_block_series',
   deleteCalendar: 'delete_calendar',
   deleteConversation: 'delete_conversation',
+  deleteDecisionModel: 'delete_decision_model',
   deleteEntry: 'delete_entry',
   deleteEvent: 'delete_event',
   deleteForever: 'delete_forever',
@@ -938,6 +948,7 @@ export const COMMAND_NAMES = {
   discardRecording: 'discard_recording',
   discoverFeeds: 'discover_feeds',
   dismissMeetingOffer: 'dismiss_meeting_offer',
+  downloadDecisionModel: 'download_decision_model',
   downloadSpeechModel: 'download_speech_model',
   draftWithAi: 'draft_with_ai',
   editThreadDraft: 'edit_thread_draft',
@@ -1273,9 +1284,11 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'await_oauth_sign_in',
   'begin_oauth_sign_in',
   'begin_recording',
+  'benchmark_decision_model',
   'benchmark_speech_model',
   'calendar_providers',
   'cancel_bank_link',
+  'cancel_decision_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
@@ -1292,6 +1305,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'conversation_messages',
   'create_event',
   'create_manual_account',
+  'decision_models',
   'decline_proposal',
   'delete_account',
   'delete_all_voiceprints',
@@ -1301,6 +1315,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_block_series',
   'delete_calendar',
   'delete_conversation',
+  'delete_decision_model',
   'delete_entry',
   'delete_event',
   'delete_forever',
@@ -1336,6 +1351,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_recording',
   'discover_feeds',
   'dismiss_meeting_offer',
+  'download_decision_model',
   'download_speech_model',
   'draft_with_ai',
   'edit_thread_draft',
@@ -1663,6 +1679,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'begin_oauth_sign_in',
   'begin_recording',
   'cancel_bank_link',
+  'cancel_decision_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
@@ -1685,6 +1702,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_block_series',
   'delete_calendar',
   'delete_conversation',
+  'delete_decision_model',
   'delete_entry',
   'delete_event',
   'delete_forever',
@@ -1719,6 +1737,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_draft',
   'discard_recording',
   'dismiss_meeting_offer',
+  'download_decision_model',
   'download_speech_model',
   'edit_thread_draft',
   'empty_mailbox',
@@ -1866,6 +1885,7 @@ export const CHANGE_KINDS = {
   archive: 'thread',
   attach_oauth_sign_in: 'account',
   begin_recording: 'recording',
+  cancel_decision_model_download: 'settings',
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
@@ -1882,6 +1902,7 @@ export const CHANGE_KINDS = {
   delete_block_series: 'block',
   delete_calendar: 'calendar',
   delete_conversation: 'conversation',
+  delete_decision_model: 'settings',
   delete_entry: 'entry',
   delete_event: 'event',
   delete_forever: 'thread',
@@ -1915,6 +1936,7 @@ export const CHANGE_KINDS = {
   delete_voiceprint: 'voiceprint',
   discard_draft: 'draft',
   discard_recording: 'recording',
+  download_decision_model: 'settings',
   download_speech_model: 'settings',
   edit_thread_draft: 'draft',
   empty_mailbox: 'thread',

@@ -11,15 +11,33 @@
 // from here, through getters rather than copies, for the reason `quick`
 // gives: two loads started together land in either order, and a snapshot
 // taken before the second arrives is a feature quietly switched off.
+//
+// So does the list of decision models that run on this computer -- the
+// Decision card's other half -- polled once a second while one downloads,
+// as meeting notes polls its recognisers.
 
 import { endpointOf } from './accounts'
 import { isLoopback } from './agent'
 import { api } from './api'
 import { app, errorMessage, isLocked, quietly } from './state.svelte'
-import type { LLMConfig, ModelSettings, ModelSettingsView, ModelSlot, ModelTier } from './types'
+import type {
+  DecisionBenchmark,
+  LLMConfig,
+  LocalModelInfo,
+  ModelSettings,
+  ModelSettingsView,
+  ModelSlot,
+  ModelTier,
+} from './types'
+
+/** How often the decision model list is read again while one downloads. */
+const LOCAL_POLL_MS = 1000
 
 class ModelsState {
   view = $state<ModelSettingsView | null>(null)
+  /** The decision models that run on this computer: `decision_models`. */
+  local = $state<LocalModelInfo[]>([])
+  #localTimer: ReturnType<typeof setInterval> | null = null
   /**
    * Why the last read failed, or `null`. Kept rather than swallowed: the pane
    * would otherwise sit on "Loading…" forever, and an account's "I
@@ -36,6 +54,14 @@ class ModelsState {
   reset() {
     this.view = null
     this.error = null
+    this.local = []
+    if (this.#localTimer) clearInterval(this.#localTimer)
+    this.#localTimer = null
+  }
+
+  /** Whether this copy of Every Day can run a decision model itself. */
+  get localDecisions(): boolean {
+    return this.view?.localDecisions === true
   }
 
   get settings(): ModelSettings | null {
@@ -108,6 +134,38 @@ class ModelsState {
 
   async clearKey(tier: ModelSlot) {
     this.view = await api.clearModelKey(tier)
+  }
+
+  // ── Decision models on this computer ─────────────────────────────
+
+  async refreshLocal() {
+    this.local = await api.decisionModels()
+    const downloading = this.local.some((m) => m.progress != null)
+    if (downloading && !this.#localTimer) {
+      this.#localTimer = setInterval(() => void this.refreshLocal().catch(quietly), LOCAL_POLL_MS)
+    } else if (!downloading && this.#localTimer) {
+      clearInterval(this.#localTimer)
+      this.#localTimer = null
+    }
+  }
+
+  async downloadLocal(id: string) {
+    await api.downloadDecisionModel(id)
+    await this.refreshLocal()
+  }
+
+  async cancelLocal(id: string) {
+    await api.cancelDecisionModelDownload(id)
+    await this.refreshLocal()
+  }
+
+  async deleteLocal(id: string) {
+    await api.deleteDecisionModel(id)
+    await this.refreshLocal()
+  }
+
+  benchmarkLocal(id: string): Promise<DecisionBenchmark> {
+    return api.benchmarkDecisionModel(id)
   }
 }
 

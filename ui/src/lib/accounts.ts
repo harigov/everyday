@@ -16,6 +16,7 @@ import type {
   DecisionApi,
   DecisionConfig,
   Endpoint,
+  LocalDecisionModel,
   MailAi,
   MailCategory,
   MailNotify,
@@ -307,14 +308,16 @@ export function providerLabel(baseUrl: string | null | undefined): string {
 }
 
 /**
- * The decision models the pane offers in one click: which request shape, at
- * which address, and the model to ask there -- `DecisionApi` in
- * `crates/everyday-core/src/llm.rs`. `provider` is what a sentence calls it.
+ * The decision models the pane offers in one click at a provider: which
+ * request shape, at which address, and the model to ask there --
+ * `DecisionApi` in `crates/everyday-core/src/llm.rs`. `provider` is what a
+ * sentence calls it. A model on this computer is not one of these; see
+ * `LOCAL_DECISION_MODEL`.
  */
 export const KNOWN_DECISION_ENDPOINTS: {
   label: string
   provider: string
-  api: DecisionApi
+  api: Exclude<DecisionApi, 'local'>
   url: string
   model: string
 }[] = [
@@ -341,12 +344,17 @@ export const KNOWN_DECISION_ENDPOINTS: {
   },
 ]
 
+/** What a decision model on this computer starts as: `LocalDecisionModel::default`. */
+export const LOCAL_DECISION_MODEL: LocalDecisionModel = 'd3Nano'
+
 /**
  * Where a decision model's requests go, spelt as `DecisionConfig::endpoint`
  * spells it -- its trailing slashes off, or its API's own maker's address --
- * which is what its key is stored under.
+ * which is what its key is stored under. `null` for a model on this
+ * computer, which is sent nothing.
  */
-export function decisionEndpointOf(d: Pick<DecisionConfig, 'api' | 'url'>): string {
+export function decisionEndpointOf(d: Pick<DecisionConfig, 'api' | 'url'>): string | null {
+  if (d.api === 'local') return null
   return (
     (d.url ?? '').replace(/\/+$/, '') || KNOWN_DECISION_ENDPOINTS.find((k) => k.api === d.api)!.url
   )
@@ -355,6 +363,7 @@ export function decisionEndpointOf(d: Pick<DecisionConfig, 'api' | 'url'>): stri
 /** What to call a decision model's provider in a sentence. */
 export function decisionProviderLabel(d: Pick<DecisionConfig, 'api' | 'url'>): string {
   const endpoint = decisionEndpointOf(d)
+  if (endpoint == null) return 'this computer'
   const known = KNOWN_DECISION_ENDPOINTS.find((k) => k.url === endpoint)
   if (known) return known.provider
   try {
@@ -394,7 +403,8 @@ export function endpointOf(baseUrl: string | null | undefined): string {
  * provider, and the decision model's, once -- "OpenAI", "OpenAI and Ollama".
  * Every one of them can carry mail
  * (see `ModelSettings::acknowledgement_name`), so the sentence a person agrees
- * to names all of them.
+ * to names all of them -- but not a decision model on this computer, which
+ * sends mail nowhere.
  */
 export function providersLabel(settings: ModelSettings | null | undefined): string {
   if (!settings) return 'OpenAI'
@@ -404,7 +414,9 @@ export function providersLabel(settings: ModelSettings | null | undefined): stri
   const labels = [
     ...new Set([
       ...tiers.map((t) => providerLabel(t.baseUrl)),
-      ...(settings.decision ? [decisionProviderLabel(settings.decision)] : []),
+      ...(settings.decision && settings.decision.api !== 'local'
+        ? [decisionProviderLabel(settings.decision)]
+        : []),
     ]),
   ]
   if (labels.length <= 1) return labels[0] ?? 'OpenAI'
