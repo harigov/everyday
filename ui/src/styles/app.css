@@ -452,6 +452,18 @@ textarea.field {
   color: var(--accent);
   font-weight: 620;
 }
+/* The rows' symbols are in the open app's own colour -- the colour its icon
+   has in the app bar, `--app` set by `App.svelte` -- so the sidebar reads as
+   that app's. The open row takes the row's colour instead, with a fuller
+   back layer, so the selection is one thing rather than an icon of one
+   colour beside a label of another. */
+.side-icon {
+  color: var(--app, currentColor);
+}
+.side-row.sel .side-icon {
+  color: inherit;
+  --symbol-back: 0.5;
+}
 /* A centred box of a known size, for an inline icon or an emoji alike. */
 .side-icon {
   flex: none;

@@ -25,7 +25,7 @@
   import { app } from '../lib/state.svelte'
   import type { ConversationSummary } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
-  import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
 
   let pendingDelete = $state<ConversationSummary | null>(null)
 
@@ -88,7 +88,7 @@
     onclick={() => void agent.startThread()}
     disabled={agent.busy || !agent.ready}
   >
-    <span class="side-icon"><Icon name="plus" /></span>
+    <span class="side-icon"><Symbol name="plus" size={17} /></span>
     <span class="side-text">New conversation</span>
   </button>
 
@@ -99,14 +99,14 @@
          somebody pressed Assistant to find. -->
     {#if didUnseen > 0}
       <button class="side-row" onclick={() => assistant.setPane('runs')}>
-        <span class="side-icon"><Icon name="inbox" /></span>
+        <span class="side-icon"><Symbol name="inbox" size={17} /></span>
         <span class="side-text">What it did</span>
         <span class="side-count strong">{didUnseen}</span>
       </button>
     {/if}
     {#if app.supportsProposals && proposals.unseen > 0}
       <button class="side-row" onclick={() => assistant.setPane('proposals')}>
-        <span class="side-icon"><Icon name="tick" /></span>
+        <span class="side-icon"><Symbol name="tick" size={17} /></span>
         <span class="side-text">Waiting for you</span>
         <span class="side-count strong">{proposals.unseen}</span>
       </button>
@@ -143,7 +143,7 @@
 
 <footer class="foot">
   <button class="side-row" onclick={() => assistant.setPane('routines')}>
-    <span class="side-icon"><Icon name="clock" size={15} /></span>
+    <span class="side-icon"><Symbol name="clock" size={16} /></span>
     <span class="side-text">Routines and memory</span>
   </button>
 </footer>

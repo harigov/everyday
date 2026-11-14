@@ -18,6 +18,7 @@
   import type { Kind, KindInfo, SourceInfo } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
 
   let creating = $state(false)
   let draft = $state('')
@@ -217,7 +218,7 @@
       void library.selectShelf(null)
     }}
   >
-    <span class="side-icon"><Icon name="layers" /></span>
+    <span class="side-icon"><Symbol name="layers" size={17} /></span>
     <span class="side-text">Everything</span>
     {#if openEverywhere > 0}<span class="side-count">{openEverywhere}</span>{/if}
   </button>
@@ -230,7 +231,7 @@
       void library.selectShelf(null)
     }}
   >
-    <span class="side-icon star"><Icon name="star" size={15} filled /></span>
+    <span class="side-icon star"><Symbol name="star" size={16} /></span>
     <span class="side-text">Favourites</span>
   </button>
 

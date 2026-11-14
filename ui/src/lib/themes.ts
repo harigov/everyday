@@ -87,7 +87,8 @@ export const THEME_TOKENS = [
   // Meaning.
   '--accent',
   '--accent-hover',
-  '--hue-strength',
+  '--app-lightness',
+  '--app-chroma',
   '--danger',
   '--success',
   '--warning',
@@ -104,9 +105,29 @@ export const THEME_TOKENS = [
   '--shadow-lg',
 ] as const
 
+/** The apps with a colour of their own, each a `--app-<id>` token derived in
+ *  `theme.css` from the theme's `--app-lightness` and `--app-chroma`. */
+export const APP_COLOURS = [
+  'overview',
+  'notes',
+  'todo',
+  'calendar',
+  'library',
+  'mail',
+  'feed',
+  'money',
+  'screentime',
+  'journal',
+  'assistant',
+] as const
+
 /** Tokens computed from the others once, in `theme.css`'s `[data-theme]` rule,
  *  rather than set by each theme. */
-export const DERIVED_TOKENS = ['--aqi-3', '--aqi-4'] as const
+export const DERIVED_TOKENS = [
+  '--aqi-3',
+  '--aqi-4',
+  ...APP_COLOURS.map((app) => `--app-${app}`),
+] as const
 
 const BY_ID = new Map<string, ThemeInfo>(THEMES.map((t) => [t.id, t]))
 

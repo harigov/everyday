@@ -302,7 +302,11 @@
       {#if !pinned}
         <MeetingOfferBanner />
       {/if}
-      <div class="panes" class:pinned>
+      <div
+        class="panes"
+        class:pinned
+        style:--app={panels.settings === null ? `var(--app-${app.section})` : undefined}
+      >
         <!-- A window of one app has nothing to switch between. -->
         {#if !pinned}
           <AppBar />

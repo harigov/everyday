@@ -64,7 +64,8 @@
 
   --accent: #b4530f;
   --accent-hover: #9c460b;
-  --hue-strength: 100%;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
   --danger: #b42318;
   --success: #15803d;
   --warning: #b45309;
@@ -118,7 +119,8 @@
 
   --accent: #e8853f;
   --accent-hover: #f0975a;
-  --hue-strength: 100%;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
   --danger: #f87171;
   --success: #4ade80;
   --warning: #fbbf24;
@@ -178,7 +180,8 @@
 
   --accent: #0068d6;
   --accent-hover: #0057b5;
-  --hue-strength: 100%;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
   --danger: #c4261d;
   --success: #15803d;
   --warning: #b45309;
@@ -238,7 +241,8 @@
 
   --accent: #c8326e;
   --accent-hover: #ab2459;
-  --hue-strength: 100%;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
   --danger: #c4261d;
   --success: #15803d;
   --warning: #b45309;
@@ -298,7 +302,8 @@
 
   --accent: #13795b;
   --accent-hover: #0e6249;
-  --hue-strength: 100%;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
   --danger: #c4261d;
   --success: #15803d;
   --warning: #b45309;
@@ -358,7 +363,8 @@
 
   --accent: #b4530f;
   --accent-hover: #9c460b;
-  --hue-strength: 100%;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
   --danger: #b42318;
   --success: #15803d;
   --warning: #b45309;
@@ -419,7 +425,8 @@
 
   --accent: #a48bff;
   --accent-hover: #b7a2ff;
-  --hue-strength: 62%;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
   --danger: #ff8a94;
   --success: #4ade80;
   --warning: #fbbf24;
@@ -480,7 +487,8 @@
 
   --accent: #ff9442;
   --accent-hover: #ffa860;
-  --hue-strength: 62%;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
   --danger: #ff8080;
   --success: #4ade80;
   --warning: #fbbf24;
@@ -541,7 +549,8 @@
 
   --accent: #ff8a2e;
   --accent-hover: #ffa052;
-  --hue-strength: 62%;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
   --danger: #ff8a94;
   --success: #4ade80;
   --warning: #fbbf24;
@@ -602,7 +611,8 @@
 
   --accent: #ff6f5e;
   --accent-hover: #ff8676;
-  --hue-strength: 62%;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
   --danger: #ff8a94;
   --success: #4ade80;
   --warning: #fbbf24;

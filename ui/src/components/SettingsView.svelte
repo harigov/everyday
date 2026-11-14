@@ -76,6 +76,7 @@
   import TemplatesPanel from './TemplatesPanel.svelte'
   import ThemePicker from './ThemePicker.svelte'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import type { IconName } from '../lib/icons'
   import type { BadgeSources, HotkeyStatus, WritingSettings } from '../lib/types'
 
@@ -409,7 +410,7 @@
         aria-current={tab === t.id ? 'page' : undefined}
         onclick={() => panels.openSettings(t.id)}
       >
-        <span class="side-icon"><Icon name={t.icon} size={t.sub ? 14 : 16} /></span>
+        <span class="side-icon"><Symbol name={t.icon} size={17} /></span>
         <span class="side-text">{t.label}</span>
         {#if count(t.id) > 0}<span class="side-count strong">{count(t.id)}</span>{/if}
       </button>

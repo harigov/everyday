@@ -18,7 +18,7 @@
   import { panels } from '../lib/panels.svelte'
   import { relativeTime } from '../lib/format'
   import type { IconName } from '../lib/icons'
-  import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
 
   const LABELS: Record<ScreenView, string> = {
     summary: 'Summary',
@@ -61,7 +61,7 @@
       aria-current={screentime.view === view ? 'page' : undefined}
       onclick={() => screentime.setView(view)}
     >
-      <span class="side-icon"><Icon name={ICONS[view]} size={16} /></span>
+      <span class="side-icon"><Symbol name={ICONS[view]} size={17} /></span>
       <span class="side-text">{LABELS[view]}</span>
       {#if view === 'summary' && today !== null && today > 0}
         <span class="side-count" title="Today so far">{formatDuration(today)}</span>
@@ -96,7 +96,7 @@
     aria-pressed={picked === null}
     onclick={() => screentime.setDevices([])}
   >
-    <span class="side-icon"><Icon name="layers" size={15} /></span>
+    <span class="side-icon"><Symbol name="layers" size={16} /></span>
     <span class="side-text">All devices</span>
   </button>
   {#each screentime.knownDevices as d (d.device)}
@@ -107,7 +107,7 @@
       title="{d.device} — last heard from {relativeTime(d.lastSeen)}"
       onclick={() => screentime.setDevices(picked === d.device ? [] : [d.device])}
     >
-      <span class="side-icon"><Icon name="monitor" size={15} /></span>
+      <span class="side-icon"><Symbol name="monitor" size={16} /></span>
       <span class="side-text">{d.device}</span>
       {#if screentime.status && d.device === screentime.status.device}
         <span class="side-count">this one</span>
@@ -119,7 +119,7 @@
   {/if}
 
   <button class="side-row settings" onclick={openSettings}>
-    <span class="side-icon"><Icon name="settings" size={15} /></span>
+    <span class="side-icon"><Symbol name="settings" size={16} /></span>
     <span class="side-text">This computer…</span>
     {#if notTracking}
       <span class="side-count">off</span>

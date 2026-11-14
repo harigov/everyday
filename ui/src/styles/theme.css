@@ -173,12 +173,11 @@
  *
  * Meaning
  *   --accent, --accent-hover   the theme's own colour
- *   --hue-strength             how much of a thing's own colour -- a
- *                              journal's, a calendar's -- its text keeps, the
- *                              rest being --fg: `color-mix(in oklab, X
- *                              var(--hue-strength), var(--fg))`. 100% keeps
- *                              it pure; dark glass lifts colours chosen for
- *                              Paper and Ink so they read on a vivid backdrop
+ *   --app-lightness, --app-chroma
+ *                              the lightness and saturation every app's own
+ *                              colour is drawn at (OKLCH), the hue being the
+ *                              app's -- see `--app-<id>` below. Lighter and a
+ *                              touch softer on a dark theme
  *   --danger                   something is wrong
  *   --success, --warning, --info
  *   --star                     a favourite, a rating
@@ -206,4 +205,22 @@
 [data-theme] {
   --aqi-3: var(--accent);
   --aqi-4: var(--danger);
+
+  /* Each app's own colour: its icon in the app bar, its sidebar's icons.
+     Only the hue is the app's, and all of them are cool -- greens through
+     blues and violets to pink, no yellow, orange or red, which at an equal
+     lightness either shout or turn to mud. Lightness and saturation are the
+     theme's, the same for every app, so no one icon is louder than the
+     rest. Spaced so neighbours in the bar differ. */
+  --app-todo: oklch(var(--app-lightness) var(--app-chroma) 148);
+  --app-money: oklch(var(--app-lightness) var(--app-chroma) 172);
+  --app-screentime: oklch(var(--app-lightness) var(--app-chroma) 196);
+  --app-notes: oklch(var(--app-lightness) var(--app-chroma) 220);
+  --app-mail: oklch(var(--app-lightness) var(--app-chroma) 244);
+  --app-overview: oklch(var(--app-lightness) var(--app-chroma) 264);
+  --app-assistant: oklch(var(--app-lightness) var(--app-chroma) 282);
+  --app-library: oklch(var(--app-lightness) var(--app-chroma) 298);
+  --app-journal: oklch(var(--app-lightness) var(--app-chroma) 313);
+  --app-feed: oklch(var(--app-lightness) var(--app-chroma) 328);
+  --app-calendar: oklch(var(--app-lightness) var(--app-chroma) 343);
 }

@@ -8,6 +8,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import JournalSettings from './JournalSettings.svelte'
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
@@ -201,7 +202,7 @@
           void app.selectJournal(null)
         }}
       >
-        <span class="side-icon"><Icon name="layers" /></span>
+        <span class="side-icon"><Symbol name="layers" size={17} /></span>
         <span class="side-text">All entries</span>
         <span class="side-count">{total}</span>
       </button>
@@ -214,7 +215,7 @@
           void app.selectJournal(null)
         }}
       >
-        <span class="side-icon star"><Icon name="star" size={15} filled /></span>
+        <span class="side-icon star"><Symbol name="star" size={16} /></span>
         <span class="side-text">Starred</span>
       </button>
 
