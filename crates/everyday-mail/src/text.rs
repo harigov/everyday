@@ -568,13 +568,7 @@ fn is_invisible_style(style: &str) -> bool {
         }
     }
 
-    if is_zero_area_clip(declarations.get("clip"))
-        || is_zero_area_clip(declarations.get("clip-path"))
-    {
-        return true;
-    }
-
-    false
+    is_zero_area_clip(declarations.get("clip")) || is_zero_area_clip(declarations.get("clip-path"))
 }
 
 /// True for the two `clip`/`clip-path` shapes real hidden-content mail

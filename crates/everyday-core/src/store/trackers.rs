@@ -117,10 +117,7 @@ impl ReadingQuery {
         {
             return false;
         }
-        if self.timed_only && r.at.is_none() {
-            return false;
-        }
-        true
+        !self.timed_only || r.at.is_some()
     }
 
     /// Filter, order and truncate a fully-materialised list.
