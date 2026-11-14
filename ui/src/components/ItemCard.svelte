@@ -262,10 +262,10 @@
     opacity: 1;
   }
   .star.on {
-    color: #e0a92b;
+    color: var(--star);
   }
   .star:hover {
     background: var(--bg-hover);
-    color: #e0a92b;
+    color: var(--star);
   }
 </style>

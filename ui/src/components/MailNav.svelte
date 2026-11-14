@@ -31,7 +31,8 @@
   import { focusSearch } from '../lib/shortcuts.svelte'
   import type { AccountId, Mailbox, MailboxRole } from '../lib/types'
   import Icon from './Icon.svelte'
-  import type { IconName } from '../lib/icons'
+  import Symbol from './Symbol.svelte'
+  import type { SymbolName } from '../lib/symbols'
 
   /** At least one draft a dream wrote is waiting to be sent. Not scoped to
    *  an account: a `sendMail` proposal names a draft, not an account, and a
@@ -83,9 +84,9 @@
   })
 
   const ROLE_ORDER: MailboxRole[] = ['inbox', 'drafts', 'sent', 'archive', 'spam', 'trash']
-  const ROLE_ICON: Partial<Record<MailboxRole, IconName>> = {
+  const ROLE_ICON: Partial<Record<MailboxRole, SymbolName>> = {
     inbox: 'inbox',
-    sent: 'arrow-up',
+    sent: 'send',
     drafts: 'pencil',
     archive: 'layers',
     spam: 'alert',
@@ -95,7 +96,7 @@
   interface Row {
     id: string
     label: string
-    icon: IconName
+    icon: SymbolName
     onclick: () => void
     sel: boolean
     count: number
@@ -207,7 +208,7 @@
     }
   }
 
-  function rowFor(box: Mailbox, icon: IconName, pseudo = false): Row {
+  function rowFor(box: Mailbox, icon: SymbolName, pseudo = false): Row {
     return {
       id: box.id,
       label: mailboxDisplayName(box),
@@ -453,9 +454,7 @@
       onclick={row.onclick}
       oncontextmenu={(e) => menu.show(e, mailboxMenu(row))}
     >
-      <span class="side-icon"
-        ><Icon name={row.icon} size={16} filled={row.pseudo && row.icon === 'star'} /></span
-      >
+      <span class="side-icon"><Symbol name={row.icon} size={17} /></span>
       <span class="side-text">{row.label}</span>
       {#if row.role === 'drafts' && pendingSends > 0}
         <span

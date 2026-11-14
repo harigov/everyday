@@ -17,6 +17,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems, purposeItems } from '../lib/menus'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import type { IconName } from '../lib/icons'
   import type { GoalId, Project, ProjectStatus } from '../lib/types'
@@ -212,7 +213,7 @@
       onclick={() => todo.setScope(item.scope)}
     >
       <span class="side-icon" class:today={item.icon === 'sun'}
-        ><Icon name={item.icon} size={15} /></span
+        ><Symbol name={item.icon} size={16} /></span
       >
       <span class="side-text">{item.label}</span>
       {#if item.scope.kind === 'today' && due > 0}
@@ -242,7 +243,7 @@
       </button>
     </div>
     <button class="side-row" class:sel={goalSelected(null)} onclick={() => openGoal(null)}>
-      <span class="side-icon"><Icon name="target" size={15} /></span>
+      <span class="side-icon"><Symbol name="target" size={16} /></span>
       <span class="side-text">What this is all for</span>
       {#if openGoals > 0}<span class="side-count">{openGoals}</span>{/if}
     </button>
@@ -260,7 +261,7 @@
         title="{role.name} · {goal.title}"
       >
         <span class="side-icon">
-          {#if role.icon}{role.icon}{:else}<Icon name="target" size={14} />{/if}
+          {#if role.icon}{role.icon}{:else}<Symbol name="target" size={15} />{/if}
         </span>
         <span class="side-text">{goal.title}</span>
         {#if words}
@@ -377,7 +378,7 @@
      the time tally at the foot. */
 
   .side-icon.today {
-    color: #e0a92b;
+    color: var(--star);
   }
   /* Something has already slipped, which is worth a colour -- and the
      danger colour wins over the accent the badge would otherwise wear, open

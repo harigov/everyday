@@ -252,293 +252,295 @@
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="scrim" onclick={() => feed.closeAdd()}></div>
 <div class="sheet wide" role="dialog" aria-modal="true" aria-label="Follow something" use:trapFocus>
-  <h2>Follow something</h2>
+  <div class="sheet-scroll">
+    <h2>Follow something</h2>
 
-  <div class="tabs" role="tablist" aria-label="How to follow it">
-    {#each TABS as t (t.id)}
-      <button
-        class="tab"
-        class:on={tab === t.id}
-        role="tab"
-        aria-selected={tab === t.id}
-        onclick={() => choose(t.id)}
-      >
-        {t.label}
-      </button>
-    {/each}
-  </div>
-
-  {#snippet folderField()}
-    <label class="field-label spaced" for="follow-folder">
-      Folder <span class="opt">optional</span>
-    </label>
-    <input
-      id="follow-folder"
-      class="field"
-      list="follow-folders"
-      placeholder="None"
-      autocomplete="off"
-      bind:value={folder}
-    />
-    <datalist id="follow-folders">
-      {#each folders as name (name)}
-        <option value={name}></option>
+    <div class="tabs" role="tablist" aria-label="How to follow it">
+      {#each TABS as t (t.id)}
+        <button
+          class="tab"
+          class:on={tab === t.id}
+          role="tab"
+          aria-selected={tab === t.id}
+          onclick={() => choose(t.id)}
+        >
+          {t.label}
+        </button>
       {/each}
-    </datalist>
-  {/snippet}
-
-  {#if tab === 'address'}
-    <label class="field-label" for="follow-address">Address</label>
-    <div class="find">
-      <input
-        id="follow-address"
-        class="field"
-        placeholder="A feed, or any page that has one"
-        spellcheck="false"
-        autocomplete="off"
-        bind:value={address}
-        use:focusOnMount
-        oninput={() => {
-          found = null
-          problem = null
-        }}
-        onkeydown={(e) => {
-          if (e.key === 'Enter') void find()
-        }}
-      />
-      <button
-        class="btn btn-outline"
-        disabled={!address.trim() || finding}
-        onclick={() => void find()}
-      >
-        {finding ? 'Looking…' : 'Find feeds'}
-      </button>
     </div>
-    <p class="hint under">
-      A site's address is enough: its feed is found from the page. Substack, YouTube, Mastodon,
-      GitHub and most blogs and news sites have one.
-    </p>
 
-    {#if found !== null}
-      {#if found.length === 0}
-        <p class="hint none">
-          No feed was found there. Try the address of the page itself, or a link ending in
-          <code>.xml</code>, <code>.rss</code> or <code>.atom</code>.
-        </p>
-      {:else}
-        <ul class="choices" role="radiogroup" aria-label="Feeds found">
-          {#each found as f (f.url)}
-            <li>
-              <label class="choice" class:on={chosen === f.url}>
-                <input type="radio" name="found" value={f.url} bind:group={chosen} />
-                <span class="text">
-                  <b>{f.title || hostOf(f.url) || f.url}</b>
-                  <small>{f.url}</small>
+    {#snippet folderField()}
+      <label class="field-label spaced" for="follow-folder">
+        Folder <span class="opt">optional</span>
+      </label>
+      <input
+        id="follow-folder"
+        class="field"
+        list="follow-folders"
+        placeholder="None"
+        autocomplete="off"
+        bind:value={folder}
+      />
+      <datalist id="follow-folders">
+        {#each folders as name (name)}
+          <option value={name}></option>
+        {/each}
+      </datalist>
+    {/snippet}
+
+    {#if tab === 'address'}
+      <label class="field-label" for="follow-address">Address</label>
+      <div class="find">
+        <input
+          id="follow-address"
+          class="field"
+          placeholder="A feed, or any page that has one"
+          spellcheck="false"
+          autocomplete="off"
+          bind:value={address}
+          use:focusOnMount
+          oninput={() => {
+            found = null
+            problem = null
+          }}
+          onkeydown={(e) => {
+            if (e.key === 'Enter') void find()
+          }}
+        />
+        <button
+          class="btn btn-outline"
+          disabled={!address.trim() || finding}
+          onclick={() => void find()}
+        >
+          {finding ? 'Looking…' : 'Find feeds'}
+        </button>
+      </div>
+      <p class="hint under">
+        A site's address is enough: its feed is found from the page. Substack, YouTube, Mastodon,
+        GitHub and most blogs and news sites have one.
+      </p>
+
+      {#if found !== null}
+        {#if found.length === 0}
+          <p class="hint none">
+            No feed was found there. Try the address of the page itself, or a link ending in
+            <code>.xml</code>, <code>.rss</code> or <code>.atom</code>.
+          </p>
+        {:else}
+          <ul class="choices" role="radiogroup" aria-label="Feeds found">
+            {#each found as f (f.url)}
+              <li>
+                <label class="choice" class:on={chosen === f.url}>
+                  <input type="radio" name="found" value={f.url} bind:group={chosen} />
+                  <span class="text">
+                    <b>{f.title || hostOf(f.url) || f.url}</b>
+                    <small>{f.url}</small>
+                  </span>
+                </label>
+              </li>
+            {/each}
+          </ul>
+          {@render folderField()}
+        {/if}
+      {/if}
+
+      {#if problem}<p class="error spaced">{problem}</p>{/if}
+
+      <div class="sheet-row">
+        <span class="spacer"></span>
+        <button class="btn" onclick={() => feed.closeAdd()}>Cancel</button>
+        <button
+          class="btn btn-primary"
+          disabled={!found?.some((f) => f.url === chosen) || busy}
+          onclick={() => void followFound()}
+        >
+          {busy ? 'Following…' : 'Follow'}
+        </button>
+      </div>
+    {:else if tab === 'hackerNews'}
+      <ul class="choices" role="radiogroup" aria-label="Which list">
+        {#each HN_LISTS as l (l)}
+          <li>
+            <label class="choice" class:on={list === l}>
+              <input
+                type="radio"
+                name="hn-list"
+                value={l}
+                checked={list === l}
+                onchange={() => pickList(l)}
+              />
+              <span class="text">
+                <b>{HN_LIST_LABELS[l]}</b>
+                <small>{HN_LIST_NOTES[l]}</small>
+              </span>
+            </label>
+          </li>
+        {/each}
+      </ul>
+
+      <label class="field-label spaced" for="follow-points">
+        Only stories above <span class="opt">{list === 'top' ? 'points' : 'points, optional'}</span>
+      </label>
+      <input
+        id="follow-points"
+        class="field points"
+        type="number"
+        min="0"
+        step="10"
+        bind:value={minPoints}
+      />
+      {#if needsPoints}
+        <p class="hint under">This list is every story above a score, so it needs one.</p>
+      {/if}
+
+      {@render folderField()}
+
+      {#if problem}<p class="error spaced">{problem}</p>{/if}
+
+      <div class="sheet-row">
+        <span class="spacer"></span>
+        <button class="btn" onclick={() => feed.closeAdd()}>Cancel</button>
+        <button
+          class="btn btn-primary"
+          disabled={needsPoints || busy}
+          onclick={() => void followHackerNews()}
+        >
+          {busy ? 'Following…' : 'Follow'}
+        </button>
+      </div>
+    {:else if tab === 'mail'}
+      <p class="hint lead">
+        Newsletters that already arrive in your mail. The messages stay in Mail and the Feed only
+        points at them, so reading one here marks it read there. A source can be set to keep its
+        issues out of the inbox in its settings.
+      </p>
+
+      <ul class="senders">
+        <li class="sender">
+          <span class="who">
+            <b>All newsletters</b>
+            <small>Everything Mail files under Newsletters, but for senders followed below</small>
+          </span>
+          {#if allFollowed}
+            <span class="hint following"><Icon name="tick" size={14} /> Following</span>
+          {:else}
+            <button
+              class="btn btn-outline"
+              disabled={following !== null}
+              onclick={() => void followAll()}
+            >
+              {following === '*' ? 'Following…' : 'Follow'}
+            </button>
+          {/if}
+        </li>
+      </ul>
+
+      {#if loadingSenders && senders === null}
+        <p class="hint none">Looking through your mail…</p>
+      {:else if senders !== null && senders.length === 0}
+        <p class="hint none">No newsletters have arrived in the last 90 days.</p>
+      {:else if senders !== null}
+        {#if senders.length > 8}
+          <input
+            class="field find-sender"
+            type="search"
+            placeholder="Search senders"
+            aria-label="Search senders"
+            bind:value={filter}
+          />
+        {/if}
+        <ul class="senders">
+          {#each shownSenders as s (s.email)}
+            {@const done = s.followed || followedNow.has(s.email)}
+            <li class="sender">
+              <span class="who">
+                <b>{s.name || s.email}</b>
+                <small>{s.name ? `${s.email} · ` : ''}{plural(s.messages, 'message')}</small>
+              </span>
+              {#if done}
+                <span class="hint following">
+                  <Icon name="tick" size={14} /> Following
                 </span>
-              </label>
+              {:else}
+                <button
+                  class="btn btn-outline"
+                  disabled={following !== null}
+                  onclick={() => void followSender(s)}
+                >
+                  {following === s.email ? 'Following…' : 'Follow'}
+                </button>
+              {/if}
             </li>
+          {:else}
+            <li class="hint none">Nobody matches “{filter.trim()}”.</li>
           {/each}
         </ul>
         {@render folderField()}
       {/if}
-    {/if}
 
-    {#if problem}<p class="error spaced">{problem}</p>{/if}
+      {#if problem}<p class="error spaced">{problem}</p>{/if}
 
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <button class="btn" onclick={() => feed.closeAdd()}>Cancel</button>
-      <button
-        class="btn btn-primary"
-        disabled={!found?.some((f) => f.url === chosen) || busy}
-        onclick={() => void followFound()}
-      >
-        {busy ? 'Following…' : 'Follow'}
-      </button>
-    </div>
-  {:else if tab === 'hackerNews'}
-    <ul class="choices" role="radiogroup" aria-label="Which list">
-      {#each HN_LISTS as l (l)}
-        <li>
-          <label class="choice" class:on={list === l}>
-            <input
-              type="radio"
-              name="hn-list"
-              value={l}
-              checked={list === l}
-              onchange={() => pickList(l)}
-            />
-            <span class="text">
-              <b>{HN_LIST_LABELS[l]}</b>
-              <small>{HN_LIST_NOTES[l]}</small>
-            </span>
-          </label>
-        </li>
-      {/each}
-    </ul>
+      <div class="sheet-row">
+        <span class="spacer"></span>
+        <button class="btn btn-primary" onclick={() => feed.closeAdd()}>Done</button>
+      </div>
+    {:else}
+      <p class="hint lead">
+        Every feed reader can export what it follows as an OPML file. Choose one here to follow the
+        same feeds.
+      </p>
 
-    <label class="field-label spaced" for="follow-points">
-      Only stories above <span class="opt">{list === 'top' ? 'points' : 'points, optional'}</span>
-    </label>
-    <input
-      id="follow-points"
-      class="field points"
-      type="number"
-      min="0"
-      step="10"
-      bind:value={minPoints}
-    />
-    {#if needsPoints}
-      <p class="hint under">This list is every story above a score, so it needs one.</p>
-    {/if}
+      <div class="sheet-row top">
+        <button class="btn btn-outline" disabled={busy} onclick={() => file?.click()}>
+          <Icon name="upload" size={14} />
+          {busy ? 'Reading…' : 'Choose an OPML file'}
+        </button>
+        <input
+          class="vh"
+          type="file"
+          accept=".opml,.xml,text/xml,application/xml,text/x-opml"
+          bind:this={file}
+          onchange={(e) => void pickFile(e)}
+        />
+      </div>
 
-    {@render folderField()}
+      {#if report}
+        <div class="report" role="status">
+          {#each reportLines(report) as line (line)}
+            <p>{line}</p>
+          {/each}
+        </div>
+      {/if}
 
-    {#if problem}<p class="error spaced">{problem}</p>{/if}
+      <hr class="sep spaced" />
 
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <button class="btn" onclick={() => feed.closeAdd()}>Cancel</button>
-      <button
-        class="btn btn-primary"
-        disabled={needsPoints || busy}
-        onclick={() => void followHackerNews()}
-      >
-        {busy ? 'Following…' : 'Follow'}
-      </button>
-    </div>
-  {:else if tab === 'mail'}
-    <p class="hint lead">
-      Newsletters that already arrive in your mail. The messages stay in Mail and the Feed only
-      points at them, so reading one here marks it read there. A source can be set to keep its
-      issues out of the inbox in its settings.
-    </p>
-
-    <ul class="senders">
-      <li class="sender">
-        <span class="who">
-          <b>All newsletters</b>
-          <small>Everything Mail files under Newsletters, but for senders followed below</small>
-        </span>
-        {#if allFollowed}
-          <span class="hint following"><Icon name="tick" size={14} /> Following</span>
-        {:else}
-          <button
-            class="btn btn-outline"
-            disabled={following !== null}
-            onclick={() => void followAll()}
-          >
-            {following === '*' ? 'Following…' : 'Follow'}
+      <p class="hint lead">
+        Or take yours with you: everything you follow, as a file any other reader will open.
+      </p>
+      <div class="sheet-row top">
+        <button
+          class="btn btn-outline"
+          disabled={busy || feed.sources.length === 0}
+          onclick={() => void exportFeeds()}
+        >
+          Export OPML
+        </button>
+        {#if exported !== null}
+          <span class="hint">Saved as subscriptions.opml.</span>
+          <button class="link" onclick={() => void copyExport()}>
+            {copied ? 'Copied' : 'Nothing saved? Copy it instead'}
           </button>
         {/if}
-      </li>
-    </ul>
+      </div>
 
-    {#if loadingSenders && senders === null}
-      <p class="hint none">Looking through your mail…</p>
-    {:else if senders !== null && senders.length === 0}
-      <p class="hint none">No newsletters have arrived in the last 90 days.</p>
-    {:else if senders !== null}
-      {#if senders.length > 8}
-        <input
-          class="field find-sender"
-          type="search"
-          placeholder="Search senders"
-          aria-label="Search senders"
-          bind:value={filter}
-        />
-      {/if}
-      <ul class="senders">
-        {#each shownSenders as s (s.email)}
-          {@const done = s.followed || followedNow.has(s.email)}
-          <li class="sender">
-            <span class="who">
-              <b>{s.name || s.email}</b>
-              <small>{s.name ? `${s.email} · ` : ''}{plural(s.messages, 'message')}</small>
-            </span>
-            {#if done}
-              <span class="hint following">
-                <Icon name="tick" size={14} /> Following
-              </span>
-            {:else}
-              <button
-                class="btn btn-outline"
-                disabled={following !== null}
-                onclick={() => void followSender(s)}
-              >
-                {following === s.email ? 'Following…' : 'Follow'}
-              </button>
-            {/if}
-          </li>
-        {:else}
-          <li class="hint none">Nobody matches “{filter.trim()}”.</li>
-        {/each}
-      </ul>
-      {@render folderField()}
-    {/if}
+      {#if problem}<p class="error spaced">{problem}</p>{/if}
 
-    {#if problem}<p class="error spaced">{problem}</p>{/if}
-
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <button class="btn btn-primary" onclick={() => feed.closeAdd()}>Done</button>
-    </div>
-  {:else}
-    <p class="hint lead">
-      Every feed reader can export what it follows as an OPML file. Choose one here to follow the
-      same feeds.
-    </p>
-
-    <div class="sheet-row top">
-      <button class="btn btn-outline" disabled={busy} onclick={() => file?.click()}>
-        <Icon name="upload" size={14} />
-        {busy ? 'Reading…' : 'Choose an OPML file'}
-      </button>
-      <input
-        class="vh"
-        type="file"
-        accept=".opml,.xml,text/xml,application/xml,text/x-opml"
-        bind:this={file}
-        onchange={(e) => void pickFile(e)}
-      />
-    </div>
-
-    {#if report}
-      <div class="report" role="status">
-        {#each reportLines(report) as line (line)}
-          <p>{line}</p>
-        {/each}
+      <div class="sheet-row">
+        <span class="spacer"></span>
+        <button class="btn btn-primary" onclick={() => feed.closeAdd()}>Done</button>
       </div>
     {/if}
-
-    <hr class="sep spaced" />
-
-    <p class="hint lead">
-      Or take yours with you: everything you follow, as a file any other reader will open.
-    </p>
-    <div class="sheet-row top">
-      <button
-        class="btn btn-outline"
-        disabled={busy || feed.sources.length === 0}
-        onclick={() => void exportFeeds()}
-      >
-        Export OPML
-      </button>
-      {#if exported !== null}
-        <span class="hint">Saved as subscriptions.opml.</span>
-        <button class="link" onclick={() => void copyExport()}>
-          {copied ? 'Copied' : 'Nothing saved? Copy it instead'}
-        </button>
-      {/if}
-    </div>
-
-    {#if problem}<p class="error spaced">{problem}</p>{/if}
-
-    <div class="sheet-row">
-      <span class="spacer"></span>
-      <button class="btn btn-primary" onclick={() => feed.closeAdd()}>Done</button>
-    </div>
-  {/if}
+  </div>
 </div>
 
 <style>
@@ -550,7 +552,6 @@
     translate: -50% -50%;
     width: min(540px, calc(100vw - var(--sp-8)));
     max-height: calc(100vh - var(--sp-8));
-    overflow-y: auto;
   }
 
   h2 {

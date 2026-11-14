@@ -20,6 +20,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import type { BankAccount, BankAccountId, LinkSummary } from '../lib/types'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import MoneyImport from './MoneyImport.svelte'
 
   const manual = $derived(money.visibleAccounts.filter((a) => !a.linkId))
@@ -163,7 +164,7 @@
       aria-current={isView(view) ? 'page' : undefined}
       onclick={() => openView(view)}
     >
-      <span class="side-icon"><Icon name={VIEW_ICONS[view]} size={16} /></span>
+      <span class="side-icon"><Symbol name={VIEW_ICONS[view]} size={17} /></span>
       <span class="side-text">{VIEW_LABELS[view]}</span>
       {#if view === 'accounts' && money.attention.length > 0}
         <span
@@ -246,7 +247,7 @@
 
   {#if hiddenCount > 0}
     <button class="side-row quiet" onclick={() => money.setView('accounts')}>
-      <span class="side-icon"><Icon name="hidden" size={14} /></span>
+      <span class="side-icon"><Symbol name="hidden" size={15} /></span>
       <span class="side-text">{hiddenCount} hidden</span>
     </button>
   {/if}

@@ -581,10 +581,16 @@
     padding: 4px;
     list-style: none;
     overflow-y: auto;
-    background: var(--bg-raised);
+    /* Frosted straight on the list rather than through `.frost`: it scrolls,
+       which would carry that class's pseudo-element away with the first
+       screenful, and it holds nothing fixed that the filter could
+       misplace. */
+    background: var(--float);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border);
     border-radius: calc(var(--radius) + 2px);
-    box-shadow: 0 18px 48px rgb(0 0 0 / 0.28);
+    box-shadow: var(--edge), var(--shadow-lg);
   }
   .head {
     padding: 8px 10px 4px;

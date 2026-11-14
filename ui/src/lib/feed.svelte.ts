@@ -147,13 +147,6 @@ function applyNewsOrigin(html: string): string {
     : allowWebOrigin(html.split('everyday://news/').join(`${origin}/`))
 }
 
-/** Is the window drawing dark? What `MailThread` asks before it themes a body. */
-function darkNow(): boolean {
-  if (app.theme === 'dark') return true
-  if (app.theme === 'light') return false
-  return typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
-}
-
 class FeedState {
   // -- what is on screen ------------------------------------------------
   scope = $state<FeedScope>({ kind: 'all' })
@@ -839,7 +832,7 @@ class FeedState {
     try {
       const loaded = isMock ? await this.#mockBody(story) : await this.#fetchBody(story)
       return {
-        html: applyNewsOrigin(applyBodyTheme(loaded.html, darkNow())),
+        html: applyNewsOrigin(applyBodyTheme(loaded.html, app.dark, app.frame)),
         imagesHidden: loaded.imagesHidden,
       }
     } catch (e) {

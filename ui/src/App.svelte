@@ -302,7 +302,11 @@
       {#if !pinned}
         <MeetingOfferBanner />
       {/if}
-      <div class="panes">
+      <div
+        class="panes"
+        class:pinned
+        style:--app={panels.settings === null ? `var(--app-${app.section})` : undefined}
+      >
         <!-- A window of one app has nothing to switch between. -->
         {#if !pinned}
           <AppBar />
@@ -338,30 +342,34 @@
             {/if}
             <Sidebar {folded} />
           {/if}
-          {#if app.section === 'assistant'}
-            <AssistantView />
-          {:else if app.section === 'notes'}
-            <NotesView />
-          {:else if app.section === 'todo'}
-            <TodoView />
-          {:else if app.section === 'calendar'}
-            <CalendarView />
-          {:else if app.section === 'library'}
-            <LibraryView />
-          {:else if app.section === 'mail'}
-            <MailView />
-          {:else if app.section === 'feed'}
-            <FeedView />
-          {:else if app.section === 'money'}
-            <MoneyView />
-          {:else if app.section === 'screentime'}
-            <ScreenTimeView />
-          {:else if app.section === 'overview'}
-            <OverviewView />
-          {:else}
-            <EntryList />
-            <main class="main"><Editor /></main>
-          {/if}
+          <!-- The open app, on the stage: one panel of the frame, the
+               sidebar beside it another. See `.shell-stage` in app.css. -->
+          <div class="shell-stage">
+            {#if app.section === 'assistant'}
+              <AssistantView />
+            {:else if app.section === 'notes'}
+              <NotesView />
+            {:else if app.section === 'todo'}
+              <TodoView />
+            {:else if app.section === 'calendar'}
+              <CalendarView />
+            {:else if app.section === 'library'}
+              <LibraryView />
+            {:else if app.section === 'mail'}
+              <MailView />
+            {:else if app.section === 'feed'}
+              <FeedView />
+            {:else if app.section === 'money'}
+              <MoneyView />
+            {:else if app.section === 'screentime'}
+              <ScreenTimeView />
+            {:else if app.section === 'overview'}
+              <OverviewView />
+            {:else}
+              <EntryList />
+              <main class="main"><Editor /></main>
+            {/if}
+          </div>
         {/if}
         <!-- Last in the row, so it is the right-hand rail whichever app is
              open: the assistant works on every one of them. Except its own,
@@ -441,18 +449,29 @@
     flex-direction: column;
     height: 100%;
   }
-  /* The raised surface, under every app at once: the list and the page are
-     what is being read, a step lighter than the app bar and the sidebar,
-     which are sunken -- the margin around the page, not more page. Set here
-     rather than by each view, which is how four apps ended up on the page
-     colour and two on the raised one. The Overview alone puts the page
-     colour back, behind cards that need something to stand on. */
+  /* The frame's panels in a row: the app bar, the sidebar, the stage the
+     open app stands on (`.shell-stage` in app.css, `--surface` -- a step lighter
+     than the sidebar and the app bar, which are the margin around the page,
+     not more page), and the assistant's rail. No background of its own: the
+     window's backdrop shows between the panels when a theme sets them apart
+     by `--shell-gap`, and is the frame's colour when it does not. The gap
+     runs along the right and the bottom too; the app bar needs none on the
+     left, and a window of one app, which has no app bar, takes it there. */
   .panes {
     position: relative;
     display: flex;
     flex: 1;
     min-height: 0;
-    background: var(--bg-raised);
+    gap: var(--shell-gap);
+    padding: 0 var(--shell-gap) var(--shell-gap) 0;
+    /* How far in from the window's edge the sidebar starts, for what is
+       placed over the row rather than in it: the folded sidebar and the
+       strip that brings it back. */
+    --bar-w: var(--appbar-w);
+  }
+  .panes.pinned {
+    padding-left: var(--shell-gap);
+    --bar-w: 0px;
   }
 
   /* Where a folded sidebar is found again: a strip of the app's left edge,
@@ -463,7 +482,7 @@
     position: absolute;
     top: 0;
     bottom: 0;
-    left: var(--appbar-w);
+    left: calc(var(--bar-w) + var(--shell-gap));
     width: 10px;
     z-index: 35;
   }
@@ -521,7 +540,6 @@
     display: grid;
     place-items: center;
     height: 100%;
-    background: var(--bg);
   }
   .mark {
     animation: pulse 1.6s ease-in-out infinite;

@@ -1,0 +1,630 @@
+/* ── Every Day: themes ──────────────────────────────────────────────────
+ *
+ * One block per theme, each setting every token in the contract at the foot
+ * of `theme.css` and nothing else. The list of themes -- names, light or
+ * dark, the order Settings shows them in -- is `THEMES` in `lib/themes.ts`;
+ * `scripts/themes.test.mjs` holds the two to each other.
+ *
+ * Two kinds, told apart by the frame tokens alone, never by a selector in a
+ * component:
+ *
+ *   Flat (Paper, Ink): the frame and the content touch, edge to edge, split
+ *   by hairlines; nothing is translucent. `--shell-gap` and `--shell-radius`
+ *   are 0, `--glass-blur` is `none`.
+ *
+ *   Glass (the rest): a coloured backdrop -- four soft glows over a base --
+ *   with the sidebar and the content as separate rounded cards floating on
+ *   it, a highlight along each card's rim, and menus and sheets frosted over
+ *   whatever they cover. The sidebar lets more of the backdrop through than
+ *   the content does. Light glass keeps the content nearly opaque white; dark
+ *   glass tints it with the backdrop's own hue at about half strength, which
+ *   the backdrop can afford because it is smooth -- there is nothing behind
+ *   the text to read through it. `--bg-raised` stays nearly opaque in every
+ *   theme, since popovers across the app sit on it over text, and only the
+ *   shared floating layers (`.frost` in app.css) blur what is under them.
+ *
+ * A new theme copies the nearest block, gives it a new id, and adds a row to
+ * `THEMES`. Nothing in a component needs to know it exists.
+ */
+
+/* ── Paper. Warm, paper-ish greys, flat and edge to edge. A pure-white journal feels like a spreadsheet. */
+[data-theme='light'] {
+  color-scheme: light;
+
+  --backdrop: #efede8;
+  --chrome: #efede8;
+  --sidebar: #efede8;
+  --surface: #fffefc;
+  --shell-gap: 0;
+  --shell-radius: 0;
+  --shell-rule: 1px solid var(--border);
+  --shell-shadow: 0 0 #0000;
+
+  --bg: #f7f6f3;
+  --bg-sunken: #efede8;
+  --bg-raised: #fffefc;
+  --bg-panel: #fbfaf7;
+  --bg-hover: rgb(0 0 0 / 0.035);
+  --bg-active: rgb(0 0 0 / 0.06);
+  --bg-selected: color-mix(in oklab, var(--accent) 13%, transparent);
+  --card: #f7f6f3;
+
+  --float: #fffefc;
+  --glass-blur: none;
+  --edge: 0 0 #0000;
+  --scrim: rgb(0 0 0 / 0.18);
+
+  --fg: #1c1a17;
+  --fg-muted: #605c55;
+  --fg-subtle: #8b857c;
+  --fg-faint: #aaa49a;
+  --fg-on-accent: #fff;
+  --border: rgb(0 0 0 / 0.09);
+  --border-strong: rgb(0 0 0 / 0.16);
+
+  --accent: #b4530f;
+  --accent-hover: #9c460b;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
+  --danger: #b42318;
+  --success: #15803d;
+  --warning: #b45309;
+  --info: #0369a1;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #3f8f3f;
+  --aqi-2: #a68b17;
+  --aqi-5: #7a4a9c;
+  --aqi-6: #6b1f2e;
+
+  --shadow-sm: 0 1px 2px rgb(28 26 23 / 0.06), 0 1px 1px rgb(28 26 23 / 0.04);
+  --shadow: 0 4px 12px -2px rgb(28 26 23 / 0.1), 0 2px 4px -2px rgb(28 26 23 / 0.06);
+  --shadow-lg: 0 18px 40px -12px rgb(28 26 23 / 0.22), 0 4px 10px -4px rgb(28 26 23 / 0.1);
+}
+
+/* ── Ink. Paper's counterpart: violet-tinged charcoal, flat and edge to edge. */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --backdrop: #100f13;
+  --chrome: #100f13;
+  --sidebar: #100f13;
+  --surface: #201f24;
+  --shell-gap: 0;
+  --shell-radius: 0;
+  --shell-rule: 1px solid var(--border);
+  --shell-shadow: 0 0 #0000;
+
+  --bg: #17161a;
+  --bg-sunken: #100f13;
+  --bg-raised: #201f24;
+  --bg-panel: #1b1a1f;
+  --bg-hover: rgb(255 255 255 / 0.045);
+  --bg-active: rgb(255 255 255 / 0.08);
+  --bg-selected: color-mix(in oklab, var(--accent) 22%, transparent);
+  --card: #2a292f;
+
+  --float: #201f24;
+  --glass-blur: none;
+  --edge: 0 0 #0000;
+  --scrim: rgb(0 0 0 / 0.18);
+
+  --fg: #eceaf0;
+  --fg-muted: #a8a4b0;
+  --fg-subtle: #7d7a86;
+  --fg-faint: #5c5966;
+  --fg-on-accent: #fff;
+  --border: rgb(255 255 255 / 0.09);
+  --border-strong: rgb(255 255 255 / 0.17);
+
+  --accent: #e8853f;
+  --accent-hover: #f0975a;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
+  --danger: #f87171;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --info: #38bdf8;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #6fcf6f;
+  --aqi-2: #d4b84a;
+  --aqi-5: #b48ad6;
+  --aqi-6: #c2566b;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow: 0 4px 14px -2px rgb(0 0 0 / 0.5);
+  --shadow-lg: 0 20px 44px -12px rgb(0 0 0 / 0.65);
+}
+
+/* ── Lagoon. Sky, mint and lavender behind frosted white panels, with Apple's own blue. */
+[data-theme='lagoon'] {
+  color-scheme: light;
+
+  --backdrop:
+    radial-gradient(60% 70% at 4% 0%, #9fd0ff 0%, transparent 72%),
+    radial-gradient(52% 62% at 100% 4%, #a6f0d6 0%, transparent 72%),
+    radial-gradient(58% 66% at 96% 100%, #c9bcff 0%, transparent 72%),
+    radial-gradient(52% 62% at 0% 100%, #8fe3f2 0%, transparent 72%), #e9f1fa;
+  --chrome: rgb(255 255 255 / 0.2);
+  --sidebar: rgb(255 255 255 / 0.48);
+  --surface: rgb(255 255 255 / 0.76);
+  --shell-gap: 10px;
+  --shell-radius: 18px;
+  --shell-rule: none;
+  --shell-shadow:
+    0 0 0 1px rgb(20 55 110 / 0.06), 0 1px 2px rgb(20 55 110 / 0.06),
+    0 18px 48px -18px rgb(20 55 110 / 0.32);
+
+  --bg: rgb(255 255 255 / 0.5);
+  --bg-sunken: rgb(20 55 110 / 0.06);
+  --bg-raised: rgb(255 255 255 / 0.93);
+  --bg-panel: rgb(255 255 255 / 0.56);
+  --bg-hover: rgb(20 55 110 / 0.05);
+  --bg-active: rgb(20 55 110 / 0.09);
+  --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
+  --card: #f3f7fc;
+
+  --float: rgb(255 255 255 / 0.8);
+  --glass-blur: blur(28px) saturate(1.8);
+  --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
+  --scrim: rgb(20 55 110 / 0.2);
+
+  --fg: #0e1a2b;
+  --fg-muted: #44536a;
+  --fg-subtle: #6a788d;
+  --fg-faint: #98a4b5;
+  --fg-on-accent: #fff;
+  --border: rgb(20 55 110 / 0.1);
+  --border-strong: rgb(20 55 110 / 0.18);
+
+  --accent: #0068d6;
+  --accent-hover: #0057b5;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
+  --danger: #c4261d;
+  --success: #15803d;
+  --warning: #b45309;
+  --info: #0369a1;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #3f8f3f;
+  --aqi-2: #a68b17;
+  --aqi-5: #7a4a9c;
+  --aqi-6: #6b1f2e;
+
+  --shadow-sm: 0 1px 2px rgb(20 55 110 / 0.08), 0 1px 1px rgb(20 55 110 / 0.04);
+  --shadow: 0 6px 16px -4px rgb(20 55 110 / 0.14), 0 2px 4px -2px rgb(20 55 110 / 0.08);
+  --shadow-lg: 0 24px 56px -16px rgb(20 55 110 / 0.32), 0 6px 14px -6px rgb(20 55 110 / 0.12);
+}
+
+/* ── Blossom. Cherry blossom, peach and lilac, with a rose accent. */
+[data-theme='blossom'] {
+  color-scheme: light;
+
+  --backdrop:
+    radial-gradient(60% 70% at 4% 0%, #ffbfd4 0%, transparent 72%),
+    radial-gradient(52% 62% at 100% 4%, #ffd6b0 0%, transparent 72%),
+    radial-gradient(58% 66% at 96% 100%, #dcc6ff 0%, transparent 72%),
+    radial-gradient(52% 62% at 0% 100%, #ffcfc4 0%, transparent 72%), #fbf0f3;
+  --chrome: rgb(255 255 255 / 0.2);
+  --sidebar: rgb(255 255 255 / 0.48);
+  --surface: rgb(255 255 255 / 0.76);
+  --shell-gap: 10px;
+  --shell-radius: 18px;
+  --shell-rule: none;
+  --shell-shadow:
+    0 0 0 1px rgb(110 30 60 / 0.06), 0 1px 2px rgb(110 30 60 / 0.06),
+    0 18px 48px -18px rgb(110 30 60 / 0.32);
+
+  --bg: rgb(255 255 255 / 0.5);
+  --bg-sunken: rgb(110 30 60 / 0.06);
+  --bg-raised: rgb(255 255 255 / 0.93);
+  --bg-panel: rgb(255 255 255 / 0.56);
+  --bg-hover: rgb(110 30 60 / 0.05);
+  --bg-active: rgb(110 30 60 / 0.09);
+  --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
+  --card: #fcf4f6;
+
+  --float: rgb(255 255 255 / 0.8);
+  --glass-blur: blur(28px) saturate(1.8);
+  --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
+  --scrim: rgb(110 30 60 / 0.2);
+
+  --fg: #2b1520;
+  --fg-muted: #6d4b5b;
+  --fg-subtle: #957381;
+  --fg-faint: #bd9eaa;
+  --fg-on-accent: #fff;
+  --border: rgb(110 30 60 / 0.1);
+  --border-strong: rgb(110 30 60 / 0.18);
+
+  --accent: #c8326e;
+  --accent-hover: #ab2459;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
+  --danger: #c4261d;
+  --success: #15803d;
+  --warning: #b45309;
+  --info: #0369a1;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #3f8f3f;
+  --aqi-2: #a68b17;
+  --aqi-5: #7a4a9c;
+  --aqi-6: #6b1f2e;
+
+  --shadow-sm: 0 1px 2px rgb(110 30 60 / 0.08), 0 1px 1px rgb(110 30 60 / 0.04);
+  --shadow: 0 6px 16px -4px rgb(110 30 60 / 0.14), 0 2px 4px -2px rgb(110 30 60 / 0.08);
+  --shadow-lg: 0 24px 56px -16px rgb(110 30 60 / 0.32), 0 6px 14px -6px rgb(110 30 60 / 0.12);
+}
+
+/* ── Meadow. Spring greens, lime and sea glass, with a deep jade accent. */
+[data-theme='meadow'] {
+  color-scheme: light;
+
+  --backdrop:
+    radial-gradient(60% 70% at 4% 0%, #b4ecc4 0%, transparent 72%),
+    radial-gradient(52% 62% at 100% 4%, #e6f3a2 0%, transparent 72%),
+    radial-gradient(58% 66% at 96% 100%, #a3e0d8 0%, transparent 72%),
+    radial-gradient(52% 62% at 0% 100%, #cdeeb1 0%, transparent 72%), #edf6ee;
+  --chrome: rgb(255 255 255 / 0.2);
+  --sidebar: rgb(255 255 255 / 0.48);
+  --surface: rgb(255 255 255 / 0.76);
+  --shell-gap: 10px;
+  --shell-radius: 18px;
+  --shell-rule: none;
+  --shell-shadow:
+    0 0 0 1px rgb(20 70 40 / 0.06), 0 1px 2px rgb(20 70 40 / 0.06),
+    0 18px 48px -18px rgb(20 70 40 / 0.32);
+
+  --bg: rgb(255 255 255 / 0.5);
+  --bg-sunken: rgb(20 70 40 / 0.06);
+  --bg-raised: rgb(255 255 255 / 0.93);
+  --bg-panel: rgb(255 255 255 / 0.56);
+  --bg-hover: rgb(20 70 40 / 0.05);
+  --bg-active: rgb(20 70 40 / 0.09);
+  --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
+  --card: #f3f8f3;
+
+  --float: rgb(255 255 255 / 0.8);
+  --glass-blur: blur(28px) saturate(1.8);
+  --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
+  --scrim: rgb(20 70 40 / 0.2);
+
+  --fg: #10231a;
+  --fg-muted: #43584a;
+  --fg-subtle: #6c8173;
+  --fg-faint: #9cb0a2;
+  --fg-on-accent: #fff;
+  --border: rgb(20 70 40 / 0.1);
+  --border-strong: rgb(20 70 40 / 0.18);
+
+  --accent: #13795b;
+  --accent-hover: #0e6249;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
+  --danger: #c4261d;
+  --success: #15803d;
+  --warning: #b45309;
+  --info: #0369a1;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #3f8f3f;
+  --aqi-2: #a68b17;
+  --aqi-5: #7a4a9c;
+  --aqi-6: #6b1f2e;
+
+  --shadow-sm: 0 1px 2px rgb(20 70 40 / 0.08), 0 1px 1px rgb(20 70 40 / 0.04);
+  --shadow: 0 6px 16px -4px rgb(20 70 40 / 0.14), 0 2px 4px -2px rgb(20 70 40 / 0.08);
+  --shadow-lg: 0 24px 56px -16px rgb(20 70 40 / 0.32), 0 6px 14px -6px rgb(20 70 40 / 0.12);
+}
+
+/* ── Dune. Desert light: apricot, terracotta and sand, with Paper's own amber. */
+[data-theme='dune'] {
+  color-scheme: light;
+
+  --backdrop:
+    radial-gradient(60% 70% at 4% 0%, #ffd6a0 0%, transparent 72%),
+    radial-gradient(52% 62% at 100% 4%, #f7bfa0 0%, transparent 72%),
+    radial-gradient(58% 66% at 96% 100%, #efdcae 0%, transparent 72%),
+    radial-gradient(52% 62% at 0% 100%, #e8c9bb 0%, transparent 72%), #f6eee3;
+  --chrome: rgb(255 255 255 / 0.2);
+  --sidebar: rgb(255 255 255 / 0.48);
+  --surface: rgb(255 255 255 / 0.76);
+  --shell-gap: 10px;
+  --shell-radius: 18px;
+  --shell-rule: none;
+  --shell-shadow:
+    0 0 0 1px rgb(90 55 20 / 0.06), 0 1px 2px rgb(90 55 20 / 0.06),
+    0 18px 48px -18px rgb(90 55 20 / 0.32);
+
+  --bg: rgb(255 255 255 / 0.5);
+  --bg-sunken: rgb(90 55 20 / 0.06);
+  --bg-raised: rgb(255 255 255 / 0.93);
+  --bg-panel: rgb(255 255 255 / 0.56);
+  --bg-hover: rgb(90 55 20 / 0.05);
+  --bg-active: rgb(90 55 20 / 0.09);
+  --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
+  --card: #fbf5ec;
+
+  --float: rgb(255 255 255 / 0.8);
+  --glass-blur: blur(28px) saturate(1.8);
+  --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
+  --scrim: rgb(90 55 20 / 0.2);
+
+  --fg: #24190f;
+  --fg-muted: #665747;
+  --fg-subtle: #8e7e6c;
+  --fg-faint: #b6a794;
+  --fg-on-accent: #fff;
+  --border: rgb(90 55 20 / 0.1);
+  --border-strong: rgb(90 55 20 / 0.18);
+
+  --accent: #b4530f;
+  --accent-hover: #9c460b;
+  --app-lightness: 0.6;
+  --app-chroma: 0.12;
+  --danger: #b42318;
+  --success: #15803d;
+  --warning: #b45309;
+  --info: #0369a1;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #3f8f3f;
+  --aqi-2: #a68b17;
+  --aqi-5: #7a4a9c;
+  --aqi-6: #6b1f2e;
+
+  --shadow-sm: 0 1px 2px rgb(90 55 20 / 0.08), 0 1px 1px rgb(90 55 20 / 0.04);
+  --shadow: 0 6px 16px -4px rgb(90 55 20 / 0.14), 0 2px 4px -2px rgb(90 55 20 / 0.08);
+  --shadow-lg: 0 24px 56px -16px rgb(90 55 20 / 0.32), 0 6px 14px -6px rgb(90 55 20 / 0.12);
+}
+
+/* ── Aurora. Northern lights -- violet, teal and magenta -- through tinted glass. */
+[data-theme='aurora'] {
+  color-scheme: dark;
+
+  --backdrop:
+    radial-gradient(65% 60% at 0% 0%, #6d2fe0 0%, transparent 70%),
+    radial-gradient(55% 55% at 100% 20%, #0f8f97 0%, transparent 70%),
+    radial-gradient(60% 55% at 90% 100%, #b0246e 0%, transparent 70%),
+    radial-gradient(50% 50% at 5% 95%, #2b3fc0 0%, transparent 70%),
+    linear-gradient(155deg, #2a1065 0%, #1d1468 45%, #0d3560 100%);
+  --chrome: rgb(255 255 255 / 0.03);
+  --sidebar: rgb(30 20 78 / 0.36);
+  --surface: rgb(30 20 78 / 0.5);
+  --shell-gap: 10px;
+  --shell-radius: 20px;
+  --shell-rule: none;
+  --shell-shadow: 0 24px 60px -24px rgb(0 0 0 / 0.6);
+
+  --bg: rgb(0 0 0 / 0.16);
+  --bg-sunken: rgb(0 0 0 / 0.22);
+  --bg-raised: rgb(54 42 118 / 0.94);
+  --bg-panel: rgb(30 20 78 / 0.4);
+  --bg-hover: rgb(255 255 255 / 0.07);
+  --bg-active: rgb(255 255 255 / 0.12);
+  --bg-selected: rgb(190 170 255 / 0.2);
+  --card: #2a1d57;
+
+  --float: rgb(54 42 118 / 0.72);
+  --glass-blur: blur(28px) saturate(1.7);
+  --edge:
+    inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(190 170 255 / 0.4),
+    inset 0 0 0 1px rgb(190 170 255 / 0.16);
+  --scrim: rgb(0 0 0 / 0.42);
+
+  --fg: #f3f1ff;
+  --fg-muted: #c4bdf0;
+  --fg-subtle: #958dc8;
+  --fg-faint: #6d66a0;
+  --fg-on-accent: #fff;
+  --border: rgb(190 170 255 / 0.14);
+  --border-strong: rgb(190 170 255 / 0.26);
+
+  --accent: #a48bff;
+  --accent-hover: #b7a2ff;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
+  --danger: #ff8a94;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --info: #38bdf8;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #6fcf6f;
+  --aqi-2: #d4b84a;
+  --aqi-5: #b48ad6;
+  --aqi-6: #c2566b;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow: 0 6px 18px -4px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 24px 56px -14px rgb(0 0 0 / 0.6);
+}
+
+/* ── Ember. A fire burnt low: rust, amber and plum behind tinted glass. */
+[data-theme='ember'] {
+  color-scheme: dark;
+
+  --backdrop:
+    radial-gradient(65% 60% at 0% 0%, #c2410c 0%, transparent 70%),
+    radial-gradient(55% 55% at 100% 15%, #c77a10 0%, transparent 70%),
+    radial-gradient(60% 55% at 95% 100%, #7e2fa6 0%, transparent 70%),
+    radial-gradient(50% 50% at 0% 100%, #b0193f 0%, transparent 70%),
+    linear-gradient(155deg, #4a1210 0%, #5a1d12 40%, #321033 100%);
+  --chrome: rgb(255 255 255 / 0.03);
+  --sidebar: rgb(46 16 18 / 0.36);
+  --surface: rgb(46 16 18 / 0.5);
+  --shell-gap: 10px;
+  --shell-radius: 20px;
+  --shell-rule: none;
+  --shell-shadow: 0 24px 60px -24px rgb(0 0 0 / 0.6);
+
+  --bg: rgb(0 0 0 / 0.16);
+  --bg-sunken: rgb(0 0 0 / 0.22);
+  --bg-raised: rgb(84 36 30 / 0.94);
+  --bg-panel: rgb(46 16 18 / 0.4);
+  --bg-hover: rgb(255 255 255 / 0.07);
+  --bg-active: rgb(255 255 255 / 0.12);
+  --bg-selected: rgb(255 185 150 / 0.2);
+  --card: #3f1d1a;
+
+  --float: rgb(84 36 30 / 0.72);
+  --glass-blur: blur(28px) saturate(1.7);
+  --edge:
+    inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(255 185 150 / 0.4),
+    inset 0 0 0 1px rgb(255 185 150 / 0.16);
+  --scrim: rgb(0 0 0 / 0.42);
+
+  --fg: #fff3ec;
+  --fg-muted: #e5c6b8;
+  --fg-subtle: #b8958a;
+  --fg-faint: #86675e;
+  --fg-on-accent: #fff;
+  --border: rgb(255 185 150 / 0.14);
+  --border-strong: rgb(255 185 150 / 0.26);
+
+  --accent: #ff9442;
+  --accent-hover: #ffa860;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
+  --danger: #ff8080;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --info: #38bdf8;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #6fcf6f;
+  --aqi-2: #d4b84a;
+  --aqi-5: #b48ad6;
+  --aqi-6: #c2566b;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow: 0 6px 18px -4px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 24px 56px -14px rgb(0 0 0 / 0.6);
+}
+
+/* ── Dusk. Indigo sky going plum at the edge, blue glass, and an orange to stand out against it. */
+[data-theme='dusk'] {
+  color-scheme: dark;
+
+  --backdrop:
+    radial-gradient(70% 60% at 0% 78%, #9b2f6e 0%, transparent 70%),
+    radial-gradient(60% 55% at 100% 28%, #2b5ce0 0%, transparent 70%),
+    radial-gradient(55% 50% at 100% 100%, #1f3fb0 0%, transparent 70%),
+    radial-gradient(55% 45% at 30% 0%, #3a2c9a 0%, transparent 70%),
+    linear-gradient(160deg, #1b1756 0%, #22256f 40%, #1c2c80 70%, #151b55 100%);
+  --chrome: rgb(255 255 255 / 0.03);
+  --sidebar: rgb(26 30 100 / 0.36);
+  --surface: rgb(26 30 100 / 0.5);
+  --shell-gap: 10px;
+  --shell-radius: 20px;
+  --shell-rule: none;
+  --shell-shadow: 0 24px 60px -24px rgb(0 0 0 / 0.6);
+
+  --bg: rgb(0 0 0 / 0.16);
+  --bg-sunken: rgb(0 0 0 / 0.22);
+  --bg-raised: rgb(46 52 136 / 0.94);
+  --bg-panel: rgb(26 30 100 / 0.4);
+  --bg-hover: rgb(255 255 255 / 0.07);
+  --bg-active: rgb(255 255 255 / 0.12);
+  --bg-selected: rgb(150 180 255 / 0.2);
+  --card: #262a6b;
+
+  --float: rgb(46 52 136 / 0.72);
+  --glass-blur: blur(28px) saturate(1.7);
+  --edge:
+    inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(150 180 255 / 0.4),
+    inset 0 0 0 1px rgb(150 180 255 / 0.16);
+  --scrim: rgb(0 0 0 / 0.42);
+
+  --fg: #f5f6ff;
+  --fg-muted: #c4c9ee;
+  --fg-subtle: #969dcf;
+  --fg-faint: #6d74aa;
+  --fg-on-accent: #fff;
+  --border: rgb(150 180 255 / 0.14);
+  --border-strong: rgb(150 180 255 / 0.26);
+
+  --accent: #ff8a2e;
+  --accent-hover: #ffa052;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
+  --danger: #ff8a94;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --info: #38bdf8;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #6fcf6f;
+  --aqi-2: #d4b84a;
+  --aqi-5: #b48ad6;
+  --aqi-6: #c2566b;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow: 0 6px 18px -4px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 24px 56px -14px rgb(0 0 0 / 0.6);
+}
+
+/* ── Tide. Deep ocean -- teal, cyan and sea green -- with a coral accent. */
+[data-theme='tide'] {
+  color-scheme: dark;
+
+  --backdrop:
+    radial-gradient(60% 55% at 100% 5%, #0aa2b8 0%, transparent 70%),
+    radial-gradient(65% 60% at 0% 90%, #0f7a6e 0%, transparent 70%),
+    radial-gradient(55% 50% at 95% 100%, #1d4fb0 0%, transparent 70%),
+    radial-gradient(50% 45% at 15% 5%, #0b5d86 0%, transparent 70%),
+    linear-gradient(160deg, #04263f 0%, #063f62 45%, #082d55 100%);
+  --chrome: rgb(255 255 255 / 0.03);
+  --sidebar: rgb(6 42 72 / 0.36);
+  --surface: rgb(6 42 72 / 0.5);
+  --shell-gap: 10px;
+  --shell-radius: 20px;
+  --shell-rule: none;
+  --shell-shadow: 0 24px 60px -24px rgb(0 0 0 / 0.6);
+
+  --bg: rgb(0 0 0 / 0.16);
+  --bg-sunken: rgb(0 0 0 / 0.22);
+  --bg-raised: rgb(20 68 106 / 0.94);
+  --bg-panel: rgb(6 42 72 / 0.4);
+  --bg-hover: rgb(255 255 255 / 0.07);
+  --bg-active: rgb(255 255 255 / 0.12);
+  --bg-selected: rgb(140 225 255 / 0.2);
+  --card: #0f3552;
+
+  --float: rgb(20 68 106 / 0.72);
+  --glass-blur: blur(28px) saturate(1.7);
+  --edge:
+    inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(140 225 255 / 0.4),
+    inset 0 0 0 1px rgb(140 225 255 / 0.16);
+  --scrim: rgb(0 0 0 / 0.42);
+
+  --fg: #effaff;
+  --fg-muted: #b9dbe8;
+  --fg-subtle: #88afc0;
+  --fg-faint: #5d8496;
+  --fg-on-accent: #fff;
+  --border: rgb(140 225 255 / 0.14);
+  --border-strong: rgb(140 225 255 / 0.26);
+
+  --accent: #ff6f5e;
+  --accent-hover: #ff8676;
+  --app-lightness: 0.8;
+  --app-chroma: 0.105;
+  --danger: #ff8a94;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --info: #38bdf8;
+  --star: #e0a92b;
+  --highlight: #f5d90a;
+  --aqi-1: #6fcf6f;
+  --aqi-2: #d4b84a;
+  --aqi-5: #b48ad6;
+  --aqi-6: #c2566b;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.35);
+  --shadow: 0 6px 18px -4px rgb(0 0 0 / 0.45);
+  --shadow-lg: 0 24px 56px -14px rgb(0 0 0 / 0.6);
+}

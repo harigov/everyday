@@ -201,7 +201,7 @@
     padding: 0 6px;
     border-radius: 999px;
     background: var(--accent);
-    color: #fff;
+    color: var(--fg-on-accent);
     font-size: var(--text-xs);
     font-weight: 650;
     font-variant-numeric: tabular-nums;

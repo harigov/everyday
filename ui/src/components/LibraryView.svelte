@@ -496,8 +496,8 @@
     color: var(--fg);
   }
   .star.on {
-    background: color-mix(in oklab, #e0a92b 16%, transparent);
-    color: #a9781a;
+    background: color-mix(in oklab, var(--star) 16%, transparent);
+    color: color-mix(in oklab, var(--star) 70%, var(--fg));
   }
 
   .shelves {

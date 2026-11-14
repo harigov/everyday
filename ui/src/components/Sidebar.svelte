@@ -8,6 +8,7 @@
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { colourItems } from '../lib/menus'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import JournalSettings from './JournalSettings.svelte'
   import TodoNav from './TodoNav.svelte'
   import CalendarNav from './CalendarNav.svelte'
@@ -124,8 +125,9 @@
      arriving holds it, leaving lets it go after a moment -- see
      `sidebar.svelte.ts` for the delays. Escape puts it away at once. -->
 <aside
-  class="sidebar"
+  class="sidebar shell-card"
   class:folded
+  class:frost={folded}
   class:peeking
   inert={folded && !peeking}
   aria-hidden={folded && !peeking ? 'true' : undefined}
@@ -200,7 +202,7 @@
           void app.selectJournal(null)
         }}
       >
-        <span class="side-icon"><Icon name="layers" /></span>
+        <span class="side-icon"><Symbol name="layers" size={17} /></span>
         <span class="side-text">All entries</span>
         <span class="side-count">{total}</span>
       </button>
@@ -213,7 +215,7 @@
           void app.selectJournal(null)
         }}
       >
-        <span class="side-icon star"><Icon name="star" size={15} filled /></span>
+        <span class="side-icon star"><Symbol name="star" size={16} /></span>
         <span class="side-text">Starred</span>
       </button>
 
@@ -308,20 +310,27 @@
     display: flex;
     flex-direction: column;
     padding-top: var(--sp-1);
-    background: var(--bg-sunken);
-    border-right: 1px solid var(--border);
+    background: var(--sidebar);
+    border-right: var(--shell-rule);
   }
 
   /* Folded: out of the row, so the app takes its width, and laid over the
      app's left edge instead -- invisible until a peek draws it. Over, not
      beside: a peek that reflowed the app would move the very list somebody
-     was reading. `.panes` is what it is positioned in. */
+     was reading. `.panes` is what it is positioned in, so it is placed by
+     the same gaps `.panes` leaves around a sidebar that is in the row.
+
+     Frosted (`.frost`): over the app rather than over the backdrop, a glass
+     theme's translucent sidebar would otherwise let the list underneath read
+     through it. Its own fill, not the floating one, so in a flat theme it is
+     the same sidebar it is when it is in the row. */
   .sidebar.folded {
     position: absolute;
     top: 0;
-    bottom: 0;
-    left: var(--appbar-w);
+    bottom: var(--shell-gap);
+    left: calc(var(--bar-w, var(--appbar-w)) + var(--shell-gap));
     z-index: 40;
+    background: var(--sidebar);
     visibility: hidden;
     opacity: 0;
     translate: -10px 0;
@@ -384,6 +393,6 @@
   }
 
   .star {
-    color: #e0a92b;
+    color: var(--star);
   }
 </style>

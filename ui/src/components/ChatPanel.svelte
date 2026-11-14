@@ -163,7 +163,7 @@
 {#snippet sparkle()}<Icon name="sparkle" size={28} weight={1.4} />{/snippet}
 
 <aside
-  class="panel"
+  class="panel shell-card"
   class:dragging
   class:floating={dog}
   style="--panel-w: {applied}px; --thread-top: {dog ? STAGE_H : 0}px"
@@ -298,7 +298,7 @@
     width: var(--panel-w);
     flex: none;
     min-height: 0;
-    border-left: 1px solid var(--border);
+    border-left: var(--shell-rule);
     background: var(--bg-panel);
   }
 

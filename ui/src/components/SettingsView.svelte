@@ -74,7 +74,9 @@
   import WebAccessPanel from './WebAccessPanel.svelte'
   import SkillsPanel from './SkillsPanel.svelte'
   import TemplatesPanel from './TemplatesPanel.svelte'
+  import ThemePicker from './ThemePicker.svelte'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import type { IconName } from '../lib/icons'
   import type { BadgeSources, HotkeyStatus, WritingSettings } from '../lib/types'
 
@@ -392,7 +394,7 @@
      or calendar app's -- see `Sidebar.svelte`, which draws exactly this shape
      around those. Settings has no app of its own to be drawn inside, so it
      draws its own aside rather than being handed one. -->
-<aside class="nav">
+<aside class="nav shell-card">
   <div class="head">
     <h2 class="pane-title">Settings</h2>
     <button class="ghost" onclick={() => panels.closeSettings()} title="Close settings">
@@ -408,7 +410,7 @@
         aria-current={tab === t.id ? 'page' : undefined}
         onclick={() => panels.openSettings(t.id)}
       >
-        <span class="side-icon"><Icon name={t.icon} size={t.sub ? 14 : 16} /></span>
+        <span class="side-icon"><Symbol name={t.icon} size={17} /></span>
         <span class="side-text">{t.label}</span>
         {#if count(t.id) > 0}<span class="side-count strong">{count(t.id)}</span>{/if}
       </button>
@@ -420,441 +422,437 @@
      a sheet raised over them, and nothing here traps focus or needs Escape
      caught locally -- see the header comment, and the `Escape` row in
      `shortcuts.svelte.ts`'s table for how this closes instead. -->
-<main class="pane scroll" aria-label="Settings">
-  <div class="content">
-    {#if tab === 'assistant'}
-      <AgentPanel />
-    {:else if tab === 'models'}
-      <ModelsPanel />
-    {:else if isPane(tab)}
-      <AssistantPanes pane={tab} />
-    {:else if tab === 'skills'}
-      <SkillsPanel />
-    {:else if tab === 'chat'}
-      <ChatLinksPanel />
-    {:else if tab === 'money'}
-      <MoneySettingsPanel />
-    {:else if tab === 'screentime'}
-      <ScreenTimeSettingsPanel />
-    {:else if tab === 'meetings'}
-      <MeetingsPanel />
-    {:else if tab === 'templates'}
-      <TemplatesPanel />
-    {:else if tab === 'keepintouch'}
-      <KeepInTouchPanel />
-    {:else if tab === 'profile'}
-      <ProfilePanel />
-    {:else if tab === 'accounts'}
-      <AccountsPanel />
-    {:else if tab === 'sorting'}
-      <MailSortingPanel />
-    {:else if tab === 'writing'}
-      <MailWritingPanel />
-    {:else if tab === 'data'}
-      <DataPanel />
-    {:else if tab === 'general'}
-      <section>
-        <span class="eyebrow">Appearance</span>
-        <div class="segmented">
-          {#each ['system', 'light', 'dark'] as t (t)}
-            <button
-              class="seg"
-              class:on={app.theme === t}
-              onclick={() => app.setTheme(t as 'system' | 'light' | 'dark')}
-            >
-              {t[0]!.toUpperCase() + t.slice(1)}
-            </button>
-          {/each}
-        </div>
-      </section>
-
-      {#if tray.supported}
+<div class="shell-stage">
+  <main class="pane scroll" aria-label="Settings">
+    <div class="content">
+      {#if tab === 'assistant'}
+        <AgentPanel />
+      {:else if tab === 'models'}
+        <ModelsPanel />
+      {:else if isPane(tab)}
+        <AssistantPanes pane={tab} />
+      {:else if tab === 'skills'}
+        <SkillsPanel />
+      {:else if tab === 'chat'}
+        <ChatLinksPanel />
+      {:else if tab === 'money'}
+        <MoneySettingsPanel />
+      {:else if tab === 'screentime'}
+        <ScreenTimeSettingsPanel />
+      {:else if tab === 'meetings'}
+        <MeetingsPanel />
+      {:else if tab === 'templates'}
+        <TemplatesPanel />
+      {:else if tab === 'keepintouch'}
+        <KeepInTouchPanel />
+      {:else if tab === 'profile'}
+        <ProfilePanel />
+      {:else if tab === 'accounts'}
+        <AccountsPanel />
+      {:else if tab === 'sorting'}
+        <MailSortingPanel />
+      {:else if tab === 'writing'}
+        <MailWritingPanel />
+      {:else if tab === 'data'}
+        <DataPanel />
+      {:else if tab === 'general'}
         <section>
-          <span class="eyebrow">Quick actions</span>
-          <label class="toggle">
-            <input
-              type="checkbox"
-              checked={tray.enabled}
-              onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
-            />
-            <span>
-              <b>Show Every Day in the {TRAY_WORD}</b>
-              <small>
-                <!-- What closing the window does follows from the icon being
+          <span class="eyebrow">Appearance</span>
+          <ThemePicker />
+        </section>
+
+        {#if tray.supported}
+          <section>
+            <span class="eyebrow">Quick actions</span>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={tray.enabled}
+                onchange={(e) => tray.setEnabled(e.currentTarget.checked)}
+              />
+              <span>
+                <b>Show Every Day in the {TRAY_WORD}</b>
+                <small>
+                  <!-- What closing the window does follows from the icon being
                      up -- `showing`, the shell's own answer, which is what its
                      close handler asks too: with it, closing hides the window
                      and Quit is in the menu. Without it, closing quits unless
                      there is work to do and a hotkey to come back by, which is
                      more than a line here should try to say. -->
-                {#if tray.unavailable}
-                  This desktop session has no {TRAY_WORD} for Every Day to appear in.
-                {:else if tray.showing}
-                  Start an entry, a task or an hour without coming back to the window. Closing the
-                  window keeps Every Day running here; quit it from this menu.
-                {:else}
-                  Start an entry, a task or an hour without coming back to the window.
-                {/if}
-              </small>
-            </span>
-          </label>
-          <!-- Only meaningful once the switch above is on -- greyed out
-                 rather than hidden, the same way the lock choices above are
-                 suspended while the keychain switch is on, so the choice
-                 underneath is still visible for when it is turned back on. -->
-          <label class="toggle" class:disabled={!tray.enabled}>
-            <input
-              type="checkbox"
-              checked={tray.meetingEnabled}
-              disabled={!tray.enabled}
-              onchange={(e) => tray.setMeetingEnabled(e.currentTarget.checked)}
-            />
-            <span>
-              <b>Show the next meeting in the {TRAY_WORD}</b>
-              <small>
-                {#if !tray.enabled}
-                  Only shown while Every Day is in the {TRAY_WORD}.
-                {:else}
-                  The meeting you are in, or the next one starting soon today. Nothing is shown
-                  while the vault is locked.
-                {/if}
-              </small>
-            </span>
-          </label>
-        </section>
-      {/if}
-
-      {#if badge.supported}
-        <section>
-          <span class="eyebrow">Icon badge</span>
-          <p class="hint">
-            A number on Every Day's icon in the {DOCK_WORD}, adding up whatever you choose here.
-            Nothing is shown while the vault is locked.
-          </p>
-          <div class="segmented">
-            {#each BADGE_TASKS as c (c.value)}
-              <button
-                class="seg"
-                class:on={badge.sources.tasks === c.value}
-                aria-pressed={badge.sources.tasks === c.value}
-                onclick={() => badge.set({ tasks: c.value })}
-              >
-                {c.label}
-              </button>
-            {/each}
-          </div>
-          {#if badge.sources.tasks === 'due'}
-            <p class="hint">Open tasks due today or overdue, the number beside Today in Todo.</p>
-          {:else if badge.sources.tasks === 'open'}
-            <p class="hint">Every task not yet done, the number beside All tasks in Todo.</p>
-          {/if}
-          <label class="toggle">
-            <input
-              type="checkbox"
-              checked={badge.sources.mail}
-              onchange={(e) => badge.set({ mail: e.currentTarget.checked })}
-            />
-            <span>
-              <b>Unread mail</b>
-              <small>Unread messages in every account's inbox, leaving out snoozed ones.</small>
-            </span>
-          </label>
-          <label class="toggle">
-            <input
-              type="checkbox"
-              checked={badge.sources.assistant}
-              onchange={(e) => badge.set({ assistant: e.currentTarget.checked })}
-            />
-            <span>
-              <b>Waiting in the assistant</b>
-              <small>
-                Runs and proposals you have not looked at yet, the number on the assistant's button.
-              </small>
-            </span>
-          </label>
-        </section>
-      {/if}
-
-      <section>
-        <span class="eyebrow">Keyboard</span>
-        <p class="hint">
-          Two keys for anything you do often: <kbd>G</kbd> then <kbd>J</kbd> for the journal,
-          <kbd>C</kbd> to start the next thing, <kbd>/</kbd> to search.
-        </p>
-
-        {#if hotkey}
-          <label class="toggle">
-            <input
-              type="checkbox"
-              checked={hotkey.registered}
-              disabled={!hotkey.registered && !hotkeyAvailable}
-              onchange={(e) => setHotkey(e.currentTarget.checked)}
-            />
-            <span>
-              <b>Reach Every Day from anywhere with {hotkey.shortcut}</b>
-              <small>
-                {#if hotkeyNotice}
-                  {hotkeyNotice}
-                {:else}
-                  Raises the window with the command palette open, whatever you are looking at.
-                {/if}
-              </small>
-            </span>
-          </label>
-        {/if}
-        <div>
-          <button
-            class="btn btn-outline"
-            onclick={() => {
-              panels.closeSettings()
-              panels.shortcuts = true
-            }}
-          >
-            Show every shortcut
-          </button>
-        </div>
-      </section>
-
-      {#if writing}
-        <section>
-          <span class="eyebrow">Writing help</span>
-          <label class="toggle">
-            <input
-              type="checkbox"
-              checked={writing.enabled}
-              disabled={writingBusy}
-              onchange={(e) => saveWriting(e.currentTarget.checked, null)}
-            />
-            <span>
-              <b>Rewrite selected text anywhere with {writing.key.shortcut || writing.shortcut}</b>
-              <small>
-                {#if writingNotice}
-                  {writingNotice}
-                {:else}
-                  {writingBlurb(writing)}
-                {/if}
-              </small>
-            </span>
-          </label>
-          {#if writing.enabled && !writing.key.desktopManaged}
-            <form
-              onsubmit={(e) => {
-                e.preventDefault()
-                void saveWriting(true, writingKey)
-              }}
-            >
-              <input
-                class="field"
-                aria-label="Writing help shortcut"
-                placeholder="Ctrl+Alt+Space"
-                bind:value={writingKey}
-              />
-              <div class="row">
-                <button
-                  class="btn btn-primary"
-                  type="submit"
-                  disabled={writingBusy ||
-                    !writingKey.trim() ||
-                    writingKey.trim() === writing.shortcut}
-                >
-                  Use this shortcut
-                </button>
-              </div>
-            </form>
-          {/if}
-        </section>
-      {/if}
-    {:else}
-      {#if status?.encrypted}
-        <section>
-          <span class="eyebrow">Lock after</span>
-          <!-- Suspended rather than hidden while the key is in the
-                 keychain: the choice underneath is still there, waiting, for
-                 the day the switch below goes off again. -->
-          <div class="segmented" class:disabled={opensItself}>
-            {#each LOCK_CHOICES as c (c.value)}
-              <button
-                class="seg"
-                class:on={status.autoLockSeconds === c.value}
-                disabled={opensItself}
-                onclick={() => setAutoLock(c.value)}
-              >
-                {c.label}
-              </button>
-            {/each}
-          </div>
-          <p class="hint">
-            {#if opensItself}
-              Off while the key is in this computer's keychain — signing in to this computer is what
-              unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
-            {:else}
-              How long this window may sit untouched before it hides what it is showing and asks for
-              the password again. The vault stays open behind it.
-            {/if}
-          </p>
-        </section>
-
-        <section>
-          <span class="eyebrow">Forget the key after</span>
-          <div class="segmented" class:disabled={opensItself}>
-            {#each KEY_CHOICES as c (c.value)}
-              <button
-                class="seg"
-                class:on={status.forgetKeySeconds === c.value}
-                disabled={opensItself}
-                onclick={() => setForgetKey(c.value)}
-              >
-                {c.label}
-              </button>
-            {/each}
-          </div>
-          <p class="hint">
-            {#if opensItself}
-              Off while the key is in this computer's keychain — signing in to this computer is what
-              unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
-            {:else}
-              The heavier of the two. This computer holds the key while the vault is open, and
-              serves it to your other windows, to any device you have paired, and to the assistant's
-              own routines. Forgetting it stops all of them until somebody types the password again.
-              Quitting always forgets it.
-            {/if}
-          </p>
-        </section>
-
-        <!-- This machine's keychain, so nothing a browser on web access can
-             reach: the keychain is the desktop's. -->
-        {#if !isWeb}
-          <section>
-            <span class="eyebrow">Opening this vault</span>
-            <!-- The box is driven by `opensItself` and nothing else, and the
-                 handler puts it straight back: turning it on only opens the
-                 password step, so a cancelled or refused attempt must not
-                 leave a switch that says the key is kept when it is not. -->
-            <label class="toggle">
-              <input
-                type="checkbox"
-                checked={opensItself}
-                onchange={(e) => {
-                  e.currentTarget.checked = opensItself
-                  void setOpensItself(!opensItself)
-                }}
-              />
-              <span>
-                <b>Open without a password when the app starts</b>
-                <small>
-                  This computer keeps the key in its own keychain. The vault is then as safe as your
-                  login here, rather than as safe as its password — anybody already sitting at this
-                  desk, logged in as you, can read it. Signing in here is what unlocks it from then
-                  on, so it also stops both idle locks above from firing; lock it yourself with
-                  {LOCK_SHORTCUT} when you mean to.
+                  {#if tray.unavailable}
+                    This desktop session has no {TRAY_WORD} for Every Day to appear in.
+                  {:else if tray.showing}
+                    Start an entry, a task or an hour without coming back to the window. Closing the
+                    window keeps Every Day running here; quit it from this menu.
+                  {:else}
+                    Start an entry, a task or an hour without coming back to the window.
+                  {/if}
                 </small>
               </span>
             </label>
+            <!-- Only meaningful once the switch above is on -- greyed out
+                 rather than hidden, the same way the lock choices above are
+                 suspended while the keychain switch is on, so the choice
+                 underneath is still visible for when it is turned back on. -->
+            <label class="toggle" class:disabled={!tray.enabled}>
+              <input
+                type="checkbox"
+                checked={tray.meetingEnabled}
+                disabled={!tray.enabled}
+                onchange={(e) => tray.setMeetingEnabled(e.currentTarget.checked)}
+              />
+              <span>
+                <b>Show the next meeting in the {TRAY_WORD}</b>
+                <small>
+                  {#if !tray.enabled}
+                    Only shown while Every Day is in the {TRAY_WORD}.
+                  {:else}
+                    The meeting you are in, or the next one starting soon today. Nothing is shown
+                    while the vault is locked.
+                  {/if}
+                </small>
+              </span>
+            </label>
+          </section>
+        {/if}
+
+        {#if badge.supported}
+          <section>
+            <span class="eyebrow">Icon badge</span>
             <p class="hint">
-              Worth it for one thing: the assistant's routines run where the vault is, and a vault
-              that is shut from the moment this machine boots until somebody types a password is a
-              vault whose morning brief does not happen.
+              A number on Every Day's icon in the {DOCK_WORD}, adding up whatever you choose here.
+              Nothing is shown while the vault is locked.
             </p>
-            {#if askingForKey}
-              <form onsubmit={confirmOpensItself}>
+            <div class="segmented">
+              {#each BADGE_TASKS as c (c.value)}
+                <button
+                  class="seg"
+                  class:on={badge.sources.tasks === c.value}
+                  aria-pressed={badge.sources.tasks === c.value}
+                  onclick={() => badge.set({ tasks: c.value })}
+                >
+                  {c.label}
+                </button>
+              {/each}
+            </div>
+            {#if badge.sources.tasks === 'due'}
+              <p class="hint">Open tasks due today or overdue, the number beside Today in Todo.</p>
+            {:else if badge.sources.tasks === 'open'}
+              <p class="hint">Every task not yet done, the number beside All tasks in Todo.</p>
+            {/if}
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={badge.sources.mail}
+                onchange={(e) => badge.set({ mail: e.currentTarget.checked })}
+              />
+              <span>
+                <b>Unread mail</b>
+                <small>Unread messages in every account's inbox, leaving out snoozed ones.</small>
+              </span>
+            </label>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={badge.sources.assistant}
+                onchange={(e) => badge.set({ assistant: e.currentTarget.checked })}
+              />
+              <span>
+                <b>Waiting in the assistant</b>
+                <small>
+                  Runs and proposals you have not looked at yet, the number on the assistant's
+                  button.
+                </small>
+              </span>
+            </label>
+          </section>
+        {/if}
+
+        <section>
+          <span class="eyebrow">Keyboard</span>
+          <p class="hint">
+            Two keys for anything you do often: <kbd>G</kbd> then <kbd>J</kbd> for the journal,
+            <kbd>C</kbd> to start the next thing, <kbd>/</kbd> to search.
+          </p>
+
+          {#if hotkey}
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={hotkey.registered}
+                disabled={!hotkey.registered && !hotkeyAvailable}
+                onchange={(e) => setHotkey(e.currentTarget.checked)}
+              />
+              <span>
+                <b>Reach Every Day from anywhere with {hotkey.shortcut}</b>
+                <small>
+                  {#if hotkeyNotice}
+                    {hotkeyNotice}
+                  {:else}
+                    Raises the window with the command palette open, whatever you are looking at.
+                  {/if}
+                </small>
+              </span>
+            </label>
+          {/if}
+          <div>
+            <button
+              class="btn btn-outline"
+              onclick={() => {
+                panels.closeSettings()
+                panels.shortcuts = true
+              }}
+            >
+              Show every shortcut
+            </button>
+          </div>
+        </section>
+
+        {#if writing}
+          <section>
+            <span class="eyebrow">Writing help</span>
+            <label class="toggle">
+              <input
+                type="checkbox"
+                checked={writing.enabled}
+                disabled={writingBusy}
+                onchange={(e) => saveWriting(e.currentTarget.checked, null)}
+              />
+              <span>
+                <b>Rewrite selected text anywhere with {writing.key.shortcut || writing.shortcut}</b
+                >
+                <small>
+                  {#if writingNotice}
+                    {writingNotice}
+                  {:else}
+                    {writingBlurb(writing)}
+                  {/if}
+                </small>
+              </span>
+            </label>
+            {#if writing.enabled && !writing.key.desktopManaged}
+              <form
+                onsubmit={(e) => {
+                  e.preventDefault()
+                  void saveWriting(true, writingKey)
+                }}
+              >
                 <input
                   class="field"
-                  type="password"
-                  placeholder="Your vault password"
-                  bind:value={keyPassword}
-                  autocomplete="current-password"
-                  use:focusOnMount
+                  aria-label="Writing help shortcut"
+                  placeholder="Ctrl+Alt+Space"
+                  bind:value={writingKey}
                 />
                 <div class="row">
-                  <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
-                  <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
-                    Keep the key
+                  <button
+                    class="btn btn-primary"
+                    type="submit"
+                    disabled={writingBusy ||
+                      !writingKey.trim() ||
+                      writingKey.trim() === writing.shortcut}
+                  >
+                    Use this shortcut
                   </button>
                 </div>
               </form>
             {/if}
           </section>
         {/if}
-
-        <section>
-          <span class="eyebrow">Password</span>
-          {#if changing}
-            <form onsubmit={changePassword}>
-              <input
-                class="field"
-                type="password"
-                placeholder="Current password"
-                bind:value={current}
-                autocomplete="current-password"
-              />
-              <div class="gap"></div>
-              <input
-                class="field"
-                type="password"
-                placeholder="New password"
-                bind:value={next}
-                autocomplete="new-password"
-              />
-              <div class="row">
-                <button class="btn" type="button" onclick={() => (changing = false)}>
-                  Cancel
+      {:else}
+        {#if status?.encrypted}
+          <section>
+            <span class="eyebrow">Lock after</span>
+            <!-- Suspended rather than hidden while the key is in the
+                 keychain: the choice underneath is still there, waiting, for
+                 the day the switch below goes off again. -->
+            <div class="segmented" class:disabled={opensItself}>
+              {#each LOCK_CHOICES as c (c.value)}
+                <button
+                  class="seg"
+                  class:on={status.autoLockSeconds === c.value}
+                  disabled={opensItself}
+                  onclick={() => setAutoLock(c.value)}
+                >
+                  {c.label}
                 </button>
-                <button class="btn btn-primary" type="submit" disabled={next.length < 8}>
-                  Change
+              {/each}
+            </div>
+            <p class="hint">
+              {#if opensItself}
+                Off while the key is in this computer's keychain — signing in to this computer is
+                what unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
+              {:else}
+                How long this window may sit untouched before it hides what it is showing and asks
+                for the password again. The vault stays open behind it.
+              {/if}
+            </p>
+          </section>
+
+          <section>
+            <span class="eyebrow">Forget the key after</span>
+            <div class="segmented" class:disabled={opensItself}>
+              {#each KEY_CHOICES as c (c.value)}
+                <button
+                  class="seg"
+                  class:on={status.forgetKeySeconds === c.value}
+                  disabled={opensItself}
+                  onclick={() => setForgetKey(c.value)}
+                >
+                  {c.label}
+                </button>
+              {/each}
+            </div>
+            <p class="hint">
+              {#if opensItself}
+                Off while the key is in this computer's keychain — signing in to this computer is
+                what unlocks it. Lock it yourself with {LOCK_SHORTCUT}.
+              {:else}
+                The heavier of the two. This computer holds the key while the vault is open, and
+                serves it to your other windows, to any device you have paired, and to the
+                assistant's own routines. Forgetting it stops all of them until somebody types the
+                password again. Quitting always forgets it.
+              {/if}
+            </p>
+          </section>
+
+          <!-- This machine's keychain, so nothing a browser on web access can
+             reach: the keychain is the desktop's. -->
+          {#if !isWeb}
+            <section>
+              <span class="eyebrow">Opening this vault</span>
+              <!-- The box is driven by `opensItself` and nothing else, and the
+                 handler puts it straight back: turning it on only opens the
+                 password step, so a cancelled or refused attempt must not
+                 leave a switch that says the key is kept when it is not. -->
+              <label class="toggle">
+                <input
+                  type="checkbox"
+                  checked={opensItself}
+                  onchange={(e) => {
+                    e.currentTarget.checked = opensItself
+                    void setOpensItself(!opensItself)
+                  }}
+                />
+                <span>
+                  <b>Open without a password when the app starts</b>
+                  <small>
+                    This computer keeps the key in its own keychain. The vault is then as safe as
+                    your login here, rather than as safe as its password — anybody already sitting
+                    at this desk, logged in as you, can read it. Signing in here is what unlocks it
+                    from then on, so it also stops both idle locks above from firing; lock it
+                    yourself with
+                    {LOCK_SHORTCUT} when you mean to.
+                  </small>
+                </span>
+              </label>
+              <p class="hint">
+                Worth it for one thing: the assistant's routines run where the vault is, and a vault
+                that is shut from the moment this machine boots until somebody types a password is a
+                vault whose morning brief does not happen.
+              </p>
+              {#if askingForKey}
+                <form onsubmit={confirmOpensItself}>
+                  <input
+                    class="field"
+                    type="password"
+                    placeholder="Your vault password"
+                    bind:value={keyPassword}
+                    autocomplete="current-password"
+                    use:focusOnMount
+                  />
+                  <div class="row">
+                    <button class="btn" type="button" onclick={cancelOpensItself}>Cancel</button>
+                    <button class="btn btn-primary" type="submit" disabled={!keyPassword}>
+                      Keep the key
+                    </button>
+                  </div>
+                </form>
+              {/if}
+            </section>
+          {/if}
+
+          <section>
+            <span class="eyebrow">Password</span>
+            {#if changing}
+              <form onsubmit={changePassword}>
+                <input
+                  class="field"
+                  type="password"
+                  placeholder="Current password"
+                  bind:value={current}
+                  autocomplete="current-password"
+                />
+                <div class="gap"></div>
+                <input
+                  class="field"
+                  type="password"
+                  placeholder="New password"
+                  bind:value={next}
+                  autocomplete="new-password"
+                />
+                <div class="row">
+                  <button class="btn" type="button" onclick={() => (changing = false)}>
+                    Cancel
+                  </button>
+                  <button class="btn btn-primary" type="submit" disabled={next.length < 8}>
+                    Change
+                  </button>
+                </div>
+              </form>
+            {:else}
+              <div>
+                <button class="btn btn-outline" onclick={() => (changing = true)}>
+                  Change password…
                 </button>
               </div>
-            </form>
-          {:else}
-            <div>
-              <button class="btn btn-outline" onclick={() => (changing = true)}>
-                Change password…
-              </button>
-            </div>
-          {/if}
-        </section>
-      {/if}
+            {/if}
+          </section>
+        {/if}
 
-      <!-- Three ways of serving this vault from the machine holding it, so none
+        <!-- Three ways of serving this vault from the machine holding it, so none
            of them is drawn in a browser that is itself one of the ways in. -->
-      {#if !isWeb}
-        <SharePanel />
+        {#if !isWeb}
+          <SharePanel />
 
-        <WebAccessPanel />
+          <WebAccessPanel />
 
-        <McpPanel />
-      {/if}
+          <McpPanel />
+        {/if}
 
-      {#if notice}<p class="notice">{notice}</p>{/if}
+        {#if notice}<p class="notice">{notice}</p>{/if}
 
-      <!-- `vault-facts`: this section's own `margin-top`, not the generic
+        <!-- `vault-facts`: this section's own `margin-top`, not the generic
            `section + section` rule below -- that rule only reaches a literal
            sibling `<section>` written in this file, and the element directly
            above this one is drawn by `SharePanel` or `McpPanel` (or is
            absent, on a build with neither), never that. -->
-      <section class="vault-facts">
-        <span class="eyebrow">This vault</span>
-        <div class="facts">
-          <div><span>Name</span><b>{status?.name}</b></div>
-          <div><span>Storage</span><b>{status?.backend}</b></div>
-          <div>
-            <span>Encryption</span>
-            <b class:warn={!status?.encrypted}>{status?.encrypted ? 'On' : 'Off'}</b>
-          </div>
-          {#if status?.stats}
+        <section class="vault-facts">
+          <span class="eyebrow">This vault</span>
+          <div class="facts">
+            <div><span>Name</span><b>{status?.name}</b></div>
+            <div><span>Storage</span><b>{status?.backend}</b></div>
             <div>
-              <span>Entries</span><b>{plural(status.stats.entries, 'entry', 'entries')}</b>
+              <span>Encryption</span>
+              <b class:warn={!status?.encrypted}>{status?.encrypted ? 'On' : 'Off'}</b>
             </div>
-            <div><span>Media</span><b>{humanBytes(status.stats.blobBytes)}</b></div>
-          {/if}
-        </div>
-        <p class="path" title={status?.path}>{status?.path}</p>
-      </section>
-    {/if}
-  </div>
-</main>
+            {#if status?.stats}
+              <div>
+                <span>Entries</span><b>{plural(status.stats.entries, 'entry', 'entries')}</b>
+              </div>
+              <div><span>Media</span><b>{humanBytes(status.stats.blobBytes)}</b></div>
+            {/if}
+          </div>
+          <p class="path" title={status?.path}>{status?.path}</p>
+        </section>
+      {/if}
+    </div>
+  </main>
+</div>
 
 <style>
   /* The same width, background and border every app's sidebar draws with --
-     see `Sidebar.svelte`'s own `.sidebar`. Settings is not handed that
+     see `Sidebar.svelte`'s own `.sidebar`, and `.shell-card` in app.css for
+     the corners and lift a glass theme gives both. Settings is not handed that
      component (it has no journal list, no "All entries" row, none of what
      makes a sidebar a sidebar everywhere else), so this is a second place
      that says so; the two have to be kept in step by eye. */
@@ -863,8 +861,8 @@
     flex: none;
     display: flex;
     flex-direction: column;
-    background: var(--bg-sunken);
-    border-right: 1px solid var(--border);
+    background: var(--sidebar);
+    border-right: var(--shell-rule);
   }
   /* A header the height of every app's own, so the row under the strip at
      the top of the window still lines up app to app, with a title and a

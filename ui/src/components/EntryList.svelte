@@ -445,7 +445,7 @@
     white-space: nowrap;
   }
   .star {
-    color: #e0a92b;
+    color: var(--star);
     display: flex;
   }
   .excerpt {

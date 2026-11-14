@@ -535,7 +535,7 @@
     color: var(--fg-faint);
   }
   .flag.p-high {
-    color: #d97706;
+    color: var(--warning);
   }
   .flag.p-urgent {
     color: var(--danger);
@@ -574,12 +574,12 @@
     background: var(--danger);
   }
   .chip.state.doing {
-    color: #0369a1;
-    background: color-mix(in oklab, #0369a1 13%, transparent);
+    color: var(--info);
+    background: color-mix(in oklab, var(--info) 13%, transparent);
   }
   .chip.state.blocked {
-    color: #b45309;
-    background: color-mix(in oklab, #b45309 15%, transparent);
+    color: var(--warning);
+    background: color-mix(in oklab, var(--warning) 15%, transparent);
   }
   .chip.project {
     background: none;

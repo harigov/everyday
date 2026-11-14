@@ -25,6 +25,7 @@
     partUrl,
   } from '../lib/mailview'
   import type { MailAttachment, MailMessageDetail } from '../lib/types'
+  import { app } from '../lib/state.svelte'
   import Icon from './Icon.svelte'
   import PdfView from './PdfView.svelte'
 
@@ -139,7 +140,7 @@
     }
   })
 
-  const themed = $derived(shown.state === 'page' ? applyBodyTheme(shown.html, dark) : '')
+  const themed = $derived(shown.state === 'page' ? applyBodyTheme(shown.html, dark, app.frame) : '')
   const name = $derived(current?.filename || 'Attachment')
   const isSaving = $derived(current !== undefined && saving.has(current.index))
   const isSaved = $derived(current !== undefined && saved.has(current.index))

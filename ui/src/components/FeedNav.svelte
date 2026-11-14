@@ -22,6 +22,7 @@
   import type { SourceSummary } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import SourceIcon from './SourceIcon.svelte'
   import SourceSettings from './SourceSettings.svelte'
 
@@ -167,7 +168,7 @@
     title={feed.unreadTotal > 0 ? `All — ${feed.unreadTotal} unread` : 'All'}
     onclick={() => void feed.select({ kind: 'all' })}
   >
-    <span class="side-icon"><Icon name="newspaper" size={16} /></span>
+    <span class="side-icon"><Symbol name="newspaper" size={17} /></span>
     <span class="side-text">All</span>
     {#if feed.unreadTotal > 0}<span class="side-count strong">{feed.unreadTotal}</span>{/if}
   </button>

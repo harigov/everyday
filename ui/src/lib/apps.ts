@@ -30,6 +30,7 @@
 
 import type { Group } from './shortcuts.svelte'
 import type { IconName } from './icons'
+import type { SymbolName } from './symbols'
 import type { app as appSingleton } from './state.svelte'
 import type { todo as todoSingleton } from './todo.svelte'
 import type { library as librarySingleton } from './library.svelte'
@@ -147,6 +148,9 @@ export interface AppModule {
    *  see `AppBar.svelte`'s own note on why those are one word, typed once. */
   readonly label: Group
   readonly icon: IconName
+  /** The filled icon the app bar draws, in the app's own colour
+   *  (`--app-<section>` in `theme.css`). See `symbols.ts`. */
+  readonly symbol: SymbolName
   /** Can this vault's backend run the app? */
   supported(app: AppLike): boolean
   /** The colour the window tints itself while this app is open. */
@@ -170,6 +174,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'overview',
     label: 'Overview',
     icon: 'compass',
+    symbol: 'compass',
     supported: (app) => app.supportsOverview,
     accent: () => CONSTANT_ACCENT,
     create: (d) => (d.overview.wantsLog = true),
@@ -180,6 +185,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'notes',
     label: 'Notes',
     icon: 'pencil',
+    symbol: 'note',
     supported: (app) => app.supportsNotes,
     accent: () => CONSTANT_ACCENT,
     create: (d) => d.notes.create(),
@@ -194,6 +200,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'todo',
     label: 'Todo',
     icon: 'check',
+    symbol: 'check',
     supported: (app) => app.supportsTasks,
     accent: (d) => d.todo.accent,
     // The goals pane has no task line to put a cursor in, and the next
@@ -215,6 +222,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'calendar',
     label: 'Calendar',
     icon: 'calendar',
+    symbol: 'calendar',
     supported: (app) => app.supportsCalendar,
     accent: () => CONSTANT_ACCENT,
     create: (d) => d.calendar.bookNow(),
@@ -225,6 +233,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'library',
     label: 'Library',
     icon: 'book',
+    symbol: 'book',
     supported: (app) => app.supportsLibrary,
     accent: (d) => d.library.accent,
     create: (d) => d.library.focusCapture(),
@@ -239,6 +248,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'mail',
     label: 'Mail',
     icon: 'mail',
+    symbol: 'mail',
     supported: (app) => app.supportsMail,
     accent: () => CONSTANT_ACCENT,
     create: (d) => d.mail.compose(),
@@ -253,6 +263,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'feed',
     label: 'Feed',
     icon: 'rss',
+    symbol: 'rss',
     supported: (app) => app.supportsNews,
     accent: (d) => d.feed.accent,
     // Following something is the one thing a feed reader has to be told; the
@@ -269,6 +280,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'money',
     label: 'Money',
     icon: 'wallet',
+    symbol: 'wallet',
     supported: (app) => app.supportsMoney,
     accent: (d) => d.money.accent,
     // A transaction typed into an account kept by hand, where there is one;
@@ -292,6 +304,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'screentime',
     label: 'Screen time',
     icon: 'hourglass',
+    symbol: 'hourglass',
     supported: (app) => app.supportsScreenTime,
     accent: (d) => d.screentime.accent,
     // Nothing in this app is typed in but a category, so that: the
@@ -307,6 +320,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'assistant',
     label: 'Assistant',
     icon: 'sparkle',
+    symbol: 'sparkle',
     supported: (app) => app.supportsAssistant,
     accent: () => CONSTANT_ACCENT,
     // A new conversation. It was a new routine, back when routines were
@@ -322,6 +336,7 @@ export const APPS: Record<Section, AppModule> = {
     section: 'journal',
     label: 'Journal',
     icon: 'quote',
+    symbol: 'notebook',
     // The one app every backend can carry: a store that cannot hold
     // journals is not a vault.
     supported: () => true,

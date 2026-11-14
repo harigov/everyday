@@ -15,7 +15,7 @@
 </script>
 
 <div class="wrap">
-  <div class="card">
+  <div class="card frost">
     <div class="mark"><Icon name="alert" size={28} weight={1.7} /></div>
     <h1>Every Day could not start</h1>
 
@@ -42,17 +42,19 @@
     place-items: center;
     height: 100%;
     padding: var(--sp-6);
-    background: var(--bg);
   }
 
   .card {
     width: min(400px, 100%);
     padding: var(--sp-8) var(--sp-6) var(--sp-6);
     text-align: center;
-    background: var(--bg-raised);
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
     box-shadow: var(--shadow-lg);
+    /* Frosted over the window's backdrop (`.frost`), which needs it placed
+       and stacked. */
+    position: relative;
+    z-index: 0;
   }
 
   .mark {

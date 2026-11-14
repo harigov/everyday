@@ -15,6 +15,16 @@ import { notify } from './notify.svelte'
 import { seen, type Showing } from './onscreen'
 import { panels } from './panels.svelte'
 import { pref } from './prefs'
+import {
+  parseThemeChoice,
+  resolveTheme,
+  showTheme,
+  themeInfo,
+  watchSystemScheme,
+  type Frame,
+  type ThemeChoice,
+  type ThemeId,
+} from './themes'
 import { windowControls } from './window.svelte'
 import { debounce } from './store/debounce'
 import { DocBinding } from './store/doc-binding'
@@ -100,19 +110,12 @@ export type Screen = 'loading' | 'setup' | 'locked' | 'main' | 'error'
  */
 export { type Section, APP_ORDER as SECTIONS } from './apps'
 
-export type Theme = 'light' | 'dark' | 'system'
+/** The theme the person chose. See `themes.ts` for the list and the contract. */
+export type Theme = ThemeChoice
 
-// Unvalidated, matching what this read has always done: a value nobody but
-// this interface writes, cast rather than checked, with `system` standing in
-// only for "nothing was there". Named rather than inlined into `themePref`
-// below, because `start` also runs it against a `?theme=` override that has
-// not been through `localStorage` at all.
-function parseTheme(raw: string | null): Theme {
-  return (raw as Theme | null) ?? 'system'
-}
-const themePref = pref<Theme>('everyday.theme', parseTheme, 'system')
+const themePref = pref<Theme>('everyday.theme', parseThemeChoice, 'system')
 
-/** Same reason `parseTheme` is named: `start` also runs a `?section=` override through it. */
+/** Named because `start` also runs a `?section=` override through it. */
 function parseSection(raw: string | null): Section | null {
   return APP_ORDER.includes(raw as Section) ? (raw as Section) : null
 }
@@ -202,7 +205,10 @@ class AppState {
    * copy.
    */
   conflict = $state(false)
-  theme = $state<'light' | 'dark' | 'system'>('system')
+  theme = $state<Theme>('system')
+  /** The theme on screen: `theme`, or Paper or Ink when that is to follow the
+   *  desktop. Kept apart because only this one changes when the desktop does. */
+  shown = $state<ThemeId>('light')
   section = $state<Section>('journal')
 
   /**
@@ -313,7 +319,7 @@ class AppState {
     // A mock build accepts `?theme=` so the interface can be reviewed in a
     // fixed theme without clicking through to Settings first.
     const forced = isMock ? new URLSearchParams(location.search).get('theme') : null
-    this.theme = parseTheme(forced ?? localStorage.getItem('everyday.theme'))
+    this.theme = parseThemeChoice(forced ?? localStorage.getItem('everyday.theme'))
     this.applyTheme()
     // `?section=` alongside `?theme=`, and for the same reason: so the
     // interface can be opened straight to the app under review.
@@ -692,10 +698,22 @@ class AppState {
     await this.start()
   }
 
+  /** Whether the window is drawing a dark theme: what a mail body or a feed
+   *  story asks before it is rendered to match. */
+  get dark(): boolean {
+    return themeInfo(this.shown).scheme === 'dark'
+  }
+
+  /** The colours a framed document -- a mail body, a feed story -- is drawn
+   *  in for the theme on screen. Reactive, so a renderer that reads it is
+   *  redrawn by a change between two light themes as well as to dark. */
+  get frame(): Frame {
+    return themeInfo(this.shown).frame
+  }
+
   applyTheme() {
-    const el = document.documentElement
-    if (this.theme === 'system') el.removeAttribute('data-theme')
-    else el.setAttribute('data-theme', this.theme)
+    this.shown = resolveTheme(this.theme)
+    showTheme(this.shown)
     themePref.set(this.theme)
   }
 
@@ -1681,8 +1699,12 @@ export const app = new AppState()
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
   window.addEventListener('storage', (e) => {
     if (e.key !== 'everyday.theme') return
-    app.theme = parseTheme(e.newValue)
+    app.theme = parseThemeChoice(e.newValue)
     app.applyTheme()
+  })
+  // And when the desktop goes dark, if the choice was to follow it.
+  watchSystemScheme(() => {
+    if (app.theme === 'system') app.applyTheme()
   })
 }
 

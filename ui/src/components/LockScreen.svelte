@@ -27,7 +27,7 @@
 </script>
 
 <div class="lock">
-  <form class="card" class:shake onsubmit={submit}>
+  <form class="card frost" class:shake onsubmit={submit}>
     <div class="mark"><Logo size={46} tile /></div>
     <h1>Every Day</h1>
     <p class="sub">
@@ -66,27 +66,30 @@
 </div>
 
 <style>
+  /* A glow of the accent over the window's own backdrop -- no page colour
+     between them, so a glass theme's colours are the first thing seen. */
   .lock {
     display: grid;
     place-items: center;
     height: 100%;
-    background:
-      radial-gradient(
-        1000px 520px at 50% -10%,
-        color-mix(in oklab, var(--accent) 11%, transparent),
-        transparent 70%
-      ),
-      var(--bg);
+    background: radial-gradient(
+      1000px 520px at 50% -10%,
+      color-mix(in oklab, var(--accent) 11%, transparent),
+      transparent 70%
+    );
   }
 
   .card {
     width: 320px;
     padding: var(--sp-8) var(--sp-6) var(--sp-6);
     text-align: center;
-    background: var(--bg-raised);
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
     box-shadow: var(--shadow-lg);
+    /* Frosted over the window's backdrop (`.frost`), which needs it placed
+       and stacked. */
+    position: relative;
+    z-index: 0;
   }
 
   /* The mark is an SVG block now, so it centres by layout, not by text. */

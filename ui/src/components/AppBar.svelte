@@ -27,9 +27,10 @@
   import { panels } from '../lib/panels.svelte'
   import { tray, type TrayEntry } from '../lib/tray.svelte'
   import type { Group } from '../lib/shortcuts.svelte'
-  import Icon from './Icon.svelte'
+  import Symbol from './Symbol.svelte'
   import RecordingPill from './RecordingPill.svelte'
   import type { IconName } from '../lib/icons'
+  import type { SymbolName } from '../lib/symbols'
 
   interface AppEntry {
     id: Section
@@ -44,12 +45,13 @@
      */
     label: Group
     icon: IconName
+    symbol: SymbolName
   }
 
   /** `apps.ts`'s registry entry, narrowed to what a bar button draws. */
   function entryOf(id: Section): AppEntry {
     const a = APP_REGISTRY[id]
-    return { id, label: a.label, icon: a.icon }
+    return { id, label: a.label, icon: a.icon, symbol: a.symbol }
   }
 
   // Each tab is hidden on a backend that cannot carry it, so a vault never
@@ -176,11 +178,12 @@
         <button
           class="barbtn"
           class:on
+          style:--app="var(--app-{a.id})"
           aria-current={on ? 'page' : undefined}
           onclick={() => app.setSection(a.id)}
           oncontextmenu={(e) => menu.show(e, appMenu(a))}
         >
-          <span class="glyph"><Icon name={a.icon} size={21} weight={1.7} /></span>
+          <span class="glyph app"><Symbol name={a.symbol} size={24} /></span>
           <span class="barlabel">{a.label}</span>
         </button>
       {/each}
@@ -202,12 +205,13 @@
       <button
         class="barbtn"
         class:on
+        style:--app="var(--app-{ASSISTANT.id})"
         aria-current={on ? 'page' : undefined}
         onclick={() => app.setSection(ASSISTANT.id)}
         oncontextmenu={(e) => menu.show(e, appMenu(ASSISTANT))}
       >
-        <span class="glyph">
-          <Icon name={ASSISTANT.icon} size={19} weight={1.7} />
+        <span class="glyph app">
+          <Symbol name={ASSISTANT.symbol} size={21} />
           <!-- How anybody finds out the assistant did something while they
                were away. A number rather than a stream of banners: work
                done overnight is a queue, not an interruption. -->
@@ -224,11 +228,11 @@
       onclick={() => panels.openSettings()}
       title="Settings (Ctrl+,)"
     >
-      <span><Icon name="settings" size={19} weight={1.7} /></span>
+      <span><Symbol name="settings" size={21} /></span>
       <span class="barlabel">Settings</span>
     </button>
     <button class="barbtn" onclick={() => app.lock()} title="Lock now (Ctrl+L)">
-      <span><Icon name="lock" size={19} weight={1.7} /></span>
+      <span><Symbol name="lock" size={21} /></span>
       <span class="barlabel">Lock</span>
     </button>
   </div>
@@ -244,8 +248,8 @@
     /* The first app sits a little way under the strip above, rather than
        flush against its rule. */
     padding-top: var(--sp-2);
-    background: var(--bg-sunken);
-    border-right: 1px solid var(--border);
+    background: var(--chrome);
+    border-right: var(--shell-rule);
   }
 
   .glyph {
@@ -265,7 +269,7 @@
     padding: 0 4px;
     border-radius: 999px;
     background: var(--accent);
-    color: #fff;
+    color: var(--fg-on-accent);
     font-size: 10px;
     font-weight: 700;
     line-height: 1;
@@ -291,11 +295,15 @@
     width: 100%;
   }
 
-  /* The same active treatment the editor's toolbar uses for a mark that is
-     on, in the accent of whatever is open -- so the bar is tinted by the
-     journal or the project the rest of the window is already tinted by. */
+  /* Every app's icon is in the app's own colour, always -- `--app-<id>` in
+     `theme.css` -- so the bar is read by colour before it is read at all.
+     The open one sits on a tint of that same colour, its label at full
+     strength. Settings and Lock are the vault's, not apps, and stay grey. */
+  .glyph.app {
+    color: var(--app);
+  }
   .barbtn.on {
-    background: color-mix(in oklab, var(--journal-accent, var(--accent)) 14%, transparent);
-    color: var(--journal-accent, var(--accent));
+    background: color-mix(in oklab, var(--app, var(--accent)) 16%, transparent);
+    color: var(--fg);
   }
 </style>

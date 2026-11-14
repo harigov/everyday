@@ -366,7 +366,7 @@
     font-style: italic;
   }
   .prose :global(mark) {
-    background: color-mix(in oklab, #f5d90a 42%, transparent);
+    background: color-mix(in oklab, var(--highlight) 42%, transparent);
     color: inherit;
     border-radius: 2px;
     padding: 0 2px;

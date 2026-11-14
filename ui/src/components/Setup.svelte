@@ -120,7 +120,7 @@
 </script>
 
 <div class="setup scroll">
-  <form class="card" onsubmit={submit}>
+  <form class="card frost" onsubmit={submit}>
     <div class="mark"><Logo size={46} tile /></div>
     <h1>Every Day</h1>
     <p class="sub">A private journal. Let's set it up.</p>
@@ -281,23 +281,24 @@
   .setup {
     height: 100%;
     padding: var(--sp-10) var(--sp-4);
-    background:
-      radial-gradient(
-        1000px 520px at 50% -10%,
-        color-mix(in oklab, var(--accent) 11%, transparent),
-        transparent 70%
-      ),
-      var(--bg);
+    background: radial-gradient(
+      1000px 520px at 50% -10%,
+      color-mix(in oklab, var(--accent) 11%, transparent),
+      transparent 70%
+    );
   }
 
   .card {
     width: min(440px, 100%);
     margin: 0 auto;
     padding: var(--sp-8) var(--sp-6) var(--sp-6);
-    background: var(--bg-raised);
     border: 1px solid var(--border);
     border-radius: var(--radius-xl);
     box-shadow: var(--shadow-lg);
+    /* Frosted over the window's backdrop (`.frost`), which needs it placed
+       and stacked. */
+    position: relative;
+    z-index: 0;
   }
 
   .mark {
@@ -373,11 +374,8 @@
     margin-top: var(--sp-3);
     padding: var(--sp-3);
     border-radius: var(--radius);
-    background: color-mix(in oklab, #d97706 12%, transparent);
-    color: color-mix(in oklab, #92400e 80%, var(--fg));
-  }
-  :global([data-theme='dark']) .warn {
-    color: #fbbf24;
+    background: color-mix(in oklab, var(--warning) 12%, transparent);
+    color: color-mix(in oklab, var(--warning) 80%, var(--fg));
   }
 
   .error {
