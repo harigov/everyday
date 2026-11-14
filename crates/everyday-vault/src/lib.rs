@@ -104,18 +104,38 @@ pub fn config_dir() -> PathBuf {
 /// keychain, and it cannot be left to each test to remember that -- the
 /// pointer to the last vault was overwritten by every test that opened a
 /// `Service` for a week before anybody noticed. `cfg(test)` does not reach
-/// across crates, so this asks where the running executable is instead:
-/// cargo, and nextest after it, put every unit and integration test binary
-/// in `target/<profile>/deps`, beside a `.fingerprint` directory, and nothing
-/// a person runs lives there.
+/// across crates, so this asks where the running executable is instead --
+/// see [`is_test_binary`]. Nothing a person runs lives where cargo keeps its
+/// test binaries: `cargo run` and `cargo build` copy a program up to
+/// `target/<profile>/`.
 pub fn under_test() -> bool {
     static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *UNDER_TEST.get_or_init(|| {
-        let Ok(exe) = std::env::current_exe() else { return false };
-        let Some(deps) = exe.parent() else { return false };
-        deps.file_name().is_some_and(|n| n == "deps")
-            && deps.parent().is_some_and(|profile| profile.join(".fingerprint").is_dir())
-    })
+    *UNDER_TEST.get_or_init(|| std::env::current_exe().is_ok_and(|exe| is_test_binary(&exe)))
+}
+
+/// Is `exe` where cargo -- or nextest, which runs cargo's binaries -- keeps a
+/// unit or integration test? Two layouts, because cargo moved them:
+///
+/// - until Rust 1.100, `target/<profile>/deps/<test>-<hash>`, beside a
+///   `target/<profile>/.fingerprint` directory;
+/// - from 1.100, each unit in a build directory of its own,
+///   `target/<profile>/build/<crate>/<hash>/out/<test>-<hash>`, with a
+///   `fingerprint` directory beside its `out`. Missing this is what let a
+///   1.100 test binary resolve the person's real vault and settings.
+fn is_test_binary(exe: &std::path::Path) -> bool {
+    let Some(dir) = exe.parent() else { return false };
+    let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|n| n == name);
+    let in_deps = named(dir, "deps")
+        && dir.parent().is_some_and(|profile| profile.join(".fingerprint").is_dir());
+    let in_build_dir = named(dir, "out")
+        && dir.parent().is_some_and(|unit| {
+            unit.join("fingerprint").is_dir()
+                && unit
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .is_some_and(|b| named(b, "build"))
+        });
+    in_deps || in_build_dir
 }
 
 /// Where a test binary's "platform" directories are, in place of the real
@@ -237,6 +257,27 @@ pub fn validate_password(password: &str) -> Result<()> {
 // therefore unreachable from a test outside this module.
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn both_of_cargos_test_binary_layouts_are_recognised_and_a_program_is_not() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("debug");
+        // Until Rust 1.100.
+        std::fs::create_dir_all(profile.join("deps")).unwrap();
+        std::fs::create_dir_all(profile.join(".fingerprint")).unwrap();
+        assert!(super::is_test_binary(&profile.join("deps/paths-0123")));
+        // From 1.100.
+        let unit = profile.join("build/everyday-vault/1e018f75f4f54a85");
+        std::fs::create_dir_all(unit.join("out")).unwrap();
+        std::fs::create_dir_all(unit.join("fingerprint")).unwrap();
+        assert!(super::is_test_binary(&unit.join("out/paths-1e018f75f4f54a85")));
+        // What `cargo run` runs, and a build script's output directory
+        // without a unit fingerprint beside it.
+        assert!(!super::is_test_binary(&profile.join("everyday-app")));
+        let script = profile.join("build/everyday-app-0123/out");
+        std::fs::create_dir_all(&script).unwrap();
+        assert!(!super::is_test_binary(&script.join("everyday-app")));
+    }
+
     use super::*;
 
     #[test]
