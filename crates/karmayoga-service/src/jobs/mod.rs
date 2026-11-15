@@ -945,6 +945,13 @@ fn progress_line(name: &str, arguments: &serde_json::Value) -> String {
         "list_tasks" | "get_task" | "list_projects" => "Checking tasks".to_string(),
         "list_stories" | "read_story" | "list_news_sources" => "Reading the Feed".to_string(),
         "list_meeting_notes" | "get_transcript" => "Looking through meeting notes".to_string(),
+        "find_connection_tools" => "Looking through connected services' tools".to_string(),
+        "use_connection_tool" => match (text("tool"), text("connection")) {
+            (Some(tool), Some(connection)) => {
+                format!("Using {} on {}", short(&tool, 50), short(&connection, 40))
+            }
+            _ => "Using a connected service".to_string(),
+        },
         other => format!("Using {}", other.replace('_', " ")),
     }
 }

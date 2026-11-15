@@ -755,6 +755,41 @@ fn backup_settings_and_status_are_written_apart() {
 }
 
 #[test]
+fn connection_settings_and_states_are_written_apart() {
+    use karmayoga_core::connection::{
+        AuthMethod, Connection, ConnectionSettings, ConnectionState, ConnectionStates, Transport,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    assert!(store.connection_settings().unwrap().is_none());
+    assert!(store.connection_states().unwrap().is_none());
+
+    let linear = Connection::new(
+        "Linear",
+        Transport::Http { url: "https://mcp.linear.app/mcp".into(), headers: vec![] },
+        AuthMethod::OAuth { client_id: None, scopes: vec![], redirect_port: None },
+    );
+    let mut states = ConnectionStates::default();
+    states.states.insert(
+        linear.id,
+        ConnectionState { last_error: Some("unreachable".into()), ..Default::default() },
+    );
+    // States first: a row with no settings in it yet still reads as none.
+    store.put_connection_states(&states).unwrap();
+    assert!(store.connection_settings().unwrap().is_none());
+
+    let settings = ConnectionSettings { connections: vec![linear] };
+    store.put_connection_settings(&settings).unwrap();
+    assert_eq!(store.connection_states().unwrap(), Some(states), "a settings save kept the states");
+    store.put_connection_states(&ConnectionStates::default()).unwrap();
+    assert_eq!(
+        store.connection_settings().unwrap(),
+        Some(settings),
+        "a states write kept the settings"
+    );
+}
+
+#[test]
 fn a_snapshot_refuses_to_land_on_an_existing_database() {
     let dir = tempfile::tempdir().unwrap();
     let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();

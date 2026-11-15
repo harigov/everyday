@@ -71,6 +71,9 @@ export const SETTINGS_TABS = [
   'templates',
   // Settings for the Contacts shelf's catch-ups -- see KeepInTouchPanel.
   'keepintouch',
+  // The other services the assistant may use through their MCP servers, and
+  // what it may do with each of their tools -- see ConnectionsPanel.
+  'connections',
   // Sealed copies of the vault, to a folder or a bucket, on a schedule --
   // beside Data, which is the vault's contents taken out unsealed. See
   // BackupPanel.

@@ -59,10 +59,14 @@ class BackupState {
     // finishing that it did not start: one the schedule began, or one on
     // the machine holding the vault. Only while a pane is open -- a settings
     // change is every switch in Settings, and nobody else draws this.
-    registerApply('status', () => {
-      if (this.#watching > 0) void this.refresh()
-      return false
-    })
+    registerApply(
+      'status',
+      () => {
+        if (this.#watching > 0) void this.refresh()
+        return false
+      },
+      'backup',
+    )
   }
 
   reset() {

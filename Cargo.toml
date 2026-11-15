@@ -15,6 +15,7 @@ members = [
     "crates/karmayoga-mailindex",
     "crates/karmayoga-chat",
     "crates/karmayoga-focus",
+    "crates/karmayoga-connect",
     "crates/karmayoga-app",
 ]
 
@@ -38,6 +39,7 @@ default-members = [
     "crates/karmayoga-mailindex",
     "crates/karmayoga-chat",
     "crates/karmayoga-focus",
+    "crates/karmayoga-connect",
 ]
 
 [workspace.package]
@@ -61,6 +63,7 @@ karmayoga-mail = { path = "crates/karmayoga-mail" }
 karmayoga-mailindex = { path = "crates/karmayoga-mailindex" }
 karmayoga-chat = { path = "crates/karmayoga-chat" }
 karmayoga-focus = { path = "crates/karmayoga-focus" }
+karmayoga-connect = { path = "crates/karmayoga-connect" }
 
 tauri = "2"
 tauri-build = "2"

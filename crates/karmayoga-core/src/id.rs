@@ -233,6 +233,10 @@ typed_id!(OpId, "op");
 // owner reaches the assistant from another device. See `crate::chat`.
 typed_id!(ChatLinkId, "chat_link");
 
+// A `ConnectionId` names one MCP server the assistant may use, signed in as
+// one account. See `crate::connection`.
+typed_id!(ConnectionId, "connection");
+
 /// Content address of an attachment payload.
 ///
 /// Blobs are content-addressed with BLAKE3 so that the same photo dropped into

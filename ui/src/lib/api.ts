@@ -192,6 +192,12 @@ import type {
   VoiceprintInfo,
   WebStatus,
   WritingSettings,
+  McpConnection,
+  ConnectionAuth,
+  ConnectionId,
+  ConnectionSecretsPatch,
+  ConnectionTransport,
+  ToolPolicy,
 } from './types'
 import { VaultError } from './types'
 import { COMMAND_NAMES, SERVICE_COMMANDS } from './generated/commands'
@@ -1782,6 +1788,51 @@ export const api = {
    * path comes back; nothing is read or written there.
    */
   pickFolder: (title: string) => invoke<string | null>('pick_folder', { title }),
+
+  // ── Connections ──────────────────────────────────────────────────────
+  //
+  // Settings → Connections: MCP servers the assistant may use, each signed
+  // in as one account. Every write answers the view of what it touched.
+  // Secrets go in and never come back out: `ConnectionView.secrets` says
+  // only which are set. `lib/connections.svelte.ts` is the one caller. See
+  // `docs/plans/connections.md`.
+
+  /** Every connection, and the presets to add one from. */
+  connections: () => call('connections', {}),
+  /** Add a connection, with any secrets it came with. Does not connect. */
+  addConnection: (opts: {
+    preset?: string
+    name: string
+    transport: ConnectionTransport
+    auth: ConnectionAuth
+    secrets?: ConnectionSecretsPatch
+  }) => call('addConnection', opts),
+  /** Save an edited connection: name, transport, sign-in, the two switches,
+   *  the per-tool policies. */
+  updateConnection: (connection: McpConnection) => call('updateConnection', { connection }),
+  /** Forget a connection, what was learned about it, and its secrets. */
+  removeConnection: (id: ConnectionId) => call('removeConnection', { id }),
+  /** Change some secrets; a field left out is left alone, `''` removes. */
+  setConnectionSecrets: (id: ConnectionId, patch: ConnectionSecretsPatch) =>
+    call('setConnectionSecrets', { id, ...patch }),
+  /** Connect and list the tools afresh. Answers the view either way; its
+   *  `state.lastError` says what went wrong. */
+  checkConnection: (id: ConnectionId) => call('checkConnection', { id }),
+  /** Set one tool's policy, or with `null` go back to its own hints. */
+  setConnectionToolPolicy: (id: ConnectionId, tool: string, policy: ToolPolicy | null) =>
+    call('setConnectionToolPolicy', policy === null ? { id, tool } : { id, tool, policy }),
+  /**
+   * Start an OAuth sign-in. Open the answered `url` yourself with
+   * `openExternal` (or show it to copy where there is no browser to open),
+   * then wait on `awaitConnectionSignIn`.
+   */
+  beginConnectionSignIn: (id: ConnectionId) => call('beginConnectionSignIn', { id }),
+  /** Resolves once the browser came back and the tools were listed; rejects
+   *  with `cancelled`, `timed_out`, `invalid_client` or `provider`. */
+  awaitConnectionSignIn: (signInId: string) => call('awaitConnectionSignIn', { signInId }),
+  cancelConnectionSignIn: (signInId: string) => call('cancelConnectionSignIn', { signInId }),
+  /** Forget the OAuth grant, keeping the connection. */
+  signOutConnection: (id: ConnectionId) => call('signOutConnection', { id }),
 
   // ── Mail: mailboxes and threads ───────────────────────────────────────
   //

@@ -80,6 +80,46 @@
     {
       "args": [
         {
+          "name": "preset",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "transport",
+          "required": true,
+          "type": "ConnectionTransport"
+        },
+        {
+          "name": "auth",
+          "required": true,
+          "type": "ConnectionAuth"
+        },
+        {
+          "name": "secrets",
+          "required": false,
+          "type": "ConnectionSecretsPatch"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "add_connection",
+      "orScope": null,
+      "returns": "ConnectionView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "title",
           "required": true,
           "type": "string"
@@ -521,6 +561,26 @@
           "type": "string"
         }
       ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "await_connection_sign_in",
+      "orScope": null,
+      "returns": "ConnectionView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "signInId",
+          "required": true,
+          "type": "string"
+        }
+      ],
       "changes": null,
       "effect": "read",
       "name": "await_oauth_sign_in",
@@ -548,6 +608,23 @@
       "name": "backup_snapshots",
       "orScope": null,
       "returns": "SnapshotInfo[]",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ConnectionId"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "begin_connection_sign_in",
+      "orScope": null,
+      "returns": "BegunConnectionSignIn",
       "scope": "all",
       "sensitive": false,
       "streams": false
@@ -770,6 +847,23 @@
     {
       "args": [
         {
+          "name": "signInId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "cancel_connection_sign_in",
+      "orScope": null,
+      "returns": "void",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "string"
@@ -970,6 +1064,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "ConnectionId"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "check_connection",
+      "orScope": null,
+      "returns": "ConnectionView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "AccountId"
         }
       ],
@@ -1117,6 +1231,17 @@
       "orScope": null,
       "returns": "boolean",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "connections",
+      "orScope": null,
+      "returns": "ConnectionsView",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },
@@ -6616,6 +6741,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "ConnectionId"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "remove_connection",
+      "orScope": null,
+      "returns": "ConnectionsView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "string"
         },
         {
@@ -8606,6 +8751,76 @@
       "args": [
         {
           "name": "id",
+          "required": true,
+          "type": "ConnectionId"
+        },
+        {
+          "name": "bearer",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "headers",
+          "required": false,
+          "type": "ConnectionValues"
+        },
+        {
+          "name": "env",
+          "required": false,
+          "type": "ConnectionValues"
+        },
+        {
+          "name": "clientSecret",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_connection_secrets",
+      "orScope": null,
+      "returns": "ConnectionView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ConnectionId"
+        },
+        {
+          "name": "tool",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "policy",
+          "required": false,
+          "type": "ToolPolicy"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_connection_tool_policy",
+      "orScope": null,
+      "returns": "ConnectionView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
           "required": false,
           "type": "CalendarId | null"
         }
@@ -9003,6 +9218,26 @@
       "orScope": null,
       "returns": "string",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ConnectionId"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "sign_out_connection",
+      "orScope": null,
+      "returns": "ConnectionView",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },
@@ -9791,6 +10026,26 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "connection",
+          "required": true,
+          "type": "McpConnection"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "update_connection",
+      "orScope": null,
+      "returns": "ConnectionView",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },

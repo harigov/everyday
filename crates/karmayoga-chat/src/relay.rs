@@ -1651,6 +1651,12 @@ pub(crate) fn confirmation_question(kind: &str, subject: &str, can_park: bool) -
              conversation, so I'm checking before I rewrite many of them at once.",
             subject,
         ),
+        // A tool of a connected service, which acts there as the owner: the
+        // subject's first line names the tool and the connection, and the
+        // lines after it are the arguments.
+        "connection" => {
+            with_quote("**Use this in a connected service?** It acts there as you.", subject)
+        }
         _ => with_quote("**Go ahead with this?**", subject),
     };
     markdown.push_str("\n\n");
@@ -2279,6 +2285,20 @@ mod tests {
         let q =
             confirmation_question("click", "the button \u{201c}Next\u{201d} on a.example", false);
         assert!(q.markdown.contains("read your mail"), "{}", q.markdown);
+    }
+
+    #[test]
+    fn a_connected_service_call_shows_the_tool_and_what_it_is_given() {
+        let q = confirmation_question(
+            "connection",
+            "create_issue on Linear\n{\n  \"title\": \"Fix the door\"\n}",
+            false,
+        );
+        assert!(q.markdown.contains("Use this in a connected service"), "{}", q.markdown);
+        // Escaped, as every name shown in a chat is.
+        assert!(q.markdown.contains("> create\\_issue on Linear"), "{}", q.markdown);
+        assert!(q.markdown.contains("Fix the door"), "{}", q.markdown);
+        assert_eq!(q.choices, vec![Choice::Yes, Choice::No]);
     }
 
     #[test]

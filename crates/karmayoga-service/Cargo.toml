@@ -31,6 +31,7 @@ karmayoga-mail.workspace = true
 # The sealed tantivy index mail sync commits to as bodies arrive, and
 # `sync_status`/`search_mail` read through -- see `mailsync/wiring.rs`.
 karmayoga-mailindex.workspace = true
+karmayoga-connect.workspace = true
 # A Gmail thread id (`X-GM-THRID`) is hashed into a deterministic `ThreadId`
 # -- see `mailsync::ingest` -- the same domain-separation technique
 # `karmayoga-core` already uses for a pack's directory and a proxied image's
