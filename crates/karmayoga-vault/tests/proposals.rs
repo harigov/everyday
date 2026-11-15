@@ -8,8 +8,9 @@ use support::vault;
 use jiff::Timestamp;
 use karmayoga_core::proposal::{DeclineReason, MAX_PENDING_PROPOSALS, Outcome as ProposalOutcome};
 use karmayoga_core::{
-    BlockSubject, DreamScope, Memory, MemoryOrigin, Note, Payload, Project, Proposal, ProposalKind,
-    ProposedRecord, Purpose, Role, Routine, RoutineKind, Skill, Task, TimeBlock, Trigger,
+    BlockSubject, DreamScope, Memory, MemoryOrigin, Note, NoteOrigin, Payload, Project, Proposal,
+    ProposalKind, ProposedRecord, Purpose, Role, Routine, RoutineKind, Skill, Task, TimeBlock,
+    Trigger,
 };
 
 fn now() -> Timestamp {
@@ -302,6 +303,49 @@ fn accepting_a_note_saves_it_through_the_force_path() {
 
     vault.accept_proposal(proposal.id, None, false, now()).unwrap();
     assert_eq!(vault.note(note_id).unwrap().title, "Trip notes");
+}
+
+#[test]
+fn an_accepted_note_says_the_assistant_started_it_and_a_replacement_keeps_its_origin() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    // Proposed before notes recorded who started them: no origin at all.
+    let mut proposed = Note::written("Moving checklist", "Books first.");
+    proposed.tags = vec!["moving".into()];
+    proposed.origin = None;
+    let note_id = proposed.id;
+    let proposal = create(ProposedRecord::Note(proposed), "Create note");
+    vault.save_proposal(&proposal).unwrap();
+    vault.accept_proposal(proposal.id, None, false, now()).unwrap();
+    assert_eq!(
+        vault.note(note_id).unwrap().origin,
+        Some(NoteOrigin::Assistant),
+        "a note the assistant proposed is the assistant's, however old the proposal"
+    );
+
+    // The person's own note, rewritten by a proposal that does not say.
+    let mine = Note::written("Packing", "Kettle last.");
+    let mine_id = mine.id;
+    vault.save_note(&mine, None).unwrap();
+    let stored = vault.note(mine_id).unwrap();
+    let mut rewrite = stored.clone();
+    rewrite.title = "Packing, shorter".into();
+    rewrite.origin = None;
+    let replace = Proposal::new(
+        Payload::Replace {
+            record: ProposedRecord::Note(rewrite),
+            expected_updated_at: stored.updated_at,
+        },
+        "Update note",
+        now(),
+        "UTC",
+    );
+    vault.save_proposal(&replace).unwrap();
+    vault.accept_proposal(replace.id, None, false, now()).unwrap();
+    let after = vault.note(mine_id).unwrap();
+    assert_eq!(after.title, "Packing, shorter");
+    assert_eq!(after.origin, Some(NoteOrigin::Own), "a rewrite does not change who started it");
 }
 
 // ---- accept: skill --------------------------------------------------------

@@ -337,6 +337,7 @@ function seedNotes(): Note[] {
     tags: ['research'],
     pinned: false,
     attachments: [],
+    origin: 'assistant',
     createdAt: minutesAgo(189),
     updatedAt: minutesAgo(172),
   }
@@ -361,6 +362,7 @@ function seedNotes(): Note[] {
     tags: ['research'],
     pinned: false,
     attachments: [],
+    origin: 'assistant',
     createdAt: minutesAgo(60 * 26 - 1),
     updatedAt: minutesAgo(60 * 25 + 40),
   }
@@ -855,6 +857,7 @@ function begin(id: JobId): void {
     tags: ['research'],
     pinned: false,
     attachments: [],
+    origin: 'assistant',
     createdAt: now(),
     updatedAt: now(),
   }

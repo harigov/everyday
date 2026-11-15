@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use jiff::Timestamp;
 use karmayoga_core::meeting::{MeetingSettings, Recording, Stage, TranscriberConfig, Transcript};
-use karmayoga_core::{Note, RecordingId, TranscriptId, Vault};
+use karmayoga_core::{Note, NoteOrigin, RecordingId, TranscriptId, Vault};
 
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Change, Kind, Notification, Op};
@@ -383,7 +383,7 @@ pub(crate) async fn do_summarise_and_write(
     let title = title_for(summariser, &facts.title, &body, &date).await;
     let meeting = if facts.title.trim().is_empty() { title.clone() } else { facts.title.clone() };
 
-    let note = Note::written(title.clone(), &body);
+    let note = Note::written_by(NoteOrigin::Meeting, title.clone(), &body);
     let note_id = note.id;
     let (purpose, (tags, retagged)) = {
         let vault = vault.clone();

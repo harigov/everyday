@@ -178,7 +178,7 @@ pub use news::{
     Also, BodyOrigin, FetchState, HnList, NewsImage, NewsSource, Retention, SourceKind,
     SourceSummary, Story, StoryBody,
 };
-pub use note::{Note, NoteSummary};
+pub use note::{Note, NoteOrigin, NoteSummary};
 pub use profile::Profile;
 pub use proposal::{
     Payload, Proposal, ProposalKind, ProposalPolicy, ProposalSource, ProposalState, ProposedRecord,

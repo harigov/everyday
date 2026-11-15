@@ -15,7 +15,7 @@
 use super::doc;
 use crate::text::{FrontMatter, safe_name};
 use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
-use karmayoga_core::note::Note;
+use karmayoga_core::note::{Note, NoteOrigin};
 use karmayoga_core::store::JournalStore;
 use karmayoga_core::store::notes::NoteQuery;
 use karmayoga_core::{NoteId, Result};
@@ -55,6 +55,7 @@ impl Portable for NotesPart {
                 .list("tags", &note.tags)
                 .flag("pinned", note.pinned)
                 .set("purpose", doc::purpose_text(note.purpose.as_ref()))
+                .set("origin", note.origin().as_str())
                 .set("created", doc::stamp(note.created_at))
                 .set("updated", doc::stamp(note.updated_at));
 
@@ -108,6 +109,7 @@ fn read(
     let id = fields.parse::<NoteId>("id").unwrap_or_else(NoteId::new);
 
     let existing = notes.get_note(id).ok();
+    let recorded = existing.as_ref().and_then(|n| n.origin);
     let mut landing = land(existing, || Note::new(&read.title), mode);
     let Some(note) = landing.as_mut() else {
         report.landed(&landing);
@@ -120,6 +122,11 @@ fn read(
     note.tags = fields.list("tags");
     note.pinned = fields.flag("pinned");
     note.purpose = doc::parse_purpose(&fields.text("purpose"));
+    // Absent from an older export, or from a file written elsewhere: the
+    // note already here keeps what it recorded -- who started a note never
+    // changes -- and a new one is left unsaid, so `Note::origin` reads it
+    // from the tags as it does for any note older than the field.
+    note.origin = fields.parse::<NoteOrigin>("origin").or(recorded);
     note.created_at = fields.parse("created").unwrap_or(note.created_at);
     note.updated_at = fields.parse("updated").unwrap_or_else(jiff::Timestamp::now);
     notes.put_note(note)?;

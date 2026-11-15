@@ -1,21 +1,40 @@
 <script lang="ts">
-  // The notes app's half of the sidebar: the list, and the tags that narrow
-  // it.
+  // The notes app's half of the sidebar: the list, and what narrows it.
   //
   // A list rather than a tree. Notes are not filed in folders here, because a
   // folder is a tag with an opinion about hierarchy and a note is often about
   // two things at once. Pinned ones float to the top, which is the one kind
   // of emphasis this app has.
+  //
+  // Three things keep a long list readable, each a rule in `note-list.ts`:
+  // the list is cut into sections by date, as the journal's and the mail
+  // list are; a note the assistant wrote or a call produced carries a mark in
+  // the row's gutter, and a filter over the list picks one kind; and only
+  // the most used tags get a chip, with how many notes carry each, the rest
+  // in a menu.
 
+  import { agent } from '../lib/agent.svelte'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import { menu } from '../lib/menu.svelte'
   import { SEP, tidyMenu, type MenuItem } from '../lib/menu'
   import { meetings } from '../lib/meetings.svelte'
+  import {
+    countOrigins,
+    ORIGIN_ICONS,
+    ORIGINS,
+    originLabel,
+    originLine,
+    rowWhen,
+    sameTag,
+    shortlistTags,
+    toNoteRows,
+    type NoteRow,
+  } from '../lib/note-list'
   import { notes, SORTS } from '../lib/notes.svelte'
   import { templates } from '../lib/templates.svelte'
   import { plural } from '../lib/format'
   import { proposals, recordAs } from '../lib/proposals.svelte'
-  import type { NoteSummary } from '../lib/types'
+  import type { NoteOrigin, NoteSummary } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import Icon from './Icon.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
@@ -49,12 +68,79 @@
     }
   }
 
-  const shown = $derived(notes.query.trim() ? [] : notes.list)
+  const searching = $derived(notes.query.trim() !== '')
+
+  /** The list cut into sections, a heading row before each. */
+  const rows = $derived(searching ? [] : toNoteRows(notes.visible, notes.sort))
+
+  /** How many of each kind the tag filter leaves, for the kind filter's chips. */
+  const counts = $derived(countOrigins(notes.list))
+
+  /** Which kind each note is, for the search results -- a hit carries none. */
+  const originOf = $derived(new Map(notes.list.map((n) => [n.id, n.origin])))
+
+  /**
+   * Whether the rows keep a gutter for the mark. Only when something in view
+   * carries one: a list of nothing but the person's own notes would
+   * otherwise give every row an empty column for nothing.
+   */
+  const marked = $derived(
+    searching
+      ? notes.results.some((h) => (originOf.get(h.id) ?? 'own') !== 'own')
+      : notes.visible.some((n) => n.origin !== 'own'),
+  )
+
+  const tagChips = $derived(shortlistTags(notes.tags, notes.tag))
+
+  /** "27 notes", or "8 notes · Sakha" under the kind filter -- the chips
+   *  are icons, so the heading is where the chosen kind is named. */
+  const heading = $derived(
+    [
+      plural(notes.visible.length, 'note'),
+      notes.origin ? originLabel(notes.origin, agent.displayName) : null,
+    ]
+      .filter(Boolean)
+      .join(' · '),
+  )
+
+  /** The kind filter's chips: every note, then each kind -- all four always,
+   *  a kind with none at 0, so no chip moves as the counts change. */
+  const kinds = $derived<{ key: NoteOrigin | null; label: string; count: number }[]>([
+    { key: null, label: 'All', count: notes.list.length },
+    ...ORIGINS.map((o) => ({ key: o, label: originLabel(o, agent.displayName), count: counts[o] })),
+  ])
+
+  /** Every tag, A to Z with its count -- the chips' tags among them, so it
+   *  is one index to find a tag by name in rather than "the rest". */
+  function allTags(e: MouseEvent) {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const sorted = [...notes.tags].sort((a, b) =>
+      a.tag.localeCompare(b.tag, undefined, { sensitivity: 'base' }),
+    )
+    menu.showAt(box.left, box.bottom + 4, [
+      { kind: 'heading', label: plural(notes.tags.length, 'tag') },
+      ...sorted.map((t) => ({
+        label: t.tag,
+        hint: t.count.toLocaleString(),
+        checked: sameTag(t.tag, notes.tag),
+        run: () => void notes.setTag(sameTag(t.tag, notes.tag) ? null : t.tag),
+      })),
+    ])
+  }
+
+  /** What an empty list says, under a kind filter that left nothing. */
+  function emptyLine(origin: NoteOrigin): string {
+    if (origin === 'assistant') return `Nothing ${agent.displayName} has written here.`
+    return origin === 'meeting' ? 'No notes from calls here.' : 'Nothing you have written here.'
+  }
 
   // Ghosts are only worth drawing over the plain list -- a search is asking
   // "where did I write about X", and a proposal that has not been saved
-  // anywhere yet cannot be an answer to that.
-  const ghosts = $derived(notes.query.trim() ? [] : notes.ghostNotes)
+  // anywhere yet cannot be an answer to that. A proposal is the assistant's,
+  // so it stays under that kind and goes under the other two.
+  const ghosts = $derived(
+    searching || (notes.origin && notes.origin !== 'assistant') ? [] : notes.ghostNotes,
+  )
   $effect(() => {
     if (ghosts.length > 0) void proposals.markSeen(ghosts)
   })
@@ -128,28 +214,12 @@
 />
 
 <nav class="scroll side-nav" oncontextmenu={(e) => menu.show(e, navMenu())}>
-  {#if notes.tags.length > 0}
-    <!-- The shared filter bar (app.css's "Filter bars"): one tag at a time,
-         or All, which is the same single choice every other filter row
-         makes. -->
-    <div class="filters tags">
-      <button class="filter" class:on={notes.tag === null} onclick={() => void notes.setTag(null)}>
-        All
-      </button>
-      {#each notes.tags as tag (tag)}
-        <button class="filter" class:on={notes.tag === tag} onclick={() => void notes.setTag(tag)}>
-          {tag}
-        </button>
-      {/each}
-    </div>
-  {/if}
-
   <div class="side-head">
     <span class="eyebrow">
-      {#if notes.query.trim()}
+      {#if searching}
         {plural(notes.results.length, 'result')}
       {:else}
-        {plural(notes.list.length, 'note')}
+        {heading}
       {/if}
     </span>
     {#if meetings.supported}
@@ -183,13 +253,75 @@
     </button>
   </div>
 
-  {#if !notes.query.trim() && meetings.recordingsError}
+  {#if !searching && (notes.mixed || notes.origin)}
+    <!-- The shared filter bar: each kind an icon and how many there are,
+         the chosen one named in the heading above rather than on its chip
+         -- in a sidebar this narrow a chip naming itself clipped the
+         others' counts to one digit. The icons are the marks the rows carry,
+         so the bar is also their legend. Every chip is still named, in its
+         title and to assistive technology. -->
+    <div class="filters kinds" role="tablist" aria-label="Show notes by">
+      {#each kinds as kind (kind.key ?? 'all')}
+        {@const on = notes.origin === kind.key}
+        <button
+          class="filter"
+          role="tab"
+          aria-selected={on}
+          aria-label={kind.label}
+          class:on
+          title={`${kind.label}: ${plural(kind.count, 'note')}`}
+          onclick={() => notes.setOrigin(kind.key)}
+        >
+          <Icon name={kind.key ? ORIGIN_ICONS[kind.key] : 'list'} size={14} />
+          <span class="n">{kind.count.toLocaleString()}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
+
+  {#if !searching && (notes.tags.length > 0 || notes.tag)}
+    <!-- The most used tags, each with how many notes carry it -- the order
+         and the number together say which matter. One at a time, like
+         every other filter; picking the one in force again lets it go. -->
+    <div class="tagrow" role="group" aria-label="Tags">
+      {#each tagChips.shown as t (t.tag)}
+        {@const on = sameTag(t.tag, notes.tag)}
+        <button
+          class="tagchip"
+          class:on
+          aria-pressed={on}
+          title={on ? 'Show every note' : plural(t.count, 'note')}
+          onclick={() => void notes.setTag(on ? null : t.tag)}
+        >
+          <span class="hash">#</span>{t.tag}
+          {#if on}
+            <Icon name="close" size={11} weight={1.8} />
+          {:else}
+            <span class="n">{t.count.toLocaleString()}</span>
+          {/if}
+        </button>
+      {/each}
+      {#if tagChips.rest > 0}
+        <button
+          class="tagchip more"
+          aria-haspopup="menu"
+          title="Every tag, A to Z"
+          onclick={allTags}
+        >
+          All {plural(notes.tags.length, 'tag')}
+          <Icon name="chevron" size={11} weight={1.8} />
+        </button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if !searching && meetings.recordingsError}
     <p class="error recordings-error">
       Couldn’t refresh call recordings: {meetings.recordingsError}
     </p>
   {/if}
 
-  {#if !notes.query.trim() && meetings.recordings.length > 0}
+  {#if !searching && meetings.recordings.length > 0}
     <div class="recordings">
       {#each meetings.recordings as r (r.id)}
         <RecordingCard recording={r} />
@@ -197,18 +329,24 @@
     </div>
   {/if}
 
-  {#if notes.query.trim()}
+  {#if searching}
     {#if notes.searching && notes.results.length === 0}
       <p class="hint">Searching…</p>
     {:else if notes.results.length === 0}
       <p class="hint">Nothing matched.</p>
     {:else}
       {#each notes.results as hit (hit.id)}
+        {@const origin = originOf.get(hit.id) ?? 'own'}
         <button
           class="side-row hit"
           class:sel={notes.selected === hit.id}
           onclick={() => void notes.openNote(hit.id)}
         >
+          {#if marked}
+            <span class="mark {origin}">
+              {#if origin !== 'own'}<Icon name={ORIGIN_ICONS[origin]} size={12} />{/if}
+            </span>
+          {/if}
           <span class="text">
             <span class="title">{hit.title}</span>
             <span class="sub">{hit.snippet}</span>
@@ -216,8 +354,16 @@
         </button>
       {/each}
     {/if}
-  {:else if shown.length === 0 && ghosts.length === 0}
-    <p class="hint">No notes yet.</p>
+  {:else if rows.length === 0 && ghosts.length === 0}
+    <p class="hint">
+      {#if notes.origin && notes.list.length > 0}
+        {emptyLine(notes.origin)}
+      {:else if notes.tag}
+        No notes tagged {notes.tag}.
+      {:else}
+        No notes yet.
+      {/if}
+    </p>
   {:else}
     <!-- Ghosts at the top: a note is written forward, so there is no due
          date or column for a proposed one to join the foot of the way a
@@ -232,41 +378,59 @@
         </ProposalGhost>
       {/if}
     {/each}
-    {#each shown as note (note.id)}
-      {@const replaceProposal = notes.replaceProposalFor(note.id)}
-      {@const deleteProposal = notes.deleteProposalFor(note.id)}
-      <!-- A `div`, not a button: with a proposed deletion on it this row
-           carries two controls (open, and the chip's own accept/decline),
-           and a button cannot contain a button. -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="side-row noterow"
-        class:sel={notes.selected === note.id}
-        oncontextmenu={(e) => menu.show(e, noteMenu(note))}
-      >
-        <button class="rowbody" onclick={() => void notes.openNote(note.id)}>
-          {#if note.pinned}
-            <span class="pin"><Icon name="pin" size={12} /></span>
+    {#each rows as row (row.key)}
+      {#if row.kind === 'header'}
+        <h3 class="section">{row.label}</h3>
+      {:else}
+        {@const note: NoteSummary = (row as Extract<NoteRow, { kind: 'note' }>).note}
+        {@const replaceProposal = notes.replaceProposalFor(note.id)}
+        {@const deleteProposal = notes.deleteProposalFor(note.id)}
+        <!-- A `div`, not a button: with a proposed deletion on it this row
+             carries two controls (open, and the chip's own accept/decline),
+             and a button cannot contain a button. -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="side-row noterow"
+          class:sel={notes.selected === note.id}
+          oncontextmenu={(e) => menu.show(e, noteMenu(note))}
+        >
+          <button class="rowbody" onclick={() => void notes.openNote(note.id)}>
+            {#if marked}
+              <span
+                class="mark {note.origin}"
+                title={originLine(note.origin, agent.displayName) ?? undefined}
+              >
+                {#if note.origin !== 'own'}
+                  <Icon name={ORIGIN_ICONS[note.origin]} size={12} />
+                {/if}
+              </span>
+            {/if}
+            <!-- The date opens the second line rather than closing the first,
+                 as Apple Notes has it: in a sidebar this narrow a date beside
+                 the title took a third of the room the title had. -->
+            <span class="text">
+              <span class="title">{note.title}</span>
+              <span class="sub">
+                <span class="when">{rowWhen(note, notes.sort)}</span>
+                {note.excerpt}
+              </span>
+            </span>
+          </button>
+          {#if deleteProposal}
+            <span class="delete-chip">
+              <ProposalGhost proposal={deleteProposal} compact color="var(--danger)">
+                Proposed: delete
+              </ProposalGhost>
+            </span>
           {/if}
-          <span class="text">
-            <span class="title">{note.title}</span>
-            <span class="sub">{note.excerpt}</span>
-          </span>
-        </button>
-        {#if deleteProposal}
-          <span class="delete-chip">
-            <ProposalGhost proposal={deleteProposal} compact color="var(--danger)">
-              Proposed: delete
-            </ProposalGhost>
-          </span>
+        </div>
+        {#if replaceProposal}
+          <ProposalGhost
+            proposal={replaceProposal}
+            color="var(--accent)"
+            onopen={() => notes.openProposal(replaceProposal)}
+          />
         {/if}
-      </div>
-      {#if replaceProposal}
-        <ProposalGhost
-          proposal={replaceProposal}
-          color="var(--accent)"
-          onopen={() => notes.openProposal(replaceProposal)}
-        />
       {/if}
     {/each}
   {/if}
@@ -321,16 +485,90 @@
 
 <style>
   /* The heading, its buttons and the rows' hover and selection are the
-     shared sidebar's -- see app.css's "Sidebars". What is the notes app's
-     own: the tag filter's place in a sidebar, rows two lines tall, the pin
-     and the proposed-deletion chip on a row, and the record-a-call sheet. */
+     shared sidebar's -- see app.css's "Sidebars" -- and the kind filter is
+     the shared filter bar. What is the notes app's own: the tag chips, the
+     section headings, rows two lines tall with a gutter for the mark, the
+     proposed-deletion chip on a row, and the record-a-call sheet. */
 
-  /* The shared filter bar, set a little apart from the heading above. Its
-     track is the sidebar's own sunken colour, so here it takes a shade of
-     the hover tint instead -- otherwise the chips float as loose words. */
-  .tags {
-    margin-top: var(--sp-3);
+  /* Spread across the sidebar as Mail's categories are across its column:
+     four equal chips sharing the width rather than wrapping, none narrower
+     than its icon and count. */
+  .kinds {
+    flex-wrap: nowrap;
+    justify-content: space-between;
+    margin-top: var(--sp-1);
     background: var(--bg-active);
+  }
+  .kinds .filter {
+    flex: 1 1 0;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 6px;
+  }
+  .kinds .filter :global(svg) {
+    flex: none;
+  }
+
+  /* The tags: left to right in order of use, each saying how many notes
+     carry it. Quieter than the kind filter above, which says what sort of
+     writing this is; these say what it is about. */
+  .tagrow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: var(--sp-2) 0 0;
+  }
+  .tagchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    height: 24px;
+    padding: 0 7px;
+    border-radius: 999px;
+    color: var(--fg-muted);
+    font-size: var(--text-xs);
+    font-weight: 550;
+    white-space: nowrap;
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .tagchip:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .tagchip .hash {
+    margin-right: -2px;
+    color: var(--fg-faint);
+    font-weight: 500;
+  }
+  .tagchip .n {
+    color: var(--fg-faint);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .tagchip.on {
+    background: color-mix(in oklab, var(--accent) 16%, transparent);
+    color: var(--accent);
+  }
+  .tagchip.on .hash {
+    color: inherit;
+    opacity: 0.7;
+  }
+  .tagchip.more {
+    color: var(--fg-subtle);
+  }
+
+  /* A heading over a run of rows -- Pinned, Today, a month. Never a button
+     and never focusable, as the mail list's date headings are not. Lined up
+     with the rows' titles. */
+  .section {
+    margin: 0;
+    padding: var(--sp-4) var(--sp-3) var(--sp-1);
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+    font-weight: 550;
   }
 
   /* Two lines -- the title, and a line of the note under it -- so these rows
@@ -338,6 +576,7 @@
   .side-row.hit {
     height: auto;
     align-items: flex-start;
+    gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-3);
   }
 
@@ -354,7 +593,7 @@
     display: flex;
     align-items: flex-start;
     gap: var(--sp-2);
-    padding: var(--sp-2) var(--sp-3);
+    padding: 7px var(--sp-3);
     background: none;
     border: none;
     color: inherit;
@@ -369,16 +608,30 @@
     padding-right: var(--sp-3);
   }
 
-  .pin {
+  /* The gutter the mark sits in, kept on every row once any row in view has
+     one so the titles stay in one column. Each mark in the colour of where
+     the note came from -- the assistant's own, the calendar's for a call --
+     which is the colour that app's icon has in the app bar. */
+  .mark {
     display: grid;
     flex: none;
     place-items: center;
-    height: 18px;
-    color: var(--fg-faint);
+    width: 14px;
+    height: 19px;
+  }
+  .mark.assistant {
+    color: var(--app-assistant);
+  }
+  .mark.meeting {
+    color: var(--app-calendar);
+  }
+  .side-row.sel .mark {
+    color: inherit;
   }
 
   .text {
     display: grid;
+    flex: 1;
     min-width: 0;
     gap: 1px;
   }
@@ -395,6 +648,12 @@
      name does. */
   .side-row.sel .title {
     color: inherit;
+  }
+
+  .when {
+    margin-right: 6px;
+    color: var(--fg-subtle);
+    font-variant-numeric: tabular-nums;
   }
 
   /* Its own weight, so the open row's heavier one -- meant for a row's one

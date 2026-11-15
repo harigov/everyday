@@ -137,6 +137,7 @@ import { DEFAULT_COLORS } from './colors'
 import { addDays, blockKindFor, isoDate, minutesBetween } from './time'
 import { WEEKDAYS, expandDays, weekdayOf } from './recurrence'
 import { DIGEST_MARKER, ordinal } from './dream'
+import { noteOrigin } from './note-list'
 import type { Draft, ImproveMode, MailCategory } from './types'
 import type {
   ChatLink,
@@ -1754,9 +1755,13 @@ const entries: Entry[] = [
 ]
 
 /**
- * Two notes, so the sixth app has something in it on the demo build.
+ * Enough notes that the list has to be read the way a real one is: a few
+ * pinned, most of them the person's own, some the assistant wrote off a
+ * routine or a research job, some from calls -- and a spread of tags, a
+ * handful used often and many used once, which is the shape a real vault's
+ * tags took (forty of them on thirty-seven notes, thirty-one used once).
  *
- * One of them is the shape the assistant produces: a report it wrote off a
+ * `n-2` is the shape the assistant produces: a report it wrote off a
  * routine, which is why prose from the assistant has a home that is not
  * somebody's journal.
  */
@@ -1779,6 +1784,7 @@ const notes: Note[] = [
     tags: ['boats'],
     pinned: true,
     attachments: [],
+    origin: 'own',
     createdAt: iso(20),
     updatedAt: iso(3),
   },
@@ -1797,10 +1803,227 @@ const notes: Note[] = [
     tags: ['review'],
     pinned: false,
     attachments: [],
+    origin: 'assistant',
     createdAt: iso(2),
     updatedAt: iso(2),
   },
+  ...moreNotes(),
 ]
+
+/** One seeded note: `[title, origin, tags, days since made, days since
+ *  changed, lines]`. */
+type SeedNote = [string, Note['origin'], string[], number, number, string[]]
+
+/** The rest of the demo's notes, kept terse so the seed above stays readable. */
+function moreNotes(): Note[] {
+  const seeds: SeedNote[] = [
+    [
+      'Sourdough, the version that works',
+      'own',
+      ['recipes', 'baking'],
+      40,
+      0.1,
+      [
+        '500 g flour, 350 g water, 100 g starter, 10 g salt.',
+        'Fold every half hour for two hours, then leave it overnight in the fridge.',
+      ],
+    ],
+    [
+      'Morning brief',
+      'assistant',
+      ['brief'],
+      0.2,
+      0.2,
+      [
+        'Three things are due today and one is a day overdue. Nothing on the calendar until three.',
+        'Swimming is one short of the week.',
+      ],
+    ],
+    [
+      'Questions for the surveyor',
+      'own',
+      ['house', 'moving'],
+      6,
+      0.3,
+      [
+        'Is the damp in the back bedroom rising or penetrating?',
+        'How old is the boiler, and is the flue to current regulations?',
+      ],
+    ],
+    [
+      'Planning with Sam',
+      'meeting',
+      ['meeting', 'planning'],
+      1,
+      1,
+      [
+        'Sam and you went through the spring schedule. The launch moves a week later.',
+        'Sam — send the revised timeline by Thursday.',
+      ],
+    ],
+    [
+      'Books to read next',
+      'own',
+      ['reading'],
+      60,
+      1,
+      ['The Overstory. Piranesi. Something on the history of maps.'],
+    ],
+    [
+      'Morning brief',
+      'assistant',
+      ['brief'],
+      1.2,
+      1.2,
+      ['Two things due and nothing overdue. The dentist is at eleven.'],
+    ],
+    [
+      'Gift ideas',
+      'own',
+      ['family'],
+      25,
+      4,
+      ['Mum: the walking boots she keeps looking at. Leo: a proper sketchbook.'],
+    ],
+    [
+      'Onboarding review',
+      'meeting',
+      ['meeting', 'work'],
+      4,
+      4,
+      [
+        'Priya walked through the new flow. The empty state needs another pass.',
+        'Decision: ship the simplified empty state.',
+      ],
+    ],
+    [
+      'Which outboard for the dinghy',
+      'assistant',
+      ['research', 'boats'],
+      5,
+      5,
+      ['Four options under 6 hp, compared on weight, fuel and what a harbour allows.'],
+    ],
+    [
+      'Trip to the Lakes',
+      'own',
+      ['travel', 'family'],
+      30,
+      5,
+      ['Two nights in Keswick. Catbells on the first morning if the weather holds.'],
+    ],
+    [
+      'Garden, autumn jobs',
+      'own',
+      ['garden'],
+      12,
+      9,
+      ['Lift the dahlias after the first frost. Mulch the roses. Plant the tulips late.'],
+    ],
+    [
+      'Weekly review',
+      'assistant',
+      ['review'],
+      9,
+      9,
+      ['Nine hours went to the deck. Swimming slipped to two sessions.'],
+    ],
+    [
+      'Quarterly planning',
+      'meeting',
+      ['meeting', 'work', 'planning'],
+      11,
+      11,
+      ['Three priorities for the quarter, and the one that was dropped.'],
+    ],
+    [
+      'Ideas for the illustration portfolio',
+      'own',
+      ['work', 'ideas'],
+      50,
+      15,
+      ['A series of harbour scenes at different hours. Maybe a zine.'],
+    ],
+    [
+      'Pasta e ceci',
+      'own',
+      ['recipes'],
+      70,
+      18,
+      ['Soffritto, a tin of chickpeas, rosemary, a handful of small pasta. Half mashed.'],
+    ],
+    [
+      'Weekly review',
+      'assistant',
+      ['review'],
+      16,
+      16,
+      ['Eight hours on the deck, three on the boat. Swimming held at three.'],
+    ],
+    [
+      'Call with the bank',
+      'meeting',
+      ['meeting', 'money'],
+      19,
+      19,
+      ['The fixed rate ends in March. Two options to compare before then.'],
+    ],
+    [
+      'Things Leo said',
+      'own',
+      ['family', 'kids'],
+      120,
+      22,
+      ['"Clouds are just sky that got tired."'],
+    ],
+    [
+      'Bike maintenance',
+      'own',
+      ['bike'],
+      45,
+      33,
+      ['Chain every 300 miles. Brake pads are at the wear line on the front.'],
+    ],
+    [
+      'Fermentation notes',
+      'own',
+      ['recipes', 'fermenting'],
+      90,
+      40,
+      ['Sauerkraut: 2% salt by weight. Ten days was right in this kitchen.'],
+    ],
+    [
+      'Learning to sail: knots',
+      'own',
+      ['boats', 'sailing'],
+      100,
+      48,
+      ['Bowline, clove hitch, round turn and two half hitches, cleat hitch.'],
+    ],
+    [
+      'Tax year, what to gather',
+      'own',
+      ['money', 'admin'],
+      150,
+      70,
+      ['Invoices, the pension statement, and the receipts for the studio.'],
+    ],
+  ]
+  // Not `iso`, which moves by whole calendar days: a fraction of one is how
+  // "made this morning" and "changed two hours ago" are written here.
+  const at = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString()
+  return seeds.map(([title, origin, tags, made, changed, lines], i) => ({
+    id: `n-seed-${i + 1}`,
+    title,
+    body: { type: 'doc', content: para(...lines) },
+    tags,
+    pinned: i === 0,
+    attachments: [],
+    origin,
+    createdAt: at(made),
+    updatedAt: at(changed),
+  }))
+}
 
 // Gives the meeting-notes pipeline simulation a way to add a note once a
 // mock recording finishes, without exporting `notes` itself. See
@@ -4237,6 +4460,7 @@ const proposals: Proposal[] = [
           tags: ['moving'],
           pinned: false,
           attachments: [],
+          origin: 'assistant',
           createdAt: iso(0),
           updatedAt: iso(0),
         },
@@ -4450,6 +4674,9 @@ function summarizeNote(n: Note): NoteSummary {
     wordCount: text.split(/\s+/).filter(Boolean).length,
     attachmentCount: n.attachments.length,
     cover: n.attachments.find((a) => a.kind === 'image')?.blob,
+    // Read from the tags for a note older than the field, as the vault
+    // reads every list row.
+    origin: noteOrigin(n),
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   }
@@ -4855,6 +5082,7 @@ export const mockInvoke = async <T>(
         tags: [],
         pinned: false,
         attachments: [],
+        origin: 'own',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       } satisfies Note
@@ -5158,9 +5386,16 @@ export const mockInvoke = async <T>(
       return profile as T
     }
 
-    case 'note_tags':
+    case 'note_tags': {
       requireUnlocked()
-      return [...new Set(notes.flatMap((n) => n.tags))].sort() as T
+      // Counted and ordered the way `note_tags` answers: most used first,
+      // ties alphabetical.
+      const counts = new Map<string, number>()
+      for (const tag of notes.flatMap((n) => n.tags)) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+      return [...counts]
+        .map(([tag, count]) => ({ tag, count }))
+        .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)) as T
+    }
 
     case 'list_entries': {
       requireUnlocked()

@@ -138,6 +138,7 @@ import type {
   NoteId,
   NoteQuery,
   NoteSummary,
+  NoteTag,
   OnScreen,
   Op,
   OpmlImportReport,
@@ -609,7 +610,7 @@ export interface Commands {
   newTemplate: { args: { uses?: TemplateUse[] }; result: Template }
   newTracker: { args: { name: string; kind: TrackerKind }; result: Tracker }
   newsletterSenders: { args: { days?: number | null }; result: NewsletterSender[] }
-  noteTags: { args: Record<string, never>; result: string[] }
+  noteTags: { args: Record<string, never>; result: NoteTag[] }
   outbox: { args: { account?: AccountId | null }; result: OutboxItem[] }
   plaidSetup: { args: Record<string, never>; result: PlaidSetup }
   pollAutoLock: { args: Record<string, never>; result: boolean }

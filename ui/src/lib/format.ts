@@ -270,6 +270,23 @@ export function timeOfDay(at: Date): string {
   return dateFormat({ hour: 'numeric', minute: '2-digit' }).format(at)
 }
 
+/**
+ * A list row's date, where a heading over it has already named the day --
+ * the mail list's date sections, the notes list's. "Yesterday" under a
+ * heading saying Yesterday only repeats it, so today's and yesterday's rows
+ * both give the time, and older ones the short form: "Mon", "Oct 3",
+ * "Oct 3, 2025". A date in the future, which a section puts under Today all
+ * the same, gives its date too, or it would pass for today.
+ */
+export function rowDate(instant: string, now = new Date()): string {
+  const d = new Date(instant)
+  const ago = daysBetween(startOfDay(isoDate(d)), now)
+  if (ago === 0 || ago === 1) return timeOfDay(d)
+  if (ago > 1 && ago < 7) return dateFormat({ weekday: 'short' }).format(d)
+  const year = d.getFullYear() === now.getFullYear() ? undefined : 'numeric'
+  return dateFormat({ month: 'short', day: 'numeric', year }).format(d)
+}
+
 /** `HH:MM:SS` from the core as a local-looking clock time. */
 export function formatClock(hms: string): string {
   const [h, m] = hms.split(':').map(Number)

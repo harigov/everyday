@@ -28,6 +28,8 @@
   import { purpose as purposeStore } from '../lib/purpose.svelte'
   import { ask, quick, slot } from '../lib/quick.svelte'
   import { todo } from '../lib/todo.svelte'
+  import { agent } from '../lib/agent.svelte'
+  import { noteOrigin, ORIGIN_ICONS, originLine } from '../lib/note-list'
   import Suggestions from './Suggestions.svelte'
 
   let editor = $state<TipTapEditor | null>(null)
@@ -62,14 +64,78 @@
     }
   }
 
-  function commitTag() {
-    const tag = tagDraft.trim().replace(/^#/, '')
+  /** Who started the open note -- read from its tags if it is older than
+   *  the field -- and the line saying so over it, none for the person's own. */
+  const kind = $derived(note ? noteOrigin(note) : 'own')
+  const origin = $derived(originLine(kind, agent.displayName))
+
+  // ── adding a tag ─────────────────────────────────────────────────────
+  //
+  // The tags already in use are offered as you type, most used first with
+  // their counts. Without them every note grew its own spelling of the same
+  // idea -- a real vault had forty tags on thirty-seven notes, thirty-one
+  // of them used once -- and a filter over forty one-note tags narrows
+  // nothing.
+
+  /** The offered tag the arrow keys are on, or -1 for the typed text. */
+  let tagPick = $state(-1)
+
+  const tagOptions = $derived.by(() => {
+    if (!addingTag || !note) return []
+    const typed = tagDraft.trim().replace(/^#/, '').toLowerCase()
+    const have = new Set(note.tags.map((t) => t.toLowerCase()))
+    const free = notes.tags.filter((t) => !have.has(t.tag.toLowerCase()))
+    if (!typed) return free.slice(0, 6)
+    // Those starting with what was typed before those merely containing it,
+    // each run still most used first.
+    const starts = free.filter((t) => t.tag.toLowerCase().startsWith(typed))
+    const within = free.filter(
+      (t) => !t.tag.toLowerCase().startsWith(typed) && t.tag.toLowerCase().includes(typed),
+    )
+    return [...starts, ...within].slice(0, 6)
+  })
+
+  function commitTag(picked?: string) {
+    const typed = (picked ?? tagDraft).trim().replace(/^#/, '')
     tagDraft = ''
     addingTag = false
+    tagPick = -1
     const target = notes.open
-    if (!tag || !target) return
+    if (!typed || !target) return
+    // A tag already in use is taken as it is already spelled, so "Boats"
+    // typed beside an existing "boats" does not start a second one.
+    const tag = notes.tags.find((t) => t.tag.toLowerCase() === typed.toLowerCase())?.tag ?? typed
     if (target.tags.some((t) => t.toLowerCase() === tag.toLowerCase())) return
     void notes.setTags([...target.tags, tag])
+  }
+
+  /**
+   * The arrows walk the offered tags. Tab does too, but only once something
+   * has been typed and only while there is an option to move to: the list
+   * shows as soon as the field opens, and a Tab that never left it would
+   * trap the keyboard in the field.
+   */
+  function tagKeys(e: KeyboardEvent) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      tagPick = Math.min(tagPick + 1, tagOptions.length - 1)
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      tagPick = Math.max(tagPick - 1, -1)
+    } else if (e.key === 'Tab' && tagDraft.trim()) {
+      const next = tagPick + (e.shiftKey ? -1 : 1)
+      if (next >= -1 && next < tagOptions.length) {
+        e.preventDefault()
+        tagPick = next
+      }
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      commitTag(tagOptions[tagPick]?.tag)
+    } else if (e.key === 'Escape') {
+      tagDraft = ''
+      tagPick = -1
+      addingTag = false
+    }
   }
 
   function removeTag(tag: string) {
@@ -261,6 +327,12 @@
           {/if}
 
           <div class="meta">
+            {#if origin}
+              <span class="origin {kind}">
+                <Icon name={ORIGIN_ICONS[kind]} size={12} />
+                {origin}
+              </span>
+            {/if}
             <button
               class="pin"
               class:on={note.pinned}
@@ -278,20 +350,43 @@
             {/each}
 
             {#if addingTag}
-              <input
-                class="tag-input"
-                placeholder="tag"
-                bind:value={tagDraft}
-                use:focusOnMount
-                onblur={commitTag}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter') commitTag()
-                  if (e.key === 'Escape') {
-                    tagDraft = ''
-                    addingTag = false
-                  }
-                }}
-              />
+              <span class="tag-field">
+                <input
+                  class="tag-input"
+                  placeholder="tag"
+                  bind:value={tagDraft}
+                  use:focusOnMount
+                  oninput={() => (tagPick = -1)}
+                  onblur={() => commitTag()}
+                  onkeydown={tagKeys}
+                  role="combobox"
+                  aria-expanded={tagOptions.length > 0}
+                  aria-controls="note-tag-options"
+                  aria-autocomplete="list"
+                />
+                {#if tagOptions.length}
+                  <!-- Held open through a click: `mousedown` is cancelled
+                       so the field keeps focus, and its blur does not file
+                       the half-typed text before the click lands. -->
+                  <ul class="tag-options" id="note-tag-options" role="listbox">
+                    {#each tagOptions as t, i (t.tag)}
+                      <!-- The keys are the field's: it is the combobox, and
+                           these options are reached through it. -->
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <li
+                        role="option"
+                        aria-selected={i === tagPick}
+                        class:on={i === tagPick}
+                        onmousedown={(e) => e.preventDefault()}
+                        onclick={() => commitTag(t.tag)}
+                      >
+                        <span class="opt-tag"><span class="hash">#</span>{t.tag}</span>
+                        <span class="opt-n">{t.count.toLocaleString()}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </span>
             {:else}
               <button class="add" onclick={() => (addingTag = true)}>
                 <Icon name="plus" size={11} weight={1.8} /> Tag
@@ -617,6 +712,76 @@
 
   .tag:hover .x {
     display: inline-flex;
+  }
+
+  /* Where the note came from: a word, not a control, in the colour of the
+     app it came from -- the sidebar's mark beside it says the same. */
+  .origin {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    margin-right: var(--sp-1);
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+    font-weight: 550;
+  }
+  .origin.assistant :global(svg) {
+    color: var(--app-assistant);
+  }
+  .origin.meeting :global(svg) {
+    color: var(--app-calendar);
+  }
+
+  .tag-field {
+    position: relative;
+    display: inline-flex;
+  }
+
+  .tag-options {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 20;
+    min-width: 12rem;
+    margin: 0;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--card);
+    box-shadow: var(--shadow);
+    list-style: none;
+  }
+  .tag-options li {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    height: 26px;
+    padding: 0 var(--sp-2);
+    border-radius: var(--radius-sm);
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    cursor: pointer;
+  }
+  .tag-options li:hover,
+  .tag-options li.on {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .opt-tag {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .opt-tag .hash {
+    color: var(--fg-faint);
+  }
+  .opt-n {
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .tag-input {
