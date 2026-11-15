@@ -17,7 +17,7 @@ use karmayoga_core::agent::{AgentSettings, Conversation, Memory, Message, Skill}
 use karmayoga_core::id::BlobId;
 use karmayoga_core::model::Attachment;
 use karmayoga_core::store::agent::ConversationQuery;
-use karmayoga_core::{ConversationId, MemoryId, SkillId};
+use karmayoga_core::{ConversationId, FileId, MemoryId, SkillId};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -134,6 +134,15 @@ pub struct SendMessage {
     /// never sent one sends exactly what it always has.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// Files from the files catalog handed over with `prompt`, by id --
+    /// picked from the composer's file picker or the Files app. Checked
+    /// against the catalog before the turn begins, and kept with the
+    /// message: see [`crate::pictures::with_files`]. A picture among them
+    /// also becomes one of the pictures the model is shown; every file is
+    /// named to the model, which reads one with `read_file`. Defaulted, so a
+    /// client that has never sent one sends exactly what it always has.
+    #[serde(default)]
+    pub files: Vec<FileId>,
 }
 
 #[derive(Deserialize)]
@@ -476,6 +485,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("prompt", "string", true),
             ("onScreen", "OnScreen | null", false),
             ("attachments", "Attachment[]", false),
+            ("files", "FileId[]", false),
         ],
         run: send_message,
     },

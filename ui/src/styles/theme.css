@@ -211,7 +211,10 @@
      blues and violets to pink, no yellow, orange or red, which at an equal
      lightness either shout or turn to mud. Lightness and saturation are the
      theme's, the same for every app, so no one icon is louder than the
-     rest. Spaced so neighbours in the bar differ. */
+     rest. Spaced so neighbours in the bar differ. Files, which came last,
+     takes the one gap the circle has left: a green leaning towards lime,
+     short of yellow. */
+  --app-files: oklch(var(--app-lightness) var(--app-chroma) 128);
   --app-todo: oklch(var(--app-lightness) var(--app-chroma) 148);
   --app-money: oklch(var(--app-lightness) var(--app-chroma) 172);
   --app-screentime: oklch(var(--app-lightness) var(--app-chroma) 196);

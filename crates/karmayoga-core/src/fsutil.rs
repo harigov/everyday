@@ -214,6 +214,40 @@ pub fn cache_path_name(path: &Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// Is this process a cargo test binary? The answer `karmayoga_vault::under_test`
+/// gives, kept here so that core's own defaults can follow it too: the files
+/// folder a test sets up when it names none must not be the person's
+/// `~/Karma Yoga` ([`crate::files::disk::default_folder`]).
+pub fn under_test() -> bool {
+    static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *UNDER_TEST.get_or_init(|| std::env::current_exe().is_ok_and(|exe| is_test_binary(&exe)))
+}
+
+/// Is `exe` where cargo -- or nextest, which runs cargo's binaries -- keeps a
+/// unit or integration test? Two layouts, because cargo moved them:
+///
+/// - until Rust 1.100, `target/<profile>/deps/<test>-<hash>`, beside a
+///   `target/<profile>/.fingerprint` directory;
+/// - from 1.100, each unit in a build directory of its own,
+///   `target/<profile>/build/<crate>/<hash>/out/<test>-<hash>`, with a
+///   `fingerprint` directory beside its `out`. Missing this is what let a
+///   1.100 test binary resolve the person's real vault and settings.
+pub fn is_test_binary(exe: &std::path::Path) -> bool {
+    let Some(dir) = exe.parent() else { return false };
+    let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|n| n == name);
+    let in_deps = named(dir, "deps")
+        && dir.parent().is_some_and(|profile| profile.join(".fingerprint").is_dir());
+    let in_build_dir = named(dir, "out")
+        && dir.parent().is_some_and(|unit| {
+            unit.join("fingerprint").is_dir()
+                && unit
+                    .parent()
+                    .and_then(std::path::Path::parent)
+                    .is_some_and(|b| named(b, "build"))
+        });
+    in_deps || in_build_dir
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

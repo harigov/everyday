@@ -7,6 +7,7 @@
 
 use super::Vault;
 use crate::error::Result;
+use crate::files::{RefKind, RefOwner};
 use crate::id::{EntryId, JournalId};
 use crate::model::{Entry, EntrySummary, Journal};
 use crate::record::RecordKind;
@@ -109,9 +110,11 @@ impl Vault {
     /// listener needs telling about on its own.
     pub fn delete_journal(&self, id: JournalId) -> Result<()> {
         self.writable()?;
-        self.write(|u| {
+        let removed = self.write(|u| {
+            let mut removed = Vec::new();
             for e in u.store.list_entries(&EntryQuery::in_journal(id))? {
                 u.index.remove(e.id);
+                removed.push(e.id);
             }
             // Readings survive, and are detached rather than deleted.
             //
@@ -129,8 +132,13 @@ impl Vault {
             if let Some(t) = u.store.trackers() {
                 t.detach_readings_in(id)?;
             }
-            u.store.delete_journal(id)
+            u.store.delete_journal(id)?;
+            Ok(removed)
         })?;
+        // Its entries went with it, and so did what they referred to.
+        for entry in removed {
+            self.drop_file_refs(RefOwner::new(RefKind::Entry, entry));
+        }
         self.wrote(RecordKind::Journal, id);
         Ok(())
     }
@@ -167,6 +175,7 @@ impl Vault {
             u.index.insert(entry);
             Ok(())
         })?;
+        self.track_file_refs(RefOwner::new(RefKind::Entry, entry.id), entry.body.file_refs());
         self.wrote(RecordKind::Entry, entry.id);
         Ok(())
     }
@@ -185,6 +194,7 @@ impl Vault {
             u.index.insert(entry);
             Ok(())
         })?;
+        self.track_file_refs(RefOwner::new(RefKind::Entry, entry.id), entry.body.file_refs());
         self.wrote(RecordKind::Entry, entry.id);
         Ok(())
     }
@@ -196,6 +206,7 @@ impl Vault {
             u.index.remove(id);
             Ok(())
         })?;
+        self.drop_file_refs(RefOwner::new(RefKind::Entry, id));
         self.wrote(RecordKind::Entry, id);
         Ok(())
     }

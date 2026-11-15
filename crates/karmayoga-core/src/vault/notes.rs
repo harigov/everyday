@@ -3,6 +3,7 @@
 use super::Vault;
 use super::session::{Domain, pick_domain};
 use crate::error::Result;
+use crate::files::{RefKind, RefOwner};
 use crate::id::NoteId;
 use crate::note::{Note, NoteSummary};
 use crate::record::RecordKind;
@@ -61,6 +62,7 @@ impl Vault {
             super::meetings::reindex_note(u, note.id);
             Ok(())
         })?;
+        self.track_file_refs(RefOwner::new(RefKind::Note, note.id), note.body.file_refs());
         self.wrote(RecordKind::Note, note.id);
         Ok(())
     }
@@ -76,6 +78,7 @@ impl Vault {
             super::meetings::reindex_note(u, note.id);
             Ok(())
         })?;
+        self.track_file_refs(RefOwner::new(RefKind::Note, note.id), note.body.file_refs());
         self.wrote(RecordKind::Note, note.id);
         Ok(())
     }
@@ -96,6 +99,7 @@ impl Vault {
             super::meetings::detach_note_from_meetings(u, id)?;
             Ok(())
         })?;
+        self.drop_file_refs(RefOwner::new(RefKind::Note, id));
         self.wrote(RecordKind::Note, id);
         Ok(())
     }

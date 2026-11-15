@@ -183,6 +183,7 @@ fn run(
         destination: destination.clone(),
         keep: keep.unwrap_or(settings.keep).clamp(1, karmayoga_core::backup::MAX_KEEP),
         config_dir: (!no_config && settings.include_config).then(karmayoga_vault::config_dir),
+        files: vault.supports_files(),
         // Somebody at a terminal is looking at the destination they asked
         // for, and may have emptied it on purpose; only the schedule, which
         // nobody watches, takes an empty place that held backups for one
@@ -229,6 +230,12 @@ fn run(
     for path in &report.skipped {
         eprintln!("  went away before it was read: {path}");
     }
+    if report.files_folder_unavailable {
+        eprintln!(
+            "  The files folder was not available, so this copy carries the last copy's files \
+             as they were."
+        );
+    }
     Ok(())
 }
 
@@ -256,6 +263,7 @@ pub(crate) fn restore(
     into: &Path,
     snapshot: Option<String>,
     config: bool,
+    files_to: Option<&Path>,
     location: &LocationArgs,
     password: Option<String>,
 ) -> Result<()> {
@@ -279,7 +287,13 @@ pub(crate) fn restore(
             let watching = tokio::spawn(report_progress(progress.clone()));
             let result = backup::restore(
                 &target,
-                RestoreOptions { snapshot, into: into.to_path_buf(), config_into, password },
+                RestoreOptions {
+                    snapshot,
+                    into: into.to_path_buf(),
+                    config_into,
+                    files_into: files_to.map(Path::to_path_buf),
+                    password,
+                },
                 Some(&progress),
             )
             .await;
@@ -304,6 +318,31 @@ pub(crate) fn restore(
         println!(
             "{} settings file(s) were not put back; add --config to bring them too.",
             report.config_left_out
+        );
+    }
+    if let Some(folder) = &report.files_folder {
+        println!(
+            "Put back {} file(s), {}, into {folder}{}.",
+            report.files_folder_restored,
+            human_bytes(report.files_folder_bytes),
+            if report.files_folder_kept > 0 {
+                format!("; left {} alone, because one was already there", report.files_folder_kept)
+            } else {
+                String::new()
+            }
+        );
+        if files_to.is_some() {
+            println!(
+                "The vault still names its old files folder: choose {folder} in Settings \u{2192} \
+                 Files when you open it."
+            );
+        }
+    }
+    if report.files_folder_left_out > 0 {
+        println!(
+            "{} file(s) from the files folder were not put back: the copy does not say where \
+             that folder was. Name one with --files-to.",
+            report.files_folder_left_out
         );
     }
     Ok(())

@@ -139,6 +139,14 @@ pub enum Scope {
     /// somebody spends their day on is a browsing history, and a client that
     /// may read a reading list has no business inheriting it.
     ScreenTime,
+    /// Files: the catalog, the files folder, albums, uploads, and the
+    /// settings that decide where the folder is.
+    ///
+    /// Its own scope, never a corner of another: what somebody keeps in
+    /// their files -- documents, photographs of everyone they know -- is as
+    /// private as anything in the vault, and a client that may read a
+    /// reading list has no business inheriting it.
+    Files,
     /// Sending heartbeats and nothing else: what a collector -- the browser
     /// extension, the GNOME Shell extension, another machine's shell -- is
     /// issued.
@@ -197,6 +205,7 @@ impl Scope {
             Scope::News => "news",
             Scope::Money => "money",
             Scope::ScreenTime => "screentime",
+            Scope::Files => "files",
             Scope::Heartbeats => "heartbeats",
             Scope::Web => "web",
             Scope::Admin => "admin",
@@ -226,6 +235,7 @@ impl Scope {
         Scope::News,
         Scope::Money,
         Scope::ScreenTime,
+        Scope::Files,
         Scope::Heartbeats,
         Scope::Web,
         Scope::Admin,

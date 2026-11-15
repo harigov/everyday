@@ -1,7 +1,7 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
   import { dayNumber, plural, weekdayShort } from '../lib/format'
-  import { mediaUrl } from '../lib/api'
+  import { fileUrl, mediaUrl } from '../lib/api'
   import { menu } from '../lib/menu.svelte'
   import { onOffPref } from '../lib/prefs'
   import { rovingFocus, type RovingVirtual } from '../lib/roving'
@@ -315,6 +315,8 @@
 
               {#if row.cover}
                 <img class="thumb" src={mediaUrl(row.cover)} alt="" loading="lazy" />
+              {:else if row.coverFile}
+                <img class="thumb" src={fileUrl(row.coverFile)} alt="" loading="lazy" />
               {/if}
             </button>
           {/if}

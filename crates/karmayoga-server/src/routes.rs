@@ -34,7 +34,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
 use karmayoga_core::BlobId;
-use karmayoga_core::id::{MailMessageId, StoryId};
+use karmayoga_core::id::{FileId, MailMessageId, StoryId};
 use karmayoga_service::ctx::{Caller, Ctx, Scope};
 use karmayoga_service::error::CommandError;
 use karmayoga_service::{PROTOCOL, Service};
@@ -194,6 +194,11 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
         .route("/v1/mail/img/{token}", get(get_mail_image_legacy))
         .route("/v1/news/body/{story}", get(get_news_body))
         .route("/v1/news/img/{story}/{token}", get(get_news_image))
+        // A file in the files catalog, with ranges, and one chunk of an upload
+        // to it. The chunk's body is raw bytes read by the handler after
+        // `authenticate`, like `put_blob`'s, so no default limit governs it.
+        .route("/v1/files/file/{id}", get(get_file))
+        .route("/v1/files/upload/{upload}", post(upload_file_chunk))
         // What an extractor that buffers -- `Json`, `Bytes` -- may take when a
         // route says nothing. It does not govern a raw `Body`, which is why
         // `call`, `stream` and `put_blob` can still take up to their own
@@ -856,6 +861,203 @@ async fn get_news_image(
     mail_bytes_response(served, "no-store")
 }
 
+// ---- files: a file's bytes, one chunk of an upload -------------------------
+//
+// The twins of `karmayoga-app/src/protocol.rs`'s `karmayoga://files/file/{id}`
+// and of the shell's `upload_chunk` command, over HTTP. Unlike a blob, a file
+// is not content-addressed: its bytes can change under the same id, and its
+// type is the catalog's word for it rather than anything sniffed from the
+// bytes -- so what comes out of here is held to a stricter rule than a blob.
+
+/// Most one chunk of an upload may carry. The shells send four megabytes; twice
+/// that leaves room for a client that rounds up and keeps a chunk from being a
+/// way to make the server hold a great deal before it has read a byte of it.
+const MAX_UPLOAD_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+
+/// The largest file answered whole when nothing asked for a part of it.
+///
+/// [`karmayoga_core::media::plan`] answers a request with no `Range` -- an
+/// `<img>`, a `fetch()` -- with the first eight megabytes and a `206`, which a
+/// film's player asks for and goes back for the rest of, but which a picture
+/// does not: it draws what it was sent. A twenty-five megabyte photograph would
+/// show as the top third of one. So up to this size the answer is the file; past
+/// it, which only a film or an archive is, the planner decides. Not larger,
+/// because a response is a buffer in memory, here and in the shell.
+pub const WHOLE_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// What a file is answered with when it is opened as a document rather than
+/// drawn: the policy `karmayoga-app/src/protocol.rs` sends every `karmayoga:`
+/// response with. A catalogued file is whatever bytes somebody put in the
+/// folder -- an HTML page a person saved, a mail attachment -- and the type it
+/// is served as is the catalog's, so one that is `text/html` would, opened at
+/// this address, run its script as part of the page that served it. `sandbox`
+/// gives it an opaque origin and no script; as an `<img>` or a `<video>`, which
+/// is all the interface asks for, the policy does nothing at all.
+const FILE_DOCUMENT_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+
+/// What to send for a file of `total` bytes and an optional `Range`: the
+/// whole of it when it is small enough and nothing asked for less (see
+/// [`WHOLE_FILE_BYTES`]), and what [`karmayoga_core::media::plan`] says
+/// otherwise. One function for the server and the desktop shell, so a range
+/// means the same thing in both.
+pub fn file_plan(total: u64, range: Option<&str>) -> karmayoga_core::media::ResponsePlan {
+    let asked = range.is_some_and(|r| karmayoga_core::media::parse_range(r, total).is_some());
+    if !asked && total <= WHOLE_FILE_BYTES {
+        return karmayoga_core::media::ResponsePlan { start: 0, len: total, total, partial: false };
+    }
+    karmayoga_core::media::plan(total, range)
+}
+
+/// A file's type as its response header, from the catalog's word for it: kept
+/// if it is a plausible header value, `application/octet-stream` if not. The
+/// catalog is not sniffed, but nor is it trusted to hold nothing that would
+/// make a response unbuildable.
+pub fn file_content_type(mime: &str) -> &str {
+    if !mime.is_empty() && mime.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+        mime
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// How long a webview may keep a file's bytes. A year for an address whose
+/// `?v=` is the version the file has right now
+/// ([`karmayoga_core::Vault::file_version_is_current`]) -- so a changed file
+/// has another address -- and never otherwise, because a file's bytes can
+/// change under the same id, and under the same `?v=` until the catalog
+/// catches up. Never `immutable`, as a blob's are.
+pub fn file_cache_control(current: bool) -> &'static str {
+    if current { "private, max-age=31536000" } else { "no-cache" }
+}
+
+/// What a request for a file asked for, read: the bytes, and what a response
+/// made from them needs to say.
+pub struct FileSlice {
+    /// The catalog's type for the file.
+    pub mime: String,
+    pub plan: karmayoga_core::media::ResponsePlan,
+    pub bytes: Vec<u8>,
+    /// The request named the version the file has now, so the answer may be
+    /// kept ([`file_cache_control`]).
+    pub current: bool,
+}
+
+/// Read what a request for a file asked for. Blocking; callers run it off the
+/// async runtime.
+///
+/// The length comes from the disk and the type from the catalog, and the bytes
+/// are read after both, so a file that changed in between answers an error to
+/// try again rather than a body that disagrees with its own headers.
+pub fn read_file_slice(
+    vault: &karmayoga_core::Vault,
+    id: FileId,
+    range: Option<&str>,
+    version: Option<&str>,
+) -> Result<FileSlice, CommandError> {
+    let mime = vault.file(id)?.mime;
+    let current = match version.filter(|v| !v.is_empty()) {
+        Some(v) => vault.file_version_is_current(id, v)?,
+        None => false,
+    };
+    let total = vault.file_len(id)?;
+    let plan = file_plan(total, range);
+    let bytes = vault.read_file_range(id, plan.start, plan.len)?;
+    if bytes.len() as u64 != plan.len {
+        return Err(CommandError::new("io", "that file changed while it was being read"));
+    }
+    Ok(FileSlice { mime, plan, bytes, current })
+}
+
+#[derive(Deserialize)]
+struct FileVersion {
+    /// `?v=`: what the interface versions an address by. Cached only when it
+    /// is the version the file has now -- see [`file_cache_control`].
+    v: Option<String>,
+}
+
+/// Serve part of a file, honouring `Range`.
+///
+/// The scope is checked here, not left to a command table, because this is not
+/// a command: a paired device holding no `Files` scope may not read the folder
+/// through the one route that does not go through [`call`].
+async fn get_file(
+    State((server, transport)): Ctxt,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(q): Query<FileVersion>,
+) -> Answer<Response> {
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    ctx.require(Scope::Files)?;
+    let id = FileId::parse(&id).map_err(|_| CommandError::new("invalid", "not a file address"))?;
+
+    let vault = server.service.require_unlocked()?;
+    let range = header_str(&headers, "range");
+    let version = q.v;
+    let FileSlice { mime, plan, bytes, current } = karmayoga_service::blocking(move || {
+        read_file_slice(&vault, id, range.as_deref(), version.as_deref())
+    })
+    .await?;
+
+    let mut response = Response::builder()
+        .header(header::CONTENT_TYPE, file_content_type(&mime))
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, bytes.len().to_string())
+        .header(header::CACHE_CONTROL, file_cache_control(current))
+        .header("x-content-type-options", "nosniff")
+        .header(header::CONTENT_SECURITY_POLICY, FILE_DOCUMENT_POLICY);
+    response = if plan.partial {
+        response
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, plan.content_range())
+    } else {
+        response.status(StatusCode::OK)
+    };
+    response
+        .body(axum::body::Body::from(bytes))
+        .map_err(|e| CommandError::new("internal", e.to_string()).into())
+}
+
+#[derive(Deserialize)]
+struct UploadOffset {
+    /// Where in the file this chunk begins. Read as text and parsed after
+    /// authentication, so a caller with no token is refused as such rather
+    /// than told what is wrong with its query.
+    offset: Option<String>,
+}
+
+/// One chunk of an upload begun with the `begin_upload` command, as raw bytes,
+/// at `?offset=`. Answers the bytes received so far.
+///
+/// The same door the desktop shell's `upload_chunk` command is: both call
+/// `domains::files::upload_chunk`, which decides what an offset that is not
+/// where the upload has got to means. Bytes, not JSON, so it is not a command.
+async fn upload_file_chunk(
+    State((server, transport)): Ctxt,
+    Path(upload): Path<String>,
+    Query(q): Query<UploadOffset>,
+    headers: HeaderMap,
+    body: axum::body::Body,
+) -> Answer<Json<u64>> {
+    check_protocol(&headers)?;
+    let ctx = authenticate(&server, transport, &headers)?;
+    ctx.require(Scope::Files)?;
+    let offset = q
+        .offset
+        .as_deref()
+        .and_then(|o| o.parse::<u64>().ok())
+        .ok_or_else(|| CommandError::new("invalid", "an upload chunk needs an ?offset="))?;
+    let bytes = read_body(body, MAX_UPLOAD_CHUNK_BYTES).await?;
+    let received = karmayoga_service::domains::files::upload_chunk(
+        server.service.clone(),
+        ctx,
+        upload,
+        offset,
+        bytes,
+    )
+    .await?;
+    Ok(Json(received))
+}
+
 // ---- events --------------------------------------------------------------
 
 /// Everything the service says, as it says it.
@@ -1484,7 +1686,12 @@ mod refusal_tests {
     #[tokio::test]
     async fn a_body_is_not_read_for_somebody_with_no_token() {
         let (server, _dir) = server(true);
-        for path in ["/v1/call/list_journals", "/v1/stream/send_message", "/v1/blob"] {
+        for path in [
+            "/v1/call/list_journals",
+            "/v1/stream/send_message",
+            "/v1/blob",
+            "/v1/files/upload/abc?offset=0",
+        ] {
             let touched = Arc::new(AtomicBool::new(false));
             let app = router(server.clone(), Transport::Network);
             let (status, _) = post(app, path, None, watched_body(touched.clone())).await;
@@ -1572,5 +1779,134 @@ mod refusal_tests {
             post(app, "/v1/call/change_password", Some(&token), json_body(args)).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{answer}");
         assert_eq!(answer["code"], "too_many_attempts");
+    }
+
+    #[tokio::test]
+    async fn an_upload_chunk_needs_the_files_scope_and_an_offset() {
+        let (server, _dir) = server(true);
+        let (narrow, _) = server.registry.issue("Phone", vec![Scope::Journals], false).unwrap();
+        let (wide, _) = server.registry.issue("Laptop", vec![Scope::Files], false).unwrap();
+
+        let app = router(server.clone(), Transport::Network);
+        let (status, answer) = post(
+            app,
+            "/v1/files/upload/abc?offset=0",
+            Some(&narrow),
+            axum::body::Body::from(vec![0u8; 16]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+        assert_eq!(answer["code"], "forbidden");
+
+        // Past the scope check, a chunk with nowhere to go is a bad request,
+        // not a guess at offset zero.
+        let app = router(server, Transport::Network);
+        let (status, answer) = post(
+            app,
+            "/v1/files/upload/abc?offset=soon",
+            Some(&wide),
+            axum::body::Body::from(vec![0u8; 16]),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    }
+
+    #[tokio::test]
+    async fn a_chunk_past_its_limit_is_too_large() {
+        let (server, _dir) = server(true);
+        let (token, _) = server.registry.issue("Laptop", vec![Scope::Files], false).unwrap();
+        let app = router(server, Transport::Network);
+        let body = axum::body::Body::from(vec![0u8; MAX_UPLOAD_CHUNK_BYTES + 1]);
+        let (status, answer) = post(app, "/v1/files/upload/abc?offset=0", Some(&token), body).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{answer}");
+    }
+}
+
+/// What a file is answered with, apart from where its bytes come from -- which
+/// is the facade's, and tested there.
+#[cfg(test)]
+mod file_route_tests {
+    use super::*;
+    use karmayoga_core::media::{ResponsePlan, plan};
+    use tower::ServiceExt;
+
+    #[test]
+    fn a_small_file_asked_for_whole_is_answered_whole() {
+        // Where `media::plan` alone would send eight megabytes and a 206, and
+        // a picture would be drawn from the top of it.
+        let total = 20 * 1024 * 1024;
+        assert!(plan(total, None).partial);
+        assert_eq!(
+            file_plan(total, None),
+            ResponsePlan { start: 0, len: total, total, partial: false }
+        );
+        assert_eq!(
+            file_plan(0, None),
+            ResponsePlan { start: 0, len: 0, total: 0, partial: false },
+            "an empty file is an empty answer"
+        );
+    }
+
+    #[test]
+    fn a_range_is_the_planners_to_decide() {
+        let total = 20 * 1024 * 1024;
+        for range in ["bytes=0-", "bytes=1000-1999", "bytes=-500"] {
+            assert_eq!(file_plan(total, Some(range)), plan(total, Some(range)), "{range}");
+        }
+        // Past what a response may be, nothing asked for less still gets a part.
+        let film = WHOLE_FILE_BYTES + 1;
+        assert_eq!(file_plan(film, None), plan(film, None));
+        assert!(file_plan(film, None).partial);
+        // A range that is nonsense is no range at all.
+        assert_eq!(file_plan(100, Some("bytes=oops")).len, 100);
+    }
+
+    #[test]
+    fn a_file_is_only_cached_under_an_address_that_names_its_version() {
+        assert_eq!(file_cache_control(true), "private, max-age=31536000");
+        assert_eq!(file_cache_control(false), "no-cache");
+        // Never what a blob's are: the bytes behind a file's address can change.
+        assert!(!file_cache_control(true).contains("immutable"));
+    }
+
+    #[test]
+    fn a_type_that_is_not_a_header_value_is_an_octet_stream() {
+        assert_eq!(file_content_type("image/jpeg"), "image/jpeg");
+        assert_eq!(file_content_type("text/plain; charset=utf-8"), "text/plain; charset=utf-8");
+        for bad in ["", "image/jp\neg", "text/\u{7f}", "caf\u{e9}/x"] {
+            assert_eq!(file_content_type(bad), "application/octet-stream", "{bad:?}");
+        }
+    }
+
+    /// Nothing to read from: this is about who may ask, which is decided
+    /// before the vault is looked at.
+    #[tokio::test]
+    async fn a_file_is_not_served_to_a_device_without_the_files_scope() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(Registry::open(config_dir.path().join("devices.json")).unwrap());
+        let server = Server::new(
+            Arc::new(Service::new()),
+            registry,
+            Arc::new(Broadcaster::new()),
+            "Test".into(),
+            String::new(),
+            true,
+        );
+        let (narrow, _) = server.registry.issue("Phone", vec![Scope::Mail], false).unwrap();
+        let uri = format!("/v1/files/file/{}?v=abc", FileId::new());
+        for (token, want) in
+            [(Some(narrow), StatusCode::FORBIDDEN), (None, StatusCode::UNAUTHORIZED)]
+        {
+            let mut request =
+                Request::builder().uri(&uri).header("x-karmayoga-protocol", PROTOCOL.to_string());
+            if let Some(token) = token {
+                request = request.header("authorization", format!("Bearer {token}"));
+            }
+            let response = router(server.clone(), Transport::Network)
+                .oneshot(request.body(axum::body::Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), want);
+        }
     }
 }

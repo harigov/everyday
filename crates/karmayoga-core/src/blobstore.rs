@@ -51,7 +51,7 @@ use crate::error::{Error, Result};
 use crate::id::BlobId;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 const MAGIC: &[u8; 4] = b"EVDB";
@@ -105,6 +105,41 @@ pub fn address(cipher: &dyn Cipher, bytes: &[u8]) -> BlobId {
 
 /// The [`Cipher::derive_subkey`] label for [`address`].
 const BLOB_ADDRESS_LABEL: &str = "everyday 2026-10 blob address v1";
+
+/// [`address`], for a payload that arrives in pieces: feed the hasher every
+/// piece in order and what it finalises to is the id `address` gives the
+/// whole. [`FileBlobStore::put_file`] is the caller -- a film of several
+/// gigabytes has an address too, and finding it must not need the film in
+/// memory.
+///
+/// Kept beside [`address`], and checked against it by
+/// `put_file_and_put_agree_on_the_id`, so the two cannot drift: a blob stored
+/// from a file under a different address than the same bytes get from `put`
+/// would be a duplicate nothing could deduplicate.
+fn address_hasher(cipher: &dyn Cipher) -> blake3::Hasher {
+    if cipher.is_encrypting() {
+        blake3::Hasher::new_keyed(cipher.derive_subkey(BLOB_ADDRESS_LABEL).expose())
+    } else {
+        blake3::Hasher::new()
+    }
+}
+
+/// Read into `buf` until it is full or the reader is done, and say how many
+/// bytes that was. `Read::read` is allowed to return less than asked for any
+/// time it likes, and a chunk that came up short would be sealed as though it
+/// were the last.
+fn fill(reader: &mut impl Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut at = 0;
+    while at < buf.len() {
+        match reader.read(&mut buf[at..]) {
+            Ok(0) => break,
+            Ok(n) => at += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(at)
+}
 
 /// Seal `bytes` into one complete container: header followed by chunks.
 ///
@@ -334,6 +369,112 @@ impl FileBlobStore {
         // already references it.
         crate::fsutil::sync_dir(dir);
         Ok(id)
+    }
+
+    /// Seal the file at `source` and write it, as [`put`](Self::put) would
+    /// its bytes, without ever holding more than one chunk of it in memory.
+    /// Returns the content address, which is the one `put` gives the same
+    /// bytes.
+    ///
+    /// Two passes over the file, because the two things that have to be known
+    /// before the first sealed byte is written are not known until the last
+    /// has been read. The first pass is the address -- the blob's name on
+    /// disk, and what its chunks are bound to -- and the length, which is in
+    /// the header; it also finds out whether the blob is already here, in
+    /// which case there is no second pass. The second seals chunk by chunk
+    /// into a scratch file and renames that into place, as `put` does.
+    ///
+    /// # A file that changes underneath
+    ///
+    /// Something else may be writing to `source` -- a film still being
+    /// copied in -- and the second pass would then seal bytes the address
+    /// does not name: a blob that opens, under an id that is not its
+    /// contents'. So the second pass hashes what it reads, and a file whose
+    /// length or address is not what the first pass found is refused with
+    /// nothing left behind.
+    pub fn put_file(&self, source: &Path) -> Result<BlobId> {
+        let (id, len) = self.address_of_file(source)?;
+        let path = self.path_for(id);
+        if path.is_file() {
+            return Ok(id); // content-addressed: identical bytes, identical file
+        }
+        let dir = path.parent().expect("blob path always has a parent");
+        std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+
+        // A per-writer scratch name, for the reason `put` gives.
+        let tmp = path.with_extension(format!("{}.tmp", crate::fsutil::unique_tag()));
+        if let Err(e) = self.seal_file_into(source, id, len, &tmp) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        if let Err(e) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(Error::io(&path, e));
+        }
+        crate::fsutil::sync_dir(dir);
+        Ok(id)
+    }
+
+    /// The first pass of [`put_file`](Self::put_file): the file's address and
+    /// its length in bytes.
+    fn address_of_file(&self, source: &Path) -> Result<(BlobId, u64)> {
+        let mut input = File::open(source).map_err(|e| Error::io(source, e))?;
+        let mut hasher = address_hasher(self.cipher.as_ref());
+        let mut buf = vec![0u8; CHUNK_SIZE as usize];
+        let mut len = 0u64;
+        loop {
+            let n = fill(&mut input, &mut buf).map_err(|e| Error::io(source, e))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            len += n as u64;
+        }
+        Ok((BlobId(*hasher.finalize().as_bytes()), len))
+    }
+
+    /// The second pass of [`put_file`](Self::put_file): the container for
+    /// `source`, written to `tmp`, which the caller removes on failure.
+    ///
+    /// `id` and `len` are what the first pass found. The header is written
+    /// after the first chunk is sealed, because the overhead it records is
+    /// measured from a sealed chunk rather than assumed (see
+    /// [`put`](Self::put)).
+    fn seal_file_into(&self, source: &Path, id: BlobId, len: u64, tmp: &Path) -> Result<()> {
+        let changed =
+            || Error::Invalid(format!("{} changed while it was being stored", source.display()));
+        let mut input = File::open(source).map_err(|e| Error::io(source, e))?;
+        let mut out = File::create(tmp).map_err(|e| Error::io(tmp, e))?;
+        let mut hasher = address_hasher(self.cipher.as_ref());
+        let chunk = CHUNK_SIZE as u64;
+        let count = chunk_count(len, chunk);
+        let mut buf = vec![0u8; CHUNK_SIZE as usize];
+
+        for index in 0..count {
+            // Every chunk but the last is full, and the last holds what is
+            // left -- which is nothing, once, for an empty file, whose one
+            // chunk is empty.
+            let want = len.saturating_sub(index * chunk).min(chunk) as usize;
+            let got = fill(&mut input, &mut buf[..want]).map_err(|e| Error::io(source, e))?;
+            if got != want {
+                return Err(changed());
+            }
+            hasher.update(&buf[..want]);
+            let sealed = self.cipher.seal(&chunk_aad(id, index, count), &buf[..want])?;
+            if index == 0 {
+                let overhead = (sealed.len() - want) as u32;
+                out.write_all(&header_bytes(overhead, len)).map_err(|e| Error::io(tmp, e))?;
+            }
+            out.write_all(&sealed).map_err(|e| Error::io(tmp, e))?;
+        }
+
+        // Nothing past the length the first pass found, and the same bytes.
+        let mut extra = [0u8; 1];
+        let more = fill(&mut input, &mut extra).map_err(|e| Error::io(source, e))?;
+        if more != 0 || BlobId(*hasher.finalize().as_bytes()) != id {
+            return Err(changed());
+        }
+        out.sync_all().map_err(|e| Error::io(tmp, e))
     }
 
     pub fn get(&self, id: BlobId) -> Result<Vec<u8>> {
@@ -777,6 +918,155 @@ mod tests {
         assert!(ids.windows(2).all(|w| w[0] == w[1]), "content addressing should agree");
         assert_eq!(s.get(ids[0]).unwrap(), *data);
         assert_eq!(s.list().unwrap(), [ids[0]], "no scratch files left behind");
+    }
+
+    /// `bytes` as a file called `name` in `dir`, for `put_file` to read.
+    fn source_file(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// Every file under `root` that is not a finished blob: the scratch files
+    /// a writer that failed, or crashed, would leave.
+    fn leftovers(root: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        for shard in std::fs::read_dir(root).unwrap().flatten() {
+            if !shard.path().is_dir() {
+                continue;
+            }
+            for f in std::fs::read_dir(shard.path()).unwrap().flatten() {
+                if f.path().extension().is_none_or(|e| e != "blob") {
+                    out.push(f.path());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn put_file_and_put_agree_on_the_id() {
+        // The reason `put_file` has a second copy of the address derivation
+        // at all: a blob stored from a file must land where the same bytes
+        // stored from memory do, or the same photo is kept twice. Under
+        // both kinds of cipher, since the address is keyed in one and bare
+        // in the other, and at every size where chunking changes shape.
+        for encrypted in [true, false] {
+            let by_file_dir = tempfile::tempdir().unwrap();
+            let by_bytes_dir = tempfile::tempdir().unwrap();
+            let scratch = tempfile::tempdir().unwrap();
+            let by_file = store(by_file_dir.path(), encrypted);
+            let by_bytes = store(by_bytes_dir.path(), encrypted);
+
+            for size in [
+                0usize,
+                1,
+                CHUNK_SIZE as usize - 1,
+                CHUNK_SIZE as usize,
+                CHUNK_SIZE as usize + 1,
+                CHUNK_SIZE as usize * 3 + 77,
+            ] {
+                let data = pseudorandom(size);
+                let source = source_file(scratch.path(), "source.bin", &data);
+
+                let id = by_file.put_file(&source).unwrap();
+                assert_eq!(
+                    id,
+                    by_bytes.put(&data).unwrap(),
+                    "put_file and put disagree at {size} bytes (encrypted: {encrypted})"
+                );
+                assert_eq!(by_file.get(id).unwrap(), data, "round trip failed at {size} bytes");
+                assert_eq!(by_file.len_of(id).unwrap(), size as u64);
+
+                // And the same container: the header names the same chunk
+                // size, overhead and length, and the sealed file is as long.
+                let a = std::fs::read(by_file.path_for(id)).unwrap();
+                let b = std::fs::read(by_bytes.path_for(id)).unwrap();
+                assert_eq!(a.len(), b.len(), "the containers differ in size at {size} bytes");
+                assert_eq!(a[..HEADER_LEN], b[..HEADER_LEN], "and in their headers");
+            }
+            assert!(leftovers(by_file_dir.path()).is_empty(), "no scratch file may be left");
+        }
+    }
+
+    #[test]
+    fn a_blob_put_from_a_file_can_be_read_by_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let data = pseudorandom(CHUNK_SIZE as usize * 3 + 1234);
+        let id = s.put_file(&source_file(scratch.path(), "film.mp4", &data)).unwrap();
+
+        let chunk = CHUNK_SIZE as u64;
+        for (off, len) in [(0u64, 10u64), (chunk - 5, 10), (chunk * 2 + 7, 200_000)] {
+            let want = &data[off as usize..(off + len) as usize];
+            assert_eq!(s.get_range(id, off, len).unwrap(), want, "range ({off}, {len}) mismatched");
+        }
+    }
+
+    #[test]
+    fn put_file_deduplicates_against_put_and_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let data = pseudorandom(CHUNK_SIZE as usize + 9);
+
+        let first = s.put_file(&source_file(scratch.path(), "a.bin", &data)).unwrap();
+        // The same bytes under another name, and from memory.
+        let second = s.put_file(&source_file(scratch.path(), "b.bin", &data)).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(s.put(&data).unwrap(), first);
+        assert_eq!(s.list().unwrap(), [first], "one blob, however it arrived");
+
+        // The other way round: put first, then the file finds it there and
+        // writes nothing.
+        let other = pseudorandom(500);
+        let id = s.put(&other).unwrap();
+        assert_eq!(s.put_file(&source_file(scratch.path(), "c.bin", &other)).unwrap(), id);
+        assert_eq!(s.list().unwrap().len(), 2);
+        assert!(leftovers(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn put_file_of_a_file_that_is_not_there_fails_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let err = s.put_file(&dir.path().join("nowhere.bin")).unwrap_err();
+        assert_eq!(err.code(), "io");
+        assert!(s.list().unwrap().is_empty());
+        assert!(leftovers(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn the_second_pass_refuses_a_file_that_is_not_what_the_first_found() {
+        // The race `put_file` guards: the file is read once for its address
+        // and again to be sealed, and it may be written to in between. Each
+        // way it can differ is refused, with `put_file` removing the scratch
+        // file.
+        let dir = tempfile::tempdir().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let s = store(dir.path(), true);
+        let data = pseudorandom(CHUNK_SIZE as usize + 100);
+        let source = source_file(scratch.path(), "growing.bin", &data);
+        let (id, len) = s.address_of_file(&source).unwrap();
+        assert_eq!(len, data.len() as u64);
+        let tmp = scratch.path().join("out.tmp");
+
+        // As found: fine.
+        s.seal_file_into(&source, id, len, &tmp).unwrap();
+
+        // It grew: bytes past the length the header will say.
+        let err = s.seal_file_into(&source, id, len - 1, &tmp).unwrap_err();
+        assert_eq!(err.code(), "invalid");
+        // It shrank: the last chunk is short.
+        let err = s.seal_file_into(&source, id, len + 1, &tmp).unwrap_err();
+        assert_eq!(err.code(), "invalid");
+        // Same length, other bytes.
+        let mut other = data.clone();
+        other[10] ^= 0xff;
+        let changed = source_file(scratch.path(), "changed.bin", &other);
+        let err = s.seal_file_into(&changed, id, len, &tmp).unwrap_err();
+        assert_eq!(err.code(), "invalid");
     }
 
     #[test]

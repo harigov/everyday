@@ -40,6 +40,7 @@ import type { mail as mailSingleton } from './mail.svelte'
 import type { feed as feedSingleton } from './feed.svelte'
 import type { money as moneySingleton } from './money.svelte'
 import type { screentime as screentimeSingleton } from './screentime.svelte'
+import type { files as filesSingleton } from './files.svelte'
 import type { overview as overviewSingleton } from './overview.svelte'
 import type { assistant as assistantSingleton } from './assistant.svelte'
 import type { agent as agentSingleton } from './agent.svelte'
@@ -54,6 +55,7 @@ type MailLike = typeof mailSingleton
 type FeedLike = typeof feedSingleton
 type MoneyLike = typeof moneySingleton
 type ScreenTimeLike = typeof screentimeSingleton
+type FilesLike = typeof filesSingleton
 type OverviewLike = typeof overviewSingleton
 type AssistantLike = typeof assistantSingleton
 type AgentLike = typeof agentSingleton
@@ -74,6 +76,7 @@ export const APP_ORDER = [
   'feed',
   'money',
   'screentime',
+  'files',
   'assistant',
   'journal',
 ] as const
@@ -91,6 +94,7 @@ export interface AppDeps {
   feed: FeedLike
   money: MoneyLike
   screentime: ScreenTimeLike
+  files: FilesLike
   overview: OverviewLike
 }
 
@@ -119,6 +123,7 @@ export interface AccentDeps {
   feed: FeedLike
   money: MoneyLike
   screentime: ScreenTimeLike
+  files: FilesLike
 }
 
 /** What `shortcuts.svelte.ts`'s "start the next thing" needs from every
@@ -133,6 +138,7 @@ export interface CreateDeps {
   feed: FeedLike
   money: MoneyLike
   screentime: ScreenTimeLike
+  files: FilesLike
   overview: OverviewLike
   assistant: AssistantLike
   /** The conversation, which is what the Assistant app starts a new one of. */
@@ -315,6 +321,27 @@ export const APPS: Record<Section, AppModule> = {
     // What is listed are the person's apps and sites, a few dozen at most,
     // read at a glance; there is nothing for a search to narrow.
     search: () => null,
+  },
+  files: {
+    section: 'files',
+    label: 'Files',
+    icon: 'folder',
+    symbol: 'folder',
+    supported: (app) => app.supportsFiles,
+    accent: (d) => d.files.accent,
+    // Adding files is the one thing the app is for, and it is what the bar's
+    // "+" does: the system picker on the vault's own computer, the browser's
+    // anywhere else. See `files.create`.
+    create: (d) => d.files.create(),
+    onScreen: (d) => d.files.showing,
+    // Narrows what is listed by name -- a folder's own files in Browse, the
+    // whole catalog (names, captions, tags, people, places) in the other
+    // views. See `files.setSearch`.
+    search: (d) => ({
+      placeholder: d.files.view === 'browse' ? 'Search this folder' : 'Search files',
+      query: d.files.search,
+      set: (q) => d.files.setSearch(q),
+    }),
   },
   assistant: {
     section: 'assistant',

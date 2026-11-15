@@ -50,6 +50,25 @@
 //! each is either made again or not this vault's: downloaded models, the mail
 //! search index, the pointer to the last vault opened, and the key kept in
 //! the system keychain.
+//!
+//! And the files folder, when the vault has one set up: its files go in the
+//! copy under `files/`, minus the folder Karma Yoga keeps for itself and the
+//! names a scan of the folder leaves out. They are plain files on the disk
+//! and sealed here like the rest.
+//!
+//! # A files folder that is not there
+//!
+//! The folder may be on an encrypted volume or a drive that is not mounted
+//! tonight. A backup that took that for an empty folder would write a copy
+//! without the files, and a few nights of it would push every copy that held
+//! them out of "keep 7". So while the folder is unavailable -- the vault
+//! says so, by the marker file its folder carries -- the previous copy's
+//! `files/` entries are carried into the new manifest unchanged: the chunks
+//! are already there, nothing is sent, and the run says it was done
+//! ([`karmayoga_core::backup::BackupReport::files_folder_unavailable`]).
+//!
+//! `files/` goes back to the folder the vault had, or one a restore is told
+//! of, and one file can be brought back alone ([`restore::restore_file`]).
 
 mod creds;
 pub mod folder;

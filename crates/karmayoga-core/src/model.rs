@@ -4,7 +4,7 @@
 //! index and the UI. They are deliberately backend-agnostic: nothing here
 //! knows about SQL tables or Markdown frontmatter.
 
-use crate::id::{BlobId, EntryId, JournalId, TrackerId};
+use crate::id::{BlobId, EntryId, FileId, JournalId, TrackerId};
 use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
 use crate::template::JournalTemplates;
@@ -362,6 +362,7 @@ impl Entry {
             word_count: plain.split_whitespace().count() as u32,
             attachment_count: self.attachments.len() as u32,
             cover: self.attachments.iter().find(|a| a.kind == MediaKind::Image).map(|a| a.blob),
+            cover_file: self.body.first_image_file(),
             place: self
                 .location
                 .as_ref()
@@ -407,6 +408,11 @@ pub struct EntrySummary {
     /// First image in the entry, used as a thumbnail in the list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover: Option<BlobId>,
+    /// The first picture in the body that is kept in the files catalog: the
+    /// thumbnail when the entry's pictures are files rather than attachments
+    /// and [`EntrySummary::cover`] has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_file: Option<FileId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<String>,
     /// Carried so the list can say what an entry is filed under, and offer

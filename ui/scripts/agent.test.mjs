@@ -444,6 +444,20 @@ function msg(over) {
   assert.equal(turns[2].role, 'user', 'a picture with nothing said is still the person speaking')
 }
 
+// Files handed over come back with the turn they were sent with. A message
+// with none carries none -- the Rust side leaves the empty list off the wire.
+{
+  const turns = replay([
+    msg({ id: 'm1', role: 'user', content: 'read this', files: ['file-a', 'file-b'] }),
+    msg({ id: 'm2', role: 'assistant', content: 'Done.' }),
+    msg({ id: 'm3', role: 'user', content: 'and?' }),
+  ])
+  assert.deepEqual(
+    turns.map((t) => t.files),
+    [['file-a', 'file-b'], [], []],
+  )
+}
+
 // A stored tool turn that failed is replayed as failed. The flag is on the
 // record precisely so the interface never has to read the prose to decide.
 {

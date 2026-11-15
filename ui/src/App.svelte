@@ -20,6 +20,7 @@
   import { feed } from './lib/feed.svelte'
   import { money } from './lib/money.svelte'
   import { screentime } from './lib/screentime.svelte'
+  import { files } from './lib/files.svelte'
   import { assistant } from './lib/assistant.svelte'
   import { proposals } from './lib/proposals.svelte'
   import { purpose } from './lib/purpose.svelte'
@@ -47,6 +48,7 @@
   import FeedView from './components/FeedView.svelte'
   import MoneyView from './components/MoneyView.svelte'
   import ScreenTimeView from './components/ScreenTimeView.svelte'
+  import FilesView from './components/FilesView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import AssistantView from './components/AssistantView.svelte'
   import LockScreen from './components/LockScreen.svelte'
@@ -166,7 +168,9 @@
   // used to be a chain of ternaries with a fallback on the end, which had
   // grown a clause per app and quietly gave any new one the *journal's*
   // accent, which is the one answer that is wrong everywhere.
-  const accent = $derived(APPS[app.section].accent({ app, todo, library, feed, money, screentime }))
+  const accent = $derived(
+    APPS[app.section].accent({ app, todo, library, feed, money, screentime, files }),
+  )
 
   // Each app's sidebar folds on its own -- see `sidebar.svelte.ts` -- and a
   // peek belongs to the app it was raised over, so changing app (or opening
@@ -272,6 +276,21 @@
   <ChoiceDialog title={q.title} detail={q.detail} options={q.options} oncancel={q.cancel} />
 {/if}
 
+<!-- The Files app's: deleting for good, emptying the trash, forgetting files
+     that went missing, deleting an album. Asked by the store
+     (`files.question`), so every way to the same act -- a menu, a key, the
+     inspector -- asks the same thing. Trashing does not ask: the trash is
+     the undo. -->
+{#if files.question}
+  {@const q = files.question}
+  <ChoiceDialog
+    title={q.title}
+    detail={q.body}
+    options={[{ label: q.confirm, danger: q.danger, run: () => files.answer(true) }]}
+    oncancel={() => files.answer(false)}
+  />
+{/if}
+
 <div class="app" style="--journal-accent: {accent}">
   {#if app.screen !== 'main'}
     <!-- The window's title bar on the screens that have no top bar. Off
@@ -363,6 +382,8 @@
               <MoneyView />
             {:else if app.section === 'screentime'}
               <ScreenTimeView />
+            {:else if app.section === 'files'}
+              <FilesView />
             {:else if app.section === 'overview'}
               <OverviewView />
             {:else}

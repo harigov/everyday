@@ -31,6 +31,7 @@ import type {
   Bootstrap,
   ChangeEvent,
   ConversationId,
+  FileId,
   OnScreen,
   ShellNotification,
   VaultStatus,
@@ -254,6 +255,22 @@ export async function webInvoke<T>(cmd: string, args?: Args, requestId?: string)
   return serviceCall<T>(cmd, (args ?? {}) as Record<string, unknown>, requestId)
 }
 
+/**
+ * One chunk of a files upload (`api.uploadChunk`): raw bytes to
+ * `/v1/files/upload/{upload}?offset=`, answering the bytes received so far.
+ */
+export async function webUploadChunk(
+  upload: string,
+  offset: number,
+  bytes: Uint8Array,
+): Promise<number> {
+  return post<number>(
+    `/v1/files/upload/${encodeURIComponent(upload)}?offset=${offset}`,
+    bytes as Uint8Array<ArrayBuffer>,
+    { 'Content-Type': 'application/octet-stream' },
+  )
+}
+
 async function serviceCall<T>(
   cmd: string,
   args: Record<string, unknown>,
@@ -298,6 +315,7 @@ export async function webSendMessage(
   prompt: string,
   onScreen: OnScreen | null,
   attachments: Attachment[],
+  files: FileId[],
   onEvent: (event: AgentEvent) => void,
 ): Promise<void> {
   let res: Response
@@ -305,7 +323,7 @@ export async function webSendMessage(
     res = await fetch('/v1/stream/send_message', {
       method: 'POST',
       headers: headers({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ conversationId, prompt, onScreen, attachments }),
+      body: JSON.stringify({ conversationId, prompt, onScreen, attachments, files }),
       credentials: 'same-origin',
     })
   } catch {

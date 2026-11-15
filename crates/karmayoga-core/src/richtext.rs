@@ -13,7 +13,7 @@
 //!
 //! [ProseMirror]: https://prosemirror.net/docs/ref/#model.Document_Structure
 
-use crate::id::BlobId;
+use crate::id::{BlobId, FileId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -324,6 +324,23 @@ impl RichDoc {
         out
     }
 
+    /// The first picture in the document that is a file in the files
+    /// catalog: what a list draws as the record's cover when its pictures
+    /// are kept as files rather than as attachments.
+    pub fn first_image_file(&self) -> Option<FileId> {
+        first_image_file(&self.0, 0)
+    }
+
+    /// Every file in the files catalog a media node refers to, deduplicated:
+    /// a node whose `attrs.file` is a [`FileId`]. Such a node has no `blob`;
+    /// the file's bytes are wherever the catalog says (see
+    /// [`crate::files`]).
+    pub fn file_refs(&self) -> BTreeSet<FileId> {
+        let mut out = BTreeSet::new();
+        collect_files(&self.0, &mut out, 0);
+        out
+    }
+
     /// Render to Markdown. Used by the Markdown storage backend, by "export
     /// entry" in the UI and wherever the assistant reads a document. Unknown
     /// node types degrade to their text.
@@ -390,6 +407,42 @@ fn collect_text(node: &Value, out: &mut String, d: usize) {
     }
     if is_block(ty) {
         out.push('\n');
+    }
+}
+
+fn first_image_file(node: &Value, d: usize) -> Option<FileId> {
+    if d > MAX_DEPTH {
+        return None;
+    }
+    let attrs = node.get("attrs");
+    if node.get("type").and_then(Value::as_str) == Some(MEDIA_NODE)
+        && attrs.and_then(|a| a.get("kind")).and_then(Value::as_str) == Some("image")
+        && let Some(id) = attrs
+            .and_then(|a| a.get("file"))
+            .and_then(Value::as_str)
+            .and_then(|s| FileId::parse(s).ok())
+    {
+        return Some(id);
+    }
+    node.get("content")
+        .and_then(Value::as_array)
+        .and_then(|children| children.iter().find_map(|child| first_image_file(child, d + 1)))
+}
+
+fn collect_files(node: &Value, out: &mut BTreeSet<FileId>, d: usize) {
+    if d > MAX_DEPTH {
+        return;
+    }
+    if node.get("type").and_then(Value::as_str) == Some(MEDIA_NODE)
+        && let Some(s) = node.get("attrs").and_then(|a| a.get("file")).and_then(Value::as_str)
+        && let Ok(id) = FileId::parse(s)
+    {
+        out.insert(id);
+    }
+    if let Some(children) = node.get("content").and_then(Value::as_array) {
+        for child in children {
+            collect_files(child, out, d + 1);
+        }
     }
 }
 
@@ -498,14 +551,24 @@ fn md_block(node: &Value, d: usize) -> String {
         MEDIA_NODE => {
             let text = |key| attr(node, key).and_then(Value::as_str).unwrap_or_default();
             let (caption, blob) = (text("caption"), text("blob"));
+            // Only an id `file_refs` would also find: anything else in the
+            // attribute is not a file, and linking it would point at nothing.
+            let file = Some(text("file")).filter(|f| FileId::parse(f).is_ok()).unwrap_or_default();
+            // A node naming a file in the files catalog rather than a blob
+            // links to it by id, the way a blob is linked by address.
+            let target = if blob.is_empty() && !file.is_empty() {
+                format!("files/{file}")
+            } else {
+                format!("media/{blob}")
+            };
             // Images use image syntax; other media degrade to a link so that
             // the Markdown stays readable in any other editor.
             if text("kind") == "image" {
-                format!("![{caption}](media/{blob})")
+                format!("![{caption}]({target})")
             } else {
                 let filename = text("filename");
-                let label = [caption, filename, blob].into_iter().find(|s| !s.is_empty());
-                format!("[{}](media/{blob})", label.unwrap_or_default())
+                let label = [caption, filename, blob, file].into_iter().find(|s| !s.is_empty());
+                format!("[{}]({target})", label.unwrap_or_default())
             }
         }
         "text" | "hardBreak" => md_inline(std::slice::from_ref(node), d),

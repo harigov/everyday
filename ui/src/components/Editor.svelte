@@ -258,6 +258,7 @@
             syncBody={() => app.syncBody()}
             onedit={() => app.scheduleSave()}
             onattach={attach}
+            origin="journal"
             onwords={(n: number) => (words = n)}
             onstoring={(f: string | null) => (storing = f)}
           />

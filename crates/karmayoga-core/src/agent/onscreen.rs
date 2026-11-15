@@ -45,10 +45,11 @@ use serde::{Deserialize, Serialize};
 
 use super::tools::{Domain, ToolContext, mail as mail_tools};
 use crate::account::{Account, Permission};
+use crate::files::{FileKind, FileStatus};
 use crate::id::{
-    AccountId, BlockId, CalendarId, DraftId, EntryId, EventId, GoalId, ItemId, JournalId, KindId,
-    MailMessageId, MailboxId, NewsSourceId, NoteId, ProjectId, RoleId, StoryId, TaskId, ThreadId,
-    TrackerId,
+    AccountId, AlbumId, BlockId, CalendarId, DraftId, EntryId, EventId, FileId, GoalId, ItemId,
+    JournalId, KindId, MailMessageId, MailboxId, NewsSourceId, NoteId, ProjectId, RoleId, StoryId,
+    TaskId, ThreadId, TrackerId,
 };
 use crate::mail::{Address, Message};
 use crate::record::RecordKind;
@@ -81,6 +82,8 @@ pub enum App {
     /// own section name.
     #[serde(rename = "screentime")]
     ScreenTime,
+    /// The Files app, its Photos view included.
+    Files,
     Assistant,
     Journal,
     /// Settings is a page drawn where the app would be, not a dialog over
@@ -104,6 +107,7 @@ impl App {
             App::ScreenTime => {
                 "Screen time, where how long they spent in each app and on each website is"
             }
+            App::Files => "Files, where the files in their files folder and their photos are",
             App::Assistant => {
                 "the Assistant app, where this conversation fills the window and nothing \
                  else is on screen"
@@ -152,6 +156,10 @@ pub enum Shown {
     BankAccount(crate::id::BankAccountId),
     /// A transaction in Money.
     Txn(crate::id::TxnId),
+    /// A file in the Files app, the one open in the viewer or selected.
+    File(FileId),
+    /// An album in the Files app's Photos view.
+    Album(AlbumId),
 }
 
 impl Shown {
@@ -179,6 +187,8 @@ impl Shown {
             Shown::Story(_) => RecordKind::Story,
             Shown::BankAccount(_) => RecordKind::BankAccount,
             Shown::Txn(_) => RecordKind::Txn,
+            Shown::File(_) => RecordKind::File,
+            Shown::Album(_) => RecordKind::Album,
         }
     }
 }
@@ -571,7 +581,63 @@ fn line(ctx: &ToolContext<'_>, tz: &TimeZone, shown: Shown) -> Option<Said> {
             ));
             Said::mail(text)
         }
+        Shown::File(id) => {
+            // The same switch the file tools answer to: with the assistant
+            // not allowed to look through their files, what is open is not
+            // described either, rather than leaking a name the tools would
+            // have refused to give.
+            if !may_look_at_files(ctx) {
+                return None;
+            }
+            let file = vault.file(id).ok()?;
+            let what = match file.kind {
+                FileKind::Image => "a picture",
+                FileKind::Video => "a video",
+                FileKind::Audio => "an audio file",
+                FileKind::Document => "a document",
+                FileKind::Other => "a file",
+            };
+            let when = file.when().to_zoned(tz.clone()).date().strftime("%A %-d %B %Y");
+            // A sealed file has no folder; a plain one's is quoted like any
+            // name, since the folder's name is somebody's too.
+            let place = match file.dir() {
+                Some("") => ", at the top of their files folder".to_string(),
+                Some(dir) => format!(", in the folder {}", q(dir)),
+                None => ", kept sealed in the vault rather than in a folder".to_string(),
+            };
+            let state = match file.status {
+                FileStatus::Present => "",
+                FileStatus::Missing { .. } => " It is missing from its folder at the moment.",
+                FileStatus::Trashed { .. } => " It is in the trash.",
+            };
+            Said::with_id(format!(
+                "the file {} (id {id}), {what} dated {when}{place}.{state}",
+                q(&file.name)
+            ))
+        }
+        Shown::Album(id) => {
+            if !may_look_at_files(ctx) {
+                return None;
+            }
+            let album = vault.albums().ok()?.into_iter().find(|a| a.album.id == id)?;
+            let count = match album.count {
+                1 => "1 file".to_string(),
+                n => format!("{n} files"),
+            };
+            Said::with_id(format!(
+                "the album {} (id {id}) in Photos, with {count}.",
+                q(&album.album.name)
+            ))
+        }
     }
+}
+
+/// May the assistant be told about their files? The switch every file tool
+/// checks first -- see [`FilesSettings::assistant_access`].
+///
+/// [`FilesSettings::assistant_access`]: crate::files::FilesSettings::assistant_access
+fn may_look_at_files(ctx: &ToolContext<'_>) -> bool {
+    ctx.vault.files_settings().is_ok_and(|settings| settings.assistant_access)
 }
 
 /// May the assistant read mail on `account`? The very gate `read_thread`
@@ -769,8 +835,24 @@ mod tests {
             Shown::Thread(ThreadId::new()),
             Shown::Message(MailMessageId::new()),
             Shown::Draft(DraftId::new()),
+            Shown::File(FileId::new()),
+            Shown::Album(AlbumId::new()),
         ] {
             assert!(Domain::try_from(shown.record_kind()).is_ok(), "{shown:?}");
         }
+    }
+
+    #[test]
+    fn a_file_and_an_album_are_named_by_kind_and_id_on_the_wire() {
+        let (file, album) = (FileId::new(), AlbumId::new());
+        let screen: OnScreen = serde_json::from_value(serde_json::json!({
+            "app": "files",
+            "within": [{ "kind": "album", "id": album.to_string() }],
+            "open": [{ "kind": "file", "id": file.to_string() }],
+        }))
+        .unwrap();
+        assert_eq!(screen.app, App::Files);
+        assert_eq!(screen.within, vec![Shown::Album(album)]);
+        assert_eq!(screen.open, vec![Shown::File(file)]);
     }
 }

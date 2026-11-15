@@ -80,6 +80,8 @@ pub(super) enum Domain {
     /// Screen time: spans, labels, categories and settings -- see
     /// [`crate::screentime`] and [`crate::store::screentime`].
     ScreenTime,
+    /// The files catalog -- see [`crate::files`] and [`crate::store::files`].
+    Files,
 }
 
 impl Domain {
@@ -105,6 +107,7 @@ impl Domain {
             Domain::News => "a feed (this vault's backend stores journals only)",
             Domain::Money => "money (this vault's backend stores journals only)",
             Domain::ScreenTime => "screen time (this vault's backend stores journals only)",
+            Domain::Files => "files (this vault's backend stores journals only)",
         }
     }
 }

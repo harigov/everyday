@@ -32,6 +32,14 @@ import type {
   ScreenQuery,
   ScreenTimeSettings,
   ScreenTimeStatus,
+  Album,
+  AlbumId,
+  FileEntry,
+  FileId,
+  FileOrigin,
+  FileQuery,
+  FileUpdate,
+  FilesSettings,
   DeclineReason,
   AgentCallerKind,
   AgentEvent,
@@ -166,6 +174,7 @@ import {
   onWebNotification,
   webInvoke,
   webSendMessage,
+  webUploadChunk,
 } from './web'
 
 // Decided at BUILD time, not run time.
@@ -385,7 +394,10 @@ export let onMeetingOffer: (handler: (offer: MeetingOfferPayload) => void) => vo
  * Rejects with the same `VaultError` every other command does.
  *
  * `attachments` are pictures sent with `prompt`, each made ready by
- * `api.preparePicture` first.
+ * `api.preparePicture` first. `files` are whatever else was handed over, by
+ * id: files already in the files catalog (`addFiles` puts them there). A
+ * picture can be in both -- its catalogued file, and the small copy a model
+ * is shown.
  *
  * Replaced with the mock implementation in dev-without-Tauri, so the panel is
  * as usable in a browser as the rest of the interface.
@@ -395,6 +407,7 @@ export let sendMessage: (
   prompt: string,
   onScreen: OnScreen | null,
   attachments: Attachment[],
+  files: FileId[],
   onEvent: (event: AgentEvent) => void,
 ) => Promise<void> = async () => {
   throw new VaultError('unavailable', 'The assistant could not reach its backend.')
@@ -454,7 +467,7 @@ if (SHELL) {
   }
 
   const mod = await import('@tauri-apps/api/core')
-  sendMessage = async (conversationId, prompt, onScreen, attachments, onEvent) => {
+  sendMessage = async (conversationId, prompt, onScreen, attachments, files, onEvent) => {
     const channel = new mod.Channel<AgentEvent>()
     channel.onmessage = onEvent
     // By name, not through `call`: a turn answers with a stream rather than a
@@ -465,6 +478,7 @@ if (SHELL) {
       prompt,
       onScreen,
       attachments,
+      files,
       channel,
     })
   }
@@ -2056,6 +2070,89 @@ export const api = {
   screentimeConnectBrowser: (browser: string) =>
     invoke<BrowserConnection>('screentime_connect_browser', { browser }),
 
+  // ── Files ──────────────────────────────────────────────────────────
+  //
+  // The files catalog and the files folder -- see `docs/plans/files.md`.
+  // Available when `status.capabilities.files` is true. Named as the
+  // commands are, bar the shell's own at the end.
+
+  filesStatus: () => call('filesStatus', {}),
+  saveFilesSettings: (settings: FilesSettings) => call('saveFilesSettings', { settings }),
+  /** Set the folder up at `path` (absolute), or at the default when absent. */
+  setUpFilesFolder: (path?: string) => call('setUpFilesFolder', { path }),
+  listFiles: (query: FileQuery) => call('listFiles', { query }),
+  /** One folder: subfolders from the disk, files from the catalog. */
+  listFolder: (dir: string) => call('listFolder', { dir }),
+  getFile: (id: FileId) => call('getFile', { id }),
+  filesFacets: () => call('filesFacets', {}),
+  /**
+   * Copy files from paths on the vault's own machine. Only the shell on that
+   * machine may (`FilesStatus.local`); everything else uploads.
+   */
+  importFiles: (
+    paths: string[],
+    opts: { dir?: string; origin?: FileOrigin; encrypted?: boolean } = {},
+  ) => call('importFiles', { paths, ...opts }),
+  beginUpload: (
+    name: string,
+    size: number,
+    opts: { dir?: string; origin?: FileOrigin; encrypted?: boolean } = {},
+  ) => call('beginUpload', { name, size, ...opts }),
+  /**
+   * One chunk of an upload, as raw bytes. Answers the bytes received so far.
+   * Not a service command (its body is bytes, as `put_blob`'s is): the shell
+   * has `upload_chunk`, reading the upload and the offset from headers; web
+   * access posts to `/v1/files/upload/{upload}?offset=`.
+   */
+  uploadChunk: (upload: string, offset: number, bytes: Uint8Array) =>
+    uploadChunk(upload, offset, bytes),
+  finishUpload: (upload: string) => call('finishUpload', { upload }),
+  cancelUpload: (upload: string) => call('cancelUpload', { upload }),
+  createFolder: (dir: string, name: string) => call('createFolder', { dir, name }),
+  renameFile: (id: FileId, name: string) => call('renameFile', { id, name }),
+  moveFiles: (ids: FileId[], dir: string) => call('moveFiles', { ids, dir }),
+  renameFolder: (path: string, name: string) => call('renameFolder', { path, name }),
+  moveFolder: (path: string, into: string) => call('moveFolder', { path, into }),
+  updateFiles: (ids: FileId[], update: FileUpdate) => call('updateFiles', { ids, update }),
+  stackFiles: (top: FileId, others: FileId[]) => call('stackFiles', { top, others }),
+  unstackFiles: (ids: FileId[]) => call('unstackFiles', { ids }),
+  trashFiles: (ids: FileId[]) => call('trashFiles', { ids }),
+  /** Answers how many files went to the trash. */
+  trashFolder: (path: string) => call('trashFolder', { path }),
+  restoreFiles: (ids: FileId[]) => call('restoreFiles', { ids }),
+  deleteFilesForever: (ids: FileId[]) => call('deleteFilesForever', { ids }),
+  emptyFilesTrash: () => call('emptyFilesTrash', {}),
+  forgetMissingFiles: (ids: FileId[]) => call('forgetMissingFiles', { ids }),
+  setFileEncrypted: (id: FileId, encrypted: boolean) => call('setFileEncrypted', { id, encrypted }),
+  /** A film's poster frame, drawn here: a JPEG or PNG, base64. */
+  setFileThumbnail: (id: FileId, image: string) => call('setFileThumbnail', { id, image }),
+  rescanFiles: () => call('rescanFiles', {}),
+  listAlbums: () => call('listAlbums', {}),
+  saveAlbum: (album: Album) => call('saveAlbum', { album }),
+  deleteAlbum: (id: AlbumId) => call('deleteAlbum', { id }),
+  addToAlbum: (id: AlbumId, files: FileId[]) => call('addToAlbum', { id, files }),
+  removeFromAlbum: (id: AlbumId, files: FileId[]) => call('removeFromAlbum', { id, files }),
+  /** Move pictures kept inside entries, notes and messages into the folder. */
+  bringInAttachments: () => call('bringInAttachments', {}),
+  saveMailPartToFiles: (messageId: string, part: string, dir?: string) =>
+    call('saveMailPartToFiles', { messageId, part, dir }),
+  restoreFileFromBackup: (id: FileId) => call('restoreFileFromBackup', { id }),
+
+  // This machine's half: pickers, a drop's paths, opening a file in another
+  // program. By name, not through `call`: they are the shell's own, and only
+  // a window on the vault's machine (`FilesStatus.local`) can use them.
+  /** Ask the system file picker for files and import them; `[]` if cancelled. */
+  pickAndImportFiles: (opts: { dir?: string; origin?: FileOrigin; encrypted?: boolean } = {}) =>
+    invoke<FileEntry[]>('pick_and_import_files', opts),
+  /** Ask the system folder picker for a folder; null if cancelled. */
+  pickFilesFolder: () => invoke<string | null>('pick_files_folder'),
+  /** Open a file in the program the system uses for it. */
+  openFileExternally: (id: FileId) => invoke<void>('open_file_externally', { id }),
+  /** Show a plain file in the system file manager. */
+  revealFile: (id: FileId) => invoke<void>('reveal_file', { id }),
+  /** Ask where to save copies of these files, and save them; how many were saved. */
+  exportFiles: (ids: FileId[]) => invoke<number>('export_files', { ids }),
+
   // ── Accounts ───────────────────────────────────────────────────────
   //
   // A mailbox provider signed in to -- not owned by the mail app, see
@@ -2175,6 +2272,65 @@ export function mediaUrl(blob: string): string {
       ? 'http://karmayoga.localhost'
       : 'karmayoga://localhost'
   return `${base}/${blob}`
+}
+
+/**
+ * URL for a file in the files catalog: `karmayoga://files/file/{id}` in the
+ * desktop window, answered with ranges from the folder (or the vault, for a
+ * sealed file); `/v1/files/file/{id}` over web access.
+ *
+ * Unlike a blob, a file's bytes can change under the same id -- something
+ * else may edit it in the folder -- so `version` (its hash, or its modified
+ * time when not yet hashed) is added for the webview's cache to tell them
+ * apart. `fileVersion` gives it.
+ */
+export function fileUrl(id: string, version = ''): string {
+  const v = version ? `?v=${encodeURIComponent(version)}` : ''
+  if (MOCK) return mockFileUrl(id)
+  if (WEB) return `${webMediaBase()}/v1/files/file/${id}${v}`
+  const base =
+    navigator.userAgent.includes('Windows') || navigator.userAgent.includes('Android')
+      ? 'http://karmayoga.localhost/files'
+      : 'karmayoga://files'
+  return `${base}/file/${id}${v}`
+}
+
+/** What `fileUrl` is versioned by. */
+export function fileVersion(file: { hash: string; modifiedAt: string }): string {
+  return file.hash || file.modifiedAt
+}
+
+/** A file's thumbnail, when one has been drawn: a blob like any other. */
+export function thumbnailUrl(file: { thumbnail?: string }): string | null {
+  return file.thumbnail ? mediaUrl(file.thumbnail) : null
+}
+
+async function uploadChunk(upload: string, offset: number, bytes: Uint8Array): Promise<number> {
+  if (MOCK) return mockUploadChunk(upload, offset, bytes)
+  if (WEB) return webUploadChunk(upload, offset, bytes)
+  const mod = await import('@tauri-apps/api/core')
+  try {
+    return await mod.invoke<number>('upload_chunk', bytes, {
+      headers: { 'x-karmayoga-upload': upload, 'x-karmayoga-offset': String(offset) },
+    })
+  } catch (raw) {
+    if (raw && typeof raw === 'object' && 'code' in raw && 'message' in raw) {
+      throw new VaultError(String(raw.code), String(raw.message))
+    }
+    throw new VaultError('unknown', String(raw))
+  }
+}
+
+let mockFileUrl: (id: string) => string = () => ''
+let mockUploadChunk: (
+  upload: string,
+  offset: number,
+  bytes: Uint8Array,
+) => Promise<number> = async () => 0
+if (MOCK) {
+  const { mockFileUrl: f, mockUploadChunk: u } = await import('./mock-files')
+  mockFileUrl = f
+  mockUploadChunk = u
 }
 
 let mockMediaUrl: (blob: string) => string = () => ''

@@ -217,6 +217,33 @@ impl Session {
         }
     }
 
+    /// One chunk of an upload to the files folder, wherever the vault is: the
+    /// service's own `upload_chunk` for a vault in this process, the server's
+    /// `POST /v1/files/upload/{upload}?offset=` for one that is not. Answers
+    /// the bytes received so far. Bytes rather than JSON, so not a command --
+    /// see `karmayoga_service::domains::files::upload_chunk`.
+    pub async fn upload_chunk(
+        &self,
+        ctx: Ctx,
+        upload: &str,
+        offset: u64,
+        bytes: Vec<u8>,
+    ) -> CommandResult<u64> {
+        match self {
+            Session::Local(service) => {
+                karmayoga_service::domains::files::upload_chunk(
+                    service.clone(),
+                    ctx,
+                    upload.to_string(),
+                    offset,
+                    bytes,
+                )
+                .await
+            }
+            Session::Remote(remote) => remote.client.upload_chunk(upload, offset, bytes).await,
+        }
+    }
+
     /// A turn of the assistant.
     pub async fn send_message(
         &self,

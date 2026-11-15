@@ -1221,6 +1221,27 @@
       "title": "Draft reply"
     },
     {
+      "domain": "files",
+      "effect": "read",
+      "name": "file_info",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The file's id, from find_files or one they handed you.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "File info"
+    },
+    {
       "domain": "mail",
       "effect": "read",
       "name": "find_address",
@@ -1244,6 +1265,76 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Find address"
+    },
+    {
+      "domain": "files",
+      "effect": "read",
+      "name": "find_files",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "album": {
+            "description": "Only files in this album, by its name or id.",
+            "type": "string"
+          },
+          "favourite": {
+            "description": "Only files marked as favourites.",
+            "type": "boolean"
+          },
+          "folder": {
+            "description": "Only files in this folder of their files folder or any folder under it, like \"Photos/2024\". Leave out for everywhere.",
+            "type": "string"
+          },
+          "from": {
+            "description": "Only files from this day on, inclusive: the day a photo was taken, else the day the file last changed. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Only this kind of file.",
+            "enum": [
+              "image",
+              "video",
+              "audio",
+              "document",
+              "other"
+            ],
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "offset": {
+            "description": "Skip this many matches, to read on from a page that said `more`.",
+            "type": "integer"
+          },
+          "person": {
+            "description": "Only files with this person in them.",
+            "type": "string"
+          },
+          "place": {
+            "description": "Only files taken or kept at this place.",
+            "type": "string"
+          },
+          "tag": {
+            "description": "Only files carrying this tag.",
+            "type": "string"
+          },
+          "text": {
+            "description": "Words, every one of which must appear in the file's name, caption, a tag, a person, its place or its path (any case).",
+            "type": "string"
+          },
+          "to": {
+            "description": "Only files up to this day, inclusive. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Find files"
     },
     {
       "domain": "money",
@@ -2523,6 +2614,88 @@
       "title": "Move thread"
     },
     {
+      "domain": "files",
+      "effect": "write",
+      "name": "organize_files",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "add_people": {
+            "description": "Names of people to add as being in each file.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "add_tags": {
+            "description": "Tags to add to each file.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "album": {
+            "description": "Add the files to this existing album, by its name or id.",
+            "type": "string"
+          },
+          "caption": {
+            "description": "Set each file's caption to this; an empty string clears it.",
+            "type": "string"
+          },
+          "create_folder": {
+            "description": "Make this folder, with any folders above it.",
+            "type": "string"
+          },
+          "favourite": {
+            "description": "Mark or unmark the files as favourites.",
+            "type": "boolean"
+          },
+          "ids": {
+            "description": "Ids of the files to change, from find_files. At most 200. Not needed for `create_folder` or `new_album` alone.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "move_to": {
+            "description": "Move the files into this folder of their files folder, like \"Photos/2024/Lisbon\", made if it is not there. Sealed files have no folder and are refused.",
+            "type": "string"
+          },
+          "new_album": {
+            "description": "Add the files to the album of this name, making it if there is none. With no ids it just makes the album.",
+            "type": "string"
+          },
+          "place": {
+            "description": "Set the place each file was taken or kept at; an empty string clears it.",
+            "type": "string"
+          },
+          "rating": {
+            "description": "Stars from 1 to 5; 0 clears the rating.",
+            "type": "integer"
+          },
+          "remove_people": {
+            "description": "Names of people to take off each file.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "remove_tags": {
+            "description": "Tags to take off each file.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Organize files"
+    },
+    {
       "domain": "journals",
       "effect": "read",
       "name": "overview",
@@ -2579,6 +2752,31 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Read conversation"
+    },
+    {
+      "domain": "files",
+      "effect": "read",
+      "name": "read_file",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "The file's id, from find_files or one they handed you.",
+            "type": "string"
+          },
+          "start": {
+            "description": "Byte to start reading at. Leave out to read from the top; to go on from a read that was `truncated`, pass its `next_start`.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Read file"
     },
     {
       "domain": "journals",
@@ -2746,6 +2944,36 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Run routine"
+    },
+    {
+      "domain": "files",
+      "effect": "write",
+      "name": "save_file",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "folder": {
+            "description": "The folder of their files folder to put it in, like \"Projects/Garden\", made if it is not there. Leave out to put it with the other files you have written.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The file's name with its extension, like \"packing list.md\" or \"expenses 2026.csv\". No folders in it. Extensions allowed: md, markdown, txt, csv, tsv, json, jsonl, xml, yaml, yml, toml, log, ics; with none, .md is added.",
+            "type": "string"
+          },
+          "text": {
+            "description": "The whole text of the file, at most 1 MB. For a .json file it has to be valid JSON.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "text"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Save file"
     },
     {
       "domain": "news",
@@ -3242,6 +3470,30 @@
       "scope": "trackers",
       "sensitivity": "ordinary",
       "title": "Tracker summary"
+    },
+    {
+      "domain": "files",
+      "effect": "destructive",
+      "name": "trash_files",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "ids": {
+            "description": "Ids of the files to move to the trash, from find_files. At most 200.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "type": "object"
+      },
+      "scope": "files",
+      "sensitivity": "ordinary",
+      "title": "Trash files"
     },
     {
       "domain": "mail",

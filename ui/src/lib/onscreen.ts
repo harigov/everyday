@@ -88,6 +88,8 @@ const UNTITLED: Record<ShownKind, string> = {
   story: 'An untitled story',
   bankAccount: 'A bank account',
   txn: 'A transaction',
+  file: 'A file',
+  album: 'An album',
 }
 
 /** The most `send_message` will carry of each list -- the service reads no

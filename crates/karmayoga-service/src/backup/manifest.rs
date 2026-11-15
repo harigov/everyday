@@ -26,8 +26,21 @@ pub struct Manifest {
     pub host: String,
     /// The vault's name, as its header has it.
     pub vault_name: String,
+    /// The files folder as the vault's settings named it when this copy was
+    /// made, when one was set up: where `files/` goes back to unless a
+    /// restore is told otherwise. Sealed with the rest of the manifest, so a
+    /// path on somebody's computer is as private here as it is there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub files_folder: Option<String>,
     pub files: Vec<FileEntry>,
 }
+
+/// What a file in the person's files folder is named under inside a copy:
+/// `files/Photos/a.jpg`. Entries under it are laid back into the files
+/// folder, not the vault directory, though they are [`Area::Vault`] ones as
+/// far as a build that has never heard of the files folder is concerned --
+/// which restores them as a harmless `files/` beside the store.
+pub const FILES_PREFIX: &str = "files/";
 
 /// Which folder a file is laid back down in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -53,6 +66,14 @@ pub struct FileEntry {
     pub chunk_size: u32,
     /// In order; the file is their plaintexts end to end.
     pub chunks: Vec<String>,
+}
+
+impl FileEntry {
+    /// Whether this is a file from the person's files folder (see
+    /// [`FILES_PREFIX`]).
+    pub fn in_files_folder(&self) -> bool {
+        self.area == Area::Vault && self.path.starts_with(FILES_PREFIX)
+    }
 }
 
 impl Manifest {

@@ -374,6 +374,8 @@ pub struct Files<'a> {
     /// used by three entries is one file linked three times. Blobs are
     /// content-addressed, so this is exact rather than a guess at sameness.
     blobs: BTreeMap<karmayoga_core::BlobId, String>,
+    /// The same, for files in the files catalog that a document refers to.
+    catalogued: BTreeMap<karmayoga_core::FileId, String>,
 }
 
 impl Files<'_> {
@@ -452,6 +454,59 @@ impl Files<'_> {
     }
 }
 
+impl Files<'_> {
+    /// Write a file from the files catalog that a document refers to, beside
+    /// the attachments in `media/`, and answer where it went -- the same way
+    /// [`Files::media`] writes a blob, so an export is whole whichever way an
+    /// entry keeps its pictures. `None` when media are not exported, or the
+    /// file cannot be read now (missing from the folder, the folder locked):
+    /// the document is still written, with its link left as it was.
+    ///
+    /// A plain file is read from the folder the vault's settings name, a
+    /// sealed one from the blob store. Either may be a film of gigabytes;
+    /// the archive takes it as it would an attachment that size.
+    pub fn catalogued(
+        &mut self,
+        store: &dyn JournalStore,
+        id: karmayoga_core::FileId,
+        opts: &Options,
+    ) -> Result<Option<String>> {
+        if !opts.media {
+            return Ok(None);
+        }
+        if let Some(written) = self.catalogued.get(&id) {
+            return Ok(Some(written.clone()));
+        }
+        let Some(catalog) = store.files() else { return Ok(None) };
+        let read = || -> karmayoga_core::Result<(String, Vec<u8>)> {
+            let entry = catalog.get_file(id)?;
+            let body = match &entry.storage {
+                karmayoga_core::FileStorage::Sealed { blob } => store.get_blob(*blob)?,
+                karmayoga_core::FileStorage::Plain { path } => {
+                    let folder = catalog.files_settings()?.folder.ok_or_else(|| {
+                        karmayoga_core::Error::Invalid("the files folder is not set up".into())
+                    })?;
+                    let folder = karmayoga_core::files::disk::Folder::new(folder);
+                    std::fs::read(folder.resolve(path)?)
+                        .map_err(|e| karmayoga_core::Error::io(folder.root(), e))?
+                }
+            };
+            Ok((entry.name, body))
+        };
+        let (name, body) = match read() {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::warn!(%id, error = %e, "a file a document refers to could not be exported");
+                return Ok(None);
+            }
+        };
+        let path = format!("media/{}-{}", id.short(), text::safe_name(&name));
+        self.bytes_at(&path, &body)?;
+        self.catalogued.insert(id, path.clone());
+        Ok(Some(path))
+    }
+}
+
 /// Write an archive of `vault` into `out`.
 ///
 /// The manifest is written last of the metadata and first in reading order,
@@ -487,6 +542,7 @@ pub fn write_into(vault: &Vault, opts: &Options, sink: &mut dyn Sink) -> Result<
                 bytes: 0,
                 records: 0,
                 blobs: BTreeMap::new(),
+                catalogued: BTreeMap::new(),
             };
             part.export(store, &mut files, opts)?;
             // A part with nothing in it writes nothing and is not listed. An

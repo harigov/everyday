@@ -34,6 +34,7 @@ import type {
   Attachment,
   ConfirmKind,
   ConversationSummary,
+  FileId,
   MailLink,
 } from './types'
 
@@ -88,6 +89,9 @@ export interface Turn {
   text: string
   /** Pictures the person sent with a `user` turn. Empty on every other. */
   pictures: Attachment[]
+  /** Files in the files catalog the person handed over with a `user` turn --
+   *  a picture among them is in `pictures` as well. Empty on every other. */
+  files: FileId[]
   cards: ToolCard[]
   /** Set on a turn that failed, so the panel draws it as an error. */
   error: string | null
@@ -112,12 +116,14 @@ export function emptyTurn(
   id: string,
   text = '',
   pictures: Attachment[] = [],
+  files: FileId[] = [],
 ): Turn {
   return {
     id,
     role,
     text,
     pictures,
+    files,
     cards: [],
     error: null,
     thinking: '',
@@ -279,7 +285,7 @@ export function replay(messages: AgentMessage[]): Turn[] {
   const turns: Turn[] = []
   for (const m of messages) {
     if (m.role === 'user') {
-      turns.push(emptyTurn('user', m.id, m.content, m.attachments ?? []))
+      turns.push(emptyTurn('user', m.id, m.content, m.attachments ?? [], m.files ?? []))
       continue
     }
     if (m.role === 'assistant') {

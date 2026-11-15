@@ -13,16 +13,18 @@
 //! busy with a message already (it queues), and joining a room, which can
 //! retry for a minute, runs as a task of its own.
 //!
-//! With one exception: a picture is downloaded where it is heard, within
-//! [`DOWNLOAD_TIMEOUT`]. The order the owner's messages arrive in is part of
+//! With one exception: a picture or a file is downloaded where it is heard,
+//! within [`DOWNLOAD_TIMEOUT`] -- longer for a big file, see
+//! [`download_patience`]. The order the owner's messages arrive in is part of
 //! what they mean -- a photo, then "what is this?" -- and a download left to
 //! a task of its own could hand the relay the question before the picture
-//! it is about.
+//! it is about. The price is that the bot hears nothing else while a large
+//! file comes down, which is why [`MAX_FILE_BYTES`] is what it is.
 
 use super::rooms::kind_of;
 use super::rules::{self, RoomKind};
 use super::speaking::Questions;
-use crate::connector::{Choice, Incoming, Picture};
+use crate::connector::{Choice, Document, Incoming, MAX_FILE_BYTES, Picture};
 use matrix_sdk::deserialized_responses::EncryptionInfo;
 use matrix_sdk::event_handler::EventHandlerDropGuard;
 use matrix_sdk::media::{MediaFormat, MediaRequestParameters};
@@ -36,7 +38,7 @@ use matrix_sdk::ruma::events::room::message::sanitize::remove_plain_reply_fallba
 use matrix_sdk::ruma::events::room::message::{
     MessageType, OriginalSyncRoomMessageEvent, Relation, RoomMessageEventContent,
 };
-use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId};
+use matrix_sdk::ruma::{OwnedRoomId, OwnedUserId, UInt};
 use matrix_sdk::{Client, Room, RoomState};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -55,8 +57,43 @@ const FIRST_JOIN_RETRY: Duration = Duration::from_secs(2);
 /// so this is also the longest the bot can go deaf for one picture.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The longest the bot waits for any one download, however big the file says
+/// it is.
+const LONGEST_DOWNLOAD: Duration = Duration::from_secs(15 * 60);
+
+/// What a file's declared size adds to [`DOWNLOAD_TIMEOUT`]: a second for
+/// every 500 kB, which is a connection of four megabits.
+const BYTES_PER_EXTRA_SECOND: u64 = 500_000;
+
 /// What the owner is told when a picture they sent could not be fetched.
 const DOWNLOAD_FAILED: &str = "I couldn't download that picture. Try sending it again.";
+
+/// What the owner is told when a file they sent could not be fetched.
+const FILE_DOWNLOAD_FAILED: &str = "I couldn't download that file. Try sending it again.";
+
+/// How long to wait for a download of `size` bytes, when the sender said
+/// what size it was: [`DOWNLOAD_TIMEOUT`], and a second more for every
+/// [`BYTES_PER_EXTRA_SECOND`], up to [`LONGEST_DOWNLOAD`]. The size is the
+/// sender's own word, so it only ever stretches the wait; what is actually
+/// downloaded is measured again against [`MAX_FILE_BYTES`] afterwards.
+fn download_patience(size: Option<u64>) -> Duration {
+    let extra = Duration::from_secs(size.unwrap_or(0) / BYTES_PER_EXTRA_SECOND);
+    (DOWNLOAD_TIMEOUT + extra).min(LONGEST_DOWNLOAD)
+}
+
+/// What the owner is told when a file they sent is too big to take over a
+/// chat.
+fn too_large_notice(filename: &str) -> String {
+    let what = match filename.trim() {
+        "" => "That file".to_string(),
+        name => format!("\"{name}\""),
+    };
+    format!(
+        "{what} is over {} MB, which is more than I can take over a chat. Add it to your files \
+         folder another way.",
+        MAX_FILE_BYTES / 1_000_000
+    )
+}
 
 /// Everything the message handlers share.
 pub(super) struct Hearing {
@@ -151,14 +188,29 @@ impl Hearing {
         let incoming = match heard {
             Heard::Text(text) => Incoming::Said { chat, text, at },
             Heard::Picture { source, filename, caption } => {
-                let Some(bytes) = download(&room, source).await else {
-                    let notice = RoomMessageEventContent::notice_plain(DOWNLOAD_FAILED);
-                    if let Err(error) = room.send(notice).await {
-                        tracing::debug!("couldn't say a picture was lost: {error}");
-                    }
+                let Some(bytes) = download(&room, source, DOWNLOAD_TIMEOUT).await else {
+                    tell(&room, DOWNLOAD_FAILED).await;
                     return;
                 };
                 Incoming::Showed { chat, picture: Picture { filename, bytes }, caption, at }
+            }
+            Heard::File { source, filename, caption, size } => {
+                // Said before anything is fetched when the sender already
+                // owns up to the size, and checked again against what came
+                // down, which is the only size that is not their word.
+                if size.is_some_and(|size| size > MAX_FILE_BYTES) {
+                    tell(&room, &too_large_notice(&filename)).await;
+                    return;
+                }
+                let Some(bytes) = download(&room, source, download_patience(size)).await else {
+                    tell(&room, FILE_DOWNLOAD_FAILED).await;
+                    return;
+                };
+                if bytes.len() as u64 > MAX_FILE_BYTES {
+                    tell(&room, &too_large_notice(&filename)).await;
+                    return;
+                }
+                Incoming::Handed { chat, document: Document { filename, bytes }, caption, at }
             }
         };
         self.deliver(incoming).await;
@@ -237,17 +289,22 @@ enum Heard {
     /// A picture: where to fetch it, what it is called, and what was written
     /// with it -- empty when nothing was.
     Picture { source: MediaSource, filename: String, caption: String },
+    /// Any other file: a document, a film, a recording. The same, and the
+    /// size the sender declared for it, if they did.
+    File { source: MediaSource, filename: String, caption: String, size: Option<u64> },
 }
 
 /// What the owner sent, if it is something to answer: [`said_text`]'s
-/// words, or a picture.
+/// words, a picture, or a file.
 ///
 /// A picture is an image message, or a file whose type says it is an image
 /// -- what a client sends when asked to send a photo "as a file" to spare it
-/// being recompressed. Its caption is what Matrix calls one: the body, when
-/// the message names its file separately (`caption()` reads that rule), so a
-/// client that only ever writes the filename into the body sends a picture
-/// with nothing said. An edit is skipped, as an edited text is.
+/// being recompressed. Any other file, a video or an audio message is a file:
+/// it is kept in Files whole, and the assistant is handed its id. The
+/// caption of each is what Matrix calls one: the body, when the message names
+/// its file separately (`caption()` reads that rule), so a client that only
+/// ever writes the filename into the body sends a file with nothing said. An
+/// edit is skipped, as an edited text is.
 fn heard_of(content: &RoomMessageEventContent) -> Option<Heard> {
     if matches!(content.relates_to, Some(Relation::Replacement(_))) {
         return None;
@@ -257,40 +314,69 @@ fn heard_of(content: &RoomMessageEventContent) -> Option<Heard> {
         filename: filename.to_owned(),
         caption: caption.unwrap_or_default().trim().to_owned(),
     };
+    let file = |source: &MediaSource, filename: &str, caption: Option<&str>, size: Option<UInt>| {
+        Heard::File {
+            source: source.clone(),
+            filename: filename.to_owned(),
+            caption: caption.unwrap_or_default().trim().to_owned(),
+            size: size.map(u64::from),
+        }
+    };
     match &content.msgtype {
         MessageType::Image(image) => {
             Some(picture(&image.source, image.filename(), image.caption()))
         }
-        MessageType::File(file)
-            if file
+        MessageType::File(attached) => {
+            let is_image = attached
                 .info
                 .as_ref()
                 .and_then(|info| info.mimetype.as_deref())
-                .is_some_and(|mime| mime.starts_with("image/")) =>
-        {
-            Some(picture(&file.source, file.filename(), file.caption()))
+                .is_some_and(|mime| mime.starts_with("image/"));
+            if is_image {
+                Some(picture(&attached.source, attached.filename(), attached.caption()))
+            } else {
+                let size = attached.info.as_ref().and_then(|info| info.size);
+                Some(file(&attached.source, attached.filename(), attached.caption(), size))
+            }
+        }
+        MessageType::Video(video) => {
+            let size = video.info.as_ref().and_then(|info| info.size);
+            Some(file(&video.source, video.filename(), video.caption(), size))
+        }
+        MessageType::Audio(audio) => {
+            let size = audio.info.as_ref().and_then(|info| info.size);
+            Some(file(&audio.source, audio.filename(), audio.caption(), size))
         }
         _ => said_text(content).map(Heard::Text),
     }
 }
 
-/// Fetch a picture the owner sent, decrypting it if it came encrypted, or
-/// `None` if that failed or took longer than [`DOWNLOAD_TIMEOUT`].
+/// Say `text` to the owner in `room`, as a notice. A failure is only worth a
+/// log line: it is a courtesy about something that has already gone wrong.
+async fn tell(room: &Room, text: &str) {
+    let notice = RoomMessageEventContent::notice_plain(text);
+    if let Err(error) = room.send(notice).await {
+        tracing::debug!("couldn't say that something the owner sent was lost: {error}");
+    }
+}
+
+/// Fetch a picture or a file the owner sent, decrypting it if it came
+/// encrypted, or `None` if that failed or took longer than `patience`.
 ///
-/// Not kept in the SDK's own media cache: the picture is about to be kept in
-/// the vault, sealed, for as long as the conversation is, and a second copy
-/// in the bot's state directory would outlive the conversation's deletion.
-async fn download(room: &Room, source: MediaSource) -> Option<Vec<u8>> {
+/// Not kept in the SDK's own media cache: it is about to be kept in the
+/// vault or the files folder, and a second copy in the bot's state directory
+/// would outlive the conversation's deletion.
+async fn download(room: &Room, source: MediaSource, patience: Duration) -> Option<Vec<u8>> {
     let request = MediaRequestParameters { source, format: MediaFormat::File };
     let media = room.client().media();
-    match tokio::time::timeout(DOWNLOAD_TIMEOUT, media.get_media_content(&request, false)).await {
+    match tokio::time::timeout(patience, media.get_media_content(&request, false)).await {
         Ok(Ok(bytes)) => Some(bytes),
         Ok(Err(error)) => {
-            tracing::warn!(room = %room.room_id(), "couldn't download a picture the owner sent: {error}");
+            tracing::warn!(room = %room.room_id(), "couldn't download something the owner sent: {error}");
             None
         }
         Err(_) => {
-            tracing::warn!(room = %room.room_id(), "gave up downloading a picture the owner sent");
+            tracing::warn!(room = %room.room_id(), "gave up downloading something the owner sent");
             None
         }
     }
@@ -546,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn a_photo_sent_as_a_file_is_a_picture_and_any_other_file_is_not() {
+    fn a_photo_sent_as_a_file_is_a_picture_and_any_other_file_is_a_file() {
         let photo = content(json!({
             "msgtype": "m.file",
             "body": "receipt.png",
@@ -559,9 +645,82 @@ mod tests {
             "msgtype": "m.file",
             "body": "minutes.pdf",
             "url": "mxc://example.org/ghi",
-            "info": { "mimetype": "application/pdf" },
+            "info": { "mimetype": "application/pdf", "size": 48_213 },
         }));
-        assert!(heard_of(&document).is_none());
+        assert_eq!(
+            file_of(heard_of(&document)),
+            ("minutes.pdf".into(), String::new(), Some(48_213))
+        );
+    }
+
+    fn file_of(heard: Option<Heard>) -> (String, String, Option<u64>) {
+        match heard {
+            Some(Heard::File { filename, caption, size, .. }) => (filename, caption, size),
+            other => panic!("expected a file, heard {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_video_or_a_recording_is_a_file_with_its_caption_and_declared_size() {
+        let video = content(json!({
+            "msgtype": "m.video",
+            "body": "the view from the top",
+            "filename": "VID_0042.mp4",
+            "url": "mxc://example.org/jkl",
+            "info": { "mimetype": "video/mp4", "size": 52_000_000 },
+        }));
+        assert_eq!(
+            file_of(heard_of(&video)),
+            ("VID_0042.mp4".into(), "the view from the top".into(), Some(52_000_000))
+        );
+
+        // An older client: the body is the filename, nothing was said, and
+        // the sender gave no size.
+        let voice = content(json!({
+            "msgtype": "m.audio",
+            "body": "voice message.ogg",
+            "url": "mxc://example.org/mno",
+        }));
+        assert_eq!(file_of(heard_of(&voice)), ("voice message.ogg".into(), String::new(), None));
+    }
+
+    #[test]
+    fn an_edited_file_is_not_a_new_one() {
+        let edit = content(json!({
+            "msgtype": "m.file",
+            "body": "* minutes.pdf",
+            "filename": "minutes.pdf",
+            "url": "mxc://example.org/ghi",
+            "m.new_content": {
+                "msgtype": "m.file",
+                "body": "minutes.pdf",
+                "url": "mxc://example.org/ghi",
+            },
+            "m.relates_to": { "rel_type": "m.replace", "event_id": "$first:example.org" },
+        }));
+        assert!(heard_of(&edit).is_none());
+    }
+
+    #[test]
+    fn a_big_download_is_given_longer_but_never_for_ever() {
+        assert_eq!(download_patience(None), DOWNLOAD_TIMEOUT);
+        assert_eq!(download_patience(Some(1_000_000)), DOWNLOAD_TIMEOUT + Duration::from_secs(2));
+        assert_eq!(
+            download_patience(Some(200_000_000)),
+            DOWNLOAD_TIMEOUT + Duration::from_secs(400)
+        );
+        assert_eq!(
+            download_patience(Some(u64::MAX)),
+            LONGEST_DOWNLOAD,
+            "the sender's word, capped"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_too_big_is_refused_in_words_that_say_how_big_is_too_big() {
+        let said = too_large_notice("holiday.mov");
+        assert!(said.contains("\"holiday.mov\"") && said.contains("200 MB"), "{said}");
+        assert!(too_large_notice("  ").starts_with("That file is over 200 MB"));
     }
 
     #[test]

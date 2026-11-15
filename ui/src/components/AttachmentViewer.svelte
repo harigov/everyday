@@ -13,6 +13,7 @@
   // own bytes at `karmayoga://mail/part/…`.
 
   import { untrack } from 'svelte'
+  import { APPS } from '../lib/apps'
   import { humanBytes } from '../lib/format'
   import { focusOnMount, trapFocus } from '../lib/focus'
   import * as mailApi from '../lib/mail-api'
@@ -38,9 +39,12 @@
     dark: boolean
     /** Saves one, answering whether it was. */
     onsave: (attachment: MailAttachment) => Promise<boolean>
+    /** Keeps one in Files, answering whether it was. Absent when the vault has
+     *  no Files, and then the button is not drawn. */
+    onfiles?: (attachment: MailAttachment) => Promise<boolean>
     onclose: () => void
   }
-  let { message, attachments, index, dark, onsave, onclose }: Props = $props()
+  let { message, attachments, index, dark, onsave, onfiles, onclose }: Props = $props()
 
   /** The open file, by its place in the message's parts rather than in
    *  `attachments`: the thread is read again now and then -- a sync, a flag,
@@ -72,6 +76,9 @@
    *  the parts: a save outlives stepping to the next file. */
   let saving = $state<ReadonlySet<number>>(new Set())
   let saved = $state<ReadonlySet<number>>(new Set())
+  /** The same for keeping one in Files. */
+  let filing = $state<ReadonlySet<number>>(new Set())
+  let filed = $state<ReadonlySet<number>>(new Set())
 
   const COULD_NOT = 'This file could not be shown here. Save it to open it.'
 
@@ -144,6 +151,8 @@
   const name = $derived(current?.filename || 'Attachment')
   const isSaving = $derived(current !== undefined && saving.has(current.index))
   const isSaved = $derived(current !== undefined && saved.has(current.index))
+  const isFiling = $derived(current !== undefined && filing.has(current.index))
+  const isFiled = $derived(current !== undefined && filed.has(current.index))
 
   function go(by: 1 | -1) {
     const next = attachments[position + by]
@@ -158,6 +167,17 @@
       if (await onsave(a)) saved = new Set([...saved, a.index])
     } finally {
       saving = new Set([...saving].filter((i) => i !== a.index))
+    }
+  }
+
+  async function keep() {
+    const a = current
+    if (!a || !onfiles || filing.has(a.index)) return
+    filing = new Set([...filing, a.index])
+    try {
+      if (await onfiles(a)) filed = new Set([...filed, a.index])
+    } finally {
+      filing = new Set([...filing].filter((i) => i !== a.index))
     }
   }
 
@@ -244,6 +264,17 @@
         onclick={() => go(1)}
       >
         <Icon name="chevron" size={17} />
+      </button>
+    {/if}
+    {#if onfiles}
+      <button
+        class="tool labelled"
+        disabled={isFiling}
+        title="Keep a copy in Files"
+        onclick={() => void keep()}
+      >
+        <Icon name={APPS.files.icon} size={16} />
+        {isFiled ? 'In Files' : 'Save to Files'}
       </button>
     {/if}
     <button class="tool labelled" disabled={isSaving} onclick={() => void save()}>

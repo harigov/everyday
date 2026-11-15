@@ -57,6 +57,10 @@ export const SETTINGS_TABS = [
   // the GNOME and browser extensions -- and the vault's retention. See
   // `docs/plans/screentime.md`.
   'screentime',
+  // Where the files folder is, which apps keep their files sealed in the
+  // vault, how long the trash keeps what is in it, and bringing older
+  // pictures in. See `docs/plans/files.md`.
+  'files',
   'meetings',
   // The shapes an entry, a note or a meeting's notes start from -- one list
   // for all three. See TemplatesPanel.

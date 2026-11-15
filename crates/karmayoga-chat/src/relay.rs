@@ -53,7 +53,9 @@
 //! rest is plumbing, and is tested end to end in `tests/relay.rs` against a
 //! fake connector and a fake model.
 
-use crate::connector::{ChatId, Choice, Connector, Incoming, MessageRef, Picture, Question};
+use crate::connector::{
+    ChatId, Choice, Connector, Document, Incoming, MessageRef, Picture, Question, Sent,
+};
 use futures::FutureExt;
 use futures::future::BoxFuture;
 use jiff::{SignedDuration, Timestamp};
@@ -85,8 +87,8 @@ pub const CONFIRM_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// can send it again.
 pub const STALE_AFTER: SignedDuration = SignedDuration::from_hours(12);
 
-/// How long a picture sent with nothing written beside it waits for the
-/// words that go with it.
+/// How long a picture or a file sent with nothing written beside it waits for
+/// the words that go with it.
 ///
 /// A phone sends a picture and the question about it as two messages more
 /// often than as one: the photo goes, then "what is this plant?" is typed
@@ -95,7 +97,8 @@ pub const STALE_AFTER: SignedDuration = SignedDuration::from_hours(12);
 /// held, and goes with whatever is said next -- or alone, once a minute has
 /// passed with nothing more, which is ample time to type a question and
 /// short enough that a picture sent on its own is not left unanswered.
-/// Further pictures sent meanwhile are gathered with it.
+/// Further pictures and files sent meanwhile are gathered with it, in the
+/// order they came.
 pub const PICTURE_WAIT: Duration = Duration::from_secs(60);
 
 /// How long the relay gives its workers to finish when it is stopped, before
@@ -493,7 +496,7 @@ impl Chats {
         let handle = self.handle_for(&chat);
         let mut shared = handle.shared.lock().unwrap();
 
-        match route(&item, shared.asked(), now, context.timing.stale_after) {
+        match route(item, shared.asked(), now, context.timing.stale_after) {
             Route::Ignore => {}
             Route::Queue(work) => handle.enqueue(work),
             Route::Answer(choice) => shared.answer(choice),
@@ -792,8 +795,11 @@ pub(crate) enum Work {
     Say(String),
     /// A picture, and what was written with it. Held by the worker until
     /// what is said next, when nothing was -- see [`PICTURE_WAIT`] -- and
-    /// otherwise run as a turn at once, with any pictures already held.
+    /// otherwise run as a turn at once, with anything already held.
     Show { picture: Picture, caption: String },
+    /// A file that is not a picture to look at, and what was written with it.
+    /// Held and run exactly as [`Work::Show`] is.
+    Hand { document: Document, caption: String },
     /// `!new`.
     New,
     /// `!help`.
@@ -836,10 +842,13 @@ pub(crate) enum Route {
 ///   `!new` and `!stop` included: a command from last night is not an
 ///   instruction for now.
 /// * `!stop` is never queued.
-/// * A picture never answers a question. It is the owner moving on, as
-///   typed text that is not an answer is.
+/// * A picture or a file never answers a question. It is the owner moving
+///   on, as typed text that is not an answer is.
+///
+/// Takes the item rather than borrowing it, so that a file of two hundred
+/// megabytes is moved into the work it becomes and not copied.
 pub(crate) fn route(
-    item: &Incoming,
+    item: Incoming,
     asked: Asked<'_>,
     now: Timestamp,
     stale_after: SignedDuration,
@@ -847,27 +856,24 @@ pub(crate) fn route(
     match item {
         Incoming::Unreadable { .. } => Route::Queue(Work::Reply(UNREADABLE_REPLY.to_string())),
         Incoming::Chose { question, choice, .. } => match asked {
-            Asked::Sent(waiting_on) if waiting_on == question => Route::Answer(*choice),
-            Asked::Unsent => Route::Hold { question: question.clone(), choice: *choice },
+            Asked::Sent(waiting_on) if *waiting_on == question => Route::Answer(choice),
+            Asked::Unsent => Route::Hold { question, choice },
             Asked::Sent(_) | Asked::Nothing | Asked::Open => Route::Ignore,
         },
         Incoming::Showed { picture, caption, at, .. } => {
-            if let Some(hours) = stale_hours(*at, now, stale_after) {
-                return Route::Queue(Work::Reply(catch_up_reply(hours)));
-            }
-            let work = Work::Show { picture: picture.clone(), caption: caption.trim().to_string() };
-            match asked {
-                Asked::Nothing => Route::Queue(work),
-                // A picture answers no question: the owner has moved on.
-                Asked::Unsent | Asked::Sent(_) | Asked::Open => Route::DeclineThen(work),
-            }
+            let work = Work::Show { picture, caption: caption.trim().to_string() };
+            route_sent(work, at, asked, now, stale_after)
+        }
+        Incoming::Handed { document, caption, at, .. } => {
+            let work = Work::Hand { document, caption: caption.trim().to_string() };
+            route_sent(work, at, asked, now, stale_after)
         }
         Incoming::Said { text, at, .. } => {
             let text = text.trim();
             if text.is_empty() {
                 return Route::Ignore;
             }
-            if let Some(hours) = stale_hours(*at, now, stale_after) {
+            if let Some(hours) = stale_hours(at, now, stale_after) {
                 return Route::Queue(Work::Reply(catch_up_reply(hours)));
             }
             let command = parse_command(text);
@@ -893,6 +899,26 @@ pub(crate) fn route(
                 },
             }
         }
+    }
+}
+
+/// What a picture or a file is for: not run if it is too old, and otherwise
+/// queued -- after declining a question it did not answer, if one was
+/// waiting.
+fn route_sent(
+    work: Work,
+    at: Timestamp,
+    asked: Asked<'_>,
+    now: Timestamp,
+    stale_after: SignedDuration,
+) -> Route {
+    if let Some(hours) = stale_hours(at, now, stale_after) {
+        return Route::Queue(Work::Reply(catch_up_reply(hours)));
+    }
+    match asked {
+        Asked::Nothing => Route::Queue(work),
+        // A picture or a file answers no question: the owner has moved on.
+        Asked::Unsent | Asked::Sent(_) | Asked::Open => Route::DeclineThen(work),
     }
 }
 
@@ -1034,16 +1060,16 @@ async fn worker(
     mut work: mpsc::UnboundedReceiver<Job>,
 ) {
     let mut memory = Memory::default();
-    // Pictures sent with nothing written beside them, waiting for the words
-    // that go with them. See `PICTURE_WAIT`.
-    let mut held: Vec<Picture> = Vec::new();
+    // Pictures and files sent with nothing written beside them, waiting for
+    // the words that go with them. See `PICTURE_WAIT`.
+    let mut held: Vec<Sent> = Vec::new();
     loop {
         let next = if held.is_empty() {
             work.recv().await
         } else {
             match tokio::time::timeout(context.timing.picture_wait, work.recv()).await {
                 Ok(next) => next,
-                // Nothing more came: the pictures are the whole message.
+                // Nothing more came: what was sent is the whole message.
                 Err(_) => Some(Job::Owner(Work::Say(String::new()))),
             }
         };
@@ -1054,53 +1080,64 @@ async fn worker(
         if context.stopping() {
             break;
         }
-        let (item, pictures) = match gather(&mut held, item) {
+        let (item, sent) = match gather(&mut held, item) {
             Gathered::Hold => continue,
-            Gathered::Run(item, pictures) => (item, pictures),
-            // Something else to do while pictures wait: they go first, on
-            // their own, so they are answered in the order they were sent.
-            Gathered::First(pictures, item) => {
+            Gathered::Run(item, sent) => (item, sent),
+            // Something else to do while pictures or files wait: they go
+            // first, on their own, so they are answered in the order they
+            // were sent.
+            Gathered::First(sent, item) => {
                 let alone = Job::Owner(Work::Say(String::new()));
-                run_caught(&context, &chat, &shared, &mut memory, alone, pictures).await;
+                run_caught(&context, &chat, &shared, &mut memory, alone, sent).await;
                 (item, Vec::new())
             }
         };
-        run_caught(&context, &chat, &shared, &mut memory, item, pictures).await;
+        run_caught(&context, &chat, &shared, &mut memory, item, sent).await;
     }
 }
 
-/// What a worker does with the next thing queued, given the pictures it is
-/// holding. See [`gather`].
+/// What a worker does with the next thing queued, given the pictures and
+/// files it is holding. See [`gather`].
 enum Gathered {
-    /// A picture with nothing said: hold it, and wait for more.
+    /// A picture or a file with nothing said: hold it, and wait for more.
     Hold,
-    /// Run this, with these pictures.
-    Run(Job, Vec<Picture>),
-    /// Run the pictures held, alone, and then this.
-    First(Vec<Picture>, Job),
+    /// Run this, with these.
+    Run(Job, Vec<Sent>),
+    /// Run what is held, alone, and then this.
+    First(Vec<Sent>, Job),
 }
 
-/// Fold `item` into the pictures `held`, or run it.
+/// Fold `item` into what is `held`, or run it.
 ///
-/// A picture with nothing written beside it is held. Anything the owner
-/// says -- a picture's caption included -- takes every picture held with
-/// it. Anything else (a command, a routine's message) finds them sent on
-/// their own first.
-fn gather(held: &mut Vec<Picture>, item: Job) -> Gathered {
+/// A picture or a file with nothing written beside it is held. Anything the
+/// owner says -- a caption included -- takes everything held with it.
+/// Anything else (a command, a routine's message) finds what is held sent on
+/// its own first.
+fn gather(held: &mut Vec<Sent>, item: Job) -> Gathered {
     match item {
-        Job::Owner(Work::Show { picture, caption }) if caption.is_empty() => {
-            held.push(picture);
-            Gathered::Hold
-        }
         Job::Owner(Work::Show { picture, caption }) => {
-            held.push(picture);
-            Gathered::Run(Job::Owner(Work::Say(caption)), std::mem::take(held))
+            hold_or_run(held, Sent::Picture(picture), caption)
+        }
+        Job::Owner(Work::Hand { document, caption }) => {
+            hold_or_run(held, Sent::Document(document), caption)
         }
         Job::Owner(Work::Say(text)) => {
             Gathered::Run(Job::Owner(Work::Say(text)), std::mem::take(held))
         }
         other if held.is_empty() => Gathered::Run(other, Vec::new()),
         other => Gathered::First(std::mem::take(held), other),
+    }
+}
+
+/// Add `sent` to what is `held`: and wait for more if nothing was written
+/// with it, or run it as a turn with everything held and its `caption` as
+/// the words.
+fn hold_or_run(held: &mut Vec<Sent>, sent: Sent, caption: String) -> Gathered {
+    held.push(sent);
+    if caption.is_empty() {
+        Gathered::Hold
+    } else {
+        Gathered::Run(Job::Owner(Work::Say(caption)), std::mem::take(held))
     }
 }
 
@@ -1113,11 +1150,10 @@ async fn run_caught(
     shared: &Arc<Mutex<Shared>>,
     memory: &mut Memory,
     item: Job,
-    pictures: Vec<Picture>,
+    sent: Vec<Sent>,
 ) {
-    let done = AssertUnwindSafe(do_work(context, chat, shared, memory, item, pictures))
-        .catch_unwind()
-        .await;
+    let done =
+        AssertUnwindSafe(do_work(context, chat, shared, memory, item, sent)).catch_unwind().await;
     if done.is_err() {
         tracing::error!(chat = %chat.0, "a chat turn panicked; carrying on with the next message");
         {
@@ -1132,16 +1168,16 @@ async fn run_caught(
     }
 }
 
-/// Do one thing queued for a chat. `pictures` go with a turn -- the owner's
-/// words, or a picture's caption -- and with nothing else; [`gather`] sees
-/// that they only ever come with one.
+/// Do one thing queued for a chat. `sent` -- pictures and files -- go with a
+/// turn: the owner's words, or a caption; and with nothing else; [`gather`]
+/// sees that they only ever come with one.
 async fn do_work(
     context: &Context,
     chat: &ChatId,
     shared: &Mutex<Shared>,
     memory: &mut Memory,
     job: Job,
-    pictures: Vec<Picture>,
+    sent: Vec<Sent>,
 ) {
     let work = match job {
         Job::Owner(work) => work,
@@ -1157,10 +1193,14 @@ async fn do_work(
             let name = context.assistant_name().await;
             context.tell(chat, &help_text(&name)).await;
         }
-        Work::Say(text) => converse(context, chat, shared, memory, text, pictures).await,
+        Work::Say(text) => converse(context, chat, shared, memory, text, sent).await,
         Work::Show { picture, caption } => {
-            let pictures = pictures.into_iter().chain([picture]).collect();
-            converse(context, chat, shared, memory, caption, pictures).await
+            let sent = sent.into_iter().chain([Sent::Picture(picture)]).collect();
+            converse(context, chat, shared, memory, caption, sent).await
+        }
+        Work::Hand { document, caption } => {
+            let sent = sent.into_iter().chain([Sent::Document(document)]).collect();
+            converse(context, chat, shared, memory, caption, sent).await
         }
     }
 }
@@ -1219,7 +1259,7 @@ async fn converse(
     shared: &Mutex<Shared>,
     memory: &mut Memory,
     text: String,
-    pictures: Vec<Picture>,
+    sent: Vec<Sent>,
 ) {
     // Claimed before anything slow, so a `!stop` that lands while the
     // conversation is being looked for finds something to stop.
@@ -1258,8 +1298,24 @@ async fn converse(
     context.typing(chat, true).await;
 
     let mut told = String::new();
-    let pictures = pictures.into_iter().map(|p| (p.bytes, p.filename)).collect();
-    let mut turn = Box::pin(context.service.chat_turn(via, conversation, text, pictures, sink));
+    // Pictures are shown to the model, and every one is also kept as a file;
+    // anything else is only kept, and the assistant told. The service takes
+    // the two apart and does not care what order they came in.
+    let (mut pictures, mut documents) = (Vec::new(), Vec::new());
+    for item in sent {
+        match item {
+            Sent::Picture(picture) => pictures.push((picture.bytes, picture.filename)),
+            Sent::Document(document) => documents.push((document.bytes, document.filename)),
+        }
+    }
+    let mut turn = Box::pin(context.service.chat_turn_with_files(
+        via,
+        conversation,
+        text,
+        pictures,
+        documents,
+        sink,
+    ));
     let result = loop {
         tokio::select! {
             biased;
@@ -1720,7 +1776,7 @@ mod tests {
     }
 
     fn routed(item: &Incoming, asked: Asked<'_>) -> Route {
-        route(item, asked, now(), STALE_AFTER)
+        route(item.clone(), asked, now(), STALE_AFTER)
     }
 
     // ---- pictures ----
@@ -1779,8 +1835,8 @@ mod tests {
         owner(Work::Show { picture: picture(name), caption: caption.into() })
     }
 
-    fn names(pictures: &[Picture]) -> Vec<&str> {
-        pictures.iter().map(|p| p.filename.as_str()).collect()
+    fn names(sent: &[Sent]) -> Vec<&str> {
+        sent.iter().map(Sent::filename).collect()
     }
 
     #[test]
@@ -1800,7 +1856,7 @@ mod tests {
 
     #[test]
     fn a_captioned_picture_goes_at_once_with_any_held_before_it() {
-        let mut held = vec![picture("one.jpg")];
+        let mut held = vec![Sent::Picture(picture("one.jpg"))];
         match gather(&mut held, show("two.jpg", "compare these")) {
             Gathered::Run(Job::Owner(Work::Say(text)), pictures) => {
                 assert_eq!(text, "compare these");
@@ -1813,7 +1869,7 @@ mod tests {
 
     #[test]
     fn a_command_while_pictures_wait_sends_them_first() {
-        let mut held = vec![picture("one.jpg")];
+        let mut held = vec![Sent::Picture(picture("one.jpg"))];
         match gather(&mut held, owner(Work::Help)) {
             Gathered::First(pictures, Job::Owner(Work::Help)) => {
                 assert_eq!(names(&pictures), ["one.jpg"]);
@@ -1822,6 +1878,74 @@ mod tests {
         }
         assert!(held.is_empty());
         assert!(matches!(gather(&mut held, owner(Work::New)), Gathered::Run(_, p) if p.is_empty()));
+    }
+
+    // ---- files ----
+
+    fn document(name: &str) -> Document {
+        Document { filename: name.into(), bytes: name.as_bytes().to_vec() }
+    }
+
+    fn handed_at(caption: &str, at: Timestamp) -> Incoming {
+        Incoming::Handed {
+            chat: chat(),
+            document: document("minutes.pdf"),
+            caption: caption.into(),
+            at,
+        }
+    }
+
+    fn hand(name: &str, caption: &str) -> Job {
+        owner(Work::Hand { document: document(name), caption: caption.into() })
+    }
+
+    #[test]
+    fn a_file_is_queued_with_its_caption_trimmed() {
+        assert_eq!(
+            routed(&handed_at("  summarise this  ", now()), Asked::Nothing),
+            Route::Queue(Work::Hand {
+                document: document("minutes.pdf"),
+                caption: "summarise this".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_file_never_answers_a_waiting_question() {
+        let question = MessageRef("$q".into());
+        for asked in [Asked::Unsent, Asked::Sent(&question), Asked::Open] {
+            assert!(
+                matches!(
+                    routed(&handed_at("yes", now()), asked),
+                    Route::DeclineThen(Work::Hand { .. })
+                ),
+                "{asked:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_from_last_night_is_not_taken() {
+        assert!(matches!(
+            routed(&handed_at("what is it?", ago(13)), Asked::Nothing),
+            Route::Queue(Work::Reply(_))
+        ));
+    }
+
+    #[test]
+    fn pictures_and_files_wait_together_and_go_in_the_order_they_were_sent() {
+        let mut held = Vec::new();
+        assert!(matches!(gather(&mut held, show("one.jpg", "")), Gathered::Hold));
+        assert!(matches!(gather(&mut held, hand("two.pdf", "")), Gathered::Hold));
+        match gather(&mut held, hand("three.mov", "compare these")) {
+            Gathered::Run(Job::Owner(Work::Say(text)), sent) => {
+                assert_eq!(text, "compare these");
+                assert_eq!(names(&sent), ["one.jpg", "two.pdf", "three.mov"]);
+                assert!(matches!(sent[1], Sent::Document(_)), "a file stays a file");
+            }
+            _ => panic!("a caption is something said"),
+        }
+        assert!(held.is_empty());
     }
 
     // ---- commands ----

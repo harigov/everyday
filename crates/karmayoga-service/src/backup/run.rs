@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tokio::task::JoinSet;
 
-use super::manifest::{Area, FORMAT, FileEntry, Manifest};
+use super::manifest::{Area, FILES_PREFIX, FORMAT, FileEntry, Manifest};
 use super::repo::{self, Lock, ManifestCache, chunk_object, snapshot_object};
 use super::target::Target;
 use super::{BackupError, BackupPhase, Progress};
@@ -49,6 +49,11 @@ pub struct Plan {
     pub keep: u32,
     /// This computer's settings folder, to copy too; `None` leaves it out.
     pub config_dir: Option<PathBuf>,
+    /// Copy the files folder too, when the vault has one set up: its files
+    /// go in the copy under `files/` (see [`FILES_PREFIX`]). While the
+    /// folder is not usable the previous copy's are carried forward instead
+    /// of the folder being recorded empty.
+    pub files: bool,
     /// A backup has gone to this destination before -- see
     /// [`repo::prepare`].
     pub expect_existing: bool,
@@ -156,14 +161,15 @@ async fn run_locked(
         }
     }
     let present = repo::chunks(target).await?;
+    let previous_files_folder = previous.as_ref().and_then(|m| m.files_folder.clone());
     let previous: HashMap<(Area, String), FileEntry> = previous
         .map(|m| m.files.into_iter().map(|f| ((f.area, f.path.clone()), f)).collect())
         .unwrap_or_default();
 
     progress.set_phase(BackupPhase::Preparing);
-    let files = {
-        let (vault, staging, config) =
-            (vault.clone(), staging.to_path_buf(), plan.config_dir.clone());
+    let (files, files_folder) = {
+        let (vault, staging, config, with_files) =
+            (vault.clone(), staging.to_path_buf(), plan.config_dir.clone(), plan.files);
         let staged = tokio::task::spawn_blocking(move || -> Result<_, BackupError> {
             let mut files: Vec<(Area, StagedFile)> =
                 vault.stage_for_backup(&staging)?.into_iter().map(|f| (Area::Vault, f)).collect();
@@ -172,12 +178,33 @@ async fn run_locked(
                     config_files(&config, vault.path())?.into_iter().map(|f| (Area::Config, f)),
                 );
             }
-            Ok(files)
+            let files_folder =
+                if with_files { stage_files_folder(&vault, &mut files) } else { FilesFolder::Left };
+            Ok((files, files_folder))
         });
         until_cancelled(staged, progress).await??
     };
     progress.totals(files.len() as u64, files.iter().map(|(_, f)| f.size).sum());
     check(progress)?;
+
+    // A files folder that could not be read is not recorded empty: the last
+    // copy's files go into this one as they were, each only if the
+    // destination still has every chunk of it.
+    let carried: Vec<FileEntry> = if matches!(files_folder, FilesFolder::Unavailable(_)) {
+        let mut kept: Vec<FileEntry> = previous
+            .values()
+            .filter(|f| f.in_files_folder() && f.chunks.iter().all(|c| present.contains(c)))
+            .cloned()
+            .collect();
+        kept.sort_by(|a, b| a.path.cmp(&b.path));
+        tracing::warn!(
+            carried = kept.len(),
+            "backup: the files folder is not available, so the last copy's files are carried over"
+        );
+        kept
+    } else {
+        Vec::new()
+    };
 
     progress.set_phase(BackupPhase::Copying);
     let parallelism = target.parallelism();
@@ -236,13 +263,21 @@ async fn run_locked(
     // Every chunk is there: the copy can be named.
     let now = Timestamp::now();
     let snapshot = next_name(&existing, now);
+    let mut entries = produced.entries;
+    entries.extend(carried);
     let manifest = Manifest {
         format: FORMAT,
         created: now,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         host: plan.host.clone(),
         vault_name: vault.status().name,
-        files: produced.entries,
+        // Where the files folder was: as it says now, or -- when it cannot
+        // be asked -- as the copy whose files this one carries said.
+        files_folder: match &files_folder {
+            FilesFolder::Unavailable(None) => previous_files_folder,
+            other => other.path().map(str::to_string),
+        },
+        files: entries,
     };
     repo::store_manifest(target, keys, &snapshot, &manifest, &cache).await?;
     let snapshot_progress = progress.snapshot();
@@ -253,6 +288,7 @@ async fn run_locked(
         uploaded_bytes: snapshot_progress.uploaded_bytes,
         uploaded_chunks: snapshot_progress.uploaded_chunks,
         skipped: produced.skipped,
+        files_folder_unavailable: matches!(files_folder, FilesFolder::Unavailable(_)),
         ..BackupReport::default()
     };
 
@@ -482,6 +518,80 @@ async fn delete_all(
         count += 1;
     }
     Ok(count)
+}
+
+/// What became of the files folder when a copy was staged.
+enum FilesFolder {
+    /// Not asked for, or never set up, or a vault that keeps no files.
+    Left,
+    /// Listed, and its files added to the copy's; the folder's own path.
+    Listed(String),
+    /// Set up, and not usable now: not there, not readable, or there
+    /// without its marker while the catalog expects files in it -- an
+    /// encrypted volume that is locked, a drive that is not mounted. Its
+    /// path, when it is known.
+    ///
+    /// Recording it as empty is the one wrong answer. A backup that ran
+    /// every night through a week of a locked volume would then keep seven
+    /// copies of nothing, and "keep 7" would have pushed every copy that held
+    /// the files out. So the previous copy's files are carried forward.
+    Unavailable(Option<String>),
+}
+
+impl FilesFolder {
+    fn path(&self) -> Option<&str> {
+        match self {
+            Self::Listed(path) => Some(path.as_str()),
+            Self::Unavailable(path) => path.as_deref(),
+            Self::Left => None,
+        }
+    }
+}
+
+/// Add the files folder's files to `into`, named `files/…`, if the folder
+/// is usable -- before the listing, and again after it, so a volume that
+/// locked halfway through is not taken for a folder that has lost most of
+/// its files.
+fn stage_files_folder(vault: &Vault, into: &mut Vec<(Area, StagedFile)>) -> FilesFolder {
+    if !vault.supports_files() {
+        return FilesFolder::Left;
+    }
+    let folder = match vault.files_folder() {
+        Ok(Some(folder)) => folder,
+        Ok(None) => return FilesFolder::Left,
+        Err(e) => {
+            tracing::warn!(error = %e, "backup: the files folder could not be looked up");
+            return FilesFolder::Unavailable(None);
+        }
+    };
+    let root = folder.root().display().to_string();
+    let usable = || matches!(vault.folder_state(), Ok(state) if state.is_available());
+    if !usable() {
+        return FilesFolder::Unavailable(Some(root));
+    }
+    let listed =
+        match list_files(folder.root(), FILES_PREFIX.trim_end_matches('/'), &left_out_of_files) {
+            Ok(listed) => listed,
+            Err(e) => {
+                tracing::warn!(error = %e, "backup: the files folder could not be read");
+                return FilesFolder::Unavailable(Some(root));
+            }
+        };
+    if !usable() {
+        return FilesFolder::Unavailable(Some(root));
+    }
+    into.extend(listed.into_iter().map(|f| (Area::Vault, f)));
+    FilesFolder::Listed(root)
+}
+
+/// Left out of a copy of the files folder, by path as the copy names it
+/// (`files/…`): the folder Karma Yoga keeps for itself, and every name a
+/// scan of the folder leaves out too -- a sync tool's scratch files, an
+/// operating system's litter -- so what a backup holds is what the catalog
+/// does.
+fn left_out_of_files(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name == karmayoga_core::files::INTERNAL_DIR || karmayoga_core::files::disk::is_skipped(name)
 }
 
 /// What is copied from this computer's settings folder: everything but what

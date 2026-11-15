@@ -79,6 +79,7 @@
     'feed',
     'money',
     'screentime',
+    'files',
     'journal',
   ]
   const shown = $derived(NAV_ORDER.map(entryOf).filter((a) => app.canShow(a.id)))

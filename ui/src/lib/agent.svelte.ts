@@ -28,6 +28,7 @@ import type {
   Attachment,
   ConversationId,
   ConversationSummary,
+  FileId,
   Memory,
   OnScreen,
 } from './types'
@@ -246,16 +247,19 @@ class AgentState {
    * it — and if the request fails, the question is still on screen rather
    * than having vanished with it.
    *
-   * `pictures` go with it, each made ready by `api.preparePicture`. A picture
-   * with nothing typed is a message too.
+   * `pictures` go with it, each made ready by `api.preparePicture`; and
+   * `files`, any file at all, by its id in the files catalog -- `addFiles`
+   * has already put it there, so nothing large goes through this call. A
+   * picture or a file with nothing typed is a message too.
    */
   async send(
     prompt: string,
     onScreen: OnScreen | null,
     pictures: Attachment[] = [],
+    files: FileId[] = [],
   ): Promise<boolean> {
     const text = prompt.trim()
-    if ((!text && pictures.length === 0) || this.busy) return false
+    if ((!text && pictures.length === 0 && files.length === 0) || this.busy) return false
     if (!this.conversationId) {
       // Nothing to send into: an unlock cleared the thread, or minting one
       // failed. Said out loud, because the composer clears on the strength
@@ -266,7 +270,7 @@ class AgentState {
 
     this.error = null
     this.busy = true
-    this.turns.push(emptyTurn('user', this.#nextLocalId(), text, pictures))
+    this.turns.push(emptyTurn('user', this.#nextLocalId(), text, pictures, files))
 
     // Pushed first, then read back out. `turns` is `$state`, so pushing an
     // object stores a *proxy* of it and the reference handed in is not the
@@ -280,7 +284,7 @@ class AgentState {
     const conversationId = this.conversationId
 
     try {
-      await sendMessage(conversationId, text, onScreen, pictures, (event) =>
+      await sendMessage(conversationId, text, onScreen, pictures, files, (event) =>
         applyEvent(reply, event),
       )
       // The thread has a title now, and has moved to the top of the list.

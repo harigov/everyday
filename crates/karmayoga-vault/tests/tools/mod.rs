@@ -174,6 +174,7 @@ fn the_catalogue_marks_exactly_the_tools_the_confirmation_gate_must_catch() {
             "forget",
             "delete_skill",
             "unfollow_source",
+            "trash_files",
         ]
     );
 }

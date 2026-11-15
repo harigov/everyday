@@ -78,6 +78,8 @@ const KINDS = [
   'screenApp',
   'screenCategory',
   'screenSpan',
+  'file',
+  'album',
   'recording',
   'voiceprint',
   'transcript',
@@ -156,6 +158,14 @@ assert.deepEqual(
 // of heartbeats costs nothing while somebody writes in the journal.
 assert.equal(RELOAD.screentime(), undefined, 'no reload before Screen time is opened')
 assert.equal(RELOAD.screentimeSpans(), undefined, 'nor for heartbeats')
+
+// Files: a file arriving, changing, moving or going missing, and an album, are
+// one store's, which reads what it has on screen. A scan raises a `file`
+// change for every file it touches, so a batch of them is one reload; and
+// the app has not been opened here, so it reads nothing.
+assert.deepEqual(targetsFor(['file', 'album']), ['files'])
+assert.deepEqual(targetsFor(['file', 'file', 'file'], true), ['files'], 'a scan is one reload')
+assert.equal(RELOAD.files(), undefined, 'no reload before Files is opened')
 
 // A job moving -- queued, running, a new progress line, done -- reloads the
 // jobs store alone, and does not drag the routines with it: the two are

@@ -88,6 +88,7 @@ pub mod completable;
 pub mod crypto;
 pub mod dream;
 pub mod error;
+pub mod files;
 pub mod fsutil;
 pub mod ics;
 pub mod id;
@@ -145,13 +146,18 @@ pub use blobstore::FileBlobStore;
 pub use calendar::{Calendar, CalendarOrigin, CalendarProvider, Event, EventStatus, SyncReport};
 pub use completable::Completable;
 pub use error::{Error, Result};
+pub use files::{
+    Album, AlbumView, FileEntry, FileFilter, FileKind, FileOrigin, FilePage, FileQuery, FileSort,
+    FileStatus, FileStorage, FileUpdate, FileUse, FilesSettings, FolderListing, FolderState,
+    ImportOptions, MediaInfo,
+};
 pub use id::{
-    AccountId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId, ChatLinkId, ConversationId,
-    DraftId, EntryId, EventId, GoalId, ItemId, JobId, JournalId, KindId, LogId, MailMessageId,
-    MailboxId, MemoryId, MessageId, MoneyCategoryId, MoneyRuleId, NewsSourceId, NoteId, OpId,
-    PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId,
-    ScreenAppId, ScreenCategoryId, ScreenSpanId, SkillId, StoryId, TaskId, TemplateId, ThreadId,
-    TrackerId, TranscriptId, TxnId, VoiceprintId, WritingId,
+    AccountId, AlbumId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId, ChatLinkId,
+    ConversationId, DraftId, EntryId, EventId, FileId, GoalId, ItemId, JobId, JournalId, KindId,
+    LogId, MailMessageId, MailboxId, MemoryId, MessageId, MoneyCategoryId, MoneyRuleId,
+    NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId,
+    RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId, ScreenSpanId, SkillId, StoryId, TaskId,
+    TemplateId, ThreadId, TrackerId, TranscriptId, TxnId, VoiceprintId, WritingId,
 };
 pub use job::{Job, JobKind, JobOutput, JobStatus};
 pub use library::{
@@ -202,6 +208,7 @@ pub use screentime::{
 pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
+pub use store::files::FilesStore;
 pub use store::jobs::{JobQuery, JobStore};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};

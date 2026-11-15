@@ -28,11 +28,24 @@
 //!
 //! # Attachments
 //!
-//! In a `blobs` table, not in a directory. A folder of media on one laptop is
-//! not part of a vault that two machines open — see
-//! [`Media`](karmayoga_store_sql::Media). Postgres caps a single value at
-//! 1 GB, so this driver declares a limit and the interface can refuse a file
-//! before it is uploaded rather than after.
+//! In a directory of sealed files beside the vault, exactly as the SQLite
+//! backend keeps them -- `media/`, [`MEDIA_DIRNAME`] -- and not in the
+//! database. See [`Media`](karmayoga_store_sql::Media).
+//!
+//! They used to be rows in a `blobs` table, so that they travelled with a
+//! database two machines open. The price was a ceiling (Postgres refuses a
+//! value over 1 GB, so this driver turned away anything over 900 MB) and a
+//! database that held every file the Files app seals, films included, while
+//! the rest of a person's files sit in a folder on one machine anyway. A blob
+//! is the same sealed container in either place, so with the table gone
+//! there is no ceiling, nothing to download to read the middle of a film, and
+//! the media are copied by whatever copies the vault's directory.
+//!
+//! What that gives up is deliberate: attachments belong to the machine that
+//! wrote them, and a second machine opening the same database does not have
+//! them. This backend has only ever been tried out, never relied on, and a
+//! vault that wants its files on every machine is served by the Files folder
+//! and a sync tool. A `blobs` table left by an earlier build is not read.
 //!
 //! # Configuration
 //!
@@ -90,6 +103,12 @@ pub const URL_ENV: &str = "KARMAYOGA_DATABASE_URL";
 /// Settings key for the schema the tables live in.
 pub const SCHEMA_KEY: &str = "schema";
 
+/// The directory under the vault's root that holds attachments.
+///
+/// The same name the SQLite backend uses, so a vault's media are in the same
+/// place whichever backend its records are in.
+pub const MEDIA_DIRNAME: &str = "media";
+
 /// Where the tables go unless told otherwise.
 ///
 /// Not `public`. On a Supabase project `public` is where the *user's* own
@@ -98,14 +117,6 @@ pub const SCHEMA_KEY: &str = "schema";
 /// with a second vault in the same database. A named schema makes "this
 /// database holds two vaults and an application" work by default.
 pub const DEFAULT_SCHEMA: &str = "karmayoga";
-
-/// The largest attachment this backend accepts.
-///
-/// Postgres refuses a single value over 1 GB. The sealed container adds a
-/// header and one AEAD tag per 256 KiB chunk, so the ceiling is set a little
-/// under it — a limit that rejects the paste is a better outcome than one
-/// that accepts the paste and fails the insert.
-pub const MAX_BLOB_BYTES: u64 = 900 * 1024 * 1024;
 
 /// Registers this backend with a [`karmayoga_core::BackendRegistry`].
 pub struct PostgresFactory;
@@ -193,13 +204,10 @@ impl PostgresStore {
             None => driver.session()?,
         };
 
-        SqlStore::open(
-            Arc::new(driver),
-            Box::new(conn),
-            // In the database, not on this disk: see the module docs.
-            Media::Table,
-            &ctx,
-        )
+        // On this disk, beside the vault, as SQLite's are: see the module
+        // docs.
+        let media = Media::files(ctx.root.join(MEDIA_DIRNAME), ctx.cipher.clone())?;
+        SqlStore::open(Arc::new(driver), Box::new(conn), media, &ctx)
     }
 }
 
@@ -405,10 +413,6 @@ impl Driver for PostgresDriver {
 
     fn dialect(&self) -> Dialect {
         Dialect::Postgres
-    }
-
-    fn max_blob_bytes(&self) -> Option<u64> {
-        Some(MAX_BLOB_BYTES)
     }
 
     /// Another session, with its own statement cache.

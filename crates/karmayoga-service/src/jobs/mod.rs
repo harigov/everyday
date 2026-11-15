@@ -529,6 +529,7 @@ async fn execute(
         conversation: transcript,
         prompt,
         pictures: Vec::new(),
+        files: Vec::new(),
         on_screen: None,
         channel,
         // A job is unattended in every way that matters, and says so with

@@ -14,7 +14,8 @@
   // lets that link become an ordinary new tab rather than dead text.
 
   import { untrack } from 'svelte'
-  import { isMock } from '../lib/api'
+  import { api, isMock } from '../lib/api'
+  import { APPS } from '../lib/apps'
   import {
     firstName,
     formatAddresses,
@@ -50,9 +51,17 @@
   import { formatInstantTime, humanBytes, longDate, plural } from '../lib/format'
   import { isoDate } from '../lib/time'
   import { accounts } from '../lib/accounts.svelte'
+  import { files } from '../lib/files.svelte'
+  import { notify } from '../lib/notify.svelte'
   import { app, handle } from '../lib/state.svelte'
   import { splitQuoted } from '../lib/mailwrite'
-  import type { Draft, MailAttachment, MailMessageDetail, RemoteImageSettings } from '../lib/types'
+  import type {
+    Draft,
+    FileEntry,
+    MailAttachment,
+    MailMessageDetail,
+    RemoteImageSettings,
+  } from '../lib/types'
   import AttachmentViewer from './AttachmentViewer.svelte'
   import Icon from './Icon.svelte'
   import MailQuickReplies from './MailQuickReplies.svelte'
@@ -152,6 +161,50 @@
     } finally {
       fetching = new Set([...fetching].filter((k) => k !== key))
     }
+  }
+
+  /** Which parts are being saved to Files, by the same keys as `fetching`. */
+  let filing = $state<Set<string>>(new Set())
+
+  /**
+   * Keep a part that is already here in Files, as a file of its own that
+   * outlives the message, and say so with a way to go and look at it. The
+   * part is named the way its address is (`partIdentifier`), which is what
+   * the service looks it up by. Answers whether it was saved.
+   */
+  async function saveToFiles(
+    message: MailMessageDetail,
+    attachment: MailAttachment,
+  ): Promise<boolean> {
+    const key = attachmentKey(message.id, attachment.index)
+    if (filing.has(key)) return false
+    filing = new Set([...filing, key])
+    try {
+      const file = await api.saveMailPartToFiles(message.id, partIdentifier(attachment))
+      notify.success(`Saved ${file.name} to Files`, {
+        action: { label: 'Open', run: () => void showInFiles(file) },
+      })
+      return true
+    } catch (e) {
+      await handle(e)
+      return false
+    } finally {
+      filing = new Set([...filing].filter((k) => k !== key))
+    }
+  }
+
+  /** Go to the Files app with `file` picked out: in the folder it is in, or
+   *  among the encrypted files, which have no folder. */
+  async function showInFiles(file: FileEntry) {
+    if (!(await app.goTo('files'))) return
+    if (file.storage.kind === 'plain') {
+      const slash = file.storage.path.lastIndexOf('/')
+      files.openFolder(slash < 0 ? '' : file.storage.path.slice(0, slash))
+    } else {
+      files.setView('encrypted')
+    }
+    // Picked out, and described in the inspector.
+    files.select(file.id)
   }
 
   /** The attachment open in the viewer, by message and place in its parts. */
@@ -524,6 +577,43 @@
                     >
                       <Icon name="download" size={13} />
                     </button>
+                    {#if app.supportsFiles}
+                      <button
+                        class="chip-files"
+                        disabled={filing.has(key)}
+                        aria-label="Save {a.filename || 'this attachment'} to Files"
+                        title="Save to Files"
+                        onclick={() => void saveToFiles(message, a)}
+                      >
+                        <Icon name={APPS.files.icon} size={13} />
+                      </button>
+                    {/if}
+                  </span>
+                {:else if a.available && app.supportsFiles}
+                  <!-- The whole chip saves it, as it does without Files; the
+                       icon beside it keeps it in Files instead. -->
+                  <span class="chip split">
+                    <button
+                      class="chip-open"
+                      disabled={isFetching}
+                      title="Save {a.filename || 'this attachment'}"
+                      onclick={() => void save(message, a)}
+                    >
+                      <Icon name="paperclip" size={12} />
+                      <span class="chip-name">{a.filename || 'attachment'}</span>
+                      <span class="chip-size">
+                        {saved.has(key) ? 'Saved' : humanBytes(a.size)}
+                      </span>
+                    </button>
+                    <button
+                      class="chip-files"
+                      disabled={filing.has(key)}
+                      aria-label="Save {a.filename || 'this attachment'} to Files"
+                      title="Save to Files"
+                      onclick={() => void saveToFiles(message, a)}
+                    >
+                      <Icon name={APPS.files.icon} size={13} />
+                    </button>
                   </span>
                 {:else if a.available}
                   <button
@@ -661,6 +751,7 @@
       index={open.index}
       {dark}
       onsave={(a: MailAttachment) => save(message, a)}
+      onfiles={app.supportsFiles ? (a: MailAttachment) => saveToFiles(message, a) : undefined}
       onclose={() => (viewing = null)}
     />
   {/if}
@@ -928,7 +1019,8 @@
     gap: 0;
   }
   .chip-open,
-  .chip-save {
+  .chip-save,
+  .chip-files {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -942,12 +1034,19 @@
     padding: 3px var(--sp-2) 3px 5px;
     color: var(--fg-faint);
   }
+  /* The second icon on a chip, beside the save arrow: keep it in Files. */
+  .chip-files {
+    padding: 3px var(--sp-2) 3px 2px;
+    color: var(--fg-faint);
+  }
   .chip-open:hover,
-  .chip-save:hover:not(:disabled) {
+  .chip-save:hover:not(:disabled),
+  .chip-files:hover:not(:disabled) {
     background: var(--bg-active);
     color: var(--fg);
   }
-  .chip-save:disabled {
+  .chip-save:disabled,
+  .chip-files:disabled {
     opacity: 0.6;
   }
   .chip-download {

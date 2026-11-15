@@ -451,6 +451,7 @@
           syncBody={() => notes.syncBody()}
           onedit={() => notes.edited()}
           onattach={attach}
+          origin="notes"
           onwords={(n: number) => (words = n)}
           onstoring={(f: string | null) => (storing = f)}
         />

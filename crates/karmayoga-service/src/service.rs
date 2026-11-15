@@ -598,6 +598,7 @@ impl Service {
             crate::calendar_refresh::ensure_task(self, &vault);
             crate::money::ensure_task(self, &vault);
             crate::backup::task::ensure_task(self, &vault);
+            crate::files::task::ensure_task(self, &vault);
         }
     }
 
@@ -1202,10 +1203,12 @@ impl Service {
         // before anything is written: a message that names a picture that
         // is not there, or not one a model takes, is refused whole rather
         // than sent without it.
-        let pictures = {
-            let (vault, attachments) = (vault.clone(), args.attachments);
-            blocking(move || crate::pictures::checked(&vault, attachments)).await?
-        };
+        //
+        // Files from the catalog are checked the same way, and a picture
+        // among them gets the small copy a model is shown -- unless the
+        // interface already sent one under the same name.
+        let (pictures, files) =
+            crate::pictures::with_files(&vault, args.attachments, args.files).await?;
         let turned = crate::agent::run_turn(crate::agent::Turn {
             service: self.clone(),
             vault,
@@ -1213,6 +1216,7 @@ impl Service {
             conversation: args.conversation_id,
             prompt: args.prompt,
             pictures,
+            files,
             on_screen: args
                 .on_screen
                 .as_ref()

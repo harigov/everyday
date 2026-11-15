@@ -31,17 +31,24 @@
     type Turn,
   } from '../lib/agent'
   import { agent } from '../lib/agent.svelte'
-  import { api, mediaUrl } from '../lib/api'
+  import { api, fileUrl, fileVersion, mediaUrl, thumbnailUrl } from '../lib/api'
   import { APPS } from '../lib/apps'
   import { lookOf } from '../lib/companion'
   import { splitDigest } from '../lib/dream'
+  import { lookupFiles, whyNotAdded } from '../lib/file-lookup'
+  import { addFiles } from '../lib/files'
+  import { files as filesStore } from '../lib/files.svelte'
   import { jobs } from '../lib/jobs.svelte'
   import { renderMarkdown } from '../lib/markdown'
+  import { notify } from '../lib/notify.svelte'
   import { headline, toWire } from '../lib/onscreen'
   import { panels } from '../lib/panels.svelte'
   import { onScreenNow } from '../lib/screen.svelte'
-  import type { Attachment, Job } from '../lib/types'
+  import { app, handle } from '../lib/state.svelte'
+  import type { Attachment, FileEntry, FileId, Job } from '../lib/types'
   import EmptyState from './EmptyState.svelte'
+  import FileCard from './FileCard.svelte'
+  import FileViewer from './FileViewer.svelte'
   import Icon from './Icon.svelte'
   import JobCard from './JobCard.svelte'
   import ToolCardView from './ToolCard.svelte'
@@ -290,6 +297,76 @@
     pinned = true
   })
 
+  // ── Files in the thread ─────────────────────────────────────────────
+  //
+  // A message carries the ids of the files it was handed, and the assistant
+  // names the ones it found or saved as `[name](files:<id>)`. Neither is a
+  // file as such, so each is looked up in the catalog (once; see
+  // `file-lookup.ts`) before it can be drawn, and pressing one opens it in
+  // the viewer over the thread. A file the catalog does not know -- trashed
+  // for good, or this vault has no catalog -- is `null`, and is said so.
+
+  /** The files turns carry, by id; `undefined` until asked for. */
+  let entries = $state<Record<FileId, FileEntry | null | undefined>>({})
+  const carried = $derived(agent.turns.flatMap((t) => t.files))
+  $effect(() => {
+    const missing = carried.filter((id) => untrack(() => entries[id]) === undefined)
+    if (missing.length === 0) return
+    void lookupFiles(missing)
+      .then((found) => {
+        for (const id of missing) entries[id] = found.find((f) => f.id === id) ?? null
+      })
+      .catch(() => {
+        for (const id of missing) entries[id] = null
+      })
+  })
+
+  /** What the viewer is showing, and which of them. */
+  let viewer = $state<{ files: FileEntry[]; index: number } | null>(null)
+
+  /** Open one of a turn's files, with the turn's others a key away. */
+  function openCarried(ids: FileId[], id: FileId) {
+    const found = ids.flatMap((i) => entries[i] ?? [])
+    const index = found.findIndex((f) => f.id === id)
+    if (index >= 0) viewer = { files: found, index }
+  }
+
+  /** A picture's tile: the catalog's own thumbnail when it has drawn one,
+   *  else the small copy the model was shown -- named as the file is -- and
+   *  only then the file itself, which may be a camera's whole frame. */
+  function tileOf(turn: Turn, file: FileEntry): string {
+    const copy = turn.pictures.find((p) => p.filename === file.name)
+    return thumbnailUrl(file) ?? (copy ? mediaUrl(copy.blob) : fileUrl(file.id, fileVersion(file)))
+  }
+
+  /** A `files:` link in a reply, which `renderMarkdown` draws as a button
+   *  carrying the id. Looked up afresh: what is wanted is the file as it is
+   *  now, and it may have been trashed since it was named. */
+  async function openLinked(id: FileId) {
+    try {
+      const [file] = await lookupFiles([id], { fresh: true })
+      if (file) viewer = { files: [file], index: 0 }
+      else notify.warn('That file is no longer in Files.')
+    } catch (e) {
+      await handle(e)
+    }
+  }
+
+  /** On a reply: a press on one of its `files:` chips opens the file. One
+   *  listener on the reply rather than one on each, because the chips
+   *  arrive inside `{@html}` and are drawn again with every chunk. */
+  function chips(node: HTMLElement) {
+    const onclick = (e: MouseEvent) => {
+      const chip = e.target instanceof Element ? e.target.closest<HTMLElement>('.file-chip') : null
+      const id = chip?.dataset.file
+      if (!id) return
+      e.preventDefault()
+      void openLinked(id)
+    }
+    node.addEventListener('click', onclick)
+    return { destroy: () => node.removeEventListener('click', onclick) }
+  }
+
   // ── The composer ────────────────────────────────────────────────────
 
   // The panel is opened in order to type in it, so the caret starts here
@@ -326,7 +403,7 @@
     agent.composing = false
   })
 
-  // ── Pictures ────────────────────────────────────────────────────────
+  // ── Pictures, and any other file ────────────────────────────────────
   //
   // Chosen with the paperclip, pasted, or dropped on the composer. Each is
   // stored and made ready for the model the moment it arrives -- shrunk,
@@ -334,18 +411,38 @@
   // file that cannot be sent says so while somebody is still choosing, rather
   // than after they have typed a question and waited for an answer. Until
   // then its chip shows the file as it is on disk, and Send waits for it.
+  //
+  // In a vault with a files catalog (`keepsFiles`) the composer takes any file
+  // at all. Each goes into Files through `addFiles`, the way every app adds
+  // one, and is sent by its id; a picture is also made ready for the model
+  // as above, because that small copy is what the model is shown. In a vault
+  // without one it is pictures only, stored as blobs, exactly as it was.
 
   /** The most pictures one message carries; the service holds to the same. */
   const MAX_PICTURES = 4
+
+  const keepsFiles = $derived(app.supportsFiles)
+  // Whether this window is on the vault's own machine decides how the
+  // paperclip adds files (see `choose`), so it is known before it is pressed:
+  // the page's file input has to be opened by the press itself, and cannot
+  // wait for an answer first.
+  $effect(() => {
+    if (keepsFiles && filesStore.status === null) void untrack(() => filesStore.refreshStatus())
+  })
 
   interface Picking {
     /** For the `{#each}`: a picture is not stored until it is ready. */
     key: number
     name: string
-    /** The file as chosen, drawn at once while it is being stored. */
+    /** A picture as chosen, drawn at once while it is being stored. Empty
+     *  for a file that is not one. */
     preview: string
-    /** What `sendMessage` is given, once it is ready. */
+    /** What `sendMessage` is given as a picture, once it is ready. */
     ready: Attachment | null
+    /** The file in Files, once it has arrived there. Only with `keepsFiles`. */
+    entry: FileEntry | null
+    /** Still being stored or made ready; Send waits for it. */
+    busy: boolean
   }
 
   let picking = $state<Picking[]>([])
@@ -354,7 +451,7 @@
   let chooser = $state<HTMLInputElement | null>(null)
   /** Whether something with files in it is being dragged over the composer. */
   let dragging = $state(false)
-  const preparing = $derived(picking.some((p) => p.ready === null))
+  const preparing = $derived(picking.some((p) => p.busy))
   const canSend = $derived(!preparing && (draft.trim() !== '' || picking.length > 0))
 
   /** Store and prepare `files`, skipping what is not a picture. */
@@ -370,7 +467,14 @@
     }
     for (const file of images.slice(0, Math.max(0, room))) {
       const key = ++nextPicture
-      picking.push({ key, name: file.name, preview: URL.createObjectURL(file), ready: null })
+      picking.push({
+        key,
+        name: file.name,
+        preview: URL.createObjectURL(file),
+        ready: null,
+        entry: null,
+        busy: true,
+      })
       void (async () => {
         try {
           const blob = await api.putBlob(new Uint8Array(await file.arrayBuffer()))
@@ -378,7 +482,10 @@
           const at = picking.findIndex((p) => p.key === key)
           // Removed while it was being stored: the blob is left for the
           // garbage collector, as an unsaved editor's picture is.
-          if (at >= 0) picking[at]!.ready = ready
+          if (at >= 0) {
+            picking[at]!.ready = ready
+            picking[at]!.busy = false
+          }
         } catch (e) {
           removePicture(key)
           pictureError = e instanceof Error ? e.message : String(e)
@@ -388,35 +495,130 @@
     box?.focus()
   }
 
+  /** Files are added one at a time, in the order chosen, so that it is the
+   *  first pictures that get the small copy a model is shown, and there are
+   *  never more than `MAX_PICTURES` of them however fast somebody drops. */
+  let queue: Promise<void> = Promise.resolve()
+  function enqueue(job: () => Promise<void>) {
+    queue = queue.then(job).catch(() => {})
+  }
+
+  /** Add `list` to the next message, whatever it is, through Files. */
+  function addAnyFiles(list: File[]) {
+    pictureError = null
+    for (const file of list) {
+      const key = ++nextPicture
+      const picture = file.type.startsWith('image/')
+      picking.push({
+        key,
+        name: file.name,
+        preview: picture ? URL.createObjectURL(file) : '',
+        ready: null,
+        entry: null,
+        busy: true,
+      })
+      enqueue(async () => {
+        try {
+          const [entry] = await addFiles([file], { origin: 'assistant' })
+          if (!entry) throw new Error(whyNotAdded(file))
+          await attach(key, entry, file)
+        } catch (e) {
+          removePicture(key)
+          pictureError = e instanceof Error ? e.message : String(e)
+        }
+      })
+    }
+    box?.focus()
+  }
+
+  /** The system's own picker, which imports by path: on the vault's own
+   *  machine nothing has to go through this window at all. Anywhere else the
+   *  page's input is the way in. */
+  async function choose() {
+    if (!(keepsFiles && filesStore.local)) return void chooser?.click()
+    pictureError = null
+    try {
+      for (const entry of await filesStore.pickAndImport({ origin: 'assistant' })) {
+        const key = ++nextPicture
+        picking.push({ key, name: entry.name, preview: '', ready: null, entry, busy: true })
+        enqueue(() => attach(key, entry, null))
+      }
+    } catch (e) {
+      pictureError = e instanceof Error ? e.message : String(e)
+    }
+    box?.focus()
+  }
+
+  /**
+   * A file that has arrived in Files, taken as what the next message carries.
+   * A picture also gets the small copy a model is shown, from the file's own
+   * bytes -- `source` if they are at hand, else read back from the catalog.
+   * One that cannot be made ready (a format it cannot read, a fifth picture)
+   * still goes, as the file it is.
+   */
+  async function attach(key: number, entry: FileEntry, source: File | null) {
+    const item = () => picking.find((p) => p.key === key)
+    const held = item()
+    if (!held) return
+    held.entry = entry
+    if (entry.kind === 'image' && picking.filter((p) => p.ready).length < MAX_PICTURES) {
+      try {
+        let bytes: ArrayBuffer
+        if (source) {
+          bytes = await source.arrayBuffer()
+        } else {
+          const response = await fetch(fileUrl(entry.id, fileVersion(entry)))
+          if (!response.ok) throw new Error(String(response.status))
+          bytes = await response.arrayBuffer()
+        }
+        const blob = await api.putBlob(new Uint8Array(bytes))
+        const ready = await api.preparePicture(blob, entry.name)
+        const now = item()
+        if (now) now.ready = ready
+      } catch {
+        /* Not something a model can be shown: it goes as a file only. */
+      }
+    }
+    const done = item()
+    if (done) done.busy = false
+  }
+
   function removePicture(key: number) {
     const at = picking.findIndex((p) => p.key === key)
     if (at < 0) return
-    URL.revokeObjectURL(picking[at]!.preview)
+    if (picking[at]!.preview) URL.revokeObjectURL(picking[at]!.preview)
     picking.splice(at, 1)
   }
 
   function clearPictures() {
-    for (const p of picking) URL.revokeObjectURL(p.preview)
+    for (const p of picking) if (p.preview) URL.revokeObjectURL(p.preview)
     picking = []
   }
   onDestroy(clearPictures)
 
+  /** Take what was chosen, dropped or pasted: any file in a vault that keeps
+   *  them, pictures only in one that does not. */
+  function take(list: File[]) {
+    if (keepsFiles) addAnyFiles(list)
+    else addPictures(list)
+  }
+
   function onChosen(e: Event) {
     const input = e.currentTarget as HTMLInputElement
-    addPictures(Array.from(input.files ?? []))
+    take(Array.from(input.files ?? []))
     // So choosing the same file again, after removing it, is a change.
     input.value = ''
   }
 
-  /** A pasted picture -- a screenshot on the clipboard -- is attached; a
-   *  paste of text is left to the box. */
+  /** A pasted picture -- a screenshot on the clipboard -- is attached, and
+   *  with a files catalog so is any other file; a paste of text is left to
+   *  the box. */
   function onPaste(e: ClipboardEvent) {
-    const files = Array.from(e.clipboardData?.files ?? []).filter((f) =>
-      f.type.startsWith('image/'),
-    )
-    if (files.length === 0) return
+    const pasted = Array.from(e.clipboardData?.files ?? [])
+    const list = keepsFiles ? pasted : pasted.filter((f) => f.type.startsWith('image/'))
+    if (list.length === 0) return
     e.preventDefault()
-    addPictures(files)
+    take(list)
   }
 
   function carriesFiles(e: DragEvent): boolean {
@@ -433,18 +635,28 @@
     dragging = false
     if (!carriesFiles(e)) return
     e.preventDefault()
-    addPictures(Array.from(e.dataTransfer?.files ?? []))
+    take(Array.from(e.dataTransfer?.files ?? []))
   }
 
   async function send(text = draft) {
     const pictures = picking.flatMap((p) => (p.ready ? [p.ready] : []))
-    if (agent.busy || preparing || (!text.trim() && pictures.length === 0)) return
+    const attached = picking.flatMap((p) => (p.entry ? [p.entry.id] : []))
+    if (
+      agent.busy ||
+      preparing ||
+      (!text.trim() && pictures.length === 0 && attached.length === 0)
+    ) {
+      return
+    }
     // Cleared optimistically, because leaving the question in the box reads
     // as though nothing was sent. Put back if the store refuses it -- which
     // it does when there is no thread open -- so a paragraph is never
     // silently eaten, and nor are the pictures that went with it.
     const was = draft
     const held = picking
+    // Known already, so the files the message carries are drawn with it and
+    // not after a round trip to ask what they are.
+    for (const p of held) if (p.entry) entries[p.entry.id] = p.entry
     draft = ''
     picking = []
     pictureError = null
@@ -452,10 +664,11 @@
       text,
       variant === 'rail' && withScreen ? toWire(screen.app, screen.showing) : null,
       pictures,
+      attached,
     )
     withScreen = true
     if (accepted) {
-      for (const p of held) URL.revokeObjectURL(p.preview)
+      for (const p of held) if (p.preview) URL.revokeObjectURL(p.preview)
     } else {
       draft = was
       picking = held
@@ -559,7 +772,32 @@
                  not otherwise see, so it is folded rather than dropped -- see
                  `splitDigest` and docs/plans/dreaming.md. -->
             {@const { text, digest } = splitDigest(turn.text)}
-            {#if turn.pictures.length}
+            {#if turn.files.length}
+              <!-- What was handed over, as it is in Files. A picture is a tile
+                   and anything else a card, and each opens the viewer, with
+                   the message's other files a key away. A message that
+                   predates Files, or a vault without it, has its pictures
+                   below instead. -->
+              {@const only = turn.files.length === 1 && entries[turn.files[0]!]?.kind === 'image'}
+              <div class="sent" class:single={only}>
+                {#each turn.files as id (id)}
+                  {@const file = entries[id]}
+                  {#if file?.kind === 'image'}
+                    <button
+                      class="picture"
+                      title={file.name}
+                      onclick={() => openCarried(turn.files, id)}
+                    >
+                      <img src={tileOf(turn, file)} alt={file.name} loading="lazy" />
+                    </button>
+                  {:else if file}
+                    <FileCard {file} compact onopen={() => openCarried(turn.files, id)} />
+                  {:else if file === null}
+                    <span class="gone">A file that is no longer in Files</span>
+                  {/if}
+                {/each}
+              </div>
+            {:else if turn.pictures.length}
               <div class="pictures" class:single={turn.pictures.length === 1}>
                 {#each turn.pictures as picture (picture.blob)}
                   <a
@@ -694,7 +932,7 @@
                    `<script>`, an `onerror` attribute and a `javascript:`
                    link. -->
               <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-              <div class="reply md">{@html renderMarkdown(turn.text)}</div>
+              <div class="reply md" use:chips>{@html renderMarkdown(turn.text)}</div>
             {/if}
 
             {#if choices}
@@ -759,8 +997,8 @@
     <p class="failed banner">{agent.error}</p>
   {/if}
 
-  <!-- The whole composer is where a picture can be dropped; the paperclip
-       is the way in from the keyboard. -->
+  <!-- The whole composer is where a picture -- or, with Files, any file --
+       can be dropped; the paperclip is the way in from the keyboard. -->
   <div
     class="composer"
     class:dragging
@@ -789,17 +1027,28 @@
     {#if picking.length || pictureError}
       <div class="picking">
         {#each picking as p (p.key)}
-          <div class="chip" class:waiting={p.ready === null} title={p.name}>
-            <img src={p.preview} alt={p.name} />
-            <button
-              class="unpick"
-              onclick={() => removePicture(p.key)}
-              aria-label="Remove {p.name}"
-              title="Remove"
-            >
-              <Icon name="close" size={10} weight={2} />
-            </button>
-          </div>
+          {#if p.entry}
+            <!-- In Files already; the card is how it will be seen there. -->
+            <div class="held" class:waiting={p.busy}>
+              <FileCard file={p.entry} compact onremove={() => removePicture(p.key)} />
+            </div>
+          {:else}
+            <div class="chip" class:waiting={p.busy} title={p.name}>
+              {#if p.preview}
+                <img src={p.preview} alt={p.name} />
+              {:else}
+                <span class="chip-name">{p.name}</span>
+              {/if}
+              <button
+                class="unpick"
+                onclick={() => removePicture(p.key)}
+                aria-label="Remove {p.name}"
+                title="Remove"
+              >
+                <Icon name="close" size={10} weight={2} />
+              </button>
+            </div>
+          {/if}
         {/each}
         {#if pictureError}<p class="picture-error">{pictureError}</p>{/if}
       </div>
@@ -809,7 +1058,7 @@
         bind:this={chooser}
         class="chooser"
         type="file"
-        accept="image/*"
+        accept={keepsFiles ? undefined : 'image/*'}
         multiple
         onchange={onChosen}
         tabindex="-1"
@@ -817,10 +1066,12 @@
       />
       <button
         class="attach"
-        onclick={() => chooser?.click()}
-        disabled={picking.length >= MAX_PICTURES}
-        title="Add a picture — or paste or drop one here"
-        aria-label="Add a picture"
+        onclick={() => void choose()}
+        disabled={!keepsFiles && picking.length >= MAX_PICTURES}
+        title={keepsFiles
+          ? 'Add a file — or paste or drop one here'
+          : 'Add a picture — or paste or drop one here'}
+        aria-label={keepsFiles ? 'Add a file' : 'Add a picture'}
       >
         <Icon name="paperclip" size={16} />
       </button>
@@ -847,7 +1098,11 @@
           class="send"
           onclick={() => void send()}
           disabled={!canSend}
-          title={preparing ? 'Getting the picture ready…' : 'Send (Enter)'}
+          title={preparing
+            ? keepsFiles
+              ? 'Adding the files…'
+              : 'Getting the picture ready…'
+            : 'Send (Enter)'}
         >
           <Icon name="arrow-up" size={16} />
         </button>
@@ -855,6 +1110,17 @@
     </div>
   </div>
 </div>
+
+{#if viewer}
+  <!-- Over the whole window, as the mail attachment viewer is: the files of
+       one message, or the one a link named. -->
+  <FileViewer
+    files={viewer.files}
+    index={viewer.index}
+    onclose={() => (viewer = null)}
+    onindex={(i: number) => viewer && (viewer.index = i)}
+  />
+{/if}
 
 <style>
   .thread {
@@ -983,7 +1249,8 @@
   }
   /* Pictures sit over the person's words, on the same side, as a row of
      tiles -- or one larger picture when there is only the one. */
-  .pictures {
+  .pictures,
+  .sent {
     align-self: flex-end;
     display: flex;
     flex-wrap: wrap;
@@ -1004,12 +1271,24 @@
     height: 96px;
     object-fit: cover;
   }
-  .pictures.single .picture img {
+  .pictures.single .picture img,
+  .sent.single .picture img {
     width: auto;
     height: auto;
     max-width: min(320px, 100%);
     max-height: 240px;
     object-fit: contain;
+  }
+  /* A picture handed over from Files is a button, not a link. */
+  .sent .picture {
+    padding: 0;
+    cursor: pointer;
+  }
+  .gone {
+    align-self: center;
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    font-style: italic;
   }
   .reply {
     font-size: var(--text-base);
@@ -1383,6 +1662,24 @@
   .md :global(a) {
     color: var(--accent);
   }
+  /* A file the assistant named, `[name](files:<id>)`: a chip that opens it. */
+  .md :global(.file-chip) {
+    max-width: 100%;
+    padding: 0 var(--sp-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-hover);
+    color: var(--accent);
+    font: inherit;
+    font-size: 0.92em;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+    text-align: left;
+    cursor: pointer;
+  }
+  .md :global(.file-chip:hover) {
+    border-color: var(--accent);
+  }
   .md :global(ul),
   .md :global(ol) {
     padding-left: 1.35em;
@@ -1494,8 +1791,29 @@
     object-fit: cover;
     border-radius: inherit;
   }
+  /* A file already in Files, as the card it is drawn as there. */
+  .held {
+    min-width: 0;
+    max-width: 220px;
+  }
+  /* A file that is not a picture, named while it is being added. */
+  .chip .chip-name {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    height: 100%;
+    padding: 4px;
+    overflow: hidden;
+    font-size: 10px;
+    line-height: 1.2;
+    text-align: center;
+    overflow-wrap: anywhere;
+    color: var(--fg-muted);
+  }
   /* Still being stored and made ready: dimmed, and Send waits for it. */
-  .chip.waiting img {
+  .chip.waiting img,
+  .chip.waiting .chip-name,
+  .held.waiting {
     opacity: 0.45;
   }
   .unpick {

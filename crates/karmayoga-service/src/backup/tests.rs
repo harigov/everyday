@@ -10,7 +10,7 @@ use karmayoga_core::backup::{BackupKeys, Destination};
 use karmayoga_core::note::Note;
 use karmayoga_core::{Vault, VaultConfig};
 
-use super::manifest::Area;
+use super::manifest::{Area, Manifest};
 use super::repo::{self, ManifestCache};
 use super::target::{Target, TargetErrorKind};
 use super::{BackupError, Plan, Progress, RestoreOptions};
@@ -35,6 +35,7 @@ fn plan(destination: &Path, keep: u32) -> Plan {
         destination: Destination::Folder { path: destination.display().to_string() },
         keep,
         config_dir: None,
+        files: false,
         expect_existing: false,
         s3_keys: None,
         cache_dir: None,
@@ -91,6 +92,7 @@ fn a_backup_restores_into_a_vault_that_opens_with_the_password() {
                 snapshot: None,
                 into: into.clone(),
                 config_into: None,
+                files_into: None,
                 password: Some(PASSWORD.into()),
             },
             None,
@@ -257,6 +259,7 @@ fn a_damaged_chunk_is_refused_on_restore() {
                 snapshot: None,
                 into: out.path().join("v"),
                 config_into: None,
+                files_into: None,
                 password: Some(PASSWORD.into()),
             },
             None,
@@ -314,6 +317,7 @@ fn settings_files_come_back_only_when_asked_and_never_over_what_is_there() {
                 snapshot: Some(name),
                 into: out.path().join("v"),
                 config_into: Some(new_config.path().to_path_buf()),
+                files_into: None,
                 password: Some(PASSWORD.into()),
             },
             None,
@@ -653,5 +657,217 @@ fn a_staging_folder_that_cannot_be_made_leaves_no_lock_behind() {
         assert!(super::run(v.clone(), plan(dest.path(), 7), Progress::new(false)).await.is_err());
         let target = Target::folder(dest.path());
         assert!(target.get(repo::LOCK).await.unwrap().is_none());
+    });
+}
+
+// ---- the files folder ----------------------------------------------------------
+
+/// A vault with its files folder set up at `folder`.
+fn with_files(home: &Path, folder: &Path) -> Arc<Vault> {
+    let v = vault(home, PASSWORD);
+    v.set_up_files_folder(Some(folder)).unwrap();
+    v
+}
+
+fn with_files_plan(destination: &Path, keep: u32) -> Plan {
+    Plan { files: true, ..plan(destination, keep) }
+}
+
+/// The newest copy at `target`, and its manifest.
+async fn newest(target: &Target, v: &Vault) -> (String, Manifest) {
+    let name = repo::snapshots(target).await.unwrap().pop().unwrap();
+    let keys = v.backup_keys().unwrap();
+    let manifest =
+        repo::load_manifest(target, &keys, &name, &ManifestCache::new(None)).await.unwrap();
+    (name, manifest)
+}
+
+/// What a copy holds of the files folder, by the path it names it under.
+fn files_in(manifest: &Manifest) -> Vec<String> {
+    manifest.files.iter().filter(|f| f.in_files_folder()).map(|f| f.path.clone()).collect()
+}
+
+#[test]
+fn the_files_folder_is_in_the_copy_under_files_and_comes_back_without_what_a_scan_leaves_out() {
+    let (home, dest, folder, restored) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    std::fs::write(folder.path().join("a.txt"), b"alpha").unwrap();
+    std::fs::create_dir_all(folder.path().join("Photos")).unwrap();
+    std::fs::write(folder.path().join("Photos/b.jpg"), noise(1_500_000, 6)).unwrap();
+    // What a scan of the folder leaves out, so a copy of it does.
+    std::fs::write(folder.path().join(".DS_Store"), b"litter").unwrap();
+    std::fs::write(folder.path().join(".hidden"), b"dotted").unwrap();
+    let v = with_files(home.path(), folder.path());
+
+    rt().block_on(async {
+        let report = super::run(v.clone(), with_files_plan(dest.path(), 7), Progress::new(true))
+            .await
+            .unwrap();
+        assert!(!report.files_folder_unavailable, "{report:?}");
+        let target = Target::folder(dest.path());
+        let (name, manifest) = newest(&target, &v).await;
+        assert_eq!(files_in(&manifest), ["files/Photos/b.jpg", "files/a.txt"]);
+        assert!(manifest.files_folder.is_some(), "the copy says where the folder was");
+        let sound = super::verify(&target, &v.backup_keys().unwrap(), true).await.unwrap();
+        assert!(sound.sound(), "{sound:?}");
+
+        // Back where it was told to go: the files, the folder marked as
+        // Karma Yoga's again, and nothing laid down inside the vault.
+        let files_back = restored.path().join("Files");
+        let options = |into: &str| RestoreOptions {
+            snapshot: Some(name.clone()),
+            into: restored.path().join(into),
+            config_into: None,
+            files_into: Some(files_back.clone()),
+            password: Some(PASSWORD.into()),
+        };
+        let report = super::restore(&target, options("vault"), None).await.unwrap();
+        assert_eq!((report.files_folder_restored, report.files_folder_kept), (2, 0));
+        assert_eq!(std::fs::read(files_back.join("a.txt")).unwrap(), b"alpha");
+        assert_eq!(std::fs::read(files_back.join("Photos/b.jpg")).unwrap(), noise(1_500_000, 6));
+        assert!(!files_back.join(".DS_Store").exists());
+        assert!(files_back.join(karmayoga_core::files::INTERNAL_DIR).is_dir());
+        assert!(!restored.path().join("vault/files").exists());
+
+        // A second restore is never over what is there now.
+        std::fs::write(files_back.join("a.txt"), b"mine").unwrap();
+        let report = super::restore(&target, options("vault2"), None).await.unwrap();
+        assert_eq!((report.files_folder_restored, report.files_folder_kept), (0, 2));
+        assert_eq!(std::fs::read(files_back.join("a.txt")).unwrap(), b"mine");
+    });
+}
+
+#[test]
+fn a_files_folder_that_is_not_there_is_carried_forward_and_never_recorded_empty() {
+    let (home, dest, folder, restored) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    std::fs::write(folder.path().join("a.txt"), b"alpha").unwrap();
+    std::fs::write(folder.path().join("b.bin"), noise(1_200_000, 7)).unwrap();
+    let v = with_files(home.path(), folder.path());
+
+    rt().block_on(async {
+        // Keeping one copy is the hard case: the second run lets go of the
+        // first, and with it the only chunks that hold the files.
+        let first = super::run(v.clone(), with_files_plan(dest.path(), 1), Progress::new(false))
+            .await
+            .unwrap();
+        assert!(!first.files_folder_unavailable);
+        let target = Target::folder(dest.path());
+        let (_, before) = newest(&target, &v).await;
+
+        let away = folder.path().with_extension("away");
+        std::fs::rename(folder.path(), &away).unwrap();
+        let mut p = with_files_plan(dest.path(), 1);
+        p.expect_existing = true;
+        let second = super::run(v.clone(), p.clone(), Progress::new(false)).await.unwrap();
+        assert!(second.files_folder_unavailable, "{second:?}");
+        assert_eq!(second.removed_snapshots, 1);
+        let (name, after) = newest(&target, &v).await;
+        assert_eq!(files_in(&after), files_in(&before));
+        assert_eq!(files_in(&after).len(), 2);
+        assert_eq!(after.files_folder, before.files_folder);
+        let sound = super::verify(&target, &v.backup_keys().unwrap(), true).await.unwrap();
+        assert!(sound.sound(), "what the copy names is still there: {sound:?}");
+
+        // And it opens: the files are in the copy as they were.
+        let files_back = restored.path().join("Files");
+        super::restore(
+            &target,
+            RestoreOptions {
+                snapshot: Some(name),
+                into: restored.path().join("vault"),
+                config_into: None,
+                files_into: Some(files_back.clone()),
+                password: Some(PASSWORD.into()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(std::fs::read(files_back.join("b.bin")).unwrap(), noise(1_200_000, 7));
+
+        // The folder back: it is recorded as it is.
+        std::fs::rename(&away, folder.path()).unwrap();
+        std::fs::remove_file(folder.path().join("a.txt")).unwrap();
+        let third = super::run(v.clone(), p, Progress::new(false)).await.unwrap();
+        assert!(!third.files_folder_unavailable);
+        let (_, now) = newest(&target, &v).await;
+        assert_eq!(files_in(&now), ["files/b.bin"]);
+    });
+}
+
+#[test]
+fn a_folder_that_was_never_set_up_costs_the_copy_nothing() {
+    let (home, dest) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let v = vault(home.path(), PASSWORD);
+    rt().block_on(async {
+        let report = super::run(v.clone(), with_files_plan(dest.path(), 7), Progress::new(false))
+            .await
+            .unwrap();
+        assert!(!report.files_folder_unavailable, "{report:?}");
+        let (_, manifest) = newest(&Target::folder(dest.path()), &v).await;
+        assert!(files_in(&manifest).is_empty());
+        assert_eq!(manifest.files_folder, None);
+    });
+}
+
+#[test]
+fn one_file_comes_back_from_the_newest_copy_that_holds_it_and_never_over_a_file() {
+    let (home, dest, folder) =
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let a = folder.path().join("Docs/a.txt");
+    std::fs::create_dir_all(a.parent().unwrap()).unwrap();
+    std::fs::write(&a, b"version one").unwrap();
+    let v = with_files(home.path(), folder.path());
+
+    rt().block_on(async {
+        let p = with_files_plan(dest.path(), 7);
+        super::run(v.clone(), p.clone(), Progress::new(false)).await.unwrap();
+        std::fs::write(&a, b"version two, longer").unwrap();
+        let mut p = p;
+        p.expect_existing = true;
+        super::run(v.clone(), p, Progress::new(false)).await.unwrap();
+        let target = Target::folder(dest.path());
+        let (newest_name, _) = newest(&target, &v).await;
+
+        std::fs::remove_file(&a).unwrap();
+        let keys = v.backup_keys().unwrap();
+        let staging = folder.path().join(karmayoga_core::files::INTERNAL_DIR).join("tmp");
+        let restored =
+            super::restore::restore_one(&target, &keys, "Docs/a.txt", &a, &staging, None)
+                .await
+                .unwrap()
+                .expect("a copy holds it");
+        assert_eq!(restored.snapshot, newest_name);
+        assert_eq!(std::fs::read(&a).unwrap(), b"version two, longer");
+        assert!(
+            std::fs::read_dir(&staging).map(|mut d| d.next().is_none()).unwrap_or(true),
+            "nothing is left in the staging folder"
+        );
+
+        // Already there: refused, and untouched.
+        let err = super::restore::restore_one(&target, &keys, "Docs/a.txt", &a, &staging, None)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("already there"), "{err}");
+        assert_eq!(std::fs::read(&a).unwrap(), b"version two, longer");
+
+        // No copy holds it.
+        let elsewhere = folder.path().join("never.txt");
+        assert_eq!(
+            super::restore::restore_one(&target, &keys, "never.txt", &elsewhere, &staging, None)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(!elsewhere.exists());
     });
 }

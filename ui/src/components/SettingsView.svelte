@@ -45,6 +45,7 @@
 
   import { api, isWeb } from '../lib/api'
   import { agent } from '../lib/agent.svelte'
+  import { files } from '../lib/files.svelte'
   import { assistant, PANE_LABELS, type Pane } from '../lib/assistant.svelte'
   import { jobs } from '../lib/jobs.svelte'
   import { proposals } from '../lib/proposals.svelte'
@@ -62,6 +63,7 @@
   import BackupPanel from './BackupPanel.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import DataPanel from './DataPanel.svelte'
+  import FilesSettingsPanel from './FilesSettingsPanel.svelte'
   import KeepInTouchPanel from './KeepInTouchPanel.svelte'
   import MailSortingPanel from './MailSortingPanel.svelte'
   import MailWritingPanel from './MailWritingPanel.svelte'
@@ -242,6 +244,10 @@
     // vault keeps it. Mostly this machine's, not the vault's -- which is why
     // it is a tab here rather than a pane of the app.
     { id: 'screentime', label: 'Screen time', icon: 'hourglass', group: 'apps' },
+    // Where the files folder is, what is kept encrypted, how long the trash
+    // waits, and what the assistant and the network may be told. See
+    // `FilesSettingsPanel`.
+    { id: 'files', label: 'Files', icon: 'folder', group: 'apps' },
     { id: 'meetings', label: 'Meetings', icon: 'mic', group: 'apps' },
     // After Meetings and not under it: one list serves the journal, notes and
     // meeting notes alike, and each of those picks from it in its own place.
@@ -285,6 +291,7 @@
       .filter((t) => t.id !== 'templates' || app.supportsNotes)
       .filter((t) => t.id !== 'money' || app.supportsMoney)
       .filter((t) => t.id !== 'screentime' || app.supportsScreenTime)
+      .filter((t) => t.id !== 'files' || files.supported)
       .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
       .filter((t) => t.id !== 'writing' || (agent.supported && app.supportsMail)),
@@ -475,6 +482,8 @@
         <MoneySettingsPanel />
       {:else if tab === 'screentime'}
         <ScreenTimeSettingsPanel />
+      {:else if tab === 'files'}
+        <FilesSettingsPanel />
       {:else if tab === 'meetings'}
         <MeetingsPanel />
       {:else if tab === 'templates'}

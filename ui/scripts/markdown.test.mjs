@@ -64,6 +64,9 @@ const ALLOWED = new Set([
   'pre',
   'a',
   'blockquote',
+  // Only ever `<button type="button" class="file-chip" data-file="<id>">`: a
+  // link to a file in Files. See the checks below.
+  'button',
   'ul',
   'ol',
   'li',
@@ -123,6 +126,40 @@ for (const scheme of ['javascript:alert(1)', 'data:text/html,<script>x</script>'
   const html = renderMarkdown(`[click me](${scheme})`)
   assert.ok(!html.includes('<a '), `a dangerous scheme was linked: ${html}`)
   assert.ok(html.includes('click me'), `the label was lost: ${html}`)
+}
+
+// A link to a file in Files -- how the assistant names one -- is a button
+// carrying the id, never an address: nothing that can be navigated to, and
+// nothing in it but the id.
+{
+  const id = '0192f3a4-5b6c-7d8e-9f01-23456789abcd'
+  includes(
+    `[the plan](files:${id})`,
+    `<button type="button" class="file-chip" data-file="${id}">the plan</button>`,
+  )
+  includes(`see [**the plan**](files:${id}) now`, '<strong>the plan</strong></button> now')
+  includes(`[](files:${id})`, '>File</button>', 'a link with no words is called File')
+  includes(`[the plan](files:${id.toUpperCase()})`, `data-file="${id}"`, 'the id is lower-cased')
+  includes(`[the plan](files:${id.replaceAll('-', '')})`, `data-file="${id}"`, 'and hyphenated')
+  assert.ok(!renderMarkdown(`[the plan](files:${id})`).includes('href'), 'it is not an address')
+  // Anything but an id after the scheme is the text that was typed.
+  for (const bad of [
+    'files:',
+    'files:abc',
+    'files:../../etc/passwd',
+    `files:${id}/extra`,
+    `files:${id}"onclick="steal()`,
+    'files:<script>alert(1)</script>',
+  ]) {
+    const html = renderMarkdown(`[the plan](${bad})`)
+    assert.ok(!html.includes('<button'), `not an id, so not a chip: ${html}`)
+    assert.ok(!html.includes('<script'), `a tag was written that should not be: ${html}`)
+    assert.ok(html.includes('the plan'), `the label was lost: ${html}`)
+  }
+  for (const tag of tagsIn(renderMarkdown(`[a *b*](files:${id})`))) {
+    assert.ok(ALLOWED.has(tag.name), `a tag this module does not write: ${tag.name}`)
+    assert.ok(!/\son\w+=/i.test(tag.attributes), `an event handler on a chip: ${tag.attributes}`)
+  }
 }
 
 // And the three that do not execute are linked, away from this window.

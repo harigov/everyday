@@ -31,6 +31,17 @@
 //!   times smaller as a JPEG. A PNG keeps any transparency; a JPEG is laid
 //!   over white.
 //!
+//! # Pictures that are files too
+//!
+//! A picture sent to the assistant may also be one of the person's files --
+//! picked from the Files app, or saved there from a chat. The file is the
+//! original and stays as it is, in the files folder; what the model is shown
+//! is still this copy, made the same way and kept with the message. See
+//! [`with_files`] and [`of_file`]. A file that is a picture the model cannot
+//! be shown (an iPhone's HEIC, an SVG) is not refused the way a pasted one
+//! is: it is the person's file, the assistant is told its name, and only the
+//! picture is missing.
+//!
 //! # What is refused
 //!
 //! A picture that cannot be read -- an iPhone's HEIC, an SVG, a file that
@@ -45,6 +56,8 @@ use std::sync::Arc;
 
 use image::{DynamicImage, ImageFormat};
 use karmayoga_core::Vault;
+use karmayoga_core::files::{FileEntry, FileKind};
+use karmayoga_core::id::FileId;
 use karmayoga_core::model::{Attachment, MediaKind};
 
 use crate::covers;
@@ -64,6 +77,11 @@ pub const MAX_BYTES: usize = 32 * 1024 * 1024;
 /// more on every turn it is replayed in, and a question about more than a
 /// handful of pictures at once is better asked about each.
 pub const MAX_PER_MESSAGE: usize = 4;
+
+/// How many files one message may carry. The model is told each one's name
+/// on every turn the message is replayed in, so the number is kept to what a
+/// person could mean by "these".
+pub const MAX_FILES_PER_MESSAGE: usize = 20;
 
 /// A picture made ready for the model, not yet stored.
 #[derive(Debug)]
@@ -135,18 +153,114 @@ pub async fn store(
     let vault = vault.clone();
     blocking(move || {
         let prepared = prepare(&bytes)?;
-        let blob = vault.put_blob(&prepared.bytes)?;
-        Ok(Attachment {
-            blob,
-            kind: MediaKind::Image,
-            mime: prepared.mime.to_string(),
-            filename: display_name(&filename, prepared.mime),
-            byte_len: prepared.bytes.len() as u64,
-            width: Some(prepared.width),
-            height: Some(prepared.height),
-            duration_ms: None,
-            caption: String::new(),
-        })
+        attach(&vault, &prepared, &filename)
+    })
+    .await
+}
+
+/// A picture made ready by [`prepare`], put in the vault and described as
+/// the attachment a message carries. Shared by every way a picture arrives.
+fn attach(vault: &Vault, prepared: &Prepared, filename: &str) -> CommandResult<Attachment> {
+    let blob = vault.put_blob(&prepared.bytes)?;
+    Ok(Attachment {
+        blob,
+        kind: MediaKind::Image,
+        mime: prepared.mime.to_string(),
+        filename: display_name(filename, prepared.mime),
+        byte_len: prepared.bytes.len() as u64,
+        width: Some(prepared.width),
+        height: Some(prepared.height),
+        duration_ms: None,
+        caption: String::new(),
+    })
+}
+
+/// The picture for the model of a file in the files catalog: the file read
+/// back, and made into one the way [`store`] makes any. `None` for a file
+/// that is not a picture a model can be shown -- not an image at all, over
+/// [`MAX_BYTES`], one `prepare` cannot decode (HEIC, SVG), or one that cannot
+/// be read right now, a locked folder, say. Never an error for those: the
+/// file is still the person's to hand over, and the model is still told its
+/// name.
+///
+/// Synchronous and not cheap, as [`prepare`] is; run it on the blocking pool.
+pub fn of_file(vault: &Vault, file: &FileEntry) -> CommandResult<Option<Attachment>> {
+    if file.kind != FileKind::Image || file.size > MAX_BYTES as u64 {
+        return Ok(None);
+    }
+    let bytes = match vault.read_file_range(file.id, 0, file.size) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::warn!(file = %file.id, error = %e, "could not read a file to show the model");
+            return Ok(None);
+        }
+    };
+    match prepare(&bytes) {
+        Ok(prepared) => attach(vault, &prepared, &file.name).map(Some),
+        Err(e) if e.code == codes::NOT_AN_IMAGE || e.code == codes::TOO_LARGE => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// What a message from the interface carries, checked: `attachments` as
+/// [`checked`] checks them, and `files` -- ids in the files catalog -- each
+/// looked up, with the pictures among them added to the pictures the model
+/// is shown. Answers both, ready for the turn.
+///
+/// Refused whole, before anything is written, when a file is not in the
+/// catalog or is in the trash, when there are more than
+/// [`MAX_FILES_PER_MESSAGE`], or when the pictures the model would be shown,
+/// theirs and the files', come to more than [`MAX_PER_MESSAGE`]. Repeats are
+/// dropped, and so is a picture for a file that `attachments` already has one
+/// of, by the same name.
+pub async fn with_files(
+    vault: &Arc<Vault>,
+    attachments: Vec<Attachment>,
+    files: Vec<FileId>,
+) -> CommandResult<(Vec<Attachment>, Vec<FileId>)> {
+    let vault = vault.clone();
+    blocking(move || {
+        let mut pictures = checked(&vault, attachments)?;
+        let mut ids: Vec<FileId> = Vec::with_capacity(files.len());
+        for id in files {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if ids.len() > MAX_FILES_PER_MESSAGE {
+            return Err(CommandError::new(
+                codes::INVALID,
+                format!("At most {MAX_FILES_PER_MESSAGE} files can go with one message."),
+            ));
+        }
+        for id in &ids {
+            // Not found is the vault's own error, which says so.
+            let file = vault.file(*id)?;
+            if file.status.is_trashed() {
+                return Err(CommandError::new(
+                    codes::INVALID,
+                    format!("{} is in the trash, so it cannot be sent.", file.name),
+                ));
+            }
+            // A picture the interface already made ready from this very file
+            // -- a composer that keeps the original in Files and prepares the
+            // copy for the model, both -- is not made a second time, nor
+            // counted against the cap twice. Told apart by name, which is all
+            // an attachment keeps of where it came from.
+            if pictures.iter().any(|p| p.filename == display_name(&file.name, &p.mime)) {
+                continue;
+            }
+            if let Some(picture) = of_file(&vault, &file)? {
+                if pictures.len() >= MAX_PER_MESSAGE {
+                    return Err(CommandError::new(
+                        codes::INVALID,
+                        format!("At most {MAX_PER_MESSAGE} pictures can go with one message."),
+                    ));
+                }
+                pictures.push(picture);
+            }
+        }
+        Ok((pictures, ids))
     })
     .await
 }

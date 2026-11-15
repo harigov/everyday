@@ -299,4 +299,22 @@ export const SYMBOLS: Partial<Record<SymbolName, SymbolArt>> = {
     back: '<path d="M2.5 14.5h4.5v2.6a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2.6h4.5v4.4a2.6 2.6 0 0 1-2.6 2.6H5.1a2.6 2.6 0 0 1-2.6-2.6Z"/>',
     front: '<path class="s" d="M12 3.5v10.5M7.5 8l4.5-4.5L16.5 8"/>',
   },
+  // A folder with its tab: the Files app, and a folder in it.
+  folder: {
+    back: '<path d="M2 5.5A2.5 2.5 0 0 1 4.5 3h4.2a2.5 2.5 0 0 1 1.9.9L12 5.5h7.5A2.5 2.5 0 0 1 22 8v2H2Z"/>',
+    front:
+      '<path d="M2 9.5A2.5 2.5 0 0 1 4.5 7h15A2.5 2.5 0 0 1 22 9.5v9a2.5 2.5 0 0 1-2.5 2.5h-15A2.5 2.5 0 0 1 2 18.5Z"/>',
+  },
+  // A picture: the card, with the sun and the hill on it. The Photos view.
+  image: {
+    back: '<rect x="3" y="3" width="18" height="18" rx="3.2"/>',
+    front:
+      '<circle cx="8.5" cy="8.5" r="1.9"/>' +
+      '<path d="M3 17.2l4.6-4.6a1.6 1.6 0 0 1 2.2 0l3.2 3.2 1.4-1.4a1.6 1.6 0 0 1 2.2 0L21 15.6v2.2a3.2 3.2 0 0 1-3.2 3.2H6.2A3.2 3.2 0 0 1 3 17.8Z"/>',
+  },
+  // A page with its corner turned: a file that is not a picture.
+  file: {
+    back: '<path d="M5 4.2A2.2 2.2 0 0 1 7.2 2H14l6 6v11.8a2.2 2.2 0 0 1-2.2 2.2H7.2A2.2 2.2 0 0 1 5 19.8Z"/>',
+    front: '<path d="M14 2v4a2 2 0 0 0 2 2h4Z"/>',
+  },
 }

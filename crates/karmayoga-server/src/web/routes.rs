@@ -156,7 +156,12 @@ async fn gatekeeper(State(state): State<Arc<WebState>>, mut req: Request, next: 
     if let Some(rest) = path.strip_prefix("/m/") {
         let (token, tail) = rest.split_once('/').unwrap_or((rest, ""));
         let tail = format!("/{tail}");
-        let media = ["/v1/blob/", "/v1/mail/", "/v1/news/"].iter().any(|p| tail.starts_with(p));
+        // Only what a page draws with an `<img>` or a `<video>`: a file's bytes
+        // are `/v1/files/file/`, and not `/v1/files/upload/`, which is a POST
+        // and goes through the cookie like every other write.
+        let media = ["/v1/blob/", "/v1/mail/", "/v1/news/", "/v1/files/file/"]
+            .iter()
+            .any(|p| tail.starts_with(p));
         if !matches!(*req.method(), Method::GET | Method::HEAD) || !media {
             return refuse(StatusCode::NOT_FOUND, codes::NOT_FOUND, "Nothing is here.");
         }
@@ -779,6 +784,65 @@ mod tests {
         // And the token is not a cookie.
         let as_cookie = format!("__Host-karmayoga={media}");
         assert_eq!(status_with(&rig, &as_cookie, PEER).await, StatusCode::UNAUTHORIZED);
+    }
+
+    /// A file is drawn from the folder the way a blob is -- by an `<img>` that
+    /// has only the token in its address -- and uploaded to by a POST, which
+    /// the token must not be able to make.
+    #[tokio::test]
+    async fn the_media_token_reaches_a_files_bytes_and_not_its_upload() {
+        let rig = rig(Some(PASSWORD), Config::default());
+        let (cookie, media) = sign_in(&rig, PEER).await;
+        let file = karmayoga_core::FileId::new();
+
+        // Past the gatekeeper, which is all this is about: what the files
+        // route then says of an id nobody has is its own business, and is
+        // never the gatekeeper's "Nothing is here."
+        let admitted = send(
+            &rig,
+            get(&format!("/m/{media}/v1/files/file/{file}?v=abc")).body(Body::empty()).unwrap(),
+            PEER,
+        )
+        .await;
+        let refusal = json_of(admitted).await;
+        assert_ne!(refusal["message"], "Nothing is here.", "{refusal}");
+
+        let wrong = send(
+            &rig,
+            get(&format!("/m/not-it/v1/files/file/{file}")).body(Body::empty()).unwrap(),
+            PEER,
+        )
+        .await;
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+        // An upload is a write: not through the media token, whatever it is
+        // posted to...
+        let uploaded = send(
+            &rig,
+            post(&format!("/m/{media}/v1/files/upload/abc?offset=0"))
+                .body(Body::from(vec![0u8; 16]))
+                .unwrap(),
+            PEER,
+        )
+        .await;
+        assert_eq!(uploaded.status(), StatusCode::NOT_FOUND);
+
+        // ...and through the cookie, the way the page does it, it gets as far
+        // as the files route.
+        let through_the_session = send(
+            &rig,
+            post("/v1/files/upload/abc?offset=0")
+                .header("cookie", &cookie)
+                .header("origin", ORIGIN)
+                .header("x-karmayoga-protocol", protocol())
+                .body(Body::from(vec![0u8; 16]))
+                .unwrap(),
+            PEER,
+        )
+        .await;
+        assert_ne!(through_the_session.status(), StatusCode::UNAUTHORIZED);
+        let answer = json_of(through_the_session).await;
+        assert_ne!(answer["message"], "Nothing is here.", "{answer}");
     }
 
     #[tokio::test]

@@ -198,7 +198,9 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::MoneyCategory
             | RecordKind::MoneyRule
             | RecordKind::ScreenApp
-            | RecordKind::ScreenCategory => Err(()),
+            | RecordKind::ScreenCategory
+            | RecordKind::File
+            | RecordKind::Album => Err(()),
         }
     }
 }
@@ -475,7 +477,9 @@ impl TryFrom<RecordKind> for AboutKind {
             | RecordKind::MoneyCategory
             | RecordKind::MoneyRule
             | RecordKind::ScreenApp
-            | RecordKind::ScreenCategory => Err(()),
+            | RecordKind::ScreenCategory
+            | RecordKind::File
+            | RecordKind::Album => Err(()),
         }
     }
 }

@@ -143,37 +143,16 @@ pub fn config_dir() -> PathBuf {
 /// pointer to the last vault was overwritten by every test that opened a
 /// `Service` for a week before anybody noticed. `cfg(test)` does not reach
 /// across crates, so this asks where the running executable is instead --
-/// see [`is_test_binary`]. Nothing a person runs lives where cargo keeps its
-/// test binaries: `cargo run` and `cargo build` copy a program up to
-/// `target/<profile>/`.
+/// see [`karmayoga_core::fsutil::is_test_binary`]. Nothing a person runs
+/// lives where cargo keeps its test binaries: `cargo run` and `cargo build`
+/// copy a program up to `target/<profile>/`.
 pub fn under_test() -> bool {
-    static UNDER_TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *UNDER_TEST.get_or_init(|| std::env::current_exe().is_ok_and(|exe| is_test_binary(&exe)))
+    karmayoga_core::fsutil::under_test()
 }
 
-/// Is `exe` where cargo -- or nextest, which runs cargo's binaries -- keeps a
-/// unit or integration test? Two layouts, because cargo moved them:
-///
-/// - until Rust 1.100, `target/<profile>/deps/<test>-<hash>`, beside a
-///   `target/<profile>/.fingerprint` directory;
-/// - from 1.100, each unit in a build directory of its own,
-///   `target/<profile>/build/<crate>/<hash>/out/<test>-<hash>`, with a
-///   `fingerprint` directory beside its `out`. Missing this is what let a
-///   1.100 test binary resolve the person's real vault and settings.
+#[cfg(test)]
 fn is_test_binary(exe: &std::path::Path) -> bool {
-    let Some(dir) = exe.parent() else { return false };
-    let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|n| n == name);
-    let in_deps = named(dir, "deps")
-        && dir.parent().is_some_and(|profile| profile.join(".fingerprint").is_dir());
-    let in_build_dir = named(dir, "out")
-        && dir.parent().is_some_and(|unit| {
-            unit.join("fingerprint").is_dir()
-                && unit
-                    .parent()
-                    .and_then(std::path::Path::parent)
-                    .is_some_and(|b| named(b, "build"))
-        });
-    in_deps || in_build_dir
+    karmayoga_core::fsutil::is_test_binary(exe)
 }
 
 /// Where a test binary's "platform" directories are, in place of the real

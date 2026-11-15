@@ -101,6 +101,56 @@ impl std::fmt::Debug for Picture {
     }
 }
 
+/// The most a connector takes of one file the owner sends: 200 MB. A file is
+/// held in memory from the moment it is downloaded until it is in the files
+/// folder, and the owner is writing to a bot on a phone, not copying a
+/// library; anything bigger is for the Files app, or for Syncthing.
+pub const MAX_FILE_BYTES: u64 = 200 * 1000 * 1000;
+
+/// A file the owner sent that is not a picture for the assistant to look at
+/// -- a document, a film, a recording -- as it came off the service: its
+/// bytes, and what it was called.
+///
+/// Saved whole into Files, as the file it is; the assistant is handed its id
+/// and can read it if it is text. See `Service::chat_turn_with_files`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Document {
+    /// What the sender's device called it. May be empty; the service names
+    /// it from what it is then.
+    pub filename: String,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for Document {
+    /// The name and the size, not the bytes, for the reason [`Picture`]
+    /// gives.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Document")
+            .field("filename", &self.filename)
+            .field("bytes", &self.bytes.len())
+            .finish()
+    }
+}
+
+/// One thing the owner sent beside their words, in the order they sent it: a
+/// picture the assistant is shown, or a file it is told about. What the relay
+/// holds for what is said next, and hands the service with the turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sent {
+    Picture(Picture),
+    Document(Document),
+}
+
+impl Sent {
+    /// What it was called, for a log line or a test.
+    pub fn filename(&self) -> &str {
+        match self {
+            Sent::Picture(picture) => &picture.filename,
+            Sent::Document(document) => &document.filename,
+        }
+    }
+}
+
 /// What the owner did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Incoming {
@@ -111,6 +161,12 @@ pub enum Incoming {
     /// sends them as several messages, and the relay gathers them up with
     /// what is said next. See `relay`'s `PICTURE_WAIT`.
     Showed { chat: ChatId, picture: Picture, caption: String, at: Timestamp },
+    /// They sent a file that is not a picture to look at -- a document, a
+    /// film, a recording -- with `caption`. Treated like [`Incoming::Showed`]
+    /// in every way the relay cares about: one each, held for what is said
+    /// next, never an answer to a question. Within the service's size limit:
+    /// a connector refuses one over it, and says so, before it gets here.
+    Handed { chat: ChatId, document: Document, caption: String, at: Timestamp },
     /// They picked an answer to a [`Question`] this side asked.
     Chose { chat: ChatId, question: MessageRef, choice: Choice, at: Timestamp },
     /// They sent something this side could not read -- an encrypted message
@@ -123,6 +179,7 @@ impl Incoming {
         match self {
             Incoming::Said { chat, .. }
             | Incoming::Showed { chat, .. }
+            | Incoming::Handed { chat, .. }
             | Incoming::Chose { chat, .. }
             | Incoming::Unreadable { chat, .. } => chat,
         }
@@ -132,6 +189,7 @@ impl Incoming {
         match self {
             Incoming::Said { at, .. }
             | Incoming::Showed { at, .. }
+            | Incoming::Handed { at, .. }
             | Incoming::Chose { at, .. }
             | Incoming::Unreadable { at, .. } => *at,
         }

@@ -112,6 +112,7 @@ mod library;
 // `pub(crate)` for one reader outside the catalogue: `agent::onscreen`, which
 // describes an open thread only when `mail::permits` says the tools could
 // have read it.
+mod files;
 pub(crate) mod mail;
 mod meetings;
 mod memory;
@@ -208,13 +209,17 @@ pub enum Domain {
     /// Screen time: how long went on which apps and sites -- see
     /// `agent::tools::screentime`. Read-only, and never a window title.
     ScreenTime,
+    /// Files: finding, reading and organising what is in the files folder
+    /// and the sealed files -- see `agent::tools::files`. Gated by
+    /// [`crate::files::FilesSettings::assistant_access`].
+    Files,
 }
 
 impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 15] = [
+    pub const ALL: [Domain; 16] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -230,6 +235,7 @@ impl Domain {
         Domain::News,
         Domain::Money,
         Domain::ScreenTime,
+        Domain::Files,
     ];
 
     /// Can this vault serve the domain, and may a model be shown it at all?
@@ -253,6 +259,7 @@ impl Domain {
                 Domain::News => vault.supports_news(),
                 Domain::Money => vault.supports_money(),
                 Domain::ScreenTime => vault.supports_screen_time(),
+                Domain::Files => vault.supports_files(),
             }
     }
 
@@ -322,7 +329,13 @@ impl Domain {
             // own and the point of asking. No tool returns a window title --
             // the one part a stranger writes (a page's or a message's) -- so
             // nothing here is untrusted text.
-            | Domain::ScreenTime => Sensitivity::Ordinary,
+            | Domain::ScreenTime
+            // The person's own files, but not only words they wrote: a file
+            // can have come from anywhere -- a sync tool, a download, a
+            // chat. Handled the mail way: reading a file's contents taints
+            // the turn, and what was read reaches the model as untrusted
+            // text. Finding files by name and date does not.
+            | Domain::Files => Sensitivity::Ordinary,
         }
     }
 }
@@ -373,6 +386,7 @@ impl TryFrom<RecordKind> for Domain {
             | RecordKind::MoneyCategory
             | RecordKind::MoneyRule => Ok(Domain::Money),
             RecordKind::ScreenApp | RecordKind::ScreenCategory => Ok(Domain::ScreenTime),
+            RecordKind::File | RecordKind::Album => Ok(Domain::Files),
             // Proposed work, not a domain a tool list is offered for.
             RecordKind::Proposal => Err(()),
             // No tools read writing help yet. The feedback pass that will is
@@ -1294,6 +1308,7 @@ fn all() -> &'static [Tool] {
             news::TOOLS,
             money::TOOLS,
             screentime::TOOLS,
+            files::TOOLS,
         ]
         .concat()
     })
@@ -1657,6 +1672,8 @@ mod tests {
             (RecordKind::MoneyRule, Domain::Money),
             (RecordKind::ScreenApp, Domain::ScreenTime),
             (RecordKind::ScreenCategory, Domain::ScreenTime),
+            (RecordKind::File, Domain::Files),
+            (RecordKind::Album, Domain::Files),
         ] {
             assert_eq!(Domain::try_from(kind), Ok(domain), "{kind:?}");
         }
@@ -1775,7 +1792,11 @@ mod tests {
         for tool in catalog() {
             let deletes = tool.name.starts_with("delete_")
                 || tool.name == "forget"
-                || tool.name == "unfollow_source";
+                || tool.name == "unfollow_source"
+                // Takes a file out of the folder it was in, which a sync
+                // tool may carry to every other device before anybody
+                // thinks to look in the trash.
+                || tool.name == "trash_files";
             assert_eq!(
                 deletes,
                 tool.effect == Effect::Destructive,

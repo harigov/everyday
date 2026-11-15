@@ -395,6 +395,20 @@ function tableBlock(lines: string[], start: number): [string, number] {
 const SAFE_SCHEME = /^(https?:\/\/|mailto:)/i
 
 /**
+ * A link to a file in the files catalog, which is how the assistant is told
+ * to name one it has found or saved: `[plan.pdf](files:<id>)`. The id is a
+ * UUID and nothing else is accepted, so what follows the scheme can never
+ * be more than hex digits and hyphens.
+ *
+ * It is not an address, so it is not drawn as one. An `<a href="files:…">`
+ * would be a navigation the webview has nowhere to go with; it is a button
+ * that carries the id, and the panel that drew it opens the file when it is
+ * pressed (see `ChatThread.svelte`). Anywhere nothing is listening, it does
+ * nothing, which is the right thing for it to do.
+ */
+const FILE_LINK = /^files:([0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})$/i
+
+/**
  * Emphasis, code, links and the rest, in the one order that works.
  *
  * Everything that is *markup* -- a code span's contents, a link's tags -- is
@@ -434,6 +448,10 @@ function inline(text: string): string {
 
   out = out.replace(/\[([^\]]*)\]\(([^\s)]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (all, label, href) => {
     const url = decodeEntities(String(href))
+    const file = FILE_LINK.exec(url)?.[1]
+    if (file) {
+      return `${park(fileChip(file))}${String(label) || 'File'}${park('</button>')}`
+    }
     if (!SAFE_SCHEME.test(url)) return all
     return `${park(anchor(url))}${String(label)}${park('</a>')}`
   })
@@ -486,6 +504,17 @@ function inline(text: string): string {
 /** The opening tag of a link. External by definition -- see `SAFE_SCHEME`. */
 function anchor(url: string): string {
   return `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer noopener">`
+}
+
+/** The opening tag of a link to a file; see `FILE_LINK`. The id has been
+ *  checked against a pattern that allows no character HTML treats specially,
+ *  and is written the way the catalog writes ids -- lower-case, with hyphens
+ *  -- so that it finds the file whichever way the model wrote it. */
+function fileChip(id: string): string {
+  const h = id.replaceAll('-', '').toLowerCase()
+  const parts = [h.slice(0, 8), h.slice(8, 12), h.slice(12, 16), h.slice(16, 20), h.slice(20)]
+  const uuid = parts.join('-')
+  return `<button type="button" class="file-chip" data-file="${uuid}">`
 }
 
 /** Undo the escaping for a URL, which is compared against a scheme list. */

@@ -16,6 +16,7 @@ use crate::agent::{
     Message, Skill,
 };
 use crate::error::{Error, Result};
+use crate::files::{RefKind, RefOwner};
 use crate::id::{ConversationId, MemoryId, MessageId, SkillId};
 use crate::llm::{ModelAccess, ModelTier};
 use crate::record::RecordKind;
@@ -125,7 +126,21 @@ impl Vault {
 
     pub fn delete_conversation(&self, id: ConversationId) -> Result<()> {
         self.writable()?;
+        // The messages that held files, named before they go: afterwards
+        // there is nothing left to say which they were. Skipped on a
+        // backend with no catalog, where it would be a read of the whole
+        // thread for nothing.
+        let held: Vec<MessageId> = if self.supports_files() {
+            self.with_agent(|a| a.list_messages(id))
+                .map(|ms| ms.into_iter().filter(|m| !m.files.is_empty()).map(|m| m.id).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         self.with_agent(|a| a.delete_conversation(id))?;
+        for message in held {
+            self.drop_file_refs(RefOwner::new(RefKind::Message, message));
+        }
         self.wrote(RecordKind::Conversation, id);
         Ok(())
     }
@@ -151,6 +166,10 @@ impl Vault {
     pub fn save_message(&self, message: &Message) -> Result<()> {
         self.writable()?;
         self.with_agent(|a| a.put_message(message))?;
+        self.track_file_refs(
+            RefOwner::new(RefKind::Message, message.id),
+            message.files.iter().copied(),
+        );
         self.wrote(RecordKind::Message, message.id);
 
         let touched = self.conversation(message.conversation_id).and_then(|mut c| {
@@ -176,6 +195,7 @@ impl Vault {
     pub fn delete_message(&self, id: MessageId) -> Result<()> {
         self.writable()?;
         self.with_agent(|a| a.delete_message(id))?;
+        self.drop_file_refs(RefOwner::new(RefKind::Message, id));
         self.wrote(RecordKind::Message, id);
         Ok(())
     }

@@ -30,6 +30,12 @@
 //! The server never sees plaintext: sealing happens here, before the
 //! `INSERT`.
 //!
+//! No driver in this tree uses the table now. The Postgres backend keeps its
+//! blobs on disk like SQLite's, because the files catalog seals films of
+//! several gigabytes that no column should hold and the backend was only ever
+//! tried out (see `karmayoga_store_postgres`). This stays for a store with no
+//! disk of its own to put attachments on.
+//!
 //! # One trait, two backings
 //!
 //! [`BlobBackend`] names the nine things this crate asks of wherever
@@ -45,6 +51,7 @@ use crate::{Media, SqlStore, to_us, vals};
 use karmayoga_core::blobstore::{self, FileBlobStore, Geometry, HEADER_LEN};
 use karmayoga_core::error::{Error, Result};
 use karmayoga_core::id::BlobId;
+use std::path::Path;
 
 /// Create the `blobs` table if it is not already there.
 ///
@@ -251,6 +258,23 @@ impl SqlStore {
         match &self.media {
             Media::Files(files) => files.put(bytes),
             Media::Table => TableBlobs(self).put(bytes),
+        }
+    }
+
+    /// [`blob_put`](SqlStore::blob_put) for the file at `path`, without
+    /// holding the whole file in memory where that can be avoided: a sealed
+    /// file in the files catalog can be a film of several gigabytes.
+    ///
+    /// A directory of blobs seals it chunk by chunk. A `blobs` table cannot:
+    /// a blob there is one value in one statement, so the file is read whole
+    /// and given to it, and that backend's size limit refuses what it
+    /// cannot take.
+    pub(crate) fn blob_put_file(&self, path: &Path) -> Result<BlobId> {
+        match &self.media {
+            Media::Files(files) => files.put_file(path),
+            Media::Table => {
+                TableBlobs(self).put(&std::fs::read(path).map_err(|e| Error::io(path, e))?)
+            }
         }
     }
 

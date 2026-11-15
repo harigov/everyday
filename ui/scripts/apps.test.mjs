@@ -65,6 +65,7 @@ const FULL_CAPABILITIES = {
   news: true,
   money: true,
   screentime: true,
+  files: true,
 }
 const FULL_STATUS = {
   name: 'Test',
@@ -96,6 +97,7 @@ assert.deepEqual(
     'feed',
     'money',
     'screentime',
+    'files',
     'assistant',
     'journal',
   ],
@@ -112,6 +114,7 @@ const EXPECTED_APPS = {
   feed: { label: 'Feed', icon: 'rss' },
   money: { label: 'Money', icon: 'wallet' },
   screentime: { label: 'Screen time', icon: 'hourglass' },
+  files: { label: 'Files', icon: 'folder' },
   assistant: { label: 'Assistant', icon: 'sparkle' },
   journal: { label: 'Journal', icon: 'quote' },
 }
@@ -121,10 +124,10 @@ for (const [section, want] of Object.entries(EXPECTED_APPS)) {
   assert.equal(got.icon, want.icon, `${section}'s icon changed`)
 }
 
-// The accent: `journal`, `todo`, `library`, `feed`, `money` and `screentime`
-// read a live colour -- the Feed's, Money's and Screen time's fixed ones of
-// their own, so the window is not the vault's orange there; every other app
-// is the vault's own accent regardless of what it is handed.
+// The accent: `journal`, `todo`, `library`, `feed`, `money`, `screentime` and
+// `files` read a live colour -- the Feed's, Money's, Screen time's and Files'
+// fixed ones of their own, so the window is not the vault's orange there;
+// every other app is the vault's own accent regardless of what it is handed.
 const accentDeps = {
   app: { accent: 'J' },
   todo: { accent: 'T' },
@@ -132,6 +135,7 @@ const accentDeps = {
   feed: { accent: 'F' },
   money: { accent: 'M' },
   screentime: { accent: 'S' },
+  files: { accent: 'Fi' },
 }
 const EXPECTED_ACCENTS = {
   overview: 'var(--accent)',
@@ -143,6 +147,7 @@ const EXPECTED_ACCENTS = {
   feed: 'F',
   money: 'M',
   screentime: 'S',
+  files: 'Fi',
   assistant: 'var(--accent)',
   journal: 'J',
 }
@@ -176,6 +181,7 @@ const EXPECTED_GROUPS = [
   'Feed',
   'Money',
   'Screen time',
+  'Files',
   'Overview',
   'Assistant',
   'Vault',
@@ -191,7 +197,7 @@ const actionShape = (a) => ({
   quick: a.quick === true,
 })
 
-// The eleven "Go to" rows plus "the next app", in the order they have always
+// The twelve "Go to" rows plus "the next app", in the order they have always
 // been declared -- deliberately not `APP_ORDER`, since the app bar's own
 // order starts at the journal rather than the overview. See `apps.ts`'s own
 // note on why they stay hand-written.
@@ -205,6 +211,7 @@ const EXPECTED_GO_TO = [
   { id: null, keys: 'g f', label: 'Feed', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g b', label: 'Money', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g h', label: 'Screen time', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g e', label: 'Files', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g o', label: 'Overview', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g a', label: 'Assistant', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'mod+j', label: 'The next app', group: 'Go to', tray: false, quick: false },
@@ -236,6 +243,8 @@ const EXPECTED_QUICK_ROWS = [
   quick_('feed:refresh', 'Refresh feeds', 'Feed'),
   quick_('money:sync', 'Sync banks', 'Money'),
   quick_('screentime:today', "Today's screen time", 'Screen time'),
+  quick_('files:photos', 'Photos', 'Files'),
+  quick_('files:add', 'Add files', 'Files'),
   quick_('assistant:runs', 'What the assistant did', 'Assistant'),
   quick_('assistant:new-routine', 'New routine', 'Assistant'),
 ]
@@ -266,6 +275,12 @@ const EXPECTED_APP_MENUS = {
   // Glancing at today is the thing worth doing from a menu bar; whether this
   // computer records is a switch in Settings.
   'Screen time': [{ id: 'screentime:today', label: "Today's screen time" }],
+  // The Photos view is the one pane worth jumping to from outside; the rest
+  // is the app's own sidebar. Adding files is the bar's "+" as well.
+  Files: [
+    { id: 'files:photos', label: 'Photos' },
+    { id: 'files:add', label: 'Add files' },
+  ],
   // "How things are going" is the palette's alone: here it said what "Open
   // Overview" above it already does.
   Overview: [{ id: 'overview:log', label: 'Record a reading' }],
