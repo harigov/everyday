@@ -872,8 +872,8 @@ fn read_documents(
             continue;
         }
         let stored = found(health.get_document(document.id))?;
-        let held: Vec<FileId> =
-            stored.iter().flat_map(|d| d.files.iter().map(|f| f.file)).collect();
+        let held_pages: Vec<DocFile> = stored.iter().flat_map(|d| d.files.clone()).collect();
+        let held: Vec<FileId> = held_pages.iter().map(|f| f.file).collect();
         let mut landing = land(stored, || document.clone(), mode);
         let Some(target) = landing.as_mut() else {
             report.landed(&landing);
@@ -886,11 +886,18 @@ fn read_documents(
         }
         document.files = Vec::with_capacity(described.len());
         for file in described {
-            // Not written when attachments were not asked for: the document
-            // lands with what it says about its files and none of them.
-            let Some(path) = file.file.as_deref().filter(|p| !p.contains('/')) else { continue };
+            // A page the archive has no bytes for -- not written, when
+            // attachments were not asked for -- is the page the replaced
+            // document already had under that name and size, if it had one;
+            // otherwise the document lands without it.
+            let same = || held_pages.iter().find(|p| p.name == file.name && p.size == file.size);
+            let Some(path) = file.file.as_deref().filter(|p| !p.contains('/')) else {
+                document.files.extend(same().cloned());
+                continue;
+            };
             let Some(body) = src.get(&format!("{folder}{path}")) else {
                 report.problem(name, format!("{path} is listed but is not in the archive"));
+                document.files.extend(same().cloned());
                 continue;
             };
             // Back into the files catalog, sealed, as Health keeps every
@@ -938,6 +945,7 @@ fn read_documents(
         if let Some(catalog) = store.files() {
             let pages: Vec<FileId> = target.files.iter().map(|f| f.file).collect();
             catalog.set_refs(&RefOwner::new(RefKind::HealthDocument, target.id), &pages)?;
+            crate::release_into_trash(store, FileOrigin::Health, &held, &pages)?;
         }
         report.landed(&landing);
     }
@@ -1271,17 +1279,22 @@ fn read_meals(
         };
         // The photograph, when the archive has it: into the files catalog,
         // sealed, only now that the meal is going to be written.
+        // An archive written without attachments has no photograph to give
+        // back: the replaced meal's own is kept.
         let photo = Some(row.get("photo").trim()).filter(|p| !p.is_empty());
-        if let Some((path, body)) = photo.and_then(|path| Some((path, src.get(path)?))) {
-            let name = path.rsplit('/').next().unwrap_or(path);
-            meal.photo =
-                crate::seal_into_catalog(store, body, name, "", FileOrigin::Health, &held)?;
-        }
+        meal.photo = match photo.and_then(|path| Some((path, src.get(path)?))) {
+            Some((path, body)) => {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                crate::seal_into_catalog(store, body, name, "", FileOrigin::Health, &held)?
+            }
+            None => held.first().copied(),
+        };
         *target = meal;
         health.put_meal(target)?;
         if let Some(catalog) = store.files() {
             let photo: Vec<FileId> = target.photo.into_iter().collect();
             catalog.set_refs(&RefOwner::new(RefKind::Meal, target.id), &photo)?;
+            crate::release_into_trash(store, FileOrigin::Health, &held, &photo)?;
         }
         report.landed(&landing);
     }

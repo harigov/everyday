@@ -1037,8 +1037,11 @@ impl Vault {
     }
 
     /// A file Health keeps, whole: a document's page or a meal's photograph,
-    /// for the model. Refuses one larger than `MAX_PAGE_BYTES`.
+    /// for the model. Refuses a file that is not Health's (see
+    /// [`Vault::health_files`] for why), and one larger than
+    /// `MAX_PAGE_BYTES`.
     pub fn health_file_bytes(&self, file: FileId) -> Result<Vec<u8>> {
+        self.health_files(&[file])?;
         let len = self.file_len(file)?;
         if len > MAX_PAGE_BYTES {
             return Err(Error::Invalid(format!(
@@ -1129,8 +1132,15 @@ impl Vault {
         for item in &mut meal.items {
             clean_item(item)?;
         }
+        // Only a photo new to the meal is checked: one it already carries
+        // may since have been put in the trash in Files, and that is no
+        // reason to refuse fixing a typo in its name.
         if let Some(photo) = meal.photo {
-            self.health_files(&[photo])?;
+            let carried =
+                self.with_health(|h| Ok(existing(h.get_meal(meal.id))?.and_then(|m| m.photo)))?;
+            if carried != Some(photo) {
+                self.health_files(&[photo])?;
+            }
         }
         let (saved, used, before_photo) = self.write(|u| {
             let health = health_of(u.store.as_ref())?;

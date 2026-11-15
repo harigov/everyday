@@ -1284,7 +1284,8 @@ class HealthState {
    * Upload an `export.zip` from this window and import it: for a window that
    * is not on the vault's machine, which has no path to hand over and so
    * cannot use the picker. The upload is Health's, sealed; it goes to the
-   * trash once imported, or at once if the import could not begin.
+   * trash once the import ends, however it ends, or at once if the import
+   * could not begin.
    */
   async importAppleUpload(file: File, sourceId: HealthSourceId | null = null): Promise<void> {
     if (!app.supportsHealth) return

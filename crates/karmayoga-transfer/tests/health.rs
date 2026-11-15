@@ -587,6 +587,19 @@ fn without_attachments_a_document_comes_back_without_its_files() {
     assert_eq!(documents[0].text, filled.document.text, "the words came back");
     assert!(every_meal(&target)[0].photo.is_none());
     assert_eq!(every_meal(&target)[0].items, filled.meal.items);
+
+    // Read back over the vault it came from, replacing: an archive with no
+    // bytes for a page or a photograph does not take away the ones there.
+    let reports =
+        karmayoga_transfer::import(&source, &archive, &health_part(), Mode::Replace).unwrap();
+    assert!(reports[0].problems.is_empty(), "{:?}", reports[0]);
+    let documents = with(&source, |h| h.list_documents().unwrap());
+    assert_eq!(documents[0].files, filled.document.files, "the pages it had");
+    assert_eq!(every_meal(&source)[0].photo, filled.meal.photo, "and the photograph");
+    for file in documents[0].files.iter().map(|f| f.file).chain(filled.meal.photo) {
+        assert!(!source.file(file).unwrap().status.is_trashed(), "nothing went to the trash");
+        assert_eq!(source.file_uses(file).unwrap().len(), 1, "and each is still used");
+    }
 }
 
 #[test]

@@ -15,6 +15,10 @@
 //!   `set_up_files_folder` takes a `path`, only from that same shell; anyone
 //!   else may set the folder up at the default place if it never was.
 //! - **`save_mail_part_to_files` reads mail**, so it needs `Mail` as well.
+//! - **Health's files need `Health` as well**: a clinical document's pages
+//!   and a meal's photographs are listed only to a connection that holds it,
+//!   and every command naming files by id refuses one to a connection that
+//!   does not ([`sees_health`]).
 //!
 //! Every command that adds a file answers as soon as the bytes are in place
 //! and leaves reading what the file says about itself, and drawing its
@@ -387,20 +391,76 @@ async fn set_up_files_folder(
     Ok(status)
 }
 
-async fn list_files(svc: Arc<Service>, _ctx: Ctx, args: ListFiles) -> CommandResult<FilePage> {
-    svc.on_vault(move |vault| vault.files(&args.query)).await
+// ---- Health's files ---------------------------------------------------------
+
+/// Whether `ctx` may see Health's files -- a clinical document's pages, a
+/// meal's photographs. They answer to Health's scope as well as this one: a
+/// connection allowed `files` and not `health` reads the folder, not
+/// somebody's lab reports. It is shown none of them -- a listing would hand
+/// it their blob addresses, which `/v1/blob` answers -- and is refused any
+/// act on one by id. The window and a paired copy of the app hold `All`, and
+/// see everything.
+fn sees_health(ctx: &Ctx) -> bool {
+    ctx.holds(Scope::Health)
+}
+
+/// Refuse, for a connection that may not see Health's files, any of `ids`
+/// that is one of them. A file that is not there is left for the command's
+/// own read to report.
+fn refuse_healths(ctx: &Ctx, vault: &Vault, ids: &[FileId]) -> CommandResult<()> {
+    if sees_health(ctx) {
+        return Ok(());
+    }
+    for id in ids {
+        if vault.file(*id).is_ok_and(|f| f.origin == FileOrigin::Health) {
+            return Err(CommandError::new(
+                codes::FORBIDDEN,
+                "that file is one of Health's, which this connection is not allowed to reach",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// [`Service::on_vault`] for a command that names files by id: refused
+/// first if any is one of Health's and `ctx` may not see them.
+async fn on_files<T, F>(svc: &Service, ctx: Ctx, ids: Vec<FileId>, f: F) -> CommandResult<T>
+where
+    F: FnOnce(&Vault) -> karmayoga_core::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    let vault = svc.require()?;
+    blocking(move || {
+        refuse_healths(&ctx, &vault, &ids)?;
+        Ok(f(&vault)?)
+    })
+    .await
+}
+
+async fn list_files(svc: Arc<Service>, ctx: Ctx, args: ListFiles) -> CommandResult<FilePage> {
+    let mut query = args.query;
+    if !sees_health(&ctx) {
+        query.filter.exclude_origins.push(FileOrigin::Health);
+    }
+    svc.on_vault(move |vault| vault.files(&query)).await
 }
 
 async fn list_folder(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: ListFolder,
 ) -> CommandResult<FolderListing> {
-    svc.on_vault(move |vault| vault.list_folder(&args.dir)).await
+    let mut listing = svc.on_vault(move |vault| vault.list_folder(&args.dir)).await?;
+    if !sees_health(&ctx) {
+        // Health seals what it keeps, so one of its files is in a folder
+        // only after somebody wrote it out there; it is still Health's.
+        listing.files.retain(|f| f.origin != FileOrigin::Health);
+    }
+    Ok(listing)
 }
 
-async fn get_file(svc: Arc<Service>, _ctx: Ctx, args: FileRef) -> CommandResult<FileDetail> {
-    svc.on_vault(move |vault| {
+async fn get_file(svc: Arc<Service>, ctx: Ctx, args: FileRef) -> CommandResult<FileDetail> {
+    on_files(&svc, ctx, vec![args.id], move |vault| {
         Ok(FileDetail {
             file: vault.file(args.id)?,
             uses: vault.file_uses(args.id)?,
@@ -541,16 +601,12 @@ async fn create_folder(svc: Arc<Service>, _ctx: Ctx, args: CreateFolder) -> Comm
     svc.on_vault(move |vault| vault.create_folder(&args.dir, &args.name)).await
 }
 
-async fn rename_file(svc: Arc<Service>, _ctx: Ctx, args: RenameFile) -> CommandResult<FileEntry> {
-    svc.on_vault(move |vault| vault.rename_file(args.id, &args.name)).await
+async fn rename_file(svc: Arc<Service>, ctx: Ctx, args: RenameFile) -> CommandResult<FileEntry> {
+    on_files(&svc, ctx, vec![args.id], move |vault| vault.rename_file(args.id, &args.name)).await
 }
 
-async fn move_files(
-    svc: Arc<Service>,
-    _ctx: Ctx,
-    args: MoveFiles,
-) -> CommandResult<Vec<FileEntry>> {
-    svc.on_vault(move |vault| vault.move_files(&args.ids, &args.dir)).await
+async fn move_files(svc: Arc<Service>, ctx: Ctx, args: MoveFiles) -> CommandResult<Vec<FileEntry>> {
+    on_files(&svc, ctx, args.ids.clone(), move |vault| vault.move_files(&args.ids, &args.dir)).await
 }
 
 async fn rename_folder(svc: Arc<Service>, _ctx: Ctx, args: RenameFolder) -> CommandResult<String> {
@@ -563,22 +619,24 @@ async fn move_folder(svc: Arc<Service>, _ctx: Ctx, args: MoveFolder) -> CommandR
 
 async fn update_files(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: UpdateFiles,
 ) -> CommandResult<Vec<FileEntry>> {
-    svc.on_vault(move |vault| vault.update_files(&args.ids, &args.update)).await
+    on_files(&svc, ctx, args.ids.clone(), move |vault| vault.update_files(&args.ids, &args.update))
+        .await
 }
 
-async fn stack_files(svc: Arc<Service>, _ctx: Ctx, args: StackFiles) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.stack_files(args.top, &args.others)).await
+async fn stack_files(svc: Arc<Service>, ctx: Ctx, args: StackFiles) -> CommandResult<()> {
+    let named: Vec<FileId> = std::iter::once(args.top).chain(args.others.iter().copied()).collect();
+    on_files(&svc, ctx, named, move |vault| vault.stack_files(args.top, &args.others)).await
 }
 
-async fn unstack_files(svc: Arc<Service>, _ctx: Ctx, args: FileIds) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.unstack_files(&args.ids)).await
+async fn unstack_files(svc: Arc<Service>, ctx: Ctx, args: FileIds) -> CommandResult<()> {
+    on_files(&svc, ctx, args.ids.clone(), move |vault| vault.unstack_files(&args.ids)).await
 }
 
-async fn trash_files(svc: Arc<Service>, _ctx: Ctx, args: FileIds) -> CommandResult<Vec<FileEntry>> {
-    svc.on_vault(move |vault| vault.trash_files(&args.ids)).await
+async fn trash_files(svc: Arc<Service>, ctx: Ctx, args: FileIds) -> CommandResult<Vec<FileEntry>> {
+    on_files(&svc, ctx, args.ids.clone(), move |vault| vault.trash_files(&args.ids)).await
 }
 
 async fn trash_folder(svc: Arc<Service>, _ctx: Ctx, args: FolderRef) -> CommandResult<u64> {
@@ -587,30 +645,33 @@ async fn trash_folder(svc: Arc<Service>, _ctx: Ctx, args: FolderRef) -> CommandR
 
 async fn restore_files(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: FileIds,
 ) -> CommandResult<Vec<FileEntry>> {
-    svc.on_vault(move |vault| vault.restore_files(&args.ids)).await
+    on_files(&svc, ctx, args.ids.clone(), move |vault| vault.restore_files(&args.ids)).await
 }
 
-async fn delete_files_forever(svc: Arc<Service>, _ctx: Ctx, args: FileIds) -> CommandResult<u64> {
-    svc.on_vault(move |vault| vault.delete_files_forever(&args.ids)).await
+async fn delete_files_forever(svc: Arc<Service>, ctx: Ctx, args: FileIds) -> CommandResult<u64> {
+    on_files(&svc, ctx, args.ids.clone(), move |vault| vault.delete_files_forever(&args.ids)).await
 }
 
 async fn empty_files_trash(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<u64> {
     svc.on_vault(|vault| vault.empty_files_trash()).await
 }
 
-async fn forget_missing_files(svc: Arc<Service>, _ctx: Ctx, args: FileIds) -> CommandResult<u64> {
-    svc.on_vault(move |vault| vault.forget_missing_files(&args.ids)).await
+async fn forget_missing_files(svc: Arc<Service>, ctx: Ctx, args: FileIds) -> CommandResult<u64> {
+    on_files(&svc, ctx, args.ids.clone(), move |vault| vault.forget_missing_files(&args.ids)).await
 }
 
 async fn set_file_encrypted(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: SetEncrypted,
 ) -> CommandResult<FileEntry> {
-    svc.on_vault(move |vault| vault.set_file_encrypted(args.id, args.encrypted)).await
+    on_files(&svc, ctx, vec![args.id], move |vault| {
+        vault.set_file_encrypted(args.id, args.encrypted)
+    })
+    .await
 }
 
 /// Keep the poster the interface drew of a film, which the interface can
@@ -619,11 +680,12 @@ async fn set_file_encrypted(
 /// until it has been decoded and drawn again.
 async fn set_file_thumbnail(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: SetThumbnail,
 ) -> CommandResult<FileEntry> {
     let vault = svc.require()?;
     blocking(move || {
+        refuse_healths(&ctx, &vault, &[args.id])?;
         let bytes = decode_image(&args.image)?;
         let jpeg = files::thumb::accept_uploaded(&bytes).ok_or_else(|| {
             CommandError::new(
@@ -679,12 +741,16 @@ async fn delete_album(svc: Arc<Service>, _ctx: Ctx, args: AlbumRef) -> CommandRe
     svc.on_vault(move |vault| vault.delete_album(args.id)).await
 }
 
-async fn add_to_album(svc: Arc<Service>, _ctx: Ctx, args: AlbumFiles) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.add_to_album(args.id, &args.files)).await
+async fn add_to_album(svc: Arc<Service>, ctx: Ctx, args: AlbumFiles) -> CommandResult<()> {
+    on_files(&svc, ctx, args.files.clone(), move |vault| vault.add_to_album(args.id, &args.files))
+        .await
 }
 
-async fn remove_from_album(svc: Arc<Service>, _ctx: Ctx, args: AlbumFiles) -> CommandResult<()> {
-    svc.on_vault(move |vault| vault.remove_from_album(args.id, &args.files)).await
+async fn remove_from_album(svc: Arc<Service>, ctx: Ctx, args: AlbumFiles) -> CommandResult<()> {
+    on_files(&svc, ctx, args.files.clone(), move |vault| {
+        vault.remove_from_album(args.id, &args.files)
+    })
+    .await
 }
 
 /// Bring pictures and files kept the old way, inside entries, notes and
@@ -786,7 +852,7 @@ const NAME_BUDGET: usize = 200;
 /// finds it there again, with everything the person added.
 async fn restore_file_from_backup(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: FileRef,
 ) -> CommandResult<FileEntry> {
     let vault = svc.require_unlocked()?;
@@ -794,6 +860,7 @@ async fn restore_file_from_backup(
     let path = {
         let vault = vault.clone();
         blocking(move || {
+            refuse_healths(&ctx, &vault, &[id])?;
             let entry = vault.file(id)?;
             match (&entry.status, &entry.storage) {
                 (FileStatus::Missing { .. }, FileStorage::Plain { path }) => Ok(path.clone()),

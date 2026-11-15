@@ -15,14 +15,37 @@ function isoWeekday(iso: string): number {
   return d === 0 ? 7 : d
 }
 
+/**
+ * The last local day `med`'s schedule asks for anything, or null while it
+ * runs on: the vault's own rule (`schedule::due_times`), so this count and
+ * the vault's adherence agree. A stop ends it on its `stopped` day, else the
+ * day it was stopped; a pause the day before it was paused (or its `stopped`
+ * day, if that is earlier). The day it changed is read in this computer's
+ * zone, as every day here is.
+ */
+export function lastDueDay(med: Medication): string | null {
+  const changed = isoDate(new Date(med.updatedAt))
+  switch (med.status) {
+    case 'active':
+      return med.stopped ?? null
+    case 'stopped':
+      return med.stopped ?? changed
+    case 'paused': {
+      const beforePause = addDays(changed, -1)
+      return med.stopped && med.stopped < beforePause ? med.stopped : beforePause
+    }
+  }
+}
+
 /** How many doses `med`'s schedule puts on local days `from..=to`. */
 export function expectedDoses(med: Medication, from: string, to: string): number {
   const s = med.schedule
   if (s.type === 'asNeeded' || s.times.length === 0) return 0
+  const last = lastDueDay(med)
   let count = 0
   for (let day = from, guard = 0; day <= to && guard < 400; day = addDays(day, 1), guard++) {
     if (med.started && day < med.started) continue
-    if (med.stopped && day > med.stopped) continue
+    if (last && day > last) continue
     if (s.type === 'weekly' && !s.days.includes(isoWeekday(day))) continue
     if (s.type === 'everyNDays') {
       const gap = daysApart(s.from, day)

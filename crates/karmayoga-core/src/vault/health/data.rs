@@ -1285,7 +1285,10 @@ fn file_samples(
             let outcome = merge(&mut held, &samples);
             added += outcome.added;
             duplicate += outcome.duplicate;
-            if outcome.added > 0 {
+            // Written when anything was added, and when nothing was but a
+            // held instant was given its interval: the summary's quarter
+            // hours are spread by it.
+            if outcome.added > 0 || outcome.lengthened {
                 let summary = summarize(&held, metric, &*rank);
                 rows.push(SeriesRow { series: series.clone(), day, data: held, summary });
             }

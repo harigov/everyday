@@ -29,8 +29,12 @@ use crate::vault::Vault;
 
 impl Vault {
     /// The catalog's entry for each of `ids`, in order and without repeats,
-    /// each checked to be a file a record may refer to: in the catalog and
-    /// not in the trash.
+    /// each checked to be a file a record may refer to: one of Health's own
+    /// (added by Health, sealed), in the catalog and not in the trash.
+    ///
+    /// Only Health's: otherwise a connection allowed Health and not Files
+    /// could make a document of any file somebody keeps, have the model read
+    /// it, and read the text back -- Files reached through Health's door.
     pub(super) fn health_files(&self, ids: &[FileId]) -> Result<Vec<FileEntry>> {
         let mut seen = Vec::with_capacity(ids.len());
         let mut entries = Vec::with_capacity(ids.len());
@@ -48,11 +52,17 @@ impl Vault {
                 }
                 Err(Error::Unsupported(_)) => {
                     return Err(Error::Unsupported(
-                        "this vault keeps no files catalog, so Health cannot keep files".into(),
+                        "this vault keeps no files catalog, so Health cannot keep files",
                     ));
                 }
                 Err(e) => return Err(e),
             };
+            if entry.origin != FileOrigin::Health {
+                return Err(Error::Invalid(format!(
+                    "{} is not one of Health's files; add it to Health itself",
+                    entry.name
+                )));
+            }
             if entry.status.is_trashed() {
                 return Err(Error::Invalid(format!(
                     "{} is in the trash; restore it in Files first",

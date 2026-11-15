@@ -35,6 +35,10 @@ pub struct Incoming {
 pub struct MergeOutcome {
     pub added: u64,
     pub duplicate: u64,
+    /// A sample already held was given the length a later description of
+    /// it had (an instant becoming an interval), so the day changed even if
+    /// nothing was added.
+    pub lengthened: bool,
 }
 
 /// The UTC day a sample starting at `start` (epoch seconds) is filed under.
@@ -113,7 +117,7 @@ pub fn merge(day: &mut SeriesDay, incoming: &[Incoming]) -> MergeOutcome {
         // Two sorted runs back to back: the sort merges them in one pass.
         day.samples.sort_by(order);
     }
-    MergeOutcome { added, duplicate: incoming.len() as u64 - added }
+    MergeOutcome { added, duplicate: incoming.len() as u64 - added, lengthened }
 }
 
 /// Remove samples starting in `from..to` (epoch seconds), only `source`'s
@@ -513,7 +517,7 @@ mod tests {
                 at(20, 0, 65.0, WATCH),
             ],
         );
-        assert_eq!(out, MergeOutcome { added: 5, duplicate: 0 });
+        assert_eq!(out, MergeOutcome { added: 5, duplicate: 0, lengthened: false });
         let held: Vec<(i64, u32, f64)> =
             day.samples.iter().map(|s| (s.start - DAY, s.secs, s.value)).collect();
         assert_eq!(
@@ -530,7 +534,7 @@ mod tests {
             &mut day,
             &[at(40, 0, 75.0, WATCH), at(20, 0, 65.0, WATCH), at(5, 0, 55.0, WATCH)],
         );
-        assert_eq!(out, MergeOutcome { added: 3, duplicate: 0 });
+        assert_eq!(out, MergeOutcome { added: 3, duplicate: 0, lengthened: false });
         let starts: Vec<i64> = day.samples.iter().map(|s| s.start - DAY).collect();
         assert_eq!(starts, vec![5, 10, 20, 30, 40]);
     }
@@ -542,8 +546,8 @@ mod tests {
         // The phone saw the same minute; the second is that value to within
         // a conversion's rounding.
         let again = merge(&mut day, &[at(0, 60, 42.0, PHONE), at(0, 60, 42.0 + 1e-12, PHONE)]);
-        assert_eq!(first, MergeOutcome { added: 1, duplicate: 0 });
-        assert_eq!(again, MergeOutcome { added: 0, duplicate: 2 });
+        assert_eq!(first, MergeOutcome { added: 1, duplicate: 0, lengthened: false });
+        assert_eq!(again, MergeOutcome { added: 0, duplicate: 2, lengthened: false });
         assert_eq!(day.samples.len(), 1);
         // The first to arrive keeps the sample, and a source that brought
         // nothing new leaves no name behind.
@@ -559,7 +563,7 @@ mod tests {
             &mut day,
             &[at(0, 60, 43.0, WATCH), at(0, 120, 42.0, WATCH), at(1, 60, 42.0, WATCH)],
         );
-        assert_eq!(out, MergeOutcome { added: 3, duplicate: 0 });
+        assert_eq!(out, MergeOutcome { added: 3, duplicate: 0, lengthened: false });
         assert_eq!(day.samples.len(), 4);
     }
 
@@ -567,7 +571,7 @@ mod tests {
     fn a_repeat_inside_one_batch_counts_as_a_duplicate() {
         let mut day = empty(Metric::Weight);
         let out = merge(&mut day, &[at(5, 0, 80.5, "Scale"), at(5, 0, 80.5, "Health")]);
-        assert_eq!(out, MergeOutcome { added: 1, duplicate: 1 });
+        assert_eq!(out, MergeOutcome { added: 1, duplicate: 1, lengthened: false });
         assert_eq!(day.sources, vec!["Scale".to_string()]);
     }
 
@@ -578,7 +582,7 @@ mod tests {
         merge(&mut day, &batch);
         let once = day.clone();
         let out = merge(&mut day, &batch);
-        assert_eq!(out, MergeOutcome { added: 0, duplicate: 3 });
+        assert_eq!(out, MergeOutcome { added: 0, duplicate: 3, lengthened: false });
         assert_eq!(day, once);
     }
 
@@ -939,7 +943,7 @@ mod tests {
         // Apple export sends the same sample with its five minutes.
         let mut day = filed(Metric::Steps, &[at(600, 0, 412.0, WATCH)]);
         let out = merge(&mut day, &[at(600, 300, 412.0, WATCH)]);
-        assert_eq!(out, MergeOutcome { added: 0, duplicate: 1 });
+        assert_eq!(out, MergeOutcome { added: 0, duplicate: 1, lengthened: true });
         assert_eq!(day.samples.len(), 1);
         // The interval is the better description, so the held one takes it.
         assert_eq!(day.samples[0].secs, 300);
@@ -947,7 +951,7 @@ mod tests {
         // And the other way round leaves the interval as it was.
         let mut day = filed(Metric::Steps, &[at(600, 300, 412.0, WATCH)]);
         let out = merge(&mut day, &[at(600, 0, 412.0, PHONE)]);
-        assert_eq!(out, MergeOutcome { added: 0, duplicate: 1 });
+        assert_eq!(out, MergeOutcome { added: 0, duplicate: 1, lengthened: false });
         assert_eq!(day.samples.len(), 1);
         assert_eq!(day.samples[0].secs, 300);
     }

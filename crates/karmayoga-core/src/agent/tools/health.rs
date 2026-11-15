@@ -1387,15 +1387,6 @@ fn slot_at(hour: i8) -> MealSlot {
     }
 }
 
-fn slot_word(slot: MealSlot) -> &'static str {
-    match slot {
-        MealSlot::Breakfast => "Breakfast",
-        MealSlot::Lunch => "Lunch",
-        MealSlot::Dinner => "Dinner",
-        MealSlot::Snack => "Snack",
-    }
-}
-
 // ---- finding things -------------------------------------------------------------
 
 /// The medication `raw` names: an id, or a name -- exact first, else a name
@@ -2519,7 +2510,7 @@ fn run_log_meal(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     };
     let saved = ctx.vault.save_meal(&meal)?;
 
-    let label = format!("{} at {}", slot_word(saved.slot), local.strftime("%H:%M"));
+    let label = format!("{} at {}", saved.slot.word(), local.strftime("%H:%M"));
     let mut out = done("logged", "meal", &label, saved.id.to_string())?;
     out["at"] = json!(frame.at(saved.at));
     out["items"] = json!(saved.items.len());

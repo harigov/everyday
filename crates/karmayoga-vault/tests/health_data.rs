@@ -994,3 +994,35 @@ fn health_metrics_are_a_trackers_source() {
     let weight = health_tracker(&vault, "Weight", Metric::Weight, Stat::Auto);
     assert!(tracker_values(&vault, &weight).is_empty());
 }
+
+/// The phone sends a step count with only its start; the export, later, the
+/// same count with its half hour. Nothing new arrives, but the day is written
+/// again: the count is spread over the quarter hours it was walked in rather
+/// than left whole in the one it began.
+#[test]
+fn an_instant_given_its_interval_later_spreads_over_the_hours_it_lasted() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let phone = phone(&vault);
+    let export = a_source(&vault, Connector::AppleExport, "Apple Health export");
+    let start = plus(at(3, 12), 50 * 60);
+    ingest(&vault, &phone, vec![sample(Metric::Steps, start, 900.0, "Apple Watch")]);
+    let hourly = |vault: &Vault| {
+        let query = SeriesQuery {
+            metric: Metric::Steps,
+            from: day(3),
+            to: day(3),
+            tz: "UTC".into(),
+            bucket: BucketSize::Hour,
+            stat: Stat::Sum,
+        };
+        let result = vault.health_series(&query).unwrap();
+        result.points.iter().filter(|p| p.value > 0.0).map(|p| p.value).collect::<Vec<f64>>()
+    };
+    assert_eq!(hourly(&vault), [900.0], "an instant is all in the hour it began");
+
+    let report =
+        ingest(&vault, &export, vec![lasting(Metric::Steps, start, 30 * 60, 900.0, "Apple Watch")]);
+    assert_eq!((report.samples_added, report.samples_duplicate), (0, 1), "one reading, still");
+    assert_eq!(hourly(&vault), [300.0, 600.0], "ten minutes in one hour, twenty in the next");
+}

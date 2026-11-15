@@ -614,17 +614,17 @@ async fn put_blob(
 #[derive(Deserialize)]
 struct BlobQuery {}
 
-/// Serve part of an attachment, honouring `Range`.
-///
-/// The same arithmetic the desktop's `karmayoga://` handler uses, from the same
-/// module, so a video seeks over a network exactly as it seeks off a disk: two
-/// chunks decrypted rather than a whole file downloaded.
 /// Does this caller hold only scopes that write and never read?
 fn write_only(ctx: &Ctx) -> bool {
     !ctx.scopes.is_empty()
         && ctx.scopes.iter().all(|s| matches!(s, Scope::Heartbeats | Scope::HealthIngest))
 }
 
+/// Serve part of an attachment, honouring `Range`.
+///
+/// The same arithmetic the desktop's `karmayoga://` handler uses, from the same
+/// module, so a video seeks over a network exactly as it seeks off a disk: two
+/// chunks decrypted rather than a whole file downloaded.
 async fn get_blob(
     State((server, transport)): Ctxt,
     Path(id): Path<String>,
@@ -633,8 +633,9 @@ async fn get_blob(
 ) -> Answer<Response> {
     let ctx = authenticate_media(&server, transport, &headers)?;
     // A write-only token -- a collector's heartbeats, a phone's health push
-    // -- reads nothing, and the blob store holds clinical documents and
-    // meal photos as well as pictures. It is the token most likely to leak.
+    // -- reads nothing, and the blob store holds every sealed file and what
+    // a connector sent for a clinical document as well as pictures. It is
+    // the token most likely to leak.
     if write_only(&ctx) {
         return Err(CommandError::new(
             karmayoga_service::error::codes::FORBIDDEN,

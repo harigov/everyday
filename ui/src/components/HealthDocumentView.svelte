@@ -16,6 +16,7 @@
   // been edited, so a background change never eats what was being typed.
 
   import { untrack } from 'svelte'
+  import { mediaUrl } from '../lib/api'
   import { health } from '../lib/health.svelte'
   import { docKindName } from '../lib/health'
   import { dateFormat, humanBytes } from '../lib/format'
@@ -444,6 +445,19 @@
                 </button>
               </div>
             {/if}
+          </section>
+        {/if}
+
+        <!-- What a connector sent (a FHIR resource's JSON, an ECG's CSV) is
+             the record's own data, not a page: nothing here draws it, but it
+             can be saved and opened elsewhere, as it arrived. -->
+        {#if doc.source}
+          <section class="block" aria-labelledby="source-head">
+            <span class="eyebrow" id="source-head">As it arrived</span>
+            <p class="hint">
+              <a href={mediaUrl(doc.source.blob)} download={doc.source.name}>{doc.source.name}</a>
+              · {humanBytes(doc.source.size)}
+            </p>
           </section>
         {/if}
       </div>

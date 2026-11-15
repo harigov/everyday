@@ -173,8 +173,8 @@ pub struct ImportAppleFile {
     pub file: FileId,
     #[serde(default)]
     pub source_id: Option<HealthSourceId>,
-    /// Put the file in the Files trash once it has been imported: for an
-    /// export uploaded only to be read.
+    /// Put the file in the Files trash once the import has ended, however it
+    /// ended: for an export uploaded only to be read.
     #[serde(default)]
     pub trash_after: bool,
 }
@@ -616,22 +616,42 @@ async fn import_apple_health_file(
                 "an Apple Health export is a .zip file (export.zip)",
             ));
         }
+        // Asked before a sealed export is decrypted, which can be gigabytes
+        // of somebody's health written out in the clear only to be refused.
+        if import::status().state == "running" {
+            return Err(CommandError::new(
+                codes::BUSY,
+                "an Apple Health import is already running",
+            ));
+        }
         let path = vault.open_file_copy(file)?;
         let decrypted = entry.is_sealed().then(|| path.clone());
-        let finished: import::Finished = Box::new(move |vault: &Vault, done: bool| {
-            if let Some(copy) = &decrypted
+        let forget = |copy: &Option<PathBuf>| {
+            if let Some(copy) = copy
                 && let Err(e) = std::fs::remove_file(copy)
             {
                 tracing::warn!(error = %e, "could not delete an export's decrypted copy");
             }
-            if trash_after
-                && done
-                && let Err(e) = vault.trash_files(&[file])
-            {
-                tracing::warn!(code = e.code(), "could not move an imported export to the trash");
-            }
-        });
+        };
+        let finished: import::Finished = {
+            let decrypted = decrypted.clone();
+            Box::new(move |vault: &Vault, _done: bool| {
+                forget(&decrypted);
+                // However it ended: an export uploaded only to be read is
+                // done with once it has been, and the trash still gives it
+                // back to try again.
+                if trash_after && let Err(e) = vault.trash_files(&[file]) {
+                    tracing::warn!(
+                        code = e.code(),
+                        "could not move an imported export to the trash"
+                    );
+                }
+            })
+        };
+        // Refused after all -- a source that takes no export, a thread that
+        // would not start -- the decrypted copy goes at once.
         import::start(&svc, vault, path, source_id, Some(finished))
+            .inspect_err(|_| forget(&decrypted))
     })
     .await
 }

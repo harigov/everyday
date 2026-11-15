@@ -1731,6 +1731,18 @@ pub enum MealSlot {
     Snack,
 }
 
+impl MealSlot {
+    /// The meal's name, as a person says it: "Breakfast".
+    pub fn word(self) -> &'static str {
+        match self {
+            MealSlot::Breakfast => "Breakfast",
+            MealSlot::Lunch => "Lunch",
+            MealSlot::Dinner => "Dinner",
+            MealSlot::Snack => "Snack",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]

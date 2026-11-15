@@ -503,7 +503,7 @@ pub(crate) fn catalogued_bytes(
 ) -> karmayoga_core::Result<(String, Vec<u8>)> {
     let catalog = store
         .files()
-        .ok_or_else(|| karmayoga_core::Error::Unsupported("this vault keeps no files".into()))?;
+        .ok_or_else(|| karmayoga_core::Error::Unsupported("this vault keeps no files"))?;
     let entry = catalog.get_file(id)?;
     let body = match &entry.storage {
         karmayoga_core::FileStorage::Sealed { blob } => store.get_blob(*blob)?,
@@ -590,6 +590,43 @@ pub(crate) fn seal_into_catalog(
     };
     catalog.put_file(&entry)?;
     Ok(Some(entry.id))
+}
+
+/// Files `origin` sealed that a replaced record held and the record now
+/// written does not, put in the Files trash when nothing else refers to them
+/// -- what the vault does when a record lets go of a file, done here because
+/// an import writes to the store directly. A file somebody has since written
+/// out to the folder is theirs and stays where it is.
+pub(crate) fn release_into_trash(
+    store: &dyn JournalStore,
+    origin: karmayoga_core::files::FileOrigin,
+    held: &[karmayoga_core::FileId],
+    kept: &[karmayoga_core::FileId],
+) -> karmayoga_core::Result<()> {
+    use karmayoga_core::files::FileStatus;
+    let Some(catalog) = store.files() else { return Ok(()) };
+    let dropped: Vec<karmayoga_core::FileId> =
+        held.iter().filter(|f| !kept.contains(f)).copied().collect();
+    if dropped.is_empty() {
+        return Ok(());
+    }
+    let now = jiff::Timestamp::now();
+    let mut released = Vec::new();
+    for mut entry in catalog.get_files(&dropped)? {
+        if entry.origin == origin
+            && entry.is_sealed()
+            && matches!(entry.status, FileStatus::Present)
+            && catalog.refs_to(entry.id)?.is_empty()
+        {
+            entry.status = FileStatus::Trashed { at: now, from: String::new() };
+            entry.updated_at = now;
+            released.push(entry);
+        }
+    }
+    if !released.is_empty() {
+        catalog.put_files(&released)?;
+    }
+    Ok(())
 }
 
 /// Write an archive of `vault` into `out`.

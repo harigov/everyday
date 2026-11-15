@@ -1386,6 +1386,8 @@ fn the_file_tools_neither_list_nor_open_nor_touch_healths_files() {
     use karmayoga_core::files::{FileOrigin, ImportOptions};
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
+    // A folder of its own: the default one is shared by every test here.
+    vault.set_up_files_folder(Some(&dir.path().join("Karma Yoga"))).unwrap();
     let health = ImportOptions { encrypted: Some(true), ..ImportOptions::new(FileOrigin::Health) };
     let page = vault.import_bytes(b"TSH 5.6 mIU/L", "labs.txt", &health).unwrap();
     let notes = vault

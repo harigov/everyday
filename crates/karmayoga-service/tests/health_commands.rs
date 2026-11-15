@@ -613,4 +613,105 @@ async fn an_import_that_cannot_start_says_why_and_one_that_starts_ends_in_the_st
 
     // Nothing is running now, so there is nothing to cancel.
     assert_eq!(call(&svc, "cancel_apple_import", json!({})).await, json!(false));
+
+    // From a file in Files: a sealed upload, read from a decrypted copy that
+    // is gone once the import ends, and -- uploaded only to be read -- put
+    // in the trash however it ended. Here that is failed, as above.
+    let vault = svc.require_unlocked().unwrap();
+    vault.set_up_files_folder(Some(&dir.path().join("Karma Yoga"))).unwrap();
+    let sealed = karmayoga_core::files::ImportOptions {
+        encrypted: Some(true),
+        ..karmayoga_core::files::ImportOptions::new(karmayoga_core::files::FileOrigin::Health)
+    };
+    let upload = vault.import_bytes(b"this is not a zip either", "export.zip", &sealed).unwrap();
+    let notes = vault
+        .import_bytes(
+            b"a list",
+            "notes.txt",
+            &karmayoga_core::files::ImportOptions::new(karmayoga_core::files::FileOrigin::Files),
+        )
+        .unwrap();
+    let e = fails(&svc, "import_apple_health_file", json!({ "file": notes.id })).await;
+    assert_eq!(e.code, "invalid", "only a .zip is an export: {e:?}");
+    let e = svc
+        .call(
+            holding(vec![Scope::Health]),
+            "import_apple_health_file",
+            json!({ "file": upload.id }),
+        )
+        .await
+        .expect_err("a connection without Files");
+    assert_eq!(e.code, "forbidden", "{e:?}");
+
+    let started =
+        call(&svc, "import_apple_health_file", json!({ "file": upload.id, "trashAfter": true }))
+            .await;
+    assert_eq!(started["state"], "running", "{started}");
+    let mut status = call(&svc, "apple_import_status", json!({})).await;
+    for _ in 0..400 {
+        if status["state"] != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        status = call(&svc, "apple_import_status", json!({})).await;
+    }
+    assert_eq!(status["state"], "failed", "{status}");
+    assert!(vault.file(upload.id).unwrap().status.is_trashed(), "the upload is in the trash");
+    let root = vault.files_folder().unwrap().expect("a files folder").root().to_path_buf();
+    let copy = root.join(".karmayoga").join("open").join(upload.id.to_string()).join("export.zip");
+    assert!(!copy.exists(), "the decrypted copy is gone: {}", copy.display());
+}
+
+// ---- Health's files and the Files commands ---------------------------------
+
+/// A connection allowed Files and not Health reads the folder, not somebody's
+/// lab reports: it is listed none of Health's files -- a listing would hand
+/// it their blob addresses -- and refused anything done to one by id.
+#[tokio::test]
+async fn a_connection_without_health_is_shown_and_allowed_none_of_healths_files() {
+    use karmayoga_core::files::{FileOrigin, ImportOptions};
+    let (svc, dir) = support::vault::service(None);
+    let vault = svc.require_unlocked().unwrap();
+    // A folder of its own: the default one is shared by every test here.
+    vault.set_up_files_folder(Some(&dir.path().join("Karma Yoga"))).unwrap();
+    let sealed = ImportOptions { encrypted: Some(true), ..ImportOptions::new(FileOrigin::Health) };
+    let page = vault.import_bytes(b"TSH 5.6 mIU/L", "labs.pdf", &sealed).unwrap();
+    vault.import_bytes(b"a list", "list.txt", &ImportOptions::new(FileOrigin::Files)).unwrap();
+    let names = |page: &Value| -> Vec<String> {
+        let mut names: Vec<String> = page["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+
+    let files_only = || holding(vec![Scope::Files]);
+    let listed = svc.call(files_only(), "list_files", json!({ "query": {} })).await.unwrap();
+    assert_eq!(names(&listed), ["list.txt"], "{listed}");
+    assert_eq!(listed["total"], 1);
+    for (name, args) in [
+        ("get_file", json!({ "id": page.id })),
+        ("trash_files", json!({ "ids": [page.id] })),
+        ("delete_files_forever", json!({ "ids": [page.id] })),
+        ("set_file_encrypted", json!({ "id": page.id, "encrypted": false })),
+        ("rename_file", json!({ "id": page.id, "name": "mine.pdf" })),
+        ("update_files", json!({ "ids": [page.id], "update": { "caption": "x" } })),
+    ] {
+        let e = svc.call(files_only(), name, args).await.expect_err(name);
+        assert_eq!(e.code, "forbidden", "{name}: {e:?}");
+    }
+    let untouched = vault.file(page.id).unwrap();
+    assert!(
+        untouched.is_sealed() && !untouched.status.is_trashed() && untouched.caption.is_empty()
+    );
+
+    // Holding Health as well, they are there like any other.
+    let both = || holding(vec![Scope::Files, Scope::Health]);
+    let listed = svc.call(both(), "list_files", json!({ "query": {} })).await.unwrap();
+    assert_eq!(names(&listed), ["labs.pdf", "list.txt"], "{listed}");
+    let detail = svc.call(both(), "get_file", json!({ "id": page.id })).await.unwrap();
+    assert_eq!(detail["file"]["origin"], "health", "{detail}");
 }

@@ -412,6 +412,13 @@ impl Folder {
     /// so far (a repeated chunk at an earlier offset is accepted and
     /// ignored, so a retried request is harmless). Answers the new total.
     pub fn append_upload(&self, upload: &str, offset: u64, bytes: &[u8]) -> Result<u64> {
+        // The length is read and the chunk written as one step: a retried
+        // chunk arriving while the first copy is still being written would
+        // otherwise see the same length, and be appended twice -- an upload
+        // longer than it was begun with, which finishing then refuses.
+        // Appends to every upload take turns; a chunk is a few megabytes.
+        static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _turn = APPENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let path = self.upload_file(upload)?;
         let mut file = match OpenOptions::new().append(true).open(&path) {
             Ok(file) => file,

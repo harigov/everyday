@@ -1061,3 +1061,32 @@ fn rebuilding_the_references_finds_health_documents_and_meals() {
     assert_eq!(vault.file_uses(page).unwrap()[0].owner.kind, RefKind::HealthDocument);
     assert_eq!(vault.file_uses(plate).unwrap()[0].owner.kind, RefKind::Meal);
 }
+
+/// Only Health's own files can be a page or a photo: otherwise a connection
+/// allowed Health and not Files could make a document of any file somebody
+/// keeps and have the model read it back.
+#[test]
+fn a_file_health_did_not_add_is_neither_a_page_nor_a_photo() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let theirs = vault
+        .import_bytes(b"somebody's diary", "diary.txt", &ImportOptions::new(FileOrigin::Files))
+        .unwrap()
+        .id;
+    let refused = vault.add_health_document("Diary", DocKind::Other, None, &[theirs]);
+    assert_eq!(refused.unwrap_err().code(), "invalid");
+    let mut lunch = meal(at(Date::constant(2026, 11, 10), 12, 0), vec![]);
+    lunch.photo = Some(theirs);
+    assert_eq!(vault.save_meal(&lunch).unwrap_err().code(), "invalid");
+    assert_eq!(vault.health_file_bytes(theirs).unwrap_err().code(), "invalid");
+
+    // A meal keeps a photo it already has even once that is in the trash:
+    // fixing its name is no reason to refuse it.
+    let plate = uploaded(&vault, b"a plate", "plate.jpg");
+    lunch.photo = Some(plate);
+    let saved = vault.save_meal(&lunch).unwrap();
+    vault.trash_files(&[plate]).unwrap();
+    let mut renamed = saved.clone();
+    renamed.name = "Rice bowl".into();
+    assert_eq!(vault.save_meal(&renamed).unwrap().name, "Rice bowl");
+}

@@ -2918,6 +2918,8 @@ function importStatus(): ImportStatus {
       startedAt: iso(imported.startedAt),
       finishedAt: iso(Date.now()),
     }
+    // However it ended: an upload made only to be imported is done with.
+    if (imported.trashAfter) mockFilesReleased([imported.trashAfter])
     importDone = status
     imported = null
     return status

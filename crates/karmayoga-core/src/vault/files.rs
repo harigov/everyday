@@ -2202,15 +2202,9 @@ impl Vault {
 /// was, with the day it was eaten (in this machine's zone, as the Files app
 /// shows every time).
 fn meal_title(meal: &crate::health::Meal) -> String {
-    use crate::health::MealSlot;
     let day = meal.at.to_zoned(TimeZone::system()).date().strftime("%-d %B %Y");
     let name = match meal.name.trim() {
-        "" => match meal.slot {
-            MealSlot::Breakfast => "Breakfast",
-            MealSlot::Lunch => "Lunch",
-            MealSlot::Dinner => "Dinner",
-            MealSlot::Snack => "Snack",
-        },
+        "" => meal.slot.word(),
         name => name,
     };
     format!("{name}, {day}")
