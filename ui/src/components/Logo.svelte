@@ -19,28 +19,38 @@
     'c-3.02 0-4.54 0-5.69-.59a5.4 5.4 0 0 1-2.36-2.36c-.59-1.16-.59-2.67-.59-5.69L0 8.64' +
     'c0-3.02 0-4.54.59-5.69a5.4 5.4 0 0 1 2.36-2.36c1.16-.59 2.67-.59 5.69-.59Z'
 
-  // One petal, pointing up from the sun's centre, as on the icon: from 6.2
-  // out to 10.2, pointed at both ends.
-  const PETAL = 'M0-6.2C1.05-7.35 1.15-8.95 0-10.2C-1.15-8.95-1.05-7.35 0-6.2Z'
+  // A point `r` out from the wheel's centre, `angle` degrees clockwise from
+  // straight up. Worked out here rather than with rotate() so every part
+  // stays in one coordinate space, and the gold runs top to bottom across
+  // the whole wheel instead of turning with each spoke.
+  const at = (angle: number, r: number) => {
+    const a = (angle * Math.PI) / 180
+    return { x: r * Math.sin(a), y: -r * Math.cos(a) }
+  }
 
-  // Seven, 24 degrees apart, the middle one tallest and the outer ones
-  // fainter -- the same fan as the icon's.
-  const PETALS = [-72, -48, -24, 0, 24, 48, 72].map((angle) => ({
-    angle,
-    stretch: 1 - Math.abs(angle) / 500,
-    opacity: 1 - Math.abs(angle) / 260,
-  }))
+  // Eight spokes from inside the hub to under the rim, with the medallion
+  // (or the slim spoke's bead) halfway along.
+  const spokes = (offset: number) =>
+    Array.from({ length: 8 }, (_, k) => {
+      const angle = offset + k * 45
+      return { angle, from: at(angle, 2), to: at(angle, 9.4), mid: at(angle, 6.05) }
+    })
+  const BROAD = spokes(0)
+  const SLIM = spokes(22.5)
 
-  // On the tile the mark keeps a margin; bare, it fills the box.
-  const horizon = $derived(tile ? 14.2 : 14.5)
-  const scale = $derived(tile ? 0.82 : 1)
+  // The wheel is drawn 11 in radius. On the tile it keeps the icon's
+  // proportion, 312 of an 824 tile; bare, it fills the box.
+  const scale = $derived(tile ? 9.1 / 11 : 1)
+  const ink = $derived(tile ? `url(#gold-${uid})` : 'currentColor')
 </script>
 
 <!--
-  The same sunrise as the application icon (crates/karmayoga-app/icons/icon.svg),
-  redrawn on a 24-unit grid. It is not a scaled-down copy: at 20px the icon's
-  soft glow and blurred reflection close up into a smudge, so here the petals
-  are solid, the horizon is a clean line and the reflection is two strokes.
+  The same Konark wheel as the application icon
+  (crates/karmayoga-app/icons/icon.svg), redrawn on a 24-unit grid. It is
+  not a scaled-down copy: at 18px the icon's lit edges, shadow and filleted
+  joints close up into a smudge, so here the spokes are plain strokes, a
+  little heavier than the icon's, the medallions are holes without their
+  dot and the rim is one band.
 -->
 <svg
   class="logo"
@@ -51,53 +61,55 @@
   aria-hidden="true"
   focusable="false"
 >
+  <defs>
+    {#if tile}
+      <radialGradient id="sky-{uid}" cx=".5" cy=".46" r=".62">
+        <stop offset="0" stop-color="#262a72" />
+        <stop offset="1" stop-color="#0a0c26" />
+      </radialGradient>
+      <linearGradient id="gold-{uid}" x1="0" y1="-11" x2="0" y2="11" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#ffe596" />
+        <stop offset=".5" stop-color="#ffc24d" />
+        <stop offset="1" stop-color="#ea8a2a" />
+      </linearGradient>
+    {/if}
+    <mask id="cuts-{uid}">
+      <rect x="-12" y="-12" width="24" height="24" fill="#fff" />
+      <!-- The groove round the hub's boss. -->
+      <circle r="1.65" fill="none" stroke="#000" stroke-width=".45" />
+      {#each BROAD as spoke (spoke.angle)}
+        <circle cx={spoke.mid.x} cy={spoke.mid.y} r=".6" fill="#000" />
+      {/each}
+    </mask>
+  </defs>
   {#if tile}
-    <defs>
-      <clipPath id="tile-{uid}"><path d={TILE} /></clipPath>
-      <linearGradient id="sky-{uid}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#1b1840" />
-        <stop offset=".42" stop-color="#4a2a6a" />
-        <stop offset=".76" stop-color="#d4506a" />
-        <stop offset="1" stop-color="#ffae5a" />
-      </linearGradient>
-      <linearGradient id="water-{uid}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#3b2550" />
-        <stop offset="1" stop-color="#120d22" />
-      </linearGradient>
-      <linearGradient id="sun-{uid}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="#fff4c9" />
-        <stop offset=".55" stop-color="#ffc24a" />
-        <stop offset="1" stop-color="#ff8f2e" />
-      </linearGradient>
-    </defs>
-    <g clip-path="url(#tile-{uid})">
-      <rect width="24" height={horizon} fill="url(#sky-{uid})" />
-      <rect y={horizon} width="24" height={24 - horizon} fill="url(#water-{uid})" />
-    </g>
+    <path d={TILE} fill="url(#sky-{uid})" />
   {/if}
-  <g transform="translate(12 {horizon}) scale({scale})">
-    {#each PETALS as petal (petal.angle)}
-      <path
-        d={PETAL}
-        transform="rotate({petal.angle}) scale(1 {petal.stretch})"
-        fill={tile ? '#ffe2a0' : 'currentColor'}
-        opacity={petal.opacity * (tile ? 0.9 : 1)}
+  <g transform="translate(12 12) scale({scale})" mask="url(#cuts-{uid})" fill={ink}>
+    <circle r="10.15" fill="none" stroke={ink} stroke-width="1.7" />
+    {#each BROAD as spoke (spoke.angle)}
+      <line
+        x1={spoke.from.x}
+        y1={spoke.from.y}
+        x2={spoke.to.x}
+        y2={spoke.to.y}
+        stroke={ink}
+        stroke-width="1.3"
       />
+      <circle cx={spoke.mid.x} cy={spoke.mid.y} r="1.35" />
     {/each}
-    <path d="M-5 0A5 5 0 0 1 5 0Z" fill={tile ? `url(#sun-${uid})` : 'currentColor'} />
-  </g>
-  <rect
-    x={tile ? 0 : 1.5}
-    y={horizon - 0.45}
-    width={tile ? 24 : 21}
-    height=".9"
-    rx=".45"
-    fill={tile ? '#ffd27a' : 'currentColor'}
-    opacity={tile ? 0.85 : 1}
-  />
-  <g fill={tile ? '#ffc24a' : 'currentColor'}>
-    <rect x="8.4" y={horizon + 2} width="7.2" height="1.1" rx=".55" opacity={tile ? 0.6 : 0.55} />
-    <rect x="9.9" y={horizon + 4.1} width="4.2" height="1" rx=".5" opacity={tile ? 0.38 : 0.32} />
+    {#each SLIM as spoke (spoke.angle)}
+      <line
+        x1={spoke.from.x}
+        y1={spoke.from.y}
+        x2={spoke.to.x}
+        y2={spoke.to.y}
+        stroke={ink}
+        stroke-width=".5"
+      />
+      <circle cx={spoke.mid.x} cy={spoke.mid.y} r=".45" />
+    {/each}
+    <circle r="2.7" />
   </g>
 </svg>
 
