@@ -79,6 +79,9 @@
 
 <style>
   .main {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     flex: 1;
     /* Never crushed to nothing by the list column beside it growing:
        `PaneResizer`'s own `max` stops short of most window widths, but a

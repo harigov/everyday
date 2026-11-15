@@ -358,6 +358,9 @@
 <style>
   /* The page colour, unlike the other apps: its cards are raised and need it to stand on. */
   .overview {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     display: flex;
     flex: 1;
     min-width: 0;

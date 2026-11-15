@@ -155,6 +155,9 @@
 
 <style>
   .cal {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     flex: 1;
     min-width: 0;
     display: flex;

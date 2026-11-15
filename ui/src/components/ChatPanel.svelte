@@ -292,6 +292,9 @@
 
 <style>
   .panel {
+    /* As tall as the row by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     position: relative;
     display: flex;
     flex-direction: column;

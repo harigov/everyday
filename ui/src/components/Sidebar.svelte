@@ -304,6 +304,9 @@
 
 <style>
   .sidebar {
+    /* As tall as the row by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     position: relative;
     width: var(--sidebar-w);
     flex: none;
@@ -328,6 +331,8 @@
     position: absolute;
     top: 0;
     bottom: var(--shell-gap);
+    /* Its insets decide its height, not the row's it states in the row. */
+    height: auto;
     left: calc(var(--bar-w, var(--appbar-w)) + var(--shell-gap));
     z-index: 40;
     background: var(--sidebar);

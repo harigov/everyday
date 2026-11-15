@@ -312,6 +312,9 @@
 
 <style>
   .list {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     position: relative;
     /* Its own variable, so a drag here leaves Mail's and the journal's lists
        alone. The fallback is the width it opens at before anything is stored. */
