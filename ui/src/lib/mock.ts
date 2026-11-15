@@ -185,6 +185,7 @@ import {
 import { mockBackup } from './mock-backup'
 import { mockMoney } from './mock-money'
 import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
+import { isMockFilesCommand, mockFilesInvoke } from './mock-files'
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
@@ -4752,6 +4753,7 @@ function status(): VaultStatus {
           news: true,
           money: true,
           screentime: true,
+          files: true,
           jobs: true,
         }
       : undefined,
@@ -4939,6 +4941,15 @@ export const mockInvoke = async <T>(
   const args: Record<string, unknown> = payload instanceof Uint8Array ? {} : payload
   // A touch of latency, so loading states are exercised rather than skipped.
   await new Promise((r) => setTimeout(r, 40))
+
+  // Files -- docs/plans/files.md. `mock-files.ts` keeps the catalog, the
+  // folder tree and the albums, and answers the vault's commands and the
+  // shell's own (pickers, open, reveal, export). All but the folder picker
+  // want the vault open.
+  if (isMockFilesCommand(cmd)) {
+    if (cmd !== 'pick_files_folder') requireUnlocked()
+    return mockFilesInvoke(cmd, args) as T
+  }
 
   switch (cmd) {
     case 'bootstrap':
@@ -8597,6 +8608,7 @@ export async function mockSendMessage(
   prompt: string,
   onScreen: OnScreen | null,
   attachments: Attachment[],
+  files: NonNullable<AgentMessage['files']>,
   onEvent: (event: AgentEvent) => void,
 ): Promise<void> {
   requireUnlocked()
@@ -8623,6 +8635,7 @@ export async function mockSendMessage(
     toolCallId: null,
     failed: false,
     ...(attachments.length ? { attachments } : {}),
+    ...(files.length ? { files } : {}),
     createdAt: now,
   })
 
@@ -8697,10 +8710,20 @@ export async function mockSendMessage(
   try {
     // There is no model to look at a picture, so the mock says what it was
     // sent -- which is what checking the composer against it needs.
-    if (attachments.length) {
+    // Files are named the way the real assistant is told to name them, as
+    // `[name](files:<id>)`, so the thread's chips can be checked against it.
+    if (attachments.length || files.length) {
       await pause(400)
       const names = attachments.map((a) => `**${a.filename}** (${a.width}×${a.height})`)
-      reply = `I was sent ${attachments.length === 1 ? 'a picture' : `${attachments.length} pictures`}: ${names.join(', ')}.${prompt.trim() ? ` You asked: “${prompt.trim()}”.` : ''}`
+      const said = [
+        attachments.length
+          ? `I was sent ${attachments.length === 1 ? 'a picture' : `${attachments.length} pictures`}: ${names.join(', ')}.`
+          : '',
+        files.length
+          ? `In Files: ${files.map((id, i) => `[file ${i + 1}](files:${id})`).join(', ')}.`
+          : '',
+      ].filter(Boolean)
+      reply = `${said.join(' ')}${prompt.trim() ? ` You asked: “${prompt.trim()}”.` : ''}`
       for (const w of reply.split(/(?<= )/)) {
         if (run.stopped) break
         await pause(20)

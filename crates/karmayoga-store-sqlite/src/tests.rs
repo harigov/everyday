@@ -1893,6 +1893,86 @@ fn the_database_file_contains_no_readable_money_text() {
     assert!(raw.windows(10).any(|w| w == b"2026-11-05"), "the day column is meant to be readable");
 }
 
+#[test]
+fn the_database_file_contains_no_readable_file_path_name_or_hash() {
+    // The files folder may sit on an encrypted volume that is locked while
+    // somebody holds a copy of this database, so nothing a person would
+    // recognise of a file -- its path, its folder, its name, its content
+    // hash, a caption or a tag -- may sit in a clear column, plain file or
+    // sealed. What is meant to be readable is a token of each, under a key
+    // only the vault has. See `karmayoga_store_sql::files`.
+    use karmayoga_core::files::{
+        FileEntry, FileKind, FileOrigin, FileStatus, FileStorage, MediaInfo,
+    };
+    use karmayoga_core::id::FileId;
+    use karmayoga_core::store::files::FilesStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let now = jiff::Timestamp::now();
+    let hash = "a3f0c9d28e7b4f5e9d0e2c7f8a6b5d4ea3f0c9d28e7b4f5e9d0e2c7f8a6b5d4e";
+    let file = |storage: FileStorage, name: &str| FileEntry {
+        id: FileId::new(),
+        storage,
+        name: name.into(),
+        kind: FileKind::Document,
+        mime: "application/pdf".into(),
+        size: 4_096,
+        hash: hash.into(),
+        modified_at: now,
+        added_at: now,
+        updated_at: now,
+        origin: FileOrigin::Files,
+        status: FileStatus::Present,
+        media: MediaInfo::default(),
+        thumbnail: None,
+        caption: "A caption nobody should see".into(),
+        tags: vec!["tag-nobody-should-see".into()],
+        rating: None,
+        favourite: false,
+        hidden: false,
+        people: Vec::new(),
+        place: None,
+        stack: None,
+        properties: Default::default(),
+    };
+    let plain = file(
+        FileStorage::Plain {
+            path: "LawyerNobodyShouldSee/settlement-nobody-should-see.pdf".into(),
+        },
+        "settlement-nobody-should-see.pdf",
+    );
+    let sealed = file(
+        FileStorage::Sealed { blob: store.put_blob(b"sealed contents").unwrap() },
+        "sealed-nobody-should-see.pdf",
+    );
+    store.put_files(&[plain.clone(), sealed]).unwrap();
+    store.flush().unwrap();
+
+    let raw = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    for needle in [
+        b"nobody should see".as_slice(),
+        b"nobody-should-see",
+        b"NobodyShouldSee",
+        b"settlement",
+        hash.as_bytes(),
+    ] {
+        assert!(
+            !raw.windows(needle.len()).any(|w| w == needle),
+            "found {:?} in the database file",
+            String::from_utf8_lossy(needle)
+        );
+    }
+    // And the tokens still answer what the indexes ask.
+    let found = store.file_by_path("LawyerNobodyShouldSee/settlement-nobody-should-see.pdf");
+    assert_eq!(found.unwrap().map(|f| f.id), Some(plain.id));
+    assert_eq!(
+        store.files_by_hash(hash).unwrap().len(),
+        1,
+        "only the plain file's hash is a token"
+    );
+}
+
 /// A span on the laptop, with something nobody should see in every field a
 /// person would recognise. For the two screen-time tests below.
 fn a_screen_span(start: i64, end: i64) -> karmayoga_core::screentime::ScreenSpan {

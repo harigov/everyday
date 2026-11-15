@@ -117,6 +117,10 @@ pub enum RecordKind {
     /// A category screen time is filed under -- see
     /// [`crate::screentime::ScreenCategory`].
     ScreenCategory,
+    /// One file in the files catalog -- see [`crate::files::FileEntry`].
+    File,
+    /// An album of files -- see [`crate::files::Album`].
+    Album,
 }
 
 impl RecordKind {
@@ -175,6 +179,8 @@ impl RecordKind {
             RecordKind::MoneyRule => "money_rule",
             RecordKind::ScreenApp => "screen_app",
             RecordKind::ScreenCategory => "screen_category",
+            RecordKind::File => "file",
+            RecordKind::Album => "album",
         }
     }
 
@@ -229,7 +235,9 @@ impl RecordKind {
             | RecordKind::MoneyCategory
             | RecordKind::MoneyRule
             | RecordKind::ScreenApp
-            | RecordKind::ScreenCategory => None,
+            | RecordKind::ScreenCategory
+            | RecordKind::File
+            | RecordKind::Album => None,
         }
     }
 
@@ -286,7 +294,9 @@ impl RecordKind {
             | RecordKind::MoneyCategory
             | RecordKind::MoneyRule
             | RecordKind::ScreenApp
-            | RecordKind::ScreenCategory => None,
+            | RecordKind::ScreenCategory
+            | RecordKind::File
+            | RecordKind::Album => None,
         }
     }
 
@@ -347,6 +357,8 @@ impl RecordKind {
             RecordKind::MoneyRule => "money_rule",
             RecordKind::ScreenApp => "screen_app",
             RecordKind::ScreenCategory => "screen_category",
+            RecordKind::File => "file",
+            RecordKind::Album => "album",
         }
     }
 }
@@ -838,6 +850,28 @@ impl RecordDescriptor for crate::screentime::ScreenCategory {
     }
 }
 
+impl RecordDescriptor for crate::files::FileEntry {
+    const KIND: RecordKind = RecordKind::File;
+    type Id = crate::id::FileId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::files::file_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::files::Album {
+    const KIND: RecordKind = RecordKind::Album;
+    type Id = crate::id::AlbumId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::files::album_aad(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ties [`RecordKind::aad_word`] to every [`RecordDescriptor::aad`],
@@ -910,6 +944,8 @@ mod tests {
         check::<crate::money::MoneyRule>(id());
         check::<crate::screentime::ScreenApp>(id());
         check::<crate::screentime::ScreenCategory>(id());
+        check::<crate::files::FileEntry>(id());
+        check::<crate::files::Album>(id());
     }
 
     #[test]
@@ -927,7 +963,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 43] = [
+    const ALL: [RecordKind; 45] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -971,5 +1007,7 @@ mod tests {
         RecordKind::MoneyRule,
         RecordKind::ScreenApp,
         RecordKind::ScreenCategory,
+        RecordKind::File,
+        RecordKind::Album,
     ];
 }

@@ -28,6 +28,7 @@
 mod accounts;
 mod agent;
 mod calendars;
+mod files;
 mod jobs;
 mod journal;
 mod library;
@@ -48,6 +49,7 @@ mod writing;
 pub use accounts::run_account_suite;
 pub use agent::run_agent_suite;
 pub use calendars::run_calendar_suite;
+pub use files::run_files_suite;
 pub use jobs::run_job_suite;
 pub use library::run_library_suite;
 pub use mail::run_mail_suite;
@@ -271,6 +273,18 @@ pub fn run_all(store: &dyn JournalStore) {
     match store.screentime() {
         Some(_) => run_screen_time_suite(store),
         None => eprintln!("backend {name:?} stores no screen time; skipping its suite"),
+    }
+
+    // And files, which reads nothing of any other domain's either -- but a
+    // sealed file's contents and every thumbnail are blobs only a file's
+    // record holds, so garbage collection has to know about them, and that
+    // is a question about the *journal* store.
+    match store.files() {
+        Some(_) => {
+            run_files_suite(store);
+            files::garbage_collection_keeps_sealed_files_and_thumbnails(store);
+        }
+        None => eprintln!("backend {name:?} stores no files; skipping the files suite"),
     }
 
     journal::cleanup(store);

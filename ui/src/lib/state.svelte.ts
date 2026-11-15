@@ -620,6 +620,18 @@ class AppState {
   }
 
   /**
+   * Can this vault keep files?
+   *
+   * One capability, as Money's: the catalog and the files folder, which every
+   * app that keeps a file writes through (`docs/plans/files.md`). Whether the
+   * folder is set up, and whether this window may pick files by path, are
+   * questions `files_status` answers.
+   */
+  get supportsFiles(): boolean {
+    return this.status?.capabilities?.files === true
+  }
+
+  /**
    * Is this section available on the vault that is open?
    *
    * Reads `apps.ts`'s registry rather than a switch of its own: that used to

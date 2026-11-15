@@ -13,6 +13,7 @@ pub mod capture;
 mod commands;
 mod events;
 mod fanout;
+mod files;
 mod hotkey;
 mod legacy;
 mod listener;
@@ -301,6 +302,16 @@ pub fn run() {
             transfer::open_import,
             transfer::pick_folder,
             transfer::save_mail_part,
+            // The files catalog's desktop half: pickers, opening a file in
+            // another program, saving copies, and the chunks of an upload --
+            // raw bytes, so a command of its own like `put_blob`. See
+            // `files.rs`.
+            files::pick_and_import_files,
+            files::pick_files_folder,
+            files::open_file_externally,
+            files::reveal_file,
+            files::export_files,
+            files::upload_chunk,
             // This process's own furniture.
             commands::set_opens_itself,
             commands::ready_to_close,

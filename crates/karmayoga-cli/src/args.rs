@@ -304,6 +304,11 @@ pub enum Command {
         /// never over a file that is already there.
         #[arg(long)]
         config: bool,
+        /// Put the files folder's copy here rather than where the restored
+        /// vault's settings say the folder is -- for a different machine, or
+        /// a different user, than the one that made the backup.
+        #[arg(long = "files-to", value_name = "DIR")]
+        files_to: Option<PathBuf>,
         #[command(flatten)]
         location: LocationArgs,
     },

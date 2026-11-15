@@ -175,6 +175,7 @@ pub async fn answer_now(
         conversation: asked_in,
         prompt,
         pictures: Vec::new(),
+        files: Vec::new(),
         // The person is not looking at a screen that is listening, so there
         // is nothing on it to describe.
         on_screen: None,

@@ -49,7 +49,7 @@ const Media = Node.create({
   atom: true,
   addAttributes: () =>
     Object.fromEntries(
-      ['blob', 'kind', 'mime', 'filename', 'caption'].map((key) => [key, { default: '' }]),
+      ['blob', 'file', 'kind', 'mime', 'filename', 'caption'].map((key) => [key, { default: '' }]),
     ),
 })
 
@@ -121,6 +121,24 @@ const fixture = JSON.parse(
 )
 for (const { name, doc: content, markdown } of fixture.cases) {
   assert.equal(all(schema.nodeFromJSON({ type: 'doc', content })), markdown, name)
+}
+
+// A picture, film or file kept in the files catalog is a media node naming
+// the file (`file`) instead of a blob, and is linked by id as the export does
+// (`richtext.rs`'s `md_block`).
+{
+  const kept = (attrs) => all(doc({ type: 'media', attrs: { caption: '', ...attrs } }))
+  assert.equal(
+    kept({ file: 'f1', kind: 'image', caption: 'The harbour' }),
+    '![The harbour](files/f1)',
+  )
+  assert.equal(kept({ file: 'f2', kind: 'file', filename: 'plan.pdf' }), '[plan.pdf](files/f2)')
+  assert.equal(kept({ file: 'f3', kind: 'video' }), '[f3](files/f3)', 'named by its id at a pinch')
+  assert.equal(
+    kept({ blob: 'b1', file: 'f1', kind: 'image' }),
+    '![](media/b1)',
+    'a blob, when there is one, is what the node is',
+  )
 }
 
 // ── Selections ────────────────────────────────────────────────────────

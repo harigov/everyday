@@ -159,6 +159,10 @@ impl JournalStore for SqlStore {
         Some(self)
     }
 
+    fn files(&self) -> Option<&dyn karmayoga_core::store::files::FilesStore> {
+        Some(self)
+    }
+
     fn profile(&self) -> Result<karmayoga_core::profile::Profile> {
         self.read_profile()
     }
@@ -438,6 +442,10 @@ impl JournalStore for SqlStore {
 
     fn put_blob(&self, bytes: &[u8]) -> Result<BlobId> {
         self.blob_put(bytes)
+    }
+
+    fn put_blob_file(&self, path: &std::path::Path) -> Result<BlobId> {
+        self.blob_put_file(path)
     }
 
     fn get_blob(&self, id: BlobId) -> Result<Vec<u8>> {

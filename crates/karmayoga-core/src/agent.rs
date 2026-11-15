@@ -595,6 +595,12 @@ pub struct Message {
     /// [`JournalStore::collect_garbage`]: crate::store::JournalStore::collect_garbage
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<crate::model::Attachment>,
+    /// Files in the files catalog this message carries: what somebody handed
+    /// the assistant in the composer or a chat, kept as the files they are
+    /// (see [`crate::files`]). A picture among them also has a small copy in
+    /// [`Message::attachments`], which is what a model is shown.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<crate::id::FileId>,
     pub created_at: Timestamp,
 }
 
@@ -634,6 +640,7 @@ impl Message {
             failed: false,
             mail_link: None,
             attachments: Vec::new(),
+            files: Vec::new(),
             created_at: Timestamp::now(),
         }
     }

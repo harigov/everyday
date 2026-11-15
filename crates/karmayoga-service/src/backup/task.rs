@@ -224,6 +224,10 @@ fn plan(
             destination: destination.clone(),
             keep: settings.keep,
             config_dir: settings.include_config.then(karmayoga_vault::config_dir),
+            // The files folder goes in every copy once there is one: it is
+            // the person's own files, and the vault's catalog of them is
+            // worth nothing without them. See `run::stage_files_folder`.
+            files: vault.supports_files(),
             // Only a backup nobody is watching treats an empty destination
             // that has held backups as one that is not there. Somebody
             // pressing the button is looking at the place, and may have

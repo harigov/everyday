@@ -47,6 +47,7 @@ import { notes } from './notes.svelte'
 import { overview } from './overview.svelte'
 import { panels } from './panels.svelte'
 import { screentime } from './screentime.svelte'
+import { files } from './files.svelte'
 import { sidebar } from './sidebar.svelte'
 import { assistant } from './assistant.svelte'
 import { app, type Section } from './state.svelte'
@@ -308,6 +309,7 @@ export const GROUPS = [
   'Feed',
   'Money',
   'Screen time',
+  'Files',
   'Overview',
   'Assistant',
   'Vault',
@@ -411,6 +413,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('screentime'),
     run: () => app.setSection('screentime'),
+  },
+  {
+    // `e` for explorer: `f` is the Feed's, and `d` is Mail's Drafts.
+    keys: 'g e',
+    label: 'Files',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('files'),
+    run: () => app.setSection('files'),
   },
   {
     keys: 'g o',
@@ -1497,6 +1507,32 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     },
   },
   {
+    id: 'files:photos',
+    label: 'Photos',
+    group: 'Files',
+    keywords: ['pictures', 'images', 'camera', 'timeline', 'albums', 'files'],
+    icon: 'image',
+    quick: true,
+    when: () => app.screen === 'main' && app.supportsFiles,
+    run: async () => {
+      if (!(await app.goTo('files'))) return
+      files.setView('photos')
+    },
+  },
+  {
+    id: 'files:add',
+    label: 'Add files',
+    group: 'Files',
+    keywords: ['upload', 'import', 'save', 'picture', 'document', 'files'],
+    icon: 'upload',
+    quick: true,
+    when: () => app.screen === 'main' && app.supportsFiles,
+    run: async () => {
+      if (!(await app.goTo('files'))) return
+      files.create()
+    },
+  },
+  {
     id: 'assistant:runs',
     label: 'What the assistant did',
     group: 'Assistant',
@@ -1661,6 +1697,7 @@ function create() {
     feed,
     money,
     screentime,
+    files,
     overview,
     assistant,
     agent,

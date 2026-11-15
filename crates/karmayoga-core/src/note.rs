@@ -19,7 +19,7 @@
 //! entry would file a report under a day as though somebody had lived it, and
 //! three hundred and sixty-five of those are not a journal.
 
-use crate::id::{BlobId, NoteId};
+use crate::id::{BlobId, FileId, NoteId};
 use crate::model::{Attachment, MediaKind};
 use crate::purpose::Purpose;
 use crate::richtext::RichDoc;
@@ -227,6 +227,7 @@ impl Note {
             word_count: plain.split_whitespace().count() as u32,
             attachment_count: self.attachments.len() as u32,
             cover: self.attachments.iter().find(|a| a.kind == MediaKind::Image).map(|a| a.blob),
+            cover_file: self.body.first_image_file(),
             origin: Some(self.origin()),
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -256,6 +257,10 @@ pub struct NoteSummary {
     pub attachment_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover: Option<BlobId>,
+    /// The first picture in the body that is kept in the files catalog, for
+    /// a note whose pictures are files rather than attachments.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover_file: Option<FileId>,
     /// Who started the note. `None` only on a summary sealed before this was
     /// kept; [`crate::Vault::notes`] fills it in from the tags, as
     /// [`NoteSummary::origin`] does, so every row handed out carries one.

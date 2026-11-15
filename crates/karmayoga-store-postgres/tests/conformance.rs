@@ -58,7 +58,11 @@ fn store(schema: &str, encrypted: bool) -> Option<karmayoga_store_sql::SqlStore>
     } else {
         Arc::new(NullCipher)
     };
+    // Attachments are on disk under this directory, not in the database, so
+    // a previous run's would still be here for the garbage-collection check
+    // to count. Emptied with the schema, for the same reason.
     let dir = std::env::temp_dir().join(format!("karmayoga-pg-{schema}"));
+    let _ = std::fs::remove_dir_all(&dir);
     let mut settings = BackendSettings::with_url(&url);
     settings.set(SCHEMA_KEY, schema);
     let ctx = StoreContext::new(dir, cipher).with_settings(settings);
@@ -78,11 +82,9 @@ fn passes_the_shared_conformance_suite_unencrypted() {
 }
 
 #[test]
-fn attachments_live_in_the_database_and_seek_without_downloading() {
-    // The one thing this backend does differently from SQLite: media in a
-    // column rather than in a directory. The container format is the same, so
-    // a range read is still a range read -- over `substr()` instead of over a
-    // `seek`.
+fn attachments_live_beside_the_database_and_seek_without_reading_it_all() {
+    // Media in a directory of sealed files on this machine, as SQLite keeps
+    // them, rather than in a column: a range read into a video is a `seek`.
     let Some(store) = store("conformance_blobs", true) else { return };
 
     let payload: Vec<u8> = (0..700_000u32).map(|i| (i % 251) as u8).collect();

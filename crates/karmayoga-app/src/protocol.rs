@@ -105,9 +105,37 @@
 //! remove it. Three independent walls, not one: a bug in any single layer
 //! -- the sandbox attribute, the child's own CSP, or `frame-src` itself --
 //! still leaves the other two standing.
+//!
+//! # `karmayoga://files/…`
+//!
+//! One more, for the files catalog: `karmayoga://files/file/{id}`, and
+//! `http://karmayoga.localhost/files/file/{id}` where a custom scheme has no
+//! host of its own to carry `files` (see [`mail_path`]). It is the route a
+//! picture, a film or a PDF in the Files app, a journal entry or a note is
+//! drawn from. What is different from a blob's address is that a file is not
+//! content-addressed:
+//!
+//! * **Its bytes can change under the same id** -- another program edits it in
+//!   the folder, Syncthing replaces it -- so a response is never `immutable`.
+//!   The interface adds `?v=` (the file's hash) to an address, and only an
+//!   address that has one may be kept for a year; without it the webview asks
+//!   again. The query is otherwise ignored.
+//! * **Its type is the catalog's**, not sniffed from the bytes: a film's
+//!   `video/quicktime` is not something its first bytes can be relied on to say.
+//!   That is also why `harden` matters more here than anywhere: whatever type
+//!   the catalog holds is what opening the address as a document would
+//!   be told, and the sandbox is what makes that harmless.
+//! * **A small file is answered whole** even when nothing asked for a range
+//!   (see [`karmayoga_server::routes::file_plan`]), because a picture draws what
+//!   it is sent and a `206` of the top of a photograph is a broken picture.
+//!
+//! Local vault: refused while locked, read off the async runtime through the
+//! vault's facade (`file_len`, `read_file_range`), plain or sealed alike.
+//! Remote vault: the server's identical route through the pinned client, with
+//! the `Range` passed on untouched.
 
 use karmayoga_core::BlobId;
-use karmayoga_core::id::{MailMessageId, StoryId};
+use karmayoga_core::id::{FileId, MailMessageId, StoryId};
 use karmayoga_core::media;
 use tauri::http::{Request, Response, StatusCode, header};
 use tauri::{Manager, Runtime};
@@ -140,6 +168,14 @@ pub fn handle<R: Runtime>(
     if news_path(&request).is_some() {
         tauri::async_runtime::spawn(async move {
             responder.respond(harden(serve_news(session, &request).await));
+        });
+        return;
+    }
+
+    // `karmayoga://files/…`, a file in the catalog, likewise.
+    if files_path(&request).is_some() {
+        tauri::async_runtime::spawn(async move {
+            responder.respond(harden(serve_files(session, &request).await));
         });
         return;
     }
@@ -727,6 +763,157 @@ fn respond_news_body(doc: karmayoga_service::mailview::BodyDocument) -> Response
         .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "could not build a response"))
 }
 
+// ---- files -----------------------------------------------------------------
+
+/// What a `files/…` address named.
+#[derive(Debug, PartialEq, Eq)]
+struct FileRoute {
+    id: FileId,
+    /// The address's `?v=`, when it has one: the version of the file it names.
+    /// The bytes may be cached only when that is the version the file has now.
+    version: Option<String>,
+}
+
+/// The `file/{id}` remainder of a files address, in whichever of its two shapes
+/// this platform's webview produced -- or `None` for a request that is not a
+/// files address at all. See [`mail_path`] for why there are two.
+fn files_path(request: &Request<Vec<u8>>) -> Option<String> {
+    let path = request.uri().path().trim_start_matches('/');
+    if request.uri().host() == Some("files") {
+        return Some(path.to_string());
+    }
+    path.strip_prefix("files/").map(str::to_string)
+}
+
+/// Parses `request` into a [`FileRoute`]. A pure function of the request, as
+/// [`parse_mail_route`] is, so a test can drive it with the address the
+/// interface builds (`fileUrl` in `ui/src/lib/api.ts`).
+fn parse_files_route(request: &Request<Vec<u8>>) -> Option<FileRoute> {
+    let path = files_path(request)?;
+    let mut segments = path.split('/');
+    match (segments.next(), segments.next(), segments.next()) {
+        (Some("file"), Some(id), None) => {
+            let id = FileId::parse(&percent_decode(id)).ok()?;
+            let version = query_param(request.uri().query().unwrap_or(""), "v")
+                .filter(|version| !version.is_empty());
+            Some(FileRoute { id, version })
+        }
+        _ => None,
+    }
+}
+
+async fn serve_files(
+    session: Option<SessionHandle>,
+    request: &Request<Vec<u8>>,
+) -> Response<Vec<u8>> {
+    let Some(route) = parse_files_route(request) else {
+        return error(StatusCode::BAD_REQUEST, "not a file address");
+    };
+    let range =
+        request.headers().get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
+    match session {
+        Some(SessionHandle::Local(service)) => serve_files_local(&service, route, range).await,
+        Some(SessionHandle::Remote(remote)) => serve_files_remote(&remote, route, range).await,
+        None => error(StatusCode::INTERNAL_SERVER_ERROR, "application state is missing"),
+    }
+}
+
+async fn serve_files_local(
+    service: &std::sync::Arc<karmayoga_service::Service>,
+    route: FileRoute,
+    range: Option<String>,
+) -> Response<Vec<u8>> {
+    let Some(vault) = service.get() else {
+        return error(StatusCode::NOT_FOUND, "no vault is open");
+    };
+    // The same rule the blob, mail and news routes enforce.
+    if !vault.is_unlocked() {
+        return error(StatusCode::FORBIDDEN, "vault is locked");
+    }
+
+    let FileRoute { id, version } = route;
+    // Reading a file is disk, and a sealed one is decryption: off the async
+    // runtime's threads, on `serve_mail_local`'s reasoning.
+    let read = karmayoga_service::blocking(move || {
+        karmayoga_server::routes::read_file_slice(&vault, id, range.as_deref(), version.as_deref())
+    })
+    .await;
+    match read {
+        Ok(slice) => respond_file(&slice.mime, slice.plan, slice.bytes, slice.current),
+        Err(e) => {
+            tracing::debug!(%id, error = %e, "could not read a file");
+            error_from(&e)
+        }
+    }
+}
+
+async fn serve_files_remote(
+    remote: &std::sync::Arc<crate::remote::Remote>,
+    route: FileRoute,
+    range: Option<String>,
+) -> Response<Vec<u8>> {
+    // Never kept: whether the version named is the file's version now is the
+    // other machine's to say, and nothing it answers says so.
+    let FileRoute { id, version: _ } = route;
+    match remote.client.file_range(&id.to_string(), range.as_deref()).await {
+        Ok(served) => {
+            // The server's plan, read back out of its answer: the same
+            // arithmetic as a local read, decided once and on the machine that
+            // has the file.
+            let plan = media::ResponsePlan {
+                start: served.start,
+                len: served.bytes.len() as u64,
+                total: served.total,
+                partial: served.partial,
+            };
+            respond_file(&served.content_type, plan, served.bytes, false)
+        }
+        Err(e) => {
+            tracing::warn!(%id, error = %e, "could not read a remote file");
+            error_from(&e)
+        }
+    }
+}
+
+/// The response both paths build for a file, so a local vault and a remote one
+/// answer a range request identically.
+///
+/// Carries CORS headers for the reason [`respond_body`] gives: the interface
+/// `fetch()`es a PDF or a text file from this address as well as drawing a
+/// picture from it, which is a cross-origin read, and pdf.js decides whether
+/// it may ask for ranges from `Content-Range` and `Accept-Ranges`, which CORS
+/// hides unless they are named.
+fn respond_file(
+    mime: &str,
+    plan: media::ResponsePlan,
+    bytes: Vec<u8>,
+    current: bool,
+) -> Response<Vec<u8>> {
+    let mut builder = Response::builder()
+        .header(header::CONTENT_TYPE, karmayoga_server::routes::file_content_type(mime))
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, bytes.len().to_string())
+        // Never `immutable`, as a blob's are: see the module docs.
+        .header(header::CACHE_CONTROL, karmayoga_server::routes::file_cache_control(current))
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .header(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            "content-range, content-length, accept-ranges",
+        );
+
+    builder = if plan.partial {
+        builder
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, plan.content_range())
+    } else {
+        builder.status(StatusCode::OK)
+    };
+
+    builder
+        .body(bytes)
+        .unwrap_or_else(|_| error(StatusCode::INTERNAL_SERVER_ERROR, "could not build a response"))
+}
+
 fn error_from(e: &karmayoga_service::error::CommandError) -> Response<Vec<u8>> {
     use karmayoga_service::error::codes;
     let status = match e.code.as_str() {
@@ -994,6 +1181,125 @@ mod news_route_tests {
                 Some("x-news-images-hidden")
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod files_route_tests {
+    use super::*;
+
+    fn request(uri: &str) -> Request<Vec<u8>> {
+        Request::builder().uri(uri).body(Vec::new()).expect("a test URI is always well formed")
+    }
+
+    fn header_of<'a>(response: &'a Response<Vec<u8>>, name: &str) -> Option<&'a str> {
+        response.headers().get(name).and_then(|v| v.to_str().ok())
+    }
+
+    #[test]
+    fn a_file_address_names_its_id_and_the_version_it_asks_for() {
+        let id = FileId::new();
+        let bare = parse_files_route(&request(&format!("karmayoga://files/file/{id}")));
+        assert_eq!(bare, Some(FileRoute { id, version: None }));
+        // What `fileUrl` builds: the hash, which only ever selects a cache entry.
+        let uri = format!("karmayoga://files/file/{id}?v=9f2c0a77");
+        let versioned = Some(FileRoute { id, version: Some("9f2c0a77".into()) });
+        assert_eq!(parse_files_route(&request(&uri)), versioned);
+        let uri = format!("karmayoga://files/file/{id}?v=");
+        assert_eq!(parse_files_route(&request(&uri)), Some(FileRoute { id, version: None }));
+    }
+
+    /// Where a custom scheme has no host of its own to ride, `files` is the
+    /// first path segment -- the shape `mail_path` documents.
+    #[test]
+    fn the_windows_shape_of_the_address_parses_too() {
+        let id = FileId::new();
+        let uri = format!("http://karmayoga.localhost/files/file/{id}?v=abc");
+        let route = parse_files_route(&request(&uri));
+        assert_eq!(route, Some(FileRoute { id, version: Some("abc".into()) }));
+    }
+
+    #[test]
+    fn what_is_not_a_file_address_is_refused() {
+        let id = FileId::new();
+        for uri in [
+            "karmayoga://files/nonsense".to_string(),
+            "karmayoga://files/file".to_string(),
+            "karmayoga://files/file/not-an-id".to_string(),
+            format!("karmayoga://files/file/{id}/extra"),
+            format!("karmayoga://files/blob/{id}"),
+        ] {
+            assert_eq!(parse_files_route(&request(&uri)), None, "{uri}");
+        }
+        // Mail's and news's addresses are not files', and a blob's is neither.
+        let message = MailMessageId::new();
+        assert!(files_path(&request(&format!("karmayoga://mail/body/{message}"))).is_none());
+        assert!(files_path(&request(&format!("karmayoga://news/body/{id}"))).is_none());
+        let blob = format!("karmayoga://localhost/{}", "ab".repeat(32));
+        assert!(files_path(&request(&blob)).is_none());
+        // And a files address is not mail's or news's.
+        assert!(mail_path(&request(&format!("karmayoga://files/file/{id}"))).is_none());
+        assert!(news_path(&request(&format!("karmayoga://files/file/{id}"))).is_none());
+    }
+
+    #[test]
+    fn a_part_of_a_file_is_a_206_that_says_where_it_sits() {
+        let plan = media::plan(1000, Some("bytes=100-199"));
+        let response = respond_file("video/mp4", plan, vec![0; 100], true);
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(header_of(&response, "content-range"), Some("bytes 100-199/1000"));
+        assert_eq!(header_of(&response, "content-length"), Some("100"));
+        assert_eq!(header_of(&response, "accept-ranges"), Some("bytes"));
+        // From the catalog, not from the bytes, which are zeros here.
+        assert_eq!(header_of(&response, "content-type"), Some("video/mp4"));
+    }
+
+    #[test]
+    fn a_whole_file_is_a_200_and_a_big_one_asked_for_nothing_still_gets_a_part() {
+        let whole = karmayoga_server::routes::file_plan(20 * 1024 * 1024, None);
+        let response = respond_file("image/jpeg", whole, vec![0; 16], true);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(header_of(&response, "content-range").is_none());
+
+        let film = karmayoga_server::routes::WHOLE_FILE_BYTES + 1;
+        let part = karmayoga_server::routes::file_plan(film, None);
+        let response = respond_file("video/mp4", part, vec![0; 16], true);
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    }
+
+    /// The reason a file is not a blob: its bytes can change under its id.
+    #[test]
+    fn a_file_is_cached_only_under_an_address_that_names_its_version() {
+        let plan = media::plan(10, None);
+        let versioned = respond_file("text/plain", plan, vec![0; 10], true);
+        assert_eq!(header_of(&versioned, "cache-control"), Some("private, max-age=31536000"));
+        let bare = respond_file("text/plain", plan, vec![0; 10], false);
+        assert_eq!(header_of(&bare, "cache-control"), Some("no-cache"));
+        for response in [&versioned, &bare] {
+            let cache = header_of(response, "cache-control").unwrap_or_default();
+            assert!(!cache.contains("immutable"), "{cache}");
+        }
+    }
+
+    /// Whatever type the catalog holds, an address opened as a document is a
+    /// sandbox with no script in it.
+    #[test]
+    fn a_file_that_says_it_is_html_is_still_sandboxed() {
+        let plan = media::plan(11, None);
+        let page = b"<script>1</script>".to_vec();
+        let response = harden(respond_file("text/html", plan, page, true));
+        assert_eq!(header_of(&response, "content-type"), Some("text/html"));
+        let policy = header_of(&response, "content-security-policy").unwrap_or_default();
+        assert!(policy.split(';').any(|d| d.trim() == "sandbox"), "{policy}");
+        assert_eq!(header_of(&response, "x-content-type-options"), Some("nosniff"));
+    }
+
+    #[test]
+    fn a_catalog_type_that_is_not_a_header_value_does_not_break_the_response() {
+        let plan = media::plan(1, None);
+        let response = respond_file("text/\nplain", plan, vec![0], false);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(header_of(&response, "content-type"), Some("application/octet-stream"));
     }
 }
 

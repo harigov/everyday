@@ -81,6 +81,13 @@
 //! | screen label `created_us`, `updated_us` | how many apps and sites somebody labelled, and when -- never which, or what they called them |
 //! | screen category `sort_order`, `created_us`, `updated_us` | how many categories screen time is filed under -- never a name or a colour |
 //! | `screen_settings` (singleton) | that screen time has been set up -- the idle limit, the retention and the browser list stay sealed |
+//! | file `storage`, `kind`, `size`, `origin`, `status`, `rating`, `favourite`, `hidden`, `stack`, `added_us`, `updated_us` | how many files there are, how big, of what kind, which app brought each, which are sealed in the vault or in the trash or gone missing, which are marked a favourite or hidden or given stars, which sit under another in a stack, and when each arrived and last changed -- never a caption, a tag, a person, a place, a property or anything the file says about itself |
+//! | file `blob`, `thumb` | which blobs a sealed file's contents and a file's thumbnail are, so garbage collection can keep them without opening a record; the address is a *keyed* hash, so it cannot be matched against a file somebody already has |
+//! | plain file `path_key`, `dir_key`, `hash_key`, `modified_us`, `when_us` | how many files share a folder or the same contents, and when each was last changed and taken -- the path, the folder, the name and the content hash are keyed tokens under a subkey of the vault key, so a copy of the database says none of them even while the folder is on a volume that is locked. `idx` holds the path and the hash again, sealed. `NULL` for a sealed file, whose times stay sealed too (a sealed file is filed by when it was added) |
+//! | `file_refs` (`file_id`, `owner_kind`, `owner_id`) | which journal entry, note or message refers to which file -- never what it says about it |
+//! | album `created_us`, `updated_us` | how many albums there are and when each was made -- never a name, a description or which file is its cover |
+//! | `album_files` (`album_id`, `file_id`, `position`) | which files are in which album, and in what order they were added -- never an album's name |
+//! | `files_settings` (singleton) | that the Files app has been set up -- where the folder is, which apps seal their files and how long the trash is kept stay sealed |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -153,6 +160,7 @@ pub mod schema;
 mod agent;
 mod backup;
 mod calendars;
+mod files;
 mod jobs;
 mod journals;
 mod library;
@@ -286,10 +294,11 @@ pub enum Media {
     /// wants: the database stays small, fast to open and cheap to back up,
     /// and a range read into a video is a `seek`.
     Files(FileBlobStore),
-    /// A `blobs` table. What a *remote* vault needs, because attachments in
-    /// a directory on one laptop are not in the vault at all — they are
-    /// missing from every other machine that opens it, and gone with the
-    /// laptop. See [`blobs`].
+    /// A `blobs` table. What a vault on a database server once kept its
+    /// attachments in, so they travelled with the vault rather than staying
+    /// on one laptop; every backend now keeps them in [`Media::Files`], and
+    /// this stays so the code that reads such a table is not lost. See
+    /// [`blobs`].
     Table,
 }
 

@@ -29,7 +29,11 @@
   import { MarkdownClipboard } from '../lib/markdown-clipboard'
   import { app } from '../lib/state.svelte'
   import { api } from '../lib/api'
-  import type { Attachment, MediaKind, RichDoc } from '../lib/types'
+  import { lookupFiles, whyNotAdded } from '../lib/file-lookup'
+  import { addFiles } from '../lib/files'
+  import { notify } from '../lib/notify.svelte'
+  import type { Attachment, FileEntry, FileId, MediaKind, RichDoc } from '../lib/types'
+  import FileViewer from './FileViewer.svelte'
 
   interface Props {
     /**
@@ -59,8 +63,17 @@
      * The caller appends to its own `attachments` and saves; this does not
      * reach into the record, because it does not know what kind of record it
      * is drawing.
+     *
+     * Only for a file stored as a blob. One kept in Files is a node that
+     * names it, and the record's references to it are worked out from the
+     * document whenever it is saved: there is nothing for the caller to add.
      */
     onattach: (attachment: Attachment) => void
+    /**
+     * Which app's files these are, for Files: where a file dropped here is
+     * put, and what it says it came from. The journal's unless told.
+     */
+    origin?: 'journal' | 'notes'
     /** Words in the document, on a lull rather than on every keypress. */
     onwords?: (words: number) => void
     /** The file currently being written to the vault, for a status bar. */
@@ -88,6 +101,7 @@
     onwords,
     onstoring,
     oneditor,
+    origin = 'journal',
   }: Props = $props()
 
   let host = $state<HTMLDivElement>()
@@ -131,7 +145,7 @@
         // The wrapper is what scrolls a table wider than the page, rather
         // than the table pushing the whole column sideways.
         TableKit.configure({ table: { resizable: false, renderWrapper: true } }),
-        Media,
+        Media.configure({ openFile: (id) => void showFile(id) }),
         // Markdown out on a copy, and in on a paste.
         MarkdownClipboard.configure({ taskLists: true, headings: Math.max(...HEADING_LEVELS) }),
       ],
@@ -187,6 +201,7 @@
     const target = docId
     if (!files.length || !editor || target === null) return false
     const ed = editor
+    if (app.supportsFiles) return insertCatalogued(files, target, ed)
     void (async () => {
       for (const file of files) {
         try {
@@ -231,6 +246,77 @@
     })()
     return true
   }
+
+  /**
+   * The same, in a vault that has a files catalog: a picture, a film or any
+   * file goes into Files, as it does from every app (`addFiles`: in chunks,
+   * into the person's own folder, never through this window as one buffer),
+   * and the document refers to it by id. There is no size limit here beyond
+   * the disk's -- that belonged to the blob store.
+   *
+   * Nothing is handed to `onattach`: a node that names a file has no blob for
+   * the record to keep, and the vault finds the file in the document when it
+   * is saved. The same care about a record navigated away from applies: the
+   * file is in Files either way, and is left there rather than put in a
+   * document it was not dropped on.
+   */
+  function insertCatalogued(files: File[], target: string, ed: Editor): boolean {
+    void (async () => {
+      for (const file of files) {
+        try {
+          onstoring?.(file.name)
+          const [entry] = await addFiles([file], { origin })
+          if (!entry) throw new Error(whyNotAdded(file))
+          const kind: MediaKind =
+            entry.kind === 'image' || entry.kind === 'video' || entry.kind === 'audio'
+              ? entry.kind
+              : 'file'
+          // The size the webview will draw it at, which is not always what
+          // the file says: a photograph turned by its orientation, say.
+          const size =
+            kind === 'image'
+              ? ((await imageSize(file)) ??
+                (entry.media.width && entry.media.height
+                  ? { width: entry.media.width, height: entry.media.height }
+                  : null))
+              : null
+          if (docId !== target || ed !== editor) continue
+          ed.chain()
+            .focus()
+            .insertMedia({
+              file: entry.id,
+              kind,
+              mime: entry.mime || file.type || 'application/octet-stream',
+              filename: entry.name,
+              caption: '',
+              width: size?.width ?? null,
+              height: size?.height ?? null,
+            })
+            .run()
+        } catch (e) {
+          app.error = e instanceof Error ? e.message : String(e)
+        } finally {
+          onstoring?.(null)
+        }
+      }
+    })()
+    return true
+  }
+
+  /** A file in the document that is not drawn in place was pressed: look it
+   *  up as it is now, and open it in the viewer. */
+  async function showFile(id: FileId) {
+    try {
+      const [file] = await lookupFiles([id], { fresh: true })
+      if (file) viewing = file
+      else notify.warn('That file is no longer in Files.')
+    } catch (e) {
+      app.error = e instanceof Error ? e.message : String(e)
+    }
+  }
+
+  /** The file open in the viewer, if any. */
+  let viewing = $state<FileEntry | null>(null)
 
   /** Read intrinsic dimensions so the layout can reserve space up front. */
   function imageSize(file: File): Promise<{ width: number; height: number } | null> {
@@ -318,6 +404,10 @@
 </script>
 
 <div class="prose" bind:this={host}></div>
+
+{#if viewing}
+  <FileViewer files={[viewing]} index={0} onclose={() => (viewing = null)} />
+{/if}
 
 <style>
   .prose :global(.ed-content) {
@@ -515,6 +605,19 @@
     font-family: var(--font-ui);
     font-size: var(--text-base);
     line-height: normal;
+  }
+  /* A file kept in Files opens in the viewer rather than being downloaded, so
+     it is a button wearing a link's colour. */
+  .prose :global(button.ed-file) {
+    width: 100%;
+    border: 0;
+    background: none;
+    color: var(--journal-accent, var(--accent));
+    text-align: left;
+    cursor: pointer;
+  }
+  .prose :global(button.ed-file:hover) {
+    text-decoration: underline;
   }
   .prose :global(.ed-caption) {
     margin-top: 0.55em;

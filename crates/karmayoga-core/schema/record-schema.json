@@ -653,6 +653,14 @@
         "description": "Set on a [`Role::Tool`] message whose tool failed.\n\nThe failure is still sent to the model — that is the point, it is how\nthe assistant learns the id it guessed does not exist and tries\nsomething else — but the interface needs to draw it as a failure\nrather than as a result, and \"did the string look like an error\" is\nnot a test worth writing.",
         "type": "boolean"
       },
+      "files": {
+        "description": "Files in the files catalog this message carries: what somebody handed\nthe assistant in the composer or a chat, kept as the files they are\n(see [`crate::files`]). A picture among them also has a small copy in\n[`Message::attachments`], which is what a model is shown.",
+        "items": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "type": "array"
+      },
       "id": {
         "format": "uuid",
         "type": "string"
@@ -696,6 +704,47 @@
       "createdAt"
     ],
     "title": "Message",
+    "type": "object"
+  },
+  "Album": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "A named collection of files. A file may be in many; deleting an album\nnever deletes a file.",
+    "properties": {
+      "cover": {
+        "description": "The file drawn for it; the first file when `None`.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "description": {
+        "default": "",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Album",
     "type": "object"
   },
   "BankAccount": {
@@ -2058,6 +2107,646 @@
       "updatedAt"
     ],
     "title": "Entry",
+    "type": "object"
+  },
+  "FileEntry": {
+    "$defs": {
+      "BlobId": {
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
+        "type": "string"
+      },
+      "FileKind": {
+        "description": "What sort of thing a file is, for filtering and for choosing a viewer.",
+        "oneOf": [
+          {
+            "enum": [
+              "image",
+              "video",
+              "audio",
+              "other"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "document",
+            "description": "Something to read: a PDF, a text or Markdown file, an office\ndocument, a spreadsheet, an e-book.",
+            "type": "string"
+          }
+        ]
+      },
+      "FileOrigin": {
+        "description": "Which app put a file in the catalog.\n\nDecides the folder a new file goes in when the caller names none\n([`FileOrigin::default_dir`]), whether it is sealed by default\n([`FilesSettings::encrypted`]), and lets the Files app say where a file\ncame from.",
+        "oneOf": [
+          {
+            "const": "files",
+            "description": "Added in the Files app: picked, dropped or uploaded.",
+            "type": "string"
+          },
+          {
+            "const": "found",
+            "description": "Found in the folder by the reconciler: put there by another program\nor brought by a sync tool from another device.",
+            "type": "string"
+          },
+          {
+            "const": "journal",
+            "description": "A picture or a video in a journal entry.",
+            "type": "string"
+          },
+          {
+            "const": "notes",
+            "description": "A picture or a file in a note.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "Handed to the assistant in the composer, or saved by it.",
+            "type": "string"
+          },
+          {
+            "const": "chat",
+            "description": "Sent to the assistant in a chat (Matrix).",
+            "type": "string"
+          },
+          {
+            "const": "mail",
+            "description": "Saved from a mail attachment.",
+            "type": "string"
+          },
+          {
+            "const": "jobs",
+            "description": "Written by a routine or a background job.",
+            "type": "string"
+          }
+        ]
+      },
+      "FileStatus": {
+        "description": "Whether a file is where the catalog says.",
+        "oneOf": [
+          {
+            "properties": {
+              "state": {
+                "const": "present",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The folder was there and this file was not, since `since`. Kept, with\neverything the person added, until it turns up again (at the same\npath, or anywhere with the same contents) or the person forgets it.",
+            "properties": {
+              "since": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "state": {
+                "const": "missing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "since"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "In the trash since `at`. `from` is the path it had, to put it back\nto; empty for a sealed file.",
+            "properties": {
+              "at": {
+                "format": "date-time",
+                "type": "string"
+              },
+              "from": {
+                "type": "string"
+              },
+              "state": {
+                "const": "trashed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "state",
+              "at",
+              "from"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "FileStorage": {
+        "description": "Where a file's bytes are.",
+        "oneOf": [
+          {
+            "description": "An ordinary file at `path`: relative to the files folder,\n`/`-separated, never absolute and never containing `..`. A trashed\nfile's path is its place in the trash, under [`INTERNAL_DIR`].",
+            "properties": {
+              "kind": {
+                "const": "plain",
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "path"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Sealed in the vault's blob store. No path; nothing but Karma Yoga can\nread it.",
+            "properties": {
+              "blob": {
+                "$ref": "#/$defs/BlobId"
+              },
+              "kind": {
+                "const": "sealed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "blob"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "GeoPoint": {
+        "description": "A place on Earth, as a camera wrote it.",
+        "properties": {
+          "alt": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "lat": {
+            "format": "double",
+            "type": "number"
+          },
+          "lon": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "lat",
+          "lon"
+        ],
+        "type": "object"
+      },
+      "MediaInfo": {
+        "description": "What a file says about itself, read out of it when it arrives and again\nwhenever its contents change. Never written back into the file.\n\nEvery field is optional: most files say little, and a document says\nnothing at all.",
+        "properties": {
+          "cameraMake": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cameraModel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "codec": {
+            "description": "A film's video codec, or an audio file's: `avc1`, `hvc1`, `mp4a`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "durationMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "exposureTime": {
+            "description": "As a photographer writes it: `1/250`, `2.5`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fNumber": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "focalLengthMm": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "gps": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/GeoPoint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "height": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "iso": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "lens": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "orientation": {
+            "description": "EXIF orientation, 1 to 8.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "pages": {
+            "description": "A PDF's page count.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "takenAt": {
+            "description": "When the picture or the film was taken, as an instant: from the\nfile's own offset when it wrote one, else read in this machine's\ntime zone.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "takenLocal": {
+            "description": "The wall-clock time the camera wrote, as it wrote it\n(`2024-03-01T14:22:05`), for showing the time the person saw.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "width": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "PropValue": {
+        "description": "A value somebody -- or an app -- attached to a file under a key of its\nown. See [`FileEntry::properties`].",
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "text",
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "number",
+                "type": "string"
+              },
+              "value": {
+                "format": "double",
+                "type": "number"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "bool",
+                "type": "string"
+              },
+              "value": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "`YYYY-MM-DD`, or an RFC 3339 instant.",
+            "properties": {
+              "type": {
+                "const": "date",
+                "type": "string"
+              },
+              "value": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "list",
+                "type": "string"
+              },
+              "value": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One file in the catalog.\n\nSealed as a whole under its id. Beside it the store keeps a few clear\ncolumns for the indexes -- see [`crate::store::files`] for exactly which\nand why each is safe to leave readable.",
+    "properties": {
+      "addedAt": {
+        "description": "When it entered the catalog.",
+        "format": "date-time",
+        "type": "string"
+      },
+      "caption": {
+        "default": "",
+        "type": "string"
+      },
+      "favourite": {
+        "default": false,
+        "type": "boolean"
+      },
+      "hash": {
+        "default": "",
+        "description": "BLAKE3 of the contents, lowercase hex; empty until it has been read.\nWhat a file that moved while nobody watched is recognised by.",
+        "type": "string"
+      },
+      "hidden": {
+        "default": false,
+        "description": "Left out of the timeline and every listing unless asked for.",
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/FileKind"
+      },
+      "media": {
+        "$ref": "#/$defs/MediaInfo",
+        "default": {},
+        "description": "What the file says about itself."
+      },
+      "mime": {
+        "type": "string"
+      },
+      "modifiedAt": {
+        "description": "The file's own modification time (a sealed file's: when it was\nsealed).",
+        "format": "date-time",
+        "type": "string"
+      },
+      "name": {
+        "description": "The file's name, with its extension. For a plain file, always the\nlast segment of its path.",
+        "type": "string"
+      },
+      "origin": {
+        "$ref": "#/$defs/FileOrigin"
+      },
+      "people": {
+        "description": "The people in it, by name.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "place": {
+        "description": "A place's name: typed in, or looked up from the coordinates when the\nperson allowed that.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "properties": {
+        "additionalProperties": {
+          "$ref": "#/$defs/PropValue"
+        },
+        "description": "Anything else, under namespaced keys: `user.<name>` for what the\nperson defines, `<app>.<name>` for what an app keeps, `index.<name>`\nfor what indexing will add. Keys are lowercase ASCII words joined by\ndots, at least two parts ([`valid_property_key`]).",
+        "type": "object"
+      },
+      "rating": {
+        "description": "1 to 5.",
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "size": {
+        "description": "Bytes.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "stack": {
+        "description": "The top of the stack this file belongs to -- a RAW file under its\nJPEG, a Live Photo's film under its picture, an edit under its\noriginal. `None` for a file that is not stacked and for a stack's top\nitself.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/$defs/FileStatus"
+      },
+      "storage": {
+        "$ref": "#/$defs/FileStorage"
+      },
+      "tags": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "thumbnail": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/BlobId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "A small JPEG of it, sealed in the blob store; `None` until drawn, and\nfor files nothing can be drawn of."
+      },
+      "updatedAt": {
+        "description": "When this record last changed.",
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "storage",
+      "name",
+      "kind",
+      "mime",
+      "size",
+      "modifiedAt",
+      "addedAt",
+      "updatedAt",
+      "origin",
+      "status"
+    ],
+    "title": "FileEntry",
+    "type": "object"
+  },
+  "FilesSettings": {
+    "$defs": {
+      "FileOrigin": {
+        "description": "Which app put a file in the catalog.\n\nDecides the folder a new file goes in when the caller names none\n([`FileOrigin::default_dir`]), whether it is sealed by default\n([`FilesSettings::encrypted`]), and lets the Files app say where a file\ncame from.",
+        "oneOf": [
+          {
+            "const": "files",
+            "description": "Added in the Files app: picked, dropped or uploaded.",
+            "type": "string"
+          },
+          {
+            "const": "found",
+            "description": "Found in the folder by the reconciler: put there by another program\nor brought by a sync tool from another device.",
+            "type": "string"
+          },
+          {
+            "const": "journal",
+            "description": "A picture or a video in a journal entry.",
+            "type": "string"
+          },
+          {
+            "const": "notes",
+            "description": "A picture or a file in a note.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "Handed to the assistant in the composer, or saved by it.",
+            "type": "string"
+          },
+          {
+            "const": "chat",
+            "description": "Sent to the assistant in a chat (Matrix).",
+            "type": "string"
+          },
+          {
+            "const": "mail",
+            "description": "Saved from a mail attachment.",
+            "type": "string"
+          },
+          {
+            "const": "jobs",
+            "description": "Written by a routine or a background job.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "The settings singleton.",
+    "properties": {
+      "assistantAccess": {
+        "default": true,
+        "description": "Whether the assistant may find and read files it was not handed.\nWhat somebody hands it in the composer it always sees.",
+        "type": "boolean"
+      },
+      "encrypted": {
+        "default": [],
+        "description": "The apps whose new files are sealed in the vault rather than written\nto the folder. Empty by default: most files are plain.",
+        "items": {
+          "$ref": "#/$defs/FileOrigin"
+        },
+        "type": "array"
+      },
+      "folder": {
+        "description": "The files folder, absolute. `None` until it has been set up; the\nfirst file anything keeps sets up [`disk::default_folder`].",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "namePlaces": {
+        "default": false,
+        "description": "Whether a photo's coordinates may be sent to OpenStreetMap\n(Nominatim) to name the place it was taken. Off unless switched on:\nit puts where somebody was on the network.",
+        "type": "boolean"
+      },
+      "trashDays": {
+        "default": 30,
+        "description": "Days a trashed file is kept; 0 keeps them until the trash is\nemptied.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "title": "FilesSettings",
     "type": "object"
   },
   "Goal": {

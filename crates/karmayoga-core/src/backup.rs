@@ -391,6 +391,13 @@ pub struct BackupReport {
     /// attachment collected, a pack compacted -- named so a gap is never
     /// silent.
     pub skipped: Vec<String>,
+    /// The files folder is set up and was not usable -- an encrypted volume
+    /// that is locked, a drive that is not mounted -- so this copy carries
+    /// the previous copy's `files/` forward unchanged instead of recording
+    /// the folder empty. Said in Settings, because it means the files in
+    /// this copy are as old as that one's: a few runs during a locked volume
+    /// would otherwise push every real copy of them out of "keep N".
+    pub files_folder_unavailable: bool,
 }
 
 /// One copy at a destination, as Settings lists them.

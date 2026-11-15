@@ -573,6 +573,8 @@ export interface NoteSummary {
   wordCount: number
   attachmentCount: number
   cover?: BlobId
+  /** The first picture in the body kept in Files, when `cover` has none. */
+  coverFile?: FileId
   origin: NoteOrigin
   createdAt: string
   updatedAt: string
@@ -946,6 +948,8 @@ export interface EntrySummary {
   wordCount: number
   attachmentCount: number
   cover?: BlobId
+  /** The first picture in the body kept in Files, when `cover` has none. */
+  coverFile?: FileId
   place?: string
   /**
    * Carried so the list can say what an entry is filed under, and offer to
@@ -1115,6 +1119,9 @@ export interface Capabilities {
   money?: boolean
   /** The Screen time app: heartbeats and reports. */
   screentime?: boolean
+  /** The files catalog: the Files app, and apps keeping files in the
+   *  files folder rather than as blobs inside their own records. */
+  files?: boolean
 }
 
 export interface VaultStatus {
@@ -3405,6 +3412,9 @@ export interface BackupReport {
   seconds: number
   /** Files that went away between being listed and being read. */
   skipped: string[]
+  /** The files folder was set up but not there (a locked volume, a drive
+   *  not mounted), so this copy carries the last one's copy of it forward. */
+  filesFolderUnavailable?: boolean
 }
 
 export interface BackupStatus {
@@ -3585,6 +3595,7 @@ export const ON_SCREEN_APPS = [
   'feed',
   'money',
   'screentime',
+  'files',
   'assistant',
   'journal',
   'settings',
@@ -3616,6 +3627,8 @@ export const SHOWN_KINDS = [
   'story',
   'bankAccount',
   'txn',
+  'file',
+  'album',
 ] as const
 export type ShownKind = (typeof SHOWN_KINDS)[number]
 
@@ -3786,6 +3799,10 @@ export interface AgentMessage {
    *  turn, each already made the size a model is shown. Absent when there
    *  are none: the Rust side leaves an empty list off the wire. */
   attachments?: Attachment[]
+  /** Files in the files catalog this message carries: what somebody handed
+   *  the assistant. A picture among them also has a small copy in
+   *  `attachments`, which is what a model is shown. */
+  files?: FileId[]
   createdAt: string
 }
 
@@ -5277,4 +5294,310 @@ export interface Heartbeat {
 export interface CollectorConfig {
   idleMinutes: number
   keepTitles: boolean
+}
+
+// ---- Files -------------------------------------------------------------------
+// Mirrors `karmayoga_core::files` and `karmayoga_service::domains::files`.
+// See `docs/plans/files.md`.
+
+export type FileId = string
+export type AlbumId = string
+
+/** Where a file's bytes are: a plain file in the files folder (`path` is
+ *  relative to it, `/`-separated), or sealed in the vault. */
+export type FileStorage = { kind: 'plain'; path: string } | { kind: 'sealed'; blob: BlobId }
+
+export type StorageKind = 'plain' | 'sealed'
+
+export type FileKind = 'image' | 'video' | 'audio' | 'document' | 'other'
+
+/** Which app put a file in the catalog. `found` is the reconciler: put in the
+ *  folder by another program or a sync tool. */
+export type FileOrigin =
+  'files' | 'found' | 'journal' | 'notes' | 'assistant' | 'chat' | 'mail' | 'jobs'
+
+export type FileStatus =
+  | { state: 'present' }
+  | { state: 'missing'; since: string }
+  | { state: 'trashed'; at: string; from: string }
+
+export interface GeoPoint {
+  lat: number
+  lon: number
+  alt?: number
+}
+
+/** What a file says about itself (EXIF, a movie header). */
+export interface MediaInfo {
+  width?: number
+  height?: number
+  durationMs?: number
+  /** An instant (RFC 3339). */
+  takenAt?: string
+  /** The wall-clock time the camera wrote, as it wrote it. */
+  takenLocal?: string
+  cameraMake?: string
+  cameraModel?: string
+  lens?: string
+  fNumber?: number
+  exposureTime?: string
+  iso?: number
+  focalLengthMm?: number
+  /** EXIF orientation, 1..8. */
+  orientation?: number
+  gps?: GeoPoint
+  codec?: string
+  pages?: number
+}
+
+export type PropValue =
+  | { type: 'text'; value: string }
+  | { type: 'number'; value: number }
+  | { type: 'bool'; value: boolean }
+  | { type: 'date'; value: string }
+  | { type: 'list'; value: string[] }
+
+/** One file in the catalog. */
+export interface FileEntry {
+  id: FileId
+  storage: FileStorage
+  name: string
+  kind: FileKind
+  mime: string
+  size: number
+  /** BLAKE3, hex; empty until read. */
+  hash: string
+  modifiedAt: string
+  addedAt: string
+  updatedAt: string
+  origin: FileOrigin
+  status: FileStatus
+  media: MediaInfo
+  thumbnail?: BlobId
+  caption: string
+  tags?: string[]
+  /** 1..5. */
+  rating?: number
+  favourite: boolean
+  hidden: boolean
+  people?: string[]
+  place?: string
+  /** The top of the stack this file is under. */
+  stack?: FileId
+  /** Namespaced keys: `user.*`, `<app>.*`, `index.*`. */
+  properties?: Record<string, PropValue>
+}
+
+export interface Album {
+  id: AlbumId
+  name: string
+  description: string
+  cover?: FileId
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AlbumView {
+  album: Album
+  count: number
+  cover?: FileEntry
+}
+
+export interface FilesSettings {
+  /** Absolute; absent until set up. */
+  folder?: string
+  /** Apps whose new files are sealed rather than written to the folder. */
+  encrypted: FileOrigin[]
+  /** 0 keeps trashed files until the trash is emptied. */
+  trashDays: number
+  assistantAccess: boolean
+  /** Send a photo's coordinates to OpenStreetMap to name the place. */
+  namePlaces: boolean
+}
+
+export type FolderState =
+  | { state: 'notSetUp'; suggested: string }
+  | { state: 'available'; path: string }
+  | { state: 'unavailable'; path: string; reason: string }
+
+export type StatusFilter = 'live' | 'present' | 'missing' | 'trashed' | 'all'
+
+export type FileSort = 'when' | 'added' | 'name' | 'size'
+
+/** A listing: what the store filters on, plus what only the sealed record
+ *  answers (`text`, `tag`, `person`, `place`, `unused`). Every field is
+ *  optional. */
+export interface FileQuery {
+  kinds?: FileKind[]
+  /** Plain files directly in this folder (`''` is the top). */
+  dir?: string | null
+  /** Plain files anywhere under this folder. */
+  under?: string | null
+  album?: AlbumId | null
+  ids?: FileId[] | null
+  favourite?: boolean
+  minRating?: number | null
+  origin?: FileOrigin | null
+  status?: StatusFilter
+  storage?: StorageKind | null
+  from?: string | null
+  to?: string | null
+  includeHidden?: boolean
+  stackTopsOnly?: boolean
+  /** Only this stack: its top and every file under it. */
+  stack?: FileId | null
+  sort?: FileSort
+  descending?: boolean
+  limit?: number | null
+  offset?: number
+  text?: string | null
+  tag?: string | null
+  person?: string | null
+  place?: string | null
+  unused?: boolean
+}
+
+export interface FilePage {
+  files: FileEntry[]
+  total: number
+  /** How many files are under each listed file that tops a stack. */
+  stackCounts?: Record<FileId, number>
+}
+
+export interface FolderInfo {
+  name: string
+  path: string
+  items: number
+  modifiedAt?: string | null
+}
+
+export interface FolderListing {
+  dir: string
+  state: FolderState
+  folders: FolderInfo[]
+  files: FileEntry[]
+}
+
+export interface UploadTicket {
+  upload: string
+  received: number
+}
+
+/** A change to what the person added. Fields left out are left alone. */
+export interface FileUpdate {
+  caption?: string | null
+  tags?: string[] | null
+  addTags?: string[]
+  removeTags?: string[]
+  /** 1..5; 0 clears it. */
+  rating?: number | null
+  favourite?: boolean | null
+  hidden?: boolean | null
+  people?: string[] | null
+  addPeople?: string[]
+  removePeople?: string[]
+  /** `''` clears it. */
+  place?: string | null
+  /** Set a property, or remove it with null. */
+  properties?: Record<string, PropValue | null>
+  /** RFC 3339 to correct when it was taken; `''` goes back to the file's own. */
+  takenAt?: string | null
+}
+
+export type RefKind = 'entry' | 'note' | 'message'
+
+export interface RefOwner {
+  kind: RefKind
+  id: string
+}
+
+/** "Used in": one record that refers to a file. */
+export interface FileUse {
+  owner: RefOwner
+  title: string
+  when?: string
+  /** The conversation a message is in. */
+  parent?: string
+}
+
+export interface KindUsage {
+  kind: FileKind
+  files: number
+  bytes: number
+}
+
+export interface FilesUsage {
+  files: number
+  bytes: number
+  byKind: KindUsage[]
+  sealedFiles: number
+  sealedBytes: number
+  trashedFiles: number
+  trashedBytes: number
+  missingFiles: number
+}
+
+export interface Facet {
+  name: string
+  count: number
+}
+
+export interface FilesFacets {
+  tags: Facet[]
+  people: Facet[]
+  places: Facet[]
+  years: Facet[]
+  cameras: Facet[]
+}
+
+export interface ScanReport {
+  added: number
+  changed: number
+  moved: number
+  missing: number
+  returned: number
+  unchanged: number
+  unavailable?: boolean
+  /** So much vanished at once that nothing was marked missing. */
+  heldBack?: boolean
+  errors?: string[]
+}
+
+export interface LegacySummary {
+  entries: number
+  notes: number
+  messages: number
+  files: number
+  bytes: number
+}
+
+export interface LegacyReport {
+  files: number
+  bytes: number
+  entries: number
+  notes: number
+  messages: number
+  errors?: string[]
+}
+
+/** `files_status`. */
+export interface FilesStatus {
+  supported: boolean
+  state: FolderState
+  settings: FilesSettings
+  usage: FilesUsage
+  scanning: boolean
+  lastScan: string | null
+  lastReport: ScanReport | null
+  legacy: LegacySummary
+  /** This caller is the shell on the vault's own machine: it may pick files
+   *  by path and open them in another program. */
+  local: boolean
+}
+
+/** `get_file`. */
+export interface FileDetail {
+  file: FileEntry
+  uses: FileUse[]
+  albums: Album[]
 }

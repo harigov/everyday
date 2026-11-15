@@ -193,6 +193,7 @@ export const APP_COLOURS = [
   'feed',
   'money',
   'screentime',
+  'files',
   'journal',
   'assistant',
 ] as const

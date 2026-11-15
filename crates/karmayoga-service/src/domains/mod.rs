@@ -13,6 +13,7 @@ pub mod assistant;
 pub mod backup;
 pub mod calendars;
 pub mod chat;
+pub mod files;
 pub mod insights;
 pub mod jobs;
 pub mod journals;
@@ -91,6 +92,7 @@ pub fn catalog() -> &'static [&'static Command] {
             newsmail::COMMANDS,
             money::COMMANDS,
             screentime::COMMANDS,
+            files::COMMANDS,
             meetings::COMMANDS,
             notes::COMMANDS,
             templates::COMMANDS,

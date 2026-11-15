@@ -43,6 +43,7 @@ const {
     feedModule,
     moneyModule,
     screentimeModule,
+    filesModule,
   ],
   close,
 } = await load(
@@ -56,6 +57,7 @@ const {
     '/src/lib/feed.svelte.ts',
     '/src/lib/money.svelte.ts',
     '/src/lib/screentime.svelte.ts',
+    '/src/lib/files.svelte.ts',
   ],
   { svelte: true },
 )
@@ -68,6 +70,7 @@ const { panels } = panelsModule
 const { feed } = feedModule
 const { money } = moneyModule
 const { screentime } = screentimeModule
+const { files } = filesModule
 
 const { check, ok, finish } = makeCheck()
 
@@ -313,6 +316,68 @@ screentime.setView('apps')
 now = onScreenNow()
 ok('screentime: the apps pane says what it lists', /apps and websites/.test(now.showing.view))
 screentime.setView('summary')
+
+// Files: the pane, and the folder when Browse is in one, in the interface's
+// words; an album, and the files open or selected, by id. Never a file's name
+// or caption, nor the name of an album, a tag or a person -- those are the
+// person's, and the service looks each reference up again itself.
+const loaded = async () => {
+  while (files.loading) await new Promise((r) => setTimeout(r, 20))
+}
+const refs = (list) => list.map((r) => [r.kind, r.id])
+app.section = 'files'
+await files.start()
+ok('the mock vault has a files folder', files.available)
+files.setView('browse')
+now = onScreenNow()
+check('files: the app', now.app, 'files')
+check('files: the top of the folder', now.showing.view, 'the top of their files folder')
+files.openFolder('Photos/2024/Yosemite')
+await loaded()
+ok('files: the folder is listed', files.visibleFiles.length > 0)
+now = onScreenNow()
+check(
+  'files: the folder is in the view, by its path',
+  now.showing.view,
+  'their files folder, in the folder Photos/2024/Yosemite',
+)
+check('files: nothing is open yet', now.showing.open, [])
+const picture = files.visibleFiles.find((f) => f.caption)
+ok('files: the folder has a picture with a caption', picture !== undefined)
+files.select(picture.id)
+now = onScreenNow()
+check('files: the selected file is what is open, by id', refs(now.showing.open), [
+  ['file', picture.id],
+])
+check('files: and the strip names it', now.showing.open[0].label, picture.name)
+const filesWire = JSON.stringify(toWire('files', now.showing))
+ok('files: no file name leaves the interface', !filesWire.includes(picture.name))
+ok('files: nor its caption', !filesWire.includes(picture.caption))
+files.setSearch('dawn')
+check('files: the search goes too', onScreenNow().showing.query, 'dawn')
+files.setSearch('')
+files.clearSelection()
+files.setView('albums')
+await files.start()
+const kyoto = files.albums.find((a) => a.album.name.startsWith('Kyoto'))
+ok('files: the mock vault has the Kyoto album', kyoto !== undefined)
+files.openAlbum(kyoto.album.id)
+await loaded()
+now = onScreenNow()
+check('files: an album is what narrows the list', refs(now.showing.within), [
+  ['album', kyoto.album.id],
+])
+check('files: the view says it is an album', now.showing.view, 'one of their photo albums')
+const albumWire = JSON.stringify(toWire('files', now.showing))
+ok('files: the album’s name does not leave', !albumWire.includes('Kyoto'))
+files.setFacet({ kind: 'person', name: 'Asha' })
+await loaded()
+now = onScreenNow()
+ok('files: a person narrows the photos', /narrowed to one person$/.test(now.showing.view))
+const personWire = JSON.stringify(toWire('files', now.showing))
+ok('files: and the name stays here', !personWire.includes('Asha'))
+check('files: no album narrows Photos', now.showing.within, [])
+files.setView('browse')
 
 // Settings stands where the app was, so the app is not on screen at all.
 panels.openSettings('accounts')

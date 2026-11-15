@@ -124,6 +124,14 @@
 //!   source to fetch and it then sleeps for up to a minute, far longer than
 //!   this test runs -- so the sources the Feed section imports are never
 //!   fetched, and nothing it does can land between two of this test's rows.
+//!   The files task's start is pinned there too. It is on a vault with no
+//!   files folder, so its passes find nothing to do and announce nothing.
+//! - A file that is added is read and drawn *after* its command has
+//!   answered, on a background job that then announces what it finished.
+//!   Those commands run through `run_settled`, which waits for the job
+//!   (`karmayoga_service::files::settled`) before taking the events, so the
+//!   command's own change and the job's come in an order the scheduler has
+//!   no say in.
 //!
 //! To accept a change: `UPDATE_SURFACE=1 cargo test -p karmayoga-service
 //! --test change_events`.
@@ -219,6 +227,19 @@ async fn run(svc: &Arc<Service>, h: &Arc<Harness>, name: &str, args: Value) -> V
     result
 }
 
+/// [`run`] for a command that finishes part of its work in the background --
+/// a file added is read, and its thumbnail drawn, after the call has answered
+/// -- waiting for that work to be done and announced before the events are
+/// taken. See the module doc.
+async fn run_settled(svc: &Arc<Service>, h: &Arc<Harness>, name: &str, args: Value) -> Value {
+    let result = svc.call(Ctx::local(), name, args).await.unwrap_or_else(|e| panic!("{name}: {e}"));
+    karmayoga_service::files::settled().await;
+    let events = h.take();
+    h.executed.lock().unwrap().insert(name.to_string());
+    h.commands.lock().unwrap().push(json!({ "command": name, "events": events }));
+    result
+}
+
 /// Call a *read* command -- minting a blank record (`new_journal` and
 /// friends), or listing what already exists -- that this test only needs to
 /// get a real id to build a write's arguments from. Not logged and not
@@ -286,6 +307,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ),
     ("retry_recording", "resumes the same background pipeline finish_recording does"),
     ("run_backup", "copies the vault in the background; see backup::tests for what it does"),
+    ("save_mail_part_to_files", "needs a message whose attachment is in a real synced pack"),
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
     ("sort_older_mail", "refuses without a decision model, which would be asked over the network"),
@@ -963,6 +985,176 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "clear_backup_keys", json!({})).await;
     run(&svc, &h, "cancel_backup", json!({})).await;
+
+    // ---- files -----------------------------------------------------------------
+    //
+    // A folder of its own in a temporary directory, never `~/Karma Yoga`. What
+    // adds a file is `run_settled`: the call answers when the bytes are in
+    // place, and a background job reads the file and announces it after.
+    {
+        let files_home = tempfile::tempdir().unwrap();
+        let files_src = tempfile::tempdir().unwrap();
+        let folder = files_home.path().join("Karma Yoga");
+        let now = Timestamp::now();
+
+        run(&svc, &h, "set_up_files_folder", json!({ "path": folder })).await;
+        let mut files_settings =
+            call(&svc, &h, "files_status", json!({})).await["settings"].clone();
+        files_settings["trashDays"] = json!(14);
+        run(&svc, &h, "save_files_settings", json!({ "settings": files_settings })).await;
+        run(&svc, &h, "create_folder", json!({ "dir": "", "name": "Trips" })).await;
+
+        // Picked: two files copied in by path, each read and drawn after.
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(8, 8))
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let png = png.into_inner();
+        let photo = files_src.path().join("photo.png");
+        let notes = files_src.path().join("notes.txt");
+        std::fs::write(&photo, &png).unwrap();
+        std::fs::write(&notes, b"Packed the tent and the stove.").unwrap();
+        let imported = run_settled(
+            &svc,
+            &h,
+            "import_files",
+            json!({ "paths": [photo, notes], "dir": "Trips", "origin": "files", "encrypted": false }),
+        )
+        .await;
+        let photo_id = imported[0]["id"].clone();
+        let notes_id = imported[1]["id"].clone();
+
+        // Uploaded: begun, sent in a chunk -- not a command, its body is bytes
+        // -- and finished; and another begun and given up.
+        let ticket = run(
+            &svc,
+            &h,
+            "begin_upload",
+            json!({ "name": "upload.txt", "size": 11, "dir": "Trips", "origin": "files", "encrypted": false }),
+        )
+        .await;
+        let upload = ticket["upload"].as_str().unwrap().to_string();
+        let received = karmayoga_service::domains::files::upload_chunk(
+            svc.clone(),
+            Ctx::local(),
+            upload.clone(),
+            0,
+            b"hello world".to_vec(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(received, 11);
+        let uploaded = run_settled(&svc, &h, "finish_upload", json!({ "upload": upload })).await;
+        let uploaded_id = uploaded["id"].clone();
+        let ticket = run(
+            &svc,
+            &h,
+            "begin_upload",
+            json!({ "name": "abandoned.bin", "size": 5, "dir": null, "origin": "files", "encrypted": null }),
+        )
+        .await;
+        run(&svc, &h, "cancel_upload", json!({ "upload": ticket["upload"] })).await;
+
+        // Organised: renamed, moved, a folder renamed and moved with them.
+        run(&svc, &h, "rename_file", json!({ "id": photo_id, "name": "holiday.png" })).await;
+        run(&svc, &h, "create_folder", json!({ "dir": "Trips", "name": "2026" })).await;
+        run(&svc, &h, "move_files", json!({ "ids": [photo_id, notes_id], "dir": "Trips/2026" }))
+            .await;
+        run(&svc, &h, "rename_folder", json!({ "path": "Trips/2026", "name": "Summer" })).await;
+        run(&svc, &h, "move_folder", json!({ "path": "Trips/Summer", "into": "" })).await;
+        run(
+            &svc,
+            &h,
+            "update_files",
+            json!({ "ids": [photo_id], "update": {
+                "caption": "On the beach",
+                "addTags": ["trip"],
+                "favourite": true,
+                "rating": 4,
+            } }),
+        )
+        .await;
+        run(&svc, &h, "stack_files", json!({ "top": photo_id, "others": [notes_id] })).await;
+        run(&svc, &h, "unstack_files", json!({ "ids": [notes_id] })).await;
+        run(&svc, &h, "set_file_encrypted", json!({ "id": notes_id, "encrypted": true })).await;
+        run(&svc, &h, "set_file_encrypted", json!({ "id": notes_id, "encrypted": false })).await;
+        run(
+            &svc,
+            &h,
+            "set_file_thumbnail",
+            json!({ "id": photo_id, "image": base64::engine::general_purpose::STANDARD.encode(&png) }),
+        )
+        .await;
+
+        // Albums.
+        let album = karmayoga_core::files::Album {
+            id: karmayoga_core::id::AlbumId::new(),
+            name: "Summer".into(),
+            description: String::new(),
+            cover: None,
+            created_at: now,
+            updated_at: now,
+        };
+        run(&svc, &h, "save_album", json!({ "album": album })).await;
+        call(&svc, &h, "list_albums", json!({})).await;
+        run(&svc, &h, "add_to_album", json!({ "id": album.id, "files": [photo_id] })).await;
+        run(&svc, &h, "remove_from_album", json!({ "id": album.id, "files": [photo_id] })).await;
+        run(&svc, &h, "delete_album", json!({ "id": album.id })).await;
+
+        // Found: two files another program put in the folder, which a pass
+        // catalogues and reads. Then a backup holds them, they go missing,
+        // and one is brought back from it and the other forgotten.
+        std::fs::write(folder.join("found.txt"), b"Left by a sync tool.").unwrap();
+        std::fs::write(folder.join("gone.txt"), b"About to be lost.").unwrap();
+        run(&svc, &h, "rescan_files", json!({})).await;
+        let copy = karmayoga_service::backup::run(
+            vault.clone(),
+            karmayoga_service::backup::Plan {
+                destination: karmayoga_core::backup::Destination::Folder {
+                    path: backups.path().display().to_string(),
+                },
+                keep: 7,
+                config_dir: None,
+                files: true,
+                expect_existing: false,
+                s3_keys: None,
+                cache_dir: None,
+                host: "test-host".into(),
+            },
+            karmayoga_service::backup::Progress::new(true),
+        )
+        .await
+        .unwrap();
+        assert!(copy.files > 0);
+        std::fs::remove_file(folder.join("found.txt")).unwrap();
+        std::fs::remove_file(folder.join("gone.txt")).unwrap();
+        run(&svc, &h, "rescan_files", json!({})).await;
+        let missing =
+            call(&svc, &h, "list_files", json!({ "query": { "status": "missing" } })).await;
+        let id_of = |name: &str| {
+            missing["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["name"] == name)
+                .unwrap_or_else(|| panic!("{name} is not among the missing files"))["id"]
+                .clone()
+        };
+        run(&svc, &h, "restore_file_from_backup", json!({ "id": id_of("found.txt") })).await;
+        run(&svc, &h, "forget_missing_files", json!({ "ids": [id_of("gone.txt")] })).await;
+
+        // Pictures and files kept the old way; this vault has none.
+        run_settled(&svc, &h, "bring_in_attachments", json!({})).await;
+
+        // The trash: in, out, in and gone for good; and emptied; and a folder.
+        run(&svc, &h, "trash_files", json!({ "ids": [notes_id] })).await;
+        run(&svc, &h, "restore_files", json!({ "ids": [notes_id] })).await;
+        run(&svc, &h, "trash_files", json!({ "ids": [notes_id] })).await;
+        run(&svc, &h, "delete_files_forever", json!({ "ids": [notes_id] })).await;
+        run(&svc, &h, "trash_files", json!({ "ids": [uploaded_id] })).await;
+        run(&svc, &h, "empty_files_trash", json!({})).await;
+        run(&svc, &h, "trash_folder", json!({ "path": "Summer" })).await;
+    }
 
     // ---- chat links ---------------------------------------------------------
     //

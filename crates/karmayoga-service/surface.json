@@ -143,6 +143,31 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "files",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "album",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "add_to_album",
+      "orScope": null,
+      "returns": "void",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -491,6 +516,43 @@
     {
       "args": [
         {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "size",
+          "required": true,
+          "type": "number"
+        },
+        {
+          "name": "dir",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "origin",
+          "required": false,
+          "type": "FileOrigin"
+        },
+        {
+          "name": "encrypted",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "begin_upload",
+      "orScope": null,
+      "returns": "UploadTicket",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "string"
@@ -519,6 +581,20 @@
       "orScope": null,
       "returns": "ModelBenchmark",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": {
+        "kind": "file",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "bring_in_attachments",
+      "orScope": null,
+      "returns": "LegacyReport",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -652,6 +728,23 @@
       "orScope": null,
       "returns": "boolean",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "upload",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "write",
+      "name": "cancel_upload",
+      "orScope": null,
+      "returns": "void",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -890,6 +983,31 @@
     {
       "args": [
         {
+          "name": "dir",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "create_folder",
+      "orScope": null,
+      "returns": "string",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "name",
           "required": true,
           "type": "string"
@@ -970,6 +1088,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "album",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_album",
+      "orScope": null,
+      "returns": "void",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -1179,6 +1317,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_files_forever",
+      "orScope": null,
+      "returns": "number",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -1964,6 +2122,20 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": {
+        "kind": "file",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "empty_files_trash",
+      "orScope": null,
+      "returns": "number",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "mailbox",
@@ -2108,6 +2280,28 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "files_facets",
+      "orScope": null,
+      "returns": "FilesFacets",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "files_status",
+      "orScope": null,
+      "returns": "FilesStatus",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "id",
@@ -2128,6 +2322,26 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "upload",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "finish_upload",
+      "orScope": null,
+      "returns": "FileEntry",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "write",
@@ -2135,6 +2349,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "forget_missing_files",
+      "orScope": null,
+      "returns": "number",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -2206,6 +2440,23 @@
       "orScope": null,
       "returns": "CalendarEvent",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_file",
+      "orScope": null,
+      "returns": "FileDetail",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -2507,6 +2758,41 @@
     {
       "args": [
         {
+          "name": "paths",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "dir",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "origin",
+          "required": false,
+          "type": "FileOrigin"
+        },
+        {
+          "name": "encrypted",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "import_files",
+      "orScope": null,
+      "returns": "FileEntry[]",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "xml",
           "required": true,
           "type": "string"
@@ -2734,6 +3020,17 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "list_albums",
+      "orScope": null,
+      "returns": "AlbumView[]",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "list_bank_accounts",
       "orScope": null,
       "returns": "BankAccount[]",
@@ -2861,6 +3158,40 @@
       "orScope": null,
       "returns": "CalendarEvent[]",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "FileQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_files",
+      "orScope": null,
+      "returns": "FilePage",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "dir",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_folder",
+      "orScope": null,
+      "returns": "FolderListing",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -3907,6 +4238,56 @@
       "orScope": null,
       "returns": "Draft",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "dir",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "move_files",
+      "orScope": null,
+      "returns": "FileEntry[]",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "into",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "move_folder",
+      "orScope": null,
+      "returns": "string",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -5061,6 +5442,81 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "files",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "album",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "remove_from_album",
+      "orScope": null,
+      "returns": "void",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "rename_file",
+      "orScope": null,
+      "returns": "FileEntry",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "rename_folder",
+      "orScope": null,
+      "returns": "string",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "template",
           "required": true,
           "type": "Template"
@@ -5082,6 +5538,20 @@
       "orScope": null,
       "returns": "RenderedTemplate",
       "scope": "templates",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "rescan_files",
+      "orScope": null,
+      "returns": "ScanReport",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -5129,6 +5599,46 @@
       "orScope": null,
       "returns": "void",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "restore_file_from_backup",
+      "orScope": null,
+      "returns": "FileEntry",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "restore_files",
+      "orScope": null,
+      "returns": "FileEntry[]",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -5404,6 +5914,26 @@
     {
       "args": [
         {
+          "name": "album",
+          "required": true,
+          "type": "Album"
+        }
+      ],
+      "changes": {
+        "kind": "album",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_album",
+      "orScope": null,
+      "returns": "Album",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "settings",
           "required": true,
           "type": "BackupSettings"
@@ -5619,6 +6149,26 @@
     {
       "args": [
         {
+          "name": "settings",
+          "required": true,
+          "type": "FilesSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_files_settings",
+      "orScope": null,
+      "returns": "FilesStatus",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "goal",
           "required": true,
           "type": "Goal"
@@ -5773,6 +6323,36 @@
       "orScope": null,
       "returns": "void",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "messageId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "part",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "dir",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "save_mail_part_to_files",
+      "orScope": null,
+      "returns": "FileEntry",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -6519,6 +7099,11 @@
           "name": "attachments",
           "required": false,
           "type": "Attachment[]"
+        },
+        {
+          "name": "files",
+          "required": false,
+          "type": "FileId[]"
         }
       ],
       "changes": {
@@ -6625,6 +7210,56 @@
       "orScope": null,
       "returns": "void",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "encrypted",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_file_encrypted",
+      "orScope": null,
+      "returns": "FileEntry",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "image",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_file_thumbnail",
+      "orScope": null,
+      "returns": "FileEntry",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -6881,6 +7516,26 @@
     {
       "args": [
         {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_up_files_folder",
+      "orScope": null,
+      "returns": "FilesStatus",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "id",
           "required": true,
           "type": "WritingId"
@@ -6977,6 +7632,31 @@
       "orScope": null,
       "returns": "LocalModelInfo[]",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "top",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "others",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "stack_files",
+      "orScope": null,
+      "returns": "void",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },
@@ -7488,6 +8168,46 @@
     {
       "args": [
         {
+          "name": "ids",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "trash_files",
+      "orScope": null,
+      "returns": "FileEntry[]",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "path",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "trash_folder",
+      "orScope": null,
+      "returns": "number",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "draftId",
           "required": true,
           "type": "DraftId"
@@ -7603,6 +8323,26 @@
     {
       "args": [
         {
+          "name": "ids",
+          "required": true,
+          "type": "string[]"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "unstack_files",
+      "orScope": null,
+      "returns": "void",
+      "scope": "files",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -7647,6 +8387,31 @@
       "orScope": null,
       "returns": "void",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "string[]"
+        },
+        {
+          "name": "update",
+          "required": true,
+          "type": "FileUpdate"
+        }
+      ],
+      "changes": {
+        "kind": "file",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "update_files",
+      "orScope": null,
+      "returns": "FileEntry[]",
+      "scope": "files",
       "sensitive": false,
       "streams": false
     },

@@ -79,6 +79,8 @@ fn all_kinds() -> Vec<Kind> {
         Kind::ScreenApp,
         Kind::ScreenCategory,
         Kind::ScreenSpan,
+        Kind::File,
+        Kind::Album,
         Kind::Settings,
         Kind::BackgroundTask,
     ]
@@ -133,6 +135,8 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::ScreenApp
         | Kind::ScreenCategory
         | Kind::ScreenSpan
+        | Kind::File
+        | Kind::Album
         | Kind::Settings
         | Kind::BackgroundTask => {}
     }
@@ -172,6 +176,7 @@ fn capabilities_baseline() -> Capabilities {
         news: false,
         money: false,
         screentime: false,
+        files: false,
     }
 }
 
@@ -203,6 +208,7 @@ fn capabilities_all_true() -> Capabilities {
         news: true,
         money: true,
         screentime: true,
+        files: true,
     }
 }
 

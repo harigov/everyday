@@ -56,6 +56,9 @@ Reproduced below in full:
   47. llama-cpp-sys-2 — © utilityai and the llama-cpp-rs contributors, https://github.com/utilityai/llama-cpp-rs
   48. MiniJinja — © Armin Ronacher, https://github.com/mitsuhiko/minijinja
   49. Decision 3.0 models d3-lite, d3-nano and d3-mini — © vLLM Semantic Router, fine-tuned from Qwen3.5 (© Alibaba Cloud), https://huggingface.co/vllm-sr
+  50. kamadak-exif — © KAMADA Ken'ichi, https://github.com/kamadak/exif-rs
+  51. mp4 — © Alfred Gutierrez, https://github.com/alfg/mp4-rust
+  52. notify — © Félix Saparelli and contributors, https://github.com/notify-rs/notify
 
 The interface icons in `ui/src/lib/icons.ts` are drawn for this project, but
 follow the geometry conventions of Lucide (https://lucide.dev), which is ISC
@@ -3683,3 +3686,78 @@ Semantic Router's Decision 3.0 models (https://huggingface.co/vllm-sr/d3-lite,
 they are fine-tuned from; see entry 32 above for the licence text. Used as
 published.
 
+---
+
+## 50. kamadak-exif
+
+`files::meta` and `files::thumb` read what a photo says about itself -- when
+and where it was taken, on what, how it is turned -- and the small JPEG most
+cameras embed, with kamadak-exif (https://github.com/kamadak/exif-rs),
+© KAMADA Ken'ichi, BSD-2-Clause licensed:
+
+```
+Copyright (c) 2016-2023 KAMADA Ken'ichi.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+```
+
+---
+
+## 51. mp4
+
+`files::meta` reads a film's length, size and the time it was made with the
+`mp4` crate (https://github.com/alfg/mp4-rust), © Alfred Gutierrez, MIT
+licensed:
+
+```
+MIT License
+
+Copyright (c) 2020 Alfred Gutierrez
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## 52. notify
+
+`files::watch` notices changes to the files folder as they happen with
+`notify` (https://github.com/notify-rs/notify), © Félix Saparelli and
+contributors, dedicated to the public domain under CC0-1.0. No notice is
+required; this entry says where it came from.

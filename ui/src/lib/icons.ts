@@ -302,6 +302,25 @@ export const ICONS = {
     '<circle cx="8.5" cy="8.5" r="1.5"/>' +
     '<path d="m20.5 15-4-4L7 20.5"/>',
 
+  // The Files app and a folder in it: a tabbed folder, closed.
+  folder:
+    '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9L9.6 3.9A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
+
+  // A page with its corner turned: a file that is not a picture, a film or
+  // a recording -- a document, or anything else.
+  file:
+    '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>' +
+    '<path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
+
+  // A strip of film with its sprocket holes: a video.
+  film:
+    '<rect width="18" height="18" x="3" y="3" rx="2"/>' +
+    '<path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 12h18"/>' +
+    '<path d="M3 7.5h4"/><path d="M3 16.5h4"/><path d="M17 7.5h4"/><path d="M17 16.5h4"/>',
+
+  // A pair of notes: a recording or a song.
+  music: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+
   // A four-pointed star with a smaller one beside it: the mark every
   // interface now uses for "go and work this out for me". Not the five-
   // pointed `star`, which already means "I liked this".

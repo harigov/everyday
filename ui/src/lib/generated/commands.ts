@@ -16,6 +16,8 @@ import type {
   AgentMailAccess,
   AgentMessage,
   AgentSettings,
+  Album,
+  AlbumView,
   ArchiveManifest,
   Attachment,
   AttachmentPreview,
@@ -63,6 +65,17 @@ import type {
   EventScope,
   ExportChunk,
   ExportHandle,
+  FileDetail,
+  FileEntry,
+  FileId,
+  FileOrigin,
+  FilePage,
+  FileQuery,
+  FileUpdate,
+  FilesFacets,
+  FilesSettings,
+  FilesStatus,
+  FolderListing,
   FoundFeed,
   Goal,
   GoalActivity,
@@ -92,6 +105,7 @@ import type {
   Kind,
   KindId,
   KindInfo,
+  LegacyReport,
   LibraryStats,
   LinkCheck,
   LinkStart,
@@ -194,6 +208,7 @@ import type {
   RoutineRunId,
   RoutineTemplate,
   RunQuery,
+  ScanReport,
   ScheduledSend,
   ScreenApp,
   ScreenAppId,
@@ -250,6 +265,7 @@ import type {
   TxnPage,
   TxnPatch,
   TxnQuery,
+  UploadTicket,
   VaultStatus,
   VerificationAnswer,
   VoiceprintId,
@@ -278,6 +294,7 @@ export interface Commands {
   addManualTransaction: { args: { txn: NewTxn }; result: Txn }
   addNewsSource: { args: { source: NewSource }; result: NewsSource }
   addStoryToLibrary: { args: { id: StoryId }; result: ItemId }
+  addToAlbum: { args: { id: string; files: string[] }; result: void }
   agentSettings: { args: Record<string, never>; result: AgentSettings }
   allowRemoteImages: {
     args: { sender?: string | null; domain?: string | null; messageId?: MailMessageId | null }
@@ -322,8 +339,13 @@ export interface Commands {
     }
     result: Recording
   }
+  beginUpload: {
+    args: { name: string; size: number; dir?: string; origin?: FileOrigin; encrypted?: boolean }
+    result: UploadTicket
+  }
   benchmarkDecisionModel: { args: { id: string }; result: DecisionBenchmark }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
+  bringInAttachments: { args: Record<string, never>; result: LegacyReport }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
   cancelBackup: { args: Record<string, never>; result: BackupView }
   cancelBankLink: { args: { session: string }; result: void }
@@ -332,6 +354,7 @@ export interface Commands {
   cancelOauthSignIn: { args: { signInId: string }; result: void }
   cancelSpeechModelDownload: { args: { id: string }; result: void }
   cancelTurn: { args: { conversationId: ConversationId }; result: boolean }
+  cancelUpload: { args: { upload: string }; result: void }
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
@@ -345,6 +368,7 @@ export interface Commands {
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
   createEvent: { args: { calendarId: CalendarId; draft: EventDraft }; result: CalendarEvent | null }
+  createFolder: { args: { dir?: string; name: string }; result: string }
   createManualAccount: {
     args: { name: string; kind: AccountKind; currency: string }
     result: BankAccount
@@ -352,6 +376,7 @@ export interface Commands {
   decisionModels: { args: Record<string, never>; result: LocalModelInfo[] }
   declineProposal: { args: { id: ProposalId; reason?: DeclineReason | null }; result: Proposal }
   deleteAccount: { args: { id: AccountId }; result: void }
+  deleteAlbum: { args: { id: string }; result: void }
   deleteAllVoiceprints: { args: Record<string, never>; result: void }
   deleteBankAccount: { args: { id: BankAccountId }; result: void }
   deleteBankLink: { args: { id: BankLinkId; keepHistory?: boolean }; result: void }
@@ -362,6 +387,7 @@ export interface Commands {
   deleteDecisionModel: { args: { id: string }; result: void }
   deleteEntry: { args: { id: EntryId }; result: void }
   deleteEvent: { args: { id: EventId; scope?: EventScope }; result: void }
+  deleteFilesForever: { args: { ids: string[] }; result: number }
   deleteForever: { args: { threads: ThreadId[]; from: MailboxId[] }; result: Op[] }
   deleteGoal: { args: { id: GoalId }; result: void }
   deleteItem: { args: { id: ItemId }; result: void }
@@ -411,6 +437,7 @@ export interface Commands {
     result: WrittenText
   }
   editThreadDraft: { args: { copies: MailMessageId[] }; result: Draft }
+  emptyFilesTrash: { args: Record<string, never>; result: number }
   emptyMailbox: { args: { mailbox: MailboxId }; result: number }
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
@@ -419,12 +446,17 @@ export interface Commands {
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchFullArticle: { args: { id: StoryId }; result: Story }
   fetchImage: { args: { url: string }; result: string }
+  filesFacets: { args: Record<string, never>; result: FilesFacets }
+  filesStatus: { args: Record<string, never>; result: FilesStatus }
   finishRecording: { args: { id: RecordingId }; result: Recording }
+  finishUpload: { args: { upload: string }; result: FileEntry }
   flush: { args: Record<string, never>; result: void }
+  forgetMissingFiles: { args: { ids: string[] }; result: number }
   forgetScreenItem: { args: { key: string }; result: number }
   getAccount: { args: { id: AccountId }; result: AccountView }
   getEntry: { args: { id: EntryId }; result: Entry }
   getEvent: { args: { id: EventId }; result: CalendarEvent }
+  getFile: { args: { id: string }; result: FileDetail }
   getGoal: { args: { id: GoalId }; result: Goal }
   getItem: { args: { id: ItemId }; result: Item }
   getJob: { args: { id: JobId }; result: Job }
@@ -443,6 +475,10 @@ export interface Commands {
   importCalendar: {
     args: { name: string; label: string; color: string; ics: string }
     result: CalendarInfo
+  }
+  importFiles: {
+    args: { paths: string[]; dir?: string; origin?: FileOrigin; encrypted?: boolean }
+    result: FileEntry[]
   }
   importOpml: { args: { xml: string }; result: OpmlImportReport }
   importTransactions: {
@@ -476,6 +512,7 @@ export interface Commands {
   lintTemplate: { args: { template: Template }; result: string[] }
   listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
   listAccounts: { args: Record<string, never>; result: AccountView[] }
+  listAlbums: { args: Record<string, never>; result: AlbumView[] }
   listBankAccounts: { args: Record<string, never>; result: BankAccount[] }
   listBankLinks: { args: Record<string, never>; result: LinkSummary[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
@@ -488,6 +525,8 @@ export interface Commands {
   listDrafts: { args: { account: AccountId }; result: Draft[] }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
+  listFiles: { args: { query: FileQuery }; result: FilePage }
+  listFolder: { args: { dir?: string }; result: FolderListing }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
   listItems: { args: { query: ItemQuery }; result: Item[] }
   listJobs: { args: { query?: JobQuery }; result: Job[] }
@@ -582,6 +621,8 @@ export interface Commands {
   moneyNetWorth: { args: { from: string; to: string }; result: NetWorthPoint[] }
   moneyRecurring: { args: Record<string, never>; result: Recurring[] }
   moveDraft: { args: { draft: Draft; account: AccountId; identity: string }; result: Draft }
+  moveFiles: { args: { ids: string[]; dir?: string }; result: FileEntry[] }
+  moveFolder: { args: { path: string; into?: string }; result: string }
   moveToMailbox: { args: { threads: ThreadId[]; to: MailboxId }; result: Op[] }
   nameSpeaker: {
     args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }
@@ -680,15 +721,21 @@ export interface Commands {
   }
   refreshNews: { args: { source?: NewsSourceId | null }; result: RefreshReport[] }
   removeChatLink: { args: { id: ChatLinkId }; result: void }
+  removeFromAlbum: { args: { id: string; files: string[] }; result: void }
+  renameFile: { args: { id: string; name: string }; result: FileEntry }
+  renameFolder: { args: { path: string; name: string }; result: string }
   renderTemplate: {
     args: { template: Template; date?: string | null; journalId?: JournalId | null }
     result: RenderedTemplate
   }
+  rescanFiles: { args: Record<string, never>; result: ScanReport }
   respondToInvite: {
     args: { messageId: MailMessageId; response: string; comment?: string | null }
     result: void
   }
   restoreDraft: { args: { id: DraftId }; result: void }
+  restoreFileFromBackup: { args: { id: string }; result: FileEntry }
+  restoreFiles: { args: { ids: string[] }; result: FileEntry[] }
   retryRecording: { args: { id: RecordingId }; result: Recording }
   revokeRemoteImageAllowance: {
     args: { sender?: string | null; domain?: string | null }
@@ -711,6 +758,7 @@ export interface Commands {
   saveAccount: { args: { account: Account }; result: void }
   saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
+  saveAlbum: { args: { album: Album }; result: Album }
   saveBackupSettings: { args: { settings: BackupSettings }; result: BackupView }
   saveBankAccount: { args: { account: BankAccount }; result: void }
   saveBankLink: { args: { link: BankLink }; result: void }
@@ -724,6 +772,7 @@ export interface Commands {
   saveDraft: { args: { draft: Draft }; result: void }
   saveEntry: { args: { entry: Entry; expect?: string | null }; result: void }
   saveEntryForce: { args: { entry: Entry }; result: void }
+  saveFilesSettings: { args: { settings: FilesSettings }; result: FilesStatus }
   saveGoal: { args: { goal: Goal }; result: void }
   saveGoals: { args: { goals: Goal[] }; result: void }
   saveItem: { args: { item: Item }; result: void }
@@ -732,6 +781,10 @@ export interface Commands {
   saveKeepInTouchSettings: { args: { settings: KeepInTouchSettings }; result: void }
   saveKind: { args: { kind: Kind }; result: void }
   saveLog: { args: { log: LogEntry }; result: void }
+  saveMailPartToFiles: {
+    args: { messageId: string; part: string; dir?: string }
+    result: FileEntry
+  }
   saveMailSorting: { args: { sorting: MailSorting }; result: MailSortingView }
   saveMailWriting: { args: { writing: MailWriting }; result: MailWriting }
   saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
@@ -793,6 +846,7 @@ export interface Commands {
       prompt: string
       onScreen?: OnScreen | null
       attachments?: Attachment[]
+      files?: FileId[]
     }
     result: void
   }
@@ -803,6 +857,8 @@ export interface Commands {
   setAutoLock: { args: { seconds: number }; result: void }
   setBackupKeys: { args: { accessKeyId: string; secretAccessKey: string }; result: BackupView }
   setDefaultCalendar: { args: { id?: CalendarId | null }; result: void }
+  setFileEncrypted: { args: { id: string; encrypted: boolean }; result: FileEntry }
+  setFileThumbnail: { args: { id: string; image: string }; result: FileEntry }
   setForgetKey: { args: { seconds: number }; result: void }
   setItemProgress: {
     args: { id: ItemId; position: number; total?: number | null; log: boolean }
@@ -816,6 +872,7 @@ export interface Commands {
   setThreadCategory: { args: { threads: ThreadId[]; category: MailCategory }; result: void }
   setThreadPriority: { args: { threads: ThreadId[]; priority: boolean }; result: void }
   setTranscriberKey: { args: { key?: string | null }; result: MeetingSettingsView }
+  setUpFilesFolder: { args: { path?: string }; result: FilesStatus }
   settleWritingAssist: { args: { id: WritingId; outcome: WritingOutcome }; result: WritingAssist }
   shrinkCover: { args: { blob: string }; result: string }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
@@ -824,6 +881,7 @@ export interface Commands {
     result: MailSortingView
   }
   speechModels: { args: Record<string, never>; result: LocalModelInfo[] }
+  stackFiles: { args: { top: string; others: string[] }; result: void }
   star: { args: { threads: ThreadId[] }; result: Op[] }
   startBankLink: { args: { linkId?: BankLinkId | null }; result: LinkStart }
   startChatVerification: { args: { id: ChatLinkId }; result: void }
@@ -857,6 +915,8 @@ export interface Commands {
   touch: { args: Record<string, never>; result: void }
   trackerDays: { args: { query: ReadingQuery }; result: TrackerDay[] }
   trash: { args: { threads: ThreadId[] }; result: Op[] }
+  trashFiles: { args: { ids: string[] }; result: FileEntry[] }
+  trashFolder: { args: { path: string }; result: number }
   undoSend: { args: { draftId: DraftId }; result: Draft }
   unlabel: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   unlock: { args: { password: string }; result: VaultStatus }
@@ -864,8 +924,10 @@ export interface Commands {
   unseenProposals: { args: Record<string, never>; result: number }
   unseenRuns: { args: Record<string, never>; result: number }
   unsnooze: { args: { threads: ThreadId[] }; result: void }
+  unstackFiles: { args: { ids: string[] }; result: void }
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
   updateEvent: { args: { id: EventId; draft: EventDraft; scope?: EventScope }; result: void }
+  updateFiles: { args: { ids: string[]; update: FileUpdate }; result: FileEntry[] }
   updateTransactions: { args: { ids: TxnId[]; patch: TxnPatch }; result: TxnId[] }
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
@@ -883,6 +945,7 @@ export const COMMAND_NAMES = {
   addManualTransaction: 'add_manual_transaction',
   addNewsSource: 'add_news_source',
   addStoryToLibrary: 'add_story_to_library',
+  addToAlbum: 'add_to_album',
   agentSettings: 'agent_settings',
   allowRemoteImages: 'allow_remote_images',
   answerChatVerification: 'answer_chat_verification',
@@ -897,8 +960,10 @@ export const COMMAND_NAMES = {
   backupSnapshots: 'backup_snapshots',
   beginOauthSignIn: 'begin_oauth_sign_in',
   beginRecording: 'begin_recording',
+  beginUpload: 'begin_upload',
   benchmarkDecisionModel: 'benchmark_decision_model',
   benchmarkSpeechModel: 'benchmark_speech_model',
+  bringInAttachments: 'bring_in_attachments',
   calendarProviders: 'calendar_providers',
   cancelBackup: 'cancel_backup',
   cancelBankLink: 'cancel_bank_link',
@@ -907,6 +972,7 @@ export const COMMAND_NAMES = {
   cancelOauthSignIn: 'cancel_oauth_sign_in',
   cancelSpeechModelDownload: 'cancel_speech_model_download',
   cancelTurn: 'cancel_turn',
+  cancelUpload: 'cancel_upload',
   categoryCounts: 'category_counts',
   changePassword: 'change_password',
   chatLinks: 'chat_links',
@@ -920,10 +986,12 @@ export const COMMAND_NAMES = {
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
   createEvent: 'create_event',
+  createFolder: 'create_folder',
   createManualAccount: 'create_manual_account',
   decisionModels: 'decision_models',
   declineProposal: 'decline_proposal',
   deleteAccount: 'delete_account',
+  deleteAlbum: 'delete_album',
   deleteAllVoiceprints: 'delete_all_voiceprints',
   deleteBankAccount: 'delete_bank_account',
   deleteBankLink: 'delete_bank_link',
@@ -934,6 +1002,7 @@ export const COMMAND_NAMES = {
   deleteDecisionModel: 'delete_decision_model',
   deleteEntry: 'delete_entry',
   deleteEvent: 'delete_event',
+  deleteFilesForever: 'delete_files_forever',
   deleteForever: 'delete_forever',
   deleteGoal: 'delete_goal',
   deleteItem: 'delete_item',
@@ -971,6 +1040,7 @@ export const COMMAND_NAMES = {
   downloadSpeechModel: 'download_speech_model',
   draftWithAi: 'draft_with_ai',
   editThreadDraft: 'edit_thread_draft',
+  emptyFilesTrash: 'empty_files_trash',
   emptyMailbox: 'empty_mailbox',
   endExport: 'end_export',
   endImport: 'end_import',
@@ -979,12 +1049,17 @@ export const COMMAND_NAMES = {
   fetchAttachment: 'fetch_attachment',
   fetchFullArticle: 'fetch_full_article',
   fetchImage: 'fetch_image',
+  filesFacets: 'files_facets',
+  filesStatus: 'files_status',
   finishRecording: 'finish_recording',
+  finishUpload: 'finish_upload',
   flush: 'flush',
+  forgetMissingFiles: 'forget_missing_files',
   forgetScreenItem: 'forget_screen_item',
   getAccount: 'get_account',
   getEntry: 'get_entry',
   getEvent: 'get_event',
+  getFile: 'get_file',
   getGoal: 'get_goal',
   getItem: 'get_item',
   getJob: 'get_job',
@@ -1001,6 +1076,7 @@ export const COMMAND_NAMES = {
   imagePreview: 'image_preview',
   imageSearch: 'image_search',
   importCalendar: 'import_calendar',
+  importFiles: 'import_files',
   importOpml: 'import_opml',
   importTransactions: 'import_transactions',
   improveWriting: 'improve_writing',
@@ -1011,6 +1087,7 @@ export const COMMAND_NAMES = {
   lintTemplate: 'lint_template',
   listAccountCalendars: 'list_account_calendars',
   listAccounts: 'list_accounts',
+  listAlbums: 'list_albums',
   listBankAccounts: 'list_bank_accounts',
   listBankLinks: 'list_bank_links',
   listBlocks: 'list_blocks',
@@ -1020,6 +1097,8 @@ export const COMMAND_NAMES = {
   listDrafts: 'list_drafts',
   listEntries: 'list_entries',
   listEvents: 'list_events',
+  listFiles: 'list_files',
+  listFolder: 'list_folder',
   listGoals: 'list_goals',
   listItems: 'list_items',
   listJobs: 'list_jobs',
@@ -1082,6 +1161,8 @@ export const COMMAND_NAMES = {
   moneyNetWorth: 'money_net_worth',
   moneyRecurring: 'money_recurring',
   moveDraft: 'move_draft',
+  moveFiles: 'move_files',
+  moveFolder: 'move_folder',
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
   newBlock: 'new_block',
@@ -1142,9 +1223,15 @@ export const COMMAND_NAMES = {
   recordScreenTime: 'record_screen_time',
   refreshNews: 'refresh_news',
   removeChatLink: 'remove_chat_link',
+  removeFromAlbum: 'remove_from_album',
+  renameFile: 'rename_file',
+  renameFolder: 'rename_folder',
   renderTemplate: 'render_template',
+  rescanFiles: 'rescan_files',
   respondToInvite: 'respond_to_invite',
   restoreDraft: 'restore_draft',
+  restoreFileFromBackup: 'restore_file_from_backup',
+  restoreFiles: 'restore_files',
   retryRecording: 'retry_recording',
   revokeRemoteImageAllowance: 'revoke_remote_image_allowance',
   rewriteMeetingNote: 'rewrite_meeting_note',
@@ -1158,6 +1245,7 @@ export const COMMAND_NAMES = {
   saveAccount: 'save_account',
   saveAccountPassword: 'save_account_password',
   saveAgentSettings: 'save_agent_settings',
+  saveAlbum: 'save_album',
   saveBackupSettings: 'save_backup_settings',
   saveBankAccount: 'save_bank_account',
   saveBankLink: 'save_bank_link',
@@ -1168,6 +1256,7 @@ export const COMMAND_NAMES = {
   saveDraft: 'save_draft',
   saveEntry: 'save_entry',
   saveEntryForce: 'save_entry_force',
+  saveFilesSettings: 'save_files_settings',
   saveGoal: 'save_goal',
   saveGoals: 'save_goals',
   saveItem: 'save_item',
@@ -1176,6 +1265,7 @@ export const COMMAND_NAMES = {
   saveKeepInTouchSettings: 'save_keep_in_touch_settings',
   saveKind: 'save_kind',
   saveLog: 'save_log',
+  saveMailPartToFiles: 'save_mail_part_to_files',
   saveMailSorting: 'save_mail_sorting',
   saveMailWriting: 'save_mail_writing',
   saveMeetingSettings: 'save_meeting_settings',
@@ -1216,6 +1306,8 @@ export const COMMAND_NAMES = {
   setAutoLock: 'set_auto_lock',
   setBackupKeys: 'set_backup_keys',
   setDefaultCalendar: 'set_default_calendar',
+  setFileEncrypted: 'set_file_encrypted',
+  setFileThumbnail: 'set_file_thumbnail',
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
@@ -1226,11 +1318,13 @@ export const COMMAND_NAMES = {
   setThreadCategory: 'set_thread_category',
   setThreadPriority: 'set_thread_priority',
   setTranscriberKey: 'set_transcriber_key',
+  setUpFilesFolder: 'set_up_files_folder',
   settleWritingAssist: 'settle_writing_assist',
   shrinkCover: 'shrink_cover',
   snooze: 'snooze',
   sortOlderMail: 'sort_older_mail',
   speechModels: 'speech_models',
+  stackFiles: 'stack_files',
   star: 'star',
   startBankLink: 'start_bank_link',
   startChatVerification: 'start_chat_verification',
@@ -1258,6 +1352,8 @@ export const COMMAND_NAMES = {
   touch: 'touch',
   trackerDays: 'tracker_days',
   trash: 'trash',
+  trashFiles: 'trash_files',
+  trashFolder: 'trash_folder',
   undoSend: 'undo_send',
   unlabel: 'unlabel',
   unlock: 'unlock',
@@ -1265,8 +1361,10 @@ export const COMMAND_NAMES = {
   unseenProposals: 'unseen_proposals',
   unseenRuns: 'unseen_runs',
   unsnooze: 'unsnooze',
+  unstackFiles: 'unstack_files',
   unstar: 'unstar',
   updateEvent: 'update_event',
+  updateFiles: 'update_files',
   updateTransactions: 'update_transactions',
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
@@ -1294,6 +1392,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'add_manual_transaction',
   'add_news_source',
   'add_story_to_library',
+  'add_to_album',
   'agent_settings',
   'allow_remote_images',
   'answer_chat_verification',
@@ -1308,8 +1407,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'backup_snapshots',
   'begin_oauth_sign_in',
   'begin_recording',
+  'begin_upload',
   'benchmark_decision_model',
   'benchmark_speech_model',
+  'bring_in_attachments',
   'calendar_providers',
   'cancel_backup',
   'cancel_bank_link',
@@ -1318,6 +1419,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
   'cancel_turn',
+  'cancel_upload',
   'category_counts',
   'change_password',
   'chat_links',
@@ -1331,10 +1433,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'confirm_tool_call',
   'conversation_messages',
   'create_event',
+  'create_folder',
   'create_manual_account',
   'decision_models',
   'decline_proposal',
   'delete_account',
+  'delete_album',
   'delete_all_voiceprints',
   'delete_bank_account',
   'delete_bank_link',
@@ -1345,6 +1449,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_decision_model',
   'delete_entry',
   'delete_event',
+  'delete_files_forever',
   'delete_forever',
   'delete_goal',
   'delete_item',
@@ -1382,6 +1487,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'download_speech_model',
   'draft_with_ai',
   'edit_thread_draft',
+  'empty_files_trash',
   'empty_mailbox',
   'end_export',
   'end_import',
@@ -1390,12 +1496,17 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'fetch_attachment',
   'fetch_full_article',
   'fetch_image',
+  'files_facets',
+  'files_status',
   'finish_recording',
+  'finish_upload',
   'flush',
+  'forget_missing_files',
   'forget_screen_item',
   'get_account',
   'get_entry',
   'get_event',
+  'get_file',
   'get_goal',
   'get_item',
   'get_job',
@@ -1412,6 +1523,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'image_preview',
   'image_search',
   'import_calendar',
+  'import_files',
   'import_opml',
   'import_transactions',
   'improve_writing',
@@ -1422,6 +1534,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lint_template',
   'list_account_calendars',
   'list_accounts',
+  'list_albums',
   'list_bank_accounts',
   'list_bank_links',
   'list_blocks',
@@ -1431,6 +1544,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_drafts',
   'list_entries',
   'list_events',
+  'list_files',
+  'list_folder',
   'list_goals',
   'list_items',
   'list_jobs',
@@ -1493,6 +1608,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'money_net_worth',
   'money_recurring',
   'move_draft',
+  'move_files',
+  'move_folder',
   'move_to_mailbox',
   'name_speaker',
   'new_block',
@@ -1553,9 +1670,15 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'record_screen_time',
   'refresh_news',
   'remove_chat_link',
+  'remove_from_album',
+  'rename_file',
+  'rename_folder',
   'render_template',
+  'rescan_files',
   'respond_to_invite',
   'restore_draft',
+  'restore_file_from_backup',
+  'restore_files',
   'retry_recording',
   'revoke_remote_image_allowance',
   'rewrite_meeting_note',
@@ -1569,6 +1692,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account',
   'save_account_password',
   'save_agent_settings',
+  'save_album',
   'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
@@ -1579,6 +1703,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_draft',
   'save_entry',
   'save_entry_force',
+  'save_files_settings',
   'save_goal',
   'save_goals',
   'save_item',
@@ -1587,6 +1712,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_keep_in_touch_settings',
   'save_kind',
   'save_log',
+  'save_mail_part_to_files',
   'save_mail_sorting',
   'save_mail_writing',
   'save_meeting_settings',
@@ -1626,6 +1752,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_auto_lock',
   'set_backup_keys',
   'set_default_calendar',
+  'set_file_encrypted',
+  'set_file_thumbnail',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
@@ -1636,11 +1764,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
+  'set_up_files_folder',
   'settle_writing_assist',
   'shrink_cover',
   'snooze',
   'sort_older_mail',
   'speech_models',
+  'stack_files',
   'star',
   'start_bank_link',
   'start_chat_verification',
@@ -1668,6 +1798,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'touch',
   'tracker_days',
   'trash',
+  'trash_files',
+  'trash_folder',
   'undo_send',
   'unlabel',
   'unlock',
@@ -1675,8 +1807,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'unseen_proposals',
   'unseen_runs',
   'unsnooze',
+  'unstack_files',
   'unstar',
   'update_event',
+  'update_files',
   'update_transactions',
   'vault_stats',
   'verify_password',
@@ -1698,6 +1832,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'add_manual_transaction',
   'add_news_source',
   'add_story_to_library',
+  'add_to_album',
   'allow_remote_images',
   'answer_chat_verification',
   'answer_job',
@@ -1708,6 +1843,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'attach_oauth_sign_in',
   'begin_oauth_sign_in',
   'begin_recording',
+  'begin_upload',
+  'bring_in_attachments',
   'cancel_backup',
   'cancel_bank_link',
   'cancel_decision_model_download',
@@ -1715,6 +1852,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_oauth_sign_in',
   'cancel_speech_model_download',
   'cancel_turn',
+  'cancel_upload',
   'change_password',
   'check_bank_link',
   'check_sending',
@@ -1724,9 +1862,11 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'collect_garbage',
   'confirm_tool_call',
   'create_event',
+  'create_folder',
   'create_manual_account',
   'decline_proposal',
   'delete_account',
+  'delete_album',
   'delete_all_voiceprints',
   'delete_bank_account',
   'delete_bank_link',
@@ -1737,6 +1877,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_decision_model',
   'delete_entry',
   'delete_event',
+  'delete_files_forever',
   'delete_forever',
   'delete_goal',
   'delete_item',
@@ -1772,15 +1913,19 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'download_decision_model',
   'download_speech_model',
   'edit_thread_draft',
+  'empty_files_trash',
   'empty_mailbox',
   'enrol_voice',
   'fetch_attachment',
   'fetch_full_article',
   'fetch_image',
   'finish_recording',
+  'finish_upload',
   'flush',
+  'forget_missing_files',
   'forget_screen_item',
   'import_calendar',
+  'import_files',
   'import_opml',
   'import_transactions',
   'label',
@@ -1795,6 +1940,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_unread',
   'merge_trackers',
   'move_draft',
+  'move_files',
+  'move_folder',
   'move_to_mailbox',
   'name_speaker',
   'new_draft',
@@ -1805,8 +1952,14 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'record_screen_time',
   'refresh_news',
   'remove_chat_link',
+  'remove_from_album',
+  'rename_file',
+  'rename_folder',
+  'rescan_files',
   'respond_to_invite',
   'restore_draft',
+  'restore_file_from_backup',
+  'restore_files',
   'retry_recording',
   'revoke_remote_image_allowance',
   'rewrite_selection',
@@ -1818,6 +1971,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account',
   'save_account_password',
   'save_agent_settings',
+  'save_album',
   'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
@@ -1828,6 +1982,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_draft',
   'save_entry',
   'save_entry_force',
+  'save_files_settings',
   'save_goal',
   'save_goals',
   'save_item',
@@ -1836,6 +1991,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_keep_in_touch_settings',
   'save_kind',
   'save_log',
+  'save_mail_part_to_files',
   'save_mail_sorting',
   'save_mail_writing',
   'save_meeting_settings',
@@ -1868,6 +2024,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_auto_lock',
   'set_backup_keys',
   'set_default_calendar',
+  'set_file_encrypted',
+  'set_file_thumbnail',
   'set_forget_key',
   'set_item_progress',
   'set_item_status',
@@ -1878,10 +2036,12 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_thread_category',
   'set_thread_priority',
   'set_transcriber_key',
+  'set_up_files_folder',
   'settle_writing_assist',
   'shrink_cover',
   'snooze',
   'sort_older_mail',
+  'stack_files',
   'star',
   'start_bank_link',
   'start_chat_verification',
@@ -1896,12 +2056,16 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'sync_due_calendars',
   'touch',
   'trash',
+  'trash_files',
+  'trash_folder',
   'undo_send',
   'unlabel',
   'unlock',
   'unsnooze',
+  'unstack_files',
   'unstar',
   'update_event',
+  'update_files',
   'update_transactions',
   'verify_password',
 ])
@@ -1913,6 +2077,7 @@ export const CHANGE_KINDS = {
   add_manual_transaction: 'txn',
   add_news_source: 'newsSource',
   add_story_to_library: 'item',
+  add_to_album: 'album',
   allow_remote_images: 'settings',
   answer_job: 'job',
   apply_metadata: 'item',
@@ -1920,6 +2085,7 @@ export const CHANGE_KINDS = {
   archive: 'thread',
   attach_oauth_sign_in: 'account',
   begin_recording: 'recording',
+  bring_in_attachments: 'file',
   cancel_decision_model_download: 'settings',
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
@@ -1928,9 +2094,11 @@ export const CHANGE_KINDS = {
   clear_model_key: 'settings',
   clear_plaid_credentials: 'settings',
   create_event: 'event',
+  create_folder: 'file',
   create_manual_account: 'bankAccount',
   decline_proposal: 'proposal',
   delete_account: 'account',
+  delete_album: 'album',
   delete_all_voiceprints: 'voiceprint',
   delete_bank_account: 'bankAccount',
   delete_bank_link: 'bankLink',
@@ -1941,6 +2109,7 @@ export const CHANGE_KINDS = {
   delete_decision_model: 'settings',
   delete_entry: 'entry',
   delete_event: 'event',
+  delete_files_forever: 'file',
   delete_forever: 'thread',
   delete_goal: 'goal',
   delete_item: 'item',
@@ -1975,12 +2144,16 @@ export const CHANGE_KINDS = {
   download_decision_model: 'settings',
   download_speech_model: 'settings',
   edit_thread_draft: 'draft',
+  empty_files_trash: 'file',
   empty_mailbox: 'thread',
   enrol_voice: 'voiceprint',
   fetch_full_article: 'story',
   finish_recording: 'recording',
+  finish_upload: 'file',
+  forget_missing_files: 'file',
   forget_screen_item: 'screenSpan',
   import_calendar: 'calendar',
+  import_files: 'file',
   import_opml: 'newsSource',
   import_transactions: 'txn',
   label: 'thread',
@@ -1994,13 +2167,21 @@ export const CHANGE_KINDS = {
   mark_unread: 'thread',
   merge_trackers: 'tracker',
   move_draft: 'draft',
+  move_files: 'file',
+  move_folder: 'file',
   move_to_mailbox: 'thread',
   name_speaker: 'transcript',
   new_draft: 'draft',
   record_screen_time: 'screenSpan',
   refresh_news: 'story',
   remove_chat_link: 'settings',
+  remove_from_album: 'album',
+  rename_file: 'file',
+  rename_folder: 'file',
+  rescan_files: 'file',
   restore_draft: 'draft',
+  restore_file_from_backup: 'file',
+  restore_files: 'file',
   retry_recording: 'recording',
   revoke_remote_image_allowance: 'settings',
   run_keep_in_touch: 'log',
@@ -2008,6 +2189,7 @@ export const CHANGE_KINDS = {
   save_account: 'account',
   save_account_password: 'account',
   save_agent_settings: 'settings',
+  save_album: 'album',
   save_backup_settings: 'settings',
   save_bank_account: 'bankAccount',
   save_bank_link: 'bankLink',
@@ -2018,6 +2200,7 @@ export const CHANGE_KINDS = {
   save_draft: 'draft',
   save_entry: 'entry',
   save_entry_force: 'entry',
+  save_files_settings: 'settings',
   save_goal: 'goal',
   save_goals: 'goal',
   save_item: 'item',
@@ -2026,6 +2209,7 @@ export const CHANGE_KINDS = {
   save_keep_in_touch_settings: 'settings',
   save_kind: 'shelf',
   save_log: 'log',
+  save_mail_part_to_files: 'file',
   save_mail_sorting: 'settings',
   save_mail_writing: 'settings',
   save_meeting_settings: 'settings',
@@ -2058,6 +2242,8 @@ export const CHANGE_KINDS = {
   set_auto_lock: 'settings',
   set_backup_keys: 'settings',
   set_default_calendar: 'calendar',
+  set_file_encrypted: 'file',
+  set_file_thumbnail: 'file',
   set_forget_key: 'settings',
   set_item_progress: 'item',
   set_item_status: 'item',
@@ -2068,7 +2254,9 @@ export const CHANGE_KINDS = {
   set_thread_category: 'thread',
   set_thread_priority: 'thread',
   set_transcriber_key: 'settings',
+  set_up_files_folder: 'settings',
   snooze: 'thread',
+  stack_files: 'file',
   star: 'thread',
   start_research: 'job',
   stop_send: 'draft',
@@ -2078,11 +2266,15 @@ export const CHANGE_KINDS = {
   sync_calendar: 'event',
   sync_due_calendars: 'event',
   trash: 'thread',
+  trash_files: 'file',
+  trash_folder: 'file',
   undo_send: 'draft',
   unlabel: 'thread',
   unsnooze: 'thread',
+  unstack_files: 'file',
   unstar: 'thread',
   update_event: 'event',
+  update_files: 'file',
   update_transactions: 'txn',
 } as const
 

@@ -150,6 +150,13 @@ async fn locate(place: &str, near: Option<Point>) -> CommandResult<Located> {
     })
 }
 
+/// The name of the place at `point` ("Fort Kochi, Kochi"), or `None` where
+/// there is nothing to name. In turn with every other question to Nominatim.
+pub async fn reverse(point: Point) -> CommandResult<Option<String>> {
+    let body = nominatim(&maps::reverse_url(point), "the place's name").await?;
+    Ok(maps::parse_reverse(&body)?)
+}
+
 /// GET one Nominatim address, in turn -- see the module doc's "One question
 /// a second".
 async fn nominatim(url: &str, what: &str) -> CommandResult<String> {

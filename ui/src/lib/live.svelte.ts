@@ -22,6 +22,7 @@ import { ownOrigin, pinned } from './appwindow'
 import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
+import { files } from './files.svelte'
 import { jobs } from './jobs.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
@@ -131,6 +132,11 @@ export const RELOAD = {
   // than a label is: only while today is on screen, and at most once a
   // minute. See `screentime.spansArrived`.
   screentimeSpans: () => screentime.spansArrived(),
+  // A file arrived, changed, moved or went missing -- the reconciler finds
+  // them as the folder changes under a sync tool, and every app that keeps a
+  // file raises one -- or an album did. Read again only while Files is the
+  // app on screen, and one at a time: see `files.changed` and `files.reload`.
+  files: () => files.changed(),
 } satisfies Record<string, () => Promise<unknown> | void>
 
 /**
@@ -279,6 +285,10 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   screenApp: 'screentime',
   screenCategory: 'screentime',
   screenSpan: 'screentimeSpans',
+  // What is in the files folder and the catalog, and the albums made of it.
+  // One target for both: Files shows the two together.
+  file: 'files',
+  album: 'files',
 }
 
 /**

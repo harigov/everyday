@@ -32,6 +32,7 @@ use crate::model::{Entry, EntrySummary, Journal};
 use crate::store::accounts::AccountStore;
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
+use crate::store::files::FilesStore;
 use crate::store::jobs::JobStore;
 use crate::store::library::LibraryStore;
 use crate::store::mail::MailStore;
@@ -216,6 +217,14 @@ pub struct Capabilities {
     /// False hides the Screen time app and refuses heartbeats.
     #[serde(default)]
     pub screentime: bool,
+    /// Backend implements [`files::FilesStore`], so the files catalog --
+    /// what is in the files folder, what is sealed, albums, and which
+    /// records refer to which files -- has somewhere to live.
+    ///
+    /// False hides the Files app, and every app keeps its pictures the old
+    /// way, as blobs inside its own records.
+    #[serde(default)]
+    pub files: bool,
 }
 
 /// The facts about a backend that [`Capabilities`]' domain flags cannot
@@ -586,6 +595,7 @@ pub trait JournalStore: Send + Sync {
             news: self.news().is_some(),
             money: self.money().is_some(),
             screentime: self.screentime().is_some(),
+            files: self.files().is_some(),
         }
     }
 
@@ -770,6 +780,14 @@ pub trait JournalStore: Send + Sync {
         None
     }
 
+    /// Storage for the files catalog, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::tasks`]. See
+    /// [`files`](crate::store::files) for the rules an implementation keeps.
+    fn files(&self) -> Option<&dyn FilesStore> {
+        None
+    }
+
     // ---- the owner ------------------------------------------------------
 
     /// Who this vault belongs to.
@@ -939,6 +957,16 @@ pub trait JournalStore: Send + Sync {
     /// twice is a no-op that returns the same id.
     fn put_blob(&self, bytes: &[u8]) -> Result<BlobId>;
 
+    /// Store the file at `path` as a blob, as [`JournalStore::put_blob`]
+    /// would its bytes -- without holding the whole file in memory, where
+    /// the backend can manage that. A sealed file in the files catalog can
+    /// be a film of several gigabytes.
+    ///
+    /// The default reads the file whole and calls `put_blob`.
+    fn put_blob_file(&self, path: &std::path::Path) -> Result<BlobId> {
+        self.put_blob(&std::fs::read(path)?)
+    }
+
     fn get_blob(&self, id: BlobId) -> Result<Vec<u8>>;
 
     /// Plaintext length of a blob, without decrypting it.
@@ -1096,6 +1124,13 @@ pub trait JournalStore: Send + Sync {
         if let Some(agent) = self.agent() {
             live.extend(agent.attachment_blob_refs()?);
         }
+        // And the files catalog: a sealed file's contents and every file's
+        // thumbnail are blobs held by nothing but the file's record. Missing
+        // this walk would make the first sweep after a day take every file
+        // somebody chose to keep encrypted, and every thumbnail.
+        if let Some(files) = self.files() {
+            live.extend(files.file_blob_refs()?);
+        }
         let mut removed = 0;
         for id in self.list_blobs()? {
             if live.contains(&id) {
@@ -1205,6 +1240,7 @@ impl BackendRegistry {
 pub mod accounts;
 pub mod agent;
 pub mod calendars;
+pub mod files;
 pub mod jobs;
 pub mod library;
 pub mod mail;

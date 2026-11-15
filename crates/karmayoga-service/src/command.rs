@@ -649,6 +649,11 @@ mod tests {
             "start_bank_link",
             "check_bank_link",
             "cancel_bank_link",
+            // An upload in progress is a staging file and a note in this
+            // process's memory; nothing anybody draws exists until
+            // `finish_upload`, which announces the file it makes.
+            "begin_upload",
+            "cancel_upload",
             // Signs in to an account's outgoing server and sends nothing. A
             // write for its reach, not for a record anybody draws.
             "check_sending",

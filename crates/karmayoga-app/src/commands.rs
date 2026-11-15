@@ -561,6 +561,11 @@ pub async fn put_blob(
 /// turn takes seconds and calls tools while it runs, and a panel that could draw
 /// none of that until the end would read as a hang. What this returns is only
 /// whether the turn finished.
+///
+/// One argument per field the interface sends, because a Tauri command's
+/// arguments *are* its wire format; bundling them into a struct would change
+/// what every window already sends.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn send_message(
     webview: tauri::Webview,
@@ -577,6 +582,12 @@ pub async fn send_message(
     // see `karmayoga_service::pictures::checked`. Optional, so a window built
     // before pictures could be sent still sends what it always has.
     attachments: Option<Vec<serde_json::Value>>,
+    // Files from the files catalog handed over with the prompt, by id.
+    // Passed through as JSON for the same reason as `attachments`: the
+    // service checks each against the catalog, and an id it cannot read
+    // refuses the message there rather than here. Optional, so a window built
+    // before files could be sent still sends what it always has.
+    files: Option<Vec<serde_json::Value>>,
     channel: tauri::ipc::Channel<AgentEvent>,
 ) -> CommandResult<()> {
     let session = state.session().as_session();
@@ -593,6 +604,7 @@ pub async fn send_message(
                 "prompt": prompt,
                 "onScreen": on_screen,
                 "attachments": attachments.unwrap_or_default(),
+                "files": files.unwrap_or_default(),
             }),
             sink,
         )

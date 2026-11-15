@@ -14,6 +14,7 @@
 import { APPS, type AppDeps, type AppSearch } from './apps'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
+import { files } from './files.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
 import { money } from './money.svelte'
@@ -36,6 +37,7 @@ const deps: AppDeps = {
   feed,
   money,
   screentime,
+  files,
   overview,
 }
 
@@ -59,6 +61,8 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   money: 'the Money tab, where the keys for linking banks through Plaid are kept',
   screentime:
     'the Screen time tab, whether this computer records which app or site is in use, and how',
+  files:
+    'the Files tab, where the files folder is, which apps keep their files encrypted, and how long the trash keeps them',
   meetings: 'the Meetings tab',
   templates:
     'the Templates tab, the shapes their journal entries, notes and meeting notes start from',

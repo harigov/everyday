@@ -318,6 +318,14 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "update_transactions",
     "set_budget",
     "create_money_rule",
+    // What is in somebody's files folder is theirs, and a file is not a
+    // record a proposal could hold: it is bytes in a folder that Syncthing
+    // may already have carried to their phone by the time anybody answered.
+    // A dream tidying their photos, or trashing a file on a guess, is the
+    // loop nobody asked for.
+    "save_file",
+    "organize_files",
+    "trash_files",
 ];
 
 /// The two tools that write a real `Draft` while drafting and gain a linked

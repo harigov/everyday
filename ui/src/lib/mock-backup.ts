@@ -143,6 +143,7 @@ function report(snapshot: string, seconds: number, removed: number): BackupRepor
     removedChunks: removed * 37,
     seconds,
     skipped: [],
+    filesFolderUnavailable: false,
   }
 }
 

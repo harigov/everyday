@@ -118,7 +118,7 @@ use karmayoga_core::proposal::{ProposalKind, ProposalSource};
 use karmayoga_core::quick::{ExtractAnswer, QuickContext, RESEARCH_EXTRACT};
 use karmayoga_core::record::RecordKind;
 use karmayoga_core::websearch::SearchResult;
-use karmayoga_core::{ConversationId, KindId, MessageId, Vault};
+use karmayoga_core::{ConversationId, FileId, KindId, MessageId, Vault};
 use rig_agent::agent::hook::{
     ModelTurnAction, ModelTurnFinished, ToolCall as HookToolCall, ToolCallAction, ToolResultAction,
     ToolResultEvent,
@@ -947,6 +947,19 @@ const UPDATE_ROUTINE: &str = "update_routine";
 const START_RESEARCH: &str = "start_research";
 const JOB_STATUS: &str = "job_status";
 const CANCEL_JOB: &str = "cancel_job";
+/// The tools in [`tools::Domain::Files`], singled out for three reasons:
+/// `read_file` returns somebody's writing, which arms the fetch check (see
+/// [`reads_strangers_words`]); it and `file_info` are the two that work on a
+/// file the person handed over even with the assistant shut out of their
+/// files, so they are offered then too (see [`files_offered`]); and all four
+/// that need one have a line for their card (see [`summarise`]).
+const READ_FILE: &str = "read_file";
+const FILE_INFO: &str = "file_info";
+const ORGANIZE_FILES: &str = "organize_files";
+const TRASH_FILES: &str = "trash_files";
+/// The two that work on a file the person handed over whatever the switch
+/// for the rest of their files says.
+const HANDED_FILE_TOOLS: [&str; 2] = [FILE_INFO, READ_FILE];
 
 /// How much of a page a research job is shown when the quick model cannot
 /// read it for the job -- no quick model, `research.extract` switched off, or
@@ -1950,15 +1963,22 @@ fn trimmed_page(page: &Value) -> Value {
 /// design expects might leak from a browser profile -- so a name can be
 /// anybody's words; and what it answers is a day's browsing, which an
 /// address composed afterwards could carry away.
+///
+/// And reading a file's contents, `read_file` alone of the file tools: a file
+/// can have come from anywhere -- a download, a sync from a phone, a chat --
+/// and what is in it is somebody's writing exactly as a mail's is. Finding
+/// and describing files by name and date reads nothing of the kind, so they
+/// arm nothing: the person's own folder is not a stranger.
 fn reads_strangers_words(name: &str) -> bool {
     tools::find(name).is_some_and(|t| {
-        matches!(
-            t.domain,
-            tools::Domain::Mail
-                | tools::Domain::News
-                | tools::Domain::Money
-                | tools::Domain::ScreenTime
-        ) && t.effect == Effect::Read
+        t.effect == Effect::Read
+            && (matches!(
+                t.domain,
+                tools::Domain::Mail
+                    | tools::Domain::News
+                    | tools::Domain::Money
+                    | tools::Domain::ScreenTime
+            ) || t.name == READ_FILE)
     })
 }
 
@@ -2057,6 +2077,19 @@ struct TurnMeta {
     asker: Option<Arc<dyn Asker>>,
 }
 
+/// Whether `tool` is offered given whether the person has let the assistant
+/// look through their files. Anything outside [`tools::Domain::Files`]
+/// always is: this decides nothing else.
+///
+/// With the switch off, `read_file` and `file_info` stay, because they work
+/// on a file handed over in the conversation whatever the switch says --
+/// handing it over is the permission -- and refuse any other themselves. The
+/// rest of the domain, which only ever works on files the person did not
+/// hand over, is not offered at all.
+fn files_offered(tool: &tools::Tool, may_look: bool) -> bool {
+    tool.domain != tools::Domain::Files || may_look || HANDED_FILE_TOOLS.contains(&tool.name)
+}
+
 /// Whether a turn is offered the tools that start, inspect and stop
 /// background jobs ([`tools::Domain::Jobs`]), which are in the core catalogue
 /// like any other and so are offered unless this says not.
@@ -2106,7 +2139,19 @@ impl JobTools {
         // day on is a browsing history, worth nothing to a question about the
         // web and exactly what a page that wanted to profile them would ask
         // to have put into a search address.
-        if self.job && matches!(tool.domain, tools::Domain::Money | tools::Domain::ScreenTime) {
+        //
+        // And their files, for both reasons at once: what is in them is as
+        // private as anything here, and `read_file` puts a file's own words
+        // -- anybody's -- in front of a model whose searches never ask. A
+        // routine is offered them, as it is mail: its runs do have the fetch
+        // check, and with nobody to answer it, a page fetched after a file
+        // was read is refused.
+        if self.job
+            && matches!(
+                tool.domain,
+                tools::Domain::Money | tools::Domain::ScreenTime | tools::Domain::Files
+            )
+        {
             return false;
         }
         if tool.domain != tools::Domain::Jobs {
@@ -2166,10 +2211,17 @@ fn build(
         follow_up: meta.follow_up,
         drafting: is_dream,
     };
+    // Whether the person has let the assistant look through their files. When
+    // not, only the two tools that work on a file they handed over are
+    // offered -- the rest are absent rather than refused, for the reason mail
+    // tools are: a model never told a tool exists cannot be talked into
+    // calling it.
+    let may_look_at_files = vault.files_settings().is_ok_and(|s| s.assistant_access);
     let available: Vec<&'static tools::Tool> =
         tools::available_for(&vault, Some(&caller), Some(&assistant_provider))
             .into_iter()
             .filter(|tool| jobs.offers(tool))
+            .filter(|tool| files_offered(tool, may_look_at_files))
             .collect();
     let can_remember = available.iter().any(|t| t.name == "remember");
     // Mail is the one domain a person has to open to the assistant account
@@ -3602,6 +3654,19 @@ pub struct Turn {
     /// been told what to search for or which page to open. See
     /// [`ConfirmGate::mail_read_this_turn`].
     pub pictures: Vec<Attachment>,
+    /// Files from the files catalog the person handed over with `prompt`:
+    /// picked in the composer, or saved from a chat. Already checked against
+    /// the catalog -- see [`crate::pictures::with_files`] and
+    /// [`Service::chat_turn_with_files`](crate::service::Service) -- and kept
+    /// with the person's message, which is what lets the file tools work on
+    /// them even when the assistant may not look through their other files.
+    ///
+    /// A picture among them is also in [`Turn::pictures`], the copy a model
+    /// is shown. The model is told every file's name, kind, size and id in a
+    /// line after the person's words, so it can read or link to it; a text
+    /// file is never put in the message itself. Empty for every turn nobody
+    /// handed a file to, and for the application's own follow-up to a job.
+    pub files: Vec<FileId>,
     /// What the person has on screen, if the interface said -- by
     /// reference, and described by [`run_turn`] itself; see
     /// [`karmayoga_core::agent::onscreen`].
@@ -3825,6 +3890,7 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
                 tools::Domain::Money => Kind::Txn,
                 // Read-only: the match covers the type, not the tools.
                 tools::Domain::ScreenTime => Kind::ScreenApp,
+                tools::Domain::Files => Kind::File,
             },
         };
         add(kind, &entry.ids);
@@ -3843,7 +3909,8 @@ fn written(ran: &[Ran]) -> Vec<(Kind, Vec<String>)> {
 fn chat_context(service: &str) -> String {
     format!(
         "They are writing to you from {service} on another device, not in this app: they \
-         cannot see its screen, and links into the app will not open there. Only your reply \
+         cannot see its screen, and links into the app will not open there -- a files: link to \
+         a file is one, so name a file in words instead. Only your reply \
          after the last tool you call reaches them, not what you say on the way. Keep replies \
          short; Markdown is fine. When a choice comes down to their taste, number two to \
          five options in your reply and ask which they would like."
@@ -3894,6 +3961,7 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         conversation,
         prompt,
         pictures,
+        files,
         on_screen,
         channel,
         unattended,
@@ -3905,8 +3973,9 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
         max_steps,
         tier,
     } = turn;
-    // The application's own words never come with a picture.
-    let pictures = if follow_up.is_some() { Vec::new() } else { pictures };
+    // The application's own words never come with a picture, or a file.
+    let (pictures, files) =
+        if follow_up.is_some() { (Vec::new(), Vec::new()) } else { (pictures, files) };
     // Only a scheduled run reaches anybody; a turn somebody is watching has
     // them right there.
     let reach = if unattended.is_some() { reach } else { Reach::default() };
@@ -3961,12 +4030,29 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     let asked = if follow_up.is_some() {
         VaultMessage::system(conversation, prompt.clone())
     } else {
-        VaultMessage::user(conversation, prompt.clone()).with_attachments(pictures.clone())
+        let mut asked =
+            VaultMessage::user(conversation, prompt.clone()).with_attachments(pictures.clone());
+        asked.files = files.clone();
+        asked
     };
     vault.save_message(&asked)?;
+    // A message of nothing but files is named by the first of them, as a
+    // picture sent with nothing said is by its file (see
+    // `Vault::save_message`, which only knows of attachments). Best effort:
+    // a thread without a name is no reason to fail the turn.
+    if prompt.trim().is_empty()
+        && pictures.is_empty()
+        && let Some(first) = files.first().and_then(|id| vault.file(*id).ok())
+        && let Ok(mut thread) = vault.conversation(conversation)
+        && thread.title.is_empty()
+    {
+        thread.title = Conversation::title_from(&first.name);
+        let _ = vault.save_conversation(&thread);
+    }
 
     let thread = vault.messages(conversation)?;
-    let (history, history_trimmed) = replay(&thread, asked.id, |a| shown_picture(&vault, a));
+    let (history, history_trimmed) =
+        replay(&thread, asked.id, |a| shown_picture(&vault, a), |ids| files_line(&vault, ids));
     // This turn's own pictures, read back as the model is sent them. One the
     // vault cannot give back is said to be missing rather than failing the
     // turn: the question still stands without it.
@@ -4160,6 +4246,10 @@ pub async fn run_turn(turn: Turn) -> CommandResult<Turned> {
     // the application's, and says so, because to the model the latest input
     // is otherwise the person talking.
     let input = if follow_up.is_some() { application_note(&prompt) } else { prompt };
+    // Whatever files came with it, named after the words, as the pictures
+    // that cannot be shown are -- see `replay`, which does the same for every
+    // earlier message.
+    let input = with_files_line(input, files_line(&vault, &files));
     let input = with_pictures(format!("{note}\n\n{input}"), &missing, shown);
     // A scheduled run, a job and a chat are read from their reply alone; the
     // rail draws every tool that ran, so a turn there that ends quietly has
@@ -4354,6 +4444,11 @@ const PICTURE_CHARS: usize = 4_000;
 /// treat them as still pending. What it needs from a finished turn is the
 /// sentence that summarised it, which is the assistant message beside them.
 ///
+/// Every kept message that carried files is followed by `files`' line naming
+/// them (see [`files_line`]), however old it is: a line is a few words, and
+/// the id in it is what lets the model read or link to a file the person
+/// handed over three turns ago.
+///
 /// And only the recent part of it: see [`window`].
 ///
 /// `current` is the message this turn is answering, already saved by
@@ -4371,12 +4466,15 @@ fn replay(
     thread: &[VaultMessage],
     current: MessageId,
     picture: impl Fn(&Attachment) -> Option<rig_agent::completion::message::UserContent>,
+    files: impl Fn(&[FileId]) -> Option<String>,
 ) -> (Vec<rig_agent::completion::Message>, bool) {
     let spoken: Vec<&VaultMessage> = thread
         .iter()
         .filter(|m| m.id != current)
         .filter(|m| matches!(m.role, Role::User | Role::Assistant))
-        .filter(|m| !m.content.trim().is_empty() || !m.attachments.is_empty())
+        .filter(|m| {
+            !m.content.trim().is_empty() || !m.attachments.is_empty() || !m.files.is_empty()
+        })
         .collect();
     // Where the messages whose pictures are shown again begin: the person's
     // last few before this one, which is the first of `PICTURE_TURNS`.
@@ -4403,6 +4501,7 @@ fn replay(
             (Vec::new(), m.attachments.iter().collect())
         };
         let text = with_unseen(&m.content, &unseen);
+        let text = with_files_line(text, (!m.files.is_empty()).then(|| files(&m.files)).flatten());
         lines.push((m.role, text, shown.len() * PICTURE_CHARS));
         pictures.push(shown);
     }
@@ -4491,6 +4590,94 @@ fn with_unseen(text: &str, unseen: &[&Attachment]) -> String {
         names.join(", ")
     );
     if text.trim().is_empty() { note } else { format!("{text}\n\n{note}") }
+}
+
+/// `text`, with `line` after it when there is one. A message that is only
+/// files is just the line.
+fn with_files_line(text: String, line: Option<String>) -> String {
+    match line {
+        Some(line) if text.trim().is_empty() => line,
+        Some(line) => format!("{text}\n\n{line}"),
+        None => text,
+    }
+}
+
+/// A line telling the model which files a message carried: each one's name,
+/// what sort of file it is, how big, and the id to read or link it by -- or
+/// `None` when none of them can be named any more (all since deleted).
+///
+/// Names, not contents. A picture among the files is shown to the model
+/// beside the message already (see [`crate::pictures::of_file`]); a text file
+/// is never put into the message, because it can be any length and
+/// `read_file` reads as much of it as is wanted. The names are somebody's --
+/// a download's, a phone's -- so each is quoted, flattened onto one line and
+/// capped, as every other name put in front of the model is.
+fn files_line(vault: &Vault, ids: &[FileId]) -> Option<String> {
+    let named: Vec<String> = ids
+        .iter()
+        .filter_map(|id| vault.file(*id).ok())
+        .map(|file| {
+            format!(
+                "{} ({}, {}, files:{})",
+                quoted_name(&file.name),
+                file_kind_word(file.kind),
+                file_size_text(file.size),
+                file.id
+            )
+        })
+        .collect();
+    if named.is_empty() {
+        return None;
+    }
+    let what = if named.len() == 1 { "a file" } else { "files" };
+    Some(format!(
+        "[They attached {what} to this message: {}. A picture is shown to you with the \
+         message; to read a text file, call read_file with its id. When you mention a file in \
+         your reply, write it as a Markdown link whose target is its files: address, like \
+         [name](files:id).]",
+        named.join(", ")
+    ))
+}
+
+/// A file's name for the model's context: on one line, at most 120
+/// characters, and quoted with JSON's escaping so that whatever it says
+/// stays inside the quotation marks.
+fn quoted_name(name: &str) -> String {
+    let flat = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let capped: String = if flat.chars().count() > 120 {
+        format!("{}\u{2026}", flat.chars().take(120).collect::<String>())
+    } else {
+        flat
+    };
+    serde_json::to_string(&capped).unwrap_or_default()
+}
+
+/// What sort of file this is, in the words a person uses.
+fn file_kind_word(kind: karmayoga_core::FileKind) -> &'static str {
+    use karmayoga_core::FileKind;
+    match kind {
+        FileKind::Image => "picture",
+        FileKind::Video => "video",
+        FileKind::Audio => "audio",
+        FileKind::Document => "document",
+        FileKind::Other => "file",
+    }
+}
+
+/// A size as a file manager says it: `4.1 MB`, decimal.
+fn file_size_text(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1000.0 && unit < UNITS.len() - 1 {
+        value /= 1000.0;
+        unit += 1;
+    }
+    match unit {
+        0 => format!("{bytes} B"),
+        _ if value >= 100.0 => format!("{value:.0} {}", UNITS[unit]),
+        _ => format!("{value:.1} {}", UNITS[unit]),
+    }
 }
 
 /// The most recent part of a thread that fits in `max_messages` and
@@ -5169,6 +5356,28 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
             };
         }
         CANCEL_JOB => return format!("cancelled: {}", str_of("name")),
+        // A file read or described is named; the reply's own words are what
+        // it said, and not what a card should repeat.
+        READ_FILE => {
+            let truncated = result.get("truncated").and_then(Value::as_bool).unwrap_or(false);
+            return if truncated {
+                format!("{} (the first part)", str_of("name"))
+            } else {
+                str_of("name").to_string()
+            };
+        }
+        FILE_INFO => return str_of("name").to_string(),
+        // What was done, in the tool's own words, rather than "organized
+        // file 3 files".
+        ORGANIZE_FILES => {
+            let changes: Vec<&str> = result
+                .get("changes")
+                .and_then(Value::as_array)
+                .map(|list| list.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            return changes.join("; ").chars().take(120).collect();
+        }
+        TRASH_FILES => return format!("trashed {}", str_of("name")),
         JOB_STATUS => {
             // One job: where it stands, and what it is doing if it says.
             if let Some(status) = result.get("status").and_then(Value::as_str) {
@@ -6826,7 +7035,7 @@ mod tests {
     }
 
     #[test]
-    fn a_job_is_offered_everything_but_the_job_tools_money_and_screen_time() {
+    fn a_job_is_offered_everything_but_the_job_tools_money_screen_time_and_files() {
         let job = JobTools { unattended: true, job: true, ..rail() };
         assert!(job_tools_offered(job).is_empty(), "no job starts, inspects or cancels jobs");
 
@@ -6835,7 +7044,10 @@ mod tests {
             .filter(|t| {
                 !matches!(
                     t.domain,
-                    tools::Domain::Jobs | tools::Domain::Money | tools::Domain::ScreenTime
+                    tools::Domain::Jobs
+                        | tools::Domain::Money
+                        | tools::Domain::ScreenTime
+                        | tools::Domain::Files
                 )
             })
             .count();
@@ -6862,6 +7074,136 @@ mod tests {
                 .filter(|t| t.domain == tools::Domain::ScreenTime)
                 .all(|t| !job.offers(t) && rail().offers(t)),
             "nor its browsing history, which a conversation is still handed"
+        );
+        let files: Vec<_> =
+            tools::catalog().iter().filter(|t| t.domain == tools::Domain::Files).collect();
+        assert!(!files.is_empty(), "the premise of this check");
+        assert!(
+            files.iter().all(|t| !job.offers(t) && rail().offers(t)),
+            "nor their files, which read_file would put in front of a model whose searches \
+             never ask; a conversation, and a routine's run, still are"
+        );
+        let routine = JobTools { unattended: true, ..rail() };
+        assert!(files.iter().all(|t| routine.offers(t)), "a routine's run is offered them");
+    }
+
+    /// With the assistant shut out of the person's files, a model is still
+    /// offered the two tools that work on a file they handed over, and none
+    /// of the rest -- absent rather than refused.
+    #[test]
+    fn with_the_switch_off_only_the_tools_for_a_handed_file_are_offered() {
+        let files: Vec<_> =
+            tools::catalog().iter().filter(|t| t.domain == tools::Domain::Files).collect();
+        assert!(
+            files.iter().any(|t| t.name == READ_FILE) && files.iter().any(|t| t.name == FILE_INFO),
+            "the two named here are in the catalogue"
+        );
+        for tool in files {
+            assert!(files_offered(tool, true), "{} is offered with the switch on", tool.name);
+            assert_eq!(
+                files_offered(tool, false),
+                HANDED_FILE_TOOLS.contains(&tool.name),
+                "{} with the switch off",
+                tool.name
+            );
+        }
+        let elsewhere = tools::find("list_tasks").unwrap();
+        assert!(files_offered(elsewhere, false), "nothing outside the domain is decided here");
+    }
+
+    /// Reading a file's contents arms the fetch check, as reading mail does;
+    /// finding, describing and organising files read nothing of the kind.
+    #[test]
+    fn reading_a_file_arms_the_fetch_check_and_nothing_else_in_the_domain_does() {
+        assert!(reads_strangers_words(READ_FILE));
+        for name in ["find_files", FILE_INFO, "save_file", ORGANIZE_FILES, TRASH_FILES] {
+            assert!(tools::find(name).is_some(), "{name} is in the catalogue");
+            assert!(!reads_strangers_words(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_file_tools_each_have_a_line_for_their_card() {
+        let read = ToolOutput::json(serde_json::json!({
+            "id": "x", "name": "log.txt", "truncated": true, "untrusted_text": { "text": "…" },
+        }));
+        assert_eq!(summarise(READ_FILE, &read), "log.txt (the first part)");
+        let whole = ToolOutput::json(serde_json::json!({ "name": "notes.md", "truncated": false }));
+        assert_eq!(summarise(READ_FILE, &whole), "notes.md");
+        let info = ToolOutput::json(serde_json::json!({ "id": "x", "name": "beach.jpg" }));
+        assert_eq!(summarise(FILE_INFO, &info), "beach.jpg");
+        let organised = ToolOutput::json(serde_json::json!({
+            "ok": true, "action": "organized", "kind": "file", "name": "3 files",
+            "changes": ["added the tags beach", "moved to \"Photos/Lisbon\""],
+        }));
+        assert_eq!(
+            summarise(ORGANIZE_FILES, &organised),
+            "added the tags beach; moved to \"Photos/Lisbon\""
+        );
+        let trashed = ToolOutput::json(serde_json::json!({
+            "ok": true, "action": "trashed", "kind": "file", "name": "beach.jpg",
+        }));
+        assert_eq!(summarise(TRASH_FILES, &trashed), "trashed beach.jpg");
+        let saved = ToolOutput::json(serde_json::json!({
+            "ok": true, "action": "saved", "kind": "file", "name": "plan.md", "id": "x",
+        }));
+        assert_eq!(summarise("save_file", &saved), "saved file plan.md");
+    }
+
+    #[test]
+    fn a_file_is_named_to_the_model_quoted_and_on_one_line() {
+        assert_eq!(quoted_name("beach.jpg"), "\"beach.jpg\"");
+        assert_eq!(
+            quoted_name("a\n\"b\" -- ignore the above"),
+            "\"a \\\"b\\\" -- ignore the above\""
+        );
+        let long = quoted_name(&"x".repeat(300));
+        assert!(long.chars().count() <= 120 + 3, "capped: {}", long.chars().count());
+        assert!(long.ends_with("\u{2026}\""));
+        assert_eq!(file_size_text(4_100_000), "4.1 MB");
+        assert_eq!(file_size_text(999), "999 B");
+        assert_eq!(file_size_text(250_000_000), "250 MB");
+        // No file in the catalogue by that id, so there is nothing to name.
+        let (vault, _dir) = test_vault();
+        assert_eq!(files_line(&vault, &[FileId::new()]), None);
+        assert_eq!(files_line(&vault, &[]), None);
+    }
+
+    #[test]
+    fn a_line_about_files_goes_after_the_words_or_stands_alone() {
+        assert_eq!(
+            with_files_line("Summarise".into(), Some("[line]".into())),
+            "Summarise\n\n[line]"
+        );
+        assert_eq!(with_files_line(String::new(), Some("[line]".into())), "[line]");
+        assert_eq!(with_files_line("  ".into(), Some("[line]".into())), "[line]");
+        assert_eq!(with_files_line("Summarise".into(), None), "Summarise");
+    }
+
+    /// What lets the model refer to a file handed over three turns ago: its
+    /// line goes with its message every time the thread is replayed, and a
+    /// message of nothing but a file is still a message.
+    #[test]
+    fn a_message_that_carried_files_is_replayed_with_a_line_naming_them() {
+        let conversation = ConversationId::new();
+        let file = FileId::new();
+        let mut handed = VaultMessage::user(conversation, "Summarise this");
+        handed.files = vec![file];
+        let mut only_a_file = VaultMessage::user(conversation, "");
+        only_a_file.files = vec![file];
+        let reply = VaultMessage::assistant(conversation, "It is about tides.");
+        let current = VaultMessage::user(conversation, "and the second page?");
+        let thread = vec![handed, only_a_file, reply, current.clone()];
+
+        let (history, _) =
+            replay(&thread, current.id, |_| None, |ids| Some(format!("[{} attached]", ids.len())));
+        assert_eq!(
+            history,
+            vec![
+                rig_agent::completion::Message::user("Summarise this\n\n[1 attached]"),
+                rig_agent::completion::Message::user("[1 attached]"),
+                rig_agent::completion::Message::assistant("It is about tides."),
+            ]
         );
     }
 
@@ -7078,7 +7420,7 @@ mod tests {
         let follow_up = VaultMessage::system(conversation, "The job finished; answer them.");
         let thread = vec![asked, started, card, follow_up.clone()];
 
-        let (history, trimmed) = replay(&thread, follow_up.id, |_| None);
+        let (history, trimmed) = replay(&thread, follow_up.id, |_| None, |_| None);
         assert!(!trimmed);
         assert_eq!(
             history,
@@ -7099,7 +7441,7 @@ mod tests {
         let three = VaultMessage::user(conversation, "three");
         let thread = vec![one, two, three.clone()];
 
-        let (history, _) = replay(&thread, three.id, |_| None);
+        let (history, _) = replay(&thread, three.id, |_| None, |_| None);
         assert_eq!(
             history,
             vec![

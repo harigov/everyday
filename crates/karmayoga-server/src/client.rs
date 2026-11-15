@@ -130,6 +130,22 @@ pub struct MailBytes {
     pub bytes: Vec<u8>,
 }
 
+/// What [`RemoteClient::file_range`] answers with: some of a file's bytes, and
+/// what a response made from them needs to say about them.
+pub struct FileBytes {
+    /// The catalog's type for the file, as the server sent it -- never
+    /// sniffed from the bytes.
+    pub content_type: String,
+    /// The whole file's length, not this part's.
+    pub total: u64,
+    /// Where `bytes` begins in the file.
+    pub start: u64,
+    /// Whether the server sent less than the whole file (a `206`), however it
+    /// came to: a `Range` it was asked for, or a file too big to send at once.
+    pub partial: bool,
+    pub bytes: Vec<u8>,
+}
+
 impl RemoteClient {
     /// Pair with the server a link points at, and connect.
     ///
@@ -318,6 +334,71 @@ impl RemoteClient {
             .to_vec();
         self.blobs.lock().unwrap().put(id, offset, bytes.clone());
         Ok(bytes)
+    }
+
+    /// Part of a file in the files catalog -- or all of it, for a small one --
+    /// with its type and where it sits in the whole. `range` is a `Range`
+    /// header's value, passed on as the webview sent it, so the server's
+    /// planner (`routes::file_plan`) decides what a range means for a file
+    /// exactly as it does for a window on the vault's own machine, and a film
+    /// seeks over a network as it seeks off a disk.
+    ///
+    /// Not cached, unlike [`Self::blob_range`]: a file's bytes can change under
+    /// the same id -- something else may edit it in the folder -- so a cache
+    /// over them would need exactly the invalidation this client has no way to
+    /// hear about.
+    pub async fn file_range(&self, id: &str, range: Option<&str>) -> CommandResult<FileBytes> {
+        let mut request = self.request(reqwest::Method::GET, &format!("/v1/files/file/{id}"));
+        if let Some(range) = range {
+            request = request.header("range", range);
+        }
+        let response = request.send().await.map_err(transport)?.error_for_body().await?;
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+        let partial = response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+        let placed = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range);
+        let bytes = response.bytes().await.map_err(transport)?.to_vec();
+        let (start, total) = match (partial, placed) {
+            (true, Some(placed)) => placed,
+            (true, None) => return Err(CommandError::new("network", "that file had no length")),
+            // A `200` is the whole file.
+            (false, _) => (0, bytes.len() as u64),
+        };
+        Ok(FileBytes { content_type, total, start, partial, bytes })
+    }
+
+    /// One chunk of an upload begun with `begin_upload`, at `offset`. Answers
+    /// the bytes the server has received so far, which is how a caller knows
+    /// the chunk landed where it meant it to.
+    ///
+    /// Bytes, not JSON, so its own route rather than a command -- see
+    /// `karmayoga_service::domains::files::upload_chunk`.
+    pub async fn upload_chunk(
+        &self,
+        upload: &str,
+        offset: u64,
+        bytes: Vec<u8>,
+    ) -> CommandResult<u64> {
+        let response = self
+            .request(
+                reqwest::Method::POST,
+                &format!("/v1/files/upload/{}?offset={offset}", encode_segment(upload)),
+            )
+            .header("content-type", "application/octet-stream")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(transport)?;
+        response.error_for_body().await?.json().await.map_err(transport)
     }
 
     /// A rendered message body, and whether it hid remote images -- the
@@ -782,6 +863,33 @@ fn check_protocol(theirs: u32) -> CommandResult<()> {
 }
 
 /// Where `needle` first appears in `haystack`.
+/// `(start, total)` from a `Content-Range` value, `bytes 5-9/20`. `None` for a
+/// range of unknown length (`bytes 5-9/*`) and for anything that is not one:
+/// a server that sends no length has told this client nothing it can plan
+/// the rest of a download by.
+fn parse_content_range(value: &str) -> Option<(u64, u64)> {
+    let spec = value.trim().strip_prefix("bytes")?.trim_start();
+    let (range, total) = spec.split_once('/')?;
+    let (start, _end) = range.split_once('-')?;
+    Some((start.trim().parse().ok()?, total.trim().parse().ok()?))
+}
+
+/// One path segment, percent-encoded. An upload's name is opaque to this
+/// client -- the service decides what one looks like -- so it is not trusted
+/// to be free of anything that would end the segment or the path.
+fn encode_segment(segment: &str) -> String {
+    let mut out = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|window| window == needle)
 }
@@ -950,5 +1058,30 @@ mod tests {
         assert_eq!(cache.get("abc", 0, 32), None);
         assert_eq!(cache.len_of("abc"), None);
         assert_eq!(cache.bytes, 0);
+    }
+}
+
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    #[test]
+    fn a_content_range_says_where_a_part_starts_and_how_long_the_file_is() {
+        assert_eq!(parse_content_range("bytes 0-0/1234"), Some((0, 1234)));
+        assert_eq!(
+            parse_content_range("bytes 4194304-8388607/20000000"),
+            Some((4_194_304, 20_000_000))
+        );
+        // No length is no plan.
+        assert_eq!(parse_content_range("bytes 0-9/*"), None);
+        assert_eq!(parse_content_range("items 0-9/20"), None);
+        assert_eq!(parse_content_range(""), None);
+    }
+
+    #[test]
+    fn an_upload_name_cannot_end_its_segment() {
+        assert_eq!(encode_segment("0192-abc_DEF.~"), "0192-abc_DEF.~");
+        assert_eq!(encode_segment("a/b?c=d e"), "a%2Fb%3Fc%3Dd%20e");
+        assert_eq!(encode_segment("../x"), "..%2Fx");
     }
 }

@@ -1114,6 +1114,7 @@ async fn resume(
         conversation: conversation.id,
         prompt,
         pictures: Vec::new(),
+        files: Vec::new(),
         on_screen: None,
         // Nothing is listening: there is no window on the other end of a
         // scheduled run. The events are dropped rather than buffered, and what

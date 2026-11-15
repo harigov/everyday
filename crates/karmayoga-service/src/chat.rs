@@ -464,13 +464,44 @@ impl Service {
     /// handed them over, each with its name. They are made into pictures for
     /// the model and stored first -- see [`crate::pictures`] -- and one that
     /// cannot be read fails the turn with a sentence saying so, before
-    /// anything is written, so the owner can send another.
+    /// anything is written, so the owner can send another. Each is kept in
+    /// Files as well: see [`Service::chat_turn_with_files`].
     pub async fn chat_turn(
         self: &Arc<Self>,
         via: Via,
         conversation: ConversationId,
         prompt: String,
         pictures: Vec<(Vec<u8>, String)>,
+        sink: Sink,
+    ) -> CommandResult<Turned> {
+        self.chat_turn_with_files(via, conversation, prompt, pictures, Vec::new(), sink).await
+    }
+
+    /// [`Service::chat_turn`], for an owner who sent files too: documents,
+    /// films, recordings -- anything that is not a picture for the model to
+    /// look at -- each with its name.
+    ///
+    /// Every one is saved into Files, origin `Chat`, as the file it is: the
+    /// original, not the 2048-pixel copy a model is shown, which is made for
+    /// a picture as before and kept with the message. The assistant is handed
+    /// the ids with the message, so it can name and read them (a file it was
+    /// handed it may always read, whatever Settings → Files says about the
+    /// rest) and link to them.
+    ///
+    /// The order is the point. Pictures are made ready for the model first, so
+    /// one that cannot be read fails the turn before anything is written, as
+    /// it always did. Only then is anything put in the files folder. A picture
+    /// that cannot be kept there is not worth failing the turn for -- the
+    /// model still has its copy, and the question is still answerable -- but a
+    /// document that cannot is: there is nothing else to do with it, and the
+    /// owner is told why in the sentence the turn fails with.
+    pub async fn chat_turn_with_files(
+        self: &Arc<Self>,
+        via: Via,
+        conversation: ConversationId,
+        prompt: String,
+        pictures: Vec<(Vec<u8>, String)>,
+        documents: Vec<(Vec<u8>, String)>,
         sink: Sink,
     ) -> CommandResult<Turned> {
         let vault = self.require()?;
@@ -484,10 +515,41 @@ impl Service {
                 ),
             ));
         }
-        let mut stored = Vec::with_capacity(pictures.len());
-        for (bytes, filename) in pictures {
-            stored.push(crate::pictures::store(&vault, bytes, filename).await?);
+        if pictures.len() + documents.len() > crate::pictures::MAX_FILES_PER_MESSAGE {
+            return Err(crate::error::CommandError::new(
+                crate::error::codes::INVALID,
+                format!(
+                    "That is more files than I can take at once. Send at most {} with one \
+                     message.",
+                    crate::pictures::MAX_FILES_PER_MESSAGE
+                ),
+            ));
         }
+        let mut stored = Vec::with_capacity(pictures.len());
+        for (bytes, filename) in &pictures {
+            stored.push(crate::pictures::store(&vault, bytes.clone(), filename.clone()).await?);
+        }
+
+        let mut files = Vec::with_capacity(pictures.len() + documents.len());
+        for (bytes, filename) in pictures {
+            match keep_in_files(&vault, bytes, filename).await {
+                Ok(id) => files.push(id),
+                Err(e) => tracing::warn!(
+                    error = %e.message,
+                    "could not keep a picture from a chat in Files; the model still has its copy"
+                ),
+            }
+        }
+        for (bytes, filename) in documents {
+            let kept = keep_in_files(&vault, bytes, filename.clone()).await.map_err(|e| {
+                crate::error::CommandError::new(
+                    &e.code,
+                    format!("I couldn't save {filename:?} to your Files: {}", e.message),
+                )
+            })?;
+            files.push(kept);
+        }
+
         let turned = crate::agent::run_turn(Turn {
             service: self.clone(),
             vault,
@@ -495,6 +557,7 @@ impl Service {
             conversation,
             prompt,
             pictures: stored,
+            files,
             // Whoever is writing from a phone cannot be looking at this
             // application's screen, so there is nothing on it to describe.
             on_screen: None,
@@ -520,6 +583,62 @@ impl Service {
         self.announce_turn(&turned, conversation, Some("chat".to_string()));
         Ok(turned)
     }
+}
+
+/// Save what the owner sent into Files as it came, origin `Chat`, and answer
+/// the new file's id. On the blocking pool: it writes the bytes to the files
+/// folder and a record to the vault.
+async fn keep_in_files(
+    vault: &Arc<Vault>,
+    bytes: Vec<u8>,
+    filename: String,
+) -> CommandResult<karmayoga_core::FileId> {
+    let vault = vault.clone();
+    crate::service::blocking(move || {
+        let name = file_name(&filename, &bytes);
+        let options = karmayoga_core::ImportOptions::new(karmayoga_core::FileOrigin::Chat);
+        Ok(vault.import_bytes(&bytes, &name, &options)?.id)
+    })
+    .await
+}
+
+/// What to call a file a chat sent: the name its sender's device gave it,
+/// without any directories or control characters and at most 200 characters
+/// -- or, when it came without one, a name made from what its bytes are.
+fn file_name(given: &str, bytes: &[u8]) -> String {
+    let base = given.rsplit(['/', '\\']).next().unwrap_or("").trim();
+    let clean: String =
+        base.chars().take(200).map(|c| if c.is_control() { '_' } else { c }).collect();
+    if !clean.is_empty() {
+        return clean;
+    }
+    let mime = karmayoga_core::media::sniff_mime(bytes);
+    let stem = match mime.split('/').next().unwrap_or("") {
+        "image" => "picture",
+        "video" => "video",
+        "audio" => "recording",
+        _ => "file",
+    };
+    let extension = match mime {
+        "image/jpeg" => "jpg",
+        "image/png" => "png",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        "image/heic" => "heic",
+        "image/avif" => "avif",
+        "image/bmp" => "bmp",
+        "video/mp4" => "mp4",
+        "video/quicktime" => "mov",
+        "video/webm" => "webm",
+        "audio/mpeg" => "mp3",
+        "audio/mp4" => "m4a",
+        "audio/wav" => "wav",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        "application/pdf" => "pdf",
+        _ => "bin",
+    };
+    format!("{stem}.{extension}")
 }
 
 /// Where a link stands, once what its connector last said is held up against
@@ -814,5 +933,23 @@ mod tests {
     fn a_task_is_named_by_its_link() {
         let id = ChatLinkId::new();
         assert_eq!(task_key(id), format!("chat:{id}"));
+    }
+
+    #[test]
+    fn a_file_from_a_chat_keeps_its_own_name_without_directories_or_control_characters() {
+        assert_eq!(file_name("minutes.pdf", b"%PDF-1.7"), "minutes.pdf");
+        assert_eq!(file_name("/storage/emulated/0/DCIM/IMG_1.jpg", b""), "IMG_1.jpg");
+        assert_eq!(file_name("C:\\Users\\me\\notes.txt", b""), "notes.txt");
+        assert_eq!(file_name("a\nb.txt", b""), "a_b.txt");
+        assert_eq!(file_name(&"x".repeat(300), b"").chars().count(), 200);
+    }
+
+    #[test]
+    fn a_file_from_a_chat_with_no_name_is_named_for_what_it_is() {
+        assert_eq!(file_name("", b"\x89PNG\r\n\x1a\n...."), "picture.png");
+        assert_eq!(file_name("  ", &[0xFF, 0xD8, 0xFF, 0xE0]), "picture.jpg");
+        assert_eq!(file_name("", b"%PDF-1.7"), "file.pdf");
+        assert_eq!(file_name("", b"OggS...."), "recording.ogg");
+        assert_eq!(file_name("", b"nothing it knows"), "file.bin");
     }
 }

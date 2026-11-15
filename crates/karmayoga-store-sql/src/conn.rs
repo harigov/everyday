@@ -144,6 +144,14 @@ impl Row {
         }
     }
 
+    pub fn opt_bytes(&self, i: usize) -> Result<Option<Vec<u8>>> {
+        match self.at(i)? {
+            Value::Null => Ok(None),
+            Value::Bytes(b) => Ok(Some(b.clone())),
+            _ => Err(self.wrong(i, "bytes or null")),
+        }
+    }
+
     /// Accepts a real too: `SUM` over an integer column is exact in SQLite
     /// and a `numeric` in Postgres, and both are integers in fact.
     pub fn i64(&self, i: usize) -> Result<i64> {

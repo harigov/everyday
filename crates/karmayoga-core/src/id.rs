@@ -149,6 +149,11 @@ typed_id!(ScreenSpanId, "screen_span");
 typed_id!(ScreenAppId, "screen_app");
 typed_id!(ScreenCategoryId, "screen_category");
 
+// Files: one file in the catalog -- a plain file in the files folder or one
+// sealed in the vault -- and an album of them. See `crate::files`.
+typed_id!(FileId, "file");
+typed_id!(AlbumId, "album");
+
 // The tracking domain. A `TrackerId` names a thing you decided to record --
 // a habit, a supplement, a symptom -- and is a vault record in its own right,
 // not a setting of any one journal; a `ReadingId` names one recorded value. The split matters more here than

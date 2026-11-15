@@ -226,6 +226,11 @@ pub enum Kind {
     /// arrive every half minute from every collector, and what a listener
     /// does about any of them is reload what it shows.
     ScreenSpan,
+    /// A file in the files catalog. The reconciler raises one with no id,
+    /// meaning "reload", after a pass that changed anything.
+    File,
+    /// An album of files.
+    Album,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
     /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --
@@ -294,6 +299,8 @@ impl TryFrom<Kind> for RecordKind {
             Kind::MoneyRule => Ok(RecordKind::MoneyRule),
             Kind::ScreenApp => Ok(RecordKind::ScreenApp),
             Kind::ScreenCategory => Ok(RecordKind::ScreenCategory),
+            Kind::File => Ok(RecordKind::File),
+            Kind::Album => Ok(RecordKind::Album),
             // Not a record kind: spans are written by the thousand and
             // never one at a time by a person.
             Kind::ScreenSpan => Err(()),
@@ -354,6 +361,8 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::MoneyRule => Ok(Kind::MoneyRule),
             RecordKind::ScreenApp => Ok(Kind::ScreenApp),
             RecordKind::ScreenCategory => Ok(Kind::ScreenCategory),
+            RecordKind::File => Ok(Kind::File),
+            RecordKind::Album => Ok(Kind::Album),
             // Folded into `Kind::Thread` -- see this impl's docs.
             RecordKind::MailMessage | RecordKind::Op => Err(()),
             // Folded into `Kind::Conversation` -- see this impl's docs.
@@ -536,7 +545,7 @@ mod tests {
     //! the docs on those impls name.
     use super::*;
 
-    const RECORD_KINDS: [Kind; 38] = [
+    const RECORD_KINDS: [Kind; 40] = [
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
@@ -575,6 +584,8 @@ mod tests {
         Kind::MoneyRule,
         Kind::ScreenApp,
         Kind::ScreenCategory,
+        Kind::File,
+        Kind::Album,
     ];
 
     #[test]

@@ -1393,6 +1393,444 @@
       "events": []
     },
     {
+      "command": "set_up_files_folder",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_files_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "create_folder",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "import_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "created",
+          "origin": "local"
+        },
+        {
+          "idPresent": false,
+          "idsLen": 2,
+          "kind": "file",
+          "op": "updated",
+          "origin": null
+        }
+      ]
+    },
+    {
+      "command": "begin_upload",
+      "events": []
+    },
+    {
+      "command": "finish_upload",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "created",
+          "origin": "local"
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": null
+        }
+      ]
+    },
+    {
+      "command": "begin_upload",
+      "events": []
+    },
+    {
+      "command": "cancel_upload",
+      "events": []
+    },
+    {
+      "command": "rename_file",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "create_folder",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "move_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 2,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "rename_folder",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "move_folder",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "update_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "stack_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "unstack_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_file_encrypted",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_file_encrypted",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_file_thumbnail",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_album",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "album",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "add_to_album",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "album",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "remove_from_album",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "album",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_album",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "album",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "rescan_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": null
+        },
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": null
+        },
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "rescan_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": null
+        },
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "restore_file_from_backup",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "forget_missing_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "file",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "bring_in_attachments",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "trash_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "restore_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "trash_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_files_forever",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "file",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "trash_files",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "empty_files_trash",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "trash_folder",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "file",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_chat_link",
       "events": [
         {
@@ -1685,6 +2123,13 @@
           "kind": "backgroundTask",
           "op": "updated",
           "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
         }
       ]
     }
@@ -1797,6 +2242,10 @@
     {
       "name": "run_backup",
       "reason": "copies the vault in the background; see backup::tests for what it does"
+    },
+    {
+      "name": "save_mail_part_to_files",
+      "reason": "needs a message whose attachment is in a real synced pack"
     },
     {
       "name": "send_message",

@@ -199,6 +199,29 @@ fn located(row: &Value) -> Option<Located> {
     Some(Located { point, label, country_code })
 }
 
+/// The geocoder's address for what is at `point`, at the zoom of a
+/// neighbourhood or a village: the name a person gives the place a photo was
+/// taken, rather than the house number it was taken outside.
+pub fn reverse_url(point: Point) -> String {
+    format!(
+        "https://nominatim.openstreetmap.org/reverse?lat={:.6}&lon={:.6}&format=jsonv2\
+         &zoom=14&addressdetails=1&accept-language=en",
+        point.latitude, point.longitude
+    )
+}
+
+/// Read the geocoder's answer to [`reverse_url`]: a place's name and its
+/// town ("Fort Kochi, Kochi"). `None` where there is nothing to name -- the
+/// open sea answers an error object, which is not a failure.
+pub fn parse_reverse(body: &str) -> Result<Option<String>> {
+    let root: Value = serde_json::from_str(body)
+        .map_err(|e| Error::Invalid(format!("{GEOCODER}'s answer could not be read: {e}")))?;
+    if error_of(&root).is_some() {
+        return Ok(None);
+    }
+    Ok(located(&root).map(|l| l.label).filter(|label| !label.trim().is_empty()))
+}
+
 /// Where a search for places looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Area {
@@ -1536,5 +1559,20 @@ mod tests {
         let km = NEEDLE.distance_km(Point { latitude: 47.6179341, longitude: -122.3475939 });
         assert!((km - 0.3127).abs() < 0.001, "{km}");
         assert_eq!(NEEDLE.distance_km(NEEDLE), 0.0);
+    }
+
+    #[test]
+    fn a_reverse_lookup_names_the_place_or_nothing_at_sea() {
+        let url = reverse_url(Point { latitude: 9.964_8, longitude: 76.242_1 });
+        assert!(
+            url.starts_with(
+                "https://nominatim.openstreetmap.org/reverse?lat=9.964800&lon=76.242100"
+            )
+        );
+        let body = r#"{"lat":"9.9648","lon":"76.2421","name":"Fort Kochi",
+            "address":{"suburb":"Fort Kochi","city":"Kochi","country_code":"in"}}"#;
+        assert_eq!(parse_reverse(body).unwrap().as_deref(), Some("Fort Kochi, Kochi"));
+        assert_eq!(parse_reverse(r#"{"error":"Unable to geocode"}"#).unwrap(), None);
+        assert!(parse_reverse("not json").is_err());
     }
 }

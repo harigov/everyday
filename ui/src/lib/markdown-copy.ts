@@ -254,8 +254,12 @@ function media(node: PMNode): string {
   const attr = (key: string) => (typeof node.attrs?.[key] === 'string' ? node.attrs[key] : '')
   const caption = attr('caption')
   const blob = attr('blob')
-  if (attr('kind') === 'image') return `![${caption}](media/${blob})`
-  return `[${caption || attr('filename') || blob}](media/${blob})`
+  const file = attr('file')
+  // A node naming a file in the files catalog rather than a blob links to it
+  // by id, the way a blob is linked by address.
+  const target = !blob && file ? `files/${file}` : `media/${blob}`
+  if (attr('kind') === 'image') return `![${caption}](${target})`
+  return `[${caption || attr('filename') || blob || file}](${target})`
 }
 
 /** A code block's text, as typed. */

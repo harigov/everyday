@@ -98,7 +98,14 @@ pub fn write(
     }
     for (blob, filename) in &wanted {
         if let Some(path) = files.media(store, *blob, filename, opts)? {
-            links.insert(blob.to_hex(), format!("{up}{path}"));
+            links.insert(format!("media/{}", blob.to_hex()), format!("{up}{path}"));
+        }
+    }
+    // And the files a media node names from the files catalog, which the
+    // Markdown links as `files/<id>`.
+    for id in body.file_refs() {
+        if let Some(path) = files.catalogued(store, id, opts)? {
+            links.insert(format!("files/{id}"), format!("{up}{path}"));
         }
     }
 
@@ -114,12 +121,12 @@ pub fn write(
     // would otherwise be in the archive and mentioned nowhere.
     let loose: Vec<&Attachment> = attachments
         .iter()
-        .filter(|a| !body.blob_refs().contains(&a.blob) && links.contains_key(&a.blob.to_hex()))
+        .filter(|a| !body.blob_refs().contains(&a.blob) && links.contains_key(&media_key(a.blob)))
         .collect();
     if !loose.is_empty() {
         markdown.push_str("\n## Attached\n\n");
         for a in loose {
-            let path = &links[&a.blob.to_hex()];
+            let path = &links[&media_key(a.blob)];
             let label = if a.caption.is_empty() { &a.filename } else { &a.caption };
             let bang = if matches!(a.kind, MediaKind::Image) { "!" } else { "" };
             markdown.push_str(&format!("{bang}[{label}]({path})\n"));
@@ -129,7 +136,7 @@ pub fn write(
     let mut front = front;
     if !links.is_empty() {
         let mut paths: Vec<String> =
-            attachments.iter().filter_map(|a| links.get(&a.blob.to_hex()).cloned()).collect();
+            attachments.iter().filter_map(|a| links.get(&media_key(a.blob)).cloned()).collect();
         paths.dedup();
         front.list("attachments", &paths);
     }
@@ -143,16 +150,23 @@ pub fn write(
     Ok(Written { markdown: format!("{}{markdown}", front.render()), sidecar })
 }
 
-/// Point every `media/<blob>` link at the file that was actually written.
+/// The key a blob's link is kept under in `links`: the target
+/// [`RichDoc::to_markdown`] gave it.
+fn media_key(blob: BlobId) -> String {
+    format!("media/{}", blob.to_hex())
+}
+
+/// Point every `media/<blob>` and `files/<id>` link at the file that was
+/// actually written.
 ///
-/// [`RichDoc::to_markdown`] writes the blob's address as the path, because in
-/// the vault the address *is* the file. In an archive the file has a name a
-/// person can read, and a link to a 64-character hex string that is not there
-/// would be worse than no link.
+/// [`RichDoc::to_markdown`] writes the blob's address, or the catalogued
+/// file's id, as the path, because in the vault that *is* the file. In an
+/// archive the file has a name a person can read, and a link to a hex string
+/// that is not there would be worse than no link.
 fn relink(markdown: &str, links: &BTreeMap<String, String>) -> String {
     let mut out = markdown.to_string();
-    for (blob, path) in links {
-        out = out.replace(&format!("](media/{blob})"), &format!("]({path})"));
+    for (target, path) in links {
+        out = out.replace(&format!("]({target})"), &format!("]({path})"));
     }
     out
 }
@@ -195,6 +209,11 @@ pub fn read(
         .and_then(|bytes| serde_json::from_slice::<Sidecar>(bytes).ok())
         .filter(|s| s.digest == digest(&strip_front_matter(source)));
 
+    // A sidecar whose document names files this vault's catalog does not
+    // hold -- an archive from another vault -- is read the long way instead:
+    // the files were written beside the attachments in `media/`, and the
+    // links in the Markdown bring them in as attachments.
+    let sidecar = sidecar.filter(|s| names_only_files_held(store, &s.body));
     if let Some(sidecar) = sidecar {
         return Ok(Read { fields, title, body: sidecar.body, attachments: sidecar.attachments });
     }
@@ -204,6 +223,19 @@ pub fn read(
     // could have expressed them.
     let (body, attachments) = from_markdown(store, src, name, body_text)?;
     Ok(Read { fields, title, body, attachments })
+}
+
+/// Whether every file `body` names from the files catalog is in this
+/// store's.
+fn names_only_files_held(store: &dyn JournalStore, body: &RichDoc) -> bool {
+    let wanted: Vec<karmayoga_core::FileId> = body.file_refs().into_iter().collect();
+    if wanted.is_empty() {
+        return true;
+    }
+    store
+        .files()
+        .and_then(|catalog| catalog.get_files(&wanted).ok())
+        .is_some_and(|held| held.len() == wanted.len())
 }
 
 fn strip_front_matter(source: &str) -> String {

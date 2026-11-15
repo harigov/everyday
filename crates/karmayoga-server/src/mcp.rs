@@ -57,7 +57,7 @@
 //! listed and then refused. A gate whose refusal explains how to get past it
 //! is not a gate.
 //!
-//! # Money and Screen time need asking for by name
+//! # Money, Screen time and Files need asking for by name
 //!
 //! A token is issued with [`Scope::All`] unless its owner narrows it, and
 //! most were minted before Money existed. What somebody earns and spends is
@@ -73,8 +73,17 @@
 //! from the other direction: which apps and sites somebody spent each day
 //! on is their browsing history, and a token minted for a coding agent
 //! before Screen time existed must not wake up able to read it. The tools
-//! are offered only to a token that names `screentime`. [`by_name`] is the
-//! one list of such domains, so a third is one line there.
+//! are offered only to a token that names `screentime`.
+//!
+//! Files is the third: what is in somebody's files folder -- documents,
+//! photographs of everyone they know -- is as private as anything in the
+//! vault, and a token minted for a coding agent must not wake up able to
+//! read it. Its tools are offered only to a token that names `files`, and
+//! then only while the person has let the assistant look through their files
+//! (Settings → Files): over MCP there is no conversation to have handed a
+//! file in, so with that switch off the file tools are not listed at all.
+//! [`by_name`] is the one list of such domains, so a fourth is one line
+//! there.
 //!
 //! # Outward tools over MCP
 //!
@@ -366,6 +375,11 @@ impl karmayoga_mcp::Host for VaultHost {
             if !unlocked {
                 return Ok(Vec::new());
             }
+            // Whether the person has let the assistant look through their
+            // files at all. Read once per listing, from the vault, so
+            // switching it off in Settings takes the file tools out of the
+            // very next `tools/list`.
+            let files_open = files_open(&service);
 
             // This caller's own identity, minted server-side from the
             // authenticated bearer token rather than taken from anything on
@@ -394,10 +408,14 @@ impl karmayoga_mcp::Host for VaultHost {
                 // filtered on above -- see the module doc's "Outward tools
                 // over MCP".
                 .filter(|t| allow_destructive || t.effect != "destructive")
-                // Money and Screen time only for a token that names them --
-                // see the module doc's "Money and Screen time need asking
-                // for by name".
+                // Money, Screen time and Files only for a token that names
+                // them -- see the module doc's "Money, Screen time and Files
+                // need asking for by name".
                 .filter(|t| named_if_needed(&named_ctx, &t.name).is_ok())
+                // And no file tools at all while the assistant may not look
+                // through the files: there is no conversation here for a
+                // file to have been handed in.
+                .filter(|t| files_open || !is_file_tool(&t.name))
                 .map(|t| ToolDef {
                     name: t.name,
                     title: t.title,
@@ -424,8 +442,9 @@ impl karmayoga_mcp::Host for VaultHost {
             // Checked against the catalogue directly, not against this
             // caller's own `tools()` answer -- cheaper than a round trip
             // through `Service::call` just to ask a question this process
-            // can answer from `karmayoga_core::agent::tools` alone, and the
-            // answer is the same one `tools()` would have filtered on.
+            // can answer from `karmayoga_core::agent::tools` alone -- and
+            // every filter `tools()` applies is applied here too, so a tool
+            // left out of the list cannot be called by name instead.
             if let Err((what, scope)) = named_if_needed(&ctx, &name) {
                 return Err(HostError {
                     code: "forbidden".to_string(),
@@ -433,6 +452,19 @@ impl karmayoga_mcp::Host for VaultHost {
                         "{name} reads or changes {what}, and this connection's token was not \
                          given the {} scope",
                         scope.as_str()
+                    ),
+                });
+            }
+            // The person's switch for letting the assistant look through
+            // their files, read now as `tools()` reads it. No file was
+            // handed in a conversation here, so a tool's own exception for
+            // one does not apply: over MCP the switch is the whole answer.
+            if is_file_tool(&name) && !files_open(&service) {
+                return Err(HostError {
+                    code: "forbidden".to_string(),
+                    message: format!(
+                        "{name} looks through the files, and the assistant is not allowed to \
+                         (Settings \u{2192} Files)"
                     ),
                 });
             }
@@ -479,14 +511,30 @@ impl karmayoga_mcp::Host for VaultHost {
 
 /// The domains whose tools a token reaches only by naming their scope, not
 /// through [`Scope::All`]: what each is called in a refusal, and the scope
-/// it has to name. See the module doc's "Money and Screen time need asking
-/// for by name".
+/// it has to name. See the module doc's "Money, Screen time and Files need
+/// asking for by name".
 fn by_name(domain: Domain) -> Option<(&'static str, Scope)> {
     match domain {
         Domain::Money => Some(("Money", Scope::Money)),
         Domain::ScreenTime => Some(("Screen time", Scope::ScreenTime)),
+        Domain::Files => Some(("Files", Scope::Files)),
         _ => None,
     }
+}
+
+/// Whether the person has let the assistant look through their files: the
+/// one switch both `tools()` and `call` read. A vault that cannot say (no
+/// catalog, locked) is closed.
+fn files_open(service: &Service) -> bool {
+    service
+        .get()
+        .and_then(|vault| vault.files_settings().ok())
+        .is_some_and(|settings| settings.assistant_access)
+}
+
+/// Is `tool` one of the file tools?
+fn is_file_tool(tool: &str) -> bool {
+    karmayoga_core::agent::tools::find(tool).is_some_and(|t| t.domain == Domain::Files)
 }
 
 /// May this caller see or run `tool`? Every tool outside [`by_name`]'s
@@ -866,26 +914,38 @@ mod tests {
             .name
     }
 
-    /// `All` reaches every domain but the two that have to be named, and
-    /// naming one of them reaches that one and not the other. See the
-    /// module doc's "Money and Screen time need asking for by name".
+    /// `All` reaches every domain but the three that have to be named, and
+    /// naming one of them reaches that one and not the others. See the
+    /// module doc's "Money, Screen time and Files need asking for by name".
     #[test]
-    fn money_and_screen_time_are_reached_only_by_naming_them() {
+    fn money_screen_time_and_files_are_reached_only_by_naming_them() {
         let money = a_tool_of(Domain::Money);
         let screen = a_tool_of(Domain::ScreenTime);
+        let files = a_tool_of(Domain::Files);
         let journal = a_tool_of(Domain::Journals);
 
         let everything = token(vec![Scope::All]);
         assert!(named_if_needed(&everything, journal).is_ok());
         assert_eq!(named_if_needed(&everything, money), Err(("Money", Scope::Money)));
         assert_eq!(named_if_needed(&everything, screen), Err(("Screen time", Scope::ScreenTime)));
+        assert_eq!(named_if_needed(&everything, files), Err(("Files", Scope::Files)));
 
         let screen_only = token(vec![Scope::ScreenTime]);
         assert!(named_if_needed(&screen_only, screen).is_ok());
         assert!(named_if_needed(&screen_only, money).is_err());
+        assert!(named_if_needed(&screen_only, files).is_err());
 
-        let both = token(vec![Scope::All, Scope::Money, Scope::ScreenTime]);
-        assert!(named_if_needed(&both, money).is_ok() && named_if_needed(&both, screen).is_ok());
+        let files_only = token(vec![Scope::Files]);
+        assert!(named_if_needed(&files_only, files).is_ok());
+        assert!(named_if_needed(&files_only, money).is_err());
+        assert!(named_if_needed(&files_only, screen).is_err());
+
+        let all_three = token(vec![Scope::All, Scope::Money, Scope::ScreenTime, Scope::Files]);
+        assert!(
+            named_if_needed(&all_three, money).is_ok()
+                && named_if_needed(&all_three, screen).is_ok()
+                && named_if_needed(&all_three, files).is_ok()
+        );
 
         // A name the catalogue does not know is nobody's to gate here.
         assert!(named_if_needed(&everything, "no_such_tool").is_ok());

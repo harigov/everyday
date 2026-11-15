@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 29;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -117,6 +117,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v26(),
         v27(d),
         v28(d),
+        v29(d),
     ]
 }
 
@@ -1843,6 +1844,124 @@ fn v28(d: Dialect) -> Vec<String> {
     )]
 }
 
+/// Version 29: Files -- the catalog of what is in the files folder and what
+/// is sealed in the vault, which records refer to which files, albums, and
+/// the settings. See `docs/plans/files.md` and `karmayoga_core::files`.
+///
+/// Additive. Five tables:
+///
+/// - `files`: one row per file, sealed whole in `data` under its id. What is
+///   in the clear is what an index is built from, and splits in two by
+///   `storage`. For *every* file: `storage` (`plain` or `sealed`), `kind`,
+///   `size`, `origin`, `status`, `rating`, `favourite`, `hidden`, `stack`,
+///   the two timestamps, and `blob` and `thumb`, the blob ids of a sealed
+///   file's contents and of its thumbnail -- clear so that garbage
+///   collection reads them without opening a record, and safe because a blob
+///   id is a *keyed* hash. For a *plain* file only: `modified_us` and
+///   `when_us` (when it was taken), timestamps as every table here keeps
+///   them; and `path_key`, `dir_key` and `hash_key`, which are *keyed*
+///   hashes of its path, its folder and its contents under a subkey of the
+///   vault key. Not the path, the folder, the name or the content hash
+///   themselves: the folder may be on an encrypted volume that is locked
+///   while somebody holds a copy of this database, and then a readable
+///   `Lawyer/settlement.pdf` here would say what the volume was locked to
+///   keep, and a readable content hash would let anyone confirm a file they
+///   already have is among these. A token answers "this path", "this
+///   folder" and "these contents" for the indexes and nothing else. `idx` is
+///   the path and the hash again, sealed, for the reconciler, which compares
+///   every file against the disk every few minutes and should not have to
+///   open whole records to do it. A sealed file's are all `NULL`, and its
+///   time sorts by `added_us`. Never a caption, a tag, a person, a place, a
+///   property or anything the file says about itself. The partial unique
+///   index is the rule that a plain file's path is its own among files not
+///   in the trash (a trashed file's path is its place in the trash, which is
+///   unique anyway). The rest answer the listings: a folder (`dir_key`), a
+///   timeline (`when_us`, `kind` and `when_us`), "the same contents"
+///   (`hash_key`), what arrived lately (`added_us`), what is missing or
+///   trashed (`status`), and what is stacked under a file (`stack`).
+/// - `file_refs`: which entry, note or message refers to which file -- the
+///   "used in" answer and the Unused view. Maintained on every save of an
+///   owner, with a rebuild from the records as the backstop. Owner ids are
+///   text, as a record's id is everywhere.
+/// - `albums`: nothing in the clear but the two timestamps; a name and a
+///   description say what somebody collects.
+/// - `album_files`: membership, with the order files were added in.
+/// - `files_settings`: a singleton on `screen_settings`' shape.
+///
+/// No foreign keys, as nowhere else in this schema: the store deletes a
+/// file's references and memberships in the same transaction as the file.
+fn v29(d: Dialect) -> Vec<String> {
+    let (blob, int, boolean, f) = (d.blob(), d.int(), d.boolean(), d.bool_default(false));
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS files (
+                 id           TEXT    PRIMARY KEY NOT NULL,
+                 storage      TEXT    NOT NULL,
+                 path_key     TEXT,
+                 dir_key      TEXT,
+                 hash_key     TEXT,
+                 idx          {blob},
+                 blob         TEXT,
+                 thumb        TEXT,
+                 kind         TEXT    NOT NULL,
+                 size         {int} NOT NULL,
+                 modified_us  {int},
+                 when_us      {int},
+                 origin       TEXT    NOT NULL,
+                 status       TEXT    NOT NULL,
+                 rating       {int},
+                 favourite    {boolean} NOT NULL DEFAULT {f},
+                 hidden       {boolean} NOT NULL DEFAULT {f},
+                 stack        TEXT,
+                 added_us     {int} NOT NULL,
+                 updated_us   {int} NOT NULL,
+                 data         {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS files_by_path ON files (path_key)
+             WHERE path_key IS NOT NULL AND status <> 'trashed'"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS files_by_dir ON files (dir_key)".into(),
+        "CREATE INDEX IF NOT EXISTS files_by_when ON files (when_us)".into(),
+        "CREATE INDEX IF NOT EXISTS files_by_kind_when ON files (kind, when_us)".into(),
+        "CREATE INDEX IF NOT EXISTS files_by_hash ON files (hash_key)".into(),
+        "CREATE INDEX IF NOT EXISTS files_by_added ON files (added_us)".into(),
+        "CREATE INDEX IF NOT EXISTS files_by_status ON files (status)".into(),
+        "CREATE INDEX IF NOT EXISTS files_by_stack ON files (stack)".into(),
+        "CREATE TABLE IF NOT EXISTS file_refs (
+             file_id     TEXT NOT NULL,
+             owner_kind  TEXT NOT NULL,
+             owner_id    TEXT NOT NULL,
+             PRIMARY KEY (file_id, owner_kind, owner_id)
+         )"
+        .into(),
+        "CREATE INDEX IF NOT EXISTS file_refs_by_owner ON file_refs (owner_kind, owner_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS albums (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS album_files (
+                 album_id  TEXT    NOT NULL,
+                 file_id   TEXT    NOT NULL,
+                 position  {int} NOT NULL,
+                 PRIMARY KEY (album_id, file_id)
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS album_files_by_file ON album_files (file_id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS files_settings (
+                 id          {int} PRIMARY KEY CHECK (id = 1),
+                 data        {blob} NOT NULL
+             )"
+        ),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1888,6 +2007,57 @@ mod tests {
         // running the conformance suite against both dialects.
         for sql in steps(Dialect::Postgres).concat().iter().chain(&blobs_table(Dialect::Postgres)) {
             assert!(!sql.contains('?'), "DDL must not contain a question mark: {sql}");
+        }
+    }
+
+    #[test]
+    fn a_files_path_is_unique_only_while_the_file_is_not_in_the_trash() {
+        // The backstop for the rule the store checks first: two files not in
+        // the trash cannot share a path, but a trashed file's path is its
+        // place in the trash and a sealed file has none. Both dialects say
+        // it the same way, which the test above already holds them to.
+        for d in [Dialect::Sqlite, Dialect::Postgres] {
+            let index = v29(d)
+                .into_iter()
+                .find(|sql| sql.contains("files_by_path"))
+                .expect("an index on a file's path");
+            let index = index.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert_eq!(
+                index,
+                "CREATE UNIQUE INDEX IF NOT EXISTS files_by_path ON files (path_key) \
+                 WHERE path_key IS NOT NULL AND status <> 'trashed'"
+            );
+        }
+    }
+
+    #[test]
+    fn a_sealed_files_tokens_and_time_may_be_absent_but_its_marks_may_not() {
+        // The clear-column policy in `karmayoga_core::store::files`, as the
+        // table states it: what only a plain file has is nullable, and what
+        // every file has is not.
+        let files = v29(Dialect::Sqlite).remove(0);
+        let column = |name: &str| {
+            files
+                .lines()
+                .find(|line| line.split_whitespace().next() == Some(name))
+                .unwrap_or_else(|| panic!("no column {name}"))
+                .to_string()
+        };
+        for name in
+            ["path_key", "dir_key", "hash_key", "idx", "blob", "thumb", "modified_us", "when_us"]
+        {
+            assert!(!column(name).contains("NOT NULL"), "{name} must allow NULL");
+        }
+        for name in ["storage", "kind", "size", "origin", "status", "added_us", "updated_us"] {
+            assert!(column(name).contains("NOT NULL"), "{name} must not");
+        }
+        // And nothing a person could read a name in: a path, a folder, a
+        // file's name or its content hash is a token or sealed, never text.
+        for name in ["path", "dir", "name", "hash"] {
+            assert!(
+                !files.lines().any(|line| line.split_whitespace().next() == Some(name)),
+                "{name} must not be a clear column"
+            );
         }
     }
 
