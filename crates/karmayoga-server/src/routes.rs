@@ -1011,6 +1011,16 @@ async fn get_file(
     let id = FileId::parse(&id).map_err(|_| CommandError::new("invalid", "not a file address"))?;
 
     let vault = server.service.require_unlocked()?;
+    // One of Health's -- a clinical document's page, a meal's photograph --
+    // is Health's to show as much as Files': a device holding only `Files`
+    // reads the folder, not somebody's lab reports.
+    let origin = {
+        let vault = vault.clone();
+        karmayoga_service::blocking(move || Ok(vault.file(id)?.origin)).await?
+    };
+    if origin == karmayoga_core::files::FileOrigin::Health {
+        ctx.require(Scope::Health)?;
+    }
     let range = header_str(&headers, "range");
     let version = q.v;
     let FileSlice { mime, plan, bytes, current } = karmayoga_service::blocking(move || {

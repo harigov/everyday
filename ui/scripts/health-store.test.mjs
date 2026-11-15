@@ -47,7 +47,16 @@ Object.defineProperty(globalThis, 'navigator', {
 })
 
 const {
-  modules: [storeModule, stateModule, apiModule, helpers, timeModule, trackingModule],
+  modules: [
+    storeModule,
+    stateModule,
+    apiModule,
+    helpers,
+    timeModule,
+    trackingModule,
+    notifyModule,
+    filesModule,
+  ],
   close,
 } = await load(
   [
@@ -57,17 +66,26 @@ const {
     '/src/lib/health.ts',
     '/src/lib/time.ts',
     '/src/lib/tracking.svelte.ts',
+    '/src/lib/notify.svelte.ts',
+    '/src/lib/files.ts',
   ],
   { svelte: true },
 )
 const { health, HEALTH_VIEWS, HEALTH_RANGES } = storeModule
 const { app } = stateModule
 const { api, callCommand } = apiModule
-const { METRICS, VITALS_METRICS, itemFor, rangeOf } = helpers
+const { METRICS, VITALS_METRICS, itemFor, newMeal, rangeOf } = helpers
 const { addDays, localeWeekStart, todayIso } = timeModule
 const { tracking } = trackingModule
+const { notify } = notifyModule
+const { addFiles } = filesModule
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+/** The files Health has put in the Files trash, newest first. */
+const trashedHealthFiles = async () =>
+  (await api.listFiles({ origin: 'health', status: 'trashed', sort: 'added', descending: true }))
+    .files
 
 /** Wait for something that happens in the background, up to four seconds. */
 async function until(what, condition) {
@@ -396,6 +414,53 @@ assert.deepEqual(health.editingMeal.items, [])
   assert.ok(!health.meals.some((m) => m.id === saved.id), 'and the meal with it')
 }
 
+// A meal's photo is a file in Files, kept as long as the meal keeps it.
+{
+  const everyMeal = await api.listMeals(
+    new Date(Date.now() - 70 * 86_400_000).toISOString(),
+    new Date(Date.now() + 86_400_000).toISOString(),
+  )
+  const seeded = everyMeal.filter((m) => m.photo)
+  assert.equal(seeded.length, 1, 'one meal in the seed was photographed')
+  const shown = await api.getFile(seeded[0].photo)
+  assert.equal(shown.file.origin, 'health')
+  assert.equal(shown.file.storage.kind, 'sealed')
+  assert.deepEqual(
+    shown.uses.map((u) => [u.owner.kind, u.owner.id]),
+    [['meal', seeded[0].id]],
+    'Files says which meal it is used in',
+  )
+
+  const oats = health.foods.find((f) => f.name.startsWith('Oatmeal'))
+  const first = await health.estimatePhoto(new File(['one'], 'first-plate.jpg'))
+  const meal = await health.saveMeal({
+    ...newMeal(),
+    name: 'Photographed',
+    items: [itemFor(oats, 1, '1 cup')],
+    photo: first.photo,
+  })
+  assert.equal(meal.photo, first.photo)
+  assert.equal((await api.getFile(first.photo)).file.status.state, 'present')
+  assert.equal((await api.getFile(first.photo)).uses[0].owner.kind, 'meal')
+
+  // A photo the saved meal no longer has goes to the Files trash.
+  const second = await health.estimatePhoto(new File(['two'], 'second-plate.jpg'))
+  const swapped = await health.saveMeal({ ...meal, photo: second.photo })
+  assert.equal((await api.getFile(first.photo)).file.status.state, 'trashed', 'the old one')
+  assert.equal((await api.getFile(second.photo)).file.status.state, 'present', 'not the new')
+
+  // Deleting the meal says what becomes of its photo, and does it.
+  health.deleteMeal(swapped)
+  assert.match(health.question.body, /Its photo goes to the trash in Files/)
+  await health.question.run()
+  assert.equal((await api.getFile(second.photo)).file.status.state, 'trashed')
+  // A meal without one says nothing of it.
+  const plain = health.meals.find((m) => !m.photo)
+  health.deleteMeal(plain)
+  assert.doesNotMatch(health.question.body, /photo/)
+  health.question = null
+}
+
 // Foods and the lookups.
 {
   const none = await health.searchFoods('   ')
@@ -425,6 +490,30 @@ assert.deepEqual(health.editingMeal.items, [])
     'every item is a guess',
   )
   assert.ok(photo.photo)
+  // The photo is a file in Files, sealed as Health's, and is handed back by id.
+  const kept = (await api.getFile(photo.photo)).file
+  assert.equal(kept.origin, 'health')
+  assert.equal(kept.storage.kind, 'sealed')
+  assert.equal(kept.name, 'plate.jpg')
+  assert.equal(kept.status.state, 'present')
+
+  // A picture the model cannot read is not kept: it goes to the Files trash
+  // and the editor is told nothing was read.
+  const estimate = api.estimateMealPhoto
+  api.estimateMealPhoto = async () => {
+    throw new Error('the model is not answering')
+  }
+  assert.equal(await health.estimatePhoto(new File(['y'], 'blurred.jpg')), null)
+  api.estimateMealPhoto = estimate
+  assert.deepEqual(
+    (await trashedHealthFiles()).map((f) => f.name).filter((n) => n === 'blurred.jpg'),
+    ['blurred.jpg'],
+    'the picture went to the trash',
+  )
+  assert.ok(
+    notify.toasts.some((t) => t.title === 'The photo could not be read'),
+    'and it was said',
+  )
 }
 
 // ── medications ──────────────────────────────────────────────────────
@@ -616,15 +705,29 @@ assert.deepEqual(
   [['healthDocument', 'doc-october']],
 )
 assert.equal(
-  health.documentFileUrl(health.document, health.document.files[0].blob) !== '',
+  health.documentFileUrl(health.document, health.document.files[0].file) !== '',
   true,
   'a file the document lists has an address',
 )
 assert.equal(
-  health.documentFileUrl(health.document, 'not-a-blob-it-has'),
+  health.documentFileUrl(health.document, 'not-a-file-it-has'),
   '',
   'one it does not has none',
 )
+{
+  // A page is a file in Files, sealed as Health's, and says what it is used in.
+  const page = health.document.files[0]
+  assert.equal(page.name, 'quest-labs-october.pdf')
+  assert.equal(page.mime, 'application/pdf')
+  const detail = await api.getFile(page.file)
+  assert.equal(detail.file.origin, 'health')
+  assert.equal(detail.file.storage.kind, 'sealed')
+  assert.deepEqual(
+    detail.uses.map((u) => [u.owner.kind, u.owner.id, u.title]),
+    [['healthDocument', 'doc-october', 'Lab report, October']],
+  )
+  assert.equal(health.document.source, undefined, 'a page is not a connector’s source')
+}
 
 // Accepting what was read.
 {
@@ -656,6 +759,15 @@ assert.equal(
   assert.equal(health.documents.length, 3)
   assert.equal(await health.addDocument([], 'No files', 'other'), null, 'no files, no document')
 
+  // The page went through Files -- sealed, as Health's -- and the document
+  // lists it by the id the catalog gave it.
+  const page = (await api.getFile(doc.files[0].file)).file
+  assert.equal(page.origin, 'health')
+  assert.equal(page.storage.kind, 'sealed')
+  assert.equal(page.name, 'visit.txt')
+  assert.equal(page.status.state, 'present')
+  assert.equal(health.documentFileUrl(doc, page.id) !== '', true, 'and has an address, by that id')
+
   await health.extractDocument(doc.id)
   const read = health.documents.find((d) => d.id === doc.id)
   assert.equal(read.extraction, 'proposed', 'the model read it')
@@ -671,8 +783,71 @@ assert.equal(
     null,
     'no results accepted from it, none to offer to delete',
   )
+  assert.match(health.question.body, /trash in Files/, 'its pages are said to go to the trash')
+  assert.doesNotMatch(health.question.body, /for good/)
   await health.question.run()
   assert.equal(health.documents.length, 2)
+  assert.equal(
+    (await api.getFile(page.id)).file.status.state,
+    'trashed',
+    'its page is in the Files trash, to be restored from there',
+  )
+}
+
+// A document that cannot be made leaves nothing behind. Not every file
+// arriving is a failure of its own: the pages that did arrive are put in the
+// trash, no document is made, and it is said.
+{
+  const before = health.documents.length
+  const made = []
+  const add = api.addHealthDocument
+  api.addHealthDocument = async (...args) => {
+    made.push(args)
+    return add(...args)
+  }
+  const begin = api.beginUpload
+  api.beginUpload = async (name, ...rest) => {
+    if (name === 'page-2.txt') throw new Error('connection reset')
+    return begin(name, ...rest)
+  }
+  const none = await health.addDocument(
+    [new File(['one'], 'page-1.txt'), new File(['two'], 'page-2.txt')],
+    'Two pages',
+    'other',
+  )
+  api.beginUpload = begin
+  assert.equal(none, null, 'a page that did not arrive is no document')
+  assert.deepEqual(made, [], 'the vault was never asked to make one')
+  assert.equal(health.documents.length, before)
+  assert.deepEqual(
+    (await trashedHealthFiles()).map((f) => f.name).filter((n) => n.startsWith('page-')),
+    ['page-1.txt'],
+    'the page that did arrive is in the Files trash',
+  )
+  const toasted = notify.toasts.find((t) => t.key === 'health-failed')
+  assert.equal(toasted?.title, 'The document could not be added')
+  assert.match(toasted?.body ?? '', /Only 1 of 2 files could be added/)
+
+  // The files all arrive and the vault refuses the document.
+  api.addHealthDocument = async (...args) => {
+    made.push(args)
+    throw new Error('the vault is full')
+  }
+  assert.equal(
+    await health.addDocument([new File(['three'], 'refused.txt')], 'Refused', 'other'),
+    null,
+  )
+  api.addHealthDocument = add
+  assert.equal(made.length, 1, 'it was asked, and answered with the file ids')
+  assert.deepEqual(made[0].slice(0, 3), ['Refused', 'other', null])
+  assert.equal(made[0][3].length, 1)
+  assert.equal(
+    (await api.getFile(made[0][3][0])).file.status.state,
+    'trashed',
+    'so the file that arrived went to the trash',
+  )
+  assert.equal(health.documents.length, before)
+  assert.match(notify.toasts.find((t) => t.key === 'health-failed').body, /the vault is full/)
 }
 
 // A document with results accepted from it offers to delete them too.
@@ -876,6 +1051,47 @@ const calls = []
   assert.equal(health.importStatus.report.samplesAdded, 12480)
   assert.ok(health.importStatus.read === health.importStatus.total)
   await until('the source knows', () => health.sources[0]?.status.samplesTotal >= 12480)
+
+  // An export uploaded from a window that is not on the vault's machine is
+  // sealed in Files as Health's, imported from there and followed the same
+  // way -- and goes to the Files trash once it has been read.
+  await health.importAppleUpload(new File(['PK'], 'export.zip'))
+  assert.equal(health.importStatus.state, 'running')
+  assert.equal(health.importStatus.fileName, 'export.zip')
+  const sent = (await api.listFiles({ origin: 'health', text: 'export.zip' })).files
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0].storage.kind, 'sealed')
+  assert.equal(sent[0].status.state, 'present', 'it is kept while it is being read')
+  await until('the upload is imported', () => health.importStatus?.state === 'done')
+  assert.equal(
+    (await api.getFile(sent[0].id)).file.status.state,
+    'trashed',
+    'and trashed once it was',
+  )
+
+  // One that is in Files already is imported where it is, and kept.
+  const [synced] = await addFiles([new File(['PK'], 'synced.zip')])
+  assert.equal(await health.importAppleFile(synced.id), true, 'it began')
+  assert.equal(health.importStatus.fileName, 'synced.zip')
+  // Another cannot begin while it runs; what was uploaded for it is not left.
+  await health.importAppleUpload(new File(['PK'], 'second.zip'))
+  assert.equal(health.importStatus.fileName, 'synced.zip', 'the first import is still the one')
+  assert.equal(
+    notify.toasts.find((t) => t.key === 'health-failed').body,
+    'An import is already running.',
+  )
+  assert.deepEqual(
+    (await trashedHealthFiles()).map((f) => f.name).filter((n) => n === 'second.zip'),
+    ['second.zip'],
+    'the upload that could not be imported went to the trash',
+  )
+  assert.equal(await health.importAppleFile('no-such-file'), false, 'a file that is not there')
+  await until('the import finishes', () => health.importStatus?.state === 'done')
+  assert.equal(
+    (await api.getFile(synced.id)).file.status.state,
+    'present',
+    'a file left in Files stays there',
+  )
 
   // And can be stopped.
   await health.importApple()

@@ -1232,7 +1232,10 @@ iPhone, which only an iPhone app can read, so it arrives two ways:
 - **History**, from Apple Health's own export (Health → your picture →
   Export All Health Data). Settings → Health → **Choose export.zip** reads
   it as a stream, however many gigabytes, with the workouts, their routes
-  and any health records your providers shared with Apple Health.
+  and any health records your providers shared with Apple Health. An export
+  that Syncthing brought into your files folder is imported from its menu in
+  Files (**Import into Health**), and a browser on another machine uploads
+  one in pieces.
 - **Every hour after that**, from the **Health Auto Export** iOS app, whose
   REST API automations post to this computer over web access (the phone has
   to be on your tailnet). **Connect your iPhone** in Settings → Health makes
@@ -1260,8 +1263,11 @@ own numbers.
 **Meals and records.** Meals by food search (yours first, then USDA
 FoodData Central; barcodes through Open Food Facts) or from a photo the
 model estimates, with what glucose did afterwards. Lab reports and other
-documents are sealed into the vault; **Read results** has the model read
-the values out for you to check against the page before anything is saved.
+documents, and meal photos, are files in Files, always sealed into the vault
+rather than written to the folder: Files shows which document each page
+belongs to, and deleting a document puts its pages in the trash there.
+**Read results** has the model read the values out for you to check against
+the page before anything is saved.
 
 **Not a medical device.** Targets and thresholds are yours, alerts are
 notices after the fact, a CGM's own alarms stay the alarm, and the assistant

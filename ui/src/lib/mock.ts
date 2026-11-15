@@ -8303,6 +8303,7 @@ export const mockInvoke = async <T>(
     case 'delete_health_source':
     case 'record_health_push':
     case 'import_apple_health':
+    case 'import_apple_health_file':
     case 'apple_import_status':
     case 'cancel_apple_import':
     case 'health_keys':

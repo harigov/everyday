@@ -1151,10 +1151,10 @@ pub trait JournalStore: Send + Sync {
             live.extend(files.file_blob_refs()?);
         }
 
-        // And Health: a clinical document's files, a workout's route, a
-        // meal's photo. Missing this walk would make the first sweep after a
-        // day take every lab report somebody filed, the document still
-        // listing files that open to nothing.
+        // And Health: what a connector sent for a clinical document, and a
+        // workout's route. Missing this walk would make the first sweep after
+        // a day take every record an Apple export brought. (A document's
+        // pages and a meal's photo are files, kept by the catalog's walk.)
         if let Some(health) = self.health() {
             live.extend(health.blob_refs()?);
         }

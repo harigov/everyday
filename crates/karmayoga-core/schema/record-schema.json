@@ -2899,6 +2899,11 @@
             "const": "jobs",
             "description": "Written by a routine or a background job.",
             "type": "string"
+          },
+          {
+            "const": "health",
+            "description": "A clinical document or a meal's photograph kept by Health. Always\nsealed when Health adds it (Hari's call: what a clinician gave\nsomebody stays in the vault), and out of the assistant's file tools,\nwhich have Health's own gates to answer to instead.",
+            "type": "string"
           }
         ]
       },
@@ -3429,6 +3434,11 @@
             "const": "jobs",
             "description": "Written by a routine or a background job.",
             "type": "string"
+          },
+          {
+            "const": "health",
+            "description": "A clinical document or a meal's photograph kept by Health. Always\nsealed when Health adds it (Hari's call: what a clinician gave\nsomebody stays in the vault), and out of the assistant's file tools,\nwhich have Health's own gates to answer to instead.",
+            "type": "string"
           }
         ]
       }
@@ -3826,9 +3836,11 @@
         "type": "object"
       },
       "DocFile": {
+        "description": "One of a document's pages: a file in the files catalog, sealed, with\n[`crate::files::FileOrigin::Health`]. Somebody adds them through Files'\nown uploads, so a scan of many megabytes never crosses the webview whole,\nand the Files app shows them, says which document uses each, and keeps\nthem in its trash a while after the document is deleted.\n\nThe name, type and size are the catalog's at the moment the file was\nadded, so a list of documents is drawn without opening the catalog.",
         "properties": {
-          "blob": {
-            "$ref": "#/$defs/BlobId"
+          "file": {
+            "format": "uuid",
+            "type": "string"
           },
           "mime": {
             "type": "string"
@@ -3843,7 +3855,7 @@
           }
         },
         "required": [
-          "blob",
+          "file",
           "name",
           "mime",
           "size"
@@ -3872,6 +3884,32 @@
             "type": "string"
           }
         ]
+      },
+      "DocSource": {
+        "description": "What a connector sent for a document -- a FHIR resource's JSON, an ECG's\nCSV -- sealed in the blob store exactly as it arrived. The document's own\ndata, kept so it can be read again, rather than a file anybody handed in:\nnever in the files catalog, never one of [`HealthDocument::files`].",
+        "properties": {
+          "blob": {
+            "$ref": "#/$defs/BlobId"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "blob",
+          "name",
+          "mime",
+          "size"
+        ],
+        "type": "object"
       },
       "ExtractionState": {
         "oneOf": [
@@ -4108,6 +4146,7 @@
       },
       "files": {
         "default": [],
+        "description": "What somebody added: its pages, in order.",
         "items": {
           "$ref": "#/$defs/DocFile"
         },
@@ -4137,6 +4176,17 @@
         "default": "",
         "description": "The clinician, clinic or lab.",
         "type": "string"
+      },
+      "source": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/DocSource"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What a connector sent, when one brought it."
       },
       "text": {
         "default": "",
@@ -6832,10 +6882,6 @@
   },
   "Meal": {
     "$defs": {
-      "BlobId": {
-        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
-        "type": "string"
-      },
       "MealItem": {
         "properties": {
           "amount": {
@@ -6994,13 +7040,11 @@
         "type": "integer"
       },
       "photo": {
-        "anyOf": [
-          {
-            "$ref": "#/$defs/BlobId"
-          },
-          {
-            "type": "null"
-          }
+        "description": "A photograph of the plate: a sealed file in the files catalog, like a\ndocument's pages (see [`DocFile`]).",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
         ]
       },
       "slot": {

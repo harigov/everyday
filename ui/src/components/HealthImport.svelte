@@ -9,6 +9,12 @@
   // piece at a time, so a file of several gigabytes needs no more memory
   // than a small one.
   //
+  // That is for a window on the vault's own computer. A window anywhere else
+  // -- a browser over web access, a desktop paired with a vault elsewhere --
+  // has no path to give the vault, so it uploads the file instead: into Files
+  // (sealed, Health's), then imported from there and put in the Files trash
+  // once it has been read.
+  //
   // What is on screen is the store's `importStatus`, which it keeps current
   // while an import runs: how far through the file it is, what has been
   // added so far, and, at the end, the whole report. Nothing is dropped
@@ -16,14 +22,28 @@
   // listed. Importing the same file twice is harmless -- a reading already
   // here is recognised and skipped.
 
+  import { untrack } from 'svelte'
+  import { files } from '../lib/files.svelte'
   import { health } from '../lib/health.svelte'
   import { dateFormat, humanBytes, plural } from '../lib/format'
+  import { app } from '../lib/state.svelte'
 
   const status = $derived(health.importStatus)
   const running = $derived(status?.state === 'running')
   const report = $derived(status?.report ?? null)
 
   let starting = $state(false)
+  let chooser = $state<HTMLInputElement | null>(null)
+
+  // Whether this window is on the vault's own machine is what the files
+  // status says, so it is asked for when this opens, as the assistant's
+  // composer does for its paperclip.
+  $effect(() => {
+    if (app.supportsFiles && files.status === null) void untrack(() => files.refreshStatus())
+  })
+  /** Not on the vault's machine, and so no picker to use: the file is
+   *  uploaded. Until the files status is known the picker is what is offered. */
+  const uploading = $derived(app.supportsFiles && files.status !== null && !files.local)
 
   /** How far through `export.xml` it is, or `null` before the size is known. */
   const percent = $derived(
@@ -57,9 +77,23 @@
 
   async function start() {
     if (starting || running) return
+    // The page's input has to be opened by the press itself.
+    if (uploading) return void chooser?.click()
     starting = true
     try {
       await health.importApple()
+    } finally {
+      starting = false
+    }
+  }
+
+  async function onUpload(e: Event & { currentTarget: EventTarget & HTMLInputElement }) {
+    const file = e.currentTarget.files?.[0]
+    e.currentTarget.value = ''
+    if (!file || starting || running) return
+    starting = true
+    try {
+      await health.importAppleUpload(file)
     } finally {
       starting = false
     }
@@ -88,14 +122,36 @@
         Send the file somewhere you can reach from this computer: AirDrop, Files, a cloud drive. It
         is called <code>export.zip</code>.
       </li>
-      <li>Get it onto this computer, then press the button below and choose it.</li>
+      <li>
+        {#if uploading}
+          Get it onto the computer you are using now, then press the button below and choose it. It
+          is uploaded to the vault, imported, and put in the trash in Files.
+        {:else}
+          Get it onto this computer, then press the button below and choose it.
+        {/if}
+      </li>
     </ol>
   </details>
 
   <div class="row">
     <button class="btn btn-outline" disabled={starting || running} onclick={() => void start()}>
-      {running ? 'Importing…' : starting ? 'Choosing…' : 'Choose export.zip…'}
+      {#if running}
+        Importing…
+      {:else if uploading}
+        {starting ? 'Uploading…' : 'Upload export.zip…'}
+      {:else}
+        {starting ? 'Choosing…' : 'Choose export.zip…'}
+      {/if}
     </button>
+    <input
+      class="hidden"
+      type="file"
+      accept=".zip,application/zip"
+      tabindex="-1"
+      aria-hidden="true"
+      bind:this={chooser}
+      onchange={(e) => void onUpload(e)}
+    />
     {#if running}
       <button class="btn" onclick={() => void health.cancelImport()}>Cancel</button>
     {/if}
@@ -237,6 +293,9 @@
     margin: 0;
     font-size: var(--text-base);
     font-weight: 550;
+  }
+  .hidden {
+    display: none;
   }
   .row {
     display: flex;

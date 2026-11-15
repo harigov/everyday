@@ -22,8 +22,8 @@ use jiff::tz::TimeZone;
 use karmayoga_core::agent::onscreen::{App, OnScreen, Shown, describe};
 use karmayoga_core::agent::tools::{self, Domain, Effect};
 use karmayoga_core::health::{
-    Condition, DocFile, DocKind, DoseOrigin, DoseStatus, ExtractionState, Food, HealthBatch,
-    HealthSource, LabResult, Medication, Metric,
+    Condition, DocKind, DoseOrigin, DoseStatus, ExtractionState, Food, HealthBatch, HealthSource,
+    LabResult, Medication, Metric,
 };
 use karmayoga_core::{
     ConditionId, FoodId, HealthDocumentId, HealthSourceId, LabResultId, MealId, MedicationId,
@@ -189,18 +189,20 @@ fn seed(vault: &Vault) -> Life {
     vault.save_lab(&lab("TSH", "3016-3", 5.6, "mIU/L", "2026-08-20", 4.5)).unwrap();
 
     // A document: sealed file, its text read out, an A1c waiting.
-    let blob = vault.put_blob(b"%PDF-1.4 a pretend lab report").unwrap();
+    let opts = karmayoga_core::files::ImportOptions {
+        encrypted: Some(true),
+        ..karmayoga_core::files::ImportOptions::new(karmayoga_core::files::FileOrigin::Health)
+    };
+    let page = vault.import_bytes(b"%PDF-1.4 a pretend lab report", "labs.pdf", &opts).unwrap();
+    let karmayoga_core::files::FileStorage::Sealed { blob } = page.storage else {
+        panic!("Health's pages are sealed")
+    };
     let document = vault
         .add_health_document(
             &format!("Lab report {HOSTILE}"),
             DocKind::LabReport,
             Some(Date::constant(2026, 8, 20)),
-            vec![DocFile {
-                blob,
-                name: "labs.pdf".into(),
-                mime: "application/pdf".into(),
-                size: 29,
-            }],
+            &[page.id],
         )
         .unwrap();
     let pending = lab("Hemoglobin A1c", "4548-4", 6.1, "%", "2026-08-20", 5.6);
@@ -1372,4 +1374,47 @@ fn what_they_have_open_in_health_is_named_and_a_strangers_words_are_quoted_and_t
     // A record that is gone is left out without comment.
     let gone = describe(&ctx(&vault), &screen(vec![Shown::Medication(MedicationId::new())]));
     assert!(!gone.text.contains("the medication"), "{}", gone.text);
+}
+
+// ---- Health's files and the file tools -----------------------------------------
+
+/// A clinical document's pages are reached through the health tools, under
+/// Health's gates, and never through the file tools: those answer an MCP
+/// token that names only `files`, which must not open somebody's lab reports.
+#[test]
+fn the_file_tools_neither_list_nor_open_nor_touch_healths_files() {
+    use karmayoga_core::files::{FileOrigin, ImportOptions};
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let health = ImportOptions { encrypted: Some(true), ..ImportOptions::new(FileOrigin::Health) };
+    let page = vault.import_bytes(b"TSH 5.6 mIU/L", "labs.txt", &health).unwrap();
+    let notes = vault
+        .import_bytes(b"a shopping list", "list.txt", &ImportOptions::new(FileOrigin::Files))
+        .unwrap();
+
+    let found = call(&vault, "find_files", json!({}));
+    let names: Vec<&str> =
+        found["files"].as_array().unwrap().iter().filter_map(|f| f["name"].as_str()).collect();
+    assert_eq!(names, ["list.txt"], "{found}");
+    assert_eq!(found["total"], 1, "and the count does not give it away either");
+
+    let id = page.id.to_string();
+    for (tool, args) in [
+        ("file_info", json!({ "id": id })),
+        ("read_file", json!({ "id": id })),
+        ("trash_files", json!({ "ids": [id] })),
+        ("organize_files", json!({ "ids": [id], "add_tags": ["labs"] })),
+    ] {
+        let refused = call_err(&vault, tool, args);
+        assert!(refused.contains("one of Health's"), "{tool}: {refused}");
+    }
+    assert!(!vault.file(page.id).unwrap().status.is_trashed());
+    assert!(vault.file(page.id).unwrap().tags.is_empty());
+
+    // The person's other files are as they were.
+    assert!(
+        call(&vault, "read_file", json!({ "id": notes.id.to_string() }))
+            .to_string()
+            .contains("shopping")
+    );
 }

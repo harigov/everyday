@@ -17,12 +17,21 @@
   // eaten at the same meal yesterday. An item that has no food behind it --
   // a photo's guess -- has its numbers editable directly, since there is no
   // label to work them out from.
+  //
+  // The photo is a file in Files, sealed as Health's, and is drawn as the
+  // card Files draws it with. A photo added in this sitting is the editor's
+  // to clean up after: if the meal is not saved with it -- cancelled, or the
+  // photo taken off or replaced first -- it goes to the Files trash. A photo
+  // the meal already had is not: that one belongs to the meal as it is
+  // stored, and the vault trashes it when a saved meal no longer refers to it.
 
+  import { api } from '../lib/api'
   import { health } from '../lib/health.svelte'
   import { gramsOf, itemFor, slotName, sumNutrients } from '../lib/health'
   import { trapFocus } from '../lib/focus'
   import { addDays } from '../lib/time'
-  import type { BlobId, Food, Meal, MealItem, MealSlot, Nutrients } from '../lib/types'
+  import type { FileEntry, FileId, Food, Meal, MealItem, MealSlot, Nutrients } from '../lib/types'
+  import FileCard from './FileCard.svelte'
   import HealthFoodSearch from './HealthFoodSearch.svelte'
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
@@ -46,7 +55,7 @@
   let date = $state((opened ?? nowLocal).slice(0, 10))
   let time = $state((opened ?? nowLocal).slice(11, 16))
   let items = $state<MealItem[]>(base ? base.items.map((i) => ({ ...i })) : [])
-  let photo = $state<BlobId | null>(base?.photo ?? null)
+  let photo = $state<FileId | null>(base?.photo ?? null)
   let note = $state(base?.note ?? '')
 
   let adding = $state(false)
@@ -56,7 +65,15 @@
   let photoError = $state('')
   let fileInput = $state<HTMLInputElement | null>(null)
 
-  function close() {
+  /** The photos added in this sitting: the only ones the editor may trash. */
+  let uploaded: FileId[] = []
+
+  /** Close the editor. What was added in this sitting and is not `kept` --
+   *  the photo the saved meal carries -- goes to the Files trash. */
+  function close(kept: FileId | null = null) {
+    const stray = uploaded.filter((id) => id !== kept)
+    uploaded = []
+    if (stray.length > 0) void health.discardFiles(stray)
     health.editingMeal = null
   }
 
@@ -164,6 +181,42 @@
 
   // ── A photo ─────────────────────────────────────────────────────────────
 
+  /** The photo's own entry, for its card. Until it is read, or if it cannot
+   *  be, the card is left out and a line says there is a photo. */
+  let photoFile = $state.raw<FileEntry | null>(null)
+  /** Only the entry of the photo the meal has now, not of one just replaced. */
+  const shown = $derived(photoFile && photoFile.id === photo ? photoFile : null)
+  $effect(() => {
+    const id = photo
+    if (!id) {
+      photoFile = null
+      return
+    }
+    let gone = false
+    api.getFile(id).then(
+      (detail) => {
+        if (!gone) photoFile = detail.file
+      },
+      () => {
+        if (!gone) photoFile = null
+      },
+    )
+    return () => {
+      gone = true
+    }
+  })
+
+  /** Take the photo off the meal. One added in this sitting is trashed at
+   *  once; the meal's own is left for the vault to deal with on Save. */
+  function removePhoto() {
+    const id = photo
+    photo = null
+    if (id && uploaded.includes(id)) {
+      uploaded = uploaded.filter((u) => u !== id)
+      void health.discardFiles([id])
+    }
+  }
+
   async function onFile(e: Event & { currentTarget: EventTarget & HTMLInputElement }) {
     const file = e.currentTarget.files?.[0]
     e.currentTarget.value = ''
@@ -176,7 +229,10 @@
         photoError = 'The picture could not be read. You can add the foods by hand.'
         return
       }
+      // A picture added earlier in this sitting is replaced, not kept beside it.
+      removePhoto()
       photo = found.photo
+      uploaded.push(found.photo)
       for (const it of found.items) items.push({ ...it, estimated: true })
       if (found.items.length === 0) photoError = 'No food could be made out in that picture.'
     } finally {
@@ -241,7 +297,7 @@
         createdAt: base?.createdAt || now,
         updatedAt: now,
       })
-      if (saved) close()
+      if (saved) close(saved.photo ?? null)
       else formError = 'The meal could not be saved. Try again.'
     } finally {
       saving = false
@@ -352,10 +408,16 @@
 
       {#if photoError}<p class="error" role="alert">{photoError}</p>{/if}
       {#if photo}
-        <p class="photo">
-          <Icon name="image" size={13} /> A photo is kept with this meal.
-          <button class="link" onclick={() => (photo = null)}>Remove it</button>
-        </p>
+        {#if shown}
+          <div class="photo">
+            <FileCard file={shown} onremove={removePhoto} />
+          </div>
+        {:else}
+          <p class="photo">
+            <Icon name="image" size={13} /> A photo is kept with this meal.
+            <button class="link" onclick={removePhoto}>Remove it</button>
+          </p>
+        {/if}
       {/if}
 
       {#if items.length === 0}
@@ -506,7 +568,7 @@
       <button class="btn btn-ghost-danger" onclick={remove}>Delete</button>
     {/if}
     <span class="spacer"></span>
-    <button class="btn" onclick={close}>Cancel</button>
+    <button class="btn" onclick={() => close()}>Cancel</button>
     <button class="btn btn-primary" disabled={saving} onclick={() => void save()}>Save</button>
   </div>
 </div>

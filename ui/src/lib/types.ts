@@ -5326,7 +5326,16 @@ export type FileKind = 'image' | 'video' | 'audio' | 'document' | 'other'
 /** Which app put a file in the catalog. `found` is the reconciler: put in the
  *  folder by another program or a sync tool. */
 export type FileOrigin =
-  'files' | 'found' | 'journal' | 'notes' | 'assistant' | 'chat' | 'mail' | 'jobs'
+  | 'files'
+  | 'found'
+  | 'journal'
+  | 'notes'
+  | 'assistant'
+  | 'chat'
+  | 'mail'
+  | 'jobs'
+  /** A clinical document's page or a meal's photograph, sealed by Health. */
+  | 'health'
 
 export type FileStatus =
   | { state: 'present' }
@@ -5450,6 +5459,8 @@ export interface FileQuery {
   favourite?: boolean
   minRating?: number | null
   origin?: FileOrigin | null
+  /** None of these origins. */
+  excludeOrigins?: FileOrigin[]
   status?: StatusFilter
   storage?: StorageKind | null
   from?: string | null
@@ -5516,7 +5527,7 @@ export interface FileUpdate {
   takenAt?: string | null
 }
 
-export type RefKind = 'entry' | 'note' | 'message'
+export type RefKind = 'entry' | 'note' | 'message' | 'healthDocument' | 'meal'
 
 export interface RefOwner {
   kind: RefKind
@@ -6208,7 +6219,18 @@ export type DocKind =
   | 'ecg'
   | 'other'
 
+/** One of a document's pages: a file in the files catalog, sealed as
+ *  Health's. Name, type and size are the catalog's when it was added. */
 export interface DocFile {
+  file: FileId
+  name: string
+  mime: string
+  size: number
+}
+
+/** What a connector sent for a document (a FHIR resource's JSON, an ECG's
+ *  CSV), sealed in the vault as it arrived. Not a file in the catalog. */
+export interface DocSource {
   blob: BlobId
   name: string
   mime: string
@@ -6231,7 +6253,10 @@ export interface HealthDocument {
   kind: DocKind
   date?: string | null
   provider: string
+  /** What somebody added: its pages, in order. */
   files: DocFile[]
+  /** What a connector sent, when one brought it. */
+  source?: DocSource
   text: string
   fhir: FhirEntry[]
   extraction: ExtractionState
@@ -6309,7 +6334,8 @@ export interface Meal {
   slot: MealSlot
   name: string
   items: MealItem[]
-  photo?: BlobId | null
+  /** A photograph of the plate: a sealed file in the files catalog. */
+  photo?: FileId | null
   note: string
   createdAt: string
   updatedAt: string

@@ -238,12 +238,12 @@ async fn pages(vault: &Arc<Vault>, document: &HealthDocument) -> CommandResult<V
         ));
     }
     let id = document.id;
-    let blobs: Vec<_> = candidates.iter().map(|f| f.blob).collect();
+    let pages: Vec<_> = candidates.iter().map(|f| f.file).collect();
     let vault = vault.clone();
     blocking(move || {
         let mut ready = Vec::new();
-        for blob in blobs {
-            let bytes = vault.health_document_file(id, blob)?;
+        for page in pages {
+            let bytes = vault.health_document_file(id, page)?;
             // What a file claims to be is the interface's word; what it is
             // is in its first bytes.
             if !matches!(
@@ -520,6 +520,7 @@ mod tests {
             date: day,
             provider: provider.into(),
             files: Vec::new(),
+            source: None,
             text: String::new(),
             fhir: Vec::new(),
             extraction: ExtractionState::None,

@@ -16,11 +16,13 @@
 import { agent } from './agent.svelte'
 import { api } from './api'
 import { files } from './files.svelte'
+import { health } from './health.svelte'
 import { menu } from './menu.svelte'
 import { SEP, tidyMenu, type MenuItem } from './menu'
 import { notes } from './notes.svelte'
+import { notify } from './notify.svelte'
 import { app } from './state.svelte'
-import { todayIso } from './time'
+import { isoDate, todayIso } from './time'
 import type {
   FileEntry,
   FileId,
@@ -278,6 +280,8 @@ export function fileMenu(file: FileEntry, hooks: MenuHooks = {}): MenuItem[] {
   /** One file, and this window on the vault's own machine: it can be handed
    *  to another program. */
   const onlyHere = !many && files.local
+  /** One archive, in a vault that keeps Health: it may be Apple's export. */
+  const maybeExport = !many && app.supportsHealth && /\.zip$/i.test(file.name)
 
   return tidyMenu([
     !many && { label: 'Open', icon: 'eye', run: () => files.open(file.id) },
@@ -336,6 +340,11 @@ export function fileMenu(file: FileEntry, hooks: MenuHooks = {}): MenuItem[] {
       ]),
     },
     { label: 'Move to…', icon: 'folder', run: () => filesUi.pickFolder(ids) },
+    maybeExport && {
+      label: 'Import into Health',
+      icon: 'heart-pulse',
+      run: () => importIntoHealth(file),
+    },
     SEP,
     {
       label: allSealed ? 'Store as a plain file' : 'Encrypt',
@@ -348,6 +357,17 @@ export function fileMenu(file: FileEntry, hooks: MenuHooks = {}): MenuItem[] {
     SEP,
     { label: 'Move to trash', icon: 'trash', danger: true, run: () => files.trash(ids) },
   ])
+}
+
+/** Import an Apple Health export that is in Files. Health says if it could
+ *  not begin, and when it has finished; this says it has begun, and where to
+ *  follow it, since the import runs on without the Health app on screen. */
+async function importIntoHealth(file: FileEntry): Promise<void> {
+  if (!(await health.importAppleFile(file.id))) return
+  notify.info('Importing into Health.', {
+    body: 'It runs in the background. You can follow it in Settings → Health.',
+    key: 'health-import-started',
+  })
 }
 
 /** What a menu on a folder offers. */
@@ -425,6 +445,7 @@ export const ORIGIN_LABELS: Record<FileOrigin, string> = {
   chat: 'Chat',
   mail: 'Mail',
   jobs: 'Background jobs',
+  health: 'Health',
 }
 
 /** A film's or recording's length: `2:05`, `1:02:05`. */
@@ -542,6 +563,17 @@ export async function openUse(use: FileUse): Promise<void> {
     case 'note':
       if (await app.goTo('notes')) await notes.openNote(use.owner.id)
       return
+    case 'healthDocument':
+      if (await app.goTo('health')) health.openDocument(use.owner.id)
+      return
+    case 'meal': {
+      // The meal's day: the instant it was eaten, read on this computer's
+      // clock. A use that says no time opens on today.
+      const at = use.when ? new Date(use.when) : null
+      const day = at && !Number.isNaN(at.getTime()) ? isoDate(at) : todayIso()
+      if (await app.goTo('health')) health.openMealDay(day)
+      return
+    }
     case 'message': {
       const thread = use.parent
       if (!thread) return
@@ -559,4 +591,6 @@ export const USE_LABELS: Record<FileUse['owner']['kind'], string> = {
   entry: 'Journal entry',
   note: 'Note',
   message: 'Assistant conversation',
+  healthDocument: 'Health document',
+  meal: 'Meal',
 }

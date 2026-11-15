@@ -478,23 +478,10 @@ impl Files<'_> {
         if let Some(written) = self.catalogued.get(&id) {
             return Ok(Some(written.clone()));
         }
-        let Some(catalog) = store.files() else { return Ok(None) };
-        let read = || -> karmayoga_core::Result<(String, Vec<u8>)> {
-            let entry = catalog.get_file(id)?;
-            let body = match &entry.storage {
-                karmayoga_core::FileStorage::Sealed { blob } => store.get_blob(*blob)?,
-                karmayoga_core::FileStorage::Plain { path } => {
-                    let folder = catalog.files_settings()?.folder.ok_or_else(|| {
-                        karmayoga_core::Error::Invalid("the files folder is not set up".into())
-                    })?;
-                    let folder = karmayoga_core::files::disk::Folder::new(folder);
-                    std::fs::read(folder.resolve(path)?)
-                        .map_err(|e| karmayoga_core::Error::io(folder.root(), e))?
-                }
-            };
-            Ok((entry.name, body))
-        };
-        let (name, body) = match read() {
+        if store.files().is_none() {
+            return Ok(None);
+        }
+        let (name, body) = match catalogued_bytes(store, id) {
             Ok(found) => found,
             Err(e) => {
                 tracing::warn!(%id, error = %e, "a file a document refers to could not be exported");
@@ -506,6 +493,103 @@ impl Files<'_> {
         self.catalogued.insert(id, path.clone());
         Ok(Some(path))
     }
+}
+
+/// A catalogued file's name and bytes: a sealed one's from the blob store, a
+/// plain one's from the folder the vault's settings name.
+pub(crate) fn catalogued_bytes(
+    store: &dyn JournalStore,
+    id: karmayoga_core::FileId,
+) -> karmayoga_core::Result<(String, Vec<u8>)> {
+    let catalog = store
+        .files()
+        .ok_or_else(|| karmayoga_core::Error::Unsupported("this vault keeps no files".into()))?;
+    let entry = catalog.get_file(id)?;
+    let body = match &entry.storage {
+        karmayoga_core::FileStorage::Sealed { blob } => store.get_blob(*blob)?,
+        karmayoga_core::FileStorage::Plain { path } => {
+            let folder = catalog.files_settings()?.folder.ok_or_else(|| {
+                karmayoga_core::Error::Invalid("the files folder is not set up".into())
+            })?;
+            let folder = karmayoga_core::files::disk::Folder::new(folder);
+            std::fs::read(folder.resolve(path)?)
+                .map_err(|e| karmayoga_core::Error::io(folder.root(), e))?
+        }
+    };
+    Ok((entry.name, body))
+}
+
+/// Put `body` into the files catalog as a sealed file from `origin`, the way
+/// an archive's files come back when the record naming them is written: a
+/// blob and a catalog record, nothing in the folder, so it lands whether or
+/// not this vault has a folder set up. Its metadata and thumbnail are drawn
+/// later, as for a file that arrived any other way.
+///
+/// `reuse` is the files the record being replaced held: one with the same
+/// contents is that file again rather than a second copy, so importing the
+/// same archive twice does not double what Files lists. `None` when the
+/// store keeps no catalog.
+pub(crate) fn seal_into_catalog(
+    store: &dyn JournalStore,
+    body: &[u8],
+    name: &str,
+    mime: &str,
+    origin: karmayoga_core::files::FileOrigin,
+    reuse: &[karmayoga_core::FileId],
+) -> karmayoga_core::Result<Option<karmayoga_core::FileId>> {
+    use karmayoga_core::files::{FileEntry, FileKind, FileStatus, FileStorage, MediaInfo};
+    let Some(catalog) = store.files() else { return Ok(None) };
+    let (_, hash) = karmayoga_core::files::disk::hash_reader(body)?;
+    if !reuse.is_empty() {
+        for held in catalog.get_files(reuse)? {
+            if held.hash == hash && !held.status.is_trashed() {
+                return Ok(Some(held.id));
+            }
+        }
+    }
+    // A sealed file's name is only ever shown, but it is still one name:
+    // no folders in it, nothing unprintable, as long as Files allows.
+    let name: String = name
+        .chars()
+        .map(|c| if c == '/' || c == '\\' || c.is_control() { '-' } else { c })
+        .take(karmayoga_core::files::MAX_NAME_LEN)
+        .collect();
+    let name = match name.trim() {
+        "" | "." | ".." => "file".to_string(),
+        named => named.to_string(),
+    };
+    let mime = match mime.trim() {
+        "" => karmayoga_core::media::sniff_mime(body).to_string(),
+        typed => typed.to_string(),
+    };
+    let now = jiff::Timestamp::now();
+    let entry = FileEntry {
+        id: karmayoga_core::FileId::new(),
+        storage: FileStorage::Sealed { blob: store.put_blob(body)? },
+        kind: FileKind::classify(&mime, &name),
+        name,
+        mime,
+        size: body.len() as u64,
+        hash,
+        modified_at: now,
+        added_at: now,
+        updated_at: now,
+        origin,
+        status: FileStatus::Present,
+        media: MediaInfo::default(),
+        thumbnail: None,
+        caption: String::new(),
+        tags: Vec::new(),
+        rating: None,
+        favourite: false,
+        hidden: false,
+        people: Vec::new(),
+        place: None,
+        stack: None,
+        properties: Default::default(),
+    };
+    catalog.put_file(&entry)?;
+    Ok(Some(entry.id))
 }
 
 /// Write an archive of `vault` into `out`.

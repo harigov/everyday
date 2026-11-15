@@ -34,7 +34,6 @@ import type {
   BankLink,
   BankLinkId,
   BegunSignIn,
-  BlobId,
   BlockId,
   BlockKind,
   BlockQuery,
@@ -61,7 +60,6 @@ import type {
   DeclineReason,
   Destination,
   DestinationCheck,
-  DocFile,
   DocKind,
   Dose,
   DoseId,
@@ -346,7 +344,7 @@ export interface Commands {
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   activeRecording: { args: Record<string, never>; result: Recording | null }
   addHealthDocument: {
-    args: { title: string; kind: DocKind; date?: string | null; files: DocFile[] }
+    args: { title: string; kind: DocKind; date?: string | null; files: FileId[] }
     result: HealthDocument
   }
   addHealthReading: { args: { reading: ManualReading }; result: void }
@@ -526,7 +524,7 @@ export interface Commands {
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
   enrolVoice: { args: { pcm: string }; result: VoiceprintInfo }
-  estimateMealPhoto: { args: { photo: BlobId }; result: MealItem[] }
+  estimateMealPhoto: { args: { photo: FileId }; result: MealItem[] }
   exportOpml: { args: Record<string, never>; result: string }
   extractHealthDocument: {
     args: { id: HealthDocumentId; text?: string | null }
@@ -581,6 +579,10 @@ export interface Commands {
   imageSearch: { args: { query: string; limit?: number | null }; result: ImageResult[] }
   importAppleHealth: {
     args: { path: string; sourceId?: HealthSourceId | null }
+    result: ImportStatus
+  }
+  importAppleHealthFile: {
+    args: { file: FileId; sourceId?: HealthSourceId | null; trashAfter?: boolean }
     result: ImportStatus
   }
   importCalendar: {
@@ -1264,6 +1266,7 @@ export const COMMAND_NAMES = {
   imagePreview: 'image_preview',
   imageSearch: 'image_search',
   importAppleHealth: 'import_apple_health',
+  importAppleHealthFile: 'import_apple_health_file',
   importCalendar: 'import_calendar',
   importFiles: 'import_files',
   importOpml: 'import_opml',
@@ -1780,6 +1783,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'image_preview',
   'image_search',
   'import_apple_health',
+  'import_apple_health_file',
   'import_calendar',
   'import_files',
   'import_opml',
@@ -2231,6 +2235,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'forget_missing_files',
   'forget_screen_item',
   'import_apple_health',
+  'import_apple_health_file',
   'import_calendar',
   'import_files',
   'import_opml',
@@ -2492,6 +2497,7 @@ export const CHANGE_KINDS = {
   forget_missing_files: 'file',
   forget_screen_item: 'screenSpan',
   import_apple_health: 'healthSample',
+  import_apple_health_file: 'healthSample',
   import_calendar: 'calendar',
   import_files: 'file',
   import_opml: 'newsSource',

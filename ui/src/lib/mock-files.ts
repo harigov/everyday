@@ -50,6 +50,7 @@ import type {
   FolderState,
   LegacyReport,
   MediaInfo,
+  RefOwner,
   ScanReport,
   UploadTicket,
 } from './types'
@@ -1271,6 +1272,7 @@ function listFiles(query: FileQuery): FilePage {
     if (query.favourite && !f.favourite) return false
     if (query.minRating && (f.rating ?? 0) < query.minRating) return false
     if (query.origin && f.origin !== query.origin) return false
+    if (query.excludeOrigins?.includes(f.origin)) return false
     if (query.storage && f.storage.kind !== query.storage) return false
     const when = whenOf(f)
     if (query.from && when < query.from) return false
@@ -1471,6 +1473,8 @@ function defaultDir(origin: FileOrigin): string {
       return 'Mail'
     case 'jobs':
       return 'Jobs'
+    case 'health':
+      return 'Health'
     default:
       return ''
   }
@@ -1523,6 +1527,60 @@ function addFile(name: string, size: number, opts: AddOptions): FileEntry {
   if (sealed) s.wasAt.set(id, joinPath(dir, final))
   s.files.push(entry)
   return entry
+}
+
+/**
+ * A page of a clinical document, or a picture of a meal, as Health's mock
+ * keeps it: a sealed file in this catalog with origin `health`, which is what
+ * the vault makes of a file added with `{ origin: 'health', encrypted: true }`.
+ * The same name answers the same file, so Health's seed can ask for its pages
+ * whenever it is built. It is asked for from there rather than seeded above
+ * so that this catalog -- and what the Files app is tried against -- is the
+ * same whether or not Health has been opened.
+ */
+export function mockHealthFile(name: string, size: number, at?: string): FileEntry {
+  const found = db().files.find((f) => f.origin === 'health' && f.name === name)
+  if (found) return wire(found)
+  const added = addFile(name, size, { origin: 'health', encrypted: true })
+  if (at) {
+    added.addedAt = at
+    added.modifiedAt = at
+    added.updatedAt = at
+  }
+  return wire(added)
+}
+
+/** What `FileEntry` the catalog holds for `id`, if it holds one. */
+export function mockCatalogFile(id: string): FileEntry | undefined {
+  const found = db().files.find((f) => f.id === id)
+  return found ? wire(found) : undefined
+}
+
+/** Say that `use.owner` refers to the file: the "Used in" the Files app
+ *  shows. One use per owner. */
+export function mockFileUsed(id: string, use: FileUse): void {
+  const s = db()
+  const others = (s.uses.get(id) ?? []).filter(
+    (u) => !(u.owner.kind === use.owner.kind && u.owner.id === use.owner.id),
+  )
+  s.uses.set(id, [...others, wire(use)])
+  s.unused.delete(id)
+}
+
+/** What the vault does when a record lets go of files it kept for itself: the
+ *  record (`owner`, when there is one) no longer uses them, and they go to the
+ *  Files trash. */
+export function mockFilesReleased(ids: string[], owner?: RefOwner): void {
+  const s = db()
+  const live = ids.filter((id) => s.files.some((f) => f.id === id))
+  for (const id of live) {
+    const rest = (s.uses.get(id) ?? []).filter(
+      (u) => !(owner && u.owner.kind === owner.kind && u.owner.id === owner.id),
+    )
+    if (rest.length > 0) s.uses.set(id, rest)
+    else s.uses.delete(id)
+  }
+  trash(live)
 }
 
 function applyUpdate(f: FileEntry, u: FileUpdate): void {

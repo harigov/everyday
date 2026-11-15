@@ -58,8 +58,8 @@ pub mod templates;
 pub mod units;
 
 use crate::id::{
-    AllergyId, BlobId, ConditionId, DoseId, FoodId, HealthDocumentId, HealthSourceId, ItemId,
-    LabResultId, MealId, MedicationId, TrackerId, WorkoutId,
+    AllergyId, BlobId, ConditionId, DoseId, FileId, FoodId, HealthDocumentId, HealthSourceId,
+    ItemId, LabResultId, MealId, MedicationId, TrackerId, WorkoutId,
 };
 use jiff::Timestamp;
 use jiff::civil::{Date, Time};
@@ -1522,10 +1522,32 @@ pub enum DocKind {
     Other,
 }
 
+/// One of a document's pages: a file in the files catalog, sealed, with
+/// [`crate::files::FileOrigin::Health`]. Somebody adds them through Files'
+/// own uploads, so a scan of many megabytes never crosses the webview whole,
+/// and the Files app shows them, says which document uses each, and keeps
+/// them in its trash a while after the document is deleted.
+///
+/// The name, type and size are the catalog's at the moment the file was
+/// added, so a list of documents is drawn without opening the catalog.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct DocFile {
+    pub file: FileId,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+/// What a connector sent for a document -- a FHIR resource's JSON, an ECG's
+/// CSV -- sealed in the blob store exactly as it arrived. The document's own
+/// data, kept so it can be read again, rather than a file anybody handed in:
+/// never in the files catalog, never one of [`HealthDocument::files`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct DocSource {
     pub blob: BlobId,
     pub name: String,
     pub mime: String,
@@ -1576,8 +1598,12 @@ pub struct HealthDocument {
     /// The clinician, clinic or lab.
     #[serde(default)]
     pub provider: String,
+    /// What somebody added: its pages, in order.
     #[serde(default)]
     pub files: Vec<DocFile>,
+    /// What a connector sent, when one brought it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<DocSource>,
     /// Text read out of it (the PDF's text layer, or the model's reading
     /// of a scan). Sealed; what search and the assistant read.
     #[serde(default)]
@@ -1740,8 +1766,10 @@ pub struct Meal {
     pub name: String,
     #[serde(default)]
     pub items: Vec<MealItem>,
+    /// A photograph of the plate: a sealed file in the files catalog, like a
+    /// document's pages (see [`DocFile`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub photo: Option<BlobId>,
+    pub photo: Option<FileId>,
     #[serde(default)]
     pub note: String,
     pub created_at: Timestamp,

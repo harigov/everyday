@@ -55,7 +55,7 @@
 //! does not go on drawing the old one.
 
 use crate::command;
-use crate::ctx::{Caller, Ctx};
+use crate::ctx::{Caller, Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::events::{Kind, Op};
 use crate::health::{brief, extract, food, import, photo};
@@ -67,15 +67,15 @@ use karmayoga_core::error::Error;
 use karmayoga_core::health::connect::hae;
 use karmayoga_core::health::metric::{self, MetricEntry};
 use karmayoga_core::health::{
-    ActivityDay, Adherence, Allergy, Condition, ConditionReport, DayTimeline, DocFile, DocKind,
-    Dose, DueDose, Food, FoodHit, GlucoseReport, HealthDay, HealthDocument, HealthIngestReport,
+    ActivityDay, Adherence, Allergy, Condition, ConditionReport, DayTimeline, DocKind, Dose,
+    DueDose, Food, FoodHit, GlucoseReport, HealthDay, HealthDocument, HealthIngestReport,
     HealthKeys, HealthKeysInfo, HealthSettings, HealthSource, ImportStatus, LabResult, LabTrend,
     Latest, MAX_RANGE_DAYS, ManualReading, Meal, MealItem, MealResponse, Medication, Metric,
     NutritionDay, PushHeaders, RuleAlert, SamplePoint, SeriesQuery, SeriesResult, SleepNight,
     TemplateChoice, TemplateInfo, TemplateKey, VisitBrief, Workout, WorkoutDetail,
 };
 use karmayoga_core::id::{
-    AllergyId, BlobId, ConditionId, DoseId, FoodId, HealthDocumentId, HealthSourceId, LabResultId,
+    AllergyId, ConditionId, DoseId, FileId, FoodId, HealthDocumentId, HealthSourceId, LabResultId,
     MealId, MedicationId, WorkoutId,
 };
 use serde::Deserialize;
@@ -164,6 +164,19 @@ pub struct ImportApple {
     pub path: String,
     #[serde(default)]
     pub source_id: Option<HealthSourceId>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportAppleFile {
+    /// An `export.zip` in the files catalog.
+    pub file: FileId,
+    #[serde(default)]
+    pub source_id: Option<HealthSourceId>,
+    /// Put the file in the Files trash once it has been imported: for an
+    /// export uploaded only to be read.
+    #[serde(default)]
+    pub trash_after: bool,
 }
 
 #[derive(Deserialize)]
@@ -327,8 +340,9 @@ pub struct AddDocument {
     pub kind: DocKind,
     #[serde(default)]
     pub date: Option<Date>,
-    /// Files already in the blob store; the interface uploads them first.
-    pub files: Vec<DocFile>,
+    /// Files already in the files catalog; the interface adds them through
+    /// Files first, sealed, as Health's.
+    pub files: Vec<FileId>,
 }
 
 #[derive(Deserialize)]
@@ -388,7 +402,8 @@ pub struct SaveMeal {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Photo {
-    pub photo: BlobId,
+    /// A picture in the files catalog.
+    pub photo: FileId,
 }
 
 #[derive(Deserialize)]
@@ -566,7 +581,59 @@ async fn import_apple_health(
     }
     let path = PathBuf::from(path);
     let vault = svc.require_unlocked()?;
-    blocking(move || import::start(&svc, vault, path, source_id)).await
+    blocking(move || import::start(&svc, vault, path, source_id, None)).await
+}
+
+/// Start importing an Apple Health `export.zip` that is in the files
+/// catalog: one a sync tool brought into the folder from the phone, or one
+/// uploaded through Files from a window on another machine -- in pieces,
+/// so an export of a gigabyte crosses no webview whole. Answers at once, as
+/// `import_apple_health` does.
+///
+/// Any caller holding Health and Files may: the file is the vault's, read
+/// where it is, and nothing of it is answered. A sealed one is read from a
+/// decrypted copy in the folder's private place, deleted the moment the
+/// import ends.
+async fn import_apple_health_file(
+    svc: Arc<Service>,
+    ctx: Ctx,
+    args: ImportAppleFile,
+) -> CommandResult<ImportStatus> {
+    ctx.require(Scope::Files)?;
+    let ImportAppleFile { file, source_id, trash_after } = args;
+    let vault = svc.require_unlocked()?;
+    blocking(move || {
+        let entry = vault.file(file)?;
+        if entry.status.is_trashed() {
+            return Err(CommandError::new(
+                codes::INVALID,
+                "that file is in the trash; restore it in Files first",
+            ));
+        }
+        if !entry.name.to_ascii_lowercase().ends_with(".zip") {
+            return Err(CommandError::new(
+                codes::INVALID,
+                "an Apple Health export is a .zip file (export.zip)",
+            ));
+        }
+        let path = vault.open_file_copy(file)?;
+        let decrypted = entry.is_sealed().then(|| path.clone());
+        let finished: import::Finished = Box::new(move |vault: &Vault, done: bool| {
+            if let Some(copy) = &decrypted
+                && let Err(e) = std::fs::remove_file(copy)
+            {
+                tracing::warn!(error = %e, "could not delete an export's decrypted copy");
+            }
+            if trash_after
+                && done
+                && let Err(e) = vault.trash_files(&[file])
+            {
+                tracing::warn!(code = e.code(), "could not move an imported export to the trash");
+            }
+        });
+        import::start(&svc, vault, path, source_id, Some(finished))
+    })
+    .await
 }
 
 async fn apple_import_status(
@@ -955,7 +1022,7 @@ async fn add_health_document(
             format!("at most {MAX_FILES} files in one document"),
         ));
     }
-    svc.on_vault(move |vault| vault.add_health_document(&title, kind, date, files)).await
+    svc.on_vault(move |vault| vault.add_health_document(&title, kind, date, &files)).await
 }
 
 async fn save_health_document(
@@ -1264,6 +1331,17 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("sourceId", "HealthSourceId | null", false),
         ],
         run: import_apple_health,
+    },
+    command! {
+        name: "import_apple_health_file", scope: Health, effect: Write,
+        change: HealthSample / Updated,
+        args: ImportAppleFile, returns: "ImportStatus",
+        signature: &[
+            ("file", "FileId", true),
+            ("sourceId", "HealthSourceId | null", false),
+            ("trashAfter", "boolean", false),
+        ],
+        run: import_apple_health_file,
     },
     command! {
         name: "apple_import_status", scope: Health, effect: Read,
@@ -1623,7 +1701,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
             ("title", "string", true),
             ("kind", "DocKind", true),
             ("date", "string | null", false),
-            ("files", "DocFile[]", true),
+            ("files", "FileId[]", true),
         ],
         run: add_health_document,
     },
@@ -1722,7 +1800,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     command! {
         name: "estimate_meal_photo", scope: Health, effect: Read,
         args: Photo, returns: "MealItem[]",
-        signature: &[("photo", "BlobId", true)],
+        signature: &[("photo", "FileId", true)],
         run: estimate_meal_photo,
     },
     command! {

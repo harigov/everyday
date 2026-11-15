@@ -10,7 +10,6 @@ import type {
   AccountId,
   AccountKind,
   BankAccount,
-  BlobId,
   BankAccountId,
   BankLink,
   BankLinkId,
@@ -45,7 +44,6 @@ import type {
   AllergyId,
   Condition,
   ConditionId,
-  DocFile,
   DocKind,
   Dose,
   DoseId,
@@ -2213,6 +2211,14 @@ export const api = {
    *  (`healthImportApple`) is how a window gets one; this is the vault's half. */
   importAppleHealth: (path: string, sourceId: HealthSourceId | null = null) =>
     call('importAppleHealth', { path, sourceId: sourceId ?? undefined }),
+  /** Start importing an `export.zip` that is in Files: one a sync tool
+   *  brought from the phone, or one uploaded from a window on another
+   *  machine. `trashAfter` puts it in the Files trash once imported. */
+  importAppleHealthFile: (
+    file: FileId,
+    sourceId: HealthSourceId | null = null,
+    trashAfter = false,
+  ) => call('importAppleHealthFile', { file, sourceId: sourceId ?? undefined, trashAfter }),
   appleImportStatus: () => call('appleImportStatus', {}),
   /** Answers whether there was an import to stop. */
   cancelAppleImport: () => call('cancelAppleImport', {}),
@@ -2283,8 +2289,9 @@ export const api = {
   labTrends: () => call('labTrends', {}),
   listHealthDocuments: () => call('listHealthDocuments', {}),
   getHealthDocument: (id: HealthDocumentId) => call('getHealthDocument', { id }),
-  /** The files are put through `putBlob` first; this makes one document of them. */
-  addHealthDocument: (title: string, kind: DocKind, date: string | null, files: DocFile[]) =>
+  /** The files are added through Files first (`addFiles`, sealed, origin
+   *  `health`); this makes one document of them. */
+  addHealthDocument: (title: string, kind: DocKind, date: string | null, files: FileId[]) =>
     call('addHealthDocument', { title, kind, date: date ?? undefined, files }),
   saveHealthDocument: (document: HealthDocument) => call('saveHealthDocument', { document }),
   /** `deleteLabs` also deletes the results accepted from it. */
@@ -2307,8 +2314,9 @@ export const api = {
   listMeals: (from: string, to: string) => call('listMeals', { from, to }),
   saveMeal: (meal: Meal) => call('saveMeal', { meal }),
   deleteMeal: (id: MealId) => call('deleteMeal', { id }),
-  /** A picture put through `putBlob`, sent to the model: foods and grams, every item an estimate. */
-  estimateMealPhoto: (photo: BlobId) => call('estimateMealPhoto', { photo }),
+  /** A picture added through Files (sealed, origin `health`), sent to the
+   *  model: foods and grams, every item an estimate. */
+  estimateMealPhoto: (photo: FileId) => call('estimateMealPhoto', { photo }),
   mealResponse: (id: MealId) => call('mealResponse', { id }),
   /** A summary for a clinic visit, from the vault's own numbers. */
   healthVisitBrief: (conditionId: ConditionId | null, since: string, tz: string) =>

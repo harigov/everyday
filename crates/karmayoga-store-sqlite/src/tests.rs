@@ -2298,6 +2298,7 @@ fn the_database_file_contains_no_readable_health_data() {
             date: Some(jiff::civil::date(2026, 11, 4)),
             provider: "A clinic nobody should see".into(),
             files: Vec::new(),
+            source: None,
             text: "A sentence of a report nobody should see".into(),
             fhir: Vec::new(),
             extraction: ExtractionState::None,

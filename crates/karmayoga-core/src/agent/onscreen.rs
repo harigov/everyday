@@ -613,6 +613,12 @@ fn line(ctx: &ToolContext<'_>, tz: &TimeZone, shown: Shown) -> Option<Said> {
                 return None;
             }
             let file = vault.file(id).ok()?;
+            // One of Health's -- a clinical document's page, a meal's
+            // photograph -- is for the health tools to name, under their
+            // gates, not a line on every turn.
+            if file.origin == crate::files::FileOrigin::Health {
+                return None;
+            }
             let what = match file.kind {
                 FileKind::Image => "a picture",
                 FileKind::Video => "a video",

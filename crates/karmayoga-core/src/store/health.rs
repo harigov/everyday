@@ -39,8 +39,9 @@
 //!   document, a medication still naming a deleted condition, is the vault's
 //!   to tidy.
 //! - **[`HealthStore::blob_refs`] names every blob a health record holds**
-//!   -- a document's files, a workout's route, a meal's photo -- or the
-//!   garbage collector takes them.
+//!   -- what a connector sent for a document, a workout's route -- or the
+//!   garbage collector takes them. A document's pages and a meal's photo are
+//!   files in the files catalog, kept alive by the catalog's own records.
 
 use crate::error::Result;
 use crate::health::{

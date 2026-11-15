@@ -347,6 +347,32 @@ fn check_may_read(ctx: &ToolContext<'_>, tool: &str, id: FileId) -> Result<()> {
     }
 }
 
+/// What these tools say about one of Health's files.
+fn healths(tool: &str) -> Error {
+    Error::Invalid(format!(
+        "{tool}: that file is one of Health's -- a clinical document's page or a meal's \
+         photograph -- and the file tools do not reach it. The health tools read documents."
+    ))
+}
+
+/// Refuse any of `ids` that is one of Health's files.
+///
+/// A clinical document's pages and a meal's photograph are reached through
+/// the health tools, under Health's own gates -- an MCP token that names
+/// `health`, never a job -- and not through these: a token minted to tidy
+/// somebody's photographs must not be able to open their lab reports, or
+/// trash them. `find_files` leaves them out of every listing for the same
+/// reason. A file that cannot be read is left for the tool's own read to
+/// report.
+fn check_not_healths(ctx: &ToolContext<'_>, tool: &str, ids: &[FileId]) -> Result<()> {
+    for id in ids {
+        if ctx.vault.file(*id).is_ok_and(|f| f.origin == FileOrigin::Health) {
+            return Err(healths(tool));
+        }
+    }
+    Ok(())
+}
+
 // ---- arguments ------------------------------------------------------------
 
 /// `key` as a list of file ids, each checked to be one, without repeats.
@@ -508,6 +534,7 @@ fn run_find_files(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         filter.album = Some(album.id);
     }
     filter.favourite = args.bool_or("favourite", false);
+    filter.exclude_origins = vec![FileOrigin::Health];
 
     let from = args.opt_date("from")?;
     let to = args.opt_date("to")?;
@@ -621,6 +648,9 @@ fn run_file_info(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let id: FileId = args.id("id", "file")?;
     check_may_read(ctx, "file_info", id)?;
     let file = ctx.vault.file(id)?;
+    if file.origin == FileOrigin::Health {
+        return Err(healths("file_info"));
+    }
 
     let mut m = row(&file, ctx.tz);
     m.insert("mime".into(), json!(file.mime));
@@ -720,6 +750,9 @@ fn run_read_file(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let id: FileId = args.id("id", "file")?;
     check_may_read(ctx, "read_file", id)?;
     let file = ctx.vault.file(id)?;
+    if file.origin == FileOrigin::Health {
+        return Err(healths("read_file"));
+    }
     // Said before anything is opened, in words that say what to do instead.
     if matches!(file.kind, FileKind::Image | FileKind::Video | FileKind::Audio) {
         return Err(args.bad(format!(
@@ -868,6 +901,7 @@ fn names_of(names: &[String]) -> String {
 fn run_organize_files(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     check_access(ctx, "organize_files")?;
     let ids = file_ids(args, "ids")?;
+    check_not_healths(ctx, "organize_files", &ids)?;
 
     // What is asked for, read in full before anything is done, so a bad
     // argument never leaves half a request applied.
@@ -1028,6 +1062,7 @@ fn run_trash_files(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if ids.is_empty() {
         return Err(args.bad("`ids` is required: which files? Use find_files"));
     }
+    check_not_healths(ctx, "trash_files", &ids)?;
     let trashed = ctx.vault.trash_files(&ids)?;
     let days = ctx.vault.files_settings()?.trash_days;
     let note = match days {

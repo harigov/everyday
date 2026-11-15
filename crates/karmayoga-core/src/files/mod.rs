@@ -196,10 +196,15 @@ pub enum FileOrigin {
     Mail,
     /// Written by a routine or a background job.
     Jobs,
+    /// A clinical document or a meal's photograph kept by Health. Always
+    /// sealed when Health adds it (Hari's call: what a clinician gave
+    /// somebody stays in the vault), and out of the assistant's file tools,
+    /// which have Health's own gates to answer to instead.
+    Health,
 }
 
 impl FileOrigin {
-    pub const ALL: [FileOrigin; 8] = [
+    pub const ALL: [FileOrigin; 9] = [
         FileOrigin::Files,
         FileOrigin::Found,
         FileOrigin::Journal,
@@ -208,6 +213,7 @@ impl FileOrigin {
         FileOrigin::Chat,
         FileOrigin::Mail,
         FileOrigin::Jobs,
+        FileOrigin::Health,
     ];
 
     /// The word stored in the catalog's clear `origin` column.
@@ -221,6 +227,7 @@ impl FileOrigin {
             FileOrigin::Chat => "chat",
             FileOrigin::Mail => "mail",
             FileOrigin::Jobs => "jobs",
+            FileOrigin::Health => "health",
         }
     }
 
@@ -242,6 +249,9 @@ impl FileOrigin {
             FileOrigin::Assistant | FileOrigin::Chat => format!("Assistant/{y:04}-{m:02}"),
             FileOrigin::Mail => "Mail".to_string(),
             FileOrigin::Jobs => "Assistant/Jobs".to_string(),
+            // Only where one is written out of the vault: Health seals what
+            // it keeps.
+            FileOrigin::Health => "Health".to_string(),
         }
     }
 }
@@ -633,6 +643,10 @@ pub struct FileFilter {
     pub min_rating: Option<u8>,
     #[serde(default)]
     pub origin: Option<FileOrigin>,
+    /// None of these origins: what the assistant's file tools leave out
+    /// (Health's, which only the health tools reach).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_origins: Vec<FileOrigin>,
     #[serde(default)]
     pub status: StatusFilter,
     #[serde(default)]
@@ -808,6 +822,10 @@ pub enum RefKind {
     Note,
     /// A message in a conversation with the assistant.
     Message,
+    /// A clinical document in Health: its pages.
+    HealthDocument,
+    /// A meal in Health: its photograph.
+    Meal,
 }
 
 impl RefKind {
@@ -817,11 +835,15 @@ impl RefKind {
             RefKind::Entry => "entry",
             RefKind::Note => "note",
             RefKind::Message => "message",
+            RefKind::HealthDocument => "health_document",
+            RefKind::Meal => "meal",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
-        [RefKind::Entry, RefKind::Note, RefKind::Message].into_iter().find(|k| k.as_str() == s)
+        [RefKind::Entry, RefKind::Note, RefKind::Message, RefKind::HealthDocument, RefKind::Meal]
+            .into_iter()
+            .find(|k| k.as_str() == s)
     }
 }
 

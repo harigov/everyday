@@ -97,7 +97,7 @@
         {
           "name": "files",
           "required": true,
-          "type": "DocFile[]"
+          "type": "FileId[]"
         }
       ],
       "changes": {
@@ -2663,7 +2663,7 @@
         {
           "name": "photo",
           "required": true,
-          "type": "BlobId"
+          "type": "FileId"
         }
       ],
       "changes": null,
@@ -3542,6 +3542,36 @@
       },
       "effect": "write",
       "name": "import_apple_health",
+      "orScope": null,
+      "returns": "ImportStatus",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "file",
+          "required": true,
+          "type": "FileId"
+        },
+        {
+          "name": "sourceId",
+          "required": false,
+          "type": "HealthSourceId | null"
+        },
+        {
+          "name": "trashAfter",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "healthSample",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "import_apple_health_file",
       "orScope": null,
       "returns": "ImportStatus",
       "scope": "health",

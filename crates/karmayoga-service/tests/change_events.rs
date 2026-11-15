@@ -54,10 +54,11 @@
 //!   stores it, and is never synced or disconnected. (`sync_bank_links` is
 //!   *not* skipped: run before any bank exists, it has nothing to ask
 //!   Plaid, answers `[]`, and still announces its `change:`.)
-//! - **Health, the two that cannot be offline**: `import_apple_health` reads a
-//!   file on a thread of its own and raises its own changes whenever it ends,
-//!   which this capture would race, and `extract_health_document` asks the
-//!   large model to read the document. (`cancel_apple_import` is *not*
+//! - **Health, the three that cannot be offline**: `import_apple_health` and
+//!   `import_apple_health_file` read an export on a thread of their own and
+//!   raise their own changes whenever it ends, which this capture would race,
+//!   and `extract_health_document` asks the large model to read the
+//!   document. (`cancel_apple_import` is *not*
 //!   skipped: with no import running it answers `false` and still announces
 //!   its `change:`.)
 //! - **`respond_to_invite`**: needs a message carrying a real,
@@ -311,6 +312,10 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("finish_recording", "moves the recording into the transcription pipeline: background work"),
     (
         "import_apple_health",
+        "reads the export on a thread of its own, which raises its own changes",
+    ),
+    (
+        "import_apple_health_file",
         "reads the export on a thread of its own, which raises its own changes",
     ),
     ("name_speaker", "needs a transcript, which only a finished recording produces"),
@@ -1074,7 +1079,13 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "delete_lab", json!({ "id": lab })).await;
 
     let report = b"%PDF-1.4 a lab report, for the snapshot";
-    let page = vault.put_blob(report).unwrap();
+    // Added to the files catalog first, sealed as Health's, the way the
+    // interface adds a page before it makes a document of it.
+    let sealed = karmayoga_core::files::ImportOptions {
+        encrypted: Some(true),
+        ..karmayoga_core::files::ImportOptions::new(karmayoga_core::files::FileOrigin::Health)
+    };
+    let page = vault.import_bytes(report, "report.pdf", &sealed).unwrap().id;
     let document = run(
         &svc,
         &h,
@@ -1083,12 +1094,7 @@ async fn every_offline_write_announces_what_was_written_down() {
             "title": "Lab report",
             "kind": "labReport",
             "date": "2026-11-01",
-            "files": [{
-                "blob": page,
-                "name": "report.pdf",
-                "mime": "application/pdf",
-                "size": report.len(),
-            }],
+            "files": [page],
         }),
     )
     .await;

@@ -48,7 +48,9 @@ use crate::files::{
     ScanChanges, ScanReport, StatusFilter, StorageKind, UploadTicket, reconcile,
     valid_property_key,
 };
-use crate::id::{AlbumId, BlobId, ConversationId, EntryId, FileId, NoteId};
+use crate::id::{
+    AlbumId, BlobId, ConversationId, EntryId, FileId, HealthDocumentId, MealId, NoteId,
+};
 use crate::model::{Attachment, MediaKind};
 use crate::note::Note;
 use crate::record::RecordKind;
@@ -448,6 +450,43 @@ impl Vault {
                     }
                     RefKind::Message => {
                         messages.insert(owner.id.clone(), owner);
+                    }
+                    RefKind::HealthDocument => {
+                        let (Ok(document_id), Some(health)) =
+                            (HealthDocumentId::parse(&owner.id), u.store.health())
+                        else {
+                            continue;
+                        };
+                        match health.get_document(document_id) {
+                            Ok(d) => uses.push(FileUse {
+                                owner,
+                                title: match d.title.trim() {
+                                    "" => "Untitled document".to_string(),
+                                    t => t.to_string(),
+                                },
+                                when: Some(d.created_at),
+                                parent: None,
+                            }),
+                            Err(Error::NotFound { .. }) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    RefKind::Meal => {
+                        let (Ok(meal_id), Some(health)) =
+                            (MealId::parse(&owner.id), u.store.health())
+                        else {
+                            continue;
+                        };
+                        match health.get_meal(meal_id) {
+                            Ok(m) => uses.push(FileUse {
+                                owner,
+                                title: meal_title(&m),
+                                when: Some(m.at),
+                                parent: None,
+                            }),
+                            Err(Error::NotFound { .. }) => {}
+                            Err(e) => return Err(e),
+                        }
                     }
                 }
             }
@@ -1475,8 +1514,9 @@ impl Vault {
         self.track_file_refs(owner, std::iter::empty());
     }
 
-    /// Recompute the whole references table from every entry, note and
-    /// assistant message. Answers how many references there are.
+    /// Recompute the whole references table from every entry, note,
+    /// assistant message, health document and meal. Answers how many
+    /// references there are.
     pub fn rebuild_file_refs(&self) -> Result<u64> {
         self.writable()?;
         // The exclusive lock, not the shared one: a save landing between
@@ -1507,6 +1547,18 @@ impl Vault {
                         for file in &message.files {
                             refs.push((RefOwner::new(RefKind::Message, message.id), *file));
                         }
+                    }
+                }
+            }
+            if let Some(health) = u.store.health() {
+                for document in health.list_documents()? {
+                    for page in &document.files {
+                        refs.push((RefOwner::new(RefKind::HealthDocument, document.id), page.file));
+                    }
+                }
+                for meal in health.meals(Timestamp::MIN, Timestamp::MAX)? {
+                    if let Some(photo) = meal.photo {
+                        refs.push((RefOwner::new(RefKind::Meal, meal.id), photo));
                     }
                 }
             }
@@ -2145,6 +2197,24 @@ impl Vault {
 }
 
 // ---- small helpers ---------------------------------------------------------
+
+/// A meal as "used in" names it: its own name, else what kind of meal it
+/// was, with the day it was eaten (in this machine's zone, as the Files app
+/// shows every time).
+fn meal_title(meal: &crate::health::Meal) -> String {
+    use crate::health::MealSlot;
+    let day = meal.at.to_zoned(TimeZone::system()).date().strftime("%-d %B %Y");
+    let name = match meal.name.trim() {
+        "" => match meal.slot {
+            MealSlot::Breakfast => "Breakfast",
+            MealSlot::Lunch => "Lunch",
+            MealSlot::Dinner => "Dinner",
+            MealSlot::Snack => "Snack",
+        },
+        name => name,
+    };
+    format!("{name}, {day}")
+}
 
 fn unavailable(path: &str, reason: &str) -> Error {
     Error::Invalid(format!("the files folder at {path} is not available: {reason}"))

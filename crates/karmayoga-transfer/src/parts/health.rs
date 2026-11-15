@@ -102,13 +102,14 @@ use crate::text::{Csv, Row, Table, safe_name};
 use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
 use jiff::Timestamp;
 use jiff::civil::Date;
+use karmayoga_core::files::{FileOrigin, RefKind, RefOwner};
 use karmayoga_core::health::{
-    Allergy, Condition, DocFile, Dose, ExtractionState, Food, HealthDocument, HealthSettings,
-    LabResult, Meal, MealItem, Medication, Metric, Nutrients, Workout,
+    Allergy, Condition, DocFile, DocSource, Dose, ExtractionState, Food, HealthDocument,
+    HealthSettings, LabResult, Meal, MealItem, Medication, Metric, Nutrients, Workout,
 };
 use karmayoga_core::store::JournalStore;
 use karmayoga_core::{
-    Error, HealthDocumentId, HealthStore, LabResultId, MealId, MedicationId, Result,
+    Error, FileId, HealthDocumentId, HealthStore, LabResultId, MealId, MedicationId, Result,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -502,10 +503,10 @@ fn export_meals(
     }
     let mut csv = Csv::new(MEAL_COLUMNS);
     for meal in &meals {
-        // The photograph is a file like a document's, and is written only
-        // when attachments were asked for.
+        // The photograph is a file in the catalog, written beside the other
+        // apps' files in `media/`, and only when attachments were asked for.
         let photo = match meal.photo {
-            Some(blob) => out.media(store, blob, "meal", opts)?.unwrap_or_default(),
+            Some(file) => out.catalogued(store, file, opts)?.unwrap_or_default(),
             None => String::new(),
         };
         csv.row(&meal_row(meal, &photo)?);
@@ -562,20 +563,20 @@ fn export_documents(
         for file in &document.files {
             let mut path = None;
             if opts.media {
-                match store.get_blob(file.blob) {
-                    Ok(body) => {
-                        let address = &file.blob.to_hex()[..8];
-                        let name = format!("{address}-{}", safe_name(&file.name));
+                match crate::catalogued_bytes(store, file.file) {
+                    Ok((_, body)) => {
+                        let name = format!("{}-{}", file.file.short(), safe_name(&file.name));
                         // The same file twice under one name is one file.
                         if written.insert(name.clone()) {
                             out.bytes_at(&format!("{folder}/{name}"), &body)?;
                         }
                         path = Some(name);
                     }
-                    // A file the vault has lost is not a reason to lose the
-                    // rest; `document.json` says it was not written.
+                    // A file the vault has lost -- or one in a folder that is
+                    // locked just now -- is not a reason to lose the rest;
+                    // `document.json` says it was not written.
                     Err(e) => {
-                        tracing::warn!(blob = %file.blob, error = %e, "a health file was lost");
+                        tracing::warn!(file = %file.file, error = %e, "a health file was lost");
                     }
                 }
             }
@@ -586,9 +587,38 @@ fn export_documents(
                 file: path,
             });
         }
+        // What a connector sent, beside the pages, under a name of its own.
+        let source = match &document.source {
+            Some(source) => {
+                let mut path = None;
+                if opts.media {
+                    match store.get_blob(source.blob) {
+                        Ok(body) => {
+                            let name = format!("source-{}", safe_name(&source.name));
+                            out.bytes_at(&format!("{folder}/{name}"), &body)?;
+                            path = Some(name);
+                        }
+                        Err(e) => {
+                            tracing::warn!(blob = %source.blob, error = %e, "a health record was lost");
+                        }
+                    }
+                }
+                Some(FileOut {
+                    name: source.name.clone(),
+                    mime: source.mime.clone(),
+                    size: source.size,
+                    file: path,
+                })
+            }
+            None => None,
+        };
         let mut json = serde_json::to_value(&document)?;
         if let Some(object) = json.as_object_mut() {
             object.insert("files".into(), serde_json::to_value(&files)?);
+            match source {
+                Some(source) => object.insert("source".into(), serde_json::to_value(&source)?),
+                None => object.remove("source"),
+            };
             // A provider's own id for the paper.
             object.remove("externalId");
         }
@@ -826,6 +856,10 @@ fn read_documents(
             .and_then(|object| object.remove("files"))
             .and_then(|files| serde_json::from_value(files).ok())
             .unwrap_or_default();
+        let sent: Option<FileOut> = value
+            .as_object_mut()
+            .and_then(|object| object.remove("source"))
+            .and_then(|source| serde_json::from_value(source).ok());
         let mut document: HealthDocument = match serde_json::from_value(value) {
             Ok(document) => document,
             Err(e) => {
@@ -837,7 +871,10 @@ fn read_documents(
             report.problem(name, "a document needs a title");
             continue;
         }
-        let mut landing = land(found(health.get_document(document.id))?, || document.clone(), mode);
+        let stored = found(health.get_document(document.id))?;
+        let held: Vec<FileId> =
+            stored.iter().flat_map(|d| d.files.iter().map(|f| f.file)).collect();
+        let mut landing = land(stored, || document.clone(), mode);
         let Some(target) = landing.as_mut() else {
             report.landed(&landing);
             continue;
@@ -856,16 +893,52 @@ fn read_documents(
                 report.problem(name, format!("{path} is listed but is not in the archive"));
                 continue;
             };
-            let blob = store.put_blob(body)?;
+            // Back into the files catalog, sealed, as Health keeps every
+            // page.
+            let Some(id) = crate::seal_into_catalog(
+                store,
+                body,
+                &file.name,
+                &file.mime,
+                FileOrigin::Health,
+                &held,
+            )?
+            else {
+                report.problem(
+                    name,
+                    "this vault keeps no files, so the document's pages were left out",
+                );
+                break;
+            };
             document.files.push(DocFile {
-                blob,
+                file: id,
                 name: file.name,
                 mime: file.mime,
                 size: body.len() as u64,
             });
         }
+        document.source = None;
+        if let Some(sent) = sent
+            && let Some(path) = sent.file.as_deref().filter(|p| !p.contains('/'))
+        {
+            match src.get(&format!("{folder}{path}")) {
+                Some(body) => {
+                    document.source = Some(DocSource {
+                        blob: store.put_blob(body)?,
+                        name: sent.name,
+                        mime: sent.mime,
+                        size: body.len() as u64,
+                    });
+                }
+                None => report.problem(name, format!("{path} is listed but is not in the archive")),
+            }
+        }
         *target = document;
         health.put_document(target)?;
+        if let Some(catalog) = store.files() {
+            let pages: Vec<FileId> = target.files.iter().map(|f| f.file).collect();
+            catalog.set_refs(&RefOwner::new(RefKind::HealthDocument, target.id), &pages)?;
+        }
         report.landed(&landing);
     }
     Ok(())
@@ -1189,19 +1262,27 @@ fn read_meals(
             report.problem(MEALS, format!("row {}: {} is already in the file", n + 2, meal.id));
             continue;
         }
-        let mut landing = land(found(health.get_meal(meal.id))?, || meal.clone(), mode);
+        let stored = found(health.get_meal(meal.id))?;
+        let held: Vec<FileId> = stored.iter().filter_map(|m| m.photo).collect();
+        let mut landing = land(stored, || meal.clone(), mode);
         let Some(target) = landing.as_mut() else {
             report.landed(&landing);
             continue;
         };
-        // The photograph, when the archive has it: put into the blob store
-        // only now that the meal is going to be written.
+        // The photograph, when the archive has it: into the files catalog,
+        // sealed, only now that the meal is going to be written.
         let photo = Some(row.get("photo").trim()).filter(|p| !p.is_empty());
-        if let Some(body) = photo.and_then(|path| src.get(path)) {
-            meal.photo = Some(store.put_blob(body)?);
+        if let Some((path, body)) = photo.and_then(|path| Some((path, src.get(path)?))) {
+            let name = path.rsplit('/').next().unwrap_or(path);
+            meal.photo =
+                crate::seal_into_catalog(store, body, name, "", FileOrigin::Health, &held)?;
         }
         *target = meal;
         health.put_meal(target)?;
+        if let Some(catalog) = store.files() {
+            let photo: Vec<FileId> = target.photo.into_iter().collect();
+            catalog.set_refs(&RefOwner::new(RefKind::Meal, target.id), &photo)?;
+        }
         report.landed(&landing);
     }
     unread.finish(report);

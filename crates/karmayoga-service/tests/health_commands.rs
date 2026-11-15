@@ -390,12 +390,8 @@ async fn ranges_and_sizes_no_screen_sends_are_refused_before_the_vault_reads_the
 #[tokio::test]
 async fn a_document_of_more_files_or_more_text_than_any_scan_is_refused() {
     let (svc, _dir) = support::vault::service(None);
-    let page = json!({
-        "blob": "0000000000000000000000000000000000000000000000000000000000000000",
-        "name": "page.png",
-        "mime": "image/png",
-        "size": 1,
-    });
+    // A page is a file in the files catalog, named by its id.
+    let page = json!("00000000-0000-0000-0000-000000000000");
     let pages: Vec<Value> = std::iter::repeat_n(page, 101).collect();
     let e = fails(
         &svc,

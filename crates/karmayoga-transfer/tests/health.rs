@@ -14,6 +14,7 @@
 //! read, naming what a test looks at: everything else has its default.
 
 use jiff::Timestamp;
+use karmayoga_core::files::{FileOrigin, ImportOptions, RefKind};
 use karmayoga_core::health::{
     Allergy, Condition, Dose, Food, HealthDocument, HealthSettings, LabResult, Meal, Medication,
 };
@@ -126,6 +127,16 @@ struct Filled {
 /// with a push token, changed settings, and three samples of heart rate -- one
 /// from a device whose name is a formula.
 fn fill(vault: &Vault) -> Filled {
+    // The pages and the photograph are files in the catalog, sealed as
+    // Health keeps them: added first, through the vault, as the interface
+    // adds them.
+    let sealed = |bytes: &[u8], name: &str| {
+        let opts =
+            ImportOptions { encrypted: Some(true), ..ImportOptions::new(FileOrigin::Health) };
+        vault.import_bytes(bytes, name, &opts).unwrap().id
+    };
+    let (report, scan, photo) =
+        (sealed(REPORT, "report.pdf"), sealed(SCAN, "page 2.png"), sealed(PLATE, "plate.jpg"));
     with_store(vault, |store| {
         let health = store.health().expect("a health store");
 
@@ -202,16 +213,14 @@ fn fill(vault: &Vault) -> Filled {
 
         // A document with two files, and a result read out of it waiting to
         // be accepted.
-        let report = store.put_blob(REPORT).unwrap();
-        let scan = store.put_blob(SCAN).unwrap();
         let document_id = HealthDocumentId::new();
         let document: HealthDocument = make(json!({
             "id": document_id, "title": "Thyroid panel", "kind": "labReport",
             "date": "2026-10-02", "provider": "Quest Diagnostics",
             "files": [
-                { "blob": report, "name": "report.pdf", "mime": "application/pdf",
+                { "file": report, "name": "report.pdf", "mime": "application/pdf",
                   "size": REPORT.len() },
-                { "blob": scan, "name": "page 2.png", "mime": "image/png", "size": SCAN.len() },
+                { "file": scan, "name": "page 2.png", "mime": "image/png", "size": SCAN.len() },
             ],
             "text": "TSH 2.4 mIU/L (0.4-4.0)",
             "fhir": [{
@@ -241,7 +250,6 @@ fn fill(vault: &Vault) -> Filled {
         }));
         health.put_labs(&[tsh.clone(), odd.clone()]).unwrap();
 
-        let photo = store.put_blob(PLATE).unwrap();
         let meal: Meal = make(json!({
             "id": MealId::new(), "at": T1, "offsetMin": -480, "slot": "dinner",
             "name": "Chicken and rice",
@@ -459,13 +467,17 @@ fn health_comes_back_whole_but_for_what_the_phone_brings_again() {
     let doses = every_dose(&target);
     assert_eq!(by_id(doses, |d| d.id), by_id(filled.typed_doses.clone(), |d| d.id));
 
-    // The meal, photograph aside: that is a blob of this vault's own.
+    // The meal, photograph aside: that is a file in this vault's own
+    // catalog, sealed as Health's, and the meal is what uses it.
     let meals = every_meal(&target);
     assert_eq!(meals.len(), 1);
     let without_photo = |meal: &Meal| Meal { photo: None, ..meal.clone() };
     assert_eq!(without_photo(&meals[0]), without_photo(&filled.meal));
     let photo = meals[0].photo.expect("the photograph came back");
-    assert_eq!(with_store(&target, |s| s.get_blob(photo).unwrap()), PLATE);
+    assert_eq!(target.health_file_bytes(photo).unwrap(), PLATE);
+    let photo_entry = target.file(photo).unwrap();
+    assert!(photo_entry.is_sealed() && photo_entry.origin == FileOrigin::Health);
+    assert_eq!(target.file_uses(photo).unwrap()[0].owner.kind, RefKind::Meal);
 
     // The document, files aside, and without the provider's id; and each
     // file with the bytes it had.
@@ -480,8 +492,11 @@ fn health_comes_back_whole_but_for_what_the_phone_brings_again() {
     assert_eq!((files[0].name.as_str(), files[0].mime.as_str()), ("report.pdf", "application/pdf"));
     assert_eq!(files[1].name, "page 2.png", "the name the person gave it");
     assert_eq!(files[0].size, REPORT.len() as u64);
-    assert_eq!(with_store(&target, |s| s.get_blob(files[0].blob).unwrap()), REPORT);
-    assert_eq!(with_store(&target, |s| s.get_blob(files[1].blob).unwrap()), SCAN);
+    let document = documents[0].id;
+    assert_eq!(target.health_document_file(document, files[0].file).unwrap(), REPORT);
+    assert_eq!(target.health_document_file(document, files[1].file).unwrap(), SCAN);
+    assert!(target.file(files[0].file).unwrap().is_sealed(), "a page comes back sealed");
+    assert_eq!(target.file_uses(files[1].file).unwrap()[0].owner.kind, RefKind::HealthDocument);
     assert_eq!(documents[0].pending_labs, filled.document.pending_labs);
 
     // And what is not imported is not there: no sample, no workout, no

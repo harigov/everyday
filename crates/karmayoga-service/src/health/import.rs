@@ -68,11 +68,18 @@ fn update(change: impl FnOnce(&mut ImportStatus)) {
 /// Start importing the export at `path` into `source` (an Apple export
 /// source; one is created, named "Apple Health export", if `None`).
 /// Refused while another import runs.
+/// What to do once an import has ended, on its own thread: told whether it
+/// finished (rather than failing or being stopped). How an import read from
+/// a file in the files catalog lets go of the decrypted copy it read, and
+/// puts an export uploaded only to be imported in the trash.
+pub type Finished = Box<dyn FnOnce(&Vault, bool) + Send>;
+
 pub fn start(
     svc: &Arc<Service>,
     vault: Arc<Vault>,
     path: PathBuf,
     source: Option<HealthSourceId>,
+    finished: Option<Finished>,
 ) -> CommandResult<ImportStatus> {
     let meta = std::fs::metadata(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
@@ -115,7 +122,7 @@ pub fn start(
         let svc = svc.clone();
         std::thread::Builder::new()
             .name("health-import".into())
-            .spawn(move || run(&svc, &vault, &path, source))
+            .spawn(move || run(&svc, &vault, &path, source, finished))
     };
     if let Err(e) = worker {
         tracing::warn!(error = %e, "could not start the Apple Health import's thread");
@@ -147,7 +154,13 @@ pub fn cancel() -> bool {
 
 /// The import's thread: read, then settle the status however it ended, so
 /// that nothing is left saying `running` for ever.
-fn run(svc: &Arc<Service>, vault: &Arc<Vault>, path: &Path, source: Option<HealthSourceId>) {
+fn run(
+    svc: &Arc<Service>,
+    vault: &Arc<Vault>,
+    path: &Path,
+    source: Option<HealthSourceId>,
+    finished: Option<Finished>,
+) {
     let outcome =
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read(svc, vault, path, source)));
     let (state, error) = match outcome {
@@ -157,6 +170,14 @@ fn run(svc: &Arc<Service>, vault: &Arc<Vault>, path: &Path, source: Option<Healt
             ("failed", "the import stopped unexpectedly".to_string())
         }
     };
+    if let Some(finished) = finished {
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            finished(vault, state == "done")
+        }));
+        if ran.is_err() {
+            tracing::warn!("tidying up after an Apple Health import panicked");
+        }
+    }
     let now = svc.now();
     update(|s| {
         s.state = state.into();

@@ -41,6 +41,7 @@ import {
   itemFor,
   VITALS_METRICS,
 } from './health'
+import { mockCatalogFile, mockFileUsed, mockFilesReleased, mockHealthFile } from './mock-files'
 import { addDays, daysApart, isoDate, startOfDay, startOfWeek, todayIso } from './time'
 import type {
   ActivityDay,
@@ -361,8 +362,14 @@ let meals: Meal[] = []
 let workouts: Workout[] = []
 let nights: Night[] = []
 let fdcKey = ''
-let imported: { startedAt: number; fileName: string; total: number; cancelled: boolean } | null =
-  null
+let imported: {
+  startedAt: number
+  fileName: string
+  total: number
+  cancelled: boolean
+  /** An upload to put in the Files trash once it has been read. */
+  trashAfter?: string
+} | null = null
 let importDone: ImportStatus | null = null
 let seq = 0
 
@@ -642,6 +649,18 @@ function buildMeals(): void {
     for (const meal of made) if (meal) meals.push(meal)
   }
   meals.sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+  // The latest lunch was photographed, so the meal editor has a photo to
+  // show: a sealed file in Files, as the vault keeps one.
+  const photographed = [...meals].reverse().find((m) => m.slot === 'lunch')
+  if (photographed) {
+    const photo = mockHealthFile('lunch-bowl.jpg', 1_620_000, photographed.at)
+    photographed.photo = photo.id
+    mockFileUsed(photo.id, {
+      owner: { kind: 'meal', id: photographed.id },
+      title: photographed.name,
+      when: photographed.at,
+    })
+  }
   // What the person has eaten shows on the foods they eat most.
   for (const meal of meals) {
     for (const item of meal.items) {
@@ -1544,12 +1563,12 @@ function buildCare(): void {
     }),
   ]
 
-  const file = (blob: string, name: string, mime: string, size: number): DocFile => ({
-    blob,
-    name,
-    mime,
-    size,
-  })
+  // A page is a sealed file in Files, as the vault keeps one; the document
+  // lists it by the id the catalog gave it.
+  const file = (name: string, size: number, daysAgo: number): DocFile => {
+    const entry = mockHealthFile(name, size, iso(at(addDays(TODAY, -daysAgo), 12)))
+    return { file: entry.id, name: entry.name, mime: entry.mime, size: entry.size }
+  }
   const doc = (
     id: string,
     title: string,
@@ -1602,7 +1621,7 @@ function buildCare(): void {
       'labReport',
       8,
       'Quest Diagnostics',
-      [file('blob-october', 'quest-labs-october.pdf', 'application/pdf', 214_880)],
+      [file('quest-labs-october.pdf', 214_880, 8)],
       {
         text: 'Hemoglobin A1c 6.9 %\nGlucose, fasting 112 mg/dL\nCreatinine 0.9 mg/dL\neGFR 91 mL/min/1.73m2',
         extraction: 'proposed',
@@ -1621,7 +1640,7 @@ function buildCare(): void {
       'labReport',
       120,
       'Quest Diagnostics',
-      [file('blob-lipids', 'lipid-kidney-panel.pdf', 'application/pdf', 188_204)],
+      [file('lipid-kidney-panel.pdf', 188_204, 120)],
       {
         text: 'Total cholesterol 192 mg/dL\nLDL 118 mg/dL\nHDL 46 mg/dL\nTriglycerides 168 mg/dL\neGFR 91',
         extraction: 'done',
@@ -1629,6 +1648,18 @@ function buildCare(): void {
       },
     ),
   ]
+  for (const d of documents) usePages(d)
+}
+
+/** Files says which document a page is used in. */
+function usePages(doc: HealthDocument): void {
+  for (const f of doc.files) {
+    mockFileUsed(f.file, {
+      owner: { kind: 'healthDocument', id: doc.id },
+      title: doc.title,
+      when: doc.createdAt,
+    })
+  }
 }
 
 // ── sources and settings ─────────────────────────────────────────────────
@@ -2773,9 +2804,22 @@ function saveMeal(input: Meal): Meal {
   needId(input, 'meal')
   const meal = wire(input)
   if (!Number.isFinite(Date.parse(meal.at))) throw invalid('A meal needs a time.')
-  const fresh = !meals.some((m) => m.id === meal.id)
+  const before = meals.find((m) => m.id === meal.id)
+  const fresh = !before
   const now = new Date().toISOString()
   meal.updatedAt = now
+  // A photo the saved meal no longer has goes to the Files trash; one it has
+  // is used by it.
+  if (before?.photo && before.photo !== meal.photo) {
+    mockFilesReleased([before.photo], { kind: 'meal', id: meal.id })
+  }
+  if (meal.photo) {
+    mockFileUsed(meal.photo, {
+      owner: { kind: 'meal', id: meal.id },
+      title: meal.name,
+      when: meal.at,
+    })
+  }
   if (fresh) {
     meal.createdAt = now
     // What was eaten shows on the foods eaten.
@@ -2914,6 +2958,8 @@ function importStatus(): ImportStatus {
     apple.status.lastReceivedAt = status.finishedAt ?? null
     apple.status.samplesTotal += status.report.samplesAdded
   }
+  // Read: an upload made only to be imported is done with.
+  if (imported.trashAfter) mockFilesReleased([imported.trashAfter])
   importDone = status
   imported = null
   return status
@@ -2933,9 +2979,15 @@ function emptyReport() {
   }
 }
 
-function startImport(fileName: string): ImportStatus {
+function startImport(fileName: string, trashAfter?: string): ImportStatus {
   if (imported) throw invalid('An import is already running.')
-  imported = { startedAt: Date.now(), fileName, total: 482_000_000, cancelled: false }
+  imported = {
+    startedAt: Date.now(),
+    fileName,
+    total: 482_000_000,
+    cancelled: false,
+    ...(trashAfter ? { trashAfter } : {}),
+  }
   importDone = null
   return importStatus()
 }
@@ -3004,6 +3056,13 @@ export function mockHealth(cmd: string, args: Record<string, unknown>): unknown 
     }
     case 'import_apple_health':
       return wire(startImport(str(args.path).split(/[\\/]/).pop() || 'export.zip'))
+    case 'import_apple_health_file': {
+      // An export that is in Files already, brought by a sync tool or
+      // uploaded from a window on another machine.
+      const entry = mockCatalogFile(str(args.file))
+      if (!entry) throw notFound('file')
+      return wire(startImport(entry.name, args.trashAfter === true ? entry.id : undefined))
+    }
     case 'apple_import_status':
       return wire(importStatus())
     case 'cancel_apple_import': {
@@ -3198,10 +3257,17 @@ export function mockHealth(cmd: string, args: Record<string, unknown>): unknown 
       return wire(doc)
     }
     case 'add_health_document': {
-      const files = wire((Array.isArray(args.files) ? args.files : []) as DocFile[])
+      // The pages were added through Files first; what is made of them takes
+      // their names, types and sizes from the catalog.
+      const ids = (Array.isArray(args.files) ? args.files : []) as unknown[]
       const title = str(args.title).trim()
       if (!title) throw invalid('A document needs a title.')
-      if (files.length === 0) throw invalid('A document needs a file.')
+      if (ids.length === 0) throw invalid('A document needs a file.')
+      const files = ids.map((id): DocFile => {
+        const entry = mockCatalogFile(str(id))
+        if (!entry) throw notFound('file')
+        return { file: entry.id, name: entry.name, mime: entry.mime, size: entry.size }
+      })
       const date = strOrNull(args.date)
       const now = new Date().toISOString()
       const doc: HealthDocument = {
@@ -3223,6 +3289,7 @@ export function mockHealth(cmd: string, args: Record<string, unknown>): unknown 
         updatedAt: now,
       }
       documents.push(doc)
+      usePages(doc)
       return wire(doc)
     }
     case 'save_health_document': {
@@ -3243,6 +3310,11 @@ export function mockHealth(cmd: string, args: Record<string, unknown>): unknown 
     }
     case 'delete_health_document': {
       const gone = remove(documents, str(args.id), 'document')
+      // Its pages go to the Files trash, where they can be restored.
+      mockFilesReleased(
+        gone.files.map((f) => f.file),
+        { kind: 'healthDocument', id: gone.id },
+      )
       if (args.deleteLabs === true) labs = labs.filter((l) => l.documentId !== gone.id)
       else for (const l of labs) if (l.documentId === gone.id) l.documentId = null
       return undefined
@@ -3272,10 +3344,14 @@ export function mockHealth(cmd: string, args: Record<string, unknown>): unknown 
     }
     case 'save_meal':
       return wire(saveMeal(args.meal as Meal))
-    case 'delete_meal':
-      remove(meals, str(args.id), 'meal')
+    case 'delete_meal': {
+      const gone = remove(meals, str(args.id), 'meal')
+      if (gone.photo) mockFilesReleased([gone.photo], { kind: 'meal', id: gone.id })
       return undefined
+    }
     case 'estimate_meal_photo': {
+      // The picture was added through Files first.
+      if (!mockCatalogFile(str(args.photo))) throw notFound('photo')
       const guess = (name: string, grams: number, per100g: Nutrients): MealItem => ({
         foodId: null,
         name,

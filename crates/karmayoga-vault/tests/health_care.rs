@@ -10,16 +10,17 @@ use support::vault;
 
 use jiff::civil::{Date, Time};
 use jiff::{Span, Timestamp};
+use karmayoga_core::files::{FileOrigin, FileStatus, ImportOptions, RefKind};
 use karmayoga_core::health::templates;
 use karmayoga_core::health::{
     Adherence, Allergy, AllergyKind, CarePlan, CareTarget, Code, Condition, ConditionStatus,
-    Connector, DocFile, DocKind, Dose, DoseChange, DoseOrigin, DoseStatus, ExtractionState, Food,
+    Connector, DocKind, Dose, DoseChange, DoseOrigin, DoseStatus, ExtractionState, Food,
     FoodSource, HealthBatch, HealthSource, LabFlag, LabOrigin, LabResult, LabSchedule, Meal,
     MealItem, MealSlot, Measure, MedKind, MedSchedule, MedStatus, Medication, Metric, Nutrients,
     RawDose, Severity, SourceStatus, Stat, Supply, TemplateChoice, TemplateKey,
 };
 use karmayoga_core::{
-    AllergyId, BlobId, ConditionId, DoseId, FoodId, HealthSourceId, LabResultId, MealId,
+    AllergyId, ConditionId, DoseId, FileId, FoodId, HealthSourceId, LabResultId, MealId,
     MedicationId, TrackerKind, Vault,
 };
 
@@ -216,11 +217,11 @@ fn choosing(symptoms: &[&str]) -> TemplateChoice {
     }
 }
 
-/// A file uploaded the way the interface does it: bytes into the blob store,
-/// then a `DocFile` naming them.
-fn uploaded(vault: &Vault, bytes: &[u8], name: &str) -> DocFile {
-    let blob = vault.put_blob(bytes).unwrap();
-    DocFile { blob, name: name.into(), mime: "application/pdf".into(), size: 0 }
+/// A file added the way the interface adds one: into the files catalog,
+/// sealed, as Health's.
+fn uploaded(vault: &Vault, bytes: &[u8], name: &str) -> FileId {
+    let opts = ImportOptions { encrypted: Some(true), ..ImportOptions::new(FileOrigin::Health) };
+    vault.import_bytes(bytes, name, &opts).unwrap().id
 }
 
 fn remaining(vault: &Vault, medication: &Medication) -> f64 {
@@ -568,7 +569,7 @@ fn deleting_a_condition_strips_it_from_what_named_it_and_removes_its_trackers_on
     pills.condition_ids = vec![doomed.id, kept.id];
     vault.save_medication(&pills).unwrap();
     let file = uploaded(&vault, b"a visit note", "visit.pdf");
-    let note = vault.add_health_document("Visit", DocKind::VisitNote, None, vec![file]).unwrap();
+    let note = vault.add_health_document("Visit", DocKind::VisitNote, None, &[file]).unwrap();
     let mut tagged = note.clone();
     tagged.condition_ids = vec![doomed.id];
     vault.save_health_document(&tagged).unwrap();
@@ -631,25 +632,25 @@ fn a_document_holds_only_files_the_vault_has_and_at_most_twenty() {
     let bytes = b"%PDF-1.4 a lab report";
     let file = uploaded(&vault, bytes, "report.pdf");
 
-    let doc = vault
-        .add_health_document("  Quarterly labs ", DocKind::LabReport, None, vec![file.clone()])
-        .unwrap();
+    let doc =
+        vault.add_health_document("  Quarterly labs ", DocKind::LabReport, None, &[file]).unwrap();
     assert_eq!(doc.title, "Quarterly labs");
-    assert_eq!(doc.files[0].size, bytes.len() as u64, "the size is the blob's own");
+    assert_eq!(doc.files[0].size, bytes.len() as u64, "the size is the catalog's own");
+    assert_eq!(doc.files[0].name, "report.pdf");
     assert_eq!(doc.extraction, ExtractionState::None);
-    assert_eq!(vault.health_document_file(doc.id, file.blob).unwrap(), bytes);
+    assert_eq!(vault.health_document_file(doc.id, file).unwrap(), bytes);
 
-    let ghost = DocFile { blob: BlobId::of(b"never stored"), ..file.clone() };
-    let refused = vault.add_health_document("Ghost", DocKind::Other, None, vec![ghost]);
+    let ghost = FileId::new();
+    let refused = vault.add_health_document("Ghost", DocKind::Other, None, &[ghost]);
     assert_eq!(refused.unwrap_err().code(), "invalid");
-    let crowded = vault.add_health_document("Crowd", DocKind::Other, None, vec![file.clone(); 21]);
+    let crowded = vault.add_health_document("Crowd", DocKind::Other, None, &[file; 21]);
     assert_eq!(crowded.unwrap_err().code(), "invalid");
-    let blank = vault.add_health_document("   ", DocKind::Other, None, vec![file.clone()]);
+    let blank = vault.add_health_document("   ", DocKind::Other, None, &[file]);
     assert_eq!(blank.unwrap_err().code(), "invalid");
 
-    // A blob the vault holds but this document does not list is not its to hand out.
+    // A file the catalog holds but this document does not list is not its to hand out.
     let other = uploaded(&vault, b"another document's page", "other.pdf");
-    let stranger = vault.health_document_file(doc.id, other.blob);
+    let stranger = vault.health_document_file(doc.id, other);
     assert_eq!(stranger.unwrap_err().code(), "invalid");
 }
 
@@ -659,7 +660,7 @@ fn accepting_a_documents_results_moves_them_out_of_its_pending_list() {
     let vault = vault(dir.path());
     let day = Date::constant(2026, 10, 12);
     let file = uploaded(&vault, b"%PDF-1.4 labs", "labs.pdf");
-    let doc = vault.add_health_document("Labs", DocKind::LabReport, Some(day), vec![file]).unwrap();
+    let doc = vault.add_health_document("Labs", DocKind::LabReport, Some(day), &[file]).unwrap();
 
     let found = vec![
         lab("4548-4", "Hemoglobin A1c", 6.1, day, "%"),
@@ -706,7 +707,7 @@ fn saving_a_document_keeps_what_extraction_found_and_what_the_person_reviewed() 
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());
     let file = uploaded(&vault, b"%PDF-1.4 labs", "labs.pdf");
-    let doc = vault.add_health_document("Labs", DocKind::LabReport, None, vec![file]).unwrap();
+    let doc = vault.add_health_document("Labs", DocKind::LabReport, None, &[file]).unwrap();
     let day = Date::constant(2026, 10, 12);
     let doc = vault
         .set_document_extraction(
@@ -742,7 +743,7 @@ fn deleting_a_document_detaches_or_removes_the_results_accepted_from_it() {
     let day = Date::constant(2026, 10, 12);
     let accepted_from = |title: &str| {
         let file = uploaded(&vault, title.as_bytes(), "page.pdf");
-        let doc = vault.add_health_document(title, DocKind::LabReport, None, vec![file]).unwrap();
+        let doc = vault.add_health_document(title, DocKind::LabReport, None, &[file]).unwrap();
         let mut result = lab("3016-3", "TSH", 2.4, day, "mIU/L");
         result.document_id = Some(doc.id);
         vault.accept_document_labs(doc.id, &[result]).unwrap();
@@ -881,7 +882,7 @@ fn what_is_saved_is_checked_and_tidied() {
     sour.per_100g.carbs_g = -1.0;
     assert_eq!(vault.save_food(&sour).unwrap_err().code(), "invalid", "a nutrient is not negative");
     let mut photo = meal(at(Date::constant(2026, 11, 10), 12, 0), vec![]);
-    photo.photo = Some(BlobId::of(b"no such photo"));
+    photo.photo = Some(FileId::new());
     assert_eq!(vault.save_meal(&photo).unwrap_err().code(), "invalid", "a photo the vault lacks");
     let mut broken = lab("3016-3", "TSH", f64::INFINITY, Date::constant(2026, 1, 1), "");
     assert_eq!(vault.save_lab(&broken).unwrap_err().code(), "invalid");
@@ -982,4 +983,81 @@ fn a_visit_is_summed_up_from_what_fell_inside_it() {
 
     let backwards = vault.visit_facts(None, day(10, 31), day(10, 1), "UTC");
     assert_eq!(backwards.unwrap_err().code(), "invalid");
+}
+
+// ---- the files catalog -------------------------------------------------------
+
+#[test]
+fn a_documents_pages_are_used_in_it_and_go_to_the_trash_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let page = uploaded(&vault, b"%PDF-1.4 page one", "page-1.pdf");
+    let shared = uploaded(&vault, b"%PDF-1.4 a page two documents share", "shared.pdf");
+    let report =
+        vault.add_health_document("Labs", DocKind::LabReport, None, &[page, shared, page]).unwrap();
+    assert_eq!(report.files.len(), 2, "a page named twice is one page");
+    let other = vault.add_health_document("Copy", DocKind::Other, None, &[shared]).unwrap();
+
+    // The Files app says which document each page belongs to.
+    let uses = vault.file_uses(page).unwrap();
+    assert_eq!(uses.len(), 1);
+    assert_eq!(uses[0].owner.kind, RefKind::HealthDocument);
+    assert_eq!(uses[0].title, "Labs");
+    assert_eq!(vault.file_uses(shared).unwrap().len(), 2);
+
+    // Deleted, a document's own pages go to the trash; one another
+    // document still holds stays.
+    vault.delete_health_document(report.id, false).unwrap();
+    assert!(vault.file(page).unwrap().status.is_trashed(), "its own page is in the trash");
+    assert_eq!(vault.file(shared).unwrap().status, FileStatus::Present, "a shared one is not");
+    assert!(vault.file_uses(page).unwrap().is_empty());
+
+    vault.delete_health_document(other.id, false).unwrap();
+    assert!(vault.file(shared).unwrap().status.is_trashed(), "and goes once nothing holds it");
+
+    // A file in the trash is not one a new document can be made of.
+    let refused = vault.add_health_document("Again", DocKind::Other, None, &[page]);
+    assert_eq!(refused.unwrap_err().code(), "invalid");
+}
+
+#[test]
+fn a_meals_photo_is_used_in_it_and_a_replaced_one_goes_to_the_trash() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let first = uploaded(&vault, b"a plate of rice", "plate.jpg");
+    let second = uploaded(&vault, b"a better plate of rice", "plate-2.jpg");
+    let mut lunch = meal(at(Date::constant(2026, 11, 10), 12, 0), vec![]);
+    lunch.photo = Some(first);
+    let lunch = vault.save_meal(&lunch).unwrap();
+    let uses = vault.file_uses(first).unwrap();
+    assert_eq!(uses.len(), 1);
+    assert_eq!(uses[0].owner.kind, RefKind::Meal);
+
+    let mut retaken = lunch.clone();
+    retaken.photo = Some(second);
+    vault.save_meal(&retaken).unwrap();
+    assert!(vault.file(first).unwrap().status.is_trashed(), "the photo it replaced");
+    assert_eq!(vault.file(second).unwrap().status, FileStatus::Present);
+
+    // A plain file somebody wrote out of the vault is theirs, and stays.
+    vault.set_file_encrypted(second, false).unwrap();
+    vault.delete_meal(lunch.id).unwrap();
+    assert_eq!(vault.file(second).unwrap().status, FileStatus::Present);
+    assert!(vault.file_uses(second).unwrap().is_empty());
+}
+
+#[test]
+fn rebuilding_the_references_finds_health_documents_and_meals() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let page = uploaded(&vault, b"%PDF-1.4 page", "page.pdf");
+    let plate = uploaded(&vault, b"a plate", "plate.jpg");
+    vault.add_health_document("Labs", DocKind::LabReport, None, &[page]).unwrap();
+    let mut dinner = meal(at(Date::constant(2026, 11, 10), 19, 0), vec![]);
+    dinner.photo = Some(plate);
+    vault.save_meal(&dinner).unwrap();
+
+    assert_eq!(vault.rebuild_file_refs().unwrap(), 2);
+    assert_eq!(vault.file_uses(page).unwrap()[0].owner.kind, RefKind::HealthDocument);
+    assert_eq!(vault.file_uses(plate).unwrap()[0].owner.kind, RefKind::Meal);
 }

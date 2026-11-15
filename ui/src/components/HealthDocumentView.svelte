@@ -173,7 +173,7 @@
   )
   /** Which file is on the page. A string, so it only changes when the file
    *  does, and a re-read of the document does not load it all again. */
-  const fileKey = $derived(doc && file ? `${doc.id}/${file.blob}` : '')
+  const fileKey = $derived(doc && file ? `${doc.id}/${file.file}` : '')
 
   $effect(() => {
     const id = doc?.id ?? ''
@@ -201,7 +201,7 @@
     shown = { state: 'loading' }
     void (async () => {
       try {
-        const url = untrack(() => health.documentFileUrl(target.d, target.f.blob))
+        const url = untrack(() => health.documentFileUrl(target.d, target.f.file))
         if (url === '') throw new Error('no address')
         const how = viewKind(target.f)
         let next: Shown
@@ -265,12 +265,12 @@
         <section class="page" aria-label="The document">
           {#if doc.files.length > 1}
             <div class="filters files" role="tablist" aria-label="Files in this document">
-              {#each doc.files as f, i (f.blob)}
+              {#each doc.files as f, i (f.file)}
                 <button
                   class="filter"
-                  class:on={file.blob === f.blob}
+                  class:on={file.file === f.file}
                   role="tab"
-                  aria-selected={file.blob === f.blob}
+                  aria-selected={file.file === f.file}
                   title="{f.name} · {humanBytes(f.size)}"
                   onclick={() => (fileIndex = i)}
                 >

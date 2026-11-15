@@ -807,20 +807,19 @@ impl HealthStore for SqlStore {
     // ---- blobs ----------------------------------------------------------
 
     fn blob_refs(&self) -> Result<Vec<BlobId>> {
-        // Three kinds of record hold a blob, and which ones do is written
-        // only inside their sealed payloads, so each table is opened whole:
-        // a document's files, a workout's route and a meal's photograph.
-        // One pass over each, in the garbage collector's own time.
+        // Two kinds of record hold a blob, and which ones do is written only
+        // inside their sealed payloads, so each table is opened whole: what
+        // a connector sent for a document, and a workout's route. One pass
+        // over each, in the garbage collector's own time. A document's pages
+        // and a meal's photograph are files in the catalog, whose own
+        // records keep their blobs.
         let mut refs: Vec<BlobId> = Vec::new();
         for document in self.list_documents()? {
-            refs.extend(document.files.iter().map(|f| f.blob));
+            refs.extend(document.source.map(|s| s.blob));
         }
         let rows = self.read().records("SELECT id, data FROM health_workouts", &[])?;
         let workouts: Vec<Workout> = self.collect(rows, workout_aad)?;
         refs.extend(workouts.iter().filter_map(|w| w.route));
-        let rows = self.read().records("SELECT id, data FROM health_meals", &[])?;
-        let meals: Vec<Meal> = self.collect(rows, meal_aad)?;
-        refs.extend(meals.iter().filter_map(|m| m.photo));
         Ok(refs)
     }
 }

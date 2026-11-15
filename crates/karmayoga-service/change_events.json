@@ -2625,6 +2625,10 @@
       "reason": "reads the export on a thread of its own, which raises its own changes"
     },
     {
+      "name": "import_apple_health_file",
+      "reason": "reads the export on a thread of its own, which raises its own changes"
+    },
+    {
       "name": "name_speaker",
       "reason": "needs a transcript, which only a finished recording produces"
     },

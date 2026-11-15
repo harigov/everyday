@@ -422,6 +422,9 @@ fn filter_clause(filter: &FileFilter, tokens: &Tokens) -> Result<Option<(String,
     if let Some(origin) = filter.origin {
         w = w.eq("origin", origin.as_str());
     }
+    for origin in &filter.exclude_origins {
+        w = w.ne("origin", origin.as_str());
+    }
     if let Some(storage) = filter.storage {
         w = w.eq("storage", storage_word(storage));
     }

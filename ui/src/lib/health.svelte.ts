@@ -25,7 +25,8 @@
 //      never a value, a medication's name or a diagnosis in words. And
 //      nothing in here writes a value, a name or a document's text to a log.
 
-import { api, mediaUrl } from './api'
+import { api, fileUrl } from './api'
+import { addFiles } from './files'
 import { dateFormat, plural } from './format'
 import {
   DEFAULT_UNITS,
@@ -58,17 +59,16 @@ import { tracking } from './tracking.svelte'
 import type {
   ActivityDay,
   Allergy,
-  BlobId,
   Condition,
   ConditionId,
   ConditionReport,
   Connector,
   DayTimeline,
-  DocFile,
   DocKind,
   Dose,
   DoseStatus,
   DueDose,
+  FileId,
   Food,
   FoodHit,
   GlucoseReport,
@@ -197,25 +197,6 @@ const MAX_PDF_CHARS = 120_000
 /** A text layer shorter than this is a scan with a few stray marks, not text. */
 const MIN_PDF_CHARS = 40
 
-/** The extensions a picked file is given a type for when the browser gives
- *  none, as a document's files are shown by their type. */
-const MIME_BY_EXTENSION: Record<string, string> = {
-  pdf: 'application/pdf',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  heic: 'image/heic',
-  webp: 'image/webp',
-  txt: 'text/plain',
-  json: 'application/json',
-}
-
-function mimeOf(file: File): string {
-  if (file.type) return file.type
-  const extension = file.name.split('.').pop()?.toLowerCase() ?? ''
-  return MIME_BY_EXTENSION[extension] ?? 'application/octet-stream'
-}
-
 /**
  * The text layer of a PDF, read with the pdf.js the attachment viewer
  * already bundles -- lazily, so none of it is loaded until somebody asks for
@@ -223,9 +204,9 @@ function mimeOf(file: File): string {
  * a protected file, or anything that could not be read at all: the model is
  * sent the pages as pictures instead.
  */
-async function pdfText(blob: BlobId): Promise<string | undefined> {
+async function pdfText(file: FileId): Promise<string | undefined> {
   try {
-    const response = await fetch(mediaUrl(blob))
+    const response = await fetch(fileUrl(file))
     if (!response.ok) return undefined
     const bytes = new Uint8Array(await response.arrayBuffer())
     const { openPdf } = await import('./pdf')
@@ -688,6 +669,18 @@ class HealthState {
     if (id && this.view !== 'records') this.setView('records')
   }
 
+  /** Show Nutrition on one day -- the day itself and the window that holds
+   *  it, so its meals are read. For a link from another app, to the meal a
+   *  file belongs to. */
+  openMealDay(date: string): void {
+    const today = todayIso()
+    const day = date > today ? today : date
+    this.date = day
+    this.anchor = day
+    if (this.view === 'nutrition') void this.#loadPane(true)
+    else this.setView('nutrition')
+  }
+
   /** Open a workout, or close it (`null`). Opening one from anywhere goes to
    *  the pane it is drawn on. */
   openWorkout(id: WorkoutId | null): void {
@@ -933,7 +926,14 @@ class HealthState {
     )
   }
 
-  /** Upload the files (`api.putBlob`) and make one document of them. */
+  /**
+   * Add the files to Files -- sealed, as Health's, so they are the vault's
+   * to keep -- and make one document of them. The catalog is what holds a
+   * page now, so a document is only made once every file the person chose
+   * has arrived: a half-made one would be missing pages nobody knew to look
+   * for. What did arrive for a document that could not be made goes to the
+   * Files trash, rather than sitting there with nothing using it.
+   */
   async addDocument(
     files: File[],
     title: string,
@@ -943,13 +943,41 @@ class HealthState {
     if (!app.supportsHealth || files.length === 0) return null
     const name = title.trim() || files[0]?.name.replace(/\.[^.]+$/, '') || 'Document'
     return this.#save('The document could not be added', async () => {
-      const uploaded: DocFile[] = []
-      for (const file of files) {
-        const blob = await api.putBlob(new Uint8Array(await file.arrayBuffer()))
-        uploaded.push({ blob, name: file.name, mime: mimeOf(file), size: file.size })
+      const entries = await addFiles(files, { origin: 'health', encrypted: true })
+      try {
+        if (entries.length < files.length) {
+          throw new Error(
+            entries.length === 0
+              ? 'The files could not be added.'
+              : `Only ${entries.length} of ${files.length} files could be added.`,
+          )
+        }
+        return await api.addHealthDocument(
+          name,
+          kind,
+          date ?? null,
+          entries.map((e) => e.id),
+        )
+      } catch (e) {
+        await this.discardFiles(entries.map((e) => e.id))
+        throw e
       }
-      return api.addHealthDocument(name, kind, date ?? null, uploaded)
     })
+  }
+
+  /**
+   * Put files that were added for something that never used them in the
+   * Files trash. Best effort and quiet: the failure being cleaned up after
+   * has been said already, and a file that stays is in Files, where it can
+   * be deleted like any other.
+   */
+  async discardFiles(ids: FileId[]): Promise<void> {
+    if (ids.length === 0) return
+    try {
+      await api.trashFiles(ids)
+    } catch {
+      // Left where it is.
+    }
   }
 
   async saveDocument(document: HealthDocument): Promise<HealthDocument | null> {
@@ -972,8 +1000,8 @@ class HealthState {
     this.#confirm(
       `Delete “${document.title}”?`,
       hasResults
-        ? 'The document and its files are deleted. The results accepted from it stay, without a document.'
-        : 'The document and its files are deleted from this vault for good.',
+        ? 'The document is deleted. Its pages go to the trash in Files, where they can be restored from. The results accepted from it stay, without a document.'
+        : 'The document is deleted. Its pages go to the trash in Files, where they can be restored from.',
       'Delete',
       () => remove(false),
       hasResults ? { label: 'Delete with its results', run: () => remove(true) } : undefined,
@@ -993,7 +1021,7 @@ class HealthState {
       async () => {
         const doc = known ?? (await api.getHealthDocument(id))
         const pdf = doc.files.find((f) => f.mime === 'application/pdf')
-        const text = pdf ? await pdfText(pdf.blob) : undefined
+        const text = pdf ? await pdfText(pdf.file) : undefined
         return api.extractHealthDocument(id, text)
       },
       'none',
@@ -1020,10 +1048,10 @@ class HealthState {
     }
   }
 
-  /** An address the viewer can open one of a document's files at. Only a file
+  /** An address the viewer can open one of a document's pages at. Only a file
    *  the document lists is given one. */
-  documentFileUrl(document: HealthDocument, blob: BlobId): string {
-    return document.files.some((f) => f.blob === blob) ? mediaUrl(blob) : ''
+  documentFileUrl(document: HealthDocument, file: FileId): string {
+    return document.files.some((f) => f.file === file) ? fileUrl(file) : ''
   }
 
   // ── nutrition ────────────────────────────────────────────────────────
@@ -1082,7 +1110,9 @@ class HealthState {
     const id = meal.id
     this.#confirm(
       meal.name ? `Delete “${meal.name}”?` : 'Delete this meal?',
-      'The meal is deleted from this vault for good.',
+      meal.photo
+        ? 'The meal is deleted from this vault for good. Its photo goes to the trash in Files.'
+        : 'The meal is deleted from this vault for good.',
       'Delete',
       async () => {
         const done = await this.#drop('The meal could not be deleted', () => api.deleteMeal(id))
@@ -1091,14 +1121,22 @@ class HealthState {
     )
   }
 
-  /** Upload the photo and ask the model what is on the plate. */
-  async estimatePhoto(file: File): Promise<{ photo: BlobId; items: MealItem[] } | null> {
+  /** Add the photo to Files (sealed, as Health's) and ask the model what is
+   *  on the plate. If it cannot say, the photo is not kept: the editor is
+   *  told nothing was read and never learns the photo's id. */
+  async estimatePhoto(file: File): Promise<{ photo: FileId; items: MealItem[] } | null> {
     if (!app.supportsHealth) return null
     return this.#save(
       'The photo could not be read',
       async () => {
-        const photo = await api.putBlob(new Uint8Array(await file.arrayBuffer()))
-        return { photo, items: await api.estimateMealPhoto(photo) }
+        const [entry] = await addFiles([file], { origin: 'health', encrypted: true })
+        if (!entry) throw new Error('The picture could not be added.')
+        try {
+          return { photo: entry.id, items: await api.estimateMealPhoto(entry.id) }
+        } catch (e) {
+          await this.discardFiles([entry.id])
+          throw e
+        }
       },
       'none',
     )
@@ -1218,6 +1256,53 @@ class HealthState {
     // Nothing was picked.
     if (!status) return
     await this.#watchImport(status)
+  }
+
+  /**
+   * Import an `export.zip` that is in Files already -- one a sync tool
+   * brought from the phone -- and follow it as the picker's import is
+   * followed. `trashAfter` puts the file in the Files trash once it has been
+   * read. Answers whether the import began.
+   */
+  async importAppleFile(
+    file: FileId,
+    sourceId: HealthSourceId | null = null,
+    trashAfter = false,
+  ): Promise<boolean> {
+    if (!app.supportsHealth) return false
+    const status = await this.#save(
+      'The import could not be started',
+      () => api.importAppleHealthFile(file, sourceId, trashAfter),
+      'none',
+    )
+    if (!status) return false
+    await this.#watchImport(status)
+    return true
+  }
+
+  /**
+   * Upload an `export.zip` from this window and import it: for a window that
+   * is not on the vault's machine, which has no path to hand over and so
+   * cannot use the picker. The upload is Health's, sealed; it goes to the
+   * trash once imported, or at once if the import could not begin.
+   */
+  async importAppleUpload(file: File, sourceId: HealthSourceId | null = null): Promise<void> {
+    if (!app.supportsHealth) return
+    const status = await this.#save(
+      'The import could not be started',
+      async () => {
+        const [entry] = await addFiles([file], { origin: 'health', encrypted: true })
+        if (!entry) throw new Error('The export could not be uploaded.')
+        try {
+          return await api.importAppleHealthFile(entry.id, sourceId, true)
+        } catch (e) {
+          await this.discardFiles([entry.id])
+          throw e
+        }
+      },
+      'none',
+    )
+    if (status) await this.#watchImport(status)
   }
 
   async cancelImport(): Promise<void> {

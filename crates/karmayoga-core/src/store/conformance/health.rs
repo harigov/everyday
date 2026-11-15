@@ -23,16 +23,16 @@
 use super::*;
 use crate::health::{
     Activity, ActivityGoals, Allergy, AllergyKind, AutomationSeen, Bucket, CarePlan, CareTarget,
-    Code, Condition, ConditionStatus, Connector, DocFile, DocKind, Dose, DoseChange, DoseOrigin,
-    DoseStatus, ExtractionState, FhirEntry, Food, FoodSource, HealthDocument, HealthSettings,
-    HealthSource, HealthUnits, LabFlag, LabOrigin, LabResult, LabSchedule, Meal, MealItem,
-    MealSlot, Measure, MedKind, MedRule, MedSchedule, MedStatus, Medication, Metric, Nutrients,
-    NutritionTargets, Sample, SeriesDay, SeriesSummary, Serving, Severity, SourceStatus, Stat,
-    Supply, TemplateKey, Tombstone, Workout,
+    Code, Condition, ConditionStatus, Connector, DocFile, DocKind, DocSource, Dose, DoseChange,
+    DoseOrigin, DoseStatus, ExtractionState, FhirEntry, Food, FoodSource, HealthDocument,
+    HealthSettings, HealthSource, HealthUnits, LabFlag, LabOrigin, LabResult, LabSchedule, Meal,
+    MealItem, MealSlot, Measure, MedKind, MedRule, MedSchedule, MedStatus, Medication, Metric,
+    Nutrients, NutritionTargets, Sample, SeriesDay, SeriesSummary, Serving, Severity, SourceStatus,
+    Stat, Supply, TemplateKey, Tombstone, Workout,
 };
 use crate::id::{
-    AllergyId, BlobId, ConditionId, DoseId, FoodId, HealthDocumentId, HealthSourceId, ItemId,
-    LabResultId, MealId, MedicationId, TrackerId, WorkoutId,
+    AllergyId, BlobId, ConditionId, DoseId, FileId, FoodId, HealthDocumentId, HealthSourceId,
+    ItemId, LabResultId, MealId, MedicationId, TrackerId, WorkoutId,
 };
 use crate::store::health::{HealthStore, SeriesExtent, SeriesRow};
 use jiff::Timestamp;
@@ -564,18 +564,24 @@ fn full_document(on: Option<Date>) -> HealthDocument {
         provider: "Quest Diagnostics".into(),
         files: vec![
             DocFile {
-                blob: BlobId::of(b"page one"),
+                file: FileId::new(),
                 name: "page-1.pdf".into(),
                 mime: "application/pdf".into(),
                 size: 48_213,
             },
             DocFile {
-                blob: BlobId::of(b"page two"),
+                file: FileId::new(),
                 name: "page-2.png".into(),
                 mime: "image/png".into(),
                 size: 9_001,
             },
         ],
+        source: Some(DocSource {
+            blob: BlobId::of(b"the resource as it came"),
+            name: "Observation-77.json".into(),
+            mime: "application/fhir+json".into(),
+            size: 1_204,
+        }),
         text: "TSH 2.4 mIU/L (0.4-4.0)".into(),
         fhir: vec![FhirEntry {
             resource_type: "Observation".into(),
@@ -608,6 +614,7 @@ fn document(title: &str, on: Option<Date>) -> HealthDocument {
         date: on,
         provider: String::new(),
         files: Vec::new(),
+        source: None,
         text: String::new(),
         fhir: Vec::new(),
         extraction: ExtractionState::None,
@@ -733,7 +740,7 @@ fn full_meal(from_now: i64) -> Meal {
                 estimated: true,
             },
         ],
-        photo: Some(BlobId::of(b"a plate of dinner")),
+        photo: Some(FileId::new()),
         note: "second helping".into(),
         created_at: t(from_now),
         updated_at: t(from_now + 1),
@@ -1876,7 +1883,7 @@ fn meals_round_trip_and_are_those_in_the_range_in_time_order(health: &dyn Health
     // Replaced by id, and moved by its time.
     let mut moved = inside.clone();
     moved.at = t(400);
-    moved.photo = Some(BlobId::of(b"a later plate"));
+    moved.photo = Some(FileId::new());
     health.put_meal(&moved).unwrap();
     assert_eq!(every_meal(health).len(), 7, "put must not duplicate");
     assert_eq!(health.get_meal(moved.id).unwrap(), moved);
@@ -1958,12 +1965,14 @@ fn deleting_anything_else_touches_nothing_else(health: &dyn HealthStore) {
 }
 
 fn blob_refs_name_every_blob_a_health_record_holds(health: &dyn HealthStore) {
-    let (first_page, second_page) = (BlobId::of(b"page one"), BlobId::of(b"page two"));
-    let (route, plate) = (BlobId::of(b"a route nobody keeps"), BlobId::of(b"a plate of dinner"));
+    let (sent, route) =
+        (BlobId::of(b"the resource as it came"), BlobId::of(b"a route nobody keeps"));
 
-    // The fixtures hold these blobs: two pages, a route and a photograph.
+    // The fixtures hold these blobs: what a connector sent for a document,
+    // and a route. A document's pages and a meal's photograph are files in
+    // the catalog, which keeps their blobs itself, so they are not here.
     let report = full_document(Some(date(2026, 10, 2)));
-    assert_eq!(report.files.iter().map(|f| f.blob).collect::<Vec<_>>(), [first_page, second_page]);
+    assert_eq!(report.source.as_ref().map(|s| s.blob), Some(sent));
     let paperless = document("Nothing attached", None);
     let run = full_workout("k-blobs");
     let dinner = full_meal(10);
@@ -1975,68 +1984,62 @@ fn blob_refs_name_every_blob_a_health_record_holds(health: &dyn HealthStore) {
     health.put_meal(&dinner).unwrap();
     health.put_meal(&bare_meal).unwrap();
 
-    // A document's files, a workout's route and a meal's photograph; a
-    // record that holds none contributes none. Duplicates are not the
-    // store's business, so what is compared is the set.
+    // A connector's record and a workout's route; a record that holds none
+    // contributes none. Duplicates are not the store's business, so what is
+    // compared is the set.
     let refs = health.blob_refs().unwrap();
     assert_eq!(
         refs.iter().copied().collect::<BTreeSet<BlobId>>(),
-        [first_page, second_page, route, plate].into_iter().collect::<BTreeSet<BlobId>>(),
+        [sent, route].into_iter().collect::<BTreeSet<BlobId>>(),
         "{refs:?}"
     );
 
     // And a blob stops being referenced when what held it goes.
     health.delete_document(report.id).unwrap();
+    assert_eq!(health.blob_refs().unwrap(), vec![route]);
     health.delete_workout(run.id).unwrap();
-    assert_eq!(health.blob_refs().unwrap(), vec![plate]);
-    health.delete_meal(dinner.id).unwrap();
     assert!(health.blob_refs().unwrap().is_empty());
 
+    health.delete_meal(dinner.id).unwrap();
     health.delete_document(paperless.id).unwrap();
     health.delete_workout(bare_run.id).unwrap();
     health.delete_meal(bare_meal.id).unwrap();
 }
 
 /// What `blob_refs` is for: garbage collection walks every record that can
-/// hold a blob, and a clinical document's pages, a workout's route and a
-/// meal's photograph are three of them. Missing this walk would make the
-/// first sweep after a day's grace delete every scan somebody filed, with no
-/// error anywhere and each document still listing a file that is not there.
+/// hold a blob, and what a connector sent for a clinical document and a
+/// workout's route are two of them. Missing this walk would make the first
+/// sweep after a day's grace delete every record an Apple export brought,
+/// with no error anywhere and each document still naming a record that is
+/// not there.
 fn garbage_collection_keeps_what_health_holds(store: &dyn JournalStore, health: &dyn HealthStore) {
-    let page = store.put_blob(b"a scanned lab report").unwrap();
+    let sent = store.put_blob(b"{\"resourceType\": \"Observation\"}").unwrap();
     let route = store.put_blob(b"[a route of points]").unwrap();
-    let plate = store.put_blob(b"a photograph of a plate").unwrap();
     let orphan = store.put_blob(b"nobody's scan").unwrap();
 
-    let mut report = document("Scan", Some(date(2026, 10, 2)));
-    report.files = vec![DocFile {
-        blob: page,
-        name: "scan.pdf".into(),
-        mime: "application/pdf".into(),
-        size: 20,
-    }];
+    let mut report = document("Imported record", Some(date(2026, 10, 2)));
+    report.source = Some(DocSource {
+        blob: sent,
+        name: "Observation.json".into(),
+        mime: "application/fhir+json".into(),
+        size: 32,
+    });
     let mut run = workout("k-gc", 0, 600);
     run.route = Some(route);
-    let mut dinner = meal("Dinner", 10);
-    dinner.photo = Some(plate);
     health.put_document(&report).unwrap();
     put_workouts(health, &[&run]);
-    health.put_meal(&dinner).unwrap();
 
     store.collect_garbage(std::time::Duration::ZERO).unwrap();
-    assert!(store.has_blob(page).unwrap(), "a document's file is a live reference");
+    assert!(store.has_blob(sent).unwrap(), "what a connector sent is a live reference");
     assert!(store.has_blob(route).unwrap(), "a workout's route is");
-    assert!(store.has_blob(plate).unwrap(), "a meal's photograph is");
     assert!(!store.has_blob(orphan).unwrap(), "and what nothing holds is collected");
 
     // ...and each stops being one when what held it goes.
     health.delete_document(report.id).unwrap();
     health.delete_workout(run.id).unwrap();
-    health.delete_meal(dinner.id).unwrap();
     store.collect_garbage(std::time::Duration::ZERO).unwrap();
-    assert!(!store.has_blob(page).unwrap(), "a file nothing points at is collectable");
+    assert!(!store.has_blob(sent).unwrap(), "a record nothing points at is collectable");
     assert!(!store.has_blob(route).unwrap());
-    assert!(!store.has_blob(plate).unwrap());
 }
 
 fn unicode_survives_a_health_round_trip(health: &dyn HealthStore) {

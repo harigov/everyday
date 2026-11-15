@@ -23,6 +23,7 @@ use super::session::Domain;
 use crate::error::Result;
 use crate::store::health::HealthStore;
 
+mod attached;
 mod care;
 mod data;
 

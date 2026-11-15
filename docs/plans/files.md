@@ -34,6 +34,12 @@
 >   import whose sidecar names files the vault lacks is read from the
 >   Markdown instead.
 >
+> **Health** (15 November 2026, the same day) keeps a clinical document's
+> pages and a meal's photograph here, always sealed, with origin `health`,
+> referred to as `RefKind::HealthDocument` and `RefKind::Meal`. The file
+> tools leave its files out, and `/v1/files/file/{id}` wants the `health`
+> scope too for one: they answer to Health's gates. See `docs/plans/health.md`.
+>
 > **Still open:** HEIC and RAW previews beyond the embedded EXIF thumbnail;
 > video posters only once the window has drawn them; no map view; XMP
 > sidecars; the Syncthing panel (its own piece of work).

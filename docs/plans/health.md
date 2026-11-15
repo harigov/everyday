@@ -8,8 +8,27 @@
 >   binds the minted token to the source (`set_health_source_token`, local
 >   callers only), and `record_health_push` refuses a device whose token id
 >   is not the source's. Deleting a source revokes its token first.
->   `GET /v1/blob/{id}` refuses a write-only token (heartbeats or a push),
->   since clinical documents and meal photos live in the blob store.
+>   `GET /v1/blob/{id}` refuses a write-only token (heartbeats or a push).
+> - **A document's pages and a meal's photo are files in the Files catalog**
+>   (Files landed on main the same day), not blobs of Health's own. They are
+>   added through Files' uploads -- in 4 MB pieces, or by path on the vault's
+>   machine -- always sealed, with `FileOrigin::Health`; the record names them
+>   by `FileId`. That brings Files' viewer and thumbnails, "used in"
+>   (`RefKind::HealthDocument`, `RefKind::Meal`), exports that carry them,
+>   and a trash: deleting a document, or replacing a meal's photo, moves what
+>   Health sealed and nothing else uses to the Files trash. What a connector
+>   sent (a FHIR resource, an ECG's CSV) is the record's own data, kept as a
+>   sealed blob in `HealthDocument::source`, never a catalogued file.
+> - **Health's files are out of the file tools**: `find_files` leaves origin
+>   `health` out, and `file_info`, `read_file`, `organize_files` and
+>   `trash_files` refuse it, so a token or a setting that opens somebody's
+>   files does not open their lab reports; the screen context skips them; and
+>   `/v1/files/file/{id}` wants `health` as well as `files` for one.
+> - **An `export.zip` can be imported from Files** (`import_apple_health_file`):
+>   one a sync tool brought into the folder from the phone, or one uploaded
+>   from a window on another machine, which then goes to the trash once read.
+>   A sealed one is read from a decrypted copy deleted the moment the import
+>   ends.
 > - **Deleting is not undone by the next push.** A removed sample leaves a
 >   tombstone in its series day; a source's workout or dose is hidden, not
 >   deleted, so its key still matches when "Previous 7 Days" sends it again.
@@ -58,8 +77,9 @@ each do, aimed at living with a chronic condition.
   glucose beside meals, doses and workouts on one timeline.
 - **Health data may go to cloud models**, like any other domain. No
   local-only gate for now.
-- **Clinical documents are sealed in the vault's blob store**, like Money's
-  data -- not plain files in the Files folder.
+- **Clinical documents are sealed in the vault**, like Money's data -- not
+  plain files in the Files folder. (Delivered as sealed files in the Files
+  catalog: see the note at the top.)
 - **Apple Watch first**, through Health Auto Export (a paid iOS app whose
   REST API automations push JSON) plus Apple's `export.zip` for history,
   **behind a connector interface** so Oura, Withings, Dexcom or FIT files are
@@ -130,7 +150,10 @@ each do, aimed at living with a chronic condition.
 ### Apple's export.zip (history)
 
 Picked in Settings → Health (a shell dialog; the path never touches the
-webview), read on a blocking thread with progress and cancel. Streamed: zip
+webview), or -- from a window on another machine, or for an export a sync
+tool brought into the files folder -- read from a file in Files
+(`import_apple_health_file`). Read on a blocking thread with progress and
+cancel. Streamed: zip
 entry by entry, `export.xml` with a pull parser in batches of 50,000. Brings
 `Record`s, `Workout`s (+ `workout-routes/*.gpx`), and `clinical-records/*.json`
 (FHIR) as documents with lab results waiting to be accepted.
@@ -146,7 +169,8 @@ which answers foods and grams, every item marked `estimated`.
 
 ### Documents
 
-Uploaded as blobs (sealed), then extracted on request: the PDF's text layer
+Added to the Files catalog (sealed, origin `health`), then extracted on
+request: the PDF's text layer
 (read by the interface's pdf.js) or the pages as pictures go to the large
 model, which answers lab results in a strict JSON shape; they wait in the
 document's `pending_labs` until the person reviews them beside the page.
@@ -206,7 +230,8 @@ start_us, end_us)`, `health_medications (sort_order)`, `health_doses
 (medication_id, dedupe_key unique when non-empty, at_us)`,
 `health_conditions`, `health_labs (collected)`, `health_documents (doc_date)`,
 `health_allergies`, `health_foods (used_us)`, `health_meals (at_us)`.
-`HealthStore::blob_refs` is walked by `collect_garbage`.
+`HealthStore::blob_refs` (a document's `source`, a workout's route) is
+walked by `collect_garbage`; pages and photos are kept by the files catalog.
 
 ### Scopes and gates
 
@@ -228,6 +253,7 @@ names and a device's name reach the model as untrusted text.
 | `delete_health_source` | destructive | healthSource/deleted | `id` | void |
 | `record_health_push` (**healthIngest**) | write | healthSample/updated | `sourceId`, `headers: PushHeaders`, `body` (JSON) | `HealthIngestReport` |
 | `import_apple_health` | write | healthSample/updated | `path`, `sourceId?` | `ImportStatus` |
+| `import_apple_health_file` | write | healthSample/updated | `file: FileId`, `sourceId?`, `trashAfter?` | `ImportStatus` |
 | `apple_import_status` | read | | | `ImportStatus` |
 | `cancel_apple_import` | write | | | boolean |
 | `health_keys` | read | | | `HealthKeysInfo` |
@@ -261,7 +287,7 @@ names and a device's name reach the model as untrusted text.
 | `save_lab` / `delete_lab` | write / destructive | labResult/* | `lab` / `id` | `LabResult` / void |
 | `lab_trends` | read | | | `LabTrend[]` |
 | `list_health_documents` / `get_health_document` | read | | / `id` | `HealthDocument[]` / `HealthDocument` |
-| `add_health_document` | write | healthDocument/created | `title`, `kind`, `date?`, `files: DocFile[]` | `HealthDocument` |
+| `add_health_document` | write | healthDocument/created | `title`, `kind`, `date?`, `files: FileId[]` | `HealthDocument` |
 | `save_health_document` | write | healthDocument/updated | `document` | `HealthDocument` |
 | `delete_health_document` | destructive | healthDocument/deleted | `id`, `deleteLabs` | void |
 | `extract_health_document` | write | healthDocument/updated | `id`, `text?` | `HealthDocument` |
@@ -272,7 +298,7 @@ names and a device's name reach the model as untrusted text.
 | `lookup_barcode` | read | | `code` | `FoodHit \| null` |
 | `list_meals` | read | | `from`, `to` (instants) | `Meal[]` |
 | `save_meal` / `delete_meal` | write / destructive | meal/* | `meal` / `id` | `Meal` / void |
-| `estimate_meal_photo` | read | | `photo: BlobId` | `MealItem[]` |
+| `estimate_meal_photo` | read | | `photo: FileId` | `MealItem[]` |
 | `meal_response` | read | | `id` | `MealResponse` |
 | `health_visit_brief` | read | | `conditionId?`, `since`, `tz` | `VisitBrief` |
 

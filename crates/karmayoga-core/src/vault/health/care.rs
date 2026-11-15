@@ -26,16 +26,17 @@
 
 use crate::crypto::SecretKey;
 use crate::error::{Error, Result};
+use crate::files::{RefKind, RefOwner};
 use crate::health::{
     Adherence, Allergy, CarePlan, CareTarget, Code, Condition, ConditionReport, ConditionStatus,
-    DocFile, DocKind, Dose, DoseChange, DoseOrigin, DoseStatus, DueDose, ExtractionState, Food,
-    HealthDocument, LabOrigin, LabResult, LabTrend, MAX_RANGE_DAYS, Meal, MealItem, MealResponse,
-    Measure, MedRule, MedSchedule, MedStatus, Medication, Metric, Nutrients, NutritionDay,
-    RawDocument, RawDose, RuleAlert, Stat, TargetStanding, TemplateChoice, TemplateInfo,
-    TemplateKey, VisitFacts, glucose, nutrition, rules, schedule, templates,
+    DocFile, DocKind, DocSource, Dose, DoseChange, DoseOrigin, DoseStatus, DueDose,
+    ExtractionState, Food, HealthDocument, LabOrigin, LabResult, LabTrend, MAX_RANGE_DAYS, Meal,
+    MealItem, MealResponse, Measure, MedRule, MedSchedule, MedStatus, Medication, Metric,
+    Nutrients, NutritionDay, RawDocument, RawDose, RuleAlert, Stat, TargetStanding, TemplateChoice,
+    TemplateInfo, TemplateKey, VisitFacts, glucose, nutrition, rules, schedule, templates,
 };
 use crate::id::{
-    AllergyId, BlobId, ConditionId, DoseId, FoodId, HealthDocumentId, LabResultId, MealId,
+    AllergyId, ConditionId, DoseId, FileId, FoodId, HealthDocumentId, LabResultId, MealId,
     MedicationId, TrackerId,
 };
 use crate::record::RecordKind;
@@ -67,6 +68,9 @@ const MAX_CODES: usize = 20;
 const MAX_SOURCE_NAMES: usize = 50;
 /// The most files one document holds.
 const MAX_FILES: usize = 20;
+/// The most of one file read whole for the model: a photographed page or a
+/// plate, which the model is shown at 2048 pixels anyway.
+const MAX_PAGE_BYTES: u64 = 64 * 1024 * 1024;
 /// The most results one document waits on, or one accept saves.
 const MAX_LABS: usize = 500;
 /// The most things of one sort a care plan, a food or a meal holds.
@@ -200,10 +204,12 @@ pub(crate) fn file_source_doses(
     Ok((added, unmatched))
 }
 
-/// File a connector's documents inside an ingest's write: each file sealed
-/// into the blob store, the document saved with its FHIR summary and its
-/// labs waiting in `pending_labs`. One already held (same `external_id`)
-/// is skipped. Answers how many were added.
+/// File a connector's documents inside an ingest's write: what the connector
+/// sent sealed into the blob store as the document's [`DocSource`] -- the
+/// record's own data, not a file for the files catalog -- and the document
+/// saved with its FHIR summary and its labs waiting in `pending_labs`. One
+/// already held (same `external_id`) is skipped. Answers how many were
+/// added.
 pub(crate) fn file_documents(store: &dyn JournalStore, documents: Vec<RawDocument>) -> Result<u64> {
     if documents.is_empty() {
         return Ok(0);
@@ -225,20 +231,20 @@ pub(crate) fn file_documents(store: &dyn JournalStore, documents: Vec<RawDocumen
             continue;
         }
         let id = HealthDocumentId::new();
-        let files = if raw.bytes.is_empty() {
-            Vec::new()
+        let source = if raw.bytes.is_empty() {
+            None
         } else {
             let blob = store.put_blob(&raw.bytes)?;
             let mut name = outside_text(&raw.file_name, MAX_FILE_NAME);
             if name.is_empty() {
                 name = "record".into();
             }
-            vec![DocFile {
+            Some(DocSource {
                 blob,
                 name,
                 mime: outside_text(&raw.mime, MAX_MIME),
                 size: raw.bytes.len() as u64,
-            }]
+            })
         };
         let pending: Vec<LabResult> = raw
             .labs
@@ -265,7 +271,8 @@ pub(crate) fn file_documents(store: &dyn JournalStore, documents: Vec<RawDocumen
             kind: raw.kind,
             date: raw.date,
             provider: outside_text(&raw.provider, MAX_NAME),
-            files,
+            files: Vec::new(),
+            source,
             text: String::new(),
             fhir,
             extraction: if pending.is_empty() {
@@ -782,23 +789,34 @@ impl Vault {
         self.with_health(|h| h.get_document(id))
     }
 
-    /// A new document from files already in the blob store (the interface
-    /// uploads them first). Refuses a blob the store does not hold. Each
-    /// file's size is the blob's own, not what the caller said.
+    /// A new document of files already in the files catalog (the interface
+    /// adds them through Files first, sealed, as Health's). Refuses a file
+    /// the catalog does not hold or holds in the trash. Each file's name,
+    /// type and size are the catalog's, not the caller's.
     pub fn add_health_document(
         &self,
         title: &str,
         kind: DocKind,
         date: Option<Date>,
-        files: Vec<DocFile>,
+        files: &[FileId],
     ) -> Result<HealthDocument> {
         self.writable()?;
         let title = name_text("a document's title", title)?;
-        let files = clean_files(files)?;
+        if files.len() > MAX_FILES {
+            return Err(Error::Invalid(format!("a document can have at most {MAX_FILES} files")));
+        }
+        let files: Vec<DocFile> = self
+            .health_files(files)?
+            .into_iter()
+            .map(|entry| DocFile {
+                file: entry.id,
+                name: entry.name,
+                mime: entry.mime,
+                size: entry.size,
+            })
+            .collect();
         let document = self.write(|u| {
-            let store = u.store.as_ref();
-            let health = health_of(store)?;
-            let files = held_files(store, files)?;
+            let health = health_of(u.store.as_ref())?;
             let now = Timestamp::now();
             let document = HealthDocument {
                 id: HealthDocumentId::new(),
@@ -807,6 +825,7 @@ impl Vault {
                 date,
                 provider: String::new(),
                 files,
+                source: None,
                 text: String::new(),
                 fhir: Vec::new(),
                 extraction: ExtractionState::None,
@@ -821,6 +840,10 @@ impl Vault {
             health.put_document(&document)?;
             Ok(document)
         })?;
+        self.track_file_refs(
+            RefOwner::new(RefKind::HealthDocument, document.id),
+            document.files.iter().map(|f| f.file),
+        );
         self.wrote(RecordKind::HealthDocument, document.id);
         Ok(document)
     }
@@ -957,16 +980,20 @@ impl Vault {
     }
 
     /// Delete it; with `delete_labs`, the results accepted from it too
-    /// (otherwise they lose the reference). Its files go at the next sweep.
+    /// (otherwise they lose the reference). Its pages go to the Files trash
+    /// unless something else refers to them (see
+    /// [`Vault::release_health_files`]); what a connector sent goes at the
+    /// next sweep.
     ///
     /// The results are dealt with before the document goes, so a failure
     /// part-way leaves a document that is still there rather than results
     /// pointing at one that is not.
     pub fn delete_health_document(&self, id: HealthDocumentId, delete_labs: bool) -> Result<()> {
         self.writable()?;
-        let (deleted, detached) = self.write(|u| {
+        let (deleted, detached, pages) = self.write(|u| {
             let health = health_of(u.store.as_ref())?;
-            health.get_document(id)?;
+            let pages: Vec<FileId> =
+                health.get_document(id)?.files.iter().map(|f| f.file).collect();
             let now = Timestamp::now();
             let mut deleted = Vec::new();
             let mut detached = Vec::new();
@@ -987,8 +1014,10 @@ impl Vault {
                 health.put_labs(&detached)?;
             }
             health.delete_document(id)?;
-            Ok((deleted, detached.into_iter().map(|l| l.id).collect::<Vec<_>>()))
+            Ok((deleted, detached.into_iter().map(|l| l.id).collect::<Vec<_>>(), pages))
         })?;
+        self.drop_file_refs(RefOwner::new(RefKind::HealthDocument, id));
+        self.release_health_files(&pages);
         self.wrote(RecordKind::HealthDocument, id);
         for lab in deleted.iter().chain(&detached) {
             self.wrote(RecordKind::LabResult, lab);
@@ -996,13 +1025,29 @@ impl Vault {
         Ok(())
     }
 
-    /// One of a document's files. Refuses a blob the document does not list.
-    pub fn health_document_file(&self, id: HealthDocumentId, blob: BlobId) -> Result<Vec<u8>> {
+    /// One of a document's pages, whole, for the model to read. Refuses a
+    /// file the document does not list, and one larger than
+    /// `MAX_PAGE_BYTES`: what is read here is held in memory.
+    pub fn health_document_file(&self, id: HealthDocumentId, file: FileId) -> Result<Vec<u8>> {
         let document = self.with_health(|h| h.get_document(id))?;
-        if !document.files.iter().any(|f| f.blob == blob) {
+        if !document.files.iter().any(|f| f.file == file) {
             return Err(Error::Invalid("that file is not one of this document's".into()));
         }
-        self.blob(blob)
+        self.health_file_bytes(file)
+    }
+
+    /// A file Health keeps, whole: a document's page or a meal's photograph,
+    /// for the model. Refuses one larger than `MAX_PAGE_BYTES`.
+    pub fn health_file_bytes(&self, file: FileId) -> Result<Vec<u8>> {
+        let len = self.file_len(file)?;
+        if len > MAX_PAGE_BYTES {
+            return Err(Error::Invalid(format!(
+                "that file is {} MB; at most {} MB can be read",
+                len / 1_048_576,
+                MAX_PAGE_BYTES / 1_048_576
+            )));
+        }
+        self.read_file_range(file, 0, len)
     }
 
     // ---- foods and meals ------------------------------------------------
@@ -1084,16 +1129,14 @@ impl Vault {
         for item in &mut meal.items {
             clean_item(item)?;
         }
-        let (saved, used) = self.write(|u| {
-            let store = u.store.as_ref();
-            let health = health_of(store)?;
-            if let Some(photo) = meal.photo
-                && !store.has_blob(photo)?
-            {
-                return Err(Error::Invalid("that photo is not in the vault".into()));
-            }
+        if let Some(photo) = meal.photo {
+            self.health_files(&[photo])?;
+        }
+        let (saved, used, before_photo) = self.write(|u| {
+            let health = health_of(u.store.as_ref())?;
             let now = Timestamp::now();
             let stored = existing(health.get_meal(meal.id))?;
+            let before_photo = stored.as_ref().and_then(|s| s.photo);
             meal.created_at = stored.as_ref().map_or(now, |s| s.created_at);
             meal.updated_at = now;
             let before: HashSet<FoodId> =
@@ -1115,8 +1158,12 @@ impl Vault {
                 health.put_food(&food)?;
                 used.push(id);
             }
-            Ok((meal.clone(), used))
+            Ok((meal.clone(), used, before_photo))
         })?;
+        self.track_file_refs(RefOwner::new(RefKind::Meal, saved.id), saved.photo);
+        if let Some(old) = before_photo.filter(|old| saved.photo != Some(*old)) {
+            self.release_health_files(&[old]);
+        }
         self.wrote(RecordKind::Meal, saved.id);
         for food in &used {
             self.wrote(RecordKind::Food, food);
@@ -1124,9 +1171,17 @@ impl Vault {
         Ok(saved)
     }
 
+    /// Delete it. Its photograph goes to the Files trash unless something
+    /// else refers to it (see [`Vault::release_health_files`]).
     pub fn delete_meal(&self, id: MealId) -> Result<()> {
         self.writable()?;
-        self.with_health(|h| h.delete_meal(id))?;
+        let photo = self.with_health(|h| {
+            let photo = existing(h.get_meal(id))?.and_then(|m| m.photo);
+            h.delete_meal(id)?;
+            Ok(photo)
+        })?;
+        self.drop_file_refs(RefOwner::new(RefKind::Meal, id));
+        self.release_health_files(&photo.into_iter().collect::<Vec<_>>());
         self.wrote(RecordKind::Meal, id);
         Ok(())
     }
@@ -1395,21 +1450,6 @@ fn existing_conditions(health: &dyn HealthStore, ids: &[ConditionId]) -> Result<
         }
     }
     Ok(())
-}
-
-/// Each file must be in the blob store, and its size is the store's.
-fn held_files(store: &dyn JournalStore, files: Vec<DocFile>) -> Result<Vec<DocFile>> {
-    let mut held = Vec::with_capacity(files.len());
-    for mut file in files {
-        if !store.has_blob(file.blob)? {
-            return Err(Error::Invalid(
-                "a file of this document is not in the vault; upload it again".into(),
-            ));
-        }
-        file.size = store.blob_len(file.blob)?;
-        held.push(file);
-    }
-    Ok(held)
 }
 
 /// The keyed hash of `identity`, hex, 32 characters: what the clear dedupe
@@ -1852,23 +1892,6 @@ fn clean_lab(lab: &mut LabResult) -> Result<()> {
         return Err(Error::Invalid("a result needs a value or some text".into()));
     }
     Ok(())
-}
-
-fn clean_files(files: Vec<DocFile>) -> Result<Vec<DocFile>> {
-    if files.len() > MAX_FILES {
-        return Err(Error::Invalid(format!("a document can have at most {MAX_FILES} files")));
-    }
-    files
-        .into_iter()
-        .map(|mut file| -> Result<DocFile> {
-            file.name = person_text("a file's name", &file.name, MAX_FILE_NAME)?;
-            if file.name.is_empty() {
-                return Err(Error::Invalid("a file needs a name".into()));
-            }
-            file.mime = person_text("a file's type", &file.mime, MAX_MIME)?;
-            Ok(file)
-        })
-        .collect()
 }
 
 fn clean_nutrients(nutrients: &mut Nutrients) -> Result<()> {
