@@ -124,6 +124,9 @@
   /* No background of its own: the raised surface every app sits on is
      App.svelte's, and the floating header's fade below is drawn in it. */
   .main {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     position: relative;
     display: flex;
     flex: 1;

@@ -329,12 +329,29 @@ textarea.field {
 }
 
 /* The content. A flex row, as `.panes` was before it, so the list and the
-   page inside it lay out exactly as they did when they were its children. */
+   page inside it lay out exactly as they did when they were its children.
+
+   As tall as the row by a stated height, not by the row stretching it; and
+   so is each panel beside it, and each column an app stands on it, each
+   saying so in its own rules. WebKit lays a stretched flex item out twice
+   whenever its row is laid out again, once as tall as its content and then
+   stretched, and repaints the difference. A letter typed in the journal lays
+   the row out again, so every key repainted the empty lower half of the
+   sidebar, the entry list and the assistant's rail, and the window paints
+   all of that as one rectangle around them: most of the window, for each
+   key. Cheap enough on a flat theme; under a glass theme's glows and shadows
+   it was a lag felt on every key (30 to 80 ms of painting each, by the
+   window's size, against one or two now). Stated by each column rather than
+   here for every child of the stage, because a view raises its dialogs and
+   toasts there too, fixed to the window, and a height of 100% would stretch
+   them down it. A column that forgets is only slower; it is laid out as
+   before. */
 .shell-stage {
   display: flex;
   flex: 1;
   min-width: 0;
   min-height: 0;
+  height: 100%;
   background: var(--surface);
 }
 /* Rounded with the stage rather than clipped by it: `overflow: hidden` here

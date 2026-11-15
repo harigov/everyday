@@ -364,6 +364,9 @@
   /* No background of its own: it stands on the raised surface `App.svelte`
      lays under every app. */
   .library {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     display: flex;
     flex: 1;
     min-width: 0;

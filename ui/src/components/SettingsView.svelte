@@ -895,6 +895,9 @@
      makes a sidebar a sidebar everywhere else), so this is a second place
      that says so; the two have to be kept in step by eye. */
   .nav {
+    /* As tall as the row by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     width: var(--sidebar-w);
     flex: none;
     display: flex;
@@ -968,6 +971,9 @@
      so a long Accounts list does not end up with its last row behind the
      floating assistant button. */
   .pane {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     flex: 1;
     min-width: 0;
     padding: var(--sp-8) var(--sp-8) var(--fab-size);

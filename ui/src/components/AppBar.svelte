@@ -240,6 +240,9 @@
 
 <style>
   .bar {
+    /* As tall as the row by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     width: var(--appbar-w);
     flex: none;
     display: flex;

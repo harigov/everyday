@@ -338,6 +338,9 @@
   /* No background of its own: it stands on the raised surface `App.svelte`
      lays under every app, as the page beside it does. */
   .list {
+    /* As tall as the stage by a stated height, not stretched: see
+       `.shell-stage` in app.css. */
+    height: 100%;
     width: var(--list-w);
     flex: none;
     display: flex;

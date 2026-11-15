@@ -394,8 +394,6 @@
   }
   .canvas {
     flex: 1;
-    display: flex;
-    flex-direction: column;
   }
 
   /* --measure is the text column; the padding sits outside it. Setting it as
@@ -404,9 +402,15 @@
      the day's tags and trackers sit at the bottom rather than straight under
      the last line written. The bottom padding keeps that last row clear of
      the floating assistant button, which rises --fab-size + --sp-6 from the
-     window's foot and so stands 42px above the 30px status bar. */
+     window's foot and so stands 42px above the 30px status bar.
+
+     A `min-height` in a plain block, not `flex: 1 0 auto` in a flex column:
+     grown by a flex column, the page was laid out at its content's height
+     first and then stretched, so every key moved the tags and trackers up
+     under the text and back down, and repainted the whole stretch between
+     -- most of the page on a tall window. */
   .page {
-    flex: 1 0 auto;
+    min-height: 100%;
     display: flex;
     flex-direction: column;
     width: 100%;

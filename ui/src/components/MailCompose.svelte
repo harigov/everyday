@@ -1438,8 +1438,8 @@
     </p>
   {/if}
 
-  <div class="body">
-    <div class="prose" class:fill={!quotedHtml} bind:this={host}></div>
+  <div class="body" class:fill={!quotedHtml}>
+    <div class="prose" bind:this={host}></div>
     {#if quotedHtml}
       <button
         class="quote-toggle"
@@ -1907,9 +1907,17 @@
     padding: var(--sp-2) 0;
   }
   /* A message quoting nothing: the editor fills the body, so a click
-     anywhere in the empty space below the last line still lands in it. */
-  .pane-compose .prose.fill {
-    flex: 1 0 auto;
+     anywhere in the empty space below the last line still lands in it. By
+     a `min-height` in a plain block rather than by growing in the flex
+     column: grown, the editor was laid out as tall as its text first and
+     then stretched, and that repainted the whole pane on every key. Never
+     under the 72px every editor keeps, however little room the fields leave
+     the body: then the body scrolls instead. */
+  .pane-compose .body.fill {
+    display: block;
+  }
+  .pane-compose .body.fill > .prose {
+    min-height: max(72px, 100%);
   }
   .prose :global(.ed-content) {
     flex: 1;
