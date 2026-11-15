@@ -1040,13 +1040,15 @@ mod tests {
     #[test]
     fn an_untouched_speech_card_does_not_hold_up_a_save() {
         use crate::speech::{SpeechConfig, TranscriberConfig};
-        let mut stored = ModelSettings::default();
         // Carried over from an older build: plain http to the local network,
         // which today's rules refuse.
-        stored.speech = Some(SpeechConfig::new(TranscriberConfig::Compatible {
-            base_url: "http://192.168.1.5:8000/v1".into(),
-            model: "whisper".into(),
-        }));
+        let stored = ModelSettings {
+            speech: Some(SpeechConfig::new(TranscriberConfig::Compatible {
+                base_url: "http://192.168.1.5:8000/v1".into(),
+                model: "whisper".into(),
+            })),
+            ..ModelSettings::default()
+        };
         assert!(stored.validate().is_err());
         let mut next = stored.clone();
         next.small = Some(LLMConfig::small());

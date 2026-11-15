@@ -504,10 +504,12 @@ fn backup_key_labels_and_chunk_aad_are_pinned() {
     let name_key = vault.derive_subkey("karmayoga.backup.name.v1");
     let expected_name = blake3::keyed_hash(name_key.expose(), b"chunk").to_hex()[..32].to_string();
     assert_eq!(keys.chunk_name(b"chunk"), expected_name);
-    let expected_repo =
-        blake3::keyed_hash(name_key.expose(), b"karmayoga.backup.repository\02026-11-14T03:05:12Z")
-            .to_hex()[..32]
-            .to_string();
+    let expected_repo = blake3::keyed_hash(
+        name_key.expose(),
+        b"karmayoga.backup.repository\x002026-11-14T03:05:12Z",
+    )
+    .to_hex()[..32]
+        .to_string();
     assert_eq!(keys.repository_id(), expected_repo);
 
     let seal = AeadCipher::new(&vault.derive_subkey("karmayoga.backup.seal.v1"));
