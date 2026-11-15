@@ -247,6 +247,32 @@ all day because each was used once. A failed load is not kept. The model
 files moved from `meeting::models` to `local::files`, which now lists the
 decision models as well; see docs/plans/mail-sorting.md's "On this computer".
 
+## Speech is the platform's (Nov 2026)
+
+The transcriber is no longer chosen here. How speech becomes text -- the
+backend, its model, the recogniser's language and the key -- is the speech
+model, the fifth card in Settings → Models (`ModelSettings.speech`, see
+docs/plans/models.md's "The speech card"), so the next thing that listens
+uses the same choice instead of growing a copy of it. Meeting notes read it:
+`Vault::speech_and_keyed` for whether the switch may go on, and
+`Vault::speech_access` for the transcriber the pipeline builds. What stays
+here is what is about meetings -- the switch, offers, calendars, templates,
+the vocabulary (still told to the recogniser), voiceprints, auto-stop, the
+summary budget. The Meetings tab shows the speech model in a line, with a
+button that opens Models.
+
+- Turning meeting notes on is refused, with a reason that points at
+  Settings → Models, when no usable speech model is chosen. Changing the
+  speech model while they are on is a save of the models, which never
+  refuses for meetings' sake; the Meetings tab says what is wrong, and a
+  recording will not begin until it is fixed.
+- The speech kit and the recognisers are downloaded on the speech card. The
+  commands are the same `speech_*` ones, still under the `Meetings` scope.
+- `use_assistant_key` is gone: OpenAI speech files its key under OpenAI's
+  endpoint, which an OpenAI language model's key is already under. A vault
+  from before has its transcriber, language and own key moved into the
+  models once, at unlock (`Vault::carry_over_speech`).
+
 The app already knows when a call is about to start, who was invited, and
 how to write a note, and it already has a model it trusts to write one. What
 it cannot do is hear. This plan gives it ears for the length of a call: it
@@ -474,7 +500,8 @@ Bullets. Only what was actually agreed, with who agreed it.
 ## What the open questions were settled as
 
 - **Models:** no defaults, locally or remotely. The person picks and
-  configures the transcriber, and the switch is disabled until they have.
+  configures the transcriber -- since Nov 2026 the speech model, in Settings
+  → Models -- and the switch is disabled until they have.
   The OpenAI model field offers `gpt-4o-transcribe-diarize` and
   `gpt-4o-transcribe` as suggestions, not as a preselection.
 - **"Always" mode:** offered. Detected calls on the chosen calendars are

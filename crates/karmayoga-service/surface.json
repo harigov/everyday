@@ -390,6 +390,28 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "backup_settings",
+      "orScope": null,
+      "returns": "BackupView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "backup_snapshots",
+      "orScope": null,
+      "returns": "SnapshotInfo[]",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "authUrl",
@@ -508,6 +530,17 @@
       "orScope": null,
       "returns": "ProviderInfo[]",
       "scope": "calendars",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "cancel_backup",
+      "orScope": null,
+      "returns": "BackupView",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },
@@ -678,6 +711,23 @@
     {
       "args": [
         {
+          "name": "destination",
+          "required": true,
+          "type": "Destination"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "check_backup_destination",
+      "orScope": null,
+      "returns": "DestinationCheck",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "session",
           "required": true,
           "type": "string"
@@ -706,6 +756,20 @@
       "orScope": null,
       "returns": "void",
       "scope": "accounts",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "clear_backup_keys",
+      "orScope": null,
+      "returns": "BackupView",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },
@@ -5174,6 +5238,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "write",
+      "name": "run_backup",
+      "orScope": null,
+      "returns": "BackupView",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "handle",
@@ -5323,6 +5398,26 @@
       "orScope": null,
       "returns": "AgentSettings",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "settings",
+          "required": true,
+          "type": "BackupSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_backup_settings",
+      "orScope": null,
+      "returns": "BackupView",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },
@@ -6485,6 +6580,31 @@
       "orScope": null,
       "returns": "void",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "accessKeyId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "secretAccessKey",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_backup_keys",
+      "orScope": null,
+      "returns": "BackupView",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },

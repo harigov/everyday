@@ -161,6 +161,12 @@ dom_query = "0.28"
 # uses, so it is switched off.
 calcard = { version = "=0.3.13", default-features = false }
 chrono = "0.4"
+# Backups to a bucket of the person's own -- see `backup::s3` and
+# `backup::gcs`: HMAC-SHA256 for S3's Signature Version 4, and RS256 for the
+# token request a Google service account signs. Already in the tree as
+# rustls's crypto provider. The AWS and Google SDKs, which would do the same
+# four requests through a few hundred crates of their own, are not used.
+ring = "0.17"
 
 # ── Local speech (`local::files`, `meeting::speech`, phase 4 of
 # docs/plans/meeting-notes.md) ──────────────────────────────────────────────
@@ -176,6 +182,10 @@ chrono = "0.4"
 # by whoever publishes the model, and every sherpa-onnx release, and every
 # ASR model page anywhere, publishes SHA-256.
 sha2 = "0.10"
+# Backups: a manifest is compressed before it is sealed, and names the
+# computer that made it. Both already in the workspace's lock.
+flate2 = "1"
+gethostname = "1"
 # The pyannote segmentation model, and both local recognisers, are published
 # as a `.tar.bz2` alongside files this application does not want (Python
 # export scripts, licence text, test wavs) -- see `local::files`'

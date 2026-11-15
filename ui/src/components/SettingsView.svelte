@@ -59,6 +59,7 @@
   import AccountsPanel from './AccountsPanel.svelte'
   import AgentPanel from './AgentPanel.svelte'
   import AssistantPanes from './AssistantPanes.svelte'
+  import BackupPanel from './BackupPanel.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
   import DataPanel from './DataPanel.svelte'
   import KeepInTouchPanel from './KeepInTouchPanel.svelte'
@@ -178,58 +179,76 @@
   const status = $derived(app.status)
   const tab = $derived(panels.settings ?? 'general')
 
+  /**
+   * The rail's two halves. Platform is what every app stands on -- who you
+   * are, the models, where the vault is copied, getting your data in and
+   * out, the vault itself -- and Apps is what belongs to one of them. The
+   * owner asked for the line: a setting several apps rely on is not any one
+   * app's, and filing it beside one is how it gets looked for in the wrong
+   * place. A tab's group is part of its row below, so moving one is one
+   * word.
+   */
+  type Group = 'platform' | 'apps'
+  const GROUPS: { id: Group; label: string }[] = [
+    { id: 'platform', label: 'Platform' },
+    { id: 'apps', label: 'Apps' },
+  ]
+
   /** `sub` marks a tab drawn indented under the one before it. */
-  const TABS: { id: SettingsTab; label: string; icon: IconName; sub?: true }[] = [
-    { id: 'general', label: 'General', icon: 'settings' },
+  const TABS: { id: SettingsTab; label: string; icon: IconName; group: Group; sub?: true }[] = [
+    { id: 'general', label: 'General', icon: 'settings', group: 'platform' },
     // "About You" rather than "You": the tab now holds the roles as well as
     // the six fields, and "You" beside a list of the parts of a life read as
     // a label for one of them.
-    { id: 'profile', label: 'About You', icon: 'star' },
-    { id: 'accounts', label: 'Accounts', icon: 'inbox' },
+    { id: 'profile', label: 'About You', icon: 'star', group: 'platform' },
+    // Platform rather than the assistant's: research, the quick asks, mail
+    // sorting and meeting notes run on these too, and the assistant's own
+    // tab is who it is and how it behaves, not which model it is.
+    { id: 'models', label: 'Models', icon: 'layers', group: 'platform' },
+    // Sealed copies of the whole vault, every app's records at once. Before
+    // Data, the other way out: the same records unsealed.
+    { id: 'backup', label: 'Backup', icon: 'archive', group: 'platform' },
+    { id: 'data', label: 'Data', icon: 'upload', group: 'platform' },
+    { id: 'vault', label: 'Vault', icon: 'lock', group: 'platform' },
+    { id: 'accounts', label: 'Accounts', icon: 'inbox', group: 'apps' },
     // Under Accounts: whose mail it sorts. Shown with the models, which do
     // the sorting, on a backend that carries mail.
-    { id: 'sorting', label: 'Mail sorting', icon: 'tag', sub: true },
-    { id: 'writing', label: 'Mail writing', icon: 'sparkle', sub: true },
-    // Before the assistant rather than under it: research and the quick asks
-    // run on these too, and the assistant's own tab is who it is and how it
-    // behaves, not which model it is.
-    { id: 'models', label: 'Models', icon: 'layers' },
-    { id: 'assistant', label: 'Assistant', icon: 'sparkle' },
+    { id: 'sorting', label: 'Mail sorting', icon: 'tag', group: 'apps', sub: true },
+    { id: 'writing', label: 'Mail writing', icon: 'sparkle', group: 'apps', sub: true },
+    { id: 'assistant', label: 'Assistant', icon: 'sparkle', group: 'apps' },
     // The assistant's standing work, which was the Assistant app's four
     // panes until that app became the conversation. Under the Assistant tab
     // rather than beside it, because they are its, and a flat list of eleven
     // tabs would hide that. See `AssistantPanes.svelte`.
-    { id: 'routines', label: PANE_LABELS.routines, icon: 'clock', sub: true },
-    { id: 'runs', label: PANE_LABELS.runs, icon: 'inbox', sub: true },
-    { id: 'memory', label: 'Memory', icon: 'sparkle', sub: true },
+    { id: 'routines', label: PANE_LABELS.routines, icon: 'clock', group: 'apps', sub: true },
+    { id: 'runs', label: PANE_LABELS.runs, icon: 'inbox', group: 'apps', sub: true },
+    { id: 'memory', label: 'Memory', icon: 'sparkle', group: 'apps', sub: true },
     // A skill is managed from here, not drawn as a pane of the Assistant
     // app -- see `panels.svelte.ts`'s own note on why `SettingsTab` carries
     // it apart from `Pane`.
-    { id: 'skills', label: 'Skills', icon: 'book', sub: true },
-    { id: 'proposals', label: PANE_LABELS.proposals, icon: 'tick', sub: true },
+    { id: 'skills', label: 'Skills', icon: 'book', group: 'apps', sub: true },
+    { id: 'proposals', label: PANE_LABELS.proposals, icon: 'tick', group: 'apps', sub: true },
     // The assistant, reached from a phone. Not indented under Assistant with
     // the panes above: those are what it does, and this is how it is reached
     // -- bot accounts on a server the person runs, much as Accounts holds
     // mailboxes.
-    { id: 'chat', label: 'Chat', icon: 'globe' },
+    { id: 'chat', label: 'Chat', icon: 'globe', group: 'apps' },
     // The Plaid keys a person brings to link banks. Its own tab rather than
     // under Accounts, which holds mailboxes: a bank is not signed in to here,
     // only the keys that let Money ask Plaid to sign one in.
-    { id: 'money', label: 'Money', icon: 'wallet' },
+    { id: 'money', label: 'Money', icon: 'wallet', group: 'apps' },
     // Whether this computer records its screen time, what it is called, the
     // GNOME and browser extensions that do the watching, and how long the
     // vault keeps it. Mostly this machine's, not the vault's -- which is why
     // it is a tab here rather than a pane of the app.
-    { id: 'screentime', label: 'Screen time', icon: 'hourglass' },
-    { id: 'meetings', label: 'Meetings', icon: 'mic' },
+    { id: 'screentime', label: 'Screen time', icon: 'hourglass', group: 'apps' },
+    { id: 'meetings', label: 'Meetings', icon: 'mic', group: 'apps' },
     // After Meetings and not under it: one list serves the journal, notes and
     // meeting notes alike, and each of those picks from it in its own place.
-    { id: 'templates', label: 'Templates', icon: 'layers' },
+    { id: 'templates', label: 'Templates', icon: 'layers', group: 'apps' },
     // Beside Meetings: another thing the app does with your days on its own,
     // reading the Library's Contacts shelf rather than a calendar.
-    { id: 'keepintouch', label: 'Keeping in touch', icon: 'people' },
-    { id: 'data', label: 'Data', icon: 'upload' },
-    { id: 'vault', label: 'Vault', icon: 'lock' },
+    { id: 'keepintouch', label: 'Keeping in touch', icon: 'people', group: 'apps' },
   ]
 
   const PANES: readonly SettingsTab[] = ['routines', 'runs', 'memory', 'proposals']
@@ -269,6 +288,14 @@
       .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
       .filter((t) => t.id !== 'writing' || (agent.supported && app.supportsMail)),
+  )
+
+  /** `shown`, under its group headings. A group with nothing left in it on
+   *  this backend is not drawn, heading and all. */
+  const grouped = $derived(
+    GROUPS.map((g) => ({ ...g, tabs: shown.filter((t) => t.group === g.id) })).filter(
+      (g) => g.tabs.length > 0,
+    ),
   )
 
   async function changePassword(e: Event) {
@@ -402,18 +429,27 @@
     </button>
   </div>
   <nav class="scroll side-nav tabs" aria-label="Settings sections">
-    {#each shown as t (t.id)}
-      <button
-        class="side-row tab"
-        class:sel={tab === t.id}
-        class:sub={t.sub}
-        aria-current={tab === t.id ? 'page' : undefined}
-        onclick={() => panels.openSettings(t.id)}
-      >
-        <span class="side-icon"><Symbol name={t.icon} size={17} /></span>
-        <span class="side-text">{t.label}</span>
-        {#if count(t.id) > 0}<span class="side-count strong">{count(t.id)}</span>{/if}
-      </button>
+    {#each grouped as g (g.id)}
+      <!-- A group with its heading as its name, so a screen reader announces
+           "Platform" or "Apps" on entering one, the way the eye reads it. -->
+      <div class="group" role="group" aria-labelledby="settings-group-{g.id}">
+        <div class="side-head">
+          <h3 class="eyebrow" id="settings-group-{g.id}">{g.label}</h3>
+        </div>
+        {#each g.tabs as t (t.id)}
+          <button
+            class="side-row tab"
+            class:sel={tab === t.id}
+            class:sub={t.sub}
+            aria-current={tab === t.id ? 'page' : undefined}
+            onclick={() => panels.openSettings(t.id)}
+          >
+            <span class="side-icon"><Symbol name={t.icon} size={17} /></span>
+            <span class="side-text">{t.label}</span>
+            {#if count(t.id) > 0}<span class="side-count strong">{count(t.id)}</span>{/if}
+          </button>
+        {/each}
+      </div>
     {/each}
   </nav>
 </aside>
@@ -453,6 +489,8 @@
         <MailSortingPanel />
       {:else if tab === 'writing'}
         <MailWritingPanel />
+      {:else if tab === 'backup'}
+        <BackupPanel />
       {:else if tab === 'data'}
         <DataPanel />
       {:else if tab === 'general'}
@@ -902,8 +940,20 @@
   .tabs {
     display: flex;
     flex-direction: column;
+    padding-top: var(--sp-1);
+  }
+  /* Each group is the column of rows the rail used to be on its own, under
+     a heading in every sidebar's own style -- app.css's `.side-head` and
+     `.eyebrow`, quiet small capitals. The first heading is pulled up to
+     where the first row used to start; the second keeps the sidebar
+     heading's full space above it, which is what reads as a break. */
+  .group {
+    display: flex;
+    flex-direction: column;
     gap: 2px;
-    padding-top: var(--sp-3);
+  }
+  .group:first-child .side-head {
+    padding-top: var(--sp-2);
   }
   .side-row.sub {
     height: calc(var(--side-row-h) - 4px);

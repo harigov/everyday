@@ -7,9 +7,12 @@
 //! forwarding, and both are here because they reach outside
 //! `MeetingStore` itself:
 //!
-//! * **The transcriber's own key** is not part of [`MeetingSettings`] at
-//!   all -- see [`Vault::set_transcriber_key`] for why, the same argument
-//!   [`Vault::set_model_key`] makes for the models'.
+//! * **How speech becomes text is not meeting notes' any more.** The
+//!   transcriber, its language and its key are the platform's speech model,
+//!   in Settings → Models ([`crate::speech`], [`Vault::speech_access`]).
+//!   Older builds kept all three here; [`legacy_transcriber_key`] is the old
+//!   key's one reader left, for the carry-over in `super::llm` that moves
+//!   it, and [`Vault::save_meeting_settings`] never writes any of the three.
 //! * **A transcript's words belong in search**, and search is built from
 //!   entries and notes, neither of which knows a transcript exists. See
 //!   [`reindex_note`] for how the two are kept in step.
@@ -34,16 +37,38 @@ use crate::error::Result;
 use crate::id::{NoteId, RecordingId, TranscriptId, VoiceprintId};
 use crate::meeting::{MeetingSettings, Recording, Stage, Transcript, Voiceprint};
 use crate::record::RecordKind;
+use crate::store::JournalStore;
 use crate::store::meetings::{MeetingStore, RecordingQuery};
-use crate::store::secrets::SecretStore;
 
-/// Owner kind the transcriber's own key is sealed under in the per-record
-/// secret store -- see [`crate::store::secrets`]. There is one transcriber
-/// per vault, so the owner id is a fixed string rather than a record's id,
-/// the same shape `agent_secret` used before per-record secrets existed at
-/// all.
+/// Owner kind the transcriber's own key was sealed under, in the per-record
+/// secret store, by builds from before the speech model -- see
+/// [`crate::store::secrets`]. There was one transcriber per vault, so the
+/// owner id is a fixed string rather than a record's id, the same shape
+/// `agent_secret` used before per-record secrets existed at all. Nothing
+/// writes it now: the key is moved into the models' own map, under the
+/// speech model's endpoint, and this row deleted.
 pub const TRANSCRIBER_SECRET_OWNER_KIND: &str = "transcriber";
 const TRANSCRIBER_SECRET_OWNER_ID: &str = "singleton";
+
+/// The transcriber key an older build stored, if it is still there. Takes
+/// the store rather than the vault so the carry-over can read it inside its
+/// own exclusive section; `None` on a backend with no secret store, which
+/// had nowhere to keep one.
+pub(super) fn legacy_transcriber_key(store: &dyn JournalStore) -> Result<Option<String>> {
+    let Some(secrets) = store.secrets() else { return Ok(None) };
+    let bytes = secrets.get_secret(TRANSCRIBER_SECRET_OWNER_KIND, TRANSCRIBER_SECRET_OWNER_ID)?;
+    Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
+}
+
+/// Forget the transcriber key an older build stored, once it has been moved.
+pub(super) fn delete_legacy_transcriber_key(store: &dyn JournalStore) -> Result<()> {
+    match store.secrets() {
+        Some(secrets) => {
+            secrets.delete_secret(TRANSCRIBER_SECRET_OWNER_KIND, TRANSCRIBER_SECRET_OWNER_ID)
+        }
+        None => Ok(()),
+    }
+}
 
 impl Vault {
     /// Does this vault's backend hold meeting notes at all?
@@ -53,14 +78,6 @@ impl Vault {
 
     fn with_meetings<T>(&self, f: impl FnOnce(&dyn MeetingStore) -> Result<T>) -> Result<T> {
         self.with_domain(Domain::Meetings, |s| s.meetings().map(f))
-    }
-
-    /// Named apart from `accounts.rs`'s own `with_secrets`: item privacy in
-    /// Rust is per *module*, and each file under this one is its own module,
-    /// so a name declared there is not reachable from here even though both
-    /// are `impl Vault` for the same type.
-    fn with_meeting_secrets<T>(&self, f: impl FnOnce(&dyn SecretStore) -> Result<T>) -> Result<T> {
-        self.with_domain(Domain::Secrets, |s| s.secrets().map(f))
     }
 
     // ---- settings ---------------------------------------------------------
@@ -78,6 +95,15 @@ impl Vault {
     /// the next read would move the starter template back in after somebody
     /// had deleted it. Written under the write lock the move runs under, so
     /// the two cannot interleave.
+    ///
+    /// The old speech fields are the vault's in the same way, and more so:
+    /// the speech model's carry-over runs first, in the same exclusive
+    /// section as the write, and then whatever the vault holds for
+    /// [`MeetingSettings::speech_moved`] and the three fields it covers is
+    /// what is written, whatever the caller sent. A window still showing a
+    /// transcriber from before the move cannot write one back, and nothing
+    /// can turn the flag off and have the move run again over a speech model
+    /// somebody has since changed.
     pub fn save_meeting_settings(&self, settings: &MeetingSettings) -> Result<()> {
         self.writable()?;
         let mut settings = settings.clone();
@@ -87,8 +113,17 @@ impl Vault {
             settings.legacy_templates.clear();
         }
         self.write(|u| {
-            pick_domain(u.store.as_ref(), Domain::Meetings, |s| s.meetings())?
-                .put_meeting_settings(&settings)
+            let store = u.store.as_ref();
+            super::llm::move_speech(store)?;
+            let meetings = pick_domain(store, Domain::Meetings, |s| s.meetings())?;
+            // A row that cannot be read holds nothing to keep, and a save is
+            // how it gets fixed.
+            let held = meetings.meeting_settings().unwrap_or_default();
+            settings.speech_moved = held.speech_moved;
+            settings.legacy_transcriber = held.legacy_transcriber;
+            settings.legacy_use_assistant_key = held.legacy_use_assistant_key;
+            settings.legacy_language = held.legacy_language;
+            meetings.put_meeting_settings(&settings)
         })
     }
 
@@ -156,6 +191,9 @@ impl Vault {
     /// Write meeting settings exactly as given, the move's flag and the old
     /// list included -- what an older build did. Only for testing the move;
     /// the session forgets the move was done, as a fresh unlock would.
+    /// For the speech model's carry-over, the same: a transcriber and a
+    /// language written here are what an older build left behind, waiting
+    /// to be moved.
     #[cfg(any(test, feature = "testing"))]
     pub fn put_meeting_settings_as_an_older_build_did(
         &self,
@@ -182,47 +220,34 @@ impl Vault {
         Ok(settings.legacy_templates.into_iter().map(|t| t.into_template()).collect())
     }
 
-    // ---- the transcriber's own key -----------------------------------------
-
-    /// Store the transcriber's key, replacing any previous one, or forget it
-    /// when `key` is `None` or blank.
-    ///
-    /// Kept apart from [`MeetingSettings`] for the reason
-    /// [`crate::store::agent::AgentStore::put_secret`] gives about the
-    /// assistant's: a credential has a different shape from configuration
-    /// and must not be handed back out by accident. There is no getter on
-    /// this type; the only reader is
-    /// [`karmayoga_service`](../../karmayoga_service/index.html)'s pipeline, on
-    /// its way to building a request.
-    pub fn set_transcriber_key(&self, key: Option<&str>) -> Result<()> {
-        self.writable()?;
-        match key.map(str::trim).filter(|k| !k.is_empty()) {
-            Some(k) => self.with_meeting_secrets(|s| {
-                s.put_secret(
-                    TRANSCRIBER_SECRET_OWNER_KIND,
-                    TRANSCRIBER_SECRET_OWNER_ID,
-                    k.as_bytes(),
-                )
-            }),
-            None => self.with_meeting_secrets(|s| {
-                s.delete_secret(TRANSCRIBER_SECRET_OWNER_KIND, TRANSCRIBER_SECRET_OWNER_ID)
-            }),
-        }
+    /// Store a transcriber key the way an older build did: under meeting
+    /// notes' own secret, where only the carry-over looks for it. Only for
+    /// testing that carry-over, beside
+    /// [`Vault::put_meeting_settings_as_an_older_build_did`].
+    #[cfg(any(test, feature = "testing"))]
+    pub fn put_transcriber_key_as_an_older_build_did(&self, key: &str) -> Result<()> {
+        self.write(|u| {
+            pick_domain(u.store.as_ref(), Domain::Secrets, |s| s.secrets())?.put_secret(
+                TRANSCRIBER_SECRET_OWNER_KIND,
+                TRANSCRIBER_SECRET_OWNER_ID,
+                key.as_bytes(),
+            )
+        })
     }
 
-    /// The transcriber's own key, if one is stored. Not the models' -- see
-    /// [`Vault::models_key_if_openai`] for that half of
-    /// `use_assistant_key`, and `karmayoga_service::meeting::transcriber_key`
-    /// for the function that picks between the two.
-    pub fn transcriber_key(&self) -> Result<Option<String>> {
-        let bytes = self.with_meeting_secrets(|s| {
-            s.get_secret(TRANSCRIBER_SECRET_OWNER_KIND, TRANSCRIBER_SECRET_OWNER_ID)
-        })?;
-        Ok(bytes.map(|b| String::from_utf8_lossy(&b).into_owned()))
+    /// Whether an older build's transcriber key is still stored where it put
+    /// it -- for testing that the carry-over deletes it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn has_older_builds_transcriber_key(&self) -> Result<bool> {
+        self.read(|u| Ok(legacy_transcriber_key(u.store.as_ref())?.is_some()))
     }
 
-    pub fn has_transcriber_key(&self) -> Result<bool> {
-        Ok(self.transcriber_key()?.is_some())
+    /// Move meeting notes' old transcriber and key into the models now, as
+    /// unlock does -- for testing the move against settings written after
+    /// the vault was opened.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn carry_over_speech_now(&self) -> Result<()> {
+        self.carry_over_speech()
     }
 
     // ---- the spool's own bytes ---------------------------------------------
@@ -475,6 +500,8 @@ mod pinned_strings {
     //! public just so a test file elsewhere could see it.
     use super::*;
 
+    /// Still pinned though nothing writes them: the carry-over reads and
+    /// deletes an older build's key by exactly these.
     #[test]
     fn transcriber_secret_owner_kind_and_id_are_pinned() {
         assert_eq!(TRANSCRIBER_SECRET_OWNER_KIND, "transcriber");

@@ -778,6 +778,13 @@ mod tests {
             // `Thread` from the pass that files them. See `crate::mailsort`.
             "sort_older_mail",
             "stop_sorting_older_mail",
+            // Starting or stopping a backup writes session state (the one run
+            // a process may have; see `crate::backup::claim`), not a record.
+            // The pane follows a run through `backup_settings`' `running`, and
+            // the run raises `Settings` itself when it lands, having written
+            // its status. See `crate::backup::task`.
+            "run_backup",
+            "cancel_backup",
         ];
         for command in catalog() {
             if command.effect.is_write() && !INVISIBLE.contains(&command.name) {

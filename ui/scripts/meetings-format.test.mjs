@@ -6,6 +6,7 @@ import { load } from './harness.mjs'
 
 const { module: fmt, close } = await load('/src/lib/meetings-format.ts')
 const {
+  describeSpeech,
   formatRealtimeFactor,
   formatTimer,
   isTooSlow,
@@ -68,6 +69,28 @@ assert.equal(speakerNameStyle({ type: 'matched', score: 0.9 }), 'plain')
 assert.equal(speakerNameStyle({ type: 'named' }), 'plain')
 assert.equal(speakerNameStyle({ type: 'inferred' }), 'guessed')
 assert.equal(speakerNameStyle({ type: 'unknown' }), 'unknown')
+
+// ── the speech model, in the line meeting notes show ──────────────────
+
+assert.equal(describeSpeech(null), 'none chosen yet')
+assert.equal(
+  describeSpeech({ transcriber: { type: 'local', model: 'parakeetV3' }, language: null }),
+  'Parakeet TDT v3, on this computer',
+)
+assert.equal(
+  describeSpeech({ transcriber: { type: 'openAi', model: 'gpt-4o-transcribe' } }),
+  'gpt-4o-transcribe at OpenAI',
+)
+assert.equal(
+  describeSpeech({
+    transcriber: { type: 'compatible', baseUrl: 'http://localhost:8000/v1', model: 'whisper-1' },
+  }),
+  'whisper-1 at localhost:8000',
+)
+assert.equal(
+  describeSpeech({ transcriber: { type: 'google', model: ' ' } }),
+  'a model not yet named at Google',
+)
 
 await close()
 console.log('meetings-format: all checks passed')

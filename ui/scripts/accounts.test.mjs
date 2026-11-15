@@ -15,6 +15,8 @@ const {
   accessEqual,
   providerLabel,
   endpointOf,
+  speechEndpointOf,
+  speechProviderLabel,
   providersLabel,
   isPasswordAuth,
   mailNotifyOf,
@@ -143,6 +145,31 @@ for (const [baseUrl, want] of [
 ]) {
   assert.equal(endpointOf(baseUrl), want, `endpointOf(${JSON.stringify(baseUrl)})`)
 }
+
+// ── speechEndpointOf ──────────────────────────────────────────────────
+//
+// `TranscriberConfig::endpoint` in crates/karmayoga-core/src/speech.rs: the
+// speech model's key is filed under it, and OpenAI speech must spell OpenAI's
+// address exactly as an OpenAI language model does, or the two would be two
+// keys.
+
+assert.equal(speechEndpointOf({ type: 'openAi', model: 'gpt-4o-transcribe' }), endpointOf(null))
+assert.equal(
+  speechEndpointOf({ type: 'google', model: 'gemini-2.5-flash' }),
+  'https://generativelanguage.googleapis.com/v1beta',
+)
+assert.equal(
+  speechEndpointOf({ type: 'compatible', baseUrl: 'http://localhost:8000/v1/', model: 'w' }),
+  'http://localhost:8000/v1',
+)
+assert.equal(speechEndpointOf({ type: 'compatible', baseUrl: ' ', model: 'w' }), null)
+assert.equal(speechEndpointOf({ type: 'local', model: 'parakeetV3' }), null, 'sent nothing')
+assert.equal(speechProviderLabel({ type: 'local', model: 'whisperTurbo' }), 'this computer')
+assert.equal(
+  speechProviderLabel({ type: 'compatible', baseUrl: '', model: 'w' }),
+  'a compatible server',
+  'no address yet is not OpenAI',
+)
 
 // ── providersLabel ────────────────────────────────────────────────────
 

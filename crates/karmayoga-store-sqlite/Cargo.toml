@@ -10,7 +10,7 @@ authors.workspace = true
 [dependencies]
 karmayoga-core.workspace = true
 karmayoga-store-sql.workspace = true
-rusqlite = { version = "0.40", features = ["bundled", "hooks"] }
+rusqlite = { version = "0.40", features = ["bundled", "hooks", "backup"] }
 jiff.workspace = true
 # Saying what happened when a vault's database is renamed (see `db_file`).
 tracing.workspace = true

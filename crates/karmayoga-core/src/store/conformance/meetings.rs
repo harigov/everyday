@@ -75,9 +75,10 @@ fn blank_settings() -> MeetingSettings {
         mic_offer: false,
         calendars: CalendarFilter::default(),
         skipped_series: std::collections::BTreeSet::new(),
-        transcriber: None,
-        use_assistant_key: false,
-        language: None,
+        legacy_transcriber: None,
+        legacy_use_assistant_key: false,
+        legacy_language: None,
+        speech_moved: true,
         legacy_templates: Vec::new(),
         templates_moved: true,
         default_template: None,
@@ -153,7 +154,9 @@ fn voiceprint(name: &str) -> Voiceprint {
 fn settings_round_trip(store: &dyn JournalStore) {
     let m = meetings(store);
     let mut edited = blank_settings();
-    edited.language = Some("en".into());
+    // A store keeps what an older build wrote here, for the carry-over to
+    // find, as faithfully as anything else.
+    edited.legacy_language = Some("en".into());
     edited.voiceprints = true;
     edited.auto_stop = false;
     m.put_meeting_settings(&edited).expect("put_meeting_settings");
@@ -161,7 +164,7 @@ fn settings_round_trip(store: &dyn JournalStore) {
 
     // Saving again must replace, not merge, the row.
     let mut second = blank_settings();
-    second.language = Some("fr".into());
+    second.legacy_language = Some("fr".into());
     m.put_meeting_settings(&second).expect("put_meeting_settings again");
     assert_eq!(m.meeting_settings().unwrap(), second);
 }

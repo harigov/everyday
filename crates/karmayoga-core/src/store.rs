@@ -817,6 +817,51 @@ pub trait JournalStore: Send + Sync {
         Err(Error::Unsupported("storing model settings"))
     }
 
+    // ---- backups ----------------------------------------------------------
+
+    /// Where this vault's backups go and how often -- see [`crate::backup`]
+    /// -- or `None` if they have never been set.
+    ///
+    /// On the base trait, as the models are: backing up is the
+    /// application's, not one domain's. One singleton with two sealed
+    /// halves, so a run writing [`put_backup_status`](Self::put_backup_status)
+    /// and a person saving settings never overwrite one another.
+    fn backup_settings(&self) -> Result<Option<crate::backup::BackupSettings>> {
+        Ok(None)
+    }
+
+    fn put_backup_settings(&self, settings: &crate::backup::BackupSettings) -> Result<()> {
+        let _ = settings;
+        Err(Error::Unsupported("storing backup settings"))
+    }
+
+    fn backup_status(&self) -> Result<Option<crate::backup::BackupStatus>> {
+        Ok(None)
+    }
+
+    fn put_backup_status(&self, status: &crate::backup::BackupStatus) -> Result<()> {
+        let _ = status;
+        Err(Error::Unsupported("storing backup settings"))
+    }
+
+    /// What a backup needs from this store, as a job to run *outside* the
+    /// vault's lock -- see [`crate::backup::BackupJob`].
+    ///
+    /// The job copies every database this store keeps into the staging
+    /// directory it is given, consistently and on a connection of its own,
+    /// and lists every other file under the store's directory to be read
+    /// where it is. A copy of a multi-gigabyte database takes a minute;
+    /// holding the vault's lock for it would hold up every save behind it,
+    /// which is why this hands back work rather than doing it. The job holds
+    /// no key and reads only what is already sealed, so the vault locking
+    /// while it runs is harmless.
+    ///
+    /// The default refuses, as [`snapshot`](Self::snapshot) does: a database
+    /// on a server is backed up by whoever runs the server.
+    fn backup_job(&self) -> Result<crate::backup::BackupJob> {
+        Err(Error::Unsupported("backing up this storage backend"))
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>>;

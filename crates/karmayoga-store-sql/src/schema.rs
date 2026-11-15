@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -116,6 +116,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v25(d),
         v26(),
         v27(d),
+        v28(d),
     ]
 }
 
@@ -1821,6 +1822,23 @@ fn v27(d: Dialect) -> Vec<String> {
              created_us  {int} NOT NULL,
              updated_us  {int} NOT NULL,
              data        {blob} NOT NULL
+         )"
+    )]
+}
+
+/// Version 28: backups -- where copies of the vault go, how often, and what
+/// became of the last one (`karmayoga_core::backup`). One singleton pinned to
+/// one row, as `model_settings` (`v16`) is, with nothing in the clear, and
+/// two sealed columns rather than one: a run records its outcome in
+/// `status` while somebody may be saving `settings`, and neither must be
+/// able to overwrite the other. Either can be absent. Additive.
+fn v28(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS backup_settings (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             settings    {blob},
+             status      {blob}
          )"
     )]
 }

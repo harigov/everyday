@@ -64,6 +64,7 @@
 //! | `mail_contacts` (singleton) | that a contact index exists, for address autocomplete -- every address and name it has seen stays sealed |
 //! | `chat_settings` (singleton) | that chat links exist -- every homeserver, account and owner stays sealed |
 //! | `model_settings` (singleton) | that models are configured -- every endpoint and model name stays sealed |
+//! | `backup_settings` (singleton) | that backups have been set up, or have run -- where they go, how often and how the last one went stay sealed |
 //! | `mail_category_rules` (`account_id`) | that one account has sealed corrections outranking the rules `categorize` runs at sync -- never what they are |
 //! | news source `sort_order`, `created_us`, `updated_us` | how many sources are followed and when they were added -- never a name, an address or a folder |
 //! | `news_fetch` (`source_id`, `next_us`) | when each source is next asked for news -- never what it said last time |
@@ -150,6 +151,7 @@ pub mod keyset;
 pub mod schema;
 
 mod agent;
+mod backup;
 mod calendars;
 mod jobs;
 mod journals;
@@ -261,6 +263,14 @@ pub trait Driver: schema::VersionStore + Send + Sync {
     /// of: a hosted Postgres is backed up by whoever hosts it, and pretending
     /// otherwise would produce a "backup" that was not one.
     fn snapshot(&self, _conn: &mut dyn Sql, _root: &Path, _dir: &Path) -> Result<()> {
+        Err(Error::Unsupported("backing up this storage backend"))
+    }
+
+    /// The store's half of a backup -- see
+    /// [`JournalStore::backup_job`](karmayoga_core::JournalStore::backup_job).
+    /// `root` is the directory the store owns. The default refuses, for the
+    /// reason [`Driver::snapshot`]'s does.
+    fn backup_job(&self, _root: &Path) -> Result<karmayoga_core::backup::BackupJob> {
         Err(Error::Unsupported("backing up this storage backend"))
     }
 }

@@ -285,6 +285,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
         "asks the medium model; and announces nothing, since no list shows writing help",
     ),
     ("retry_recording", "resumes the same background pipeline finish_recording does"),
+    ("run_backup", "copies the vault in the background; see backup::tests for what it does"),
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
     ("sort_older_mail", "refuses without a decision model, which would be asked over the network"),
@@ -861,7 +862,27 @@ async fn every_offline_write_announces_what_was_written_down() {
         json!({ "settings": serde_json::to_value(&meeting_settings).unwrap() }),
     )
     .await;
+    // The deprecated key command files its key under the speech model's
+    // endpoint, so there has to be one. Chosen straight in the vault, which
+    // announces nothing, so the snapshot is about the command alone.
+    {
+        use karmayoga_core::meeting::TranscriberConfig;
+        let openai = TranscriberConfig::OpenAi { model: "gpt-4o-transcribe".into() };
+        let mut models = vault.model_settings().unwrap();
+        models.speech = Some(karmayoga_core::speech::SpeechConfig::new(openai));
+        vault.save_model_settings(&models).unwrap();
+    }
     run(&svc, &h, "set_transcriber_key", json!({ "key": "fake-key" })).await;
+    // And taken away again, straight in the vault. A speech model off this
+    // computer makes `append_recording_chunk` below start transcribing a
+    // closed chunk early, on a supervised task whose completion lands its
+    // `backgroundTask` change in whichever row happens to be running -- the
+    // race the module docs describe. With none, the chunk is only spooled.
+    {
+        let mut models = vault.model_settings().unwrap();
+        models.speech = None;
+        vault.save_model_settings(&models).unwrap();
+    }
     run(&svc, &h, "cancel_speech_model_download", json!({ "id": "nonexistent-model" })).await;
     run(&svc, &h, "cancel_decision_model_download", json!({ "id": "d3Lite" })).await;
     run(
@@ -913,6 +934,35 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "set_model_key", json!({ "tier": "medium", "key": "sk-test-key" })).await;
     run(&svc, &h, "clear_model_key", json!({ "tier": "medium" })).await;
+
+    // ---- backups --------------------------------------------------------------
+    //
+    // Left switched off, so saving wakes the scheduler for nothing; `run_backup`
+    // itself is skipped (it copies the vault in the background), and stopping
+    // one that is not running is a no-op that still answers.
+    let backups = tempfile::tempdir().unwrap();
+    run(
+        &svc,
+        &h,
+        "save_backup_settings",
+        json!({ "settings": {
+            "enabled": false,
+            "destination": { "type": "folder", "path": backups.path() },
+            "everyHours": 24,
+            "keep": 7,
+            "includeConfig": true,
+        } }),
+    )
+    .await;
+    run(
+        &svc,
+        &h,
+        "set_backup_keys",
+        json!({ "accessKeyId": "AKIDEXAMPLE", "secretAccessKey": "secret" }),
+    )
+    .await;
+    run(&svc, &h, "clear_backup_keys", json!({})).await;
+    run(&svc, &h, "cancel_backup", json!({})).await;
 
     // ---- chat links ---------------------------------------------------------
     //

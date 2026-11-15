@@ -1,6 +1,6 @@
 // State for meeting notes: the settings pane, the live capture pill, the
-// offer banner, and the recordings/voiceprints lists and the model catalogue
-// they share this store with.
+// offer banner, and the recordings/voiceprints lists they share this store
+// with.
 //
 // Deliberately one store for all of it rather than one per surface. The
 // settings pane, the pill and the notes app all need to know the same two
@@ -9,10 +9,13 @@
 // the other two without a page reload. `recording` and `voiceprint` are
 // ordinary `ChangeKind`s now, so `live.svelte.ts` routes a change of either
 // to this store's own `liveRefresh` the way every other domain's changes
-// route to its store -- see that module's `RELOADS`. The model catalogue is
-// the one list here that still polls: a byte counter mid-download is not a
-// vault write, so nothing raises a change for it, and `MODELS_POLL_MS`
-// below is that gap's whole fix, same as `speech.rs`'s own doc explains.
+// route to its store -- see that module's `RELOADS`.
+//
+// How speech becomes text is not here. It is the platform's speech model,
+// chosen on its card in Settings → Models, and the recognisers and the
+// speech kit are downloaded there -- `models.svelte.ts` holds that list. The
+// settings view below still says which speech model meeting notes will use
+// and whether it can run, so this pane can say so in a line.
 
 import {
   api,
@@ -34,19 +37,14 @@ import type {
   CaptureStatus,
   MeetingSettings,
   MeetingSettingsView,
-  ModelBenchmark,
   Recording,
   RecordingId,
-  LocalModelInfo,
   VoiceprintId,
   VoiceprintInfo,
 } from './types'
 
 /** The stages worth a card in the notes list. */
 const ACTIVE_STAGES = ['recording', 'transcribing', 'identifying', 'summarising', 'failed']
-
-/** How often the model catalogue is re-read while a download is running. */
-const MODELS_POLL_MS = 500
 
 class MeetingsState {
   /** The settings pane's whole answer: the settings, and what they add up to. */
@@ -98,10 +96,8 @@ class MeetingsState {
    * visible one.
    */
   recordingsError = $state<string | null>(null)
-  models = $state<LocalModelInfo[]>([])
   voiceprints = $state<VoiceprintInfo[]>([])
 
-  #modelsTimer: ReturnType<typeof setInterval> | null = null
   #started = false
 
   constructor() {
@@ -118,11 +114,8 @@ class MeetingsState {
     this.offerErrors = {}
     this.recordings = []
     this.recordingsError = null
-    this.models = []
     this.voiceprints = []
     this.starting = false
-    if (this.#modelsTimer) clearInterval(this.#modelsTimer)
-    this.#modelsTimer = null
   }
 
   /** Does this vault's backend carry notes, so a meeting note has somewhere
@@ -231,16 +224,6 @@ class MeetingsState {
     return v
   }
 
-  async setKey(key: string | null): Promise<MeetingSettingsView> {
-    const v = await api.setTranscriberKey(key)
-    this.view = v
-    return v
-  }
-
-  test(): Promise<void> {
-    return api.testTranscriber()
-  }
-
   // ── Recordings, refreshed by a `recording` change from `live.svelte.ts` ──
 
   async refreshRecordings() {
@@ -282,42 +265,6 @@ class MeetingsState {
   async deleteRecording(id: RecordingId) {
     await api.deleteRecording(id)
     await this.refreshRecordings()
-  }
-
-  // ── Local speech models ──────────────────────────────────────────
-
-  async refreshModels() {
-    this.models = await api.speechModels()
-    this.#ensureModelsPoll()
-  }
-
-  #ensureModelsPoll() {
-    const downloading = this.models.some((m) => m.progress != null)
-    if (downloading && !this.#modelsTimer) {
-      this.#modelsTimer = setInterval(() => void this.refreshModels(), MODELS_POLL_MS)
-    } else if (!downloading && this.#modelsTimer) {
-      clearInterval(this.#modelsTimer)
-      this.#modelsTimer = null
-    }
-  }
-
-  async downloadModel(id: string) {
-    await api.downloadSpeechModel(id)
-    await this.refreshModels()
-  }
-
-  async cancelDownload(id: string) {
-    await api.cancelSpeechModelDownload(id)
-    await this.refreshModels()
-  }
-
-  async deleteModel(id: string) {
-    await api.deleteSpeechModel(id)
-    await this.refreshModels()
-  }
-
-  benchmark(id: string): Promise<ModelBenchmark> {
-    return api.benchmarkSpeechModel(id)
   }
 
   // ── Voiceprints ───────────────────────────────────────────────────

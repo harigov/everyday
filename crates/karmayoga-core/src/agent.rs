@@ -490,6 +490,7 @@ impl AgentSettings {
             },
             small: self.legacy_quick_model.clone().map(|model| LLMConfig { connection, model }),
             decision: None,
+            speech: None,
         })
     }
 }

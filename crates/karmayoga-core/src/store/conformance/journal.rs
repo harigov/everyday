@@ -597,6 +597,13 @@ fn the_models_round_trip_and_start_unsaved(store: &dyn JournalStore) {
             url: Some("https://api.openai.com/v1/decisions".into()),
             model: "gpt-6-luna".into(),
         }),
+        speech: Some(crate::speech::SpeechConfig {
+            transcriber: crate::speech::TranscriberConfig::Compatible {
+                base_url: "http://localhost:8000/v1".into(),
+                model: "whisper-1".into(),
+            },
+            language: Some("en".into()),
+        }),
     };
     match store.put_model_settings(&mine) {
         Ok(()) => {}

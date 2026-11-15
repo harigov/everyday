@@ -2,7 +2,8 @@
 //! speech kit, which is why it is not in `domains::meetings` -- see that
 //! module's own doc for the read/write split between the two.
 //!
-//! - [`test_transcriber`]: Settings' "Test" button.
+//! - [`test_transcriber`]: the speech card's "Test" button, in Settings →
+//!   Models.
 //! - [`preview_meeting_template`]: a template editor's live preview, run
 //!   against a canned transcript rather than a real call.
 //! - [`rewrite_meeting_note`]: re-summarise a finished call under a
@@ -188,32 +189,19 @@ async fn tz_and_budget(
 
 // ---- commands ---------------------------------------------------------
 
-/// Build the configured transcriber and ask it to prove it works. Local:
-/// load the recogniser and run it on one second of silence, which loads
-/// every model file it needs and exercises the same code path a real chunk
-/// would, without needing an actual voice.
+/// Build the platform's speech model and ask it to prove it works -- the
+/// speech card's "Test" in Settings → Models, still named for the meeting
+/// notes pane it began in. Local: load the recogniser and run it on one
+/// second of silence, which loads every model file it needs and exercises
+/// the same code path a real chunk would, without needing an actual voice.
 async fn test_transcriber(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<()> {
     let vault = svc.require()?;
-    let (config, key) = blocking({
-        let vault = vault.clone();
-        move || {
-            let settings = vault.meeting_settings()?;
-            let config = settings.transcriber.clone().ok_or_else(|| {
-                karmayoga_core::Error::Invalid("no transcriber is configured".into())
-            })?;
-            Ok(config)
-        }
-    })
-    .await
-    .map(|config| {
-        let key = crate::domains::meetings::transcriber_key(&vault);
-        (config, key)
-    })?;
+    let access = blocking(move || Ok(vault.speech_access()?)).await?;
 
-    match config {
+    match access.config.transcriber {
         karmayoga_core::meeting::TranscriberConfig::Local { model } => test_local(model).await,
         other => {
-            let transcriber = pipeline::build_transcriber(&other, key)?;
+            let transcriber = pipeline::build_transcriber(&other, access.key)?;
             probe(transcriber.as_ref()).await
         }
     }

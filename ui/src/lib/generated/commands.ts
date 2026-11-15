@@ -20,6 +20,8 @@ import type {
   Attachment,
   AttachmentPreview,
   AwaitedSignIn,
+  BackupSettings,
+  BackupView,
   BalanceReport,
   BankAccount,
   BankAccountId,
@@ -46,6 +48,8 @@ import type {
   CsvMapping,
   DecisionBenchmark,
   DeclineReason,
+  Destination,
+  DestinationCheck,
   Draft,
   DraftId,
   EditableEvent,
@@ -209,6 +213,7 @@ import type {
   SeriesScope,
   Skill,
   SkillId,
+  SnapshotInfo,
   SourceInfo,
   SourceSummary,
   StoreStats,
@@ -295,6 +300,8 @@ export interface Commands {
     result: void
   }
   awaitOauthSignIn: { args: { signInId: string }; result: AwaitedSignIn }
+  backupSettings: { args: Record<string, never>; result: BackupView }
+  backupSnapshots: { args: Record<string, never>; result: SnapshotInfo[] }
   beginOauthSignIn: {
     args: {
       authUrl: string
@@ -318,6 +325,7 @@ export interface Commands {
   benchmarkDecisionModel: { args: { id: string }; result: DecisionBenchmark }
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
+  cancelBackup: { args: Record<string, never>; result: BackupView }
   cancelBankLink: { args: { session: string }; result: void }
   cancelDecisionModelDownload: { args: { id: string }; result: void }
   cancelJob: { args: { id: JobId }; result: Job }
@@ -327,8 +335,10 @@ export interface Commands {
   categoryCounts: { args: { mailbox: MailboxId }; result: CategoryCount[] }
   changePassword: { args: { current: string; next: string }; result: void }
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
+  checkBackupDestination: { args: { destination: Destination }; result: DestinationCheck }
   checkBankLink: { args: { session: string }; result: LinkCheck }
   checkSending: { args: { id: AccountId }; result: void }
+  clearBackupKeys: { args: Record<string, never>; result: BackupView }
   clearModelKey: { args: { tier: ModelSlot }; result: ModelSettingsView }
   clearPlaidCredentials: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
@@ -690,6 +700,7 @@ export interface Commands {
     result: WritingAssist
   }
   routineTemplates: { args: Record<string, never>; result: RoutineTemplate[] }
+  runBackup: { args: Record<string, never>; result: BackupView }
   runImport: { args: { handle: string; parts: string[]; mode: string }; result: ImportResult }
   runKeepInTouch: { args: Record<string, never>; result: PassReport }
   runRoutine: { args: { id: RoutineId }; result: RoutineRun }
@@ -700,6 +711,7 @@ export interface Commands {
   saveAccount: { args: { account: Account }; result: void }
   saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
+  saveBackupSettings: { args: { settings: BackupSettings }; result: BackupView }
   saveBankAccount: { args: { account: BankAccount }; result: void }
   saveBankLink: { args: { link: BankLink }; result: void }
   saveBlock: { args: { block: TimeBlock }; result: void }
@@ -789,6 +801,7 @@ export interface Commands {
     result: void
   }
   setAutoLock: { args: { seconds: number }; result: void }
+  setBackupKeys: { args: { accessKeyId: string; secretAccessKey: string }; result: BackupView }
   setDefaultCalendar: { args: { id?: CalendarId | null }; result: void }
   setForgetKey: { args: { seconds: number }; result: void }
   setItemProgress: {
@@ -880,11 +893,14 @@ export const COMMAND_NAMES = {
   archive: 'archive',
   attachOauthSignIn: 'attach_oauth_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
+  backupSettings: 'backup_settings',
+  backupSnapshots: 'backup_snapshots',
   beginOauthSignIn: 'begin_oauth_sign_in',
   beginRecording: 'begin_recording',
   benchmarkDecisionModel: 'benchmark_decision_model',
   benchmarkSpeechModel: 'benchmark_speech_model',
   calendarProviders: 'calendar_providers',
+  cancelBackup: 'cancel_backup',
   cancelBankLink: 'cancel_bank_link',
   cancelDecisionModelDownload: 'cancel_decision_model_download',
   cancelJob: 'cancel_job',
@@ -894,8 +910,10 @@ export const COMMAND_NAMES = {
   categoryCounts: 'category_counts',
   changePassword: 'change_password',
   chatLinks: 'chat_links',
+  checkBackupDestination: 'check_backup_destination',
   checkBankLink: 'check_bank_link',
   checkSending: 'check_sending',
+  clearBackupKeys: 'clear_backup_keys',
   clearModelKey: 'clear_model_key',
   clearPlaidCredentials: 'clear_plaid_credentials',
   collectGarbage: 'collect_garbage',
@@ -1132,6 +1150,7 @@ export const COMMAND_NAMES = {
   rewriteMeetingNote: 'rewrite_meeting_note',
   rewriteSelection: 'rewrite_selection',
   routineTemplates: 'routine_templates',
+  runBackup: 'run_backup',
   runImport: 'run_import',
   runKeepInTouch: 'run_keep_in_touch',
   runRoutine: 'run_routine',
@@ -1139,6 +1158,7 @@ export const COMMAND_NAMES = {
   saveAccount: 'save_account',
   saveAccountPassword: 'save_account_password',
   saveAgentSettings: 'save_agent_settings',
+  saveBackupSettings: 'save_backup_settings',
   saveBankAccount: 'save_bank_account',
   saveBankLink: 'save_bank_link',
   saveBlock: 'save_block',
@@ -1194,6 +1214,7 @@ export const COMMAND_NAMES = {
   sendMessage: 'send_message',
   setAgentAccess: 'set_agent_access',
   setAutoLock: 'set_auto_lock',
+  setBackupKeys: 'set_backup_keys',
   setDefaultCalendar: 'set_default_calendar',
   setForgetKey: 'set_forget_key',
   setItemProgress: 'set_item_progress',
@@ -1283,11 +1304,14 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'archive',
   'attach_oauth_sign_in',
   'await_oauth_sign_in',
+  'backup_settings',
+  'backup_snapshots',
   'begin_oauth_sign_in',
   'begin_recording',
   'benchmark_decision_model',
   'benchmark_speech_model',
   'calendar_providers',
+  'cancel_backup',
   'cancel_bank_link',
   'cancel_decision_model_download',
   'cancel_job',
@@ -1297,8 +1321,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'category_counts',
   'change_password',
   'chat_links',
+  'check_backup_destination',
   'check_bank_link',
   'check_sending',
+  'clear_backup_keys',
   'clear_model_key',
   'clear_plaid_credentials',
   'collect_garbage',
@@ -1535,6 +1561,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'rewrite_meeting_note',
   'rewrite_selection',
   'routine_templates',
+  'run_backup',
   'run_import',
   'run_keep_in_touch',
   'run_routine',
@@ -1542,6 +1569,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account',
   'save_account_password',
   'save_agent_settings',
+  'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
   'save_block',
@@ -1596,6 +1624,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'send_draft',
   'set_agent_access',
   'set_auto_lock',
+  'set_backup_keys',
   'set_default_calendar',
   'set_forget_key',
   'set_item_progress',
@@ -1679,6 +1708,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'attach_oauth_sign_in',
   'begin_oauth_sign_in',
   'begin_recording',
+  'cancel_backup',
   'cancel_bank_link',
   'cancel_decision_model_download',
   'cancel_job',
@@ -1688,6 +1718,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'change_password',
   'check_bank_link',
   'check_sending',
+  'clear_backup_keys',
   'clear_model_key',
   'clear_plaid_credentials',
   'collect_garbage',
@@ -1779,6 +1810,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'retry_recording',
   'revoke_remote_image_allowance',
   'rewrite_selection',
+  'run_backup',
   'run_import',
   'run_keep_in_touch',
   'run_routine',
@@ -1786,6 +1818,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account',
   'save_account_password',
   'save_agent_settings',
+  'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
   'save_block',
@@ -1833,6 +1866,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'send_message',
   'set_agent_access',
   'set_auto_lock',
+  'set_backup_keys',
   'set_default_calendar',
   'set_forget_key',
   'set_item_progress',
@@ -1890,6 +1924,7 @@ export const CHANGE_KINDS = {
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
+  clear_backup_keys: 'settings',
   clear_model_key: 'settings',
   clear_plaid_credentials: 'settings',
   create_event: 'event',
@@ -1973,6 +2008,7 @@ export const CHANGE_KINDS = {
   save_account: 'account',
   save_account_password: 'account',
   save_agent_settings: 'settings',
+  save_backup_settings: 'settings',
   save_bank_account: 'bankAccount',
   save_bank_link: 'bankLink',
   save_block: 'block',
@@ -2020,6 +2056,7 @@ export const CHANGE_KINDS = {
   send_message: 'conversation',
   set_agent_access: 'account',
   set_auto_lock: 'settings',
+  set_backup_keys: 'settings',
   set_default_calendar: 'calendar',
   set_forget_key: 'settings',
   set_item_progress: 'item',

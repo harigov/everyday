@@ -738,6 +738,20 @@ pub(crate) async fn compact_account(
         // The two-step contract's middle step: durably repoint everything
         // that named an old address before anything old is ever dropped.
         vault.remap_packs(account_id, &outcome.remap)?;
+        // Not while a backup of this vault is running, here or in another
+        // process (`karmayoga backups run` while the app is open): it copied
+        // the database before the remap, so the copy still names the old
+        // packs, and it may not have read them yet. Left where they are,
+        // they are the leftovers the next compaction's orphan sweep reclaims
+        // (rule 4 of `karmayoga_core::packstore`), so skipping costs disk
+        // for an hour and nothing else.
+        if crate::backup::running_on(vault.path()) {
+            return Ok(Some(CompactionSummary {
+                bytes_reclaimed: 0,
+                packs_rewritten: outcome.packs_rewritten,
+                packs_reclaimed: 0,
+            }));
+        }
         packs.drop_packs(&account, &outcome.obsolete)?;
         Ok(Some(CompactionSummary {
             bytes_reclaimed: outcome.bytes_reclaimed,

@@ -175,6 +175,22 @@ impl JournalStore for SqlStore {
         self.write_model_settings(settings)
     }
 
+    fn backup_settings(&self) -> Result<Option<karmayoga_core::backup::BackupSettings>> {
+        self.read_backup_settings()
+    }
+
+    fn put_backup_settings(&self, settings: &karmayoga_core::backup::BackupSettings) -> Result<()> {
+        self.write_backup_settings(settings)
+    }
+
+    fn backup_status(&self) -> Result<Option<karmayoga_core::backup::BackupStatus>> {
+        self.read_backup_status()
+    }
+
+    fn put_backup_status(&self, status: &karmayoga_core::backup::BackupStatus) -> Result<()> {
+        self.write_backup_status(status)
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>> {
@@ -489,5 +505,9 @@ impl JournalStore for SqlStore {
     fn snapshot(&self, dir: &std::path::Path) -> Result<()> {
         let mut conn = self.write();
         self.driver.snapshot(conn.as_mut(), &self.root, dir)
+    }
+
+    fn backup_job(&self) -> Result<karmayoga_core::backup::BackupJob> {
+        self.driver.backup_job(&self.root)
     }
 }

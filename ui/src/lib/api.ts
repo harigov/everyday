@@ -39,6 +39,7 @@ import type {
   AgentMailAccess,
   Attachment,
   AgentSettings,
+  BackupSettings,
   BadgeSources,
   BlockId,
   BlockKind,
@@ -54,6 +55,7 @@ import type {
   Connected,
   Connection,
   ConversationId,
+  Destination,
   Draft,
   DraftId,
   Entry,
@@ -818,10 +820,13 @@ export const api = {
 
   meetingSettings: () => call('meetingSettings', {}),
   saveMeetingSettings: (settings: MeetingSettings) => call('saveMeetingSettings', { settings }),
-  setTranscriberKey: (key: string | null) => call('setTranscriberKey', { key }),
+  // `setTranscriberKey` is gone from here, though the command stays for older
+  // clients: the speech model's key is set on its card in Settings → Models,
+  // through `setModelKey('speech', …)`.
   /** Renders with the real model -- may be slow, and may fail. */
   previewMeetingTemplate: (body: string) => call('previewMeetingTemplate', { body }),
-  /** Probe the configured transcriber backend. Rejects with the failure text. */
+  /** Probe the platform's speech model, as saved in Settings → Models. Rejects
+   *  with the failure text. Still named for the pane it began in. */
   testTranscriber: () => call('testTranscriber', {}),
 
   listRecordings: (query: RecordingQuery = {}) => call('listRecordings', { query }),
@@ -846,6 +851,8 @@ export const api = {
   deleteVoiceprint: (id: VoiceprintId) => call('deleteVoiceprint', { id }),
   deleteAllVoiceprints: () => call('deleteAllVoiceprints', {}),
 
+  // The speech card's downloads, in Settings → Models: the recognisers and the
+  // speech kit. Under the meetings scope they were born in.
   speechModels: () => call('speechModels', {}),
   downloadSpeechModel: (id: string) => call('downloadSpeechModel', { id }),
   cancelSpeechModelDownload: (id: string) => call('cancelSpeechModelDownload', { id }),
@@ -1502,7 +1509,8 @@ export const api = {
 
   /**
    * Store the key for the endpoint `tier`'s card points at -- every card
-   * there shares it, the decision model's included. There is deliberately no
+   * there shares it, the decision and speech models' included, so OpenAI
+   * speech uses an OpenAI language model's key. There is deliberately no
    * call that reads one back.
    */
   setModelKey: (tier: ModelSlot, key: string) => call('setModelKey', { tier, key }),
@@ -1681,6 +1689,55 @@ export const api = {
    * means the picker was dismissed.
    */
   openImport: () => invoke<PickedFile | null>('open_import'),
+
+  // ── Backups ──────────────────────────────────────────────────────────
+  //
+  // Settings → Backup: sealed, date-stamped copies of the vault, to a folder
+  // or a bucket, on a schedule. Every call but the last three answers the
+  // whole `BackupView`, so the pane is told what was stored and what is
+  // running rather than what it asked for. `lib/backup.svelte.ts` is the
+  // one caller.
+
+  backupSettings: () => call('backupSettings', {}),
+  saveBackupSettings: (settings: BackupSettings) => call('saveBackupSettings', { settings }),
+
+  /**
+   * Store the access key an S3 destination with `credentials: 'stored'`
+   * signs with, sealed in the vault. There is deliberately no call that
+   * reads it back: `BackupView.hasKeys` says only that one is there.
+   */
+  setBackupKeys: (accessKeyId: string, secretAccessKey: string) =>
+    call('setBackupKeys', { accessKeyId, secretAccessKey }),
+  clearBackupKeys: () => call('clearBackupKeys', {}),
+
+  /**
+   * "Back up now": starts one in the background and answers at once with
+   * `running` set. Rejects with `busy` when one is running already.
+   */
+  runBackup: () => call('runBackup', {}),
+  /** What it had sent stays at the destination and is used by the next one. */
+  cancelBackup: () => call('cancelBackup', {}),
+
+  /** The copies kept at the saved destination, newest first. Asks the
+   *  destination, so it can fail the way a backup would. */
+  backupSnapshots: () => call('backupSnapshots', {}),
+
+  /**
+   * Try a destination before it is saved: write a small file there, read it
+   * back, delete it, and say whether this vault's backups are there already.
+   * A destination that does not work is `ok: false` and a message, not a
+   * rejection.
+   */
+  checkBackupDestination: (destination: Destination) =>
+    call('checkBackupDestination', { destination }),
+
+  /**
+   * Ask the shell for a folder: the platform's own picker, titled `title`.
+   * Desktop only -- a browser on web access has no shell to ask. Answers
+   * `null` when the dialog was dismissed, which is not an error. Only the
+   * path comes back; nothing is read or written there.
+   */
+  pickFolder: (title: string) => invoke<string | null>('pick_folder', { title }),
 
   // ── Mail: mailboxes and threads ───────────────────────────────────────
   //

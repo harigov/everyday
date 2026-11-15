@@ -1,6 +1,12 @@
 //! The local speech models: what can be downloaded, downloading it, and a
-//! quick benchmark. See `local::files` and, for the model-dependent
-//! commands, `meeting::speech` (feature `speech`).
+//! quick benchmark -- the speech card's half of Settings → Models, now that
+//! how speech becomes text is the platform's choice rather than meeting
+//! notes' (see `karmayoga_core::speech`). See `local::files` and, for the
+//! model-dependent commands, `meeting::speech` (feature `speech`).
+//!
+//! Still under the `Meetings` scope they were born in, so a client allowed
+//! to set meeting notes up keeps the downloads it always had. Nothing here
+//! touches a key or a setting, only files beside the vault.
 //!
 //! `speech_models` works, and answers truthfully, in a build without the
 //! `speech` feature -- see `local::files`' own doc on why it is not
@@ -13,8 +19,8 @@
 //! A model's directory lives beside vaults, not inside one, so none of
 //! `events::Kind`'s existing variants is really "a model changed" --
 //! [`crate::events::Kind::Settings`] is the closest fit, and what the
-//! interface actually reloads off it (`meetingSettings`'s own `localSpeech`
-//! flag, indirectly) is settings-shaped. The moment-to-moment progress bar
+//! interface actually reloads off it (whether meeting notes are usable,
+//! indirectly) is settings-shaped. The moment-to-moment progress bar
 //! does not lean on this at all: the interface polls `speech_models` once a
 //! second while a download is running, the same way `poll_auto_lock` is
 //! polled rather than pushed. The `Settings` change exists so a *second*
@@ -41,8 +47,8 @@ pub struct DownloadProgress {
     pub total: u64,
 }
 
-/// One downloadable model on this computer, for the pane that lists it --
-/// meeting notes' recognisers here, the decision models in
+/// One downloadable model on this computer, for the card that lists it --
+/// the speech card's recognisers here, the decision card's models in
 /// `domains::models`. Mirrors `LocalModelInfo` in `ui/src/lib/types.ts`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

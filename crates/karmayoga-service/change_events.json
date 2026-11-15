@@ -1353,6 +1353,46 @@
       ]
     },
     {
+      "command": "save_backup_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_backup_keys",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "clear_backup_keys",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "cancel_backup",
+      "events": []
+    },
+    {
       "command": "save_chat_link",
       "events": [
         {
@@ -1638,6 +1678,13 @@
           "kind": "backgroundTask",
           "op": "updated",
           "origin": null
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "backgroundTask",
+          "op": "updated",
+          "origin": null
         }
       ]
     }
@@ -1746,6 +1793,10 @@
     {
       "name": "rewrite_selection",
       "reason": "asks the medium model; and announces nothing, since no list shows writing help"
+    },
+    {
+      "name": "run_backup",
+      "reason": "copies the vault in the background; see backup::tests for what it does"
     },
     {
       "name": "send_message",

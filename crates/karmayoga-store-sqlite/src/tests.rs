@@ -647,6 +647,113 @@ fn a_snapshot_is_a_database_that_opens_on_its_own() {
     assert!(copy.get_entry(later.id).is_err());
 }
 
+/// A chat link's store beside the vault's: a database of its own, in WAL
+/// mode, with a write still in its log -- the shape matrix-sdk leaves.
+fn chat_store(root: &Path) -> std::path::PathBuf {
+    let dir = root.join("chat").join("link");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("matrix-sdk-crypto.sqlite3");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+    conn.execute_batch("CREATE TABLE keys (k TEXT); INSERT INTO keys VALUES ('device key');")
+        .unwrap();
+    // Left open, so the row is still in the -wal when the copy is made.
+    std::mem::forget(conn);
+    path
+}
+
+#[test]
+fn a_snapshot_copies_mail_packs_and_a_chat_store_not_only_media() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    std::fs::create_dir_all(dir.path().join("mail-packs/acct")).unwrap();
+    std::fs::write(dir.path().join("mail-packs/acct/0001.pack"), b"sealed frames").unwrap();
+    chat_store(dir.path());
+
+    let dest = tempfile::tempdir().unwrap();
+    let into = dest.path().join("copy");
+    store.snapshot(&into).unwrap();
+    assert_eq!(std::fs::read(into.join("mail-packs/acct/0001.pack")).unwrap(), b"sealed frames");
+    let copied =
+        rusqlite::Connection::open(into.join("chat/link/matrix-sdk-crypto.sqlite3")).unwrap();
+    let k: String = copied.query_row("SELECT k FROM keys", [], |r| r.get(0)).unwrap();
+    assert_eq!(k, "device key", "the write still in the log came across");
+    assert!(!into.join("chat/link/matrix-sdk-crypto.sqlite3-wal").exists());
+}
+
+#[test]
+fn a_backup_job_stages_each_database_and_lists_everything_else_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let j = Journal::new("Daily");
+    store.put_journal(&j).unwrap();
+    let blob = store.put_blob(b"an attachment").unwrap();
+    std::fs::create_dir_all(dir.path().join("mail-packs/acct")).unwrap();
+    std::fs::write(dir.path().join("mail-packs/acct/0001.pack"), b"frames").unwrap();
+    chat_store(dir.path());
+
+    let staging = tempfile::tempdir().unwrap();
+    let job = store.backup_job().unwrap();
+    let files = std::thread::spawn({
+        let staging = staging.path().to_path_buf();
+        move || job(&staging)
+    })
+    .join()
+    .unwrap()
+    .unwrap();
+    let by_path =
+        |p: &str| files.iter().find(|f| f.path == p).unwrap_or_else(|| panic!("{p} listed"));
+
+    let db = by_path("store/karmayoga.db");
+    assert!(db.database && db.source.starts_with(staging.path()), "copied, not read live");
+    let copy = rusqlite::Connection::open(&db.source).unwrap();
+    let journals: i64 = copy.query_row("SELECT COUNT(*) FROM journals", [], |r| r.get(0)).unwrap();
+    assert_eq!(journals, 1);
+    assert!(!db.source.with_extension("db-wal").exists(), "one file, no log");
+
+    let chat = by_path("store/chat/link/matrix-sdk-crypto.sqlite3");
+    assert!(chat.database && chat.source.starts_with(staging.path()));
+    let pack = by_path("store/mail-packs/acct/0001.pack");
+    assert!(!pack.database && pack.source.starts_with(dir.path()), "read in place");
+    assert!(pack.modified_ns.is_some());
+    let hex = blob.to_hex();
+    assert!(files.iter().any(|f| f.path.starts_with("store/media/") && f.path.contains(&hex)));
+    assert!(
+        !files.iter().any(|f| f.path.ends_with("-wal") || f.path.ends_with("-shm")),
+        "no log is listed: {:?}",
+        files.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn backup_settings_and_status_are_written_apart() {
+    use karmayoga_core::backup::{BackupSettings, BackupStatus, Destination};
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    assert!(store.backup_settings().unwrap().is_none());
+    assert!(store.backup_status().unwrap().is_none());
+
+    // Status first: a row with no settings in it yet still reads as none.
+    let status = BackupStatus { last_error: Some("unplugged".into()), ..BackupStatus::default() };
+    store.put_backup_status(&status).unwrap();
+    assert!(store.backup_settings().unwrap().is_none());
+
+    let settings = BackupSettings {
+        enabled: true,
+        destination: Some(Destination::Folder { path: "/mnt/backup".into() }),
+        ..BackupSettings::default()
+    };
+    store.put_backup_settings(&settings).unwrap();
+    assert_eq!(store.backup_status().unwrap(), Some(status), "a settings save kept the status");
+    let later = BackupStatus::default();
+    store.put_backup_status(&later).unwrap();
+    assert_eq!(
+        store.backup_settings().unwrap(),
+        Some(settings),
+        "a status write kept the settings"
+    );
+}
+
 #[test]
 fn a_snapshot_refuses_to_land_on_an_existing_database() {
     let dir = tempfile::tempdir().unwrap();

@@ -274,7 +274,7 @@ pub(crate) fn mutate_recording(
 /// spoken for and whether the spool has room are facts about this machine's
 /// resources, true or false whatever the settings say, and cost nothing to
 /// answer; whether meeting notes are configured at all is the one question
-/// that needs a transcriber to weigh in, through
+/// that needs the speech model to weigh in, through
 /// [`crate::domains::meetings::view`]'s own "usable" check -- which, for
 /// every backend, local or remote, also requires the speech kit to be
 /// genuinely installed on disk (VAD needs it before anything else can
@@ -315,7 +315,7 @@ pub fn begin(svc: &Arc<Service>, args: BeginArgs) -> CommandResult<Recording> {
     }
     let checked = crate::domains::meetings::view(&vault, settings.clone())?;
     if !checked.usable {
-        let why = checked.problem.unwrap_or_else(|| "the transcriber is not usable".into());
+        let why = checked.problem.unwrap_or_else(|| "the speech model is not usable".into());
         return Err(Error::Invalid(format!("cannot start recording: {why}")).into());
     }
 
@@ -725,7 +725,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     /// A vault and a service around it, in a temporary directory. Meeting
-    /// notes are left off, and no transcriber is configured -- see
+    /// notes are left off, and no speech model is chosen -- see
     /// [`begin`]'s own doc on why a plain unit test does not set up a
     /// genuinely usable one: `usable` in `crate::domains::meetings` requires
     /// the speech kit to be installed on disk for every backend, which this
@@ -947,7 +947,7 @@ mod tests {
     /// completion before the next one was even polled, proving nothing about
     /// the lock. And the current-thread runtime `#[tokio::test]` gives by
     /// default is deliberate too, not incidental: `finish` always re-enqueues
-    /// the pipeline, which in this test's vault (no transcriber configured,
+    /// the pipeline, which in this test's vault (no speech model chosen,
     /// per `env`'s own doc) fails immediately -- and on a multi-threaded
     /// runtime that background task can run in genuine parallel with this
     /// function's own assertions, on another worker thread, and reach
