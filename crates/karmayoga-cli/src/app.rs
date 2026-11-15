@@ -43,6 +43,19 @@ pub fn run(cli: Cli) -> Result<()> {
         return mcp_pipe::mcp(*port, token.clone());
     }
 
+    // `restore` makes a vault rather than opening one: the day it is needed
+    // is the day there is none.
+    if let Command::Restore { from, into, snapshot, config, location } = &cli.command {
+        return crate::backups::restore(
+            from,
+            into,
+            snapshot.clone(),
+            *config,
+            location,
+            cli.password.clone(),
+        );
+    }
+
     if !karmayoga_vault::exists(&path) {
         return Err(Error::NoVault(path));
     }
@@ -156,6 +169,8 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Passwd => verbs::passwd(&vault, cli.password.as_deref()),
         Command::Backup { dir } => verbs::backup(&vault, &dir),
+        Command::Backups(cmd) => crate::backups::backups(vault, cmd),
+        Command::Restore { .. } => unreachable!("handled above"),
         Command::Backend { .. } => unreachable!("handled above"),
         Command::Check => verbs::check(&vault),
         Command::Gc { include_recent } => {

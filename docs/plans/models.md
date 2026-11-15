@@ -15,6 +15,7 @@ provider and model name, configured in **Settings → Models**.
 | Medium | conversations, routines, dreams, meeting summaries, mail summaries, `draft_with_ai`, `improve_writing` | -- always set |
 | Small | quick asks, mail sorting and priority, auto-drafts, `suggest_replies` (Medium if unset) | not done |
 | Decision | mail sorting into the person's own categories, in place of Small -- see `mail-sorting.md` | Small sorts, as before |
+| Speech | turning speech into text: meeting notes' calls -- see below | nothing that listens can be switched on |
 
 ## Decisions
 
@@ -116,6 +117,57 @@ model on this computer: `DecisionApi::Local`, with `model` naming a
 and switching back to a provider does. `set_model_key` on it says it needs
 none rather than "switched off". See docs/plans/mail-sorting.md's "On this
 computer" for the models and how they run.
+
+## The speech card (Nov 2026)
+
+How speech becomes text used to be meeting notes' own setting: a
+`TranscriberConfig` and a language in `MeetingSettings`, a key of its own
+under the `transcriber` secret, and `use_assistant_key` to borrow the models'
+OpenAI key instead. It is the fifth card now -- `ModelSettings.speech`, a
+`SpeechConfig` (`karmayoga_core::speech`) of the transcriber and the
+recogniser's language -- because a choice kept inside the first feature that
+needed it is one every later listener would copy, key and all.
+`MeetingSettings.vocabulary` stays with meetings: it is about what is said in
+them.
+
+- **Keyed by endpoint, like the rest.** `TranscriberConfig::endpoint` spells
+  OpenAI's as `Provider::default_base_url` does, so OpenAI speech and an
+  OpenAI language model share one key and `use_assistant_key` has nothing
+  left to do; Google is `GOOGLE_ENDPOINT`, a compatible server its base URL,
+  and a recogniser on this computer has none (`set_model_key` says it needs
+  none). `ModelSlot::Speech` is the card, as `tier: "speech"` on the wire.
+- **Never in an acknowledgement.** Speech carries no mail, so it is not one
+  of `ModelSettings::endpoints` and choosing or moving it clears nobody's
+  tick. `ModelSettings::all_endpoints` adds it, for the two places that ask
+  which addresses a key may be kept for: the forget-on-save rule, and
+  `keyed`.
+- **One door out.** `Vault::speech_access` is the only way the key leaves,
+  and every transcriber -- the pipeline's, Test's -- is built from what it
+  answers. `Vault::speech_and_keyed` is what meeting notes read to say
+  whether they could run.
+- **Validated on save, downloaded after.** A provider needs a model name, a
+  compatible server an https address (or plain http to this machine) and a
+  model. A recogniser not yet downloaded is fine to save: it is chosen first
+  and downloaded on the same card. A choice carried over is written without
+  these rules and says why it cannot be used when it is next asked for.
+- **Carried over once, at unlock.** `Vault::carry_over_speech`, beside
+  `carry_over_models` and on its terms: one exclusive section, nothing
+  written over a speech model already chosen, and every writer of the models
+  or the meeting settings runs it first. The key is filed under the speech
+  model's endpoint unless the map already holds one there (then the map's is
+  kept, logged at info), the old secret deleted, and
+  `MeetingSettings.speech_moved` set -- owned by the vault, so no save can
+  clear it. A process that cannot write reads the old choice and key in
+  place. A vault with nothing to move is not written to.
+- **The old fields still read.** `MeetingSettings`' `transcriber`,
+  `useAssistantKey` and `language` are `legacy_*` now, left out of a row once
+  empty, and never written from what a caller sends. `set_transcriber_key`
+  stays as a deprecated alias that files its key under the speech endpoint,
+  asking for the `Agent` scope as `set_model_key` does, since that key may be
+  the assistant's too.
+- **The downloads stay `Meetings`-scoped.** `speech_models` and its siblings
+  move files beside the vault and touch no key, so a client allowed to set
+  meeting notes up keeps them; the card simply calls them from Models.
 
 ## Not done
 

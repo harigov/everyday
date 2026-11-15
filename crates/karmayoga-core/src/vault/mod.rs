@@ -29,6 +29,7 @@
 
 mod accounts;
 mod agent;
+mod backup;
 mod calendars;
 mod chat;
 mod header;
@@ -59,10 +60,38 @@ pub mod touched;
 mod trackers;
 mod writing;
 
+pub use backup::BACKUP_STAGING_DIRNAME;
 pub use header::VaultHeader;
 
+/// Unwrap `header`'s data key with `password`, without a vault: what
+/// [`Vault::unlock`] does first, and all a restore from a backup has to go on
+/// (see [`crate::backup::BackupKeys::from_header`]). `None` for an
+/// unencrypted vault, which has no key.
+pub(crate) fn data_key_from(
+    header: &VaultHeader,
+    password: Option<&str>,
+) -> Result<Option<SecretKey>> {
+    if !header.is_encrypted() {
+        return Ok(None);
+    }
+    let password = password.ok_or(Error::BadPassword)?;
+    let salt_hex = header
+        .salt
+        .as_deref()
+        .ok_or_else(|| Error::Invalid("encrypted vault header is missing its salt".into()))?;
+    let wrapped_hex = header.wrapped_key.as_deref().ok_or_else(|| {
+        Error::Invalid("encrypted vault header is missing its wrapped key".into())
+    })?;
+    let kdf = header.kdf.ok_or_else(|| {
+        Error::Invalid("encrypted vault header is missing its KDF parameters".into())
+    })?;
+    let kek = derive_key(password, &header::from_hex(salt_hex)?, kdf)?;
+    Ok(Some(crypto::unwrap_key(&kek, &header::from_hex(wrapped_hex)?)?))
+}
+
 use crate::crypto::{
-    KdfParams, SUITE_NONE, SUITE_XCHACHA20_POLY1305, SecretKey, derive_key, random_salt, wrap_key,
+    self, KdfParams, SUITE_NONE, SUITE_XCHACHA20_POLY1305, SecretKey, derive_key, random_salt,
+    wrap_key,
 };
 use crate::error::{Error, Result};
 use crate::store::{BackendRegistry, BackendSettings, Capabilities, StoreStats};

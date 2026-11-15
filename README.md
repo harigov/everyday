@@ -429,11 +429,11 @@ capture to discover:
   separately switched on** — categorising, summaries, auto-drafts and the
   assistant's own mail tools each stay off until you turn them on, per
   account, and each says so at the switch.
-- **The transcriber you chose for [meeting notes](#meetings) — OpenAI,
-  Google, or a compatible server's base URL — and only while a call is being
-  recorded.** What travels there is speech, cut from silence locally first,
-  never a whole recording and never a voiceprint. Choosing "on this
-  computer" instead sends nothing anywhere; a call is transcribed with
+- **The speech model you chose in Settings → Models — OpenAI, Google, or a
+  compatible server's base URL — and only while a call is being recorded for
+  [meeting notes](#meetings).** What travels there is speech, cut from silence
+  locally first, never a whole recording and never a voiceprint. Choosing "on
+  this computer" instead sends nothing anywhere; a call is transcribed with
   nothing leaving the machine.
 - **The pinned address a local speech model is downloaded from, only while
   you press Download.** Every byte is checked against a SHA-256 recorded in
@@ -466,8 +466,10 @@ and the pill notices and says so the first time it does: *"Using speakers?
 Headphones give cleaner notes."*
 
 **Where the audio goes depends on what you choose, and nothing is chosen
-for you.** The switch stays off until a transcriber is configured. Pick
-**on this computer** and a call never leaves the machine — a downloaded,
+for you.** The switch stays off until a speech model is chosen, on its own
+card in **Settings → Models** — a platform setting rather than a meetings
+one, so anything else that turns speech into text uses the same model and
+key. Pick **on this computer** and a call never leaves the machine — a downloaded,
 checksummed local model does the recognising, entirely offline. Pick
 **OpenAI**, **Google**, or a compatible server's base URL (whisper.cpp's
 `server`, Speaches, anything else that speaks OpenAI's transcription API)
@@ -2079,10 +2081,18 @@ Leaving **Large** unset means research runs on the Medium model. Leaving
 back to a bigger one. These run in capture boxes; a blank card that silently
 billed at the assistant's rates would be a bill nobody could account for.
 
+Two more cards sit beside the three: a **decision model**, which sorts mail
+into your own categories, and a **speech model**, which turns speech into
+text — meeting notes' calls today. Both are chosen here once, rather than
+inside the first feature that needed them, so the next feature that wants one
+finds it already set. Their keys follow the same rule: OpenAI speech is at
+the address an OpenAI language model is, so the one key serves both.
+
 An account's "the assistant may read this mail" acknowledgement names every
-configured endpoint, since every model can carry mail — the assistant's tools
-on Medium, a research job's on Large, sorting on Small. Moving any model to a
-new address clears it, visibly, until it is given again.
+configured endpoint mail can reach — the assistant's tools on Medium, a
+research job's on Large, sorting on Small or the decision model. The speech
+model is never in it, since no mail goes there. Moving any of the others to
+a new address clears it, visibly, until it is given again.
 
 #### What it is for
 
@@ -2746,9 +2756,10 @@ credential in the vault: the models' API keys, the tokens paired devices
 hold, and the wrapped data key itself. A credential in an export is a
 credential leaked.
 
-`karmayoga backup` is the other verb. It copies the vault *sealed*, opens with
-the same password, needs no restore step, and keeps the things an export
-drops. Two verbs, two jobs — which is also why the assistant's part exports
+A backup is the other job. **Settings → Backup** (or `karmayoga backup` for
+one plain copy by hand) copies the vault *sealed*, opens with the same
+password, and keeps the things an export drops -- see
+[Backups](#backups). Two verbs, two jobs — which is also why the assistant's part exports
 and does not import: a transcript is a record of something that happened, and
 a vault whose history could be authored from a file is a vault whose history
 means nothing.
@@ -2780,6 +2791,71 @@ karmayoga import ~/journal.zip          # says what it found, changes nothing
 karmayoga import ~/journal.zip --yes    # does it
 karmayoga import ~/some-markdown-folder --yes
 ```
+
+## Backups
+
+**Settings → Backup** makes sealed, date-stamped copies of the vault -- and of
+this computer's own settings -- in a folder or a bucket, on a schedule, and
+keeps as many as you say.
+
+| Where | Signed in with |
+|---|---|
+| A folder | nothing: another disk, a network share, a synced folder |
+| Amazon S3 | what this computer already has: `AWS_*` variables, a profile in `~/.aws`, or whatever the AWS CLI can export (SSO and roles included) -- or an access key pasted in, sealed in the vault |
+| Anything S3-compatible | the same, with the service's address: Cloudflare R2, Backblaze B2, MinIO, Wasabi, Google Cloud Storage with HMAC keys |
+| Google Cloud Storage | this computer's Google sign-in (`gcloud auth application-default login`), a service account key file, or the `gcloud` CLI |
+
+There is no SDK behind either bucket. A backup only ever puts, gets, lists
+and deletes objects of a megabyte or less, which is the simplest request each
+provider has; the signing is a few hundred lines on crates the app already
+had.
+
+**Every copy is whole, and copies share what did not change.** A destination
+holds a repository: every file cut into sealed chunks named by a keyed hash,
+and one sealed manifest per copy, named by the moment it was made
+(`snapshots/2026-11-14T030512Z.snapshot`). Restoring a copy needs nothing from
+any other, but two copies store each unchanged chunk once -- so keeping a week
+of daily backups of a 24 GB mail vault costs about 24 GB plus a week of
+changes, and a night's backup sends what changed that day. The database is
+copied page for page while the app keeps writing and cut every 64 KiB, so a
+day of mail moves a few hundred of them, not the file.
+
+**It opens with the vault's password**, because it is sealed under keys
+derived from the vault's own. There is no second secret to keep. The vault's
+header -- the salt and the data key wrapped under the password -- is kept
+beside the chunks in the clear, as `vault.json` is beside a vault: worthless
+without the password, and only the latest is kept, so a password changed since
+opens every copy and the old one opens none. Credentials inside the vault
+travel sealed as they are stored; the password and the keychain's copy of the
+key are never copied at all.
+
+**What is in a copy:** the database, attachments, mail's packs, a chat link's
+own store, recordings not yet written up, and -- unless you untick it -- this
+computer's settings folder: paired devices, the server's certificate and key,
+the MCP token. **What is not:** downloaded models (downloaded again), the mail
+search index (rebuilt), and the pointer to the last vault opened.
+
+A backup that fails once -- a laptop on a train, a disk not plugged in --
+says nothing and tries again in half an hour. One that has been failing for
+longer than its own schedule says so in a notification, once. A disk that is
+not plugged in is never mistaken for a new, empty destination: once a folder
+has held backups, finding nothing there is a failure, not a fresh start.
+
+```sh
+karmayoga backups status                      # where, how often, how it went
+karmayoga backups run                         # now, to the destination Settings chose
+karmayoga backups run --to s3://bucket/kyoga  # or somewhere else, once
+karmayoga backups list                        # the copies kept
+karmayoga backups verify --read               # every piece there, and the newest read back
+karmayoga restore gs://bucket/kyoga ~/restored --config
+```
+
+`restore` needs no vault -- it is for the day there is none -- and lays the
+copy down as a vault folder that opens in Karma Yoga with the same password,
+into a folder that must be empty. `--snapshot` picks an older copy; `--config`
+puts this computer's settings back, never over a file already there. A vault
+on Postgres is not backed up from here: its database is the host's to back up.
+See `docs/plans/backup.md` for the format.
 
 ## Storage backends
 
@@ -3059,6 +3135,8 @@ karmayoga search rain
 karmayoga export ~/journal.zip      # Markdown, iCalendar and CSV; no Karma Yoga format
 karmayoga import ~/journal.zip      # and back again, after saying what it found
 karmayoga backup ~/vault-copy       # the vault itself, still sealed
+karmayoga backups run               # a backup to where Settings → Backup says
+karmayoga restore s3://bucket/kyoga ~/restored   # and back from one
 karmayoga backend                   # what the storage backend is set to
 karmayoga check                     # look for storage-level damage
 karmayoga serve --pair              # serve this vault to other machines

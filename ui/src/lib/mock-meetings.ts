@@ -44,6 +44,7 @@ import type {
   RecordingQuery,
   Segment,
   Speaker,
+  SpeechConfig,
   LocalModelInfo,
   Stage,
   Transcript,
@@ -84,9 +85,7 @@ let settings: MeetingSettings = {
   micOffer: true,
   calendars: { calendarIds: [], roleIds: [] } satisfies CalendarFilter,
   skippedSeries: [],
-  transcriber: null,
-  useAssistantKey: false,
-  language: null,
+  speechMoved: true,
   defaultTemplate: 'tpl-default',
   templatesMoved: true,
   voiceprints: false,
@@ -95,47 +94,62 @@ let settings: MeetingSettings = {
   vocabulary: ['Kubernetes', 'OKRs'],
 }
 
-let hasKey = false
-/** Set true the first time an OpenAI-shaped transcriber has ever had a key. */
-const ASSISTANT_KEY_AVAILABLE = true
+/**
+ * The platform's speech model as meeting notes see it: the speech card's
+ * choice, and whether a key is stored for where it points. It lives with the
+ * models in `mock.ts`, as it does in the real app, and is read from there --
+ * see `mockMeetingsReadSpeechFrom` -- so this file never keeps a second copy.
+ */
+export interface MockSpeech {
+  speech: SpeechConfig | null
+  hasKey: boolean
+}
+
+let speechNow: () => MockSpeech = () => ({ speech: null, hasKey: false })
+
+/** Where the speech model is read from: `mock.ts` says, once, at start. */
+export function mockMeetingsReadSpeechFrom(read: () => MockSpeech): void {
+  speechNow = read
+}
 
 function view(): MeetingSettingsView {
-  const t = settings.transcriber
+  const m = speechNow()
+  const t = m.speech?.transcriber
   let usable = false
-  let problem: string | null = 'Choose how speech becomes text.'
+  let problem: string | null = 'Choose a speech model in Settings → Models first.'
   if (t) {
     if (t.type === 'local') {
-      const model = speechModels.find((m) => m.id === t.model)
-      const kit = speechModels.find((m) => m.id === 'speechKit')
+      const model = speechModels.find((x) => x.id === t.model)
+      const kit = speechModels.find((x) => x.id === 'speechKit')
       if (model?.installed && kit?.installed) {
         usable = true
         problem = null
       } else {
-        problem = 'Download the speech kit and this model first.'
+        problem = 'Download the speech kit and this recogniser in Settings → Models first.'
       }
     } else if (t.type === 'compatible') {
       if (t.baseUrl.trim() && t.model.trim()) {
         usable = true
         problem = null
       } else {
-        problem = 'Set a base URL and a model.'
+        problem = 'Give the speech model’s server an address and a model in Settings → Models.'
       }
     } else {
       // openAi or google
-      if (hasKey || (settings.useAssistantKey && ASSISTANT_KEY_AVAILABLE)) {
+      if (m.hasKey) {
         usable = true
         problem = null
       } else {
-        problem = 'Add a key, or use the assistant’s.'
+        problem = 'Add a key for the speech model in Settings → Models.'
       }
     }
   }
   return {
     settings,
-    hasKey,
+    speech: m.speech,
+    hasKey: m.hasKey,
     usable,
     problem,
-    assistantKeyAvailable: ASSISTANT_KEY_AVAILABLE,
     remote: t != null && t.type !== 'local',
     localSpeech: true,
   }
@@ -147,21 +161,16 @@ export function mockMeetingSettings(): MeetingSettingsView {
 
 export function mockSaveMeetingSettings(next: MeetingSettings): MeetingSettingsView {
   const previous = settings
-  settings = { ...next, templatesMoved: true }
+  settings = { ...next, templatesMoved: true, speechMoved: true }
   const v = view()
-  if (next.enabled && !v.usable) {
-    // Mirrors the real command's own refusal: enabling with nothing to
-    // transcribe with is rejected rather than silently accepted and left
+  if (next.enabled && !previous.enabled && !v.usable) {
+    // Mirrors the real command's own refusal: turning them on with nothing
+    // to transcribe with is rejected rather than silently accepted and left
     // dark. The attempted write does not stick.
     settings = previous
     throw new VaultError('unusable', v.problem ?? 'Meeting notes are not set up yet.')
   }
   return v
-}
-
-export function mockSetTranscriberKey(key: string | null): MeetingSettingsView {
-  hasKey = key != null && key.trim().length > 0
-  return view()
 }
 
 function fillPlaceholders(body: string): string {

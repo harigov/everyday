@@ -489,7 +489,7 @@ pub struct MeetingOffer {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_url: Option<String>,
     /// Whether a recording can start now: meeting notes are on and the
-    /// transcriber is usable. `false` makes the offer a prompt to set
+    /// speech model is usable. `false` makes the offer a prompt to set
     /// meeting notes up, and never [`MeetingOffer::automatic`].
     #[serde(default = "ready_by_default")]
     pub ready: bool,

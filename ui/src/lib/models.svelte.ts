@@ -13,8 +13,13 @@
 // taken before the second arrives is a feature quietly switched off.
 //
 // So does the list of decision models that run on this computer -- the
-// Decision card's other half -- polled once a second while one downloads,
-// as meeting notes polls its recognisers.
+// Decision card's other half -- polled once a second while one downloads.
+//
+// And the speech card's: the recognisers and the speech kit, which meeting
+// notes used to list and poll for themselves when how speech becomes text was
+// theirs to choose. It is the platform's now (`karmayoga_core::speech`), so
+// the list lives here, once, and meeting notes read the speech model from
+// their own view rather than keeping a second copy of the catalogue.
 
 import { endpointOf } from './accounts'
 import { isLoopback } from './agent'
@@ -24,6 +29,7 @@ import type {
   DecisionBenchmark,
   LLMConfig,
   LocalModelInfo,
+  ModelBenchmark,
   ModelSettings,
   ModelSettingsView,
   ModelSlot,
@@ -33,11 +39,18 @@ import type {
 /** How often the decision model list is read again while one downloads. */
 const LOCAL_POLL_MS = 1000
 
+/** How often the speech model list is read again while one downloads: the
+ *  speech kit is small enough that a slower poll would miss most of it. */
+const SPEECH_POLL_MS = 500
+
 class ModelsState {
   view = $state<ModelSettingsView | null>(null)
   /** The decision models that run on this computer: `decision_models`. */
   local = $state<LocalModelInfo[]>([])
   #localTimer: ReturnType<typeof setInterval> | null = null
+  /** The speech recognisers and the speech kit: `speech_models`. */
+  speech = $state<LocalModelInfo[]>([])
+  #speechTimer: ReturnType<typeof setInterval> | null = null
   /**
    * Why the last read failed, or `null`. Kept rather than swallowed: the pane
    * would otherwise sit on "Loading…" forever, and an account's "I
@@ -57,11 +70,20 @@ class ModelsState {
     this.local = []
     if (this.#localTimer) clearInterval(this.#localTimer)
     this.#localTimer = null
+    this.speech = []
+    if (this.#speechTimer) clearInterval(this.#speechTimer)
+    this.#speechTimer = null
   }
 
   /** Whether this copy of Karma Yoga can run a decision model itself. */
   get localDecisions(): boolean {
     return this.view?.localDecisions === true
+  }
+
+  /** Whether this copy can run a speech recogniser itself. Assumed until the
+   *  first read says otherwise, so the choice does not flicker in. */
+  get localSpeech(): boolean {
+    return this.view?.localSpeech ?? true
   }
 
   get settings(): ModelSettings | null {
@@ -166,6 +188,46 @@ class ModelsState {
 
   benchmarkLocal(id: string): Promise<DecisionBenchmark> {
     return api.benchmarkDecisionModel(id)
+  }
+
+  // ── Speech models on this computer ───────────────────────────────
+
+  async refreshSpeech() {
+    this.speech = await api.speechModels()
+    const downloading = this.speech.some((m) => m.progress != null)
+    if (downloading && !this.#speechTimer) {
+      this.#speechTimer = setInterval(
+        () => void this.refreshSpeech().catch(quietly),
+        SPEECH_POLL_MS,
+      )
+    } else if (!downloading && this.#speechTimer) {
+      clearInterval(this.#speechTimer)
+      this.#speechTimer = null
+    }
+  }
+
+  async downloadSpeech(id: string) {
+    await api.downloadSpeechModel(id)
+    await this.refreshSpeech()
+  }
+
+  async cancelSpeech(id: string) {
+    await api.cancelSpeechModelDownload(id)
+    await this.refreshSpeech()
+  }
+
+  async deleteSpeech(id: string) {
+    await api.deleteSpeechModel(id)
+    await this.refreshSpeech()
+  }
+
+  benchmarkSpeech(id: string): Promise<ModelBenchmark> {
+    return api.benchmarkSpeechModel(id)
+  }
+
+  /** Ask the saved speech model to prove it works. Rejects with why not. */
+  testSpeech(): Promise<void> {
+    return api.testTranscriber()
   }
 }
 

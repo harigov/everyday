@@ -1,49 +1,42 @@
 <script lang="ts">
   // Configuring meeting notes: the Meetings tab of the settings dialog.
   //
-  // Six sections, in the order the decisions actually get made: whether to
-  // do this at all (blocked until a transcriber is chosen and working), what
-  // does the transcribing and where the audio goes, when a call starts a
+  // Sections in the order the decisions actually get made: whether to do this
+  // at all (blocked until the speech model is chosen and working), which
+  // speech model that is and where the audio goes, when a call starts a
   // recording, what the note looks like, and — last, because it is opt-in on
   // top of an opt-in feature — whether voices are matched to names at all.
   //
+  // How speech becomes text is not chosen here. It is the platform's speech
+  // model, on its own card in Settings → Models, shared with anything else
+  // that listens; this pane says in a line which one it is and opens that tab.
+  //
   // Edited on a draft, saved together, the same shape `AgentPanel` uses and
-  // for the same reason: a half-chosen transcriber must not be what the next
+  // for the same reason: a half-made choice must not be what the next
   // detected call is recorded with.
 
   import { onDestroy } from 'svelte'
   import { isMock } from '../lib/api'
   import { calendar } from '../lib/calendar.svelte'
-  import { humanBytes, plural, relativeTime } from '../lib/format'
+  import { plural, relativeTime } from '../lib/format'
   import { meetings } from '../lib/meetings.svelte'
-  import { formatRealtimeFactor, isTooSlow } from '../lib/meetings-format'
+  import { describeSpeech } from '../lib/meetings-format'
   import { panels } from '../lib/panels.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { templates } from '../lib/templates.svelte'
-  import type {
-    LocalModel,
-    MeetingSettings,
-    Offer,
-    LocalModelInfo,
-    TranscriberConfig,
-    VoiceprintInfo,
-  } from '../lib/types'
+  import type { MeetingSettings, Offer, VoiceprintInfo } from '../lib/types'
   import ConfirmDialog from './ConfirmDialog.svelte'
-  import Icon from './Icon.svelte'
-  import Meter from './Meter.svelte'
 
-  void meetings.load()
-  void meetings.refreshModels()
+  // Read afresh each time the tab opens: the speech model may have been
+  // changed in Settings → Models since this view was last read.
+  void meetings.reload()
   void meetings.loadVoiceprints()
   void calendar.start()
   void purpose.load()
 
   let draft = $state<MeetingSettings | null>(null)
-  let key = $state('')
   let notice = $state<string | null>(null)
   let saving = $state(false)
-  let testing = $state(false)
-  let testResult = $state<string | null>(null)
 
   let noticeTimer: ReturnType<typeof setTimeout> | null = null
   function confirm(message: string) {
@@ -68,10 +61,6 @@
     saving = true
     try {
       await meetings.save($state.snapshot(draft))
-      if (key.trim()) {
-        await meetings.setKey(key.trim())
-        key = ''
-      }
       draft = structuredClone($state.snapshot(meetings.view!.settings))
       confirm('Saved.')
     } catch (e) {
@@ -81,73 +70,10 @@
     }
   }
 
-  async function removeKey() {
-    try {
-      await meetings.setKey(null)
-    } catch (e) {
-      notice = e instanceof Error ? e.message : String(e)
-    }
-  }
+  // ── Speech ──────────────────────────────────────────────────────────
 
-  async function test() {
-    testing = true
-    testResult = null
-    try {
-      await meetings.test()
-      testResult = 'Working.'
-    } catch (e) {
-      testResult = e instanceof Error ? e.message : String(e)
-    } finally {
-      testing = false
-    }
-  }
-
-  // ── Transcriber ─────────────────────────────────────────────────────
-
-  type TranscriberKind = TranscriberConfig['type']
-
-  function chooseTranscriber(kind: TranscriberKind) {
-    if (!draft) return
-    if (kind === 'local') draft.transcriber = { type: 'local', model: 'parakeetV3' }
-    else if (kind === 'openAi') draft.transcriber = { type: 'openAi', model: '' }
-    else if (kind === 'google') draft.transcriber = { type: 'google', model: '' }
-    else draft.transcriber = { type: 'compatible', baseUrl: '', model: '' }
-  }
-
-  const localSpeech = $derived(meetings.view?.localSpeech ?? true)
-
-  function modelInfo(id: string): LocalModelInfo | undefined {
-    return meetings.models.find((m) => m.id === id)
-  }
-
-  const speechKit = $derived(modelInfo('speechKit'))
-
-  let benchmarking = $state<string | null>(null)
-  let benchmarkResult = $state<Record<string, string>>({})
-
-  async function checkSpeed(id: string) {
-    benchmarking = id
-    try {
-      const b = await meetings.benchmark(id)
-      benchmarkResult = {
-        ...benchmarkResult,
-        [id]:
-          formatRealtimeFactor(b.realtimeFactor) +
-          (isTooSlow(b.realtimeFactor)
-            ? ' — a remote transcriber will be faster on this machine.'
-            : ''),
-      }
-    } catch (e) {
-      benchmarkResult = { ...benchmarkResult, [id]: e instanceof Error ? e.message : String(e) }
-    } finally {
-      benchmarking = null
-    }
-  }
-
-  const LOCAL_MODELS: { id: LocalModel; name: string; blurb: string }[] = [
-    { id: 'parakeetV3', name: 'Parakeet TDT v3', blurb: 'English & European languages, faster' },
-    { id: 'whisperTurbo', name: 'Whisper large-v3 turbo', blurb: 'Any language, slower' },
-  ]
+  /** The speech model in a line: which it is, from the view's own read. */
+  const speechLine = $derived(describeSpeech(meetings.view?.speech))
 
   const OFFER_CHOICES: { value: Offer; label: string }[] = [
     { value: 'off', label: 'Off' },
@@ -240,7 +166,7 @@
           {#if meetings.view?.usable}
             Offers to take notes when a meeting starts, and writes a note from the call.
           {:else}
-            {meetings.view?.problem ?? 'Choose a transcriber below first.'}
+            {meetings.view?.problem ?? 'Choose a speech model in Settings → Models first.'}
           {/if}
         </small>
       </span>
@@ -248,189 +174,24 @@
 
     <section>
       <span class="eyebrow">How speech becomes text</span>
-
-      {#if speechKit}
-        <div class="model-row">
-          <div class="model-text">
-            <b>Speech kit</b>
-            <small>{speechKit.description} · {humanBytes(speechKit.bytes)}</small>
-          </div>
-          {#if speechKit.progress}
-            <div class="model-progress">
-              <Meter
-                label="Downloading"
-                value={speechKit.progress.done / speechKit.progress.total}
-                note={`${humanBytes(speechKit.progress.done)} of ${humanBytes(speechKit.progress.total)}`}
-              />
-              <button class="btn" onclick={() => void meetings.cancelDownload('speechKit')}>
-                Cancel
-              </button>
-            </div>
-          {:else if speechKit.installed}
-            <button class="btn" onclick={() => void meetings.deleteModel('speechKit')}
-              >Delete</button
-            >
-          {:else}
-            <button class="btn" onclick={() => void meetings.downloadModel('speechKit')}>
-              Download
-            </button>
-          {/if}
-        </div>
-      {/if}
-
-      <div class="presets">
-        {#if localSpeech}
-          <button
-            class="chip"
-            class:on={draft.transcriber?.type === 'local'}
-            onclick={() => chooseTranscriber('local')}
-          >
-            On this computer
-          </button>
-        {/if}
-        <button
-          class="chip"
-          class:on={draft.transcriber?.type === 'openAi'}
-          onclick={() => chooseTranscriber('openAi')}
-        >
-          OpenAI
-        </button>
-        <button
-          class="chip"
-          class:on={draft.transcriber?.type === 'google'}
-          onclick={() => chooseTranscriber('google')}
-        >
-          Google
-        </button>
-        <button
-          class="chip"
-          class:on={draft.transcriber?.type === 'compatible'}
-          onclick={() => chooseTranscriber('compatible')}
-        >
-          Compatible server
-        </button>
+      <div class="row">
+        <p class="hint grow">Speech: {speechLine}.</p>
+        <button class="btn" onclick={() => panels.openSettings('models')}>Open Models</button>
       </div>
-      {#if !draft.transcriber}
-        <p class="hint">Choose how speech becomes text.</p>
-      {/if}
-
-      {#if !localSpeech && draft.transcriber === null}
-        <p class="hint">
-          Local speech is not built into this copy of the app — OpenAI, Google or a compatible
-          server are the ways in.
-        </p>
-      {/if}
-
-      {#if draft.transcriber?.type === 'local'}
-        {#each LOCAL_MODELS as m (m.id)}
-          {@const info = modelInfo(m.id)}
-          <label class="model-row pick">
-            <input
-              type="radio"
-              name="local-model"
-              checked={draft.transcriber.type === 'local' && draft.transcriber.model === m.id}
-              onchange={() => draft && (draft.transcriber = { type: 'local', model: m.id })}
-            />
-            <div class="model-text">
-              <b>{m.name}</b>
-              <small>{m.blurb}{info ? ` · ${humanBytes(info.bytes)}` : ''}</small>
-              {#if benchmarkResult[m.id]}<small class="speed">{benchmarkResult[m.id]}</small>{/if}
-            </div>
-            {#if info?.progress}
-              <div class="model-progress">
-                <Meter
-                  label="Downloading"
-                  value={info.progress.done / info.progress.total}
-                  note={`${humanBytes(info.progress.done)} of ${humanBytes(info.progress.total)}`}
-                />
-                <button class="btn" onclick={() => void meetings.cancelDownload(m.id)}
-                  >Cancel</button
-                >
-              </div>
-            {:else if info?.installed}
-              <button
-                class="btn"
-                disabled={benchmarking === m.id}
-                onclick={() => void checkSpeed(m.id)}
-              >
-                {benchmarking === m.id ? 'Checking…' : 'Check speed'}
-              </button>
-              <button class="btn" onclick={() => void meetings.deleteModel(m.id)}>Delete</button>
-            {:else}
-              <button class="btn" onclick={() => void meetings.downloadModel(m.id)}>Download</button
-              >
-            {/if}
-          </label>
-        {/each}
-      {:else if draft.transcriber?.type === 'openAi'}
-        <label class="setting">
-          <span>Model</span>
-          <input
-            list="openai-transcriber-models"
-            bind:value={draft.transcriber.model}
-            placeholder="gpt-4o-transcribe-diarize"
-            spellcheck="false"
-          />
-          <datalist id="openai-transcriber-models">
-            <option value="gpt-4o-transcribe-diarize"></option>
-            <option value="gpt-4o-transcribe"></option>
-          </datalist>
-        </label>
-        {#if meetings.view?.assistantKeyAvailable}
-          <label class="toggle small">
-            <input type="checkbox" bind:checked={draft.useAssistantKey} />
-            <span>Use the OpenAI key from Models</span>
-          </label>
-        {/if}
-        {#if !draft.useAssistantKey}
-          {@render keyField()}
-        {/if}
-      {:else if draft.transcriber?.type === 'google'}
-        <label class="setting">
-          <span>Model</span>
-          <input
-            list="google-transcriber-models"
-            bind:value={draft.transcriber.model}
-            placeholder="gemini-2.5-flash"
-            spellcheck="false"
-          />
-          <datalist id="google-transcriber-models">
-            <option value="gemini-2.5-flash"></option>
-          </datalist>
-        </label>
-        {@render keyField()}
-      {:else if draft.transcriber?.type === 'compatible'}
-        <label class="setting">
-          <span>Base URL</span>
-          <input
-            bind:value={draft.transcriber.baseUrl}
-            placeholder="http://localhost:8000/v1"
-            spellcheck="false"
-          />
-        </label>
-        <label class="setting">
-          <span>Model</span>
-          <input bind:value={draft.transcriber.model} placeholder="whisper-1" spellcheck="false" />
-        </label>
-        {@render keyField()}
-      {/if}
-
-      {#if draft.transcriber}
-        <div class="row">
-          <button class="btn" disabled={testing} onclick={() => void test()}>
-            {testing ? 'Testing…' : 'Test'}
-          </button>
-          {#if testResult}<span class="notice">{testResult}</span>{/if}
-        </div>
-      {/if}
+      <p class="hint">
+        Chosen in Settings → Models, with its key and its downloads, and shared with anything else
+        in the app that turns speech into text.
+      </p>
     </section>
 
     <section>
       <span class="eyebrow">Where the audio goes</span>
       <p class="hint">
-        {#if meetings.view?.remote}
-          Audio is sent to the transcriber above while a call is recording. It is deleted the moment
-          the note is written; the transcript — text, timings and speakers — is what stays.
+        {#if !meetings.view?.speech}
+          Nothing is recorded until a speech model is chosen, so no audio goes anywhere yet.
+        {:else if meetings.view?.remote}
+          Audio is sent to the speech model's provider while a call is recording. It is deleted the
+          moment the note is written; the transcript — text, timings and speakers — is what stays.
         {:else}
           Audio never leaves this computer. It is deleted the moment the note is written; the
           transcript — text, timings and speakers — is what stays.
@@ -517,16 +278,6 @@
       </label>
 
       <label class="setting">
-        <span>Language</span>
-        <input
-          value={draft.language ?? ''}
-          oninput={(e) => draft && (draft.language = e.currentTarget.value.trim() || null)}
-          placeholder="Detect automatically"
-          spellcheck="false"
-        />
-      </label>
-
-      <label class="setting">
         <span>Names and words to spell right</span>
         <textarea
           class="terms"
@@ -538,7 +289,7 @@
         ></textarea>
       </label>
       <p class="hint">
-        Told to the transcriber and the note writer in every meeting, along with the names on the
+        Told to the speech model and the note writer in every meeting, along with the names on the
         invite, and used to correct near misses in the transcript.
       </p>
 
@@ -659,27 +410,6 @@
   </div>
 {/if}
 
-{#snippet keyField()}
-  <div class="key-field">
-    {#if meetings.view?.hasKey}
-      <div class="stored">
-        <span><Icon name="lock" size={14} /> Key saved</span>
-        <button class="link" onclick={() => void removeKey()}>Remove</button>
-      </div>
-    {/if}
-    <label class="setting">
-      <span>{meetings.view?.hasKey ? 'Replace the key' : 'Key'}</span>
-      <input
-        type="password"
-        bind:value={key}
-        placeholder="sk-…"
-        spellcheck="false"
-        autocomplete="off"
-      />
-    </label>
-  </div>
-{/snippet}
-
 {#if pendingVoiceDelete}
   <ConfirmDialog
     title="Delete this voice?"
@@ -759,31 +489,6 @@
     text-decoration: underline;
   }
 
-  .presets {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--sp-2);
-  }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 30px;
-    padding: 0 var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg);
-    color: var(--fg-muted);
-    font-size: var(--text-sm);
-    font-weight: 550;
-  }
-  .chip.on {
-    border-color: var(--accent);
-    background: var(--bg-selected);
-    color: var(--fg);
-  }
-
   .setting {
     display: flex;
     flex-direction: column;
@@ -809,8 +514,7 @@
     font-size: var(--text-base);
     user-select: text;
   }
-  input[type='checkbox'],
-  input[type='radio'] {
+  input[type='checkbox'] {
     width: auto;
     padding: 0;
     accent-color: var(--accent);
@@ -867,22 +571,9 @@
   .row.wrap {
     flex-wrap: wrap;
   }
-
-  .key-field {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-  }
-  .stored {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--sp-3);
-    padding: var(--sp-2) var(--sp-3);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    font-size: var(--text-sm);
-    color: var(--fg-muted);
+  .hint.grow {
+    flex: 1;
+    min-width: 0;
   }
 
   .link {

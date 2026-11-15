@@ -53,8 +53,21 @@
 //! that a vault whose tiers all share one endpoint -- every vault upgraded
 //! from the single-connection shape -- names exactly what it named before,
 //! and nobody's acknowledgement is lost to the upgrade.
+//!
+//! # Two cards that are not tiers
+//!
+//! Beside the three sizes of work, Settings → Models holds a decision model
+//! ([`DecisionConfig`]), which answers with probabilities rather than prose,
+//! and the speech model ([`SpeechConfig`]), which turns speech into text.
+//! Both are here, rather than with the first feature that needed them, for
+//! the reason the tiers are: a choice kept inside one feature is a choice
+//! every later feature has to copy, key and all. Their keys go in the same
+//! map by the same rule. Only the decision model can carry mail, so only its
+//! address is in an acknowledgement; [`ModelSettings::all_endpoints`] is the
+//! longer list, of every address a key may be kept for.
 
 use crate::error::{Error, Result};
+use crate::speech::SpeechConfig;
 use serde::{Deserialize, Serialize};
 
 /// Which family of API the model is spoken to over.
@@ -298,6 +311,18 @@ where
 /// (A build from before [`DecisionApi::Local`] does fail on one saved by
 /// this one; this is what spares the next variant.)
 fn known_decision<'de, D>(d: D) -> std::result::Result<Option<DecisionConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let Some(raw) = Option::<serde_json::Value>::deserialize(d)? else { return Ok(None) };
+    Ok(serde_json::from_value(raw).ok())
+}
+
+/// Read a stored speech model, taking one this build cannot read as none --
+/// a backend added by a newer build, or a recogniser it does not know -- for
+/// the reason [`known_decision`] gives: it shares the one sealed record every
+/// tier is in, and must not cost the vault all of them.
+fn known_speech<'de, D>(d: D) -> std::result::Result<Option<SpeechConfig>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -706,12 +731,12 @@ impl DecisionConfig {
     }
 }
 
-/// One of the four cards in Settings → Models, for the commands that act on
-/// a card's key: the three tiers, and the decision model.
+/// One of the five cards in Settings → Models, for the commands that act on
+/// a card's key: the three tiers, the decision model and the speech model.
 ///
-/// Separate from [`ModelTier`] because a decision model is not a size of
-/// the same work. Nothing resolves to it and it resolves to nothing; every
-/// `match` over the tiers would otherwise grow an arm that had to say so.
+/// Separate from [`ModelTier`] because neither of the last two is a size of
+/// the same work. Nothing resolves to them and they resolve to nothing;
+/// every `match` over the tiers would otherwise grow arms that had to say so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelSlot {
@@ -719,6 +744,7 @@ pub enum ModelSlot {
     Medium,
     Small,
     Decision,
+    Speech,
 }
 
 impl ModelSlot {
@@ -728,6 +754,7 @@ impl ModelSlot {
             Self::Medium => "Medium",
             Self::Small => "Small",
             Self::Decision => "Decision",
+            Self::Speech => "Speech",
         }
     }
 }
@@ -769,11 +796,20 @@ pub struct ModelSettings {
     /// reaching a model added later -- reads as `None`: see [`known_decision`].
     #[serde(default, deserialize_with = "known_decision")]
     pub decision: Option<DecisionConfig>,
+    /// What turns speech into text -- meeting notes' calls today -- and in
+    /// which language. `None` means nothing that listens can be switched on.
+    /// See [`crate::speech`] for why it is here and not with meeting notes.
+    ///
+    /// Left out of the record when unset, so a vault that never chose one
+    /// is written exactly as it was before there was a speech model; one
+    /// this build cannot read reads as `None`, see [`known_speech`].
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "known_speech")]
+    pub speech: Option<SpeechConfig>,
 }
 
 impl Default for ModelSettings {
     fn default() -> Self {
-        Self { large: None, medium: LLMConfig::medium(), small: None, decision: None }
+        Self { large: None, medium: LLMConfig::medium(), small: None, decision: None, speech: None }
     }
 }
 
@@ -805,17 +841,44 @@ impl ModelSettings {
                 other => other,
             })?;
         }
+        self.validate_speech()
+    }
+
+    /// [`ModelSettings::validate`], except that the speech card is checked
+    /// only if it differs from `stored`'s. A transcriber carried over from
+    /// meeting notes is stored as it was, under the rules of the build that
+    /// saved it -- and a Save that only changed Large must not be refused
+    /// for a card nobody touched.
+    pub fn validate_changed_from(&self, stored: &ModelSettings) -> Result<()> {
+        let mut unchanged = self.clone();
+        unchanged.speech = None;
+        unchanged.validate()?;
+        if self.speech != stored.speech {
+            self.validate_speech()?;
+        }
+        Ok(())
+    }
+
+    fn validate_speech(&self) -> Result<()> {
+        if let Some(speech) = &self.speech {
+            speech.validate().map_err(|e| match e {
+                Error::Invalid(why) => Error::Invalid(format!("Speech: {why}")),
+                other => other,
+            })?;
+        }
         Ok(())
     }
 
     /// Where `slot`'s card points, if it is switched on -- what a key set on
-    /// that card is filed under.
+    /// that card is filed under. A decision or speech model on this computer
+    /// points nowhere.
     pub fn endpoint_of(&self, slot: ModelSlot) -> Option<&str> {
         match slot {
             ModelSlot::Large => self.large.as_ref().map(LLMConfig::endpoint),
             ModelSlot::Medium => Some(self.medium.endpoint()),
             ModelSlot::Small => self.small.as_ref().map(LLMConfig::endpoint),
             ModelSlot::Decision => self.decision.as_ref().and_then(DecisionConfig::endpoint),
+            ModelSlot::Speech => self.speech.as_ref().and_then(SpeechConfig::endpoint),
         }
     }
 
@@ -843,9 +906,14 @@ impl ModelSettings {
         }
     }
 
-    /// Every endpoint a configured tier -- or the decision model -- points
-    /// at, sorted, each once. A decision model on this computer points at
-    /// none.
+    /// Every endpoint mail may go to: each configured tier's, and the
+    /// decision model's, sorted, each once. A decision model on this
+    /// computer points at none.
+    ///
+    /// Not the speech model's. It carries a call's audio and never mail, so
+    /// it has no place in [`ModelSettings::acknowledgement_name`], which is
+    /// this list joined; see [`ModelSettings::all_endpoints`] for the one
+    /// that counts it.
     pub fn endpoints(&self) -> Vec<&str> {
         let mut all: Vec<&str> = ModelTier::ALL
             .iter()
@@ -853,6 +921,18 @@ impl ModelSettings {
             .map(LLMConfig::endpoint)
             .chain(self.decision.as_ref().and_then(DecisionConfig::endpoint))
             .collect();
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+
+    /// Every endpoint any card points at -- [`ModelSettings::endpoints`] and
+    /// the speech model's -- sorted, each once: the addresses a key may be
+    /// kept for. A key for any other is forgotten when the models are saved,
+    /// and the pane says which of these have one.
+    pub fn all_endpoints(&self) -> Vec<&str> {
+        let mut all = self.endpoints();
+        all.extend(self.speech.as_ref().and_then(SpeechConfig::endpoint));
         all.sort_unstable();
         all.dedup();
         all
@@ -872,7 +952,8 @@ impl ModelSettings {
     /// OpenAI did not acknowledge the gateway Large was moved to afterwards.
     /// Unconfigured tiers are left out, so a vault whose tiers share one
     /// endpoint names that endpoint alone -- exactly what it named before
-    /// there were tiers.
+    /// there were tiers. So is the speech model, which carries no mail:
+    /// choosing or moving one never clears anybody's acknowledgement.
     ///
     /// The interface stores this string in an account when a box is ticked
     /// -- taken from `model_settings`'s own answer rather than worked out
@@ -955,6 +1036,28 @@ pub fn model_settings_aad() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_untouched_speech_card_does_not_hold_up_a_save() {
+        use crate::speech::{SpeechConfig, TranscriberConfig};
+        let mut stored = ModelSettings::default();
+        // Carried over from an older build: plain http to the local network,
+        // which today's rules refuse.
+        stored.speech = Some(SpeechConfig::new(TranscriberConfig::Compatible {
+            base_url: "http://192.168.1.5:8000/v1".into(),
+            model: "whisper".into(),
+        }));
+        assert!(stored.validate().is_err());
+        let mut next = stored.clone();
+        next.small = Some(LLMConfig::small());
+        next.validate_changed_from(&stored).unwrap();
+        // Changed, it is checked.
+        next.speech = Some(SpeechConfig::new(TranscriberConfig::Compatible {
+            base_url: "http://192.168.1.6:8000/v1".into(),
+            model: "whisper".into(),
+        }));
+        assert!(next.validate_changed_from(&stored).is_err());
+    }
 
     #[test]
     fn the_endpoint_defaults_to_the_provider_and_loses_a_trailing_slash() {
@@ -1082,6 +1185,7 @@ mod tests {
             },
             small: Some(LLMConfig::small()),
             decision: None,
+            speech: None,
         };
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["medium"]["baseUrl"], "https://openrouter.ai/api/v1");
@@ -1198,9 +1302,93 @@ mod tests {
                 medium: at(medium),
                 small: small.map(at),
                 decision: None,
+                speech: None,
             };
             assert_eq!(s.acknowledgement_name(), want);
         }
+    }
+
+    /// Speech carries no mail, so choosing a speech model -- anywhere, even
+    /// at an address no other card points at -- must not change what an
+    /// acknowledgement names, or every account's tick would be cleared for
+    /// a destination its mail never goes to. A key may still be kept for it.
+    #[test]
+    fn a_speech_model_is_not_in_the_acknowledgement() {
+        use crate::speech::{GOOGLE_ENDPOINT, LocalModel, TranscriberConfig};
+        let mut s = ModelSettings::default();
+        let before = s.acknowledgement_name();
+        for transcriber in [
+            TranscriberConfig::Google { model: "gemini-2.5-flash".into() },
+            TranscriberConfig::Compatible {
+                base_url: "https://whisper.example.com/v1".into(),
+                model: "whisper-1".into(),
+            },
+            TranscriberConfig::OpenAi { model: "gpt-4o-transcribe".into() },
+            TranscriberConfig::Local { model: LocalModel::ParakeetV3 },
+        ] {
+            s.speech = Some(SpeechConfig::new(transcriber));
+            assert_eq!(s.acknowledgement_name(), before, "{:?}", s.speech);
+            assert_eq!(s.endpoints(), vec!["https://api.openai.com/v1"]);
+        }
+
+        s.speech =
+            Some(SpeechConfig::new(TranscriberConfig::Google { model: "gemini-2.5-flash".into() }));
+        assert_eq!(s.endpoint_of(ModelSlot::Speech), Some(GOOGLE_ENDPOINT));
+        assert_eq!(s.all_endpoints(), vec!["https://api.openai.com/v1", GOOGLE_ENDPOINT]);
+
+        // At OpenAI it is the endpoint Medium already names: one address.
+        s.speech = Some(SpeechConfig::new(TranscriberConfig::OpenAi { model: "m".into() }));
+        assert_eq!(s.endpoint_of(ModelSlot::Speech), Some(s.medium.endpoint()));
+        assert_eq!(s.all_endpoints(), vec!["https://api.openai.com/v1"]);
+
+        // On this computer it points nowhere.
+        s.speech =
+            Some(SpeechConfig::new(TranscriberConfig::Local { model: LocalModel::WhisperTurbo }));
+        assert_eq!(s.endpoint_of(ModelSlot::Speech), None);
+    }
+
+    #[test]
+    fn a_speech_validation_error_names_its_card() {
+        use crate::speech::TranscriberConfig;
+        let s = ModelSettings {
+            speech: Some(SpeechConfig::new(TranscriberConfig::Compatible {
+                base_url: String::new(),
+                model: "whisper-1".into(),
+            })),
+            ..ModelSettings::default()
+        };
+        let err = s.validate().unwrap_err().to_string();
+        assert!(err.contains("Speech") && err.contains("base URL"), "{err}");
+    }
+
+    /// Unset, the speech model is not written at all, so every vault that
+    /// never chose one keeps the record it had; one from a newer build that
+    /// this one cannot read costs nothing but itself.
+    #[test]
+    fn a_speech_model_is_written_only_when_there_is_one() {
+        let json = serde_json::to_value(ModelSettings::default()).unwrap();
+        assert!(json.get("speech").is_none(), "{json}");
+
+        let s: ModelSettings = serde_json::from_value(serde_json::json!({
+            "medium": { "provider": "openAi", "model": "gpt-5.1-mini" },
+            "speech": { "transcriber": { "type": "somethingNewer" } }
+        }))
+        .unwrap();
+        assert_eq!(s.speech, None);
+        assert_eq!(s.medium.model.model, "gpt-5.1-mini");
+
+        let s: ModelSettings = serde_json::from_value(serde_json::json!({
+            "medium": { "provider": "openAi", "model": "gpt-5.1-mini" },
+            "speech": {
+                "transcriber": { "type": "openAi", "model": "gpt-4o-transcribe" },
+                "language": "de"
+            }
+        }))
+        .unwrap();
+        let speech = s.speech.as_ref().unwrap();
+        assert_eq!(speech.language.as_deref(), Some("de"));
+        assert_eq!(serde_json::to_value(&s).unwrap()["speech"]["transcriber"]["type"], "openAi");
+        assert_eq!(serde_json::to_value(ModelSlot::Speech).unwrap(), "speech");
     }
 
     #[test]

@@ -24,6 +24,7 @@ import type {
   ModelSettings,
   OAuthPreset,
   Services,
+  TranscriberConfig,
 } from './types'
 
 /**
@@ -376,6 +377,46 @@ export function decisionProviderLabel(d: Pick<DecisionConfig, 'api' | 'url'>): s
 /** Where a model's requests go when no base URL is set --
  *  `Provider::OpenAi.default_base_url()` in `crates/karmayoga-core/src/llm.rs`. */
 const OPENAI_BASE_URL = 'https://api.openai.com/v1'
+
+/** Where a Google speech model's audio goes -- `GOOGLE_ENDPOINT` in
+ *  `crates/karmayoga-core/src/speech.rs`. */
+const GOOGLE_SPEECH_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta'
+
+/**
+ * Where a speech model's audio goes, spelt as `TranscriberConfig::endpoint`
+ * spells it, which is what its key is stored under. OpenAI's is the very
+ * address an OpenAI language model has, so the two share one key; a compatible
+ * server is its base URL, trimmed as `endpointOf` trims one. `null` on this
+ * computer, which is sent nothing, and for a server with no address yet.
+ */
+export function speechEndpointOf(t: TranscriberConfig): string | null {
+  switch (t.type) {
+    case 'local':
+      return null
+    case 'openAi':
+      return OPENAI_BASE_URL
+    case 'google':
+      return GOOGLE_SPEECH_ENDPOINT
+    case 'compatible':
+      return t.baseUrl.trim().replace(/\/+$/, '') || null
+  }
+}
+
+/** What to call where a speech model's audio goes, in a sentence. */
+export function speechProviderLabel(t: TranscriberConfig): string {
+  switch (t.type) {
+    case 'local':
+      return 'this computer'
+    case 'openAi':
+      return 'OpenAI'
+    case 'google':
+      return 'Google'
+    case 'compatible': {
+      const endpoint = speechEndpointOf(t)
+      return endpoint ? providerLabel(endpoint) : 'a compatible server'
+    }
+  }
+}
 
 /**
  * The endpoint a base URL reaches, spelt exactly as `LLMProviderConfig::endpoint`

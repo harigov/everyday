@@ -477,3 +477,46 @@ fn every_typed_id_kind_is_pinned() {
     assert_eq!(DraftId::KIND, "draft");
     assert_eq!(OpId::KIND, "op");
 }
+
+// ---- backups (crate::backup) ------------------------------------------------
+
+#[test]
+fn backup_settings_aad_labels_are_pinned() {
+    use karmayoga_core::backup;
+    assert_eq!(backup::settings_aad(), b"karmayoga.backup-settings.v1");
+    assert_eq!(backup::status_aad(), b"karmayoga.backup-status.v1");
+    assert_eq!(backup::BACKUP_SECRET_OWNER_KIND, "backup");
+    assert_eq!(backup::BACKUP_SECRET_OWNER_ID, "s3");
+}
+
+/// The labels a backup's keys are derived under, and the associated data its
+/// chunks and manifests are sealed against, pinned by their effect: a chunk
+/// sealed today must open tomorrow, and must be named the same, or every
+/// backup ever made stops opening -- or stops sharing chunks with the next.
+/// Computed here from the literal labels, independently of the module.
+#[test]
+fn backup_key_labels_and_chunk_aad_are_pinned() {
+    use karmayoga_core::backup::BackupKeys;
+    use karmayoga_core::crypto::{AeadCipher, Cipher, SecretKey};
+    let vault = AeadCipher::new(&SecretKey::from_bytes([7u8; 32]));
+    let keys = BackupKeys::from_cipher(&vault, "2026-11-14T03:05:12Z");
+
+    let name_key = vault.derive_subkey("karmayoga.backup.name.v1");
+    let expected_name = blake3::keyed_hash(name_key.expose(), b"chunk").to_hex()[..32].to_string();
+    assert_eq!(keys.chunk_name(b"chunk"), expected_name);
+    let expected_repo =
+        blake3::keyed_hash(name_key.expose(), b"karmayoga.backup.repository\02026-11-14T03:05:12Z")
+            .to_hex()[..32]
+            .to_string();
+    assert_eq!(keys.repository_id(), expected_repo);
+
+    let seal = AeadCipher::new(&vault.derive_subkey("karmayoga.backup.seal.v1"));
+    let sealed = keys.seal_chunk(&expected_name, b"chunk").unwrap();
+    let aad = format!("karmayoga.backup.chunk.v1:{expected_name}");
+    assert_eq!(seal.open(aad.as_bytes(), &sealed).unwrap(), b"chunk");
+    let manifest = keys.seal_manifest("2026-11-14T030512Z", b"{}").unwrap();
+    assert_eq!(
+        seal.open(b"karmayoga.backup.snapshot.v1:2026-11-14T030512Z", &manifest).unwrap(),
+        b"{}"
+    );
+}

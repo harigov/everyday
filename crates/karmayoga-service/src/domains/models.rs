@@ -2,13 +2,15 @@
 //!
 //! Application settings rather than the assistant's -- see
 //! [`karmayoga_core::llm`] for the three tiers and why a key belongs to an
-//! endpoint. Four commands: the settings, a save, and the two halves of a
-//! key. There is no command that reads a key back.
+//! endpoint, and [`karmayoga_core::speech`] for the speech model, which is
+//! saved and keyed here like every other card. Four commands: the settings,
+//! a save, and the two halves of a key. There is no command that reads a key
+//! back.
 //!
 //! And five for the decision models that run on this computer -- listing,
 //! downloading, stopping a download, deleting, timing one -- the
-//! counterparts of meeting notes' `speech_*` commands, over the same
-//! catalogue ([`crate::local::files`]).
+//! counterparts of the speech card's `speech_*` commands in
+//! `domains::speech`, over the same catalogue ([`crate::local::files`]).
 
 use crate::command;
 use crate::ctx::Ctx;
@@ -32,27 +34,33 @@ use super::speech::{LocalModelInfo, MODEL_REF_SIG, ModelRef, info};
 #[serde(rename_all = "camelCase")]
 pub struct ModelSettingsView {
     pub settings: ModelSettings,
-    /// The endpoints, of those the settings name, that have a key stored.
-    /// A tier's key is the one for its endpoint, so this is what draws "a
-    /// key is stored" beside each of them -- and the key itself never leaves
-    /// the vault.
+    /// The endpoints, of those the settings name, that have a key stored --
+    /// the speech model's among them. A card's key is the one for its
+    /// endpoint, so this is what draws "a key is stored" beside each of them
+    /// -- and the key itself never leaves the vault.
     pub keyed: Vec<String>,
     /// [`ModelSettings::acknowledgement_name`]: what an account's mail
     /// acknowledgement must say for its mail to reach these models. Sent
     /// rather than worked out again in the interface, so the string a tick
-    /// stores and the string the gate compares are made in one place.
+    /// stores and the string the gate compares are made in one place. Never
+    /// the speech model's endpoint, which carries no mail.
     pub acknowledgement: String,
     /// Whether this copy of Karma Yoga can run a decision model itself --
     /// built with the `decisions` feature, as the desktop app and the
     /// server are.
     pub local_decisions: bool,
+    /// Whether this copy can run a speech recogniser itself -- built with
+    /// the `speech` feature. Without it the speech card offers only the
+    /// providers.
+    pub local_speech: bool,
 }
 
 fn view(vault: &Vault) -> karmayoga_core::Result<ModelSettingsView> {
     let (settings, keyed) = vault.model_settings_and_keyed()?;
     let acknowledgement = settings.acknowledgement_name();
     let local_decisions = cfg!(feature = "decisions");
-    Ok(ModelSettingsView { settings, keyed, acknowledgement, local_decisions })
+    let local_speech = cfg!(feature = "speech");
+    Ok(ModelSettingsView { settings, keyed, acknowledgement, local_decisions, local_speech })
 }
 
 #[derive(Deserialize)]
@@ -64,8 +72,8 @@ pub struct SaveModels {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetModelKey {
-    /// A tier, or `decision` -- the four cards. Named `tier` on the wire
-    /// still, as it was when there were three.
+    /// A tier, `decision` or `speech` -- the five cards. Named `tier` on the
+    /// wire still, as it was when there were three.
     pub tier: ModelSlot,
     pub key: String,
 }

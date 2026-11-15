@@ -568,6 +568,10 @@ impl Service {
         // The assistant's browsers: whatever a page has open in one is part
         // of a conversation the key no longer unlocks.
         crate::browser::close_all();
+        // A backup holds keys derived from the vault's; the lock promises
+        // none are left in memory. It stops at its next look, and leaves
+        // what it sent for the next one.
+        crate::backup::cancel();
         self.supervisor().stop_all().await;
         // After the tasks that were writing through it have stopped, never
         // before: a pack store or index pulled out from under a sync task
@@ -593,6 +597,7 @@ impl Service {
             crate::news::ensure_task(self, &vault);
             crate::calendar_refresh::ensure_task(self, &vault);
             crate::money::ensure_task(self, &vault);
+            crate::backup::task::ensure_task(self, &vault);
         }
     }
 

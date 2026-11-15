@@ -33,16 +33,16 @@
 //! # Who is asked, and when
 //!
 //! See [`gate`]. [`Offer::Off`] ("Never") is the one way to stop offers.
-//! Meeting notes that are not ready -- never set up, switched off, or with a
-//! transcriber that does not work -- *do* offer, with `ready: false`, so the
+//! Meeting notes that are not ready -- never set up, switched off, or over a
+//! speech model that does not work -- *do* offer, with `ready: false`, so the
 //! interface can turn the offer into "Set up meeting notes": the moment
 //! somebody is looking at a meeting is the moment they can see what the
 //! feature is for.
 //!
 //! Switched-off notes used to offer nothing, and that was a trap: the switch
-//! cannot be ticked until the transcriber works, so somebody who picked a
-//! transcriber whose key was refused had every offer silenced without ever
-//! having said no to one.
+//! cannot be ticked until the speech model works, so somebody who picked one
+//! whose key was refused had every offer silenced without ever having said
+//! no to one.
 //!
 //! # Reaching somebody who is not looking at the window
 //!
@@ -97,7 +97,7 @@ pub(crate) struct Gate {
 /// `offers` is false for [`Offer::Off`] and nothing else: an offer that is
 /// not `ready` is how the person finds out the feature exists, or that it
 /// is not working. `ready` needs the switch on and
-/// the transcriber usable -- [`crate::domains::meetings::view`], the same
+/// the speech model usable -- [`crate::domains::meetings::view`], the same
 /// check `begin` refuses a recording by, which reads keys and may look at
 /// the model files on disk. That costs something, so the watcher's tick asks
 /// [`wants_offers`] first and [`ready`] only once an event is actually
@@ -122,7 +122,7 @@ fn ready(vault: &Vault, settings: &MeetingSettings) -> CoreResult<bool> {
 /// to handle.
 ///
 /// `automatic` needs `ready` as well as [`Offer::Always`]: recording
-/// "automatically" with no usable transcriber would only fail, and a
+/// "automatically" with no usable speech model would only fail, and a
 /// never-set-up vault must ask, not act.
 fn offer_for(
     event: &Event,
@@ -374,6 +374,7 @@ mod tests {
     use karmayoga_core::calendar::{AccountCalendarSource, CalendarOrigin, EventStatus};
     use karmayoga_core::id::{AccountId, EventId, TemplateId};
     use karmayoga_core::meeting::{EventRef, MeetingSettings, Recording, TranscriberConfig};
+    use karmayoga_core::speech::SpeechConfig;
     use std::sync::Mutex as StdMutex;
 
     fn env() -> (Arc<Service>, Arc<Vault>, tempfile::TempDir) {
@@ -470,23 +471,23 @@ mod tests {
             .unwrap();
     }
 
-    /// Meeting notes switched on, with a transcriber that is usable on any
+    /// Meeting notes switched on. Ready only once [`enable`] has chosen a
+    /// speech model too, which is the platform's and not in these settings.
+    fn set_up(offer: Offer) -> MeetingSettings {
+        MeetingSettings { enabled: true, offer, ..Default::default() }
+    }
+
+    /// Meeting notes switched on, over a speech model that is usable on any
     /// machine: a loopback "compatible" server needs no key and no speech kit
     /// (see `domains::meetings::usable`), so `ready` is true wherever this
     /// runs.
-    fn set_up(offer: Offer) -> MeetingSettings {
-        MeetingSettings {
-            enabled: true,
-            offer,
-            transcriber: Some(TranscriberConfig::Compatible {
-                base_url: "http://127.0.0.1:1/v1".into(),
-                model: "whisper-1".into(),
-            }),
-            ..Default::default()
-        }
-    }
-
     fn enable(vault: &Vault, offer: Offer) {
+        let mut models = vault.model_settings().unwrap();
+        models.speech = Some(SpeechConfig::new(TranscriberConfig::Compatible {
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: "whisper-1".into(),
+        }));
+        vault.save_model_settings(&models).unwrap();
         vault.save_meeting_settings(&set_up(offer)).unwrap();
     }
 
@@ -554,14 +555,15 @@ mod tests {
         assert!(!offers[0].automatic);
     }
 
-    /// A transcriber chosen but the switch off -- what a refused key leaves
-    /// behind, since the switch cannot be ticked until the transcriber works
+    /// A speech model chosen but the switch off -- what a refused key leaves
+    /// behind, since the switch cannot be ticked until the speech model works
     /// -- still offers, as a prompt to finish setting up. Only "Never" is no.
     #[test]
     fn meeting_notes_switched_off_still_offer_but_not_ready() {
         let (svc, vault, _dir) = env();
         let sink = TestSink::default();
         svc.set_events(Arc::new(sink.clone()));
+        enable(&vault, Offer::Always);
         vault
             .save_meeting_settings(&MeetingSettings { enabled: false, ..set_up(Offer::Always) })
             .unwrap();

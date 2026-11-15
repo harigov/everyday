@@ -165,6 +165,13 @@ pub fn sync_dir(dir: &Path) {
     }
 }
 
+/// Bytes free for this user on the disk `path` is on, or `None` if the
+/// platform will not say. For refusing a large copy up front rather than
+/// filling the disk part way through it.
+pub fn available_space(path: &Path) -> Option<u64> {
+    fs4::available_space(path).ok()
+}
+
 /// Copy a directory and everything under it.
 ///
 /// A missing source is not an error: a vault with no attachments has no

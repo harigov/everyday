@@ -138,22 +138,7 @@ impl Vault {
     /// second. `None` for an unencrypted vault, which has no key.
     fn data_key(&self, password: Option<&str>) -> Result<Option<SecretKey>> {
         let header = self.header_read().clone();
-        if !header.is_encrypted() {
-            return Ok(None);
-        }
-        let password = password.ok_or(Error::BadPassword)?;
-        let salt_hex = header
-            .salt
-            .as_deref()
-            .ok_or_else(|| Error::Invalid("encrypted vault header is missing its salt".into()))?;
-        let wrapped_hex = header.wrapped_key.as_deref().ok_or_else(|| {
-            Error::Invalid("encrypted vault header is missing its wrapped key".into())
-        })?;
-        let kdf = header.kdf.ok_or_else(|| {
-            Error::Invalid("encrypted vault header is missing its KDF parameters".into())
-        })?;
-        let kek = derive_key(password, &from_hex(salt_hex)?, kdf)?;
-        Ok(Some(unwrap_key(&kek, &from_hex(wrapped_hex)?)?))
+        super::data_key_from(&header, password)
     }
 
     /// Open the backend and build the search index. Assumes the key is right.
@@ -206,6 +191,15 @@ impl Vault {
             && let Err(e) = self.carry_over_models()
         {
             tracing::warn!(error = %e, "could not carry the models over from the assistant's settings");
+        }
+        // The same for the speech model, from where meeting notes kept it,
+        // and after the models so there is a record to move it into. A
+        // failure leaves the old transcriber and key where `super::llm`'s
+        // readers still find them.
+        if self.is_writable()
+            && let Err(e) = self.carry_over_speech()
+        {
+            tracing::warn!(error = %e, "could not move the speech model over from meeting notes");
         }
         // Best-effort for the same reason: a calendar left on the old interval
         // still refreshes, and the next unlock tries again.

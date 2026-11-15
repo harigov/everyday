@@ -7,6 +7,7 @@
 
 mod app;
 mod args;
+mod backups;
 mod format;
 mod mcp_pipe;
 mod serve;

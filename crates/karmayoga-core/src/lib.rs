@@ -80,6 +80,7 @@
 pub mod account;
 pub mod agent;
 pub mod air_quality;
+pub mod backup;
 pub mod blobstore;
 pub mod calendar;
 pub mod chat;
@@ -119,6 +120,7 @@ pub mod routine;
 pub mod schema;
 pub mod screentime;
 pub mod search;
+pub mod speech;
 pub mod store;
 pub mod task;
 pub mod template;

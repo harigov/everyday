@@ -13,6 +13,13 @@
 //! written at once -- see that module's own doc, and
 //! `docs/plans/meeting-notes.md`.
 //!
+//! Nor is how speech becomes text. That is the platform's speech model,
+//! chosen on its card in Settings → Models and saved by `domains::models`
+//! (see `karmayoga_core::speech`); meeting notes read it, through
+//! [`Vault::speech_and_keyed`] to say whether they could run and
+//! [`Vault::speech_access`] to build a transcriber, and keep only what is
+//! about meetings.
+//!
 //! # Installation state, kept as booleans
 //!
 //! [`usable`] decides whether the switch may be turned on from plain
@@ -20,21 +27,23 @@
 //! -- rather than calling [`crate::local::files::installed`] or
 //! [`crate::local::files::speech_kit_installed`] itself, so the decision
 //! stays unit tested without a real vault or a real download. [`view`] is
-//! the one place, reached only once a transcriber is actually configured,
-//! that calls the real thing.
+//! the one place, reached only once a speech model is actually chosen, that
+//! calls the real thing.
 
 use super::Nothing;
 use crate::command;
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Scope};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::meeting::{spool, watch};
 use crate::service::{Service, blocking};
 use base64::Engine;
 use jiff::Timestamp;
 use karmayoga_core::id::EventId;
+use karmayoga_core::llm::ModelSlot;
 use karmayoga_core::meeting::{
     MeetingSettings, Recording, Stage, Track, TranscriberConfig, Transcript, Voiceprint,
 };
+use karmayoga_core::speech::SpeechConfig;
 use karmayoga_core::store::meetings::RecordingQuery;
 use karmayoga_core::{Error, NoteId, RecordingId, TemplateId, Vault, VoiceprintId};
 use serde::{Deserialize, Serialize};
@@ -86,8 +95,8 @@ pub struct BeginRecording {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeetingNow {
-    /// Offers are wanted at all: `offer` is not `Off`, and meeting notes are
-    /// either on or have never been set up (no transcriber chosen yet).
+    /// Offers are wanted at all: `offer` is not `Off`. An offer made before
+    /// meeting notes are set up is a prompt to set them up -- see `ready`.
     pub offers: bool,
     /// `MeetingSettings::mic_offer`.
     pub mic_offer: bool,
@@ -186,17 +195,19 @@ impl From<Voiceprint> for VoiceprintInfo {
 #[serde(rename_all = "camelCase")]
 pub struct MeetingSettingsView {
     pub settings: MeetingSettings,
-    /// A transcription key is stored. The key itself never leaves the vault.
+    /// The platform's speech model, which meeting notes transcribe through
+    /// -- sent so the pane can say which it is in a line, and point at
+    /// Settings → Models, where it is chosen. `None` when none is.
+    pub speech: Option<SpeechConfig>,
+    /// A key is stored for where the speech model points. The key itself
+    /// never leaves the vault.
     pub has_key: bool,
-    /// The transcriber is chosen and can run; the switch may be turned on.
+    /// The speech model is chosen and can run; the switch may be turned on.
     pub usable: bool,
     /// Why not, in words, when `usable` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
-    /// The assistant talks to api.openai.com with a key, so it could be
-    /// reused.
-    pub assistant_key_available: bool,
-    /// Audio leaves this machine with the chosen transcriber.
+    /// Audio leaves this machine with the chosen speech model.
     pub remote: bool,
     /// Local speech is compiled into this build.
     pub local_speech: bool,
@@ -204,75 +215,94 @@ pub struct MeetingSettingsView {
 
 // ---- the pure decision ----------------------------------------------------
 
-/// Is this transcriber set up well enough to switch on? See the module
-/// docs for why the installation checks arrive as booleans rather than
-/// being made here.
+/// Where every "fix it" below sends somebody: the speech model is chosen,
+/// keyed and downloaded on its own card, not in meeting notes.
+const FIX_IN_MODELS: &str = "in Settings → Models";
+
+/// Is this speech model set up well enough for meeting notes to switch on?
+/// See the module docs for why the installation checks arrive as booleans
+/// rather than being made here.
 ///
 /// Conservative on purpose: every branch that cannot say yes says no with a
 /// reason, rather than falling through to a default that might be "usable".
+/// Every reason names where it is fixed, since that is no longer the pane
+/// that shows it.
 fn usable(
     transcriber: &TranscriberConfig,
-    use_assistant_key: bool,
-    has_transcriber_key: bool,
-    assistant_key_available: bool,
+    has_key: bool,
     local_recogniser_installed: bool,
     speech_kit_installed: bool,
 ) -> Result<(), String> {
+    // What a save of the models refuses, checked again: a choice carried
+    // over from meeting notes was written without today's rules.
+    if let Err(e) = transcriber.validate() {
+        let why = match e {
+            Error::Invalid(why) => why,
+            other => other.to_string(),
+        };
+        return Err(format!("the speech model cannot be used: {why}; fix it {FIX_IN_MODELS}"));
+    }
+    let no_kit = || {
+        format!(
+            "the speech kit has not been downloaded yet -- download it {FIX_IN_MODELS}; it is \
+             needed to detect speech before any audio is sent"
+        )
+    };
     match transcriber {
         TranscriberConfig::Local { model } => {
             if !cfg!(feature = "speech") {
-                return Err("this build does not include local speech".into());
+                return Err(format!(
+                    "this build does not include local speech -- choose another speech model \
+                     {FIX_IN_MODELS}"
+                ));
             }
             if !local_recogniser_installed {
-                return Err(format!("{} has not been downloaded yet", model.as_str()));
+                return Err(format!(
+                    "{} has not been downloaded yet -- download it {FIX_IN_MODELS}",
+                    model.as_str()
+                ));
             }
             if !speech_kit_installed {
-                return Err("the speech kit has not been downloaded yet".into());
+                return Err(format!(
+                    "the speech kit has not been downloaded yet -- download it {FIX_IN_MODELS}"
+                ));
             }
             Ok(())
         }
         TranscriberConfig::OpenAi { .. } => {
-            if !(has_transcriber_key || (use_assistant_key && assistant_key_available)) {
-                return Err(
-                    "add an OpenAI key, or turn on \"use the OpenAI key from Models\"".into()
-                );
+            if !has_key {
+                return Err(format!("add an OpenAI key for the speech model {FIX_IN_MODELS}"));
             }
             if !speech_kit_installed {
-                return Err("the speech kit has not been downloaded yet -- it is needed to detect speech before any audio is sent".into());
+                return Err(no_kit());
             }
             Ok(())
         }
         TranscriberConfig::Google { .. } => {
-            if !has_transcriber_key {
-                return Err("add a Google API key".into());
+            if !has_key {
+                return Err(format!("add a Google API key for the speech model {FIX_IN_MODELS}"));
             }
             if !speech_kit_installed {
-                return Err("the speech kit has not been downloaded yet -- it is needed to detect speech before any audio is sent".into());
+                return Err(no_kit());
             }
             Ok(())
         }
-        TranscriberConfig::Compatible { base_url, model } => {
-            if base_url.trim().is_empty() {
-                return Err("a compatible server needs a base URL".into());
-            }
-            if model.trim().is_empty() {
-                return Err("a compatible server needs a model name".into());
-            }
-            if transcriber.needs_key() && !has_transcriber_key {
-                return Err("add a key for this server".into());
+        TranscriberConfig::Compatible { .. } => {
+            if transcriber.needs_key() && !has_key {
+                return Err(format!("add a key for the speech model's server {FIX_IN_MODELS}"));
             }
             if transcriber.is_remote() && !speech_kit_installed {
-                return Err("the speech kit has not been downloaded yet -- it is needed to detect speech before any audio is sent".into());
+                return Err(no_kit());
             }
             Ok(())
         }
     }
 }
 
-/// What [`usable`] needs from `local::files` for one transcriber choice --
-/// the one place this module calls into the speech agent's stubs. Only
-/// reached once a transcriber is actually configured, so the common "not set
-/// up yet" case never touches them.
+/// What [`usable`] needs from `local::files` for one speech model -- the one
+/// place this module calls into the speech agent's stubs. Only reached once
+/// a speech model is actually chosen, so the common "not set up yet" case
+/// never touches them.
 fn installation_state(transcriber: &TranscriberConfig) -> (bool, bool) {
     match transcriber {
         TranscriberConfig::Local { model } => {
@@ -283,7 +313,7 @@ fn installation_state(transcriber: &TranscriberConfig) -> (bool, bool) {
 }
 
 /// Build the view a settings pane draws: the settings themselves, plus
-/// everything derived from them and from the vault.
+/// everything derived from them, from the speech model and from the vault.
 ///
 /// `pub(crate)` rather than private: `karmayoga_service::meeting::spool::begin`
 /// reuses this exact check to refuse starting a recording the same way
@@ -293,65 +323,32 @@ pub(crate) fn view(
     vault: &Vault,
     settings: MeetingSettings,
 ) -> karmayoga_core::Result<MeetingSettingsView> {
-    let has_key = vault.has_transcriber_key()?;
-    let assistant_key_available = vault.models_key_if_openai()?.is_some();
+    let (speech, has_key) = vault.speech_and_keyed()?;
 
-    let (usable, problem) = match &settings.transcriber {
-        None => (false, Some("choose a transcriber before turning meeting notes on".to_string())),
-        Some(t) => {
-            let (local_installed, speech_kit) = installation_state(t);
-            match self::usable(
-                t,
-                settings.use_assistant_key,
-                has_key,
-                assistant_key_available,
-                local_installed,
-                speech_kit,
-            ) {
+    let (usable, problem) = match &speech {
+        None => (
+            false,
+            Some(format!("choose a speech model {FIX_IN_MODELS} before turning meeting notes on")),
+        ),
+        Some(s) => {
+            let (local_installed, speech_kit) = installation_state(&s.transcriber);
+            match self::usable(&s.transcriber, has_key, local_installed, speech_kit) {
                 Ok(()) => (true, None),
                 Err(reason) => (false, Some(reason)),
             }
         }
     };
-    let remote = settings.transcriber.as_ref().is_some_and(TranscriberConfig::is_remote);
+    let remote = speech.as_ref().is_some_and(SpeechConfig::is_remote);
 
     Ok(MeetingSettingsView {
         settings,
+        speech,
         has_key,
         usable,
         problem,
-        assistant_key_available,
         remote,
         local_speech: cfg!(feature = "speech"),
     })
-}
-
-/// The key a transcriber request should carry, whichever backend is
-/// configured.
-///
-/// The one door the pipeline (`karmayoga_service::meeting::pipeline`) reaches
-/// for on its way to building a request, rather than making it resolve
-/// `use_assistant_key` itself: an `OpenAi` transcriber set to reuse the
-/// models' key is answered from
-/// [`Vault::models_key_if_openai`](karmayoga_core::Vault::models_key_if_openai)
-/// -- which is `None` unless some model is actually pointed at OpenAI's
-/// hosted endpoint with a key stored for it -- and everything else, including an
-/// `OpenAi` transcriber that has its own key instead, is answered from
-/// [`Vault::transcriber_key`](karmayoga_core::Vault::transcriber_key).
-///
-/// `None` covers both "no key needed" (a loopback `Compatible` server, or
-/// `Local`) and "no key available yet" alike; a caller that cares which is
-/// which already has the settings in hand to ask
-/// [`TranscriberConfig::needs_key`].
-pub fn transcriber_key(vault: &Vault) -> Option<String> {
-    let settings = vault.meeting_settings().ok()?;
-    if settings.use_assistant_key
-        && matches!(settings.transcriber, Some(TranscriberConfig::OpenAi { .. }))
-        && let Ok(Some(key)) = vault.models_key_if_openai()
-    {
-        return Some(key);
-    }
-    vault.transcriber_key().ok().flatten()
 }
 
 // ---- commands ---------------------------------------------------------
@@ -375,27 +372,26 @@ async fn save_meeting_settings(
         let mut settings = args.settings;
         settings.vocabulary = karmayoga_core::meeting::vocab::clean_terms(&settings.vocabulary);
 
-        // Refused when the save would leave meeting notes on with nothing
-        // to transcribe through: turning them on, or changing how speech
-        // becomes text while they are on. Anything else -- the offer mode,
-        // the calendars, the microphone switch, a template -- is saved even
-        // while the transcriber is broken (a key removed, a model deleted),
+        // Refused when the save would turn meeting notes on with nothing to
+        // transcribe through. Anything else -- the offer mode, the
+        // calendars, the microphone switch, a template -- is saved even
+        // while the speech model is broken (a key removed, a model deleted),
         // or "Don't ask when the mic turns on" would be refused for the
-        // very reason its offer was showing a set-up prompt.
+        // very reason its offer was showing a set-up prompt. Changing the
+        // speech model itself is a save of the models, which this cannot
+        // see: meeting notes left on over a broken one say so in this view,
+        // and a recording refuses to begin until it is fixed.
         let saved = vault.meeting_settings()?;
-        let transcription_changed = !saved.enabled
-            || saved.transcriber != settings.transcriber
-            || saved.use_assistant_key != settings.use_assistant_key;
-        if settings.enabled && transcription_changed {
+        if settings.enabled && !saved.enabled {
             let checked = view(&vault, settings.clone())?;
             if !checked.usable {
-                let why = checked.problem.unwrap_or_else(|| "the transcriber is not usable".into());
+                let why =
+                    checked.problem.unwrap_or_else(|| "the speech model is not usable".into());
                 return Err(Error::Invalid(format!("cannot turn meeting notes on: {why}")).into());
             }
         }
         // Else: a disabled feature is always a valid thing to save, whatever
-        // state the transcriber is in -- somebody mid-way through
-        // configuring it must still be able to save a draft.
+        // state the speech model is in.
 
         vault.save_meeting_settings(&settings)?;
         // Read back rather than echoing what was sent: `has_key` and the
@@ -407,14 +403,27 @@ async fn save_meeting_settings(
     .await
 }
 
+/// Deprecated: the speech model's key is set on its card in Settings →
+/// Models, by `set_model_key` with `tier: "speech"`. Kept so a client built
+/// before the move goes on working: a key is filed where that would file it
+/// -- under the speech model's endpoint -- and no key forgets the one there.
+///
+/// Asks for the assistant's scope as well as meetings', which the command
+/// table cannot say: that endpoint's key is shared with every model at the
+/// same address -- an OpenAI key is the assistant's too -- and replacing it
+/// is what `set_model_key` needs `Agent` for.
 async fn set_transcriber_key(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: SetTranscriberKey,
 ) -> CommandResult<MeetingSettingsView> {
+    ctx.require(Scope::Agent)?;
     let vault = svc.require()?;
     blocking(move || {
-        vault.set_transcriber_key(args.key.as_deref())?;
+        match args.key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+            Some(key) => vault.set_model_key(ModelSlot::Speech, key)?,
+            None => vault.clear_model_key(ModelSlot::Speech)?,
+        }
         Ok(view(&vault, vault.meeting_settings()?)?)
     })
     .await
@@ -637,6 +646,8 @@ pub static COMMANDS: &[crate::command::Command] = &[
         run: save_meeting_settings,
     },
     command! {
+        // Deprecated, for clients from before the speech model: see the
+        // function. `set_model_key` with `tier: "speech"` is the real door.
         name: "set_transcriber_key", scope: Meetings, effect: Write,
         change: Settings / Updated,
         args: SetTranscriberKey, returns: "MeetingSettingsView",
@@ -816,10 +827,7 @@ mod tests {
         assert_eq!(err.code, codes::TOO_LARGE);
     }
 
-    /// Meeting notes on, with an OpenAI transcriber that has no key -- the
-    /// state a removed key leaves behind -- saved straight into the vault,
-    /// past the command's own check.
-    fn on_but_broken() -> (Arc<Service>, tempfile::TempDir, MeetingSettings) {
+    fn service() -> (Arc<Service>, tempfile::TempDir, Arc<Vault>) {
         let dir = tempfile::tempdir().unwrap();
         let vault = karmayoga_vault::create(
             dir.path(),
@@ -832,20 +840,32 @@ mod tests {
         .unwrap();
         let svc = Arc::new(Service::new());
         let vault = svc.set(vault);
-        let settings = MeetingSettings {
-            enabled: true,
-            transcriber: Some(openai("gpt-4o-transcribe")),
-            ..Default::default()
-        };
+        (svc, dir, vault)
+    }
+
+    /// The platform's speech model set to `transcriber`, as its card saves it.
+    fn choose_speech(vault: &Vault, transcriber: TranscriberConfig) {
+        let mut models = vault.model_settings().unwrap();
+        models.speech = Some(SpeechConfig::new(transcriber));
+        vault.save_model_settings(&models).unwrap();
+    }
+
+    /// Meeting notes on, over an OpenAI speech model with no key -- the
+    /// state a removed key leaves behind -- saved straight into the vault,
+    /// past the command's own check.
+    fn on_but_broken() -> (Arc<Service>, tempfile::TempDir, MeetingSettings) {
+        let (svc, dir, vault) = service();
+        choose_speech(&vault, openai("gpt-4o-transcribe"));
+        let settings = MeetingSettings { enabled: true, ..Default::default() };
         vault.save_meeting_settings(&settings).unwrap();
         (svc, dir, settings)
     }
 
     /// "Don't ask when the mic turns on" saves the whole settings back with
-    /// one switch changed, and is offered exactly when the transcriber is
+    /// one switch changed, and is offered exactly when the speech model is
     /// broken. Refusing every save while it is broken refused that too.
     #[tokio::test]
-    async fn a_save_that_leaves_transcription_alone_goes_through_while_it_is_broken() {
+    async fn a_save_that_leaves_the_switch_alone_goes_through_while_speech_is_broken() {
         let (svc, _dir, settings) = on_but_broken();
         let quieter = MeetingSettings { mic_offer: false, ..settings.clone() };
         let saved = save_meeting_settings(
@@ -856,45 +876,102 @@ mod tests {
         .await
         .unwrap();
         assert!(!saved.settings.mic_offer);
+        assert!(!saved.usable);
+        assert!(saved.problem.as_deref().unwrap_or_default().contains("Settings → Models"));
 
-        // Changing how speech becomes text, to something just as unusable,
-        // is still refused while meeting notes are on.
-        let other =
-            MeetingSettings { transcriber: Some(openai("gpt-4o-transcribe-diarize")), ..settings };
-        let err = save_meeting_settings(svc, Ctx::local(), SaveMeetingSettings { settings: other })
+        // Turning them on from off, over the same broken model, is refused
+        // -- and says where it is fixed, which is no longer this pane.
+        let off = MeetingSettings { enabled: false, ..settings.clone() };
+        svc.require().unwrap().save_meeting_settings(&off).unwrap();
+        let err = save_meeting_settings(svc, Ctx::local(), SaveMeetingSettings { settings })
             .await
             .unwrap_err();
         assert!(err.message.contains("cannot turn meeting notes on"), "{}", err.message);
+        assert!(err.message.contains("Settings → Models"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn with_no_speech_model_meeting_notes_cannot_be_turned_on() {
+        let (svc, _dir, _vault) = service();
+        let on = MeetingSettings { enabled: true, ..Default::default() };
+        let err = save_meeting_settings(svc, Ctx::local(), SaveMeetingSettings { settings: on })
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("choose a speech model"), "{}", err.message);
+    }
+
+    /// What `use_assistant_key` did by hand, with nothing to switch: OpenAI
+    /// speech and an OpenAI language model are at one endpoint, so a key
+    /// stored on the Medium card is the speech model's too.
+    #[test]
+    fn an_openai_key_set_for_a_language_model_serves_speech_too() {
+        let (_svc, _dir, vault) = service();
+        choose_speech(&vault, openai("gpt-4o-transcribe"));
+        assert!(!view(&vault, vault.meeting_settings().unwrap()).unwrap().has_key);
+
+        vault.set_model_key(karmayoga_core::llm::ModelTier::Medium, "sk-openai").unwrap();
+        let shown = view(&vault, vault.meeting_settings().unwrap()).unwrap();
+        assert!(shown.has_key);
+        assert!(shown.remote);
+        assert_eq!(shown.speech.unwrap().transcriber, openai("gpt-4o-transcribe"));
+        assert_eq!(vault.speech_access().unwrap().key.as_deref(), Some("sk-openai"));
+    }
+
+    /// The deprecated command files its key where the speech model's card
+    /// would, asks for the assistant's scope to do it, and has nowhere to
+    /// put one before a speech model is chosen.
+    #[tokio::test]
+    async fn set_transcriber_key_files_the_key_under_the_speech_models_endpoint() {
+        let (svc, _dir, vault) = service();
+        let key = |k: Option<&str>| SetTranscriberKey { key: k.map(str::to_string) };
+
+        let err = set_transcriber_key(svc.clone(), Ctx::local(), key(Some("sk-x"))).await;
+        assert!(err.is_err(), "no speech model, so no endpoint to file it under");
+
+        choose_speech(&vault, TranscriberConfig::Google { model: "gemini-2.5-flash".into() });
+        let meetings_only = Ctx { scopes: vec![Scope::Meetings], ..Ctx::local() };
+        let err =
+            set_transcriber_key(svc.clone(), meetings_only, key(Some("g-key"))).await.unwrap_err();
+        assert_eq!(err.code, codes::FORBIDDEN);
+
+        let shown =
+            set_transcriber_key(svc.clone(), Ctx::local(), key(Some(" g-key "))).await.unwrap();
+        assert!(shown.has_key);
+        assert_eq!(vault.speech_access().unwrap().key.as_deref(), Some("g-key"));
+        assert!(
+            vault
+                .model_settings_and_keyed()
+                .unwrap()
+                .1
+                .contains(&karmayoga_core::speech::GOOGLE_ENDPOINT.to_string())
+        );
+
+        let shown = set_transcriber_key(svc, Ctx::local(), key(None)).await.unwrap();
+        assert!(!shown.has_key);
+        assert!(vault.speech_access().is_err(), "Google needs its key");
     }
 
     #[test]
-    fn a_transcriber_is_not_usable_until_it_has_a_key() {
+    fn a_speech_model_is_not_usable_until_it_has_a_key() {
         let t = openai("gpt-4o-transcribe-diarize");
-        let err = usable(&t, false, false, false, false, true).unwrap_err();
-        assert!(err.contains("key"), "{err}");
-    }
-
-    #[test]
-    fn use_assistant_key_stands_in_for_a_stored_one() {
-        let t = openai("gpt-4o-transcribe-diarize");
-        assert!(usable(&t, true, false, true, false, true).is_ok());
-        // Without the flag on, the assistant's key does not count.
-        assert!(usable(&t, false, false, true, false, true).is_err());
+        let err = usable(&t, false, false, true).unwrap_err();
+        assert!(err.contains("key") && err.contains("Settings → Models"), "{err}");
+        assert!(usable(&t, true, false, true).is_ok());
     }
 
     #[test]
     fn a_remote_backend_also_needs_the_speech_kit() {
         let t = openai("gpt-4o-transcribe-diarize");
-        let err = usable(&t, false, true, false, false, false).unwrap_err();
+        let err = usable(&t, true, false, false).unwrap_err();
         assert!(err.contains("speech kit"), "{err}");
-        assert!(usable(&t, false, true, false, false, true).is_ok());
+        assert!(usable(&t, true, false, true).is_ok());
     }
 
     #[test]
     fn local_needs_the_recogniser_and_the_speech_kit_and_the_feature() {
         let t = TranscriberConfig::Local { model: LocalModel::ParakeetV3 };
-        assert!(usable(&t, false, false, false, false, false).is_err());
-        assert!(usable(&t, false, false, false, true, false).is_err(), "still no speech kit");
+        assert!(usable(&t, false, false, false).is_err());
+        assert!(usable(&t, false, true, false).is_err(), "still no speech kit");
         // Whether this is `Ok` from here depends on whether the `speech`
         // feature is compiled in -- see `usable`'s own `cfg!` check -- so
         // the strongest claim a feature-independent test can make is that
@@ -905,12 +982,25 @@ mod tests {
     fn a_compatible_server_needs_a_url_and_a_model_before_anything_else() {
         let t =
             TranscriberConfig::Compatible { base_url: String::new(), model: "whisper-1".into() };
-        assert!(usable(&t, false, true, false, false, true).is_err());
+        assert!(usable(&t, true, false, true).is_err());
         let t = TranscriberConfig::Compatible {
             base_url: "http://localhost:8080".into(),
             model: String::new(),
         };
-        assert!(usable(&t, false, true, false, false, true).is_err());
+        assert!(usable(&t, true, false, true).is_err());
+    }
+
+    /// A choice carried over from meeting notes was written without the
+    /// models' rules, and one of them -- no key over plain http to another
+    /// machine -- is new to speech. It says so rather than sending the key.
+    #[test]
+    fn a_carried_choice_the_models_would_refuse_says_why() {
+        let t = TranscriberConfig::Compatible {
+            base_url: "http://transcribe.example.com".into(),
+            model: "whisper-1".into(),
+        };
+        let err = usable(&t, true, false, true).unwrap_err();
+        assert!(err.contains("unencrypted") && err.contains("Settings → Models"), "{err}");
     }
 
     #[test]
@@ -919,7 +1009,7 @@ mod tests {
             base_url: "http://127.0.0.1:8080".into(),
             model: "whisper-1".into(),
         };
-        assert!(usable(&t, false, false, false, false, false).is_ok());
+        assert!(usable(&t, false, false, false).is_ok());
     }
 
     #[test]
@@ -928,16 +1018,16 @@ mod tests {
             base_url: "https://transcribe.example.com".into(),
             model: "whisper-1".into(),
         };
-        assert!(usable(&t, false, false, false, false, true).is_err(), "no key");
-        assert!(usable(&t, false, true, false, false, false).is_err(), "no speech kit");
-        assert!(usable(&t, false, true, false, false, true).is_ok());
+        assert!(usable(&t, false, false, true).is_err(), "no key");
+        assert!(usable(&t, true, false, false).is_err(), "no speech kit");
+        assert!(usable(&t, true, false, true).is_ok());
     }
 
     #[test]
     fn google_needs_only_its_own_key_and_the_speech_kit() {
         let t = TranscriberConfig::Google { model: "gemini-2.5-flash".into() };
-        assert!(usable(&t, false, false, false, false, true).is_err());
-        assert!(usable(&t, false, true, false, false, false).is_err());
-        assert!(usable(&t, false, true, false, false, true).is_ok());
+        assert!(usable(&t, false, false, true).is_err());
+        assert!(usable(&t, true, false, false).is_err());
+        assert!(usable(&t, true, false, true).is_ok());
     }
 }

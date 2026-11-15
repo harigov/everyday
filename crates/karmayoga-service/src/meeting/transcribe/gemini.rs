@@ -37,7 +37,10 @@ use crate::http;
 
 use super::{BoxFuture, Hints, Limits, RawSegment, SpeechChunk, Transcriber};
 
-pub const DEFAULT_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta";
+/// The Gemini API -- and the speech model's endpoint when it is Google, the
+/// address its key is filed under. One constant, so the key and the request
+/// cannot name two hosts.
+pub const DEFAULT_BASE_URL: &str = karmayoga_core::speech::GOOGLE_ENDPOINT;
 
 /// See this module's doc for where these come from.
 const MAX_BYTES: usize = 14 * 1024 * 1024;

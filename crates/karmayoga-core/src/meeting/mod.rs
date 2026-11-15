@@ -519,78 +519,11 @@ pub struct CalendarFilter {
     pub role_ids: Vec<crate::id::RoleId>,
 }
 
-/// The local recognisers on offer. See `karmayoga_service::local::files`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase")]
-pub enum LocalModel {
-    /// Parakeet TDT 0.6B v3, int8: English and European languages, fast.
-    ParakeetV3,
-    /// Whisper large-v3-turbo: any language, slower.
-    WhisperTurbo,
-}
-
-impl LocalModel {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LocalModel::ParakeetV3 => "parakeet-tdt-0.6b-v3",
-            LocalModel::WhisperTurbo => "whisper-large-v3-turbo",
-        }
-    }
-}
-
-/// Who turns speech into text. There is deliberately no default: the switch
-/// stays off until somebody has chosen one of these and made it usable.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum TranscriberConfig {
-    Local {
-        model: LocalModel,
-    },
-    OpenAi {
-        model: String,
-    },
-    Google {
-        model: String,
-    },
-    /// Anything that speaks OpenAI's `/v1/audio/transcriptions`.
-    Compatible {
-        base_url: String,
-        model: String,
-    },
-}
-
-impl TranscriberConfig {
-    /// Whether this backend needs a key. A loopback compatible server does
-    /// not, the same rule `Provider::needs_key` applies to the assistant.
-    pub fn needs_key(&self) -> bool {
-        match self {
-            TranscriberConfig::Local { .. } => false,
-            TranscriberConfig::OpenAi { .. } | TranscriberConfig::Google { .. } => true,
-            TranscriberConfig::Compatible { base_url, .. } => !crate::agent::is_loopback(base_url),
-        }
-    }
-
-    /// "local:…", "openai:…" -- what a transcript records as its backend.
-    pub fn label(&self) -> String {
-        match self {
-            TranscriberConfig::Local { model } => format!("local:{}", model.as_str()),
-            TranscriberConfig::OpenAi { model } => format!("openai:{model}"),
-            TranscriberConfig::Google { model } => format!("google:{model}"),
-            TranscriberConfig::Compatible { model, .. } => format!("compatible:{model}"),
-        }
-    }
-
-    /// Whether audio leaves the machine.
-    pub fn is_remote(&self) -> bool {
-        match self {
-            TranscriberConfig::Local { .. } => false,
-            TranscriberConfig::Compatible { base_url, .. } => !crate::agent::is_loopback(base_url),
-            _ => true,
-        }
-    }
-}
+/// How speech becomes text is the platform's speech model now -- see
+/// [`crate::speech`] -- and these two are its types. Named from here still,
+/// so everything that took them from meetings, where they were born, keeps
+/// working.
+pub use crate::speech::{LocalModel, TranscriberConfig};
 
 /// A meeting template as builds before shared templates stored it: inside
 /// [`MeetingSettings`]. Read once, moved into the templates table as a
@@ -627,8 +560,8 @@ impl NoteTemplate {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", default)]
 pub struct MeetingSettings {
-    /// Refused by the service unless [`MeetingSettings::transcriber`] is set
-    /// and usable.
+    /// Refused by the service unless the speech model --
+    /// [`crate::llm::ModelSettings::speech`] -- is set and usable.
     pub enabled: bool,
     pub offer: Offer,
     /// Also offer when another application starts using the microphone --
@@ -638,12 +571,34 @@ pub struct MeetingSettings {
     pub calendars: CalendarFilter,
     /// "Never for this meeting": series keys. See [`EventRef::series_key`].
     pub skipped_series: BTreeSet<String>,
-    pub transcriber: Option<TranscriberConfig>,
-    /// When the transcriber is OpenAI and the assistant already talks to
-    /// api.openai.com, use the assistant's key rather than a second copy.
-    pub use_assistant_key: bool,
-    /// BCP-47-ish language code, or `None` to detect.
-    pub language: Option<String>,
+    /// How speech became text before that was the platform's speech model:
+    /// written by older builds, and moved into
+    /// [`crate::llm::ModelSettings::speech`] once, by
+    /// `Vault::carry_over_speech`, which empties it and sets
+    /// [`MeetingSettings::speech_moved`]. Read by nothing else -- not even
+    /// what a caller sends: `Vault::save_meeting_settings` keeps whatever the
+    /// vault holds here. Left out when empty, so a saved row carries none of
+    /// the three and a vault that never had one reads as it always did.
+    #[serde(rename = "transcriber", skip_serializing_if = "Option::is_none")]
+    pub legacy_transcriber: Option<TranscriberConfig>,
+    /// Older builds' switch for using the models' OpenAI key instead of a
+    /// second copy. Nothing replaces it and nothing moves with it: OpenAI
+    /// speech files its key under the endpoint an OpenAI language model
+    /// does, so the two share one key whenever both are at OpenAI.
+    #[serde(rename = "useAssistantKey", skip_serializing_if = "std::ops::Not::not")]
+    pub legacy_use_assistant_key: bool,
+    /// The recogniser's language, as older builds kept it -- now
+    /// [`crate::speech::SpeechConfig::language`], moved with the transcriber.
+    #[serde(rename = "language", skip_serializing_if = "Option::is_none")]
+    pub legacy_language: Option<String>,
+    /// Set once [`MeetingSettings::legacy_transcriber`], its language and
+    /// its key have moved to the models, after which the three are ignored.
+    /// Kept beside the emptied fields so the move is a question of one flag
+    /// rather than of which fields happen to be empty -- the way
+    /// [`MeetingSettings::templates_moved`] is -- and owned by the vault the
+    /// same way: `Vault::save_meeting_settings` never lets a caller set or
+    /// clear it.
+    pub speech_moved: bool,
     /// Where meeting templates were kept before they became shared
     /// [`crate::template::Template`]s: written by older builds, read once
     /// by `Vault::migrate_meeting_templates`, which moves them into the
@@ -677,7 +632,9 @@ pub struct MeetingSettings {
     pub summary_budget: Option<u32>,
     /// Names, products and acronyms to spell right in every meeting: told
     /// to the recogniser, to the summarising model, and used to correct a
-    /// transcript's near misses. See [`vocab`].
+    /// transcript's near misses. See [`vocab`]. Meetings' own rather than the
+    /// speech model's, though the recogniser is told it: it is about what is
+    /// said in meetings, and goes with the invite's names it is told beside.
     pub vocabulary: Vec<String>,
 }
 
@@ -697,9 +654,10 @@ impl Default for MeetingSettings {
             mic_offer: true,
             calendars: CalendarFilter::default(),
             skipped_series: BTreeSet::new(),
-            transcriber: None,
-            use_assistant_key: false,
-            language: None,
+            legacy_transcriber: None,
+            legacy_use_assistant_key: false,
+            legacy_language: None,
+            speech_moved: false,
             default_template: Some(starter.id),
             legacy_templates: vec![starter],
             templates_moved: false,
@@ -760,6 +718,34 @@ mod tests {
         assert!(!heard_in_one_room(&demo, true));
         // Too little said to judge.
         assert!(!heard_in_one_room(&[seg(Track::Mic, "testing one two")], true));
+    }
+
+    /// An older build's row still reads, its transcriber landing in the
+    /// legacy fields for the carry-over to find; a row written now carries
+    /// none of them once they are empty.
+    #[test]
+    fn the_old_speech_fields_still_read_and_are_not_written_empty() {
+        let old: MeetingSettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "transcriber": { "type": "openAi", "model": "gpt-4o-transcribe" },
+            "useAssistantKey": true,
+            "language": "en"
+        }))
+        .unwrap();
+        assert_eq!(
+            old.legacy_transcriber,
+            Some(TranscriberConfig::OpenAi { model: "gpt-4o-transcribe".into() })
+        );
+        assert!(old.legacy_use_assistant_key);
+        assert_eq!(old.legacy_language.as_deref(), Some("en"));
+        assert!(!old.speech_moved, "a row from before the move says nothing of it");
+
+        let moved = MeetingSettings { speech_moved: true, ..MeetingSettings::default() };
+        let json = serde_json::to_value(&moved).unwrap();
+        for gone in ["transcriber", "useAssistantKey", "language"] {
+            assert!(json.get(gone).is_none(), "{gone} is still written");
+        }
+        assert_eq!(json["speechMoved"], true);
     }
 
     #[test]

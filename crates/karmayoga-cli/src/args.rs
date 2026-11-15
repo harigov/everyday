@@ -278,7 +278,35 @@ pub enum Command {
     /// Copy the whole vault, sealed as it is, into a directory.
     ///
     /// The copy opens with the same password and needs no restore step.
+    /// For copies made on a schedule, kept to a number, in a folder or a
+    /// bucket, see `karmayoga backups`.
     Backup { dir: PathBuf },
+    /// Sealed, date-stamped backups in a folder or a bucket, as Settings →
+    /// Backup makes them.
+    #[command(subcommand)]
+    Backups(BackupsCmd),
+    /// Lay a backup down as a vault that opens with the same password.
+    ///
+    /// Needs no vault of its own -- this is for the day the vault is gone.
+    /// The folder must be empty or not exist yet.
+    Restore {
+        /// Where the backups are: a folder, `s3://bucket/prefix` or
+        /// `gs://bucket/prefix`.
+        from: String,
+        /// The folder to restore into.
+        into: PathBuf,
+        /// Which copy, by name (`karmayoga backups list`). The newest by
+        /// default.
+        #[arg(long)]
+        snapshot: Option<String>,
+        /// Also put this computer's settings back -- paired devices, the
+        /// server's certificate, the MCP token -- into the settings folder,
+        /// never over a file that is already there.
+        #[arg(long)]
+        config: bool,
+        #[command(flatten)]
+        location: LocationArgs,
+    },
     /// Show or change what this vault's storage backend is configured with.
     ///
     /// The place to fix a database password that has been rotated, or a
@@ -304,6 +332,63 @@ pub enum Command {
     },
     /// Fill the vault with sample content, for trying the app out.
     Demo,
+}
+
+/// How to reach a bucket named on the command line.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct LocationArgs {
+    /// S3: the bucket's region, when the profile does not say.
+    #[arg(long)]
+    pub region: Option<String>,
+    /// S3: the base URL of an S3-compatible service (R2, B2, MinIO…).
+    #[arg(long)]
+    pub endpoint: Option<String>,
+    /// S3: which profile in `~/.aws` to use.
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Google Cloud Storage: a key file to use instead of the application
+    /// default credentials.
+    #[arg(long)]
+    pub credentials_file: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BackupsCmd {
+    /// Where backups go, how often, and how the last one went.
+    Status,
+    /// Make a backup now: to where Settings → Backup says, or to `--to`.
+    Run {
+        /// A folder, `s3://bucket/prefix` or `gs://bucket/prefix`, instead
+        /// of the destination Settings chose.
+        #[arg(long)]
+        to: Option<String>,
+        /// How many copies to keep there, this one included. Settings' own
+        /// number by default.
+        #[arg(long)]
+        keep: Option<u32>,
+        /// Leave this computer's settings out of the copy.
+        #[arg(long)]
+        no_config: bool,
+        #[command(flatten)]
+        location: LocationArgs,
+    },
+    /// List the copies kept.
+    List {
+        /// Somewhere other than the destination Settings chose.
+        from: Option<String>,
+        #[command(flatten)]
+        location: LocationArgs,
+    },
+    /// Check that every copy is whole.
+    Verify {
+        from: Option<String>,
+        /// Also download and open every piece of the newest copy -- the only
+        /// check that no byte has changed, and as large as the vault.
+        #[arg(long)]
+        read: bool,
+        #[command(flatten)]
+        location: LocationArgs,
+    },
 }
 
 #[derive(Subcommand, Debug)]

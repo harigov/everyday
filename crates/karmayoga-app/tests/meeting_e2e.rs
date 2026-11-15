@@ -578,15 +578,19 @@ async fn ensure_installed(id: &str) {
     }
 }
 
-async fn meeting_settings_local_parakeet() -> MeetingSettings {
+/// Meeting notes on, over Parakeet on this computer as the platform's speech
+/// model -- chosen in the models, where Settings → Models keeps it, rather
+/// than in the meeting settings returned. After `configure_assistant`, whose
+/// own save of the models would otherwise put no speech model back.
+async fn meeting_settings_local_parakeet(vault: &Vault) -> MeetingSettings {
     ensure_installed(models::SPEECH_KIT_ID).await;
     ensure_installed("parakeetV3").await;
-    MeetingSettings {
-        enabled: true,
-        transcriber: Some(TranscriberConfig::Local { model: LocalModel::ParakeetV3 }),
-        voiceprints: false,
-        ..MeetingSettings::default()
-    }
+    let mut platform = vault.model_settings().unwrap();
+    platform.speech = Some(karmayoga_core::speech::SpeechConfig::new(TranscriberConfig::Local {
+        model: LocalModel::ParakeetV3,
+    }));
+    vault.save_model_settings(&platform).unwrap();
+    MeetingSettings { enabled: true, voiceprints: false, ..MeetingSettings::default() }
 }
 
 // ============================================================================
@@ -701,7 +705,7 @@ async fn local_parakeet_hears_a_real_call_through_real_capture_and_writes_a_note
 
     let harness = Harness::new(&root.join("vault"));
     configure_assistant(&harness.vault, &stub_url);
-    let settings = meeting_settings_local_parakeet().await;
+    let settings = meeting_settings_local_parakeet(&harness.vault).await;
     harness.vault.save_meeting_settings(&settings).unwrap();
 
     let (calendar, role) = calendar_with_role(&harness.vault);
@@ -825,7 +829,7 @@ async fn the_watcher_offers_always_mode_starts_capture_and_ask_mode_does_not() {
     let root = scratch_root().join(format!("watch-always-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let harness = Harness::new(&root.join("vault"));
-    let mut settings = meeting_settings_local_parakeet().await;
+    let mut settings = meeting_settings_local_parakeet(&harness.vault).await;
     settings.offer = Offer::Always;
     harness.vault.save_meeting_settings(&settings).unwrap();
 
@@ -902,7 +906,7 @@ async fn auto_stop_arms_and_stops_once_both_tracks_are_quiet_past_the_events_end
     let harness = Harness::new(&root.join("vault"));
     let stub_url = chat_stub().await;
     configure_assistant(&harness.vault, &stub_url);
-    let settings = meeting_settings_local_parakeet().await;
+    let settings = meeting_settings_local_parakeet(&harness.vault).await;
     harness.vault.save_meeting_settings(&settings).unwrap();
 
     let session = harness.session().as_session();
@@ -1001,7 +1005,7 @@ async fn a_crash_mid_recording_is_recovered_on_reopen_and_the_pipeline_finishes_
     {
         let harness = Harness::new(&vault_dir);
         configure_assistant(&harness.vault, &stub_url);
-        let settings = meeting_settings_local_parakeet().await;
+        let settings = meeting_settings_local_parakeet(&harness.vault).await;
         harness.vault.save_meeting_settings(&settings).unwrap();
 
         let value = harness.call("begin_recording", json!({ "automatic": false })).await.unwrap();

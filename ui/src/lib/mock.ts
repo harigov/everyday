@@ -149,6 +149,7 @@ import type {
 } from './types'
 import { sameAccount, validateLink } from './chat'
 import { signatureFor } from './mailwrite'
+import { speechEndpointOf } from './accounts'
 import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
 import {
   mockAnswerJob,
@@ -181,6 +182,7 @@ import {
   mockStoryBody,
   mockStoryForLibrary,
 } from './mock-feed'
+import { mockBackup } from './mock-backup'
 import { mockMoney } from './mock-money'
 import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
 import {
@@ -273,9 +275,10 @@ import {
   mockRetryRecording,
   mockRewriteMeetingNote,
   mockSaveMeetingSettings,
-  mockSetTranscriberKey,
   mockSpeechModels,
   mockTestTranscriber,
+  mockMeetingsReadSpeechFrom,
+  type MockSpeech,
   mockTriggerMeetingOffer,
   mockTriggerMicOffer,
   mockTriggerStillOn,
@@ -3979,6 +3982,7 @@ let modelSettings: ModelSettings = {
     reasoningEffort: null,
   },
   decision: null,
+  speech: null,
 }
 const modelKeys = new Set<string>(['https://api.openai.com/v1'])
 
@@ -4011,13 +4015,29 @@ function mockEndpoint(baseUrl: string | null): string {
   return (baseUrl ?? '').trim().replace(/\/+$/, '') || 'https://api.openai.com/v1'
 }
 
+/** `ModelSettings::all_endpoints`: those mail may go to, and the speech
+ *  model's -- every address a key may be kept for. */
+function mockAllEndpoints(): string[] {
+  const speech = modelSettings.speech ? speechEndpointOf(modelSettings.speech.transcriber) : null
+  return [...new Set([...mockModelEndpoints(), ...(speech ? [speech] : [])])].sort()
+}
+
+/** The speech model as meeting notes see it -- see `MockSpeech`. */
+function mockSpeech(): MockSpeech {
+  const speech = modelSettings.speech ?? null
+  const endpoint = speech ? speechEndpointOf(speech.transcriber) : null
+  return { speech, hasKey: endpoint != null && modelKeys.has(endpoint) }
+}
+mockMeetingsReadSpeechFrom(mockSpeech)
+
 function modelSettingsView(): ModelSettingsView {
-  const endpoints = mockModelEndpoints()
   return {
     settings: structuredClone(modelSettings),
-    keyed: endpoints.filter((e) => modelKeys.has(e)),
-    acknowledgement: endpoints.join(', '),
+    keyed: mockAllEndpoints().filter((e) => modelKeys.has(e)),
+    // Never the speech model's: it carries no mail.
+    acknowledgement: mockModelEndpoints().join(', '),
     localDecisions: true,
+    localSpeech: true,
   }
 }
 
@@ -4030,6 +4050,15 @@ function modelSlotEndpoint(args: Record<string, unknown>): string {
     }
     const endpoint = mockDecisionEndpoint(modelSettings.decision)
     if (!endpoint) throw new VaultError('invalid', 'a decision model on this computer needs no key')
+    return endpoint
+  }
+  if (tier === 'speech') {
+    const speech = modelSettings.speech
+    if (!speech) {
+      throw new VaultError('invalid', 'no speech model is configured; set one in Settings → Models')
+    }
+    const endpoint = speechEndpointOf(speech.transcriber)
+    if (!endpoint) throw new VaultError('invalid', 'a speech model on this computer needs no key')
     return endpoint
   }
   const config = modelSettings[tier]
@@ -7096,15 +7125,17 @@ export const mockInvoke = async <T>(
       const beforeEndpoints = mockModelEndpoints()
       modelSettings = structuredClone(args.settings as ModelSettings)
       modelSettings.decision ??= null
-      // As the real one: a key no model points at any more is forgotten.
-      const inUse = new Set(mockModelEndpoints())
+      modelSettings.speech ??= null
+      // As the real one: a key no card points at any more is forgotten --
+      // the speech card counts.
+      const inUse = new Set(mockAllEndpoints())
       for (const endpoint of [...modelKeys]) if (!inUse.has(endpoint)) modelKeys.delete(endpoint)
       // And clears every account's mail acknowledgement when the endpoints
-      // change -- unless they only got fewer, when one given for the old
-      // list moves to the new one. See `Vault::save_model_settings`.
+      // mail may go to change -- unless they only got fewer, when one given
+      // for the old list moves to the new one. See `Vault::save_model_settings`.
       const after = modelSettingsView().acknowledgement
       if (after !== before) {
-        const fewer = [...inUse].every((e) => beforeEndpoints.includes(e))
+        const fewer = mockModelEndpoints().every((e) => beforeEndpoints.includes(e))
         for (const account of accounts) {
           const kept = fewer && account.assistantProviderAcknowledged === before
           account.assistantProviderAcknowledged = kept ? after : null
@@ -7395,6 +7426,25 @@ export const mockInvoke = async <T>(
         skipped: args.mode === 'replace' ? 0 : parts.length,
       } as T
     }
+
+    // ── Backups ─────────────────────────────────────────────────────
+    //
+    // `mock-backup.ts` holds the settings, the copies kept and a run worked
+    // out from the clock; these only check the vault is open and hand the
+    // call over. `pick_folder` is the shell's, answered locked or not.
+
+    case 'pick_folder':
+      return mockBackup(cmd, args) as T
+    case 'backup_settings':
+    case 'save_backup_settings':
+    case 'set_backup_keys':
+    case 'clear_backup_keys':
+    case 'run_backup':
+    case 'cancel_backup':
+    case 'backup_snapshots':
+    case 'check_backup_destination':
+      requireUnlocked()
+      return mockBackup(cmd, args) as T
 
     // ── Accounts ────────────────────────────────────────────────────
 
@@ -8281,9 +8331,15 @@ export const mockInvoke = async <T>(
     case 'save_meeting_settings':
       requireUnlocked()
       return mockSaveMeetingSettings(args.settings as MeetingSettings) as T
-    case 'set_transcriber_key':
+    case 'set_transcriber_key': {
+      // Deprecated, as the real one: files the key under the speech model's
+      // endpoint, where the speech card in Settings → Models would.
       requireUnlocked()
-      return mockSetTranscriberKey((args.key as string | null | undefined) ?? null) as T
+      const endpoint = modelSlotEndpoint({ tier: 'speech' })
+      if (str(args.key).trim()) modelKeys.add(endpoint)
+      else modelKeys.delete(endpoint)
+      return mockMeetingSettings() as T
+    }
     case 'preview_meeting_template':
       requireUnlocked()
       return (await mockPreviewMeetingTemplate(str(args.body))) as T

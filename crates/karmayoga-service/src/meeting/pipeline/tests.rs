@@ -364,17 +364,29 @@ fn test_vault() -> (tempfile::TempDir, Arc<Vault>) {
     (dir, Arc::new(vault))
 }
 
+/// The platform's speech model set to `transcriber`, as its card in
+/// Settings → Models saves it -- where the pipeline reads how speech becomes
+/// text from, rather than from meeting notes' own settings.
+fn use_speech(vault: &Vault, transcriber: TranscriberConfig) {
+    let mut models = vault.model_settings().unwrap();
+    models.speech = Some(karmayoga_core::speech::SpeechConfig::new(transcriber));
+    vault.save_model_settings(&models).unwrap();
+}
+
 fn seed_recording(
     vault: &Vault,
     audio: &FakeAudio,
     mic_chunks: u32,
     system_chunks: u32,
 ) -> RecordingId {
+    use_speech(
+        vault,
+        TranscriberConfig::Compatible {
+            base_url: "http://127.0.0.1:1/v1".into(),
+            model: "whisper-1".into(),
+        },
+    );
     let mut settings = vault.meeting_settings().unwrap();
-    settings.transcriber = Some(TranscriberConfig::Compatible {
-        base_url: "http://127.0.0.1:1/v1".into(),
-        model: "whisper-1".into(),
-    });
     settings.voiceprints = false;
     vault.save_meeting_settings(&settings).unwrap();
 
@@ -1268,10 +1280,7 @@ async fn a_real_transcribers_500_is_retried_and_the_recording_is_never_failed() 
     let id = seed_recording(&vault, &audio, 1, 0);
     test_hooks::skip_vad(id);
     let (base, calls) = spawn_flaky_server(2, axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
-    let mut settings = vault.meeting_settings().unwrap();
-    settings.transcriber =
-        Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
-    vault.save_meeting_settings(&settings).unwrap();
+    use_speech(&vault, TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
     let source: Arc<dyn AudioSource> = audio.clone();
 
     let result =
@@ -1293,10 +1302,7 @@ async fn a_real_transcribers_401_is_never_retried() {
     let id = seed_recording(&vault, &audio, 1, 0);
     test_hooks::skip_vad(id);
     let (base, calls) = spawn_flaky_server(usize::MAX, axum::http::StatusCode::UNAUTHORIZED).await;
-    let mut settings = vault.meeting_settings().unwrap();
-    settings.transcriber =
-        Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
-    vault.save_meeting_settings(&settings).unwrap();
+    use_speech(&vault, TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
     let source: Arc<dyn AudioSource> = audio.clone();
 
     let result =
@@ -1340,10 +1346,7 @@ async fn early_transcription_marks_chunks_transcribed_without_advancing_the_stag
     vault.save_recording(&recording).unwrap();
 
     let base = spawn_ok_server().await;
-    let mut settings = vault.meeting_settings().unwrap();
-    settings.transcriber =
-        Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
-    vault.save_meeting_settings(&settings).unwrap();
+    use_speech(&vault, TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
     let source: Arc<dyn AudioSource> = audio.clone();
 
     transcribe_pending(&vault, &source, id).await.unwrap();
@@ -1370,10 +1373,10 @@ async fn early_transcription_does_nothing_for_a_local_transcriber() {
     recording.stage = Stage::Recording;
     vault.save_recording(&recording).unwrap();
 
-    let mut settings = vault.meeting_settings().unwrap();
-    settings.transcriber =
-        Some(TranscriberConfig::Local { model: karmayoga_core::meeting::LocalModel::ParakeetV3 });
-    vault.save_meeting_settings(&settings).unwrap();
+    use_speech(
+        &vault,
+        TranscriberConfig::Local { model: karmayoga_core::meeting::LocalModel::ParakeetV3 },
+    );
     let source: Arc<dyn AudioSource> = audio.clone();
 
     transcribe_live(&vault, &source, id).await.unwrap();
@@ -1471,10 +1474,7 @@ async fn finish_landing_while_the_early_attempt_is_still_running_still_reaches_d
     // doc), but `do_transcribe` will, for real, once the recording is
     // woken back up at `Stage::Transcribing` below.
     let base = spawn_ok_server().await;
-    let mut settings = vault.meeting_settings().unwrap();
-    settings.transcriber =
-        Some(TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
-    vault.save_meeting_settings(&settings).unwrap();
+    use_speech(&vault, TranscriberConfig::Compatible { base_url: base, model: "whisper-1".into() });
 
     let source: Arc<dyn AudioSource> = audio.clone();
     let gate = test_hooks::arm(id);

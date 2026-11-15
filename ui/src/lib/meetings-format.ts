@@ -7,7 +7,7 @@
 // them without booting Svelte's reactivity or a mock backend.
 
 import { DEFAULT_COLORS } from './colors'
-import type { Attribution, Stage } from './types'
+import type { Attribution, LocalModel, SpeechConfig, Stage } from './types'
 
 /** What a recording's stage says in a list row or a card. */
 export function stageLabel(stage: Stage): string {
@@ -89,4 +89,46 @@ export function speakerNameStyle(how: Attribution): 'plain' | 'guessed' | 'unkno
   if (how.type === 'unknown') return 'unknown'
   if (how.type === 'inferred') return 'guessed'
   return 'plain'
+}
+
+/**
+ * The recognisers that run on this computer, as the speech card in Settings →
+ * Models lists them and as a sentence names them -- `LocalModel` in
+ * `crates/karmayoga-core/src/speech.rs`.
+ */
+export const LOCAL_RECOGNISERS: { id: LocalModel; name: string; blurb: string }[] = [
+  { id: 'parakeetV3', name: 'Parakeet TDT v3', blurb: 'English & European languages, faster' },
+  { id: 'whisperTurbo', name: 'Whisper large-v3 turbo', blurb: 'Any language, slower' },
+]
+
+/**
+ * The speech model in a few words, for the line meeting notes show where its
+ * choice used to be: "Parakeet TDT v3, on this computer", "gpt-4o-transcribe
+ * at OpenAI". `null` reads as no choice at all.
+ */
+export function describeSpeech(speech: SpeechConfig | null | undefined): string {
+  if (!speech) return 'none chosen yet'
+  const t = speech.transcriber
+  switch (t.type) {
+    case 'local': {
+      const name = LOCAL_RECOGNISERS.find((m) => m.id === t.model)?.name ?? t.model
+      return `${name}, on this computer`
+    }
+    case 'openAi':
+      return `${t.model.trim() || 'a model not yet named'} at OpenAI`
+    case 'google':
+      return `${t.model.trim() || 'a model not yet named'} at Google`
+    case 'compatible': {
+      const where = hostOf(t.baseUrl) ?? 'a compatible server'
+      return `${t.model.trim() || 'a model not yet named'} at ${where}`
+    }
+  }
+}
+
+function hostOf(url: string): string | null {
+  try {
+    return new URL(url.trim()).host || null
+  } catch {
+    return null
+  }
 }

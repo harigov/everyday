@@ -3262,8 +3262,9 @@ export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | '
 /** Which of the three models. */
 export type ModelTier = 'large' | 'medium' | 'small'
 
-/** One of the four cards in Settings → Models: a tier, or the decision model. */
-export type ModelSlot = ModelTier | 'decision'
+/** One of the five cards in Settings → Models: a tier, the decision model, or
+ *  the speech model. */
+export type ModelSlot = ModelTier | 'decision' | 'speech'
 
 /**
  * How a decision model is reached -- `karmayoga_core::llm::DecisionApi`.
@@ -3314,21 +3315,154 @@ export interface ModelSettings {
   small: LLMConfig | null
   /** Sorts mail into the Mail sorting categories, in place of `small`. */
   decision: DecisionConfig | null
+  /**
+   * Turns speech into text -- meeting notes' calls today, anything that
+   * listens later. Absent or `null`: nothing that listens can be switched on.
+   * Left out of the record when unset; see `karmayoga_core::speech`.
+   */
+  speech?: SpeechConfig | null
 }
 
 /** What every models command answers. */
 export interface ModelSettingsView {
   settings: ModelSettings
-  /** The endpoints, of those `settings` names, that have a key stored. */
+  /** The endpoints, of those `settings` names, that have a key stored --
+   *  the speech model's among them. */
   keyed: string[]
   /**
    * What an account's mail acknowledgement must say for its mail to reach
-   * these models -- every configured endpoint. Stored by a tick as-is.
-   * A decision model on this computer is not one.
+   * these models -- every configured endpoint mail may go to. Stored by a
+   * tick as-is. A decision model on this computer is not one, and the speech
+   * model never is: it carries no mail.
    */
   acknowledgement: string
   /** Whether this copy of Karma Yoga can run a decision model itself. */
   localDecisions: boolean
+  /** Whether this copy can run a speech recogniser itself. */
+  localSpeech: boolean
+}
+
+// ── Backups ──────────────────────────────────────────────────────────────
+//
+// Mirrors `karmayoga_core::backup` and `karmayoga_service::domains::backup`.
+// A destination holds a repository: every file cut into sealed chunks, and
+// one sealed, date-stamped manifest per copy. Copies share the chunks that
+// did not change, so keeping seven costs about one vault plus a week.
+
+/** Hours between backups that Settings offers. */
+export const BACKUP_FREQUENCIES = [1, 6, 24, 168] as const
+
+/** Where an S3 destination's credentials come from. */
+export type S3Credentials =
+  /** `AWS_*` variables, `~/.aws` profiles, or what the AWS CLI exports. */
+  | 'thisComputer'
+  /** An access key pasted into Settings, sealed in the vault. */
+  | 'stored'
+
+/** Where backups go. */
+export type Destination =
+  | { type: 'folder'; path: string }
+  | {
+      type: 's3'
+      bucket: string
+      /** Folder inside the bucket, no leading or trailing slash. */
+      prefix: string
+      region?: string | null
+      /** Base URL of an S3-compatible service (R2, B2, MinIO…); null for Amazon. */
+      endpoint?: string | null
+      /** `~/.aws` profile; null for `AWS_PROFILE`, then `default`. */
+      profile?: string | null
+      credentials: S3Credentials
+    }
+  | {
+      type: 'gcs'
+      bucket: string
+      prefix: string
+      /** A key file to use instead of the application default credentials. */
+      credentialsFile?: string | null
+    }
+
+export interface BackupSettings {
+  enabled: boolean
+  destination: Destination | null
+  /** One of `BACKUP_FREQUENCIES`. */
+  everyHours: number
+  /** Copies kept, 1–100. */
+  keep: number
+  /** Also copy this computer's own settings folder. */
+  includeConfig: boolean
+}
+
+/** What one backup did. */
+export interface BackupReport {
+  snapshot: string
+  files: number
+  bytes: number
+  uploadedBytes: number
+  uploadedChunks: number
+  removedSnapshots: number
+  removedChunks: number
+  seconds: number
+  /** Files that went away between being listed and being read. */
+  skipped: string[]
+}
+
+export interface BackupStatus {
+  /** The destination this is about, as `label` names it. */
+  destination: string | null
+  lastAttempt: string | null
+  lastSuccess: string | null
+  lastError: string | null
+  failingSince: string | null
+  lastReport: BackupReport | null
+  /** When somebody last pressed Stop; the schedule then waits an interval. */
+  stoppedAt?: string | null
+  /** Every destination a backup has been made to, by `label`. */
+  used?: string[]
+}
+
+export type BackupPhase = 'preparing' | 'listing' | 'copying' | 'pruning'
+
+/** A backup in progress. */
+export interface BackupProgress {
+  phase: BackupPhase
+  /** Started from the button rather than by the clock. */
+  manual: boolean
+  filesDone: number
+  filesTotal: number
+  bytesDone: number
+  bytesTotal: number
+  uploadedBytes: number
+  uploadedChunks: number
+  started: string
+}
+
+/** What every backup command answers with. */
+export interface BackupView {
+  settings: BackupSettings
+  status: BackupStatus
+  running: BackupProgress | null
+  nextDue: string | null
+  /** An S3 access key is stored. */
+  hasKeys: boolean
+  /** False for a vault whose database is on a server. */
+  supported: boolean
+  /** False: backups are no more private than the vault. */
+  encrypted: boolean
+  /** The folder "this computer's settings" means. */
+  configDir: string
+}
+
+/** One copy kept at the destination. */
+export interface SnapshotInfo {
+  name: string
+  created: string
+}
+
+/** What trying a destination came to. */
+export interface DestinationCheck {
+  ok: boolean
+  message: string
 }
 
 // ── The assistant ────────────────────────────────────────────────────────
@@ -4302,13 +4436,27 @@ export interface CalendarFilter {
   roleIds: RoleId[]
 }
 
+/** The recognisers that run on this computer -- `karmayoga_core::speech::LocalModel`. */
 export type LocalModel = 'parakeetV3' | 'whisperTurbo'
 
+/** Who turns speech into text -- `karmayoga_core::speech::TranscriberConfig`. */
 export type TranscriberConfig =
   | { type: 'local'; model: LocalModel }
   | { type: 'openAi'; model: string }
   | { type: 'google'; model: string }
   | { type: 'compatible'; baseUrl: string; model: string }
+
+/**
+ * The speech model: the fifth card in Settings → Models, a platform setting
+ * rather than meeting notes' -- `karmayoga_core::speech::SpeechConfig`. Its key
+ * is filed under where it points, as every model's is, so OpenAI speech shares
+ * an OpenAI language model's key.
+ */
+export interface SpeechConfig {
+  transcriber: TranscriberConfig
+  /** BCP-47-ish code told to the recogniser. `null`: it detects. */
+  language?: string | null
+}
 
 export interface MeetingSettings {
   enabled: boolean
@@ -4318,9 +4466,11 @@ export interface MeetingSettings {
   micOffer: boolean
   calendars: CalendarFilter
   skippedSeries: string[]
-  transcriber?: TranscriberConfig | null
-  useAssistantKey: boolean
-  language?: string | null
+  /** Whether an older build's transcriber, language and key have moved to the
+   *  speech model in Settings → Models. The vault's to set; a save cannot
+   *  change it. (Those three old fields still arrive from a vault that has not
+   *  moved them yet; nothing here reads or writes them.) */
+  speechMoved?: boolean
   /** The template a recording is written up from when nobody picked one. */
   defaultTemplate?: TemplateId | null
   /** Whether the old in-settings template list has moved to the shared
@@ -4337,15 +4487,17 @@ export interface MeetingSettings {
 /** What `meetingSettings` answers: the settings, and what they add up to. */
 export interface MeetingSettingsView {
   settings: MeetingSettings
-  /** A transcription key is stored. The key itself never leaves the vault. */
+  /** The platform's speech model meeting notes transcribe through, chosen in
+   *  Settings → Models. `null` when none is. */
+  speech: SpeechConfig | null
+  /** A key is stored for where the speech model points. The key itself never
+   *  leaves the vault. */
   hasKey: boolean
-  /** The transcriber is chosen and can run; the switch may be turned on. */
+  /** The speech model is chosen and can run; the switch may be turned on. */
   usable: boolean
   /** Why not, in words, when `usable` is false. */
   problem?: string | null
-  /** The assistant talks to api.openai.com with a key, so it could be reused. */
-  assistantKeyAvailable: boolean
-  /** Audio leaves this machine with the chosen transcriber. */
+  /** Audio leaves this machine with the chosen speech model. */
   remote: boolean
   /** Local speech is compiled into this build. */
   localSpeech: boolean

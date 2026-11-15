@@ -34,6 +34,9 @@
 //! would make every backup of the records copy it too. The remote driver
 //! makes the opposite choice for the opposite reason.
 
+use karmayoga_core::backup::{
+    BackupJob, StagedFile, is_sqlite_file, list_files, might_be_database,
+};
 use karmayoga_core::error::{Error, Result};
 use karmayoga_core::store::{IntegrityJob, JournalStore, StoreContext, StoreFactory};
 use karmayoga_store_sql::conn::{Connection, Row, Sql, Transaction, Value};
@@ -271,7 +274,7 @@ impl Driver for SqliteDriver {
         Ok(Some(Box::new(move || quick_check(&mut conn))))
     }
 
-    /// `VACUUM INTO`, plus a copy of the media directory.
+    /// `VACUUM INTO`, plus a copy of everything else the store keeps.
     ///
     /// `VACUUM INTO` runs inside a read transaction, so the file it produces
     /// is a point-in-time snapshot even while the app keeps writing -- and it
@@ -280,10 +283,15 @@ impl Driver for SqliteDriver {
     /// filesystem would do neither: it would race the WAL and land a torn
     /// page.
     ///
-    /// Media is copied after the database, which is the safe order. A blob
-    /// present in the copy that no entry references is reclaimed by the next
-    /// GC; an entry referencing a blob that was missed would be an
-    /// attachment lost in the backup.
+    /// Everything else is copied after the database, which is the safe
+    /// order. A blob or a mail pack present in the copy that nothing
+    /// references is reclaimed by the next GC or compaction; a record
+    /// referencing one that was missed would be an attachment, or a message,
+    /// lost in the backup. That is all of it -- the media, mail's packs, a
+    /// chat link's own store -- not only the media, which is all this used
+    /// to copy: a backup made before that left every raw message behind.
+    /// Another database among them (a chat link's) is copied through SQLite
+    /// as this one is, for the same reason.
     fn snapshot(&self, conn: &mut dyn Sql, root: &Path, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
         let db = dir.join(DB_FILENAME);
@@ -297,10 +305,164 @@ impl Driver for SqliteDriver {
         // Bound as a parameter: a backup path can contain a quote.
         conn.execute("VACUUM INTO ?1", &[Value::Text(db.to_string_lossy().into_owned())])?;
 
-        karmayoga_core::fsutil::copy_tree(&root.join(MEDIA_DIRNAME), &dir.join(MEDIA_DIRNAME))?;
+        for file in list_files(root, "", &is_the_database_or_a_log)? {
+            let dest = dir.join(&file.path);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+            }
+            if might_be_database(&file.path) && is_sqlite_file(&file.source) {
+                copy_database(&file.source, &dest)?;
+            } else {
+                match std::fs::copy(&file.source, &dest) {
+                    Ok(_) => {}
+                    // Collected or compacted since it was listed: nothing
+                    // references it any more, or will once that finishes.
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(Error::io(&file.source, e)),
+                }
+            }
+        }
         karmayoga_core::fsutil::sync_dir(dir);
         Ok(())
     }
+
+    /// A consistent copy of the database through SQLite's backup API, and
+    /// every other file under the store listed to be read in place -- any
+    /// other database among them (a chat link's) copied the same way.
+    ///
+    /// The backup API rather than `VACUUM INTO`, which [`snapshot`] uses,
+    /// because of what happens next: a backup cuts the copy into chunks and
+    /// keeps only those no earlier copy had. The backup API copies the file
+    /// page for page, so a day of mail moves only the pages it touched and
+    /// most chunks are the ones already kept; `VACUUM INTO` rebuilds the
+    /// file, and moves every page after the first change. It copies in one
+    /// step, so it reads one point in time, on a connection of its own that
+    /// only reads -- in WAL mode the app's writes carry on meanwhile.
+    ///
+    /// [`snapshot`]: Driver::snapshot
+    fn backup_job(&self, root: &Path) -> Result<BackupJob> {
+        let db_path = self.db_path.clone();
+        let root = root.to_path_buf();
+        Ok(Box::new(move |staging: &Path| stage_for_backup(&db_path, &root, staging)))
+    }
+}
+
+/// What [`SqliteDriver::backup_job`]'s job does.
+fn stage_for_backup(db_path: &Path, root: &Path, staging: &Path) -> Result<Vec<StagedFile>> {
+    let staged = |path: String, file: PathBuf| -> Result<StagedFile> {
+        let size = std::fs::metadata(&file).map_err(|e| Error::io(&file, e))?.len();
+        Ok(StagedFile { path, source: file, size, modified_ns: None, database: true })
+    };
+    let mut files = Vec::new();
+    let db_copy = staging.join(STORE_PREFIX).join(DB_FILENAME);
+    // The copy is as large as the database and its log together. Said up
+    // front, in numbers, rather than as a disk filling half way through.
+    let needed = [db_path.to_path_buf(), sibling(db_path, "-wal")]
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum::<u64>();
+    if let Some(free) = karmayoga_core::fsutil::available_space(staging)
+        && free < needed + needed / 20
+    {
+        return Err(Error::Invalid(format!(
+            "a backup copies the database first, and that needs {} free on the vault's disk; \
+             there is {}",
+            gigabytes(needed),
+            gigabytes(free)
+        )));
+    }
+    copy_database(db_path, &db_copy)?;
+    files.push(staged(format!("{STORE_PREFIX}/{DB_FILENAME}"), db_copy)?);
+
+    for file in list_files(root, STORE_PREFIX, &|path| {
+        is_the_database_or_a_log(
+            path.strip_prefix(STORE_PREFIX).unwrap_or(path).trim_start_matches('/'),
+        )
+    })? {
+        if might_be_database(&file.path) && is_sqlite_file(&file.source) {
+            let copy = staging.join(&file.path);
+            copy_database(&file.source, &copy)?;
+            files.push(staged(file.path, copy)?);
+        } else {
+            files.push(file);
+        }
+    }
+    Ok(files)
+}
+
+/// `path` with `suffix` on the end of its file name: a database's `-wal`.
+fn sibling(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+fn gigabytes(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1e9)
+}
+
+/// What a backup's paths are prefixed with: the store's own directory under
+/// the vault's.
+const STORE_PREFIX: &str = "store";
+
+/// The database under either of its names, and any database's log or
+/// journal, by a path relative to the store's directory. Each database is
+/// copied through SQLite, which takes in its log; a log copied as a file
+/// would be a second, torn version of the same pages.
+fn is_the_database_or_a_log(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    path == DB_FILENAME
+        || path == karmayoga_core::legacy::SQLITE_DB_FILENAME
+        || name.ends_with("-wal")
+        || name.ends_with("-shm")
+        || name.ends_with("-journal")
+}
+
+/// Copy the SQLite database at `from` to `to` -- a new file -- as it stands
+/// at one moment, through SQLite's backup API, in one step on a read-only
+/// connection of its own. The copy is left as one file with no log beside
+/// it, ready to be read as bytes.
+fn copy_database(from: &Path, to: &Path) -> Result<()> {
+    use rusqlite::OpenFlags;
+    use rusqlite::backup::{Backup, StepResult};
+    if let Some(parent) = to.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+    }
+    let source = rusqlite::Connection::open_with_flags(
+        from,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(Error::backend)?;
+    source.busy_timeout(std::time::Duration::from_secs(5)).map_err(Error::backend)?;
+    let mut dest = rusqlite::Connection::open(to).map_err(Error::backend)?;
+    {
+        let backup = Backup::new(&source, &mut dest).map_err(Error::backend)?;
+        let mut waits = 0;
+        loop {
+            match backup.step(-1).map_err(Error::backend)? {
+                StepResult::Done => break,
+                StepResult::More => {}
+                // Somebody holds a lock the copy has to wait out -- a
+                // checkpoint, usually. A minute of that is not waiting any
+                // more.
+                _ if waits < 600 => {
+                    waits += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                _ => {
+                    return Err(Error::Invalid(format!(
+                        "{} stayed busy for a minute; try the backup again",
+                        from.display()
+                    )));
+                }
+            }
+        }
+    }
+    // One file, no log: the copy is read as bytes next.
+    dest.pragma_update(None, "journal_mode", "DELETE").map_err(Error::backend)?;
+    drop(dest);
+    Ok(())
 }
 
 impl VersionStore for SqliteDriver {

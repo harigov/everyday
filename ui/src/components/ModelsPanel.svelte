@@ -4,7 +4,9 @@
   // Application settings rather than the assistant's -- the assistant is one
   // of three things here that ask a model, and its own tab is about who it is
   // and how it behaves. Three cards, largest first, each opening with what it
-  // is used for, because that is what decides which model belongs in it.
+  // is used for, because that is what decides which model belongs in it; then
+  // the decision model, and the speech model -- platform choices too, made
+  // here once rather than inside the first feature that needed them.
   //
   // A key belongs to an endpoint, not to a card: two cards at one address
   // share one key, and the card says so. Moving a card to another address
@@ -23,9 +25,13 @@
     decisionProviderLabel,
     endpointOf,
     providerLabel,
+    speechEndpointOf,
+    speechProviderLabel,
   } from '../lib/accounts'
   import { isLoopback } from '../lib/agent'
   import { humanBytes } from '../lib/format'
+  import { meetings } from '../lib/meetings.svelte'
+  import { LOCAL_RECOGNISERS, formatRealtimeFactor, isTooSlow } from '../lib/meetings-format'
   import { models } from '../lib/models.svelte'
   import { quick } from '../lib/quick.svelte'
   import { quietly } from '../lib/state.svelte'
@@ -33,11 +39,13 @@
     DecisionApi,
     DecisionConfig,
     LLMConfig,
+    LocalModelInfo,
     ModelSettings,
     ModelSlot,
     ModelTier,
     QuickAskRow,
     ReasoningEffort,
+    TranscriberConfig,
   } from '../lib/types'
   import Icon from './Icon.svelte'
   import Meter from './Meter.svelte'
@@ -45,7 +53,14 @@
   // Edited on a copy. The pane has a Save, so a half-typed base URL must not
   // be what the next message is sent to.
   let draft = $state<ModelSettings | null>(null)
-  let keys = $state<Record<ModelSlot, string>>({ large: '', medium: '', small: '', decision: '' })
+  const NO_KEYS: Record<ModelSlot, string> = {
+    large: '',
+    medium: '',
+    small: '',
+    decision: '',
+    speech: '',
+  }
+  let keys = $state<Record<ModelSlot, string>>({ ...NO_KEYS })
   let notice = $state<string | null>(null)
   let saving = $state(false)
   /** Clears "Saved." after a moment, and only that -- see `AgentPanel`. */
@@ -75,6 +90,7 @@
     if (ok && models.settings) draft = structuredClone($state.snapshot(models.settings))
   })
   void models.refreshLocal().catch(quietly)
+  void models.refreshSpeech().catch(quietly)
   void quick.load()
 
   type Card = {
@@ -239,16 +255,27 @@
     return saved ? endpointOf(saved.baseUrl) : null
   }
 
-  /** The other cards at the same address as this one, which share its key. */
-  function sharing(tier: ModelTier): string[] {
-    const mine = configOf(tier)
-    if (!mine) return []
-    return CARDS.filter(
-      (c) =>
-        c.tier !== tier &&
-        configOf(c.tier) != null &&
-        endpointOf(configOf(c.tier)!.baseUrl) === endpointOf(mine.baseUrl),
-    ).map((c) => c.title)
+  /**
+   * Every card in the draft pointing at `endpoint`, but `except` -- the cards
+   * that share its key. The speech card is one: OpenAI speech is at the
+   * address an OpenAI language model is, so the two have one key.
+   */
+  function cardsAt(endpoint: string | null, except: string): string[] {
+    if (!endpoint || !draft) return []
+    const at: string[] = []
+    for (const c of CARDS) {
+      const config = configOf(c.tier)
+      if (config && endpointOf(config.baseUrl) === endpoint) at.push(c.title)
+    }
+    if (draft.decision && decisionEndpointOf(draft.decision) === endpoint) at.push('Decision')
+    if (draft.speech && speechEndpointOf(draft.speech.transcriber) === endpoint) at.push('Speech')
+    return at.filter((title) => title !== except)
+  }
+
+  /** The other cards at the same address as this tier, which share its key. */
+  function sharing(card: Card): string[] {
+    const mine = configOf(card.tier)
+    return mine ? cardsAt(endpointOf(mine.baseUrl), card.title) : []
   }
 
   /**
@@ -280,6 +307,108 @@
     }
   }
 
+  // ── Speech ───────────────────────────────────────────────────────
+
+  /**
+   * Turning the speech model on and off. On starts at a recogniser on this
+   * computer where this copy can run one -- nothing is downloaded until
+   * somebody presses Download, and nothing is sent anywhere -- and at OpenAI
+   * where it cannot, with the model left for somebody to name: the model
+   * field offers names, it does not pick one.
+   */
+  function toggleSpeech(on: boolean) {
+    if (!draft) return
+    draft.speech = !on
+      ? null
+      : {
+          transcriber: models.localSpeech
+            ? { type: 'local', model: 'parakeetV3' }
+            : { type: 'openAi', model: '' },
+          language: null,
+        }
+  }
+
+  /** Choosing where speech becomes text. The language stays: it is about
+   *  what is said, not who listens. Clicking the chip already on keeps what
+   *  was typed under it. */
+  function chooseTranscriber(kind: TranscriberConfig['type']) {
+    if (!draft?.speech || draft.speech.transcriber.type === kind) return
+    draft.speech.transcriber =
+      kind === 'local'
+        ? { type: 'local', model: 'parakeetV3' }
+        : kind === 'compatible'
+          ? { type: 'compatible', baseUrl: '', model: '' }
+          : { type: kind, model: '' }
+  }
+
+  const SPEECH_CHOICES: { kind: TranscriberConfig['type']; label: string }[] = [
+    { kind: 'openAi', label: 'OpenAI' },
+    { kind: 'google', label: 'Google' },
+    { kind: 'compatible', label: 'Compatible server' },
+  ]
+
+  function speechInfo(id: string): LocalModelInfo | undefined {
+    return models.speech.find((m) => m.id === id)
+  }
+
+  const speechKit = $derived(speechInfo('speechKit'))
+
+  /** Where the speech card points as saved -- what its key commands act on. */
+  const savedSpeechEndpoint = $derived(
+    models.settings?.speech ? speechEndpointOf(models.settings.speech.transcriber) : null,
+  )
+
+  /** A recogniser's own timing, by id: what "Check speed" last said. */
+  let speechTiming = $state<string | null>(null)
+  let speechTimed = $state<Record<string, string>>({})
+
+  async function checkSpeechSpeed(id: string) {
+    speechTiming = id
+    try {
+      const b = await models.benchmarkSpeech(id)
+      const slow = isTooSlow(b.realtimeFactor)
+        ? ' — a provider will be faster on this machine.'
+        : ''
+      speechTimed = { ...speechTimed, [id]: formatRealtimeFactor(b.realtimeFactor) + slow }
+    } catch (e) {
+      speechTimed = { ...speechTimed, [id]: e instanceof Error ? e.message : String(e) }
+    } finally {
+      speechTiming = null
+    }
+  }
+
+  let testingSpeech = $state(false)
+  let speechTested = $state<string | null>(null)
+
+  /** Ask the saved speech model to prove it works. */
+  async function testSpeech() {
+    testingSpeech = true
+    speechTested = null
+    try {
+      await models.testSpeech()
+      speechTested = 'Working.'
+    } catch (e) {
+      speechTested = e instanceof Error ? e.message : String(e)
+    } finally {
+      testingSpeech = false
+    }
+  }
+
+  /**
+   * Meeting notes say whether they could run from the speech model, in a view
+   * of their own that the offer banner reads too. Read again once the speech
+   * model may have changed, if anything has it loaded.
+   */
+  function speechChanged() {
+    if (meetings.view) void meetings.reload()
+  }
+
+  /** The speech card as drafted differs from what is saved -- and Test tries
+   *  what is saved. */
+  const speechUnsaved = $derived(
+    JSON.stringify(draft?.speech ?? null) !== JSON.stringify(models.settings?.speech ?? null),
+  )
+
   async function save() {
     if (!draft) return
     clearNotice()
@@ -296,8 +425,12 @@
       if (keys.decision.trim() && draft.decision && draft.decision.api !== 'local') {
         await models.setKey('decision', keys.decision.trim())
       }
-      keys = { large: '', medium: '', small: '', decision: '' }
+      if (keys.speech.trim() && draft.speech && speechEndpointOf(draft.speech.transcriber)) {
+        await models.setKey('speech', keys.speech.trim())
+      }
+      keys = { ...NO_KEYS }
       draft = structuredClone($state.snapshot(models.settings!))
+      speechChanged()
       confirm('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
@@ -310,6 +443,7 @@
     clearNotice()
     try {
       await models.clearKey(tier)
+      if (tier === 'speech') speechChanged()
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
     }
@@ -328,12 +462,12 @@
 {:else}
   <div class="panes">
     <p class="hint lead">
-      Three models, one for each size of work, each with its own provider and model name, and a
-      decision model for sorting mail. Anything that speaks the OpenAI chat API works — leave the
-      address empty for OpenAI itself. What you ask about is sent to the provider of whichever model
-      does the work; a model on this machine sends nothing anywhere. A reasoning effort left at the
-      provider's default is the provider's choice, and can be no thinking at all — OpenAI's gpt-5.1
-      defaults to None.
+      Three models, one for each size of work, each with its own provider and model name; a decision
+      model for sorting mail; and a speech model for turning speech into text. Anything that speaks
+      the OpenAI chat API works — leave the address empty for OpenAI itself. What you ask about is
+      sent to the provider of whichever model does the work; a model on this machine sends nothing
+      anywhere. A reasoning effort left at the provider's default is the provider's choice, and can
+      be no thinking at all — OpenAI's gpt-5.1 defaults to None.
     </p>
 
     {#each CARDS as card (card.tier)}
@@ -367,7 +501,7 @@
         {:else}
           {@const local = isLoopback(config.baseUrl)}
           {@const keyed = models.hasKey(config)}
-          {@const shared = sharing(card.tier)}
+          {@const shared = sharing(card)}
           <div class="presets" role="group" aria-label="{card.title} provider">
             {#each KNOWN_LLM_ENDPOINTS as preset (preset.label)}
               <button
@@ -639,6 +773,265 @@
       {/if}
     </section>
 
+    <section class="card" aria-labelledby="model-speech">
+      <div class="head">
+        <span class="eyebrow" id="model-speech">Speech</span>
+        <label class="toggle compact">
+          <input
+            type="checkbox"
+            checked={draft.speech != null}
+            onchange={(e) => toggleSpeech(e.currentTarget.checked)}
+          />
+          <span>{draft.speech ? 'On' : 'Off'}</span>
+        </label>
+      </div>
+      <p class="hint">
+        Turning speech into text. Meeting notes use it today, to transcribe a call; it is set here,
+        once, so anything else in the app that listens uses the same model and the same key.
+      </p>
+      {#if !draft.speech}
+        <p class="hint">
+          Off: nothing turns speech into text, so meeting notes cannot be switched on.
+        </p>
+      {:else}
+        {@const speech = draft.speech}
+        {@const t = speech.transcriber}
+        {@const endpoint = speechEndpointOf(t)}
+        {@const keyed = endpoint != null && models.hasKeyAt(endpoint)}
+        {@const shared = cardsAt(endpoint, 'Speech')}
+        {@const needsKey =
+          t.type === 'openAi' ||
+          t.type === 'google' ||
+          (t.type === 'compatible' && !!endpoint && !isLoopback(endpoint))}
+
+        {#if speechKit}
+          {@const kit = speechKit}
+          <div class="model-row">
+            <div class="model-text">
+              <b>Speech kit</b>
+              <small>{kit.description} · {humanBytes(kit.bytes)}</small>
+              {#if kit.error}<small class="failed">The download failed: {kit.error}</small>{/if}
+            </div>
+            {#if kit.progress}
+              <div class="model-progress">
+                <Meter
+                  label="Downloading"
+                  value={kit.progress.done / kit.progress.total}
+                  note={`${humanBytes(kit.progress.done)} of ${humanBytes(kit.progress.total)}`}
+                />
+                <button class="btn" onclick={() => void onLocal(() => models.cancelSpeech(kit.id))}
+                  >Cancel</button
+                >
+              </div>
+            {:else if kit.installed}
+              <button class="btn" onclick={() => void onLocal(() => models.deleteSpeech(kit.id))}
+                >Delete</button
+              >
+            {:else}
+              <button class="btn" onclick={() => void onLocal(() => models.downloadSpeech(kit.id))}
+                >Download</button
+              >
+            {/if}
+          </div>
+          <p class="hint">
+            Needed whichever way speech becomes text: it finds the speech in a call before anything
+            is transcribed, and tells voices apart.
+          </p>
+        {/if}
+
+        <div class="presets" role="group" aria-label="Where speech becomes text">
+          {#if models.localSpeech || t.type === 'local'}
+            <button
+              class="chip"
+              class:on={t.type === 'local'}
+              aria-pressed={t.type === 'local'}
+              onclick={() => chooseTranscriber('local')}
+            >
+              On this computer
+            </button>
+          {/if}
+          {#each SPEECH_CHOICES as choice (choice.kind)}
+            <button
+              class="chip"
+              class:on={t.type === choice.kind}
+              aria-pressed={t.type === choice.kind}
+              onclick={() => chooseTranscriber(choice.kind)}
+            >
+              {choice.label}
+            </button>
+          {/each}
+        </div>
+
+        {#if t.type === 'local'}
+          {#if !models.localSpeech}
+            <p class="hint">
+              This copy of Karma Yoga cannot run a recogniser itself. Choose a provider above.
+            </p>
+          {/if}
+          {#each LOCAL_RECOGNISERS as m (m.id)}
+            {@const info = speechInfo(m.id)}
+            <label class="model-row pick">
+              <input
+                type="radio"
+                name="speech-model"
+                checked={t.model === m.id}
+                onchange={() => (speech.transcriber = { type: 'local', model: m.id })}
+              />
+              <div class="model-text">
+                <b>{m.name}</b>
+                <small>{m.blurb}{info ? ` · ${humanBytes(info.bytes)}` : ''}</small>
+                {#if speechTimed[m.id]}<small class="speed">{speechTimed[m.id]}</small>{/if}
+                {#if info?.error}
+                  <small class="failed">The download failed: {info.error}</small>
+                {/if}
+              </div>
+              {#if info?.progress}
+                <div class="model-progress">
+                  <Meter
+                    label="Downloading"
+                    value={info.progress.done / info.progress.total}
+                    note={`${humanBytes(info.progress.done)} of ${humanBytes(info.progress.total)}`}
+                  />
+                  <button class="btn" onclick={() => void onLocal(() => models.cancelSpeech(m.id))}
+                    >Cancel</button
+                  >
+                </div>
+              {:else if info?.installed}
+                <button
+                  class="btn"
+                  disabled={speechTiming === m.id}
+                  onclick={() => void checkSpeechSpeed(m.id)}
+                >
+                  {speechTiming === m.id ? 'Checking…' : 'Check speed'}
+                </button>
+                <button class="btn" onclick={() => void onLocal(() => models.deleteSpeech(m.id))}
+                  >Delete</button
+                >
+              {:else}
+                <button class="btn" onclick={() => void onLocal(() => models.downloadSpeech(m.id))}
+                  >Download</button
+                >
+              {/if}
+            </label>
+          {/each}
+          <p class="hint">
+            Runs here, so a call never leaves this computer. Choose one and download it after;
+            nothing is transcribed until it and the speech kit are both downloaded.
+          </p>
+        {:else if t.type === 'openAi'}
+          <label class="setting">
+            <span>Model name</span>
+            <input
+              list="openai-speech-models"
+              bind:value={t.model}
+              placeholder="gpt-4o-transcribe-diarize"
+              spellcheck="false"
+            />
+            <datalist id="openai-speech-models">
+              <option value="gpt-4o-transcribe-diarize"></option>
+              <option value="gpt-4o-transcribe"></option>
+            </datalist>
+          </label>
+        {:else if t.type === 'google'}
+          <label class="setting">
+            <span>Model name</span>
+            <input
+              list="google-speech-models"
+              bind:value={t.model}
+              placeholder="gemini-2.5-flash"
+              spellcheck="false"
+            />
+            <datalist id="google-speech-models">
+              <option value="gemini-2.5-flash"></option>
+            </datalist>
+          </label>
+        {:else if t.type === 'compatible'}
+          <label class="setting">
+            <span>Base URL</span>
+            <input
+              value={t.baseUrl}
+              oninput={(e) => (t.baseUrl = e.currentTarget.value.trim())}
+              placeholder="http://localhost:8000/v1"
+              spellcheck="false"
+            />
+          </label>
+          <label class="setting">
+            <span>Model name</span>
+            <input bind:value={t.model} placeholder="whisper-1" spellcheck="false" />
+          </label>
+          <p class="hint">
+            Anything that speaks OpenAI's transcription API: whisper.cpp's server, Speaches.
+          </p>
+        {/if}
+
+        {#if t.type !== 'local'}
+          {#if keyed}
+            <div class="stored">
+              <span>
+                <Icon name="lock" size={14} />
+                A key for {speechProviderLabel(t)} is stored{shared.length
+                  ? `, shared with ${shared.join(' and ')}`
+                  : ''}.
+              </span>
+              {#if savedSpeechEndpoint === endpoint}
+                <button class="link" onclick={() => void removeKey('speech')}>Remove</button>
+              {/if}
+            </div>
+          {/if}
+          <label class="setting">
+            <span>{keyed ? 'Replace the key' : 'API key'}</span>
+            <input
+              type="password"
+              bind:value={keys.speech}
+              placeholder={needsKey ? 'Its API key' : 'Not needed for a server on this machine'}
+              spellcheck="false"
+              autocomplete="off"
+            />
+          </label>
+          {#if !keyed && needsKey && shared.length}
+            <p class="hint">One key serves Speech and {shared.join(' and ')}.</p>
+          {/if}
+          {#if needsKey}
+            <p class="hint">
+              While a call is recorded its speech is sent to {speechProviderLabel(t)} — only speech, cut
+              from silence on this computer first.
+            </p>
+          {:else if endpoint}
+            <p class="hint">Audio never leaves this computer: the server runs here.</p>
+          {/if}
+        {/if}
+
+        <label class="setting">
+          <span>Language</span>
+          <input
+            value={speech.language ?? ''}
+            oninput={(e) => (speech.language = e.currentTarget.value.trim() || null)}
+            placeholder="Detect automatically"
+            spellcheck="false"
+          />
+        </label>
+        <p class="hint">
+          A language code such as en or de, told to the recogniser. Left empty, it works out which
+          language is being spoken.
+        </p>
+
+        <div class="row">
+          <button
+            class="btn"
+            disabled={testingSpeech || !models.settings?.speech}
+            onclick={() => void testSpeech()}
+          >
+            {testingSpeech ? 'Testing…' : 'Test'}
+          </button>
+          {#if speechTested}
+            <span class="notice">{speechTested}</span>
+          {:else if speechUnsaved}
+            <span class="notice">Test tries what is saved, so save first.</span>
+          {/if}
+        </div>
+      {/if}
+    </section>
+
     <p class="hint">
       Keys are encrypted with everything else in the vault, so they are unreadable while it is
       locked — and nothing can spend them while it is locked either. Moving a model to another
@@ -842,6 +1235,13 @@
   .switch-blurb {
     color: var(--fg-subtle);
     font-size: var(--text-xs);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    min-width: 0;
   }
 
   .save {

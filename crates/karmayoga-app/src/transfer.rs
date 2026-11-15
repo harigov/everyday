@@ -159,6 +159,26 @@ fn safe_file_name(name: &str) -> String {
     if trimmed.is_empty() { "attachment".to_string() } else { trimmed.to_string() }
 }
 
+/// Ask for a folder, for Settings → Backup. Answers the path, or `None`
+/// when the dialog was dismissed.
+///
+/// Only a path crosses back, and only one the person just picked: the
+/// folder is not read or written here. Whether it will do is the service's
+/// question, asked by `check_backup_destination`.
+#[tauri::command]
+pub async fn pick_folder(app: tauri::AppHandle, title: String) -> CommandResult<Option<String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().set_title(title).pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+    Ok(rx
+        .await
+        .ok()
+        .flatten()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned()))
+}
+
 /// Pick an archive and hand it to the service, chunk by chunk.
 ///
 /// Answers `None` when the dialog was dismissed. What comes back is the handle

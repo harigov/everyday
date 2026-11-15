@@ -235,9 +235,10 @@ impl RecordKind {
 
     /// The literal `record_secrets.owner_kind` this kind's per-record
     /// secrets are filed under, where one exists. Only accounts have one
-    /// today — see `karmayoga_core::account::ACCOUNT_SECRET_OWNER_KIND` — a
-    /// transcriber's own secret is filed under `"transcriber"`, which is
-    /// not a `RecordKind` at all (see
+    /// today — see `karmayoga_core::account::ACCOUNT_SECRET_OWNER_KIND` — an
+    /// older build's transcriber key is filed under `"transcriber"`, which
+    /// is not a `RecordKind` at all, until unlock moves it into the model
+    /// keys (see
     /// `karmayoga_core::vault::meetings::TRANSCRIBER_SECRET_OWNER_KIND`).
     pub fn secret_owner(self) -> Option<&'static str> {
         match self {

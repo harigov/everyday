@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use jiff::Timestamp;
-use karmayoga_core::meeting::{MeetingSettings, Recording, Stage, TranscriberConfig, Transcript};
+use karmayoga_core::meeting::{Recording, Stage, Transcript};
+use karmayoga_core::speech::SpeechConfig;
 use karmayoga_core::{Note, NoteOrigin, RecordingId, TranscriptId, Vault};
 
 use crate::error::{CommandError, CommandResult, codes};
@@ -130,11 +131,15 @@ pub(crate) async fn transcribe_pending(
         let vault = vault.clone();
         blocking(move || Ok(vault.meeting_settings()?)).await?
     };
-    let Some(config) = settings.transcriber.clone() else {
-        return Err(CommandError::new(codes::UNSUPPORTED, "no transcriber is configured"));
+    // The platform's speech model and the key for where it points, from the
+    // one door either leaves the vault by -- not switched on, or keyless
+    // where a key is needed, is an error here rather than a request that
+    // fails at the other end.
+    let access = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.speech_access()?)).await?
     };
-    let key = crate::domains::meetings::transcriber_key(vault);
-    let transcriber = build_transcriber(&config, key)?;
+    let transcriber = build_transcriber(&access.config.transcriber, access.key)?;
 
     let words = {
         let vault = vault.clone();
@@ -143,7 +148,7 @@ pub(crate) async fn transcribe_pending(
         blocking(move || Ok(words_for(&vault, event.as_ref(), &settings))).await?
     };
     let hints = Hints {
-        language: settings.language.clone(),
+        language: access.config.language.clone(),
         prompt: karmayoga_core::meeting::vocab::transcriber_prompt(&words),
     };
 
@@ -172,7 +177,7 @@ pub(crate) async fn transcribe_pending(
 ///
 /// Re-reads the setting rather than trusting whoever enqueued this pass:
 /// `chunk_closed` already checks `is_remote` before enqueuing, but the
-/// person could switch the transcriber to a local one between one chunk
+/// person could switch the speech model to a local one between one chunk
 /// closing and this attempt actually running, and a local model has no
 /// business being built here regardless of what triggered the call.
 pub(crate) async fn transcribe_live(
@@ -180,15 +185,22 @@ pub(crate) async fn transcribe_live(
     source: &Arc<dyn AudioSource>,
     id: RecordingId,
 ) -> CommandResult<()> {
-    let settings = {
+    let remote = {
         let vault = vault.clone();
-        blocking(move || Ok(vault.meeting_settings()?)).await?
+        blocking(move || Ok(speech_is_remote(&vault))).await?
     };
-    let remote = settings.transcriber.as_ref().is_some_and(TranscriberConfig::is_remote);
     if !remote {
         return Ok(());
     }
     transcribe_pending(vault, source, id).await
+}
+
+/// Whether the platform's speech model sends audio off this machine -- what
+/// decides whether a chunk is transcribed while the call is still going. No
+/// speech model, or one that cannot be read, is not remote: nothing is sent
+/// early, and the pass at the end of the call says what is wrong.
+pub(crate) fn speech_is_remote(vault: &Vault) -> bool {
+    vault.speech_and_keyed().ok().and_then(|(speech, _)| speech).is_some_and(|s| s.is_remote())
 }
 
 pub(crate) async fn do_transcribe(
@@ -280,18 +292,21 @@ pub(crate) async fn do_identify(
     .map(|_| ())
 }
 
+/// The transcript, labelled with the speech model it was transcribed by --
+/// `speech` as it stands when the note is written, the platform's choice
+/// rather than meeting notes'.
 fn build_transcript(
     recording: &Recording,
     identified: &Identified,
-    settings: &MeetingSettings,
+    speech: Option<&SpeechConfig>,
 ) -> Transcript {
-    let backend = settings.transcriber.as_ref().map(TranscriberConfig::label).unwrap_or_default();
+    let backend = speech.map(|s| s.transcriber.label()).unwrap_or_default();
     let now = Timestamp::now();
     Transcript {
         id: TranscriptId::new(),
         note_id: karmayoga_core::NoteId::new(),
         recording_id: Some(recording.id),
-        language: settings.language.clone(),
+        language: speech.and_then(|s| s.language.clone()),
         backend,
         speakers: identified.speakers.clone(),
         segments: identified.segments.clone(),
@@ -363,10 +378,15 @@ pub(crate) async fn do_summarise_and_write(
         .summary_budget
         .unwrap_or_else(|| karmayoga_core::meeting::prompt::default_budget(loopback));
 
+    let speech = {
+        let vault = vault.clone();
+        blocking(move || Ok(vault.speech_and_keyed()?.0)).await?
+    };
+
     // Names first, so the summary is written about people rather than
     // "Unknown 3".
     resolve_speakers(summariser, &mut identified, budget).await;
-    let mut transcript = build_transcript(&recording, &identified, &settings);
+    let mut transcript = build_transcript(&recording, &identified, speech.as_ref());
     let facts = facts_for(&recording, &identified, &tz);
 
     let spelling = karmayoga_core::meeting::vocab::spelling_line(&identified.words);

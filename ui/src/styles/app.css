@@ -549,8 +549,8 @@ textarea.field {
 }
 
 /* ── Downloadable models ───────────────────────────────────────────────
-   One row per model that runs on this computer -- meeting notes' recognisers,
-   the decision models under Settings → Models: what it is, its size, and
+   One row per model that runs on this computer -- the speech and decision
+   cards' models under Settings → Models: what it is, its size, and
    download, progress or delete at the end. */
 .model-row {
   display: flex;

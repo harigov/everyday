@@ -299,6 +299,7 @@ pub fn run() {
             // touches the webview: see `transfer.rs`.
             transfer::save_export,
             transfer::open_import,
+            transfer::pick_folder,
             transfer::save_mail_part,
             // This process's own furniture.
             commands::set_opens_itself,

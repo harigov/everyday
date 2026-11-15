@@ -10,6 +10,7 @@
 
 pub mod accounts;
 pub mod assistant;
+pub mod backup;
 pub mod calendars;
 pub mod chat;
 pub mod insights;
@@ -72,6 +73,7 @@ pub fn catalog() -> &'static [&'static Command] {
     ALL.get_or_init(|| {
         [
             vault::COMMANDS,
+            backup::COMMANDS,
             accounts::COMMANDS,
             journals::COMMANDS,
             tasks::COMMANDS,

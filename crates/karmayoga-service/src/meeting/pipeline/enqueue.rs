@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use karmayoga_core::RecordingId;
-use karmayoga_core::meeting::{Track, TranscriberConfig};
+use karmayoga_core::meeting::Track;
 
 use crate::service::Service;
 use crate::supervisor::Outcome;
@@ -59,7 +59,7 @@ pub fn enqueue(svc: &Arc<Service>, id: RecordingId) {
 }
 
 /// One chunk has been spooled while the call is still going. For a remote
-/// transcriber, [`enqueue`] -- and, through it, [`run_recording`]'s
+/// speech model, [`enqueue`] -- and, through it, [`run_recording`]'s
 /// `Stage::Recording` arm and [`transcribe_live`] -- transcribes it right
 /// away, so a long call is mostly done by its end rather than starting from
 /// nothing once it ends.
@@ -71,9 +71,7 @@ pub fn enqueue(svc: &Arc<Service>, id: RecordingId) {
 /// always safe.
 pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u32) {
     let Ok(vault) = svc.require() else { return };
-    let Ok(settings) = vault.meeting_settings() else { return };
-    let remote = settings.transcriber.as_ref().is_some_and(TranscriberConfig::is_remote);
-    if remote {
+    if speech_is_remote(&vault) {
         enqueue(svc, id);
     }
 }
@@ -91,7 +89,7 @@ pub fn chunk_closed(svc: &Arc<Service>, id: RecordingId, _track: Track, _seq: u3
 /// A slow or gated real transcriber could stand in for this instead, and is
 /// what `tests::spawn_flaky_server` gives the *other* retry tests their
 /// timing from -- but `chunk_closed`'s own early transcription only runs for
-/// a transcriber [`TranscriberConfig::is_remote`] calls remote, and every
+/// a speech model `TranscriberConfig::is_remote` calls remote, and every
 /// address a test can actually reach from inside this process is, by that
 /// same function's own reading, loopback. This gate holds the early attempt
 /// "still running" a different way, exactly where a slow network call would

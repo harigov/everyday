@@ -409,15 +409,17 @@ async fn run_once(
         configure_assistant(&vault, openai_key);
     }
 
-    let settings = MeetingSettings {
-        transcriber: Some(transcriber),
-        voiceprints: false,
-        ..MeetingSettings::default()
-    };
-    vault.save_meeting_settings(&settings).unwrap();
-    if matches!(settings.transcriber, Some(TranscriberConfig::OpenAi { .. })) {
-        vault.set_transcriber_key(Some(openai_key)).unwrap();
+    // How speech becomes text is the platform's speech model, chosen and
+    // keyed in Settings → Models; meeting notes only say voiceprints are off.
+    let openai = matches!(transcriber, TranscriberConfig::OpenAi { .. });
+    let mut platform = vault.model_settings().unwrap();
+    platform.speech = Some(karmayoga_core::speech::SpeechConfig::new(transcriber));
+    vault.save_model_settings(&platform).unwrap();
+    if openai {
+        vault.set_model_key(karmayoga_core::llm::ModelSlot::Speech, openai_key).unwrap();
     }
+    let settings = MeetingSettings { voiceprints: false, ..MeetingSettings::default() };
+    vault.save_meeting_settings(&settings).unwrap();
 
     let event = EventRef {
         calendar_id: CalendarId::new(),

@@ -289,6 +289,12 @@ export const SYMBOLS: Partial<Record<SymbolName, SymbolArt>> = {
       '<circle cx="9" cy="7.4" r="3.9"/>' +
       '<path d="M2 20.5v-.6a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v.6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z"/>',
   },
+  // A box with its lid: Settings → Backup.
+  archive: {
+    back: '<path d="M3.5 9.5h17v9a2.5 2.5 0 0 1-2.5 2.5H6a2.5 2.5 0 0 1-2.5-2.5Z"/>',
+    front:
+      '<rect x="2" y="3" width="20" height="5.5" rx="1.6"/>' + '<path class="s" d="M10 13.5h4"/>',
+  },
   upload: {
     back: '<path d="M2.5 14.5h4.5v2.6a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-2.6h4.5v4.4a2.6 2.6 0 0 1-2.6 2.6H5.1a2.6 2.6 0 0 1-2.6-2.6Z"/>',
     front: '<path class="s" d="M12 3.5v10.5M7.5 8l4.5-4.5L16.5 8"/>',
