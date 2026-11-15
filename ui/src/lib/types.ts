@@ -4136,7 +4136,10 @@ export interface ProposalPolicy {
  * about to be saved with instructions naming an address nobody gave -- its
  * runs would open it unasked. `'rewrite'` is a money rule, or a change to
  * more than twenty transactions, after a stranger's words -- a transfer's
- * memo, a mail -- were read this turn. See `agent::tools::mail`'s module docs in the
+ * memo, a mail -- were read this turn. `'connection'` is a tool on a connected
+ * MCP server (Slack, Linear, ...) that its policy says to ask about -- the
+ * subject names the connection, the tool and the arguments in full. See
+ * `agent::tools::mail`'s module docs in the
  * Rust core, `ConfirmGate` in the service, and the service's `browser`
  * module, for the whole of the reasoning behind each.
  */
@@ -4149,6 +4152,7 @@ export const CONFIRM_KINDS = [
   'click',
   'routine',
   'rewrite',
+  'connection',
 ] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 
@@ -6473,4 +6477,150 @@ export interface VisitBrief {
   markdown: string
   since: string
   conditionId?: ConditionId | null
+}
+
+// ── Connections ─────────────────────────────────────────────────────────
+//
+// MCP servers the assistant may use -- Slack, Linear, GitHub, Chrome, ... --
+// each signed in as one account. Mirrors `karmayoga_core::connection` and
+// `karmayoga_service::domains::connections`. See `docs/plans/connections.md`.
+
+export type ConnectionId = string
+
+/** Header or environment values, by name. Only ever sent, never read back. */
+export type ConnectionValues = Record<string, string>
+
+/** How the client reaches a server. Header and variable values are sealed
+ *  apart; only their names are here. */
+export type ConnectionTransport =
+  | { type: 'http'; url: string; headers: string[] }
+  | { type: 'stdio'; command: string; args: string[]; env: string[]; cwd?: string | null }
+
+/** How a connection signs in, beyond any headers or variables it names. */
+export type ConnectionAuth =
+  | { type: 'none' }
+  | { type: 'bearer' }
+  | {
+      type: 'oAuth'
+      /** The person's own client, for a service that does not register one
+       *  itself (Slack, Google, GitHub). `null` registers one at sign-in. */
+      clientId?: string | null
+      /** Empty asks for what the server suggests. */
+      scopes: string[]
+      /** A fixed loopback port, for a provider that matches redirect
+       *  addresses exactly. */
+      redirectPort?: number | null
+    }
+
+/** What happens when the assistant calls a tool. */
+export type ToolPolicy = 'allow' | 'ask' | 'off'
+
+export interface McpConnection {
+  id: ConnectionId
+  name: string
+  preset?: string | null
+  transport: ConnectionTransport
+  auth: ConnectionAuth
+  enabled: boolean
+  /** Routines and background jobs may use it. */
+  unattended: boolean
+  /** The person's choice per tool, by name; a tool not here follows its
+   *  own hints (read-only runs, everything else asks). */
+  policies: Record<string, ToolPolicy>
+  createdAt: string
+  updatedAt: string
+}
+
+/** A tool's own annotations. Claims, not guarantees. */
+export interface ToolHints {
+  readOnly?: boolean | null
+  destructive?: boolean | null
+  idempotent?: boolean | null
+  openWorld?: boolean | null
+}
+
+export interface RemoteTool {
+  name: string
+  title?: string | null
+  description: string
+  inputSchema: unknown
+  hints: ToolHints
+}
+
+export interface ConnectionServerInfo {
+  name: string
+  version: string
+  protocolVersion: string
+  instructions?: string | null
+}
+
+export interface ConnectionState {
+  server?: ConnectionServerInfo | null
+  tools: RemoteTool[]
+  toolsAt?: string | null
+  lastOk?: string | null
+  lastError?: string | null
+  needsSignIn: boolean
+}
+
+/** Which secrets are set: names and yes/no, never values. */
+export interface ConnectionSecretsSet {
+  bearer: boolean
+  headers: string[]
+  env: string[]
+  clientSecret: boolean
+  signedIn: boolean
+  expiresAt?: string | null
+}
+
+export type ConnectionStatus = 'off' | 'needsSetup' | 'needsSignIn' | 'error' | 'ready' | 'unknown'
+
+export interface ConnectionView {
+  connection: McpConnection
+  state: ConnectionState
+  secrets: ConnectionSecretsSet
+  status: ConnectionStatus
+  /** A client is open to it right now. */
+  live: boolean
+}
+
+export type ConnectionNeedKind = 'clientId' | 'clientSecret' | 'token' | 'header' | 'env'
+
+export interface ConnectionPresetNeed {
+  kind: ConnectionNeedKind
+  /** The header or variable name, for `header` and `env`. */
+  name?: string | null
+  label: string
+  help: string
+  optional: boolean
+}
+
+export interface ConnectionPreset {
+  key: string
+  name: string
+  description: string
+  transport: ConnectionTransport
+  auth: ConnectionAuth
+  needs: ConnectionPresetNeed[]
+  help: string
+  helpUrl?: string | null
+}
+
+export interface ConnectionsView {
+  connections: ConnectionView[]
+  presets: ConnectionPreset[]
+}
+
+/** Secrets to change. A field left out is left alone; an empty string
+ *  removes that secret (for `headers` and `env`, that one name's value). */
+export interface ConnectionSecretsPatch {
+  bearer?: string
+  headers?: ConnectionValues
+  env?: ConnectionValues
+  clientSecret?: string
+}
+
+export interface BegunConnectionSignIn {
+  signInId: string
+  url: string
 }

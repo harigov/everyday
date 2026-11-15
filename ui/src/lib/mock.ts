@@ -183,6 +183,7 @@ import {
   mockStoryForLibrary,
 } from './mock-feed'
 import { mockBackup } from './mock-backup'
+import { mockConnections } from './mock-connections'
 import { mockMoney } from './mock-money'
 import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
 import { isMockFilesCommand, mockFilesInvoke } from './mock-files'
@@ -7464,6 +7465,26 @@ export const mockInvoke = async <T>(
     case 'check_backup_destination':
       requireUnlocked()
       return mockBackup(cmd, args) as T
+
+    // ── Connections ─────────────────────────────────────────────────
+    //
+    // `mock-connections.ts` holds the list, each one's secrets apart from
+    // what the views say, and a sign-in that takes a moment; these check the
+    // vault is open and hand the call over.
+
+    case 'connections':
+    case 'add_connection':
+    case 'update_connection':
+    case 'remove_connection':
+    case 'set_connection_secrets':
+    case 'check_connection':
+    case 'set_connection_tool_policy':
+    case 'begin_connection_sign_in':
+    case 'await_connection_sign_in':
+    case 'cancel_connection_sign_in':
+    case 'sign_out_connection':
+      requireUnlocked()
+      return mockConnections(cmd, args) as T
 
     // ── Accounts ────────────────────────────────────────────────────
 

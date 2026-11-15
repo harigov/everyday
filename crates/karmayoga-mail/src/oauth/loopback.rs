@@ -131,7 +131,14 @@ impl Loopback {
     /// `0.0.0.0` -- and build the redirect URI a provider will send the
     /// browser back to.
     pub async fn bind() -> std::io::Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        Self::bind_port(0).await
+    }
+
+    /// [`Self::bind`] on a port fixed in advance, for a provider that matches
+    /// redirect addresses exactly and so needs the port registered with it.
+    /// `0` picks a free one, as `bind` does.
+    pub async fn bind_port(port: u16) -> std::io::Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", port)).await?;
         let port = listener.local_addr()?.port();
         Ok(Self { listener, redirect_uri: format!("http://127.0.0.1:{port}/callback") })
     }

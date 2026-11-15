@@ -85,6 +85,7 @@ pub mod blobstore;
 pub mod calendar;
 pub mod chat;
 pub mod completable;
+pub mod connection;
 pub mod crypto;
 pub mod dream;
 pub mod error;
@@ -154,13 +155,13 @@ pub use files::{
 };
 pub use id::{
     AccountId, AlbumId, AllergyId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId,
-    ChatLinkId, ConditionId, ConversationId, DoseId, DraftId, EntryId, EventId, FileId, FoodId,
-    GoalId, HealthDocumentId, HealthSourceId, ItemId, JobId, JournalId, KindId, LabResultId, LogId,
-    MailMessageId, MailboxId, MealId, MedicationId, MemoryId, MessageId, MoneyCategoryId,
-    MoneyRuleId, NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId,
-    RoleId, RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId, ScreenSpanId, SkillId, StoryId,
-    TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId, VoiceprintId, WorkoutId,
-    WritingId,
+    ChatLinkId, ConditionId, ConnectionId, ConversationId, DoseId, DraftId, EntryId, EventId,
+    FileId, FoodId, GoalId, HealthDocumentId, HealthSourceId, ItemId, JobId, JournalId, KindId,
+    LabResultId, LogId, MailMessageId, MailboxId, MealId, MedicationId, MemoryId, MessageId,
+    MoneyCategoryId, MoneyRuleId, NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId,
+    ReadingId, RecordingId, RoleId, RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId,
+    ScreenSpanId, SkillId, StoryId, TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId,
+    VoiceprintId, WorkoutId, WritingId,
 };
 pub use job::{Job, JobKind, JobOutput, JobStatus};
 pub use library::{

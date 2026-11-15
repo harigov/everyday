@@ -65,6 +65,7 @@
 //! | `chat_settings` (singleton) | that chat links exist -- every homeserver, account and owner stays sealed |
 //! | `model_settings` (singleton) | that models are configured -- every endpoint and model name stays sealed |
 //! | `backup_settings` (singleton) | that backups have been set up, or have run -- where they go, how often and how the last one went stay sealed |
+//! | `connections` (singleton) | that MCP servers have been connected -- which, where, and what they offer stay sealed; their credentials are `record_secrets` rows |
 //! | `mail_category_rules` (`account_id`) | that one account has sealed corrections outranking the rules `categorize` runs at sync -- never what they are |
 //! | news source `sort_order`, `created_us`, `updated_us` | how many sources are followed and when they were added -- never a name, an address or a folder |
 //! | `news_fetch` (`source_id`, `next_us`) | when each source is next asked for news -- never what it said last time |
@@ -172,6 +173,7 @@ pub mod schema;
 mod agent;
 mod backup;
 mod calendars;
+mod connections;
 mod files;
 mod health;
 mod jobs;

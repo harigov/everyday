@@ -568,6 +568,8 @@ impl Service {
         // The assistant's browsers: whatever a page has open in one is part
         // of a conversation the key no longer unlocks.
         crate::browser::close_all();
+        // Live MCP clients hold tokens read out of the vault.
+        crate::connections::hub().close_all();
         // A backup holds keys derived from the vault's; the lock promises
         // none are left in memory. It stops at its next look, and leaves
         // what it sent for the next one.
@@ -801,6 +803,7 @@ impl Service {
     pub async fn close(&self) {
         self.transfers.clear();
         self.sign_ins.clear();
+        crate::connections::hub().close_all();
         self.money.on_lock();
         self.token_cache.try_clear();
         self.calendar_sync.lock().unwrap().clear();

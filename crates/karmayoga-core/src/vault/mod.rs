@@ -32,6 +32,7 @@ mod agent;
 mod backup;
 mod calendars;
 mod chat;
+mod connections;
 mod files;
 mod header;
 mod health;

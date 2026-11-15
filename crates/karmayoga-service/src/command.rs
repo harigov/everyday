@@ -658,6 +658,11 @@ mod tests {
             "start_bank_link",
             "check_bank_link",
             "cancel_bank_link",
+            // Signing a connection in: starting keeps a sign-in in this
+            // process's memory and cancelling forgets one; what lands is
+            // written, and announced, by `await_connection_sign_in`.
+            "begin_connection_sign_in",
+            "cancel_connection_sign_in",
             // An upload in progress is a staging file and a note in this
             // process's memory; nothing anybody draws exists until
             // `finish_upload`, which announces the file it makes.

@@ -29,16 +29,37 @@ export type ChangeWithIds = ChangeEvent
  */
 export type Applier = (changes: ChangeWithIds[]) => boolean
 
-const appliers = new Map<ReloadTarget, Applier>()
+const appliers = new Map<ReloadTarget, Map<string, Applier>>()
 
-/** Opt `target`'s store into patched updates. See `Applier`. */
-export function registerApply(target: ReloadTarget, apply: Applier): void {
-  appliers.set(target, apply)
+/**
+ * Opt `target`'s store into patched updates. See `Applier`.
+ *
+ * `owner` says whose applier it is, and a second registration under the same
+ * owner replaces the first. More than one store may listen on one target --
+ * the status word's `settings` changes are watched by Backup and by
+ * Connections, each for its own open pane -- and each names itself, so
+ * neither needs to know the other is there. It defaults to the target, for
+ * the usual one store per target.
+ */
+export function registerApply(target: ReloadTarget, apply: Applier, owner: string = target): void {
+  let byOwner = appliers.get(target)
+  if (!byOwner) {
+    byOwner = new Map()
+    appliers.set(target, byOwner)
+  }
+  byOwner.set(owner, apply)
 }
 
-/** The applier registered for `target`, if any store has opted in. */
+/**
+ * What `live` runs for `target`, if any store has opted in: every applier
+ * registered there, each shown the batch, answering `true` only if all of
+ * them applied it. One that declines still means the ordinary refresh.
+ */
 export function applierFor(target: ReloadTarget): Applier | undefined {
-  return appliers.get(target)
+  const list = [...(appliers.get(target)?.values() ?? [])]
+  if (list.length === 0) return undefined
+  if (list.length === 1) return list[0]
+  return (changes) => list.map((apply) => apply(changes)).every(Boolean)
 }
 
 /**

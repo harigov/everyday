@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 30;
+pub const SCHEMA_VERSION: i64 = 31;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -119,7 +119,28 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v28(d),
         v29(d),
         v30(d),
+        v31(d),
     ]
+}
+
+/// Version 31: connections -- the MCP servers the assistant may use. See
+/// `docs/plans/connections.md` and `karmayoga_core::connection`.
+///
+/// One singleton with two sealed halves, on `backup_settings`' pattern:
+/// `settings`, the person's list, and `states`, what the runtime learned
+/// (each server's tools, the last error). Written by different hands, so
+/// neither may carry a stale copy of the other over it. Nothing in the
+/// clear. Each connection's credentials are a `record_secrets` row under
+/// owner kind `connection`. Additive.
+fn v31(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS connections (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             settings    {blob},
+             states      {blob}
+         )"
+    )]
 }
 
 /// The `blobs` table, for a backend that keeps attachments in the database.

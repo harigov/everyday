@@ -1786,6 +1786,82 @@
       "events": []
     },
     {
+      "command": "add_connection",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "update_connection",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_connection_secrets",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_connection_tool_policy",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "sign_out_connection",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "cancel_connection_sign_in",
+      "events": []
+    },
+    {
+      "command": "remove_connection",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "set_up_files_folder",
       "events": [
         {
@@ -2557,6 +2633,14 @@
       "reason": "OAuth: attaches a real sign-in's tokens to an account"
     },
     {
+      "name": "await_connection_sign_in",
+      "reason": "OAuth: waits for a browser to come back"
+    },
+    {
+      "name": "begin_connection_sign_in",
+      "reason": "OAuth: discovers a real server and opens a loopback"
+    },
+    {
       "name": "begin_oauth_sign_in",
       "reason": "OAuth: a loopback redirect to a real provider"
     },
@@ -2571,6 +2655,10 @@
     {
       "name": "check_bank_link",
       "reason": "asks Plaid how a Hosted Link session stands"
+    },
+    {
+      "name": "check_connection",
+      "reason": "connects to an MCP server; see tests/connections_commands.rs"
     },
     {
       "name": "check_sending",

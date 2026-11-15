@@ -64,6 +64,12 @@
 //! under the web's, and judged by [`ConfirmGate::browser_call`] on what the
 //! browser says each action would touch -- see that module's doc.
 //!
+//! A connected service's tools are reached through two of ours,
+//! `find_connection_tools` and `use_connection_tool`, declared in
+//! [`crate::connections::tools`]. The gate asks about a call to the second on
+//! the person's policy for that one tool ([`ConfirmGate::connection_call`]),
+//! and what comes back counts as a stranger's writing, as a mail read does.
+//!
 //! # Stopping a turn
 //!
 //! A turn can run for a minute and a dozen tools, and somebody watching it
@@ -291,7 +297,9 @@ pub enum AgentEvent {
         /// turn), `"routine"` (a routine naming an address nobody gave) or
         /// `"rewrite"` (a money rule, or a write over more than
         /// [`MONEY_SWEEP`] transactions, once a stranger's words were read
-        /// this turn). See
+        /// this turn) or `"connection"` (a tool of a connected service whose
+        /// policy is to ask: the subject is the tool and the connection,
+        /// then the arguments in full). See
         /// [`karmayoga_core::agent::tools::Effect::Outward`] and
         /// `agent::tools::mail`'s module docs for the first two, the
         /// `web_search` doc comment below for the third, and
@@ -860,6 +868,18 @@ fn unattended_refusal(kind: &str, job: bool) -> &'static str {
              chose, and this is a background job with nobody watching to confirm it, so it was \
              not made. Do not try it again or work around it."
         }
+        ("connection", false) => {
+            "This acts in a connected service as the person, which they have not allowed \
+             without asking, and this is a scheduled run with nobody watching to confirm it, \
+             so it was not done. Do not try it again or work around it. Say in your reply \
+             what you would have done there, and leave it to them."
+        }
+        ("connection", true) => {
+            "This acts in a connected service as the person, which they have not allowed \
+             without asking, and this is a background job with nobody watching to confirm it, \
+             so it was not done. Do not try it again or work around it; say in your report \
+             what you would have done there."
+        }
         ("fetch", true) => {
             "This page's address did not come from what they asked, a search result \
              or a page already read this job, and this is a background job with nobody \
@@ -1033,6 +1053,13 @@ impl AgentHook for ConfirmGate {
             return self.browser_call(call_id, name, arguments).await;
         }
 
+        // A connected service's tool is judged on that tool's own policy,
+        // which the person set per tool -- see `connection_call`. Searching
+        // for one never asks: it only reads what was already listed.
+        if name == crate::connections::tools::USE {
+            return self.connection_call(call_id, name, arguments).await;
+        }
+
         // Already answered, as one of several asked about together.
         if let Some(together) = self.answered_together(&name, &arguments) {
             return self.as_answered(together, call_id, name, arguments);
@@ -1100,7 +1127,8 @@ impl ConfirmGate {
     /// they are put to the person as one: "4 things to delete" and a line for
     /// each. The answer is kept per call, and each runs or is skipped on it
     /// as it comes up (see [`ConfirmGate::as_answered`]). Calls asked about
-    /// for any other reason -- a page, the browser -- are still asked alone:
+    /// for any other reason -- a page, the browser, a connected service -- are
+    /// still asked alone:
     /// each of those is a different address, and is its own decision.
     ///
     /// Not with nobody to ask: those are refused or parked one by one, as
@@ -1113,7 +1141,7 @@ impl ConfirmGate {
         for item in content {
             let AssistantContent::ToolCall(call) = item else { continue };
             let name = call.function.name.as_str();
-            if crate::browser::is_tool(name) {
+            if crate::browser::is_tool(name) || crate::connections::tools::is_tool(name) {
                 continue;
             }
             let arguments = &call.function.arguments;
@@ -1219,8 +1247,9 @@ impl ConfirmGate {
         // registering a waiter would park a scheduled run on a question nobody
         // will ever see, every night, until its own timeout. See
         // `decline_unattended`, which also says when a call is parked instead.
-        let has_proposal_form = !matches!(kind, "search" | "fetch" | "type" | "click")
-            && tools::find(&name).is_some_and(tools::Tool::can_propose);
+        let has_proposal_form =
+            !matches!(kind, "search" | "fetch" | "type" | "click" | "connection")
+                && tools::find(&name).is_some_and(tools::Tool::can_propose);
         // With nobody to ask -- a routine that does not ask in a chat, or a
         // background job, which never asks anybody -- the call is parked or
         // refused. A routine with an asker puts it to them instead, below.
@@ -1235,8 +1264,9 @@ impl ConfirmGate {
         // was open, say.
         let shown = matches!(kind, "outward" | "destructive").then(|| subject.clone());
 
-        // `search`, `fetch` and the browser's questions have no proposal
-        // form -- see `park`'s own doc -- so none is ever offered "later".
+        // `search`, `fetch`, the browser's questions and a connection's have
+        // no proposal form -- see `park`'s own doc -- so none is ever
+        // offered "later".
         let can_park = has_proposal_form;
         let answer = match &self.asker {
             // A scheduled run's person is somewhere else: the question goes to
@@ -1373,6 +1403,42 @@ impl ConfirmGate {
         approved
     }
 
+    /// The gate for `use_connection_tool`: [`connections::tools::judge`] on the
+    /// connection, the tool and the person's policy for it. A tool that runs
+    /// without asking is one the person (or the server's own read-only hint)
+    /// said may; one switched off, or on a connection this turn may not use,
+    /// is refused without a question, as a password field is.
+    ///
+    /// Asked alone, never together with other calls: what is being agreed to
+    /// is these arguments, in this service.
+    async fn connection_call(
+        &self,
+        call_id: String,
+        name: String,
+        arguments: Value,
+    ) -> ToolCallAction {
+        use crate::connections::tools::{Judgement, judge};
+        match judge(&self.vault, &arguments, self.unattended, self.strangers_heard()) {
+            Judgement::Run => {
+                (self.channel)(AgentEvent::ToolStarted { call_id, name, arguments });
+                ToolCallAction::Run
+            }
+            Judgement::Ask { subject } => {
+                self.put_to_person("connection", subject, call_id, name, arguments).await
+            }
+            Judgement::Refuse(why) => {
+                (self.channel)(AgentEvent::ToolFinished {
+                    call_id,
+                    name,
+                    ok: false,
+                    summary: "refused".into(),
+                    mail_link: None,
+                });
+                ToolCallAction::Skip(why)
+            }
+        }
+    }
+
     /// [`AgentHook::on_tool_result`]'s body.
     async fn tool_result(&self, event: ToolResultEvent<'_>) -> ToolResultAction {
         let ok = event.raw_result.is_success();
@@ -1414,7 +1480,14 @@ impl ConfirmGate {
                     .as_json()
                     .and_then(|json| json.get("count").and_then(Value::as_u64))
                     .is_some_and(|pages| pages > 0);
-            if is_mail_read || is_filled_item || is_own_page {
+            // And so does anything a connected service returned: a Slack
+            // message or an issue body is whoever wrote it speaking, and can
+            // carry instructions as readily as a mail can -- and so can a
+            // server's own tool descriptions and instructions, which a search
+            // hands back. Its addresses are not learned, as a mail's are not:
+            // nothing a stranger linked to is one the person gave.
+            let is_connection_read = crate::connections::tools::is_tool(event.tool_name);
+            if is_mail_read || is_filled_item || is_own_page || is_connection_read {
                 self.mail_read_this_turn.store(true, Ordering::Release);
             }
             mail_link = mail_link_of(event.tool_name, event.raw_result.output());
@@ -2320,6 +2393,19 @@ fn build(
     if browser_offered {
         offered.extend(crate::browser::tools(meta.conversation));
     }
+    // Connections: other services' tools, reached through two of ours. Not
+    // in a dream, which reads the vault and nothing else. A routine or a job
+    // is offered only the connections the person allowed unattended, and
+    // with nobody to ask, a tool that would ask is refused -- see
+    // `ConfirmGate::connection_call`.
+    let connections = if is_dream {
+        Vec::new()
+    } else {
+        crate::connections::tools::offered(&vault, meta.unattended)
+    };
+    if !connections.is_empty() {
+        offered.extend(crate::connections::tools::tools(vault.clone(), meta.unattended));
+    }
     let planning = !is_dream;
     if planning {
         offered.push(update_plan_tool());
@@ -2354,6 +2440,7 @@ fn build(
             money: money_offered,
             health: health_offered,
             browser: browser_wanted.then_some(browser_offered),
+            connections: crate::connections::tools::guidance(&connections),
             planning,
             research: research_offered,
             history_trimmed,
@@ -2429,6 +2516,9 @@ struct Guidance {
     /// are switched on but this computer has no browser to drive, `None`
     /// when they are not switched on (or the web is not).
     browser: Option<bool>,
+    /// What to say of the connected services, or empty when none is offered
+    /// -- see [`crate::connections::tools::guidance`].
+    connections: String,
     /// Whether `update_plan` is offered.
     planning: bool,
     /// Whether `start_research` is offered -- see [`JobTools`].
@@ -2518,6 +2608,10 @@ impl std::fmt::Display for Guidance {
                  Chromium is enough.",
             )?,
             None => {}
+        }
+        if !self.connections.is_empty() {
+            f.write_str("\n\n")?;
+            f.write_str(&self.connections)?;
         }
         if let Some(calendar) = &self.calendar {
             f.write_str("\n\n")?;
@@ -5297,6 +5391,9 @@ fn summarise(tool: &str, output: &ToolOutput) -> String {
     if crate::browser::is_tool(tool) {
         return crate::browser::summarise(result);
     }
+    if crate::connections::tools::is_tool(tool) {
+        return crate::connections::tools::summarise(tool, result);
+    }
     match tool {
         ASK_OWNER => {
             return match result.get("answer").and_then(Value::as_str) {
@@ -5743,6 +5840,151 @@ mod tests {
         }
     }
 
+    // ---- connected services ---------------------------------------------
+
+    use crate::connections::tools::{FIND, USE};
+
+    /// A Linear connection, saved with what was last learned of it: one tool
+    /// that says it only reads, one that writes, and one the person
+    /// switched off.
+    fn linear_connection(vault: &Vault, unattended: bool) {
+        use karmayoga_core::connection::{
+            AuthMethod, Connection, ConnectionState, RemoteTool, ToolHints, ToolPolicy, Transport,
+        };
+        let tool = |name: &str, read_only: Option<bool>| RemoteTool {
+            name: name.into(),
+            title: None,
+            description: format!("Does {name}"),
+            input_schema: serde_json::json!({ "type": "object" }),
+            hints: ToolHints { read_only, ..Default::default() },
+        };
+        let mut connection = Connection::new(
+            "Linear",
+            Transport::Http { url: "https://mcp.linear.app/mcp".into(), headers: vec![] },
+            AuthMethod::None,
+        );
+        connection.unattended = unattended;
+        connection.policies.insert("delete_issue".into(), ToolPolicy::Off);
+        let connection = vault.save_connection(connection).unwrap();
+        let state = ConnectionState {
+            tools: vec![
+                tool("list_issues", Some(true)),
+                tool("create_issue", None),
+                tool("delete_issue", None),
+            ],
+            ..Default::default()
+        };
+        vault.save_connection_state(connection.id, state).unwrap();
+    }
+
+    fn use_connection(tool: &str, arguments: Value) -> Value {
+        serde_json::json!({ "connection": "Linear", "tool": tool, "arguments": arguments })
+    }
+
+    #[tokio::test]
+    async fn a_connected_tool_that_reads_runs_and_one_that_writes_asks_with_its_arguments() {
+        let (vault, _dir) = test_vault();
+        linear_connection(&vault, false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = ConfirmGate {
+            channel: Arc::new(move |event| {
+                let _ = tx.send(event);
+            }),
+            ..test_gate(vault.clone(), ConversationId::new())
+        };
+
+        let read = use_connection("list_issues", serde_json::json!({}));
+        let action = gate.connection_call("c1".into(), USE.to_string(), read).await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        assert!(matches!(rx.recv().await, Some(AgentEvent::ToolStarted { .. })));
+
+        let pending = gate.pending.clone();
+        let answering = tokio::spawn(async move {
+            let Some(AgentEvent::ConfirmationRequired {
+                call_id,
+                name,
+                subject,
+                kind,
+                can_park,
+                ..
+            }) = rx.recv().await
+            else {
+                panic!("expected a question");
+            };
+            assert_eq!((name.as_str(), kind.as_str()), (USE, "connection"));
+            assert!(!can_park, "a connection's call has no proposal form");
+            let (head, arguments) = subject.split_once('\n').expect("arguments follow");
+            assert_eq!(head, "create_issue on Linear");
+            assert!(arguments.contains("Fix the door"), "{arguments}");
+            assert!(pending.answer(&call_id, ConfirmAnswer::Confirm));
+            assert!(matches!(rx.recv().await, Some(AgentEvent::ToolStarted { .. })));
+        });
+        let write = use_connection("create_issue", serde_json::json!({ "title": "Fix the door" }));
+        let action = gate.connection_call("c2".into(), USE.to_string(), write).await;
+        assert!(matches!(action, ToolCallAction::Run), "{action:?}");
+        answering.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_connected_tool_switched_off_is_refused_without_a_question() {
+        let (vault, _dir) = test_vault();
+        linear_connection(&vault, false);
+        let gate = test_gate(vault, ConversationId::new());
+        let off = use_connection("delete_issue", serde_json::json!({}));
+        let action = gate.connection_call("c1".into(), USE.to_string(), off).await;
+        assert!(skipped(&action).is_some_and(|r| r.contains("switched off")), "{action:?}");
+        assert!(gate.issued.lock().unwrap().is_empty(), "nothing was put to anybody");
+    }
+
+    #[tokio::test]
+    async fn a_run_with_nobody_to_ask_does_not_use_a_connected_tool_that_would_ask() {
+        let (vault, _dir) = test_vault();
+        linear_connection(&vault, true);
+        for job in [false, true] {
+            let gate = ConfirmGate {
+                unattended: true,
+                job,
+                ..test_gate(vault.clone(), ConversationId::new())
+            };
+            let read = use_connection("list_issues", serde_json::json!({}));
+            let action = gate.connection_call("c1".into(), USE.to_string(), read).await;
+            assert!(matches!(action, ToolCallAction::Run), "a read runs unattended: {action:?}");
+            let write = use_connection("create_issue", serde_json::json!({ "title": "x" }));
+            let action = gate.connection_call("c2".into(), USE.to_string(), write).await;
+            assert_eq!(skipped(&action), Some(unattended_refusal("connection", job)), "{action:?}");
+            assert!(gate.issued.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connection_the_person_did_not_allow_unattended_is_refused_to_a_run() {
+        let (vault, _dir) = test_vault();
+        linear_connection(&vault, false);
+        let gate = ConfirmGate { unattended: true, ..test_gate(vault, ConversationId::new()) };
+        let read = use_connection("list_issues", serde_json::json!({}));
+        let action = gate.connection_call("c1".into(), USE.to_string(), read).await;
+        assert!(
+            skipped(&action).is_some_and(|r| r.contains("not allowed for scheduled runs")),
+            "{action:?}"
+        );
+    }
+
+    #[test]
+    fn connected_tools_are_never_asked_about_together_and_have_a_line_of_their_own() {
+        assert!(
+            crate::connections::tools::is_tool(FIND) && crate::connections::tools::is_tool(USE)
+        );
+        let done = ToolOutput::json(
+            serde_json::json!({ "connection": "Linear", "tool": "create_issue", "ok": true }),
+        );
+        assert_eq!(summarise(USE, &done), "create_issue on Linear");
+        let found = ToolOutput::json(serde_json::json!({ "tools": [{}], "connections": [] }));
+        assert_eq!(summarise(FIND, &found), "Found 1 tool");
+        for job in [false, true] {
+            assert!(unattended_refusal("connection", job).contains("connected service"));
+        }
+    }
+
     #[test]
     fn a_page_the_browser_is_on_and_its_links_become_known_addresses() {
         let mut seen = Provenance::default();
@@ -6060,6 +6302,7 @@ mod tests {
             money: false,
             health: false,
             browser: None,
+            connections: String::new(),
             planning: true,
             research: false,
             history_trimmed: false,
@@ -6085,6 +6328,7 @@ mod tests {
             money: false,
             health: false,
             browser: None,
+            connections: String::new(),
             planning: true,
             research: false,
             history_trimmed: false,
@@ -6109,6 +6353,7 @@ mod tests {
             money: false,
             health: false,
             browser: None,
+            connections: String::new(),
             planning: false,
             research: false,
             history_trimmed: false,
@@ -6129,6 +6374,7 @@ mod tests {
             money: false,
             health: false,
             browser: None,
+            connections: String::new(),
             planning: false,
             research: false,
             history_trimmed: true,
@@ -6148,6 +6394,7 @@ mod tests {
             money: false,
             health: false,
             browser: None,
+            connections: String::new(),
             planning: false,
             research: false,
             history_trimmed: true,
@@ -6227,6 +6474,7 @@ mod tests {
             money: false,
             health: false,
             browser: None,
+            connections: String::new(),
             planning: false,
             research: false,
             history_trimmed: false,
@@ -6255,6 +6503,7 @@ mod tests {
                 money: false,
                 health: false,
                 browser: None,
+                connections: String::new(),
                 planning: false,
                 research: false,
                 history_trimmed: false,
@@ -6295,6 +6544,7 @@ mod tests {
                 money,
                 health: false,
                 browser: None,
+                connections: String::new(),
                 planning: false,
                 research: false,
                 history_trimmed: false,
@@ -6328,6 +6578,7 @@ mod tests {
                 money: false,
                 health,
                 browser: None,
+                connections: String::new(),
                 planning: false,
                 research: false,
                 history_trimmed: false,
@@ -7299,6 +7550,7 @@ mod tests {
                 money: false,
                 health: false,
                 browser: None,
+                connections: String::new(),
                 planning: false,
                 research,
                 history_trimmed: false,

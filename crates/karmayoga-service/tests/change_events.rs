@@ -326,6 +326,9 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ),
     ("retry_recording", "resumes the same background pipeline finish_recording does"),
     ("run_backup", "copies the vault in the background; see backup::tests for what it does"),
+    ("check_connection", "connects to an MCP server; see tests/connections_commands.rs"),
+    ("begin_connection_sign_in", "OAuth: discovers a real server and opens a loopback"),
+    ("await_connection_sign_in", "OAuth: waits for a browser to come back"),
     ("save_mail_part_to_files", "needs a message whose attachment is in a real synced pack"),
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
@@ -1275,6 +1278,41 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "clear_backup_keys", json!({})).await;
     run(&svc, &h, "cancel_backup", json!({})).await;
+
+    // ---- connections -----------------------------------------------------------
+    //
+    // Nothing here connects: adding, editing and signing out only write the
+    // vault. Checking a connection and signing one in reach a server, and are
+    // skipped above.
+    {
+        let added = run(
+            &svc,
+            &h,
+            "add_connection",
+            json!({
+                "preset": "github",
+                "name": "GitHub",
+                "transport": { "type": "http", "url": "https://api.githubcopilot.com/mcp/" },
+                "auth": { "type": "bearer" },
+            }),
+        )
+        .await;
+        let id = added["connection"]["id"].clone();
+        let mut connection = added["connection"].clone();
+        connection["name"] = json!("Work GitHub");
+        run(&svc, &h, "update_connection", json!({ "connection": connection })).await;
+        run(&svc, &h, "set_connection_secrets", json!({ "id": id, "bearer": "ghp_example" })).await;
+        run(
+            &svc,
+            &h,
+            "set_connection_tool_policy",
+            json!({ "id": id, "tool": "create_issue", "policy": "off" }),
+        )
+        .await;
+        run(&svc, &h, "sign_out_connection", json!({ "id": id })).await;
+        run(&svc, &h, "cancel_connection_sign_in", json!({ "signInId": "nothing-pending" })).await;
+        run(&svc, &h, "remove_connection", json!({ "id": id })).await;
+    }
 
     // ---- files -----------------------------------------------------------------
     //

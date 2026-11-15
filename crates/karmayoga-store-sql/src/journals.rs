@@ -199,6 +199,30 @@ impl JournalStore for SqlStore {
         self.write_backup_status(status)
     }
 
+    fn connection_settings(
+        &self,
+    ) -> Result<Option<karmayoga_core::connection::ConnectionSettings>> {
+        self.read_connection_settings()
+    }
+
+    fn put_connection_settings(
+        &self,
+        settings: &karmayoga_core::connection::ConnectionSettings,
+    ) -> Result<()> {
+        self.write_connection_settings(settings)
+    }
+
+    fn connection_states(&self) -> Result<Option<karmayoga_core::connection::ConnectionStates>> {
+        self.read_connection_states()
+    }
+
+    fn put_connection_states(
+        &self,
+        states: &karmayoga_core::connection::ConnectionStates,
+    ) -> Result<()> {
+        self.write_connection_states(states)
+    }
+
     // ---- journals -------------------------------------------------------
 
     fn list_journals(&self) -> Result<Vec<Journal>> {

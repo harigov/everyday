@@ -48,6 +48,7 @@ pub mod calendar_refresh;
 pub mod chat;
 pub mod clock;
 pub mod command;
+pub mod connections;
 pub mod covers;
 pub mod ctx;
 pub mod decision;

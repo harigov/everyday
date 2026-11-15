@@ -71,6 +71,8 @@ const SETTINGS_PAGES: Record<SettingsTab, string> = {
   templates:
     'the Templates tab, the shapes their journal entries, notes and meeting notes start from',
   keepintouch: 'the Keeping in touch tab, how often to keep up with people',
+  connections:
+    'the Connections tab, the services (Slack, Linear, GitHub, …) the assistant can use and what each tool may do',
   backup: 'the Backup tab, where sealed copies of the vault go and how the last one went',
   data: 'the Data tab, import and export',
   vault: 'the Vault tab',

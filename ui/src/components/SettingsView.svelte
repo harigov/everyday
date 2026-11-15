@@ -62,6 +62,7 @@
   import AssistantPanes from './AssistantPanes.svelte'
   import BackupPanel from './BackupPanel.svelte'
   import ChatLinksPanel from './ChatLinksPanel.svelte'
+  import ConnectionsPanel from './ConnectionsPanel.svelte'
   import DataPanel from './DataPanel.svelte'
   import FilesSettingsPanel from './FilesSettingsPanel.svelte'
   import KeepInTouchPanel from './KeepInTouchPanel.svelte'
@@ -208,6 +209,9 @@
     // sorting and meeting notes run on these too, and the assistant's own
     // tab is who it is and how it behaves, not which model it is.
     { id: 'models', label: 'Models', icon: 'layers', group: 'platform' },
+    // The other services the assistant may use, each through its MCP server.
+    // Platform: a connection serves the assistant in every app.
+    { id: 'connections', label: 'Connections', icon: 'link', group: 'platform' },
     // Sealed copies of the whole vault, every app's records at once. Before
     // Data, the other way out: the same records unsealed.
     { id: 'backup', label: 'Backup', icon: 'archive', group: 'platform' },
@@ -507,6 +511,8 @@
         <MailSortingPanel />
       {:else if tab === 'writing'}
         <MailWritingPanel />
+      {:else if tab === 'connections'}
+        <ConnectionsPanel />
       {:else if tab === 'backup'}
         <BackupPanel />
       {:else if tab === 'data'}

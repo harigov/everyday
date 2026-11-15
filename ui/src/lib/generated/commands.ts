@@ -33,6 +33,7 @@ import type {
   BankAccountId,
   BankLink,
   BankLinkId,
+  BegunConnectionSignIn,
   BegunSignIn,
   BlockId,
   BlockKind,
@@ -51,6 +52,13 @@ import type {
   Condition,
   ConditionId,
   ConditionReport,
+  ConnectionAuth,
+  ConnectionId,
+  ConnectionSecretsPatch,
+  ConnectionTransport,
+  ConnectionValues,
+  ConnectionView,
+  ConnectionsView,
   Conversation,
   ConversationId,
   ConversationSummary,
@@ -158,6 +166,7 @@ import type {
   Mailbox,
   MailboxId,
   ManualReading,
+  McpConnection,
   Meal,
   MealId,
   MealItem,
@@ -302,6 +311,7 @@ import type {
   ThreadSummary,
   TimeBlock,
   ToolInfo,
+  ToolPolicy,
   Track,
   Tracker,
   TrackerDay,
@@ -343,6 +353,16 @@ export interface Commands {
   }
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   activeRecording: { args: Record<string, never>; result: Recording | null }
+  addConnection: {
+    args: {
+      preset?: string
+      name: string
+      transport: ConnectionTransport
+      auth: ConnectionAuth
+      secrets?: ConnectionSecretsPatch
+    }
+    result: ConnectionView
+  }
   addHealthDocument: {
     args: { title: string; kind: DocKind; date?: string | null; files: FileId[] }
     result: HealthDocument
@@ -379,9 +399,11 @@ export interface Commands {
     args: { id: AccountId; signInId: string; clientSecret?: string; scopes?: string[] }
     result: void
   }
+  awaitConnectionSignIn: { args: { signInId: string }; result: ConnectionView }
   awaitOauthSignIn: { args: { signInId: string }; result: AwaitedSignIn }
   backupSettings: { args: Record<string, never>; result: BackupView }
   backupSnapshots: { args: Record<string, never>; result: SnapshotInfo[] }
+  beginConnectionSignIn: { args: { id: ConnectionId }; result: BegunConnectionSignIn }
   beginOauthSignIn: {
     args: {
       authUrl: string
@@ -413,6 +435,7 @@ export interface Commands {
   cancelAppleImport: { args: Record<string, never>; result: boolean }
   cancelBackup: { args: Record<string, never>; result: BackupView }
   cancelBankLink: { args: { session: string }; result: void }
+  cancelConnectionSignIn: { args: { signInId: string }; result: void }
   cancelDecisionModelDownload: { args: { id: string }; result: void }
   cancelJob: { args: { id: JobId }; result: Job }
   cancelOauthSignIn: { args: { signInId: string }; result: void }
@@ -424,6 +447,7 @@ export interface Commands {
   chatLinks: { args: Record<string, never>; result: ChatLinkView[] }
   checkBackupDestination: { args: { destination: Destination }; result: DestinationCheck }
   checkBankLink: { args: { session: string }; result: LinkCheck }
+  checkConnection: { args: { id: ConnectionId }; result: ConnectionView }
   checkSending: { args: { id: AccountId }; result: void }
   clearBackupKeys: { args: Record<string, never>; result: BackupView }
   clearHealthKeys: { args: Record<string, never>; result: void }
@@ -433,6 +457,7 @@ export interface Commands {
   conditionReport: { args: { id: ConditionId; date: string; tz: string }; result: ConditionReport }
   conditionTemplates: { args: Record<string, never>; result: TemplateInfo[] }
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
+  connections: { args: Record<string, never>; result: ConnectionsView }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
   createEvent: { args: { calendarId: CalendarId; draft: EventDraft }; result: CalendarEvent | null }
   createFolder: { args: { dir?: string; name: string }; result: string }
@@ -860,6 +885,7 @@ export interface Commands {
   }
   refreshNews: { args: { source?: NewsSourceId | null }; result: RefreshReport[] }
   removeChatLink: { args: { id: ChatLinkId }; result: void }
+  removeConnection: { args: { id: ConnectionId }; result: ConnectionsView }
   removeFromAlbum: { args: { id: string; files: string[] }; result: void }
   renameFile: { args: { id: string; name: string }; result: FileEntry }
   renameFolder: { args: { path: string; name: string }; result: string }
@@ -1007,6 +1033,20 @@ export interface Commands {
   }
   setAutoLock: { args: { seconds: number }; result: void }
   setBackupKeys: { args: { accessKeyId: string; secretAccessKey: string }; result: BackupView }
+  setConnectionSecrets: {
+    args: {
+      id: ConnectionId
+      bearer?: string
+      headers?: ConnectionValues
+      env?: ConnectionValues
+      clientSecret?: string
+    }
+    result: ConnectionView
+  }
+  setConnectionToolPolicy: {
+    args: { id: ConnectionId; tool: string; policy?: ToolPolicy }
+    result: ConnectionView
+  }
   setDefaultCalendar: { args: { id?: CalendarId | null }; result: void }
   setFileEncrypted: { args: { id: string; encrypted: boolean }; result: FileEntry }
   setFileThumbnail: { args: { id: string; image: string }; result: FileEntry }
@@ -1027,6 +1067,7 @@ export interface Commands {
   setUpFilesFolder: { args: { path?: string }; result: FilesStatus }
   settleWritingAssist: { args: { id: WritingId; outcome: WritingOutcome }; result: WritingAssist }
   shrinkCover: { args: { blob: string }; result: string }
+  signOutConnection: { args: { id: ConnectionId }; result: ConnectionView }
   snooze: { args: { threads: ThreadId[]; until: string }; result: Op[] }
   sortOlderMail: {
     args: { account?: AccountId | null; days?: number | null; again?: boolean }
@@ -1078,6 +1119,7 @@ export interface Commands {
   unsnooze: { args: { threads: ThreadId[] }; result: void }
   unstackFiles: { args: { ids: string[] }; result: void }
   unstar: { args: { threads: ThreadId[] }; result: Op[] }
+  updateConnection: { args: { connection: McpConnection }; result: ConnectionView }
   updateEvent: { args: { id: EventId; draft: EventDraft; scope?: EventScope }; result: void }
   updateFiles: { args: { ids: string[]; update: FileUpdate }; result: FileEntry[] }
   updateTransactions: { args: { ids: TxnId[]; patch: TxnPatch }; result: TxnId[] }
@@ -1094,6 +1136,7 @@ export const COMMAND_NAMES = {
   acceptProposal: 'accept_proposal',
   accountPresets: 'account_presets',
   activeRecording: 'active_recording',
+  addConnection: 'add_connection',
   addHealthDocument: 'add_health_document',
   addHealthReading: 'add_health_reading',
   addItem: 'add_item',
@@ -1112,9 +1155,11 @@ export const COMMAND_NAMES = {
   applyMoneyRules: 'apply_money_rules',
   archive: 'archive',
   attachOauthSignIn: 'attach_oauth_sign_in',
+  awaitConnectionSignIn: 'await_connection_sign_in',
   awaitOauthSignIn: 'await_oauth_sign_in',
   backupSettings: 'backup_settings',
   backupSnapshots: 'backup_snapshots',
+  beginConnectionSignIn: 'begin_connection_sign_in',
   beginOauthSignIn: 'begin_oauth_sign_in',
   beginRecording: 'begin_recording',
   beginUpload: 'begin_upload',
@@ -1125,6 +1170,7 @@ export const COMMAND_NAMES = {
   cancelAppleImport: 'cancel_apple_import',
   cancelBackup: 'cancel_backup',
   cancelBankLink: 'cancel_bank_link',
+  cancelConnectionSignIn: 'cancel_connection_sign_in',
   cancelDecisionModelDownload: 'cancel_decision_model_download',
   cancelJob: 'cancel_job',
   cancelOauthSignIn: 'cancel_oauth_sign_in',
@@ -1136,6 +1182,7 @@ export const COMMAND_NAMES = {
   chatLinks: 'chat_links',
   checkBackupDestination: 'check_backup_destination',
   checkBankLink: 'check_bank_link',
+  checkConnection: 'check_connection',
   checkSending: 'check_sending',
   clearBackupKeys: 'clear_backup_keys',
   clearHealthKeys: 'clear_health_keys',
@@ -1145,6 +1192,7 @@ export const COMMAND_NAMES = {
   conditionReport: 'condition_report',
   conditionTemplates: 'condition_templates',
   confirmToolCall: 'confirm_tool_call',
+  connections: 'connections',
   conversationMessages: 'conversation_messages',
   createEvent: 'create_event',
   createFolder: 'create_folder',
@@ -1432,6 +1480,7 @@ export const COMMAND_NAMES = {
   recordScreenTime: 'record_screen_time',
   refreshNews: 'refresh_news',
   removeChatLink: 'remove_chat_link',
+  removeConnection: 'remove_connection',
   removeFromAlbum: 'remove_from_album',
   renameFile: 'rename_file',
   renameFolder: 'rename_folder',
@@ -1526,6 +1575,8 @@ export const COMMAND_NAMES = {
   setAgentAccess: 'set_agent_access',
   setAutoLock: 'set_auto_lock',
   setBackupKeys: 'set_backup_keys',
+  setConnectionSecrets: 'set_connection_secrets',
+  setConnectionToolPolicy: 'set_connection_tool_policy',
   setDefaultCalendar: 'set_default_calendar',
   setFileEncrypted: 'set_file_encrypted',
   setFileThumbnail: 'set_file_thumbnail',
@@ -1543,6 +1594,7 @@ export const COMMAND_NAMES = {
   setUpFilesFolder: 'set_up_files_folder',
   settleWritingAssist: 'settle_writing_assist',
   shrinkCover: 'shrink_cover',
+  signOutConnection: 'sign_out_connection',
   snooze: 'snooze',
   sortOlderMail: 'sort_older_mail',
   speechModels: 'speech_models',
@@ -1585,6 +1637,7 @@ export const COMMAND_NAMES = {
   unsnooze: 'unsnooze',
   unstackFiles: 'unstack_files',
   unstar: 'unstar',
+  updateConnection: 'update_connection',
   updateEvent: 'update_event',
   updateFiles: 'update_files',
   updateTransactions: 'update_transactions',
@@ -1611,6 +1664,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'accept_proposal',
   'account_presets',
   'active_recording',
+  'add_connection',
   'add_health_document',
   'add_health_reading',
   'add_item',
@@ -1629,9 +1683,11 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'apply_money_rules',
   'archive',
   'attach_oauth_sign_in',
+  'await_connection_sign_in',
   'await_oauth_sign_in',
   'backup_settings',
   'backup_snapshots',
+  'begin_connection_sign_in',
   'begin_oauth_sign_in',
   'begin_recording',
   'begin_upload',
@@ -1642,6 +1698,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_apple_import',
   'cancel_backup',
   'cancel_bank_link',
+  'cancel_connection_sign_in',
   'cancel_decision_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
@@ -1653,6 +1710,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'chat_links',
   'check_backup_destination',
   'check_bank_link',
+  'check_connection',
   'check_sending',
   'clear_backup_keys',
   'clear_health_keys',
@@ -1662,6 +1720,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'condition_report',
   'condition_templates',
   'confirm_tool_call',
+  'connections',
   'conversation_messages',
   'create_event',
   'create_folder',
@@ -1949,6 +2008,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'record_screen_time',
   'refresh_news',
   'remove_chat_link',
+  'remove_connection',
   'remove_from_album',
   'rename_file',
   'rename_folder',
@@ -2042,6 +2102,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_auto_lock',
   'set_backup_keys',
+  'set_connection_secrets',
+  'set_connection_tool_policy',
   'set_default_calendar',
   'set_file_encrypted',
   'set_file_thumbnail',
@@ -2059,6 +2121,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_up_files_folder',
   'settle_writing_assist',
   'shrink_cover',
+  'sign_out_connection',
   'snooze',
   'sort_older_mail',
   'speech_models',
@@ -2101,6 +2164,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'unsnooze',
   'unstack_files',
   'unstar',
+  'update_connection',
   'update_event',
   'update_files',
   'update_transactions',
@@ -2121,6 +2185,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'accept_document_labs',
   'accept_proposal',
+  'add_connection',
   'add_health_document',
   'add_health_reading',
   'add_item',
@@ -2137,6 +2202,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'apply_money_rules',
   'archive',
   'attach_oauth_sign_in',
+  'await_connection_sign_in',
+  'begin_connection_sign_in',
   'begin_oauth_sign_in',
   'begin_recording',
   'begin_upload',
@@ -2144,6 +2211,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_apple_import',
   'cancel_backup',
   'cancel_bank_link',
+  'cancel_connection_sign_in',
   'cancel_decision_model_download',
   'cancel_job',
   'cancel_oauth_sign_in',
@@ -2152,6 +2220,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'cancel_upload',
   'change_password',
   'check_bank_link',
+  'check_connection',
   'check_sending',
   'clear_backup_keys',
   'clear_health_keys',
@@ -2266,6 +2335,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'record_screen_time',
   'refresh_news',
   'remove_chat_link',
+  'remove_connection',
   'remove_from_album',
   'rename_file',
   'rename_folder',
@@ -2348,6 +2418,8 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_agent_access',
   'set_auto_lock',
   'set_backup_keys',
+  'set_connection_secrets',
+  'set_connection_tool_policy',
   'set_default_calendar',
   'set_file_encrypted',
   'set_file_thumbnail',
@@ -2365,6 +2437,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_up_files_folder',
   'settle_writing_assist',
   'shrink_cover',
+  'sign_out_connection',
   'snooze',
   'sort_older_mail',
   'stack_files',
@@ -2390,6 +2463,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'unsnooze',
   'unstack_files',
   'unstar',
+  'update_connection',
   'update_event',
   'update_files',
   'update_transactions',
@@ -2400,6 +2474,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 export const CHANGE_KINDS = {
   accept_document_labs: 'labResult',
   accept_proposal: 'proposal',
+  add_connection: 'settings',
   add_health_document: 'healthDocument',
   add_health_reading: 'healthSample',
   add_item: 'item',
@@ -2414,6 +2489,7 @@ export const CHANGE_KINDS = {
   apply_money_rules: 'txn',
   archive: 'thread',
   attach_oauth_sign_in: 'account',
+  await_connection_sign_in: 'settings',
   begin_recording: 'recording',
   bring_in_attachments: 'file',
   cancel_apple_import: 'healthSample',
@@ -2421,6 +2497,7 @@ export const CHANGE_KINDS = {
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
+  check_connection: 'settings',
   clear_backup_keys: 'settings',
   clear_health_keys: 'settings',
   clear_model_key: 'settings',
@@ -2523,6 +2600,7 @@ export const CHANGE_KINDS = {
   record_screen_time: 'screenSpan',
   refresh_news: 'story',
   remove_chat_link: 'settings',
+  remove_connection: 'settings',
   remove_from_album: 'album',
   rename_file: 'file',
   rename_folder: 'file',
@@ -2600,6 +2678,8 @@ export const CHANGE_KINDS = {
   set_agent_access: 'account',
   set_auto_lock: 'settings',
   set_backup_keys: 'settings',
+  set_connection_secrets: 'settings',
+  set_connection_tool_policy: 'settings',
   set_default_calendar: 'calendar',
   set_file_encrypted: 'file',
   set_file_thumbnail: 'file',
@@ -2615,6 +2695,7 @@ export const CHANGE_KINDS = {
   set_thread_priority: 'thread',
   set_transcriber_key: 'settings',
   set_up_files_folder: 'settings',
+  sign_out_connection: 'settings',
   snooze: 'thread',
   stack_files: 'file',
   star: 'thread',
@@ -2633,6 +2714,7 @@ export const CHANGE_KINDS = {
   unsnooze: 'thread',
   unstack_files: 'file',
   unstar: 'thread',
+  update_connection: 'settings',
   update_event: 'event',
   update_files: 'file',
   update_transactions: 'txn',

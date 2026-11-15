@@ -881,6 +881,37 @@ pub trait JournalStore: Send + Sync {
         Err(Error::Unsupported("storing backup settings"))
     }
 
+    // ---- connections ------------------------------------------------------
+
+    /// The MCP servers the assistant may use -- see [`crate::connection`] --
+    /// or `None` if none were ever saved.
+    ///
+    /// On the base trait, as backups are, and for the same reason: one
+    /// singleton with two sealed halves, so the runtime writing
+    /// [`put_connection_states`](Self::put_connection_states) and a person
+    /// saving the list never overwrite one another. Credentials are not
+    /// here; they are [`SecretStore`](secrets::SecretStore) rows.
+    fn connection_settings(&self) -> Result<Option<crate::connection::ConnectionSettings>> {
+        Ok(None)
+    }
+
+    fn put_connection_settings(
+        &self,
+        settings: &crate::connection::ConnectionSettings,
+    ) -> Result<()> {
+        let _ = settings;
+        Err(Error::Unsupported("storing connections"))
+    }
+
+    fn connection_states(&self) -> Result<Option<crate::connection::ConnectionStates>> {
+        Ok(None)
+    }
+
+    fn put_connection_states(&self, states: &crate::connection::ConnectionStates) -> Result<()> {
+        let _ = states;
+        Err(Error::Unsupported("storing connections"))
+    }
+
     /// What a backup needs from this store, as a job to run *outside* the
     /// vault's lock -- see [`crate::backup::BackupJob`].
     ///

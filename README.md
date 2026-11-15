@@ -2597,6 +2597,42 @@ Hosted connectors, where ChatGPT or claude.ai reach in from the cloud, are a
 different thing and are not supported: they need a public HTTPS endpoint and
 an OAuth server, which is a great deal of machinery for a journal on a desk.
 
+## Reaching other services
+
+The other direction: the assistant using somebody else's MCP server.
+Settings → Connections adds one. Slack, Google Drive, Linear, GitHub, Paseo,
+Google Chrome and Datadog are presets that fill in the form, and any other
+server can be added by its address or by the command that runs it. Each
+connection is one account, so a work Slack and a club Slack are two
+connections, each with its own sign-in.
+
+There is no Slack code and no Linear code. A connection is only three
+things: a URL (Streamable HTTP) or a command (stdio), a way to sign in (none,
+a pasted token or headers, or OAuth in the browser, registering a client on
+the spot where the service allows it), and whatever tools the server lists.
+Tokens, header values and environment variables are sealed in the vault, one
+secret per connection, and never handed back to the interface.
+
+The assistant does not get every tool of every server in front of it.
+Datadog's server alone lists more than a hundred. Instead it gets two tools:
+`find_connection_tools` searches what the servers list, and
+`use_connection_tool` calls one. What a call is allowed to do is set per
+tool, in the panel:
+
+- **Allow** runs it without asking.
+- **Ask** shows a card with the connection, the tool and the arguments.
+- **Off** refuses it, and leaves it out of the search.
+
+A tool that says it only reads starts on Allow, and everything else starts
+on Ask. That is the server's claim, so once anybody else's writing has
+reached the conversation (a mail, a page, a Slack message), only an Allow
+you chose yourself runs without asking. Whatever a connection returns counts
+as that kind of writing.
+
+Routines and background jobs may use only the connections switched to allow
+them. With nobody to ask, a tool that would ask is refused there. The design
+is in `docs/plans/connections.md`.
+
 ## Encryption
 
 ```

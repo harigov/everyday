@@ -13,6 +13,7 @@ pub mod assistant;
 pub mod backup;
 pub mod calendars;
 pub mod chat;
+pub mod connections;
 pub mod files;
 pub mod health;
 pub mod insights;
@@ -76,6 +77,7 @@ pub fn catalog() -> &'static [&'static Command] {
         [
             vault::COMMANDS,
             backup::COMMANDS,
+            connections::COMMANDS,
             accounts::COMMANDS,
             journals::COMMANDS,
             tasks::COMMANDS,
