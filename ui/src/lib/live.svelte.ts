@@ -23,6 +23,7 @@ import { accounts } from './accounts.svelte'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
 import { files } from './files.svelte'
+import { health } from './health.svelte'
 import { jobs } from './jobs.svelte'
 import { library } from './library.svelte'
 import { mail } from './mail.svelte'
@@ -137,6 +138,16 @@ export const RELOAD = {
   // file raises one -- or an album did. Read again only while Files is the
   // app on screen, and one at a time: see `files.changed` and `files.reload`.
   files: () => files.changed(),
+  // A medication, a condition, a lab result, a meal or a workout changed on
+  // another machine, or a source was edited. Read again only while Health is
+  // the app on screen, and only once it has been opened since the vault was:
+  // it reads fresh whenever it is opened, and what is on screen is the only
+  // thing it ever loads.
+  health: () => (health.loaded && app.section === 'health' ? health.reload() : undefined),
+  // Samples arriving -- every hour from a phone, and a batch at a time from
+  // an import. A target of its own so it can be held to far less than a
+  // record is: at most once a minute. See `health.samplesArrived`.
+  healthSamples: () => health.samplesArrived(),
 } satisfies Record<string, () => Promise<unknown> | void>
 
 /**
@@ -180,9 +191,10 @@ const PURPOSE_BEARING: ReadonlySet<ChangeKind> = new Set([
  *
  * A target counts a tracker's days, and a derived tracker's days are worked
  * out from blocks (through the task and project they inherit a purpose
- * from) and from the library's log. So an hour logged on another machine,
- * or a book finished there, moves a meter while the change event says only
- * "block" or "log" -- the same shape of problem `PURPOSE_BEARING` solves for
+ * from), from the library's log and from Health's samples. So an hour logged
+ * on another machine, a book finished there, or a day's steps arriving from
+ * a phone moves a meter while the change event says only "block", "log" or
+ * "healthSample" -- the same shape of problem `PURPOSE_BEARING` solves for
  * the Overview, and solved the same way: only while the todo app, which is
  * where the meters are drawn, is on screen. It re-reads them when opened.
  */
@@ -196,6 +208,7 @@ const TARGET_FEEDING: ReadonlySet<ChangeKind> = new Set([
   'reading',
   'goal',
   'role',
+  'healthSample',
 ])
 
 /** Which of those a change of each kind asks for. */
@@ -289,6 +302,22 @@ export const RELOADS: Record<ChangeKind, ReloadTarget | null> = {
   // One target for both: Files shows the two together.
   file: 'files',
   album: 'files',
+  // What Health keeps: where its data comes from, the workouts and doses,
+  // medicines, conditions, results, documents, allergies, foods and meals
+  // somebody records. All one reload of what is on screen. Samples are the
+  // exception, as screen time's spans are: they arrive by the thousand and
+  // never with an id, so they are a target of their own.
+  healthSource: 'health',
+  workout: 'health',
+  medication: 'health',
+  dose: 'health',
+  condition: 'health',
+  labResult: 'health',
+  healthDocument: 'health',
+  allergy: 'health',
+  food: 'health',
+  meal: 'health',
+  healthSample: 'healthSamples',
 }
 
 /**

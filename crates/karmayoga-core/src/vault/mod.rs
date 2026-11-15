@@ -34,6 +34,7 @@ mod calendars;
 mod chat;
 mod files;
 mod header;
+mod health;
 mod jobs;
 mod journal;
 mod keepintouch;

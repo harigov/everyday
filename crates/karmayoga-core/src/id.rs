@@ -153,6 +153,19 @@ typed_id!(ScreenCategoryId, "screen_category");
 // sealed in the vault -- and an album of them. See `crate::files`.
 typed_id!(FileId, "file");
 typed_id!(AlbumId, "album");
+// Health: a connection data arrives through, a workout, a medication and the
+// doses taken of it, a condition, a lab result, a clinical document, an
+// allergy, a food and a meal. Samples have no id -- see `crate::health`.
+typed_id!(HealthSourceId, "health_source");
+typed_id!(WorkoutId, "workout");
+typed_id!(MedicationId, "medication");
+typed_id!(DoseId, "dose");
+typed_id!(ConditionId, "condition");
+typed_id!(LabResultId, "lab_result");
+typed_id!(HealthDocumentId, "health_document");
+typed_id!(AllergyId, "allergy");
+typed_id!(FoodId, "food");
+typed_id!(MealId, "meal");
 
 // The tracking domain. A `TrackerId` names a thing you decided to record --
 // a habit, a supplement, a symptom -- and is a vault record in its own right,

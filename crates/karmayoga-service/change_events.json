@@ -1249,6 +1249,399 @@
       ]
     },
     {
+      "command": "save_health_settings",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_health_source",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "healthSource",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "set_health_source_token",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "healthSource",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "record_health_push",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "healthSample",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "cancel_apple_import",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "healthSample",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_health_keys",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "clear_health_keys",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "add_health_reading",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "healthSample",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_health_samples",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "healthSample",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_workout",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "workout",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_workout",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "workout",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_medication",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "medication",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "log_dose",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "dose",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_dose",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "dose",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_medication",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "medication",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_allergy",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "allergy",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_allergy",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "allergy",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "apply_condition_template",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "condition",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_condition",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "condition",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_condition",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "condition",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_lab",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "labResult",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_lab",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "labResult",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "add_health_document",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "healthDocument",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_health_document",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "healthDocument",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "accept_document_labs",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "healthDocument",
+          "op": "updated",
+          "origin": "local"
+        },
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "labResult",
+          "op": "created",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_health_document",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "labResult",
+          "op": "deleted",
+          "origin": "local"
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "healthDocument",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_food",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "food",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_meal",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "food",
+          "op": "updated",
+          "origin": "local"
+        },
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "meal",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_meal",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "meal",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_food",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "food",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "delete_health_source",
+      "events": [
+        {
+          "idPresent": true,
+          "idsLen": 0,
+          "kind": "healthSource",
+          "op": "deleted",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "save_meeting_settings",
       "events": [
         {
@@ -2208,6 +2601,10 @@
       "reason": "needs the speech/voice model kit to embed real audio"
     },
     {
+      "name": "extract_health_document",
+      "reason": "asks the large model to read the document's pages"
+    },
+    {
       "name": "fetch_attachment",
       "reason": "needs a message's raw bytes from a real synced pack"
     },
@@ -2222,6 +2619,10 @@
     {
       "name": "finish_recording",
       "reason": "moves the recording into the transcription pipeline: background work"
+    },
+    {
+      "name": "import_apple_health",
+      "reason": "reads the export on a thread of its own, which raises its own changes"
     },
     {
       "name": "name_speaker",

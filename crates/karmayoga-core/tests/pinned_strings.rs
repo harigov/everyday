@@ -206,6 +206,71 @@ fn money_domain_aad_labels_are_pinned() {
     assert_eq!(karmayoga_core::money::BANK_LINK_SECRET_OWNER_KIND, "bank_link");
 }
 
+// ---- health ---------------------------------------------------------------
+
+#[test]
+fn health_domain_aad_labels_are_pinned() {
+    let day = jiff::civil::date(2026, 11, 15);
+    assert_eq!(
+        store::health::health_series_aad("0123456789abcdef0123456789abcdef", day),
+        b"everyday.health_series.v1:0123456789abcdef0123456789abcdef:2026-11-15".to_vec()
+    );
+    assert_eq!(
+        store::health::health_summary_aad("0123456789abcdef0123456789abcdef", day),
+        b"everyday.health_summary.v1:0123456789abcdef0123456789abcdef:2026-11-15".to_vec()
+    );
+    assert_eq!(store::health::health_settings_aad(), b"everyday.health-settings.v1".to_vec());
+    assert_eq!(
+        store::health::health_source_aad(id::<HealthSourceId>()),
+        b"everyday.health_source.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::workout_aad(id::<WorkoutId>()),
+        b"everyday.workout.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::medication_aad(id::<MedicationId>()),
+        b"everyday.medication.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::dose_aad(id::<DoseId>()),
+        b"everyday.dose.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::condition_aad(id::<ConditionId>()),
+        b"everyday.condition.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::lab_result_aad(id::<LabResultId>()),
+        b"everyday.lab_result.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::health_document_aad(id::<HealthDocumentId>()),
+        b"everyday.health_document.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::allergy_aad(id::<AllergyId>()),
+        b"everyday.allergy.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::food_aad(id::<FoodId>()),
+        b"everyday.food.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+    assert_eq!(
+        store::health::meal_aad(id::<MealId>()),
+        b"everyday.meal.v1:01234567-89ab-cdef-0123-456789abcdef".to_vec()
+    );
+}
+
+/// The label every series hash, workout key and dose key is derived under,
+/// and the owner the food-lookup keys are sealed for. A change to either
+/// orphans every stored day of samples, or the stored keys.
+#[test]
+fn health_key_label_and_secret_owner_are_pinned() {
+    assert_eq!(karmayoga_core::health::HEALTH_KEY_LABEL, "karmayoga.health.key.v1");
+    assert_eq!(karmayoga_core::health::HEALTH_KEYS_OWNER_KIND, "health-keys");
+}
+
 // ---- mail -----------------------------------------------------------------
 
 #[test]

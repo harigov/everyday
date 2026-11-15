@@ -417,6 +417,15 @@ const KNOWN_MISMATCHES: &[&str] = &[
     // command has fired its event on an empty seed since long before this
     // phase; the assertion is what is new, not the behaviour.
     "seed_roles",
+    // Health's sample writes declare `HealthSample`, which names no record:
+    // samples are filed by the thousand into series days, and the collector
+    // sees only the records a write touched beside them -- the source whose
+    // status moved, a workout, a dose. A push of nothing new touches only
+    // its source. See `Vault::ingest_health`.
+    "record_health_push",
+    "add_health_reading",
+    "delete_health_samples",
+    "cancel_apple_import",
     // Declares `Thread/Updated` with the clicked threads' own ids, but its
     // body (`Vault::correct_mail_category`) never touches a `Thread` row at
     // all: it rewrites the sender's `CategoryRules` (no `RecordKind` of its

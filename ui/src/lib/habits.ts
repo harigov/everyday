@@ -40,8 +40,14 @@
 // down in. It reads as unrecorded and is left out of the streak and the rate
 // both, rather than being counted as a success exactly when you stopped
 // paying attention.
+//
+// A reading from Health is the same, for the same reason and a stronger one:
+// a day with no resting heart rate, or no glucose, is a day the watch was
+// off, not a day under the limit and not a day short of the minimum -- so a
+// closed period with nothing in it is unrecorded under either bound.
 
 import { addDays, isoDate, startOfDay, startOfWeek } from './time'
+import { isDayReading } from './tracker'
 import { aggregateOf } from './types'
 import type { Period, Target, Tracker, TrackerDay } from './types'
 
@@ -208,10 +214,11 @@ function stateOf(
   partial: boolean,
   anything: boolean,
   manual: boolean,
+  reading: boolean,
 ): PeriodState {
   const standing = standingOf(target, value)
   if (!partial) {
-    if (manual && target.min == null && !anything) return 'unrecorded'
+    if (!anything && (reading || (manual && target.min == null))) return 'unrecorded'
     return standing === 'within' ? 'met' : 'missed'
   }
   // Still running. Past a maximum is past it for good; a minimum reached
@@ -239,6 +246,7 @@ export function summarise(
 ): HabitSummary {
   const goal = target ?? DAILY
   const manual = !tracker.source || tracker.source.type === 'manual'
+  const reading = isDayReading(tracker)
   const hitDays = [...new Set(days.filter((d) => recorded(d, tracker)).map((d) => d.date))].sort()
   const current = periodStart(window.today, goal.per, weekStart)
 
@@ -267,6 +275,7 @@ export function summarise(
           partial,
           inside.some((d) => d.count > 0),
           manual,
+          reading,
         ),
         partial,
       }
@@ -355,6 +364,7 @@ export function progress(
       true,
       inside.some((d) => d.count > 0),
       manual,
+      isDayReading(tracker),
     ),
     expected,
   }

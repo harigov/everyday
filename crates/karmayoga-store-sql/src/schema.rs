@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 29;
+pub const SCHEMA_VERSION: i64 = 30;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -118,6 +118,7 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v27(d),
         v28(d),
         v29(d),
+        v30(d),
     ]
 }
 
@@ -1959,6 +1960,138 @@ fn v29(d: Dialect) -> Vec<String> {
                  data        {blob} NOT NULL
              )"
         ),
+    ]
+}
+
+/// Version 30: Health (`karmayoga_core::health`). Samples are not records:
+/// `health_series` holds one row per metric per UTC day, keyed by a keyed
+/// hash of the metric (never its name -- "this vault measures glucose" is
+/// a diagnosis) and the day, with two sealed payloads, the samples and the
+/// small summary range reads open instead. Every other table is a record
+/// table on the usual shape, with only ids, times, a dose's medication, a
+/// lab's or document's date and the keyed dedupe keys in the clear.
+/// Additive.
+fn v30(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_series (
+                 series      TEXT    NOT NULL,
+                 day         TEXT    NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL,
+                 summary     {blob} NOT NULL,
+                 PRIMARY KEY (series, day)
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_settings (
+                 id    {int} PRIMARY KEY CHECK (id = 1),
+                 data  {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_sources (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_workouts (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 dedupe_key  TEXT    NOT NULL,
+                 start_us    {int} NOT NULL,
+                 end_us      {int} NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS health_workouts_by_key ON health_workouts (dedupe_key)"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS health_workouts_by_start ON health_workouts (start_us)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_medications (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 sort_order  {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_doses (
+                 id             TEXT    PRIMARY KEY NOT NULL,
+                 medication_id  TEXT    NOT NULL,
+                 dedupe_key     TEXT    NOT NULL DEFAULT '',
+                 at_us          {int} NOT NULL,
+                 created_us     {int} NOT NULL,
+                 updated_us     {int} NOT NULL,
+                 data           {blob} NOT NULL
+             )"
+        ),
+        "CREATE UNIQUE INDEX IF NOT EXISTS health_doses_by_key ON health_doses (dedupe_key)
+             WHERE dedupe_key <> ''"
+            .into(),
+        "CREATE INDEX IF NOT EXISTS health_doses_by_at ON health_doses (at_us)".into(),
+        "CREATE INDEX IF NOT EXISTS health_doses_by_medication ON health_doses (medication_id, at_us)"
+            .into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_conditions (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_labs (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 collected   TEXT    NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS health_labs_by_collected ON health_labs (collected, id)".into(),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_documents (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 doc_date    TEXT    NOT NULL DEFAULT '',
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_allergies (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_foods (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 used_us     {int} NOT NULL DEFAULT 0,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS health_meals (
+                 id          TEXT    PRIMARY KEY NOT NULL,
+                 at_us       {int} NOT NULL,
+                 created_us  {int} NOT NULL,
+                 updated_us  {int} NOT NULL,
+                 data        {blob} NOT NULL
+             )"
+        ),
+        "CREATE INDEX IF NOT EXISTS health_meals_by_at ON health_meals (at_us)".into(),
     ]
 }
 

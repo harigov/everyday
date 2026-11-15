@@ -102,6 +102,11 @@ export const SYMBOLS: Partial<Record<SymbolName, SymbolArt>> = {
       '<path d="M8.6 19.4c.4-1.8 1.7-3 3.4-3s3 1.2 3.4 3Z"/>' +
       '<path d="M9 6.6h6c-.5 1.1-1.5 1.9-3 2.8-1.5-.9-2.5-1.7-3-2.8Z"/>',
   },
+  'heart-pulse': {
+    front:
+      '<path d="M12 21.5 4.6 14.2C2.9 12.6 2 10.9 2 8.9 2 5.9 4.3 3.5 7.3 3.5c1.8 0 3.3.9 4.7 2.6 1.4-1.7 2.9-2.6 4.7-2.6 3 0 5.3 2.4 5.3 5.4 0 2-.9 3.7-2.6 5.3Z"/>',
+    cut: '<path class="s" style="stroke-width:1.9" d="M5.5 12.4h3.6l1.3-2.1 2.2 5 2.3-7.2 1.5 4.3h2.6"/>',
+  },
   notebook: {
     back: '<rect x="15" y="3.5" width="5.5" height="17" rx="2"/>',
     front: '<rect x="3.5" y="2" width="15" height="20" rx="3"/>',

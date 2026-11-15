@@ -88,6 +88,18 @@
 //! | album `created_us`, `updated_us` | how many albums there are and when each was made -- never a name, a description or which file is its cover |
 //! | `album_files` (`album_id`, `file_id`, `position`) | which files are in which album, and in what order they were added -- never an album's name |
 //! | `files_settings` (singleton) | that the Files app has been set up -- where the folder is, which apps seal their files and how long the trash is kept stay sealed |
+//! | `health_series` `series`, `day`, `updated_us` | that something was measured on a day, and how many things are measured; the series is a *keyed* hash of the metric's name, so it cannot be matched against a list of metrics -- never which metric, a single sample, a value or a device. Two sealed columns, the samples and a small summary of them, each bound to the series and the day |
+//! | `health_settings` (singleton) | that health has been set up -- the units, the goals, the targets and the order of trust among devices stay sealed |
+//! | health source `created_us`, `updated_us` | how many connections health data arrives through and when each was made -- never a name, a kind, a device or what it last said |
+//! | workout `dedupe_key`, `start_us`, `end_us` | that a workout began at seven and ended at half past; the key is a *keyed* hash, so it cannot be matched against a provider's workout ids -- never what kind, how far, how hard or where |
+//! | medication `sort_order`, `created_us`, `updated_us` | how many medications are listed and when each was added -- never a name, a strength, a schedule or what it is for |
+//! | dose `medication_id`, `dedupe_key`, `at_us` | that something listed was taken or skipped at eight, and which of the listed things; the key is a *keyed* hash of a source's dose event and empty for a dose typed in here -- never which medication, how much or whether it was taken |
+//! | condition `created_us`, `updated_us` | how many conditions are being managed and when each was added -- never a name, a diagnosis or a word of its plan |
+//! | lab result `collected`, `created_us`, `updated_us` | that blood was drawn or a test taken on a day -- never which test, the number, the unit or the laboratory |
+//! | health document `doc_date`, `created_us`, `updated_us` | that a paper is dated on a day, or has no date -- never its title, its kind, its clinic, its files or a word of its text |
+//! | allergy `created_us`, `updated_us` | how many allergies are listed -- never what to, how it shows or how bad |
+//! | food `used_us`, `created_us`, `updated_us` | when a food was last eaten and how many are kept -- never a name, a brand, a barcode or a nutrient |
+//! | meal `at_us`, `created_us`, `updated_us` | that something was eaten at noon -- never what, how much, which meal it was or the photograph |
 //!
 //! Titles, bodies, tags, locations, attachments and file names are all
 //! sealed. Someone with the database learns *that* you journalled on 14 July
@@ -161,6 +173,7 @@ mod agent;
 mod backup;
 mod calendars;
 mod files;
+mod health;
 mod jobs;
 mod journals;
 mod library;

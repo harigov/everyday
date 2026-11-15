@@ -163,6 +163,10 @@ impl JournalStore for SqlStore {
         Some(self)
     }
 
+    fn health(&self) -> Option<&dyn karmayoga_core::store::health::HealthStore> {
+        Some(self)
+    }
+
     fn profile(&self) -> Result<karmayoga_core::profile::Profile> {
         self.read_profile()
     }

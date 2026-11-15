@@ -155,6 +155,20 @@ pub enum Scope {
     /// add made-up usage and read nothing; [`Scope::ScreenTime`] does not
     /// imply it is needed, and holding it does not imply `ScreenTime`.
     Heartbeats,
+    /// Health: samples, workouts, medications and doses, conditions, labs,
+    /// documents, meals, the settings and the food-lookup keys.
+    ///
+    /// Its own scope, never a corner of another: somebody's body, medicines
+    /// and diagnoses are as private as anything in the vault, and a client
+    /// that may read a calendar has no business inheriting them.
+    Health,
+    /// Pushing health samples and nothing else: what the phone's Health
+    /// Auto Export automation is issued.
+    ///
+    /// Write-only, for [`Scope::Heartbeats`]' reason: the token sits in an
+    /// app on a phone, and one that leaks can add made-up readings and read
+    /// nothing. [`Scope::Health`] does not imply it, nor it `Health`.
+    HealthIngest,
     /// Searching the web and fetching a picture. Its own scope because it is
     /// the one capability that puts a request on the network, and a client
     /// that only wants to read a shelf has no business asking for it.
@@ -207,6 +221,8 @@ impl Scope {
             Scope::ScreenTime => "screentime",
             Scope::Files => "files",
             Scope::Heartbeats => "heartbeats",
+            Scope::Health => "health",
+            Scope::HealthIngest => "healthIngest",
             Scope::Web => "web",
             Scope::Admin => "admin",
             Scope::Any => "any",
@@ -237,6 +253,8 @@ impl Scope {
         Scope::ScreenTime,
         Scope::Files,
         Scope::Heartbeats,
+        Scope::Health,
+        Scope::HealthIngest,
         Scope::Web,
         Scope::Admin,
     ];

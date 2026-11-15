@@ -33,6 +33,7 @@ use crate::store::accounts::AccountStore;
 use crate::store::agent::AgentStore;
 use crate::store::calendars::CalendarStore;
 use crate::store::files::FilesStore;
+use crate::store::health::HealthStore;
 use crate::store::jobs::JobStore;
 use crate::store::library::LibraryStore;
 use crate::store::mail::MailStore;
@@ -225,6 +226,14 @@ pub struct Capabilities {
     /// way, as blobs inside its own records.
     #[serde(default)]
     pub files: bool,
+    /// Backend implements [`health::HealthStore`], so samples from a watch,
+    /// medications, conditions, lab results, documents and meals have
+    /// somewhere to live.
+    ///
+    /// False hides the Health app, refuses pushes from the phone and hides
+    /// the assistant's health tools.
+    #[serde(default)]
+    pub health: bool,
 }
 
 /// The facts about a backend that [`Capabilities`]' domain flags cannot
@@ -596,6 +605,7 @@ pub trait JournalStore: Send + Sync {
             money: self.money().is_some(),
             screentime: self.screentime().is_some(),
             files: self.files().is_some(),
+            health: self.health().is_some(),
         }
     }
 
@@ -785,6 +795,15 @@ pub trait JournalStore: Send + Sync {
     /// Same shape and same reasoning as [`JournalStore::tasks`]. See
     /// [`files`](crate::store::files) for the rules an implementation keeps.
     fn files(&self) -> Option<&dyn FilesStore> {
+        None
+    }
+
+    /// Storage for Health, if this backend has any.
+    ///
+    /// Same shape and same reasoning as [`JournalStore::money`]. See
+    /// [`health`](crate::store::health) for the rules an implementation
+    /// keeps.
+    fn health(&self) -> Option<&dyn HealthStore> {
         None
     }
 
@@ -1131,6 +1150,14 @@ pub trait JournalStore: Send + Sync {
         if let Some(files) = self.files() {
             live.extend(files.file_blob_refs()?);
         }
+
+        // And Health: a clinical document's files, a workout's route, a
+        // meal's photo. Missing this walk would make the first sweep after a
+        // day take every lab report somebody filed, the document still
+        // listing files that open to nothing.
+        if let Some(health) = self.health() {
+            live.extend(health.blob_refs()?);
+        }
         let mut removed = 0;
         for id in self.list_blobs()? {
             if live.contains(&id) {
@@ -1241,6 +1268,7 @@ pub mod accounts;
 pub mod agent;
 pub mod calendars;
 pub mod files;
+pub mod health;
 pub mod jobs;
 pub mod library;
 pub mod mail;

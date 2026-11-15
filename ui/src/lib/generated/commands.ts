@@ -11,13 +11,17 @@ import type {
   AccountId,
   AccountKind,
   AccountView,
+  ActivityDay,
   AddedItem,
+  Adherence,
   AgentCallerKind,
   AgentMailAccess,
   AgentMessage,
   AgentSettings,
   Album,
   AlbumView,
+  Allergy,
+  AllergyId,
   ArchiveManifest,
   Attachment,
   AttachmentPreview,
@@ -30,6 +34,7 @@ import type {
   BankLink,
   BankLinkId,
   BegunSignIn,
+  BlobId,
   BlockId,
   BlockKind,
   BlockQuery,
@@ -44,16 +49,25 @@ import type {
   ChatLinkId,
   ChatLinkView,
   CollectorConfig,
+  Condition,
+  ConditionId,
+  ConditionReport,
   Conversation,
   ConversationId,
   ConversationSummary,
   CsvMapping,
+  DayTimeline,
   DecisionBenchmark,
   DeclineReason,
   Destination,
   DestinationCheck,
+  DocFile,
+  DocKind,
+  Dose,
+  DoseId,
   Draft,
   DraftId,
+  DueDose,
   EditableEvent,
   Entry,
   EntryId,
@@ -76,17 +90,30 @@ import type {
   FilesSettings,
   FilesStatus,
   FolderListing,
+  Food,
+  FoodHit,
+  FoodId,
   FoundFeed,
+  GlucoseReport,
   Goal,
   GoalActivity,
   GoalId,
   GoalQuery,
+  HealthDay,
+  HealthDocument,
+  HealthDocumentId,
+  HealthIngestReport,
+  HealthKeysInfo,
+  HealthSettings,
+  HealthSource,
+  HealthSourceId,
   Heartbeat,
   ImageResult,
   ImportFormat,
   ImportPreview,
   ImportProgress,
   ImportResult,
+  ImportStatus,
   ImportUpload,
   ImproveMode,
   InboxSender,
@@ -105,6 +132,10 @@ import type {
   Kind,
   KindId,
   KindInfo,
+  LabResult,
+  LabResultId,
+  LabTrend,
+  Latest,
   LegacyReport,
   LibraryStats,
   LinkCheck,
@@ -128,6 +159,13 @@ import type {
   MailWriting,
   Mailbox,
   MailboxId,
+  ManualReading,
+  Meal,
+  MealId,
+  MealItem,
+  MealResponse,
+  Medication,
+  MedicationId,
   MeetingActivity,
   MeetingNow,
   MeetingSettings,
@@ -135,6 +173,8 @@ import type {
   Memory,
   MemoryId,
   MemoryOrigin,
+  Metric,
+  MetricEntry,
   ModelBenchmark,
   ModelSettings,
   ModelSettingsView,
@@ -157,6 +197,7 @@ import type {
   NoteQuery,
   NoteSummary,
   NoteTag,
+  NutritionDay,
   OnScreen,
   Op,
   OpmlImportReport,
@@ -174,6 +215,7 @@ import type {
   ProposalQuery,
   ProposedRecord,
   ProviderInfo,
+  PushHeaders,
   QuickAskRow,
   QuickBackfillPick,
   QuickEventDraft,
@@ -207,7 +249,9 @@ import type {
   RoutineRun,
   RoutineRunId,
   RoutineTemplate,
+  RuleAlert,
   RunQuery,
+  SamplePoint,
   ScanReport,
   ScheduledSend,
   ScreenApp,
@@ -225,9 +269,12 @@ import type {
   SearchMailResult,
   SearchRequest,
   SearchResult,
+  SeriesQuery,
+  SeriesResult,
   SeriesScope,
   Skill,
   SkillId,
+  SleepNight,
   SnapshotInfo,
   SourceInfo,
   SourceSummary,
@@ -245,7 +292,10 @@ import type {
   TaskStats,
   TaskStatus,
   Template,
+  TemplateChoice,
   TemplateId,
+  TemplateInfo,
+  TemplateKey,
   TemplateUse,
   ThreadDetail,
   ThreadFilter,
@@ -268,9 +318,13 @@ import type {
   UploadTicket,
   VaultStatus,
   VerificationAnswer,
+  VisitBrief,
   VoiceprintId,
   VoiceprintInfo,
   WeatherReport,
+  Workout,
+  WorkoutDetail,
+  WorkoutId,
   WritingAction,
   WritingAssist,
   WritingId,
@@ -284,12 +338,18 @@ export const PROTOCOL = 1
 
 /** What each command takes and gives back. */
 export interface Commands {
+  acceptDocumentLabs: { args: { id: HealthDocumentId; labs: LabResult[] }; result: LabResult[] }
   acceptProposal: {
     args: { id: ProposalId; edited?: ProposedRecord | null; confirm?: boolean }
     result: Proposal
   }
   accountPresets: { args: Record<string, never>; result: MailProviderInfo[] }
   activeRecording: { args: Record<string, never>; result: Recording | null }
+  addHealthDocument: {
+    args: { title: string; kind: DocKind; date?: string | null; files: DocFile[] }
+    result: HealthDocument
+  }
+  addHealthReading: { args: { reading: ManualReading }; result: void }
   addItem: { args: { kindId: KindId; title: string; lookup: boolean }; result: AddedItem }
   addManualTransaction: { args: { txn: NewTxn }; result: Txn }
   addNewsSource: { args: { source: NewSource }; result: NewsSource }
@@ -308,6 +368,11 @@ export interface Commands {
   appendRecordingChunk: {
     args: { id: RecordingId; track: Track; seq: number; startMs: number; pcm: string }
     result: void
+  }
+  appleImportStatus: { args: Record<string, never>; result: ImportStatus }
+  applyConditionTemplate: {
+    args: { template: TemplateKey; choice: TemplateChoice }
+    result: Condition
   }
   applyMetadata: { args: { id: ItemId; result: SearchResult; overwrite: boolean }; result: Item }
   applyMoneyRules: { args: { ruleId?: MoneyRuleId | null }; result: number }
@@ -347,6 +412,7 @@ export interface Commands {
   benchmarkSpeechModel: { args: { id: string }; result: ModelBenchmark }
   bringInAttachments: { args: Record<string, never>; result: LegacyReport }
   calendarProviders: { args: Record<string, never>; result: ProviderInfo[] }
+  cancelAppleImport: { args: Record<string, never>; result: boolean }
   cancelBackup: { args: Record<string, never>; result: BackupView }
   cancelBankLink: { args: { session: string }; result: void }
   cancelDecisionModelDownload: { args: { id: string }; result: void }
@@ -362,9 +428,12 @@ export interface Commands {
   checkBankLink: { args: { session: string }; result: LinkCheck }
   checkSending: { args: { id: AccountId }; result: void }
   clearBackupKeys: { args: Record<string, never>; result: BackupView }
+  clearHealthKeys: { args: Record<string, never>; result: void }
   clearModelKey: { args: { tier: ModelSlot }; result: ModelSettingsView }
   clearPlaidCredentials: { args: Record<string, never>; result: void }
   collectGarbage: { args: Record<string, never>; result: number }
+  conditionReport: { args: { id: ConditionId; date: string; tz: string }; result: ConditionReport }
+  conditionTemplates: { args: Record<string, never>; result: TemplateInfo[] }
   confirmToolCall: { args: { callId: string; approved: boolean; later?: boolean }; result: boolean }
   conversationMessages: { args: { id: ConversationId }; result: AgentMessage[] }
   createEvent: { args: { calendarId: CalendarId; draft: EventDraft }; result: CalendarEvent | null }
@@ -378,23 +447,36 @@ export interface Commands {
   deleteAccount: { args: { id: AccountId }; result: void }
   deleteAlbum: { args: { id: string }; result: void }
   deleteAllVoiceprints: { args: Record<string, never>; result: void }
+  deleteAllergy: { args: { id: AllergyId }; result: void }
   deleteBankAccount: { args: { id: BankAccountId }; result: void }
   deleteBankLink: { args: { id: BankLinkId; keepHistory?: boolean }; result: void }
   deleteBlock: { args: { id: BlockId }; result: void }
   deleteBlockSeries: { args: { id: BlockId; scope: SeriesScope }; result: BlockId[] }
   deleteCalendar: { args: { id: CalendarId }; result: void }
+  deleteCondition: { args: { id: ConditionId; removeTrackers: boolean }; result: void }
   deleteConversation: { args: { id: ConversationId }; result: void }
   deleteDecisionModel: { args: { id: string }; result: void }
+  deleteDose: { args: { id: DoseId }; result: void }
   deleteEntry: { args: { id: EntryId }; result: void }
   deleteEvent: { args: { id: EventId; scope?: EventScope }; result: void }
   deleteFilesForever: { args: { ids: string[] }; result: number }
+  deleteFood: { args: { id: FoodId }; result: void }
   deleteForever: { args: { threads: ThreadId[]; from: MailboxId[] }; result: Op[] }
   deleteGoal: { args: { id: GoalId }; result: void }
+  deleteHealthDocument: { args: { id: HealthDocumentId; deleteLabs: boolean }; result: void }
+  deleteHealthSamples: {
+    args: { metric: Metric; from: string; to: string; source?: string | null }
+    result: number
+  }
+  deleteHealthSource: { args: { id: HealthSourceId }; result: void }
   deleteItem: { args: { id: ItemId }; result: void }
   deleteJob: { args: { id: JobId }; result: void }
   deleteJournal: { args: { id: JournalId }; result: void }
   deleteKind: { args: { id: KindId }; result: void }
+  deleteLab: { args: { id: LabResultId }; result: void }
   deleteLog: { args: { id: LogId }; result: void }
+  deleteMeal: { args: { id: MealId }; result: void }
+  deleteMedication: { args: { id: MedicationId }; result: void }
   deleteMemory: { args: { id: MemoryId }; result: void }
   deleteMoneyCategory: { args: { id: MoneyCategoryId }; result: void }
   deleteMoneyRule: { args: { id: MoneyRuleId }; result: void }
@@ -417,6 +499,7 @@ export interface Commands {
   deleteTracker: { args: { id: TrackerId }; result: number }
   deleteTransactions: { args: { ids: TxnId[] }; result: void }
   deleteVoiceprint: { args: { id: VoiceprintId }; result: void }
+  deleteWorkout: { args: { id: WorkoutId }; result: void }
   discardDraft: { args: { id: DraftId }; result: void }
   discardRecording: { args: { id: RecordingId }; result: void }
   discoverFeeds: { args: { url: string }; result: FoundFeed[] }
@@ -424,6 +507,7 @@ export interface Commands {
     args: { calendarId: CalendarId; uid: string; series?: string | null; never: boolean }
     result: void
   }
+  dosesDue: { args: { date: string; tz: string }; result: DueDose[] }
   downloadDecisionModel: { args: { id: string }; result: void }
   downloadSpeechModel: { args: { id: string }; result: void }
   draftWithAi: {
@@ -442,7 +526,12 @@ export interface Commands {
   endExport: { args: { handle: string }; result: void }
   endImport: { args: { handle: string }; result: void }
   enrolVoice: { args: { pcm: string }; result: VoiceprintInfo }
+  estimateMealPhoto: { args: { photo: BlobId }; result: MealItem[] }
   exportOpml: { args: Record<string, never>; result: string }
+  extractHealthDocument: {
+    args: { id: HealthDocumentId; text?: string | null }
+    result: HealthDocument
+  }
   fetchAttachment: { args: { messageId: MailMessageId; index: number }; result: MailAttachment }
   fetchFullArticle: { args: { id: StoryId }; result: Story }
   fetchImage: { args: { url: string }; result: string }
@@ -458,6 +547,7 @@ export interface Commands {
   getEvent: { args: { id: EventId }; result: CalendarEvent }
   getFile: { args: { id: string }; result: FileDetail }
   getGoal: { args: { id: GoalId }; result: Goal }
+  getHealthDocument: { args: { id: HealthDocumentId }; result: HealthDocument }
   getItem: { args: { id: ItemId }; result: Item }
   getJob: { args: { id: JobId }; result: Job }
   getNote: { args: { id: NoteId }; result: Note }
@@ -469,9 +559,30 @@ export interface Commands {
   getThread: { args: { id: ThreadId }; result: ThreadDetail }
   getTransaction: { args: { id: TxnId }; result: Txn }
   getTranscript: { args: { noteId: NoteId }; result: Transcript | null }
+  getWorkout: { args: { id: WorkoutId }; result: WorkoutDetail }
   goalActivity: { args: { id: GoalId }; result: GoalActivity }
+  healthActivity: { args: { from: string; to: string; tz: string }; result: ActivityDay[] }
+  healthCatalog: { args: Record<string, never>; result: MetricEntry[] }
+  healthDayTimeline: { args: { date: string; tz: string }; result: DayTimeline }
+  healthGlucose: { args: { from: string; to: string; tz: string }; result: GlucoseReport }
+  healthKeys: { args: Record<string, never>; result: HealthKeysInfo }
+  healthLatest: { args: { metrics: Metric[]; on: string }; result: Latest[] }
+  healthNutrition: { args: { from: string; to: string; tz: string }; result: NutritionDay[] }
+  healthSamples: { args: { metric: Metric; from: string; to: string }; result: SamplePoint[] }
+  healthSeries: { args: { query: SeriesQuery }; result: SeriesResult }
+  healthSettings: { args: Record<string, never>; result: HealthSettings }
+  healthSleep: { args: { from: string; to: string; tz: string }; result: SleepNight[] }
+  healthToday: { args: { date: string; tz: string }; result: HealthDay }
+  healthVisitBrief: {
+    args: { conditionId?: ConditionId | null; since: string; tz: string }
+    result: VisitBrief
+  }
   imagePreview: { args: { url: string }; result: string }
   imageSearch: { args: { query: string; limit?: number | null }; result: ImageResult[] }
+  importAppleHealth: {
+    args: { path: string; sourceId?: HealthSourceId | null }
+    result: ImportStatus
+  }
   importCalendar: {
     args: { name: string; label: string; color: string; ics: string }
     result: CalendarInfo
@@ -507,33 +618,46 @@ export interface Commands {
     result: InboxSender[]
   }
   keepInTouchStatus: { args: Record<string, never>; result: KeepInTouchStatus }
+  labTrends: { args: Record<string, never>; result: LabTrend[] }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
   lintTemplate: { args: { template: Template }; result: string[] }
   listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
   listAccounts: { args: Record<string, never>; result: AccountView[] }
   listAlbums: { args: Record<string, never>; result: AlbumView[] }
+  listAllergies: { args: Record<string, never>; result: Allergy[] }
   listBankAccounts: { args: Record<string, never>; result: BankAccount[] }
   listBankLinks: { args: Record<string, never>; result: LinkSummary[] }
   listBlocks: { args: { query: BlockQuery }; result: TimeBlock[] }
   listCalendars: { args: Record<string, never>; result: CalendarInfo[] }
   listCommands: { args: Record<string, never>; result: Surface }
+  listConditions: { args: Record<string, never>; result: Condition[] }
   listConversations: {
     args: { limit?: number | null; includeRuns?: boolean }
     result: ConversationSummary[]
+  }
+  listDoses: {
+    args: { from: string; to: string; medicationId?: MedicationId | null }
+    result: Dose[]
   }
   listDrafts: { args: { account: AccountId }; result: Draft[] }
   listEntries: { args: { query: EntryQuery }; result: EntrySummary[] }
   listEvents: { args: { query: EventQuery }; result: CalendarEvent[] }
   listFiles: { args: { query: FileQuery }; result: FilePage }
   listFolder: { args: { dir?: string }; result: FolderListing }
+  listFoods: { args: { query: string }; result: Food[] }
   listGoals: { args: { query: GoalQuery }; result: Goal[] }
+  listHealthDocuments: { args: Record<string, never>; result: HealthDocument[] }
+  listHealthSources: { args: Record<string, never>; result: HealthSource[] }
   listItems: { args: { query: ItemQuery }; result: Item[] }
   listJobs: { args: { query?: JobQuery }; result: Job[] }
   listJournals: { args: Record<string, never>; result: Journal[] }
   listKinds: { args: Record<string, never>; result: KindInfo[] }
+  listLabs: { args: { key?: string | null }; result: LabResult[] }
   listLogs: { args: { query: LogQuery }; result: LogEntry[] }
   listMailboxes: { args: { account: AccountId }; result: Mailbox[] }
+  listMeals: { args: { from: string; to: string }; result: Meal[] }
+  listMedications: { args: Record<string, never>; result: Medication[] }
   listMemories: { args: Record<string, never>; result: Memory[] }
   listMoneyCategories: { args: Record<string, never>; result: MoneyCategory[] }
   listMoneyRules: { args: Record<string, never>; result: MoneyRule[] }
@@ -579,9 +703,11 @@ export interface Commands {
   listTrackers: { args: Record<string, never>; result: Tracker[] }
   listTransactions: { args: { query: TxnQuery }; result: TxnPage }
   listVoiceprints: { args: Record<string, never>; result: VoiceprintInfo[] }
+  listWorkouts: { args: { from: string; to: string }; result: Workout[] }
   listWritingAssists: { args: { query?: WritingQuery }; result: WritingAssist[] }
   loadEvent: { args: { id: EventId }; result: EditableEvent }
   lock: { args: Record<string, never>; result: VaultStatus }
+  logDose: { args: { dose: Dose }; result: Dose }
   logReading: {
     args: {
       trackerId: TrackerId
@@ -593,6 +719,7 @@ export interface Commands {
     }
     result: Reading
   }
+  lookupBarcode: { args: { code: string }; result: FoodHit | null }
   lookupMetadata: {
     args: { kindId: KindId; query: string; limit?: number | null }
     result: SearchResult[]
@@ -611,6 +738,12 @@ export interface Commands {
   markRunsSeen: { args: { ids?: RoutineRunId[] }; result: void }
   markStoriesRead: { args: { ids: StoryId[]; read: boolean }; result: void }
   markUnread: { args: { threads: ThreadId[] }; result: Op[] }
+  mealResponse: { args: { id: MealId }; result: MealResponse }
+  medicationAdherence: {
+    args: { medicationId?: MedicationId | null; from: string; to: string; tz: string }
+    result: Adherence
+  }
+  medicationAlerts: { args: { from: string; to: string; tz: string }; result: RuleAlert[] }
   meetingActivity: { args: { from: string; to: string; tz?: string }; result: MeetingActivity }
   meetingNow: { args: Record<string, never>; result: MeetingNow }
   meetingSettings: { args: Record<string, never>; result: MeetingSettingsView }
@@ -715,6 +848,10 @@ export interface Commands {
   readImport: { args: { handle: string }; result: ArchiveManifest }
   rebuildMailIndex: { args: { id?: AccountId }; result: void }
   recategorizeMail: { args: { account?: AccountId | null }; result: RecategorizeResult }
+  recordHealthPush: {
+    args: { sourceId: HealthSourceId; headers: PushHeaders; body: unknown }
+    result: HealthIngestReport
+  }
   recordScreenTime: {
     args: { device: string; collector: string; beats: Heartbeat[] }
     result: IngestReport
@@ -759,6 +896,7 @@ export interface Commands {
   saveAccountPassword: { args: { id: AccountId; password: string }; result: void }
   saveAgentSettings: { args: { settings: AgentSettings }; result: AgentSettings }
   saveAlbum: { args: { album: Album }; result: Album }
+  saveAllergy: { args: { allergy: Allergy }; result: Allergy }
   saveBackupSettings: { args: { settings: BackupSettings }; result: BackupView }
   saveBankAccount: { args: { account: BankAccount }; result: void }
   saveBankLink: { args: { link: BankLink }; result: void }
@@ -769,17 +907,24 @@ export interface Commands {
   }
   saveCalendar: { args: { calendar: Calendar }; result: void }
   saveChatLink: { args: { link: ChatLink; password?: string | null }; result: ChatLinkView }
+  saveCondition: { args: { condition: Condition }; result: Condition }
   saveDraft: { args: { draft: Draft }; result: void }
   saveEntry: { args: { entry: Entry; expect?: string | null }; result: void }
   saveEntryForce: { args: { entry: Entry }; result: void }
   saveFilesSettings: { args: { settings: FilesSettings }; result: FilesStatus }
+  saveFood: { args: { food: Food }; result: Food }
   saveGoal: { args: { goal: Goal }; result: void }
   saveGoals: { args: { goals: Goal[] }; result: void }
+  saveHealthDocument: { args: { document: HealthDocument }; result: HealthDocument }
+  saveHealthKeys: { args: { fdcKey: string }; result: void }
+  saveHealthSettings: { args: { settings: HealthSettings }; result: void }
+  saveHealthSource: { args: { source: HealthSource }; result: HealthSource }
   saveItem: { args: { item: Item }; result: void }
   saveItems: { args: { items: Item[] }; result: void }
   saveJournal: { args: { journal: Journal }; result: void }
   saveKeepInTouchSettings: { args: { settings: KeepInTouchSettings }; result: void }
   saveKind: { args: { kind: Kind }; result: void }
+  saveLab: { args: { lab: LabResult }; result: LabResult }
   saveLog: { args: { log: LogEntry }; result: void }
   saveMailPartToFiles: {
     args: { messageId: string; part: string; dir?: string }
@@ -787,6 +932,8 @@ export interface Commands {
   }
   saveMailSorting: { args: { sorting: MailSorting }; result: MailSortingView }
   saveMailWriting: { args: { writing: MailWriting }; result: MailWriting }
+  saveMeal: { args: { meal: Meal }; result: Meal }
+  saveMedication: { args: { medication: Medication }; result: Medication }
   saveMeetingSettings: { args: { settings: MeetingSettings }; result: MeetingSettingsView }
   saveMemory: { args: { memory: Memory }; result: Memory[] }
   saveModelSettings: { args: { settings: ModelSettings }; result: ModelSettingsView }
@@ -813,6 +960,7 @@ export interface Commands {
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTemplate: { args: { template: Template }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
+  saveWorkout: { args: { workout: Workout }; result: Workout }
   scheduledSends: { args: { account?: AccountId | null }; result: ScheduledSend[] }
   screenTimeCollector: { args: Record<string, never>; result: CollectorConfig }
   screenTimeReport: { args: { query: ScreenQuery }; result: ScreenReport }
@@ -825,6 +973,7 @@ export interface Commands {
     args: { query: string; journalId?: JournalId | null; kind?: SearchKind | null; limit: number }
     result: SearchHit[]
   }
+  searchFoods: { args: { query: string }; result: FoodHit[] }
   searchMail: {
     args: {
       query: string
@@ -860,6 +1009,7 @@ export interface Commands {
   setFileEncrypted: { args: { id: string; encrypted: boolean }; result: FileEntry }
   setFileThumbnail: { args: { id: string; image: string }; result: FileEntry }
   setForgetKey: { args: { seconds: number }; result: void }
+  setHealthSourceToken: { args: { sourceId: HealthSourceId; tokenId: string }; result: void }
   setItemProgress: {
     args: { id: ItemId; position: number; total?: number | null; log: boolean }
     result: Item
@@ -938,9 +1088,12 @@ export interface Commands {
 
 /** The name each method sends over the wire. */
 export const COMMAND_NAMES = {
+  acceptDocumentLabs: 'accept_document_labs',
   acceptProposal: 'accept_proposal',
   accountPresets: 'account_presets',
   activeRecording: 'active_recording',
+  addHealthDocument: 'add_health_document',
+  addHealthReading: 'add_health_reading',
   addItem: 'add_item',
   addManualTransaction: 'add_manual_transaction',
   addNewsSource: 'add_news_source',
@@ -951,6 +1104,8 @@ export const COMMAND_NAMES = {
   answerChatVerification: 'answer_chat_verification',
   answerJob: 'answer_job',
   appendRecordingChunk: 'append_recording_chunk',
+  appleImportStatus: 'apple_import_status',
+  applyConditionTemplate: 'apply_condition_template',
   applyMetadata: 'apply_metadata',
   applyMoneyRules: 'apply_money_rules',
   archive: 'archive',
@@ -965,6 +1120,7 @@ export const COMMAND_NAMES = {
   benchmarkSpeechModel: 'benchmark_speech_model',
   bringInAttachments: 'bring_in_attachments',
   calendarProviders: 'calendar_providers',
+  cancelAppleImport: 'cancel_apple_import',
   cancelBackup: 'cancel_backup',
   cancelBankLink: 'cancel_bank_link',
   cancelDecisionModelDownload: 'cancel_decision_model_download',
@@ -980,9 +1136,12 @@ export const COMMAND_NAMES = {
   checkBankLink: 'check_bank_link',
   checkSending: 'check_sending',
   clearBackupKeys: 'clear_backup_keys',
+  clearHealthKeys: 'clear_health_keys',
   clearModelKey: 'clear_model_key',
   clearPlaidCredentials: 'clear_plaid_credentials',
   collectGarbage: 'collect_garbage',
+  conditionReport: 'condition_report',
+  conditionTemplates: 'condition_templates',
   confirmToolCall: 'confirm_tool_call',
   conversationMessages: 'conversation_messages',
   createEvent: 'create_event',
@@ -993,23 +1152,33 @@ export const COMMAND_NAMES = {
   deleteAccount: 'delete_account',
   deleteAlbum: 'delete_album',
   deleteAllVoiceprints: 'delete_all_voiceprints',
+  deleteAllergy: 'delete_allergy',
   deleteBankAccount: 'delete_bank_account',
   deleteBankLink: 'delete_bank_link',
   deleteBlock: 'delete_block',
   deleteBlockSeries: 'delete_block_series',
   deleteCalendar: 'delete_calendar',
+  deleteCondition: 'delete_condition',
   deleteConversation: 'delete_conversation',
   deleteDecisionModel: 'delete_decision_model',
+  deleteDose: 'delete_dose',
   deleteEntry: 'delete_entry',
   deleteEvent: 'delete_event',
   deleteFilesForever: 'delete_files_forever',
+  deleteFood: 'delete_food',
   deleteForever: 'delete_forever',
   deleteGoal: 'delete_goal',
+  deleteHealthDocument: 'delete_health_document',
+  deleteHealthSamples: 'delete_health_samples',
+  deleteHealthSource: 'delete_health_source',
   deleteItem: 'delete_item',
   deleteJob: 'delete_job',
   deleteJournal: 'delete_journal',
   deleteKind: 'delete_kind',
+  deleteLab: 'delete_lab',
   deleteLog: 'delete_log',
+  deleteMeal: 'delete_meal',
+  deleteMedication: 'delete_medication',
   deleteMemory: 'delete_memory',
   deleteMoneyCategory: 'delete_money_category',
   deleteMoneyRule: 'delete_money_rule',
@@ -1032,10 +1201,12 @@ export const COMMAND_NAMES = {
   deleteTracker: 'delete_tracker',
   deleteTransactions: 'delete_transactions',
   deleteVoiceprint: 'delete_voiceprint',
+  deleteWorkout: 'delete_workout',
   discardDraft: 'discard_draft',
   discardRecording: 'discard_recording',
   discoverFeeds: 'discover_feeds',
   dismissMeetingOffer: 'dismiss_meeting_offer',
+  dosesDue: 'doses_due',
   downloadDecisionModel: 'download_decision_model',
   downloadSpeechModel: 'download_speech_model',
   draftWithAi: 'draft_with_ai',
@@ -1045,7 +1216,9 @@ export const COMMAND_NAMES = {
   endExport: 'end_export',
   endImport: 'end_import',
   enrolVoice: 'enrol_voice',
+  estimateMealPhoto: 'estimate_meal_photo',
   exportOpml: 'export_opml',
+  extractHealthDocument: 'extract_health_document',
   fetchAttachment: 'fetch_attachment',
   fetchFullArticle: 'fetch_full_article',
   fetchImage: 'fetch_image',
@@ -1061,6 +1234,7 @@ export const COMMAND_NAMES = {
   getEvent: 'get_event',
   getFile: 'get_file',
   getGoal: 'get_goal',
+  getHealthDocument: 'get_health_document',
   getItem: 'get_item',
   getJob: 'get_job',
   getNote: 'get_note',
@@ -1072,9 +1246,24 @@ export const COMMAND_NAMES = {
   getThread: 'get_thread',
   getTransaction: 'get_transaction',
   getTranscript: 'get_transcript',
+  getWorkout: 'get_workout',
   goalActivity: 'goal_activity',
+  healthActivity: 'health_activity',
+  healthCatalog: 'health_catalog',
+  healthDayTimeline: 'health_day_timeline',
+  healthGlucose: 'health_glucose',
+  healthKeys: 'health_keys',
+  healthLatest: 'health_latest',
+  healthNutrition: 'health_nutrition',
+  healthSamples: 'health_samples',
+  healthSeries: 'health_series',
+  healthSettings: 'health_settings',
+  healthSleep: 'health_sleep',
+  healthToday: 'health_today',
+  healthVisitBrief: 'health_visit_brief',
   imagePreview: 'image_preview',
   imageSearch: 'image_search',
+  importAppleHealth: 'import_apple_health',
   importCalendar: 'import_calendar',
   importFiles: 'import_files',
   importOpml: 'import_opml',
@@ -1082,30 +1271,40 @@ export const COMMAND_NAMES = {
   improveWriting: 'improve_writing',
   inboxSenders: 'inbox_senders',
   keepInTouchStatus: 'keep_in_touch_status',
+  labTrends: 'lab_trends',
   label: 'label',
   libraryStats: 'library_stats',
   lintTemplate: 'lint_template',
   listAccountCalendars: 'list_account_calendars',
   listAccounts: 'list_accounts',
   listAlbums: 'list_albums',
+  listAllergies: 'list_allergies',
   listBankAccounts: 'list_bank_accounts',
   listBankLinks: 'list_bank_links',
   listBlocks: 'list_blocks',
   listCalendars: 'list_calendars',
   listCommands: 'list_commands',
+  listConditions: 'list_conditions',
   listConversations: 'list_conversations',
+  listDoses: 'list_doses',
   listDrafts: 'list_drafts',
   listEntries: 'list_entries',
   listEvents: 'list_events',
   listFiles: 'list_files',
   listFolder: 'list_folder',
+  listFoods: 'list_foods',
   listGoals: 'list_goals',
+  listHealthDocuments: 'list_health_documents',
+  listHealthSources: 'list_health_sources',
   listItems: 'list_items',
   listJobs: 'list_jobs',
   listJournals: 'list_journals',
   listKinds: 'list_kinds',
+  listLabs: 'list_labs',
   listLogs: 'list_logs',
   listMailboxes: 'list_mailboxes',
+  listMeals: 'list_meals',
+  listMedications: 'list_medications',
   listMemories: 'list_memories',
   listMoneyCategories: 'list_money_categories',
   listMoneyRules: 'list_money_rules',
@@ -1135,10 +1334,13 @@ export const COMMAND_NAMES = {
   listTrackers: 'list_trackers',
   listTransactions: 'list_transactions',
   listVoiceprints: 'list_voiceprints',
+  listWorkouts: 'list_workouts',
   listWritingAssists: 'list_writing_assists',
   loadEvent: 'load_event',
   lock: 'lock',
+  logDose: 'log_dose',
   logReading: 'log_reading',
+  lookupBarcode: 'lookup_barcode',
   lookupMetadata: 'lookup_metadata',
   mailActionsByOrigin: 'mail_actions_by_origin',
   mailActivity: 'mail_activity',
@@ -1151,6 +1353,9 @@ export const COMMAND_NAMES = {
   markRunsSeen: 'mark_runs_seen',
   markStoriesRead: 'mark_stories_read',
   markUnread: 'mark_unread',
+  mealResponse: 'meal_response',
+  medicationAdherence: 'medication_adherence',
+  medicationAlerts: 'medication_alerts',
   meetingActivity: 'meeting_activity',
   meetingNow: 'meeting_now',
   meetingSettings: 'meeting_settings',
@@ -1220,6 +1425,7 @@ export const COMMAND_NAMES = {
   readImport: 'read_import',
   rebuildMailIndex: 'rebuild_mail_index',
   recategorizeMail: 'recategorize_mail',
+  recordHealthPush: 'record_health_push',
   recordScreenTime: 'record_screen_time',
   refreshNews: 'refresh_news',
   removeChatLink: 'remove_chat_link',
@@ -1246,6 +1452,7 @@ export const COMMAND_NAMES = {
   saveAccountPassword: 'save_account_password',
   saveAgentSettings: 'save_agent_settings',
   saveAlbum: 'save_album',
+  saveAllergy: 'save_allergy',
   saveBackupSettings: 'save_backup_settings',
   saveBankAccount: 'save_bank_account',
   saveBankLink: 'save_bank_link',
@@ -1253,21 +1460,30 @@ export const COMMAND_NAMES = {
   saveBlockSeries: 'save_block_series',
   saveCalendar: 'save_calendar',
   saveChatLink: 'save_chat_link',
+  saveCondition: 'save_condition',
   saveDraft: 'save_draft',
   saveEntry: 'save_entry',
   saveEntryForce: 'save_entry_force',
   saveFilesSettings: 'save_files_settings',
+  saveFood: 'save_food',
   saveGoal: 'save_goal',
   saveGoals: 'save_goals',
+  saveHealthDocument: 'save_health_document',
+  saveHealthKeys: 'save_health_keys',
+  saveHealthSettings: 'save_health_settings',
+  saveHealthSource: 'save_health_source',
   saveItem: 'save_item',
   saveItems: 'save_items',
   saveJournal: 'save_journal',
   saveKeepInTouchSettings: 'save_keep_in_touch_settings',
   saveKind: 'save_kind',
+  saveLab: 'save_lab',
   saveLog: 'save_log',
   saveMailPartToFiles: 'save_mail_part_to_files',
   saveMailSorting: 'save_mail_sorting',
   saveMailWriting: 'save_mail_writing',
+  saveMeal: 'save_meal',
+  saveMedication: 'save_medication',
   saveMeetingSettings: 'save_meeting_settings',
   saveMemory: 'save_memory',
   saveModelSettings: 'save_model_settings',
@@ -1291,12 +1507,14 @@ export const COMMAND_NAMES = {
   saveTasks: 'save_tasks',
   saveTemplate: 'save_template',
   saveTracker: 'save_tracker',
+  saveWorkout: 'save_workout',
   scheduledSends: 'scheduled_sends',
   screenTimeCollector: 'screen_time_collector',
   screenTimeReport: 'screen_time_report',
   screenTimeSettings: 'screen_time_settings',
   screenTimeTimeline: 'screen_time_timeline',
   search: 'search',
+  searchFoods: 'search_foods',
   searchMail: 'search_mail',
   searchSources: 'search_sources',
   seedRoles: 'seed_roles',
@@ -1309,6 +1527,7 @@ export const COMMAND_NAMES = {
   setFileEncrypted: 'set_file_encrypted',
   setFileThumbnail: 'set_file_thumbnail',
   setForgetKey: 'set_forget_key',
+  setHealthSourceToken: 'set_health_source_token',
   setItemProgress: 'set_item_progress',
   setItemStatus: 'set_item_status',
   setMemoryOrigin: 'set_memory_origin',
@@ -1385,9 +1604,12 @@ export const COMMAND_NAMES = {
  * cannot drift out of step with the Rust.
  */
 export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
+  'accept_document_labs',
   'accept_proposal',
   'account_presets',
   'active_recording',
+  'add_health_document',
+  'add_health_reading',
   'add_item',
   'add_manual_transaction',
   'add_news_source',
@@ -1398,6 +1620,8 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'answer_chat_verification',
   'answer_job',
   'append_recording_chunk',
+  'apple_import_status',
+  'apply_condition_template',
   'apply_metadata',
   'apply_money_rules',
   'archive',
@@ -1412,6 +1636,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'benchmark_speech_model',
   'bring_in_attachments',
   'calendar_providers',
+  'cancel_apple_import',
   'cancel_backup',
   'cancel_bank_link',
   'cancel_decision_model_download',
@@ -1427,9 +1652,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'check_bank_link',
   'check_sending',
   'clear_backup_keys',
+  'clear_health_keys',
   'clear_model_key',
   'clear_plaid_credentials',
   'collect_garbage',
+  'condition_report',
+  'condition_templates',
   'confirm_tool_call',
   'conversation_messages',
   'create_event',
@@ -1440,23 +1668,33 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_account',
   'delete_album',
   'delete_all_voiceprints',
+  'delete_allergy',
   'delete_bank_account',
   'delete_bank_link',
   'delete_block',
   'delete_block_series',
   'delete_calendar',
+  'delete_condition',
   'delete_conversation',
   'delete_decision_model',
+  'delete_dose',
   'delete_entry',
   'delete_event',
   'delete_files_forever',
+  'delete_food',
   'delete_forever',
   'delete_goal',
+  'delete_health_document',
+  'delete_health_samples',
+  'delete_health_source',
   'delete_item',
   'delete_job',
   'delete_journal',
   'delete_kind',
+  'delete_lab',
   'delete_log',
+  'delete_meal',
+  'delete_medication',
   'delete_memory',
   'delete_money_category',
   'delete_money_rule',
@@ -1479,10 +1717,12 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_tracker',
   'delete_transactions',
   'delete_voiceprint',
+  'delete_workout',
   'discard_draft',
   'discard_recording',
   'discover_feeds',
   'dismiss_meeting_offer',
+  'doses_due',
   'download_decision_model',
   'download_speech_model',
   'draft_with_ai',
@@ -1492,7 +1732,9 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'end_export',
   'end_import',
   'enrol_voice',
+  'estimate_meal_photo',
   'export_opml',
+  'extract_health_document',
   'fetch_attachment',
   'fetch_full_article',
   'fetch_image',
@@ -1508,6 +1750,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_event',
   'get_file',
   'get_goal',
+  'get_health_document',
   'get_item',
   'get_job',
   'get_note',
@@ -1519,9 +1762,24 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'get_thread',
   'get_transaction',
   'get_transcript',
+  'get_workout',
   'goal_activity',
+  'health_activity',
+  'health_catalog',
+  'health_day_timeline',
+  'health_glucose',
+  'health_keys',
+  'health_latest',
+  'health_nutrition',
+  'health_samples',
+  'health_series',
+  'health_settings',
+  'health_sleep',
+  'health_today',
+  'health_visit_brief',
   'image_preview',
   'image_search',
+  'import_apple_health',
   'import_calendar',
   'import_files',
   'import_opml',
@@ -1529,30 +1787,40 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'improve_writing',
   'inbox_senders',
   'keep_in_touch_status',
+  'lab_trends',
   'label',
   'library_stats',
   'lint_template',
   'list_account_calendars',
   'list_accounts',
   'list_albums',
+  'list_allergies',
   'list_bank_accounts',
   'list_bank_links',
   'list_blocks',
   'list_calendars',
   'list_commands',
+  'list_conditions',
   'list_conversations',
+  'list_doses',
   'list_drafts',
   'list_entries',
   'list_events',
   'list_files',
   'list_folder',
+  'list_foods',
   'list_goals',
+  'list_health_documents',
+  'list_health_sources',
   'list_items',
   'list_jobs',
   'list_journals',
   'list_kinds',
+  'list_labs',
   'list_logs',
   'list_mailboxes',
+  'list_meals',
+  'list_medications',
   'list_memories',
   'list_money_categories',
   'list_money_rules',
@@ -1582,10 +1850,13 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'list_trackers',
   'list_transactions',
   'list_voiceprints',
+  'list_workouts',
   'list_writing_assists',
   'load_event',
   'lock',
+  'log_dose',
   'log_reading',
+  'lookup_barcode',
   'lookup_metadata',
   'mail_actions_by_origin',
   'mail_activity',
@@ -1598,6 +1869,9 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'mark_runs_seen',
   'mark_stories_read',
   'mark_unread',
+  'meal_response',
+  'medication_adherence',
+  'medication_alerts',
   'meeting_activity',
   'meeting_now',
   'meeting_settings',
@@ -1667,6 +1941,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'read_import',
   'rebuild_mail_index',
   'recategorize_mail',
+  'record_health_push',
   'record_screen_time',
   'refresh_news',
   'remove_chat_link',
@@ -1693,6 +1968,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account_password',
   'save_agent_settings',
   'save_album',
+  'save_allergy',
   'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
@@ -1700,21 +1976,30 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_block_series',
   'save_calendar',
   'save_chat_link',
+  'save_condition',
   'save_draft',
   'save_entry',
   'save_entry_force',
   'save_files_settings',
+  'save_food',
   'save_goal',
   'save_goals',
+  'save_health_document',
+  'save_health_keys',
+  'save_health_settings',
+  'save_health_source',
   'save_item',
   'save_items',
   'save_journal',
   'save_keep_in_touch_settings',
   'save_kind',
+  'save_lab',
   'save_log',
   'save_mail_part_to_files',
   'save_mail_sorting',
   'save_mail_writing',
+  'save_meal',
+  'save_medication',
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
@@ -1738,12 +2023,14 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tasks',
   'save_template',
   'save_tracker',
+  'save_workout',
   'scheduled_sends',
   'screen_time_collector',
   'screen_time_report',
   'screen_time_settings',
   'screen_time_timeline',
   'search',
+  'search_foods',
   'search_mail',
   'search_sources',
   'seed_roles',
@@ -1755,6 +2042,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'set_file_encrypted',
   'set_file_thumbnail',
   'set_forget_key',
+  'set_health_source_token',
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
@@ -1827,7 +2115,10 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
  * `karmayoga_service::idempotency`.
  */
 export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
+  'accept_document_labs',
   'accept_proposal',
+  'add_health_document',
+  'add_health_reading',
   'add_item',
   'add_manual_transaction',
   'add_news_source',
@@ -1837,6 +2128,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'answer_chat_verification',
   'answer_job',
   'append_recording_chunk',
+  'apply_condition_template',
   'apply_metadata',
   'apply_money_rules',
   'archive',
@@ -1845,6 +2137,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'begin_recording',
   'begin_upload',
   'bring_in_attachments',
+  'cancel_apple_import',
   'cancel_backup',
   'cancel_bank_link',
   'cancel_decision_model_download',
@@ -1857,6 +2150,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'check_bank_link',
   'check_sending',
   'clear_backup_keys',
+  'clear_health_keys',
   'clear_model_key',
   'clear_plaid_credentials',
   'collect_garbage',
@@ -1868,23 +2162,33 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_account',
   'delete_album',
   'delete_all_voiceprints',
+  'delete_allergy',
   'delete_bank_account',
   'delete_bank_link',
   'delete_block',
   'delete_block_series',
   'delete_calendar',
+  'delete_condition',
   'delete_conversation',
   'delete_decision_model',
+  'delete_dose',
   'delete_entry',
   'delete_event',
   'delete_files_forever',
+  'delete_food',
   'delete_forever',
   'delete_goal',
+  'delete_health_document',
+  'delete_health_samples',
+  'delete_health_source',
   'delete_item',
   'delete_job',
   'delete_journal',
   'delete_kind',
+  'delete_lab',
   'delete_log',
+  'delete_meal',
+  'delete_medication',
   'delete_memory',
   'delete_money_category',
   'delete_money_rule',
@@ -1907,6 +2211,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_tracker',
   'delete_transactions',
   'delete_voiceprint',
+  'delete_workout',
   'discard_draft',
   'discard_recording',
   'dismiss_meeting_offer',
@@ -1916,6 +2221,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'empty_files_trash',
   'empty_mailbox',
   'enrol_voice',
+  'extract_health_document',
   'fetch_attachment',
   'fetch_full_article',
   'fetch_image',
@@ -1924,12 +2230,14 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'flush',
   'forget_missing_files',
   'forget_screen_item',
+  'import_apple_health',
   'import_calendar',
   'import_files',
   'import_opml',
   'import_transactions',
   'label',
   'lock',
+  'log_dose',
   'log_reading',
   'mark_all_stories_read',
   'mark_jobs_seen',
@@ -1949,6 +2257,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'prepare_picture',
   'rebuild_mail_index',
   'recategorize_mail',
+  'record_health_push',
   'record_screen_time',
   'refresh_news',
   'remove_chat_link',
@@ -1972,6 +2281,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_account_password',
   'save_agent_settings',
   'save_album',
+  'save_allergy',
   'save_backup_settings',
   'save_bank_account',
   'save_bank_link',
@@ -1979,21 +2289,30 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_block_series',
   'save_calendar',
   'save_chat_link',
+  'save_condition',
   'save_draft',
   'save_entry',
   'save_entry_force',
   'save_files_settings',
+  'save_food',
   'save_goal',
   'save_goals',
+  'save_health_document',
+  'save_health_keys',
+  'save_health_settings',
+  'save_health_source',
   'save_item',
   'save_items',
   'save_journal',
   'save_keep_in_touch_settings',
   'save_kind',
+  'save_lab',
   'save_log',
   'save_mail_part_to_files',
   'save_mail_sorting',
   'save_mail_writing',
+  'save_meal',
+  'save_medication',
   'save_meeting_settings',
   'save_memory',
   'save_model_settings',
@@ -2017,6 +2336,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tasks',
   'save_template',
   'save_tracker',
+  'save_workout',
   'seed_roles',
   'send_draft',
   'send_message',
@@ -2027,6 +2347,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'set_file_encrypted',
   'set_file_thumbnail',
   'set_forget_key',
+  'set_health_source_token',
   'set_item_progress',
   'set_item_status',
   'set_memory_origin',
@@ -2072,7 +2393,10 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
 
 /** What a listener should reload after a command succeeds. */
 export const CHANGE_KINDS = {
+  accept_document_labs: 'labResult',
   accept_proposal: 'proposal',
+  add_health_document: 'healthDocument',
+  add_health_reading: 'healthSample',
   add_item: 'item',
   add_manual_transaction: 'txn',
   add_news_source: 'newsSource',
@@ -2080,17 +2404,20 @@ export const CHANGE_KINDS = {
   add_to_album: 'album',
   allow_remote_images: 'settings',
   answer_job: 'job',
+  apply_condition_template: 'condition',
   apply_metadata: 'item',
   apply_money_rules: 'txn',
   archive: 'thread',
   attach_oauth_sign_in: 'account',
   begin_recording: 'recording',
   bring_in_attachments: 'file',
+  cancel_apple_import: 'healthSample',
   cancel_decision_model_download: 'settings',
   cancel_job: 'job',
   cancel_speech_model_download: 'settings',
   change_password: 'settings',
   clear_backup_keys: 'settings',
+  clear_health_keys: 'settings',
   clear_model_key: 'settings',
   clear_plaid_credentials: 'settings',
   create_event: 'event',
@@ -2100,23 +2427,33 @@ export const CHANGE_KINDS = {
   delete_account: 'account',
   delete_album: 'album',
   delete_all_voiceprints: 'voiceprint',
+  delete_allergy: 'allergy',
   delete_bank_account: 'bankAccount',
   delete_bank_link: 'bankLink',
   delete_block: 'block',
   delete_block_series: 'block',
   delete_calendar: 'calendar',
+  delete_condition: 'condition',
   delete_conversation: 'conversation',
   delete_decision_model: 'settings',
+  delete_dose: 'dose',
   delete_entry: 'entry',
   delete_event: 'event',
   delete_files_forever: 'file',
+  delete_food: 'food',
   delete_forever: 'thread',
   delete_goal: 'goal',
+  delete_health_document: 'healthDocument',
+  delete_health_samples: 'healthSample',
+  delete_health_source: 'healthSource',
   delete_item: 'item',
   delete_job: 'job',
   delete_journal: 'journal',
   delete_kind: 'shelf',
+  delete_lab: 'labResult',
   delete_log: 'log',
+  delete_meal: 'meal',
+  delete_medication: 'medication',
   delete_memory: 'memory',
   delete_money_category: 'moneyCategory',
   delete_money_rule: 'moneyRule',
@@ -2139,6 +2476,7 @@ export const CHANGE_KINDS = {
   delete_tracker: 'tracker',
   delete_transactions: 'txn',
   delete_voiceprint: 'voiceprint',
+  delete_workout: 'workout',
   discard_draft: 'draft',
   discard_recording: 'recording',
   download_decision_model: 'settings',
@@ -2147,16 +2485,19 @@ export const CHANGE_KINDS = {
   empty_files_trash: 'file',
   empty_mailbox: 'thread',
   enrol_voice: 'voiceprint',
+  extract_health_document: 'healthDocument',
   fetch_full_article: 'story',
   finish_recording: 'recording',
   finish_upload: 'file',
   forget_missing_files: 'file',
   forget_screen_item: 'screenSpan',
+  import_apple_health: 'healthSample',
   import_calendar: 'calendar',
   import_files: 'file',
   import_opml: 'newsSource',
   import_transactions: 'txn',
   label: 'thread',
+  log_dose: 'dose',
   log_reading: 'reading',
   mark_all_stories_read: 'story',
   mark_jobs_seen: 'job',
@@ -2172,6 +2513,7 @@ export const CHANGE_KINDS = {
   move_to_mailbox: 'thread',
   name_speaker: 'transcript',
   new_draft: 'draft',
+  record_health_push: 'healthSample',
   record_screen_time: 'screenSpan',
   refresh_news: 'story',
   remove_chat_link: 'settings',
@@ -2190,6 +2532,7 @@ export const CHANGE_KINDS = {
   save_account_password: 'account',
   save_agent_settings: 'settings',
   save_album: 'album',
+  save_allergy: 'allergy',
   save_backup_settings: 'settings',
   save_bank_account: 'bankAccount',
   save_bank_link: 'bankLink',
@@ -2197,21 +2540,30 @@ export const CHANGE_KINDS = {
   save_block_series: 'block',
   save_calendar: 'calendar',
   save_chat_link: 'settings',
+  save_condition: 'condition',
   save_draft: 'draft',
   save_entry: 'entry',
   save_entry_force: 'entry',
   save_files_settings: 'settings',
+  save_food: 'food',
   save_goal: 'goal',
   save_goals: 'goal',
+  save_health_document: 'healthDocument',
+  save_health_keys: 'settings',
+  save_health_settings: 'settings',
+  save_health_source: 'healthSource',
   save_item: 'item',
   save_items: 'item',
   save_journal: 'journal',
   save_keep_in_touch_settings: 'settings',
   save_kind: 'shelf',
+  save_lab: 'labResult',
   save_log: 'log',
   save_mail_part_to_files: 'file',
   save_mail_sorting: 'settings',
   save_mail_writing: 'settings',
+  save_meal: 'meal',
+  save_medication: 'medication',
   save_meeting_settings: 'settings',
   save_memory: 'memory',
   save_model_settings: 'settings',
@@ -2235,6 +2587,7 @@ export const CHANGE_KINDS = {
   save_tasks: 'task',
   save_template: 'template',
   save_tracker: 'tracker',
+  save_workout: 'workout',
   seed_roles: 'role',
   send_draft: 'draft',
   send_message: 'conversation',
@@ -2245,6 +2598,7 @@ export const CHANGE_KINDS = {
   set_file_encrypted: 'file',
   set_file_thumbnail: 'file',
   set_forget_key: 'settings',
+  set_health_source_token: 'healthSource',
   set_item_progress: 'item',
   set_item_status: 'item',
   set_memory_origin: 'memory',

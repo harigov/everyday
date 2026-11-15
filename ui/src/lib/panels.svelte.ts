@@ -61,6 +61,10 @@ export const SETTINGS_TABS = [
   // vault, how long the trash keeps what is in it, and bringing older
   // pictures in. See `docs/plans/files.md`.
   'files',
+  // Where health data comes from -- the phone's automations, an Apple
+  // export -- how it is shown, and the food database key. See
+  // `docs/plans/health.md`.
+  'health',
   'meetings',
   // The shapes an entry, a note or a meeting's notes start from -- one list
   // for all three. See TemplatesPanel.

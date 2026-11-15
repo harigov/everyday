@@ -252,6 +252,11 @@ impl Vault {
         if !screen.is_empty() && self.supports_screen_time() {
             out.extend(self.screen_days(&screen, window)?);
         }
+        let health: Vec<&Tracker> =
+            derived.iter().filter(|t| matches!(t.source, TrackerSource::Health { .. })).collect();
+        if !health.is_empty() && self.supports_health() {
+            out.extend(self.health_tracker_days(&health, window)?);
+        }
         Ok(out)
     }
 

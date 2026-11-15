@@ -80,6 +80,17 @@ const KINDS = [
   'screenSpan',
   'file',
   'album',
+  'healthSource',
+  'workout',
+  'medication',
+  'dose',
+  'condition',
+  'labResult',
+  'healthDocument',
+  'allergy',
+  'food',
+  'meal',
+  'healthSample',
   'recording',
   'voiceprint',
   'transcript',
@@ -166,6 +177,40 @@ assert.equal(RELOAD.screentimeSpans(), undefined, 'nor for heartbeats')
 assert.deepEqual(targetsFor(['file', 'album']), ['files'])
 assert.deepEqual(targetsFor(['file', 'file', 'file'], true), ['files'], 'a scan is one reload')
 assert.equal(RELOAD.files(), undefined, 'no reload before Files is opened')
+// Health: every record it keeps is one reload of what is on screen, so a
+// meal and a dose written together are one call. Samples -- a phone's hourly
+// push, an import's batches, never with an id -- are a target of their own,
+// held to once a minute, and neither drags the Overview along.
+assert.deepEqual(
+  targetsFor([
+    'healthSource',
+    'workout',
+    'medication',
+    'dose',
+    'condition',
+    'labResult',
+    'healthDocument',
+    'allergy',
+    'food',
+    'meal',
+  ]),
+  ['health'],
+)
+assert.deepEqual(targetsFor(['healthSample', 'healthSample'], true), ['healthSamples'])
+// ...but a step goal's meter moves with them, while the todo app is showing it.
+assert.deepEqual(
+  new Set(targetsFor(['healthSample'], false, true)),
+  new Set(['healthSamples', 'goalTargets']),
+  'steps arriving move a goal meter',
+)
+assert.deepEqual(
+  new Set(targetsFor(['dose', 'healthSample'])),
+  new Set(['health', 'healthSamples']),
+)
+// The app has not been opened here, so neither reads anything: a phone
+// pushing every hour costs nothing while somebody writes in the journal.
+assert.equal(RELOAD.health(), undefined, 'no reload before Health is opened')
+assert.equal(RELOAD.healthSamples(), undefined, 'nor for samples')
 
 // A job moving -- queued, running, a new progress line, done -- reloads the
 // jobs store alone, and does not drag the routines with it: the two are

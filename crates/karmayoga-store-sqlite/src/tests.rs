@@ -2073,3 +2073,497 @@ fn a_screen_span_copied_into_another_row_does_not_open_there() {
     let err = store.last_span("stream").unwrap_err();
     assert_eq!(err.code(), "decrypt_failed", "{err:?}");
 }
+
+/// A series' keyed hash, as the vault hands it over: opaque to the store.
+const HEALTH_SERIES: &str = "7a1b2c3d4e5f60718293a4b5c6d7e8f9";
+
+/// One day of glucose under `series`, with a device nobody should see and a
+/// number that would be easy to find. For the two health tests below.
+fn a_health_day(
+    series: &str,
+    day: jiff::civil::Date,
+    value: f64,
+) -> karmayoga_core::store::health::SeriesRow {
+    use karmayoga_core::health::{Bucket, Metric, Sample, SeriesDay, SeriesSummary, Tombstone};
+    karmayoga_core::store::health::SeriesRow {
+        series: series.into(),
+        day,
+        data: SeriesDay {
+            metric: Some(Metric::BloodGlucose),
+            day: Some(day),
+            sources: vec!["A device nobody should see".into()],
+            samples: vec![Sample {
+                start: 1_800_000_000,
+                secs: 0,
+                value,
+                source: 0,
+                offset_min: 0,
+            }],
+            tombstones: vec![Tombstone { start: 1_800_000_060, secs: 0, value: value + 1.0 }],
+        },
+        summary: SeriesSummary {
+            metric: Some(Metric::BloodGlucose),
+            day: Some(day),
+            buckets: vec![Bucket {
+                quarter: 1,
+                count: 1,
+                sum: value,
+                min: value,
+                max: value,
+                last: value,
+                covered: 0,
+            }],
+            offset_min: 0,
+        },
+    }
+}
+
+/// A medication with something nobody should see in every field a person
+/// would recognise.
+fn a_health_medication(name: &str) -> karmayoga_core::health::Medication {
+    use karmayoga_core::health::{MedKind, MedSchedule, MedStatus, Medication};
+    let now = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+    Medication {
+        id: karmayoga_core::id::MedicationId::new(),
+        name: name.into(),
+        kind: MedKind::Prescription,
+        form: "a form nobody should see".into(),
+        strength: "a strength nobody should see".into(),
+        dose: 4_321.5,
+        dose_unit: "a unit nobody should see".into(),
+        schedule: MedSchedule::AsNeeded,
+        rules: Vec::new(),
+        tags: vec!["a tag nobody should see".into()],
+        status: MedStatus::Active,
+        started: None,
+        stopped: None,
+        stop_reason: "a reason nobody should see".into(),
+        history: Vec::new(),
+        condition_ids: Vec::new(),
+        prescriber: "A prescriber nobody should see".into(),
+        pharmacy: "A pharmacy nobody should see".into(),
+        supply: None,
+        remind: true,
+        codes: Vec::new(),
+        source_names: vec!["a source name nobody should see".into()],
+        notes: "A note nobody should see".into(),
+        sort_order: 0,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+#[test]
+fn the_database_file_contains_no_readable_health_data() {
+    // Which metric, what it read, which device, which medication, which
+    // diagnosis, which test and what it found, which paper, which allergy,
+    // which food: none of it may sit in a clear column. What is meant to be
+    // readable is a series' keyed hash and its day, when a workout began and
+    // its keyed key, which medication a dose is of, and the dates of a lab
+    // result and a document -- see `karmayoga_store_sql::schema`'s `v30`.
+    use karmayoga_core::health::{
+        Activity, Allergy, AllergyKind, CarePlan, Condition, ConditionStatus, Connector, DocKind,
+        Dose, DoseOrigin, DoseStatus, ExtractionState, Food, FoodSource, HealthDocument,
+        HealthSettings, HealthSource, LabFlag, LabOrigin, LabResult, Meal, MealItem, MealSlot,
+        Nutrients, Severity, SourceStatus, Workout,
+    };
+    use karmayoga_core::id::{
+        AllergyId, ConditionId, DoseId, FoodId, HealthDocumentId, HealthSourceId, LabResultId,
+        MealId, WorkoutId,
+    };
+    use karmayoga_core::store::health::HealthStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let now = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+    let later = jiff::Timestamp::from_second(1_800_001_800).unwrap();
+
+    store
+        .put_series(&[a_health_day(HEALTH_SERIES, jiff::civil::date(2026, 11, 5), 123_456.789)])
+        .unwrap();
+    store
+        .put_health_settings(&HealthSettings {
+            priority: vec!["A device nobody should see".into()],
+            ..HealthSettings::default()
+        })
+        .unwrap();
+    store
+        .put_source(&HealthSource {
+            id: HealthSourceId::new(),
+            connector: Connector::HealthAutoExport,
+            name: "A source nobody should see".into(),
+            paused: true,
+            status: SourceStatus {
+                last_error: "an error nobody should see".into(),
+                devices: vec!["A device nobody should see".into()],
+                ..SourceStatus::default()
+            },
+            token_id: "a-token-id-nobody-should-see".into(),
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+
+    let workout_key = "a3f0c9d28e7b4f5e9d0e2c7f8a6b5d4e";
+    store
+        .put_workouts(&[Workout {
+            id: WorkoutId::new(),
+            activity: Activity::Running,
+            name: "A workout nobody should see".into(),
+            start: now,
+            end: later,
+            offset_min: -480,
+            active_energy_kcal: Some(987_654.321),
+            total_energy_kcal: None,
+            distance_m: None,
+            elevation_up_m: None,
+            avg_hr: None,
+            max_hr: None,
+            effort: None,
+            indoor: None,
+            source: "A workout source nobody should see".into(),
+            source_id: None,
+            external_id: "external-nobody-should-see".into(),
+            route: None,
+            note: "A workout note nobody should see".into(),
+            key: workout_key.into(),
+            hidden: false,
+            created_at: now,
+            updated_at: now,
+        }])
+        .unwrap();
+
+    let medication = a_health_medication("A medication nobody should see");
+    store.put_medication(&medication).unwrap();
+    let dose_key = "b4a1d0e39f8c5a6f0e1d3c8a9b7c6e5f";
+    store
+        .put_doses(&[Dose {
+            id: DoseId::new(),
+            medication_id: medication.id,
+            scheduled_at: None,
+            at: now,
+            status: DoseStatus::Taken,
+            amount: Some(4_321.5),
+            origin: DoseOrigin::Source,
+            note: "A dose note nobody should see".into(),
+            key: dose_key.into(),
+            hidden: false,
+            created_at: now,
+            updated_at: now,
+        }])
+        .unwrap();
+
+    store
+        .put_condition(&Condition {
+            id: ConditionId::new(),
+            name: "A condition nobody should see".into(),
+            template: None,
+            status: ConditionStatus::Active,
+            diagnosed: None,
+            codes: Vec::new(),
+            plan: CarePlan::default(),
+            notes: "A condition note nobody should see".into(),
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+    store
+        .put_labs(&[LabResult {
+            id: LabResultId::new(),
+            code: "code-nobody-should-see".into(),
+            name: "A test nobody should see".into(),
+            value: Some(7_531.246),
+            text: "A finding nobody should see".into(),
+            unit: "a unit nobody should see".into(),
+            ref_low: None,
+            ref_high: None,
+            ref_text: String::new(),
+            flag: LabFlag::High,
+            collected: jiff::civil::date(2026, 11, 3),
+            collected_at: None,
+            lab: "A laboratory nobody should see".into(),
+            panel: "A panel nobody should see".into(),
+            document_id: None,
+            origin: LabOrigin::Manual,
+            note: String::new(),
+            created_at: now,
+            updated_at: now,
+        }])
+        .unwrap();
+    store
+        .put_document(&HealthDocument {
+            id: HealthDocumentId::new(),
+            title: "A document nobody should see".into(),
+            kind: DocKind::LabReport,
+            date: Some(jiff::civil::date(2026, 11, 4)),
+            provider: "A clinic nobody should see".into(),
+            files: Vec::new(),
+            text: "A sentence of a report nobody should see".into(),
+            fhir: Vec::new(),
+            extraction: ExtractionState::None,
+            extraction_error: String::new(),
+            pending_labs: Vec::new(),
+            condition_ids: Vec::new(),
+            external_id: "fhir-nobody-should-see".into(),
+            notes: String::new(),
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+    store
+        .put_allergy(&Allergy {
+            id: AllergyId::new(),
+            substance: "An allergen nobody should see".into(),
+            kind: AllergyKind::Drug,
+            reaction: "A reaction nobody should see".into(),
+            severity: Severity::Severe,
+            noted: None,
+            notes: String::new(),
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+    let nutrients = Nutrients { kcal: 8_642.0, ..Nutrients::default() };
+    store
+        .put_food(&Food {
+            id: FoodId::new(),
+            name: "A food nobody should see".into(),
+            brand: "A brand nobody should see".into(),
+            barcode: "barcode-nobody-should-see".into(),
+            source: FoodSource::Own,
+            per_100g: nutrients.clone(),
+            servings: Vec::new(),
+            favorite: false,
+            last_used: Some(now),
+            use_count: 1,
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+    store
+        .put_meal(&Meal {
+            id: MealId::new(),
+            at: now,
+            offset_min: 0,
+            slot: MealSlot::Dinner,
+            name: "A meal nobody should see".into(),
+            items: vec![MealItem {
+                food_id: None,
+                name: "An item nobody should see".into(),
+                amount: 1.0,
+                unit: "unit".into(),
+                grams: None,
+                nutrients,
+                estimated: false,
+            }],
+            photo: None,
+            note: "A meal note nobody should see".into(),
+            created_at: now,
+            updated_at: now,
+        })
+        .unwrap();
+    store.flush().unwrap();
+
+    // What is readable: the series, as the vault handed it over, and its
+    // day; a workout's keyed hash; which medication a dose is of; and the
+    // two dates.
+    let held = |sql: &str| -> String { raw(dir.path()).query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(held("SELECT series FROM health_series"), HEALTH_SERIES);
+    assert_eq!(held("SELECT day FROM health_series"), "2026-11-05");
+    assert_eq!(held("SELECT dedupe_key FROM health_workouts"), workout_key);
+    assert_eq!(held("SELECT dedupe_key FROM health_doses"), dose_key);
+    assert_eq!(held("SELECT medication_id FROM health_doses"), medication.id.to_string());
+    assert_eq!(held("SELECT collected FROM health_labs"), "2026-11-03");
+    assert_eq!(held("SELECT doc_date FROM health_documents"), "2026-11-04");
+
+    let bytes = std::fs::read(dir.path().join(DB_FILENAME)).unwrap();
+    for needle in [
+        b"nobody should see".as_slice(),
+        b"nobody-should-see",
+        // The metric, by the name it is stored under and the one it is shown
+        // by -- "this vault measures glucose" is itself a diagnosis.
+        b"blood_glucose",
+        b"bloodGlucose",
+        b"BloodGlucose",
+        // Values, as the JSON would write them.
+        b"123456.789",
+        b"987654.321",
+        b"7531.246",
+        b"4321.5",
+        b"8642.0",
+        // An activity, a connector, a flag and a severity, by name.
+        b"running",
+        b"healthAutoExport",
+        b"\"severe\"",
+    ] {
+        assert!(
+            !bytes.windows(needle.len()).any(|w| w == needle),
+            "found {:?} in the database file",
+            String::from_utf8_lossy(needle)
+        );
+    }
+    assert!(bytes.windows(10).any(|w| w == b"2026-11-05"), "the day is meant to be readable");
+}
+
+#[test]
+fn a_health_series_day_moved_to_another_series_day_or_half_does_not_open() {
+    // Somebody who can write the file but does not hold the key moves a
+    // sealed payload somewhere else. A day's samples are bound to their
+    // series and their day, and the summary beside them to the same under a
+    // label of its own, so neither opens as another day's, another series',
+    // or the other half of the same row.
+    use karmayoga_core::store::health::HealthStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let day = |n: i8| jiff::civil::date(2026, 11, n);
+    let other = "another-series-hash";
+    store
+        .put_series(&[
+            a_health_day(HEALTH_SERIES, day(1), 100.0),
+            a_health_day(HEALTH_SERIES, day(2), 110.0),
+            a_health_day(HEALTH_SERIES, day(3), 120.0),
+            a_health_day(HEALTH_SERIES, day(4), 130.0),
+            a_health_day(other, day(1), 140.0),
+        ])
+        .unwrap();
+    store.flush().unwrap();
+    let read_all = || store.series_days(HEALTH_SERIES, day(1), day(4));
+    assert_eq!(read_all().unwrap().len(), 4);
+
+    let db = raw(dir.path());
+    // One day's samples moved to the next day of the same series.
+    db.execute(
+        "UPDATE health_series SET data = (SELECT data FROM health_series WHERE series = ?1 AND day = ?2)
+         WHERE series = ?1 AND day = ?3",
+        rusqlite::params![HEALTH_SERIES, "2026-11-01", "2026-11-02"],
+    )
+    .unwrap();
+    let err = store.series_days(HEALTH_SERIES, day(2), day(2)).unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+    assert!(
+        store.series_summaries(HEALTH_SERIES, day(2), day(2)).is_ok(),
+        "the summary beside it was not touched, and opens"
+    );
+
+    // The same day's samples moved to another series.
+    db.execute(
+        "UPDATE health_series SET data = (SELECT data FROM health_series WHERE series = ?1 AND day = ?2)
+         WHERE series = ?3 AND day = ?2",
+        rusqlite::params![HEALTH_SERIES, "2026-11-01", other],
+    )
+    .unwrap();
+    let err = store.series_days(other, day(1), day(1)).unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+
+    // A day's summary put where its samples go, and the samples where the
+    // summary goes: the two labels differ, so neither stands in for the
+    // other.
+    db.execute(
+        "UPDATE health_series SET data = summary WHERE series = ?1 AND day = ?2",
+        rusqlite::params![HEALTH_SERIES, "2026-11-03"],
+    )
+    .unwrap();
+    let err = store.series_days(HEALTH_SERIES, day(3), day(3)).unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+    db.execute(
+        "UPDATE health_series SET summary = data WHERE series = ?1 AND day = ?2",
+        rusqlite::params![HEALTH_SERIES, "2026-11-04"],
+    )
+    .unwrap();
+    let err = store.series_summaries(HEALTH_SERIES, day(4), day(4)).unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+    assert_eq!(store.series_days(HEALTH_SERIES, day(4), day(4)).unwrap().len(), 1);
+}
+
+#[test]
+fn reading_summaries_never_opens_the_samples() {
+    // The point of the second sealed column: a range of summaries is answered
+    // without a single sample payload being decrypted. Proved the only way
+    // the file allows -- by ruining every payload in `data` and reading the
+    // range anyway.
+    use karmayoga_core::store::health::HealthStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let day = |n: i8| jiff::civil::date(2026, 11, n);
+    let rows: Vec<_> =
+        (1..=5).map(|n| a_health_day(HEALTH_SERIES, day(n), 100.0 + f64::from(n))).collect();
+    store.put_series(&rows).unwrap();
+    store.flush().unwrap();
+
+    raw(dir.path()).execute("UPDATE health_series SET data = x'00'", []).unwrap();
+
+    let summaries = store.series_summaries(HEALTH_SERIES, day(1), day(5)).unwrap();
+    assert_eq!(summaries, rows.iter().map(|r| r.summary.clone()).collect::<Vec<_>>());
+    let err = store.series_days(HEALTH_SERIES, day(1), day(5)).unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+}
+
+#[test]
+fn a_health_record_copied_into_another_row_does_not_open_there() {
+    // A medication's payload moved into another medication's row. Bound to
+    // its own id, it will not open under the other's.
+    use karmayoga_core::store::health::HealthStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let first = a_health_medication("The first medication");
+    let second = a_health_medication("The second medication");
+    store.put_medication(&first).unwrap();
+    store.put_medication(&second).unwrap();
+    store.flush().unwrap();
+    assert_eq!(store.list_medications().unwrap().len(), 2);
+
+    raw(dir.path())
+        .execute(
+            "UPDATE health_medications SET data = (SELECT data FROM health_medications WHERE id = ?1)
+             WHERE id = ?2",
+            [first.id.to_string(), second.id.to_string()],
+        )
+        .unwrap();
+
+    let err = store.get_medication(second.id).unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+    let err = store.list_medications().unwrap_err();
+    assert_eq!(err.code(), "decrypt_failed", "{err:?}");
+    assert_eq!(store.get_medication(first.id).unwrap(), first, "the source row is as it was");
+}
+
+#[test]
+fn deleting_a_medication_takes_its_doses_in_one_transaction() {
+    // `delete_medication` deletes the doses by their clear `medication_id`,
+    // so a dose that no longer opens -- because somebody ruined its payload --
+    // goes with its medication all the same.
+    use karmayoga_core::health::{Dose, DoseOrigin, DoseStatus};
+    use karmayoga_core::store::health::HealthStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    let medication = a_health_medication("A medication");
+    let now = jiff::Timestamp::from_second(1_800_000_000).unwrap();
+    store.put_medication(&medication).unwrap();
+    let dose = Dose {
+        id: karmayoga_core::id::DoseId::new(),
+        medication_id: medication.id,
+        scheduled_at: None,
+        at: now,
+        status: DoseStatus::Taken,
+        amount: None,
+        origin: DoseOrigin::Manual,
+        note: String::new(),
+        key: String::new(),
+        hidden: false,
+        created_at: now,
+        updated_at: now,
+    };
+    store.put_doses(std::slice::from_ref(&dose)).unwrap();
+    store.flush().unwrap();
+
+    raw(dir.path()).execute("UPDATE health_doses SET data = x'00'", []).unwrap();
+    store.delete_medication(medication.id).unwrap();
+
+    let count: i64 =
+        raw(dir.path()).query_row("SELECT COUNT(*) FROM health_doses", [], |r| r.get(0)).unwrap();
+    assert_eq!(count, 0, "the dose went with its medication without being opened");
+}

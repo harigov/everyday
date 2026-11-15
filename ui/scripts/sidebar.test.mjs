@@ -32,6 +32,14 @@ check('and is remembered', localStorage.getItem('karmayoga.sidebar.folded'), '["
 sidebar.toggle('mail')
 check('unfolding forgets it', localStorage.getItem('karmayoga.sidebar.folded'), '[]')
 
+// Health is an app like the rest: its sidebar folds on its own, and the
+// choice is kept.
+sidebar.toggle('health')
+check('Health folds its own sidebar', sidebar.folded('health'), true)
+check('and not the app beside it', sidebar.folded('screentime'), false)
+check('Health is remembered', localStorage.getItem('karmayoga.sidebar.folded'), '["health"]')
+sidebar.toggle('health')
+
 sidebar.reach()
 check('not at once', sidebar.peeking, false)
 await wait(220)

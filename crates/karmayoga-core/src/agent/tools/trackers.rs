@@ -9,6 +9,8 @@ use super::{
     one_of, resolve_purpose, run_delete, schema, text,
 };
 use crate::error::{Error, Result};
+use crate::health::report::resolve_stat;
+use crate::health::{Metric, Stat, units};
 use crate::id::{GoalId, KindId, ReadingId, RoleId, TrackerId};
 use crate::purpose::Purpose;
 use crate::store::trackers::ReadingQuery;
@@ -33,7 +35,8 @@ pub(super) static TOOLS: &[Tool] = &[
          than a day what an even pace would have reached by today. Weeks run Monday \
          to Sunday. A tracker whose source is not 'manual' is worked out from other \
          records \u{2014} 'time' is minutes of logged time filed under its goal or \
-         role, 'finished' is library items finished or re-read \u{2014} and cannot be \
+         role, 'finished' is library items finished or re-read, 'health' is a day's \
+         figure from the Health app and 'measures' says which \u{2014} and cannot be \
          logged to.",
         run_list_trackers
     ),
@@ -187,9 +190,11 @@ pub(super) static TOOLS: &[Tool] = &[
                          logged time filed under the goal or role; 'finished' is things \
                          finished off a shelf (a re-read counts); 'screen' is minutes of \
                          screen time from the Screen time app, all of it or narrowed by \
-                         `screen_category` or `screen_item`; 'new' makes a tracker recorded \
-                         by hand, named by `name`.",
-                        &["time", "finished", "screen", "new"]
+                         `screen_category` or `screen_item`; 'health' is a day's figure from \
+                         the Health app, named by `health_metric` (or written \
+                         'health:<metric>'); 'new' makes a tracker recorded by hand, named \
+                         by `name`.",
+                        &["time", "finished", "screen", "health", "new"]
                     )
                 ),
                 ("goal_id", text("File the tracker under this goal. From list_goals.")),
@@ -208,6 +213,31 @@ pub(super) static TOOLS: &[Tool] = &[
                         "For 'screen': only this app or site, as screen_time names it \
                          (app:firefox, site:youtube.com) or by its name or web address."
                     )
+                ),
+                (
+                    "health_metric",
+                    text(
+                        "For 'health': which measurement, by its key, e.g. steps, \
+                         resting_heart_rate, weight, blood_glucose, active_energy, sleep_stage."
+                    )
+                ),
+                (
+                    "health_stat",
+                    one_of(
+                        "For 'health': how a day is worked out. Defaults to the metric's own \
+                         (steps add up, heart rate averages, weight takes the last reading). \
+                         in_range is the share of the day inside health_low..health_high, as \
+                         a percentage.",
+                        &["auto", "sum", "mean", "min", "max", "last", "count", "in_range"]
+                    )
+                ),
+                (
+                    "health_low",
+                    decimal("For health_stat in_range: the bottom of the range, in their unit.")
+                ),
+                (
+                    "health_high",
+                    decimal("For health_stat in_range: the top of the range, in their unit.")
                 ),
                 ("name", text("For 'new': what is being recorded, e.g. 'TV'.")),
                 ("unit", text("For 'new': the unit, e.g. 'min', 'pages'. Empty for a count.")),
@@ -241,12 +271,17 @@ pub(super) static TOOLS: &[Tool] = &[
          measure 'time', goal_id of the piano goal, per week, min 60, max 120; \
          'twelve books this year' is measure 'finished' on the books shelf, per year, \
          min 12; 'under an hour of social media a day' is measure 'screen', \
-         screen_category 'Social', per day, max 60; 'no more than an hour of TV a day' \
-         is measure 'new', name 'TV', unit 'min', per day, max 60. Time is always in \
-         minutes. A tracker holds one target per period and tally, so setting one again \
+         screen_category 'Social', per day, max 60; 'eight thousand steps a day' is \
+         measure 'health', health_metric 'steps', per day, min 8000; 'glucose in range \
+         70% of the time' is measure 'health', health_metric 'blood_glucose', health_stat \
+         'in_range', health_low 70, health_high 180 in their glucose unit, per day, min \
+         70; 'no more than an hour of TV a day' is measure 'new', name 'TV', unit \
+         'min', per day, max 60. Time is always in minutes, and a health target's min and \
+         max are in the unit list_trackers gives that tracker (kilograms, not pounds), a \
+         share in range being a percentage. A tracker holds one target per period and tally, so setting one again \
          replaces it \u{2014} and a measure that already has a tracker (time on the same \
-         goal, the same shelf, the same screen time, a tracker of the same name) reuses \
-         it rather than making another. Give min, max or both. Passing goal_id or \
+         goal, the same shelf, the same screen time, the same health metric, a tracker \
+         of the same name) reuses it rather than making another. Give min, max or both. Passing goal_id or \
          role_id with an existing tracker also files it there.",
         run_set_target
     ),
@@ -269,6 +304,9 @@ fn run_list_trackers(ctx: &ToolContext<'_>, _args: &Args<'_>) -> Result<Value> {
             let m = row.as_object_mut().expect("just built an object");
             if let Some(label) = filed_under(ctx, t.purpose) {
                 m.insert("filed_under".into(), json!(label));
+            }
+            if let TrackerSource::Health { metric, stat } = &t.source {
+                m.insert("measures".into(), json!(health_words(*metric, *stat)));
             }
             if let Some((_, each)) = measured.iter().find(|(m, _)| m.id == t.id) {
                 m.insert(
@@ -509,7 +547,7 @@ fn run_tracker_summary(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> 
     // own tracker's aggregate -- and the aggregate is named in the reply, so
     // the model can say "3 doses" rather than "3".
     let aggregates: BTreeMap<TrackerId, crate::tracker::Aggregate> =
-        ctx.vault.trackers()?.iter().map(|t| (t.id, t.kind.aggregate())).collect();
+        ctx.vault.trackers()?.iter().map(|t| (t.id, t.aggregate())).collect();
 
     Ok(json!({
         "from": from.to_string(),
@@ -644,6 +682,12 @@ fn existing_for(
             Some((wanted, _)) => live.into_iter().find(|t| t.source == wanted),
             None => None,
         },
+        // A metric under the same stat is the same measure, whether the stat
+        // was named or left to the metric's own.
+        m if is_health(m) => {
+            let (wanted, _) = health_source(ctx, args)?;
+            live.into_iter().find(|t| same_health(&t.source, &wanted))
+        }
         "new" => {
             let name = args.opt_str("name").map(str::trim).unwrap_or_default();
             live.into_iter()
@@ -704,6 +748,13 @@ fn new_tracker(
             t.icon = "eye".into();
             t
         }
+        m if is_health(m) => {
+            let (source, name) = health_source(ctx, args)?;
+            let mut t = Tracker::new(name, TrackerKind::Amount);
+            t.source = source;
+            t.icon = "heart".into();
+            t
+        }
         "new" => {
             let name = args.opt_str("name").map(str::trim).unwrap_or_default();
             if name.is_empty() {
@@ -720,13 +771,127 @@ fn new_tracker(
             t
         }
         other => {
-            return Err(
-                args.bad(format!("`measure` must be time, finished, screen or new, not {other:?}"))
-            );
+            return Err(args.bad(format!(
+                "`measure` must be time, finished, screen, health or new, not {other:?}"
+            )));
         }
     };
     tracker.purpose = purpose;
     Ok(tracker)
+}
+
+/// Is this `measure` the Health app's: "health", or "health:<metric>"?
+fn is_health(measure: &str) -> bool {
+    measure == "health" || measure.starts_with("health:")
+}
+
+/// Two health sources count the same thing: one metric, under one stat once
+/// each has been resolved to the metric's own default if it left it unsaid.
+fn same_health(a: &TrackerSource, b: &TrackerSource) -> bool {
+    match (a, b) {
+        (
+            TrackerSource::Health { metric: m1, stat: s1 },
+            TrackerSource::Health { metric: m2, stat: s2 },
+        ) => m1 == m2 && resolve_stat(*m1, *s1) == resolve_stat(*m2, *s2),
+        _ => false,
+    }
+}
+
+/// The Health source `health_metric`, `health_stat` and its bounds describe --
+/// or `measure` written `health:<metric>` -- and the name a new tracker for it
+/// gets.
+///
+/// The stat is stored resolved, so "steps" and "steps, summed" are one
+/// tracker. An in-range bound is taken in the person's own glucose or blood
+/// pressure unit and filed in the canonical whole number a stat holds.
+fn health_source(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<(TrackerSource, String)> {
+    let spelled = args
+        .opt_str("measure")
+        .and_then(|m| m.trim().split_once(':'))
+        .map(|(_, key)| key.to_string());
+    let key = args.opt_str("health_metric").map(str::to_string).or(spelled).ok_or_else(|| {
+        args.bad(
+            "'health' needs `health_metric`: a key such as steps, resting_heart_rate, weight \
+             or blood_glucose",
+        )
+    })?;
+    let wanted = key.trim().to_lowercase().replace([' ', '-'], "_");
+    let metric = Metric::from_key(&wanted).ok_or_else(|| {
+        let keys: Vec<&str> = Metric::ALL.iter().map(|m| m.key()).collect();
+        args.bad(format!("no health metric called {key:?}; they are: {}", keys.join(", ")))
+    })?;
+
+    let stat = match args.opt_str("health_stat").map(|s| s.trim().to_lowercase()).as_deref() {
+        None | Some("auto") => Stat::Auto,
+        Some("sum") => Stat::Sum,
+        Some("mean") => Stat::Mean,
+        Some("min") => Stat::Min,
+        Some("max") => Stat::Max,
+        Some("last") => Stat::Last,
+        Some("count") => Stat::Count,
+        Some("in_range") => {
+            let (Some(low), Some(high)) = (args.opt_f64("health_low"), args.opt_f64("health_high"))
+            else {
+                return Err(args.bad("'in_range' needs `health_low` and `health_high`"));
+            };
+            let unit = units::display_unit(metric, &ctx.vault.health_settings()?.units);
+            let canonical = |v: f64| {
+                units::to_canonical(metric, v, &unit).map(f64::round).ok_or_else(|| {
+                    args.bad(format!("{} cannot be given in {unit:?}", metric.info().name))
+                })
+            };
+            let (low, high) = (canonical(low)?, canonical(high)?);
+            if low.partial_cmp(&high) != Some(std::cmp::Ordering::Less)
+                || low.abs() > 1e9
+                || high.abs() > 1e9
+            {
+                return Err(args.bad("`health_low` must be below `health_high`"));
+            }
+            Stat::InRange { low: low as i32, high: high as i32 }
+        }
+        Some(other) => {
+            return Err(args.bad(format!(
+                "`health_stat` must be auto, sum, mean, min, max, last, count or in_range, not \
+                 {other:?}"
+            )));
+        }
+    };
+
+    let resolved = resolve_stat(metric, stat);
+    let info = metric.info();
+    let name = match resolved {
+        Stat::InRange { low, high } => format!("{} in range {low}-{high}", info.name),
+        other if other == resolve_stat(metric, Stat::Auto) => info.name.to_string(),
+        other => format!("{} ({})", info.name, stat_word(other)),
+    };
+    Ok((TrackerSource::Health { metric, stat: resolved }, name))
+}
+
+/// A stat other than an in-range share, in a word.
+fn stat_word(stat: Stat) -> &'static str {
+    match stat {
+        Stat::Auto => "auto",
+        Stat::Sum => "sum",
+        Stat::Mean => "mean",
+        Stat::Min => "min",
+        Stat::Max => "max",
+        Stat::Last => "last",
+        Stat::Count => "count",
+        Stat::InRange { .. } => "in range",
+    }
+}
+
+/// What a Health tracker measures, in a sentence: the metric, how each day is
+/// worked out, and the canonical unit its targets are set in.
+fn health_words(metric: Metric, stat: Stat) -> String {
+    let info = metric.info();
+    match resolve_stat(metric, stat) {
+        Stat::InRange { low, high } => format!(
+            "{}: the share of each day between {low} and {high} {}, as a percentage",
+            info.name, info.unit
+        ),
+        other => format!("{}: the {} of each day, in {}", info.name, stat_word(other), info.unit),
+    }
 }
 
 /// The screen-time source `screen_category` and `screen_item` describe, and
@@ -904,6 +1069,46 @@ mod tests {
             find_by_name(&[t], "Water").is_none(),
             "archiving rather than deleting frees the name up"
         );
+    }
+
+    // ---- health measures ----------------------------------------------------
+
+    #[test]
+    fn a_health_measure_is_the_word_or_the_word_and_a_metric() {
+        assert!(is_health("health"));
+        assert!(is_health("health:steps"));
+        assert!(!is_health("screen"));
+        assert!(!is_health("healthy"));
+    }
+
+    #[test]
+    fn the_same_metric_under_the_same_stat_is_one_tracker_whether_or_not_it_was_named() {
+        let auto = TrackerSource::Health { metric: Metric::Steps, stat: Stat::Auto };
+        let named = TrackerSource::Health {
+            metric: Metric::Steps,
+            stat: resolve_stat(Metric::Steps, Stat::Auto),
+        };
+        assert!(same_health(&auto, &named));
+        let weight = TrackerSource::Health { metric: Metric::Weight, stat: Stat::Auto };
+        assert!(!same_health(&auto, &weight), "another metric");
+        let range = TrackerSource::Health {
+            metric: Metric::BloodGlucose,
+            stat: Stat::InRange { low: 70, high: 180 },
+        };
+        let narrower = TrackerSource::Health {
+            metric: Metric::BloodGlucose,
+            stat: Stat::InRange { low: 70, high: 140 },
+        };
+        assert!(!same_health(&range, &narrower), "another range");
+        assert!(!same_health(&auto, &TrackerSource::Time), "not a health source at all");
+    }
+
+    #[test]
+    fn a_health_tracker_says_what_it_measures_and_in_what_unit() {
+        let said = health_words(Metric::BloodGlucose, Stat::InRange { low: 70, high: 180 });
+        assert!(said.contains("between 70 and 180") && said.contains("percentage"), "{said}");
+        let said = health_words(Metric::Steps, Stat::Sum);
+        assert!(said.contains("sum of each day"), "{said}");
     }
 
     // ---- editing and deleting readings --------------------------------------

@@ -186,6 +186,7 @@ import { mockBackup } from './mock-backup'
 import { mockMoney } from './mock-money'
 import { mockScreenMinutes, mockScreenTime } from './mock-screentime'
 import { isMockFilesCommand, mockFilesInvoke } from './mock-files'
+import { mockHealth, mockHealthDaily } from './mock-health'
 import {
   mockAllowRemoteImagesOnce,
   mockArchive,
@@ -4754,6 +4755,7 @@ function status(): VaultStatus {
           money: true,
           screentime: true,
           files: true,
+          health: true,
           jobs: true,
         }
       : undefined,
@@ -4832,6 +4834,12 @@ function derivedDays(q: ReadingQuery): TrackerDay[] {
       // all of it, one category's, or one app's or site's by its key.
       const minutes = mockScreenMinutes(q.from, q.to, t.source.category, t.source.item)
       for (const [date, value] of minutes) byDay.set(date, Math.round(value))
+    } else if (t.source.type === 'health') {
+      // One value a day from `mock-health.ts`'s samples: a metric under its
+      // stat, an in-range share as a percentage.
+      for (const [date, value] of mockHealthDaily(t.source.metric, t.source.stat, q.from, q.to)) {
+        byDay.set(date, value)
+      }
     } else {
       const kindId = t.source.kindId ?? null
       for (const log of logs) {
@@ -8278,6 +8286,89 @@ export const mockInvoke = async <T>(
     case 'screentime_install_gnome_extension':
     case 'screentime_connect_browser':
       return mockScreenTime(cmd, args) as T
+
+    // ── Health -- docs/plans/health.md ──────────────────────────────────
+    //
+    // `mock-health.ts` holds sixty days of one person's watch, glucose
+    // monitor, meals, medicines, conditions and records, and narrows its own
+    // arguments. The vault's commands want it open; the shell's `health_*`
+    // do not -- they are this computer's, answered whether or not a vault is
+    // unlocked.
+
+    case 'health_catalog':
+    case 'health_settings':
+    case 'save_health_settings':
+    case 'list_health_sources':
+    case 'save_health_source':
+    case 'delete_health_source':
+    case 'record_health_push':
+    case 'import_apple_health':
+    case 'apple_import_status':
+    case 'cancel_apple_import':
+    case 'health_keys':
+    case 'save_health_keys':
+    case 'clear_health_keys':
+    case 'health_today':
+    case 'health_series':
+    case 'health_samples':
+    case 'health_latest':
+    case 'add_health_reading':
+    case 'delete_health_samples':
+    case 'health_activity':
+    case 'health_sleep':
+    case 'health_glucose':
+    case 'health_nutrition':
+    case 'health_day_timeline':
+    case 'list_workouts':
+    case 'get_workout':
+    case 'save_workout':
+    case 'delete_workout':
+    case 'list_medications':
+    case 'save_medication':
+    case 'delete_medication':
+    case 'list_doses':
+    case 'log_dose':
+    case 'delete_dose':
+    case 'doses_due':
+    case 'medication_alerts':
+    case 'medication_adherence':
+    case 'list_allergies':
+    case 'save_allergy':
+    case 'delete_allergy':
+    case 'list_conditions':
+    case 'save_condition':
+    case 'delete_condition':
+    case 'condition_templates':
+    case 'apply_condition_template':
+    case 'condition_report':
+    case 'list_labs':
+    case 'save_lab':
+    case 'delete_lab':
+    case 'lab_trends':
+    case 'list_health_documents':
+    case 'get_health_document':
+    case 'add_health_document':
+    case 'save_health_document':
+    case 'delete_health_document':
+    case 'extract_health_document':
+    case 'accept_document_labs':
+    case 'list_foods':
+    case 'save_food':
+    case 'delete_food':
+    case 'search_foods':
+    case 'lookup_barcode':
+    case 'list_meals':
+    case 'save_meal':
+    case 'delete_meal':
+    case 'estimate_meal_photo':
+    case 'meal_response':
+    case 'health_visit_brief':
+      requireUnlocked()
+      return mockHealth(cmd, args) as T
+    case 'health_push_setup':
+    case 'health_push_revoke':
+    case 'health_import_apple':
+      return mockHealth(cmd, args) as T
 
     // An Articles item on the library's shelf, made the way the library's
     // own `add_item` makes one. The mock library has no Articles shelf until

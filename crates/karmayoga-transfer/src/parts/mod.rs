@@ -10,6 +10,7 @@
 pub mod assistant;
 pub mod calendar;
 pub mod doc;
+pub mod health;
 pub mod index;
 pub mod journal;
 pub mod library;

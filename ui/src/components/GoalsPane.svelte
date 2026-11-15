@@ -28,7 +28,14 @@
   import { rowName } from '../lib/screentime'
   import { targets } from '../lib/targets.svelte'
   import { tracking } from '../lib/tracking.svelte'
-  import { describeProgress, isManual } from '../lib/tracker'
+  import {
+    describeProgress,
+    HEALTH_MEASURES,
+    healthMeasure,
+    healthSource,
+    isDayReading,
+    isManual,
+  } from '../lib/tracker'
   import Suggestions from './Suggestions.svelte'
   import ConfirmDialog from './ConfirmDialog.svelte'
   import EmptyState from './EmptyState.svelte'
@@ -229,6 +236,8 @@
     if (m.startsWith('finished:')) return { kind: 'amount', unit: '', source: { type: 'finished' } }
     if (m === 'screen' || m.startsWith('screen:'))
       return { kind: 'amount', unit: 'min', source: screenSource(m) }
+    const health = healthMeasure(m)
+    if (health) return { kind: 'amount', unit: health.unit, source: healthSource(health) }
     if (m.startsWith('tracker:')) {
       const t = tracking.tracker(m.slice('tracker:'.length))
       if (t) return t
@@ -251,6 +260,16 @@
     return tally ? draft.map((t) => ({ ...t, tally })) : draft
   }
 
+  /**
+   * Bring the draft's periods in line with what is being counted: a health
+   * reading that is a value of its day -- an average, a last reading, a
+   * share in range -- is only ever counted "a day", and a week of them does
+   * not add up to anything.
+   */
+  function fitPeriods(draft: Target[], shape: Pick<Tracker, 'source'>): Target[] {
+    return isDayReading(shape) ? draft.map((t) => ({ ...t, per: 'day' as const })) : draft
+  }
+
   const ready = $derived(
     !!adding &&
       adding.draft.some((t) => t.min != null || t.max != null) &&
@@ -261,10 +280,14 @@
     const form = adding
     const g = goal
     if (!form || !g || !ready) return
-    const draft = fitTallies(
-      form.draft.filter((t) => t.min != null || t.max != null),
+    const draft = fitPeriods(
+      fitTallies(
+        form.draft.filter((t) => t.min != null || t.max != null),
+        addingShape,
+      ),
       addingShape,
     )
+    const health = healthMeasure(form.measure)
     const filed = { type: 'goal' as const, id: g.id }
 
     if (form.measure.startsWith('tracker:')) {
@@ -303,6 +326,12 @@
         name = `Time on ${rowName(row)}`
         source = { type: 'screenTime', item: key }
         icon = 'stopwatch'
+      } else if (health) {
+        // A metric's day, counted one way: steps summed, resting heart rate
+        // averaged, glucose as a share in range.
+        name = health.name
+        source = healthSource(health)
+        icon = health.icon
       } else {
         name = form.name.trim()
       }
@@ -316,7 +345,9 @@
             ? form.unit.trim()
             : form.measure.startsWith('screen')
               ? 'min'
-              : made.unit,
+              : health
+                ? health.unit
+                : made.unit,
         source,
         purpose: filed,
         targets: draft,
@@ -596,7 +627,7 @@
           onchange={(e) => {
             if (!adding) return
             adding.measure = e.currentTarget.value
-            adding.draft = fitTallies(adding.draft, addingShape)
+            adding.draft = fitPeriods(fitTallies(adding.draft, addingShape), addingShape)
           }}
         >
           <option value="time">Time filed under this goal</option>
@@ -611,6 +642,11 @@
             {/each}
             {#each screenItems as r (r.key)}
               <option value="screen:item:{r.key}">Screen time on {rowName(r)}</option>
+            {/each}
+          {/if}
+          {#if app.supportsHealth}
+            {#each HEALTH_MEASURES as h (h.id)}
+              <option value="health:{h.id}">Health: {h.name}</option>
             {/each}
           {/if}
           {#each reusable as t (t.id)}

@@ -208,16 +208,19 @@
 
   /* Each app's own colour: its icon in the app bar, its sidebar's icons.
      Only the hue is the app's, and all of them are cool -- greens through
-     blues and violets to pink, no yellow, orange or red, which at an equal
-     lightness either shout or turn to mud. Lightness and saturation are the
-     theme's, the same for every app, so no one icon is louder than the
-     rest. Spaced so neighbours in the bar differ. Files, which came last,
+     blues and violets to pink, no yellow or orange, which at an equal
+     lightness either shout or turn to mud. The one exception is Health, a
+     rose red: the colour of what it is about, and at this lightness and
+     saturation soft enough not to read as an error. Lightness and
+     saturation are the theme's, the same for every app, so no one icon is
+     louder than the rest. Spaced so neighbours in the bar differ. Files
      takes the one gap the circle has left: a green leaning towards lime,
      short of yellow. */
   --app-files: oklch(var(--app-lightness) var(--app-chroma) 128);
   --app-todo: oklch(var(--app-lightness) var(--app-chroma) 148);
   --app-money: oklch(var(--app-lightness) var(--app-chroma) 172);
   --app-screentime: oklch(var(--app-lightness) var(--app-chroma) 196);
+  --app-health: oklch(var(--app-lightness) var(--app-chroma) 10);
   --app-notes: oklch(var(--app-lightness) var(--app-chroma) 220);
   --app-mail: oklch(var(--app-lightness) var(--app-chroma) 244);
   --app-overview: oklch(var(--app-lightness) var(--app-chroma) 264);

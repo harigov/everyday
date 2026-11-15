@@ -78,11 +78,11 @@ widgets". In exchange you get native *text*, a mature editor, and one
 codebase. For a journal — an app that is essentially a text canvas — that is
 the right side of the trade.
 
-## Eleven apps, one vault
+## Thirteen apps, one vault
 
 A bar down the left edge switches between **Overview**, **Notes**, **Todo**,
-**Calendar**, **Library**, **Mail**, **Feed**, **Money**, **Screen time**, **Assistant** and
-**Journal**
+**Calendar**, **Library**, **Mail**, **Feed**, **Money**, **Screen time**, **Files**,
+**Health**, **Assistant** and **Journal**
 (`Ctrl/Cmd J` cycles); right-clicking one of them offers what that app can
 start from a standing stop — the same actions the tray offers, from the same
 registration. They share a vault, a password and a lock; they share nothing
@@ -1217,6 +1217,57 @@ when each run began and ended, and a keyed hash of which machine and
 collector sent it. Window titles can be switched off, or cleared once they
 are a set number of days old; the time itself is kept, so a goal like "under
 an hour of social a day" never loses its history.
+
+## Health
+
+What a watch and a phone measured, what you take, eat and live with, and the
+papers your clinicians gave you — one app, because living with a condition
+means seeing glucose beside meals, doses and workouts on one timeline.
+Today, Activity, Sleep, Vitals, Nutrition, Medications, Conditions and
+Records are its panes.
+
+**Getting data in.** An Apple Watch's data lives in Apple Health on the
+iPhone, which only an iPhone app can read, so it arrives two ways:
+
+- **History**, from Apple Health's own export (Health → your picture →
+  Export All Health Data). Settings → Health → **Choose export.zip** reads
+  it as a stream, however many gigabytes, with the workouts, their routes
+  and any health records your providers shared with Apple Health.
+- **Every hour after that**, from the **Health Auto Export** iOS app, whose
+  REST API automations post to this computer over web access (the phone has
+  to be on your tailnet). **Connect your iPhone** in Settings → Health makes
+  a token that can add readings to that one source and do nothing else, and
+  says exactly how to set up the automations. Summarize Data must be off.
+
+Both are connectors behind one door, so the same reading arriving from the
+export and from the phone is stored once, a re-import changes nothing, and
+Oura, Withings, Dexcom or FIT files would be a module each. When two devices
+count the same steps, only the one first on your list counts in each
+quarter hour (the Watch, unless you say otherwise). A reading you delete
+stays deleted when the phone sends the week again.
+
+**Medications and conditions.** Medicines and supplements with their
+schedules, a dose log answered from Today or a notification, supply left,
+and timing rules you confirm ("nothing to eat for 30 minutes after",
+"4 hours apart from calcium") checked against what you actually took and
+ate. Adding a condition starts from a template — type 1 diabetes, type 2
+diabetes, hypothyroidism — whose targets, tests and symptom trackers you
+edit before anything is added: time in range and the standard CGM report
+for diabetes, TSH six weeks after any dose change for hypothyroidism.
+**Prepare for a visit** writes a page for your next appointment from your
+own numbers.
+
+**Meals and records.** Meals by food search (yours first, then USDA
+FoodData Central; barcodes through Open Food Facts) or from a photo the
+model estimates, with what glucose did afterwards. Lab reports and other
+documents are sealed into the vault; **Read results** has the model read
+the values out for you to check against the page before anything is saved.
+
+**Not a medical device.** Targets and thresholds are yours, alerts are
+notices after the fact, a CGM's own alarms stay the alarm, and the assistant
+never changes a dose. Everything is sealed, including which metrics you
+record: the database names a series only by a keyed hash. See
+`docs/plans/health.md`.
 
 ## Notifications
 

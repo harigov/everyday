@@ -66,6 +66,7 @@ const FULL_CAPABILITIES = {
   money: true,
   screentime: true,
   files: true,
+  health: true,
 }
 const FULL_STATUS = {
   name: 'Test',
@@ -98,6 +99,7 @@ assert.deepEqual(
     'money',
     'screentime',
     'files',
+    'health',
     'assistant',
     'journal',
   ],
@@ -115,6 +117,7 @@ const EXPECTED_APPS = {
   money: { label: 'Money', icon: 'wallet' },
   screentime: { label: 'Screen time', icon: 'hourglass' },
   files: { label: 'Files', icon: 'folder' },
+  health: { label: 'Health', icon: 'heart-pulse' },
   assistant: { label: 'Assistant', icon: 'sparkle' },
   journal: { label: 'Journal', icon: 'quote' },
 }
@@ -124,10 +127,11 @@ for (const [section, want] of Object.entries(EXPECTED_APPS)) {
   assert.equal(got.icon, want.icon, `${section}'s icon changed`)
 }
 
-// The accent: `journal`, `todo`, `library`, `feed`, `money`, `screentime` and
-// `files` read a live colour -- the Feed's, Money's, Screen time's and Files'
-// fixed ones of their own, so the window is not the vault's orange there;
-// every other app is the vault's own accent regardless of what it is handed.
+// The accent: `journal`, `todo`, `library`, `feed`, `money`, `screentime`,
+// `files` and `health` read a live colour -- the Feed's, Money's, Screen
+// time's, Files' and Health's fixed ones of their own, so the window is not
+// the vault's orange there; every other app is the vault's own accent
+// regardless of what it is handed.
 const accentDeps = {
   app: { accent: 'J' },
   todo: { accent: 'T' },
@@ -136,6 +140,7 @@ const accentDeps = {
   money: { accent: 'M' },
   screentime: { accent: 'S' },
   files: { accent: 'Fi' },
+  health: { accent: 'H' },
 }
 const EXPECTED_ACCENTS = {
   overview: 'var(--accent)',
@@ -148,6 +153,7 @@ const EXPECTED_ACCENTS = {
   money: 'M',
   screentime: 'S',
   files: 'Fi',
+  health: 'H',
   assistant: 'var(--accent)',
   journal: 'J',
 }
@@ -182,6 +188,7 @@ const EXPECTED_GROUPS = [
   'Money',
   'Screen time',
   'Files',
+  'Health',
   'Overview',
   'Assistant',
   'Vault',
@@ -212,6 +219,7 @@ const EXPECTED_GO_TO = [
   { id: null, keys: 'g b', label: 'Money', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g h', label: 'Screen time', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g e', label: 'Files', group: 'Go to', tray: false, quick: false },
+  { id: null, keys: 'g p', label: 'Health', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g o', label: 'Overview', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'g a', label: 'Assistant', group: 'Go to', tray: false, quick: false },
   { id: null, keys: 'mod+j', label: 'The next app', group: 'Go to', tray: false, quick: false },
@@ -245,6 +253,7 @@ const EXPECTED_QUICK_ROWS = [
   quick_('screentime:today', "Today's screen time", 'Screen time'),
   quick_('files:photos', 'Photos', 'Files'),
   quick_('files:add', 'Add files', 'Files'),
+  quick_('health:today', "Today's health", 'Health'),
   quick_('assistant:runs', 'What the assistant did', 'Assistant'),
   quick_('assistant:new-routine', 'New routine', 'Assistant'),
 ]
@@ -281,6 +290,9 @@ const EXPECTED_APP_MENUS = {
     { id: 'files:photos', label: 'Photos' },
     { id: 'files:add', label: 'Add files' },
   ],
+  // Glancing at today, as Screen time's is: a reading, a meal and a dose are
+  // each entered in the pane that shows them.
+  Health: [{ id: 'health:today', label: "Today's health" }],
   // "How things are going" is the palette's alone: here it said what "Open
   // Overview" above it already does.
   Overview: [{ id: 'overview:log', label: 'Record a reading' }],

@@ -29,6 +29,7 @@ mod accounts;
 mod agent;
 mod calendars;
 mod files;
+mod health;
 mod jobs;
 mod journal;
 mod library;
@@ -50,6 +51,7 @@ pub use accounts::run_account_suite;
 pub use agent::run_agent_suite;
 pub use calendars::run_calendar_suite;
 pub use files::run_files_suite;
+pub use health::run_health_suite;
 pub use jobs::run_job_suite;
 pub use library::run_library_suite;
 pub use mail::run_mail_suite;
@@ -285,6 +287,13 @@ pub fn run_all(store: &dyn JournalStore) {
             files::garbage_collection_keeps_sealed_files_and_thumbnails(store);
         }
         None => eprintln!("backend {name:?} stores no files; skipping the files suite"),
+    }
+
+    // And Health, which reads nothing of any other domain's but the blob
+    // store its documents' files are sealed into.
+    match store.health() {
+        Some(_) => run_health_suite(store),
+        None => eprintln!("backend {name:?} stores no health data; skipping its suite"),
     }
 
     journal::cleanup(store);

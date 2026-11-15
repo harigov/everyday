@@ -35,6 +35,7 @@ import { APPS } from './apps'
 import { canOpenWindows, pinned } from './appwindow'
 import { calendar } from './calendar.svelte'
 import { feed } from './feed.svelte'
+import { health } from './health.svelte'
 import { SEQUENCE_MS, chordOf, isTyping, match, withoutShift, type Binding } from './keys'
 import { library } from './library.svelte'
 import { mailboxDisplayName, mailboxHasTabs, unifiedMailboxId } from './mail'
@@ -310,6 +311,7 @@ export const GROUPS = [
   'Money',
   'Screen time',
   'Files',
+  'Health',
   'Overview',
   'Assistant',
   'Vault',
@@ -421,6 +423,14 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     group: 'Go to',
     when: () => anywhere() && app.canShow('files'),
     run: () => app.setSection('files'),
+  },
+  {
+    // `p` for pulse, its icon: `h` is Screen time's.
+    keys: 'g p',
+    label: 'Health',
+    group: 'Go to',
+    when: () => anywhere() && app.canShow('health'),
+    run: () => app.setSection('health'),
   },
   {
     keys: 'g o',
@@ -1533,6 +1543,20 @@ export const ACTIONS: (Binding & { group: Group })[] = [
     },
   },
   {
+    id: 'health:today',
+    label: "Today's health",
+    group: 'Health',
+    keywords: ['steps', 'sleep', 'heart', 'medication', 'doses', 'glucose', 'today', 'health'],
+    icon: 'heart-pulse',
+    quick: true,
+    when: () => app.screen === 'main' && app.supportsHealth,
+    run: async () => {
+      if (!(await app.goTo('health'))) return
+      health.setView('today')
+      health.goToday()
+    },
+  },
+  {
     id: 'assistant:runs',
     label: 'What the assistant did',
     group: 'Assistant',
@@ -1698,6 +1722,7 @@ function create() {
     money,
     screentime,
     files,
+    health,
     overview,
     assistant,
     agent,

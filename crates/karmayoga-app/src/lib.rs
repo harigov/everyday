@@ -14,6 +14,7 @@ mod commands;
 mod events;
 mod fanout;
 mod files;
+mod health;
 mod hotkey;
 mod legacy;
 mod listener;
@@ -337,6 +338,10 @@ pub fn run() {
             screentime::screentime_set_device,
             screentime::screentime_install_gnome_extension,
             screentime::screentime_connect_browser,
+            // Health: the phone's push, and an Apple export. See `health.rs`.
+            health::health_push_setup,
+            health::health_push_revoke,
+            health::health_import_apple,
         ])
         .on_window_event(|window, event| {
             // Writing help's popup is not the application: closing it is

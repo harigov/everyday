@@ -180,6 +180,10 @@ pub fn router(server: Arc<Server>, transport: Transport) -> Router {
             .route("/v1/screentime/heartbeats", post(crate::screentime::shared_heartbeats));
     }
     router
+        // The phone's Health Auto Export pushes, on every transport -- web
+        // access is the one a phone can reach. Bearer-token authenticated
+        // even there; see `crate::health`.
+        .route("/v1/health/hae/{source}", post(crate::health::push))
         .route("/v1/call/{name}", post(call))
         .route("/v1/stream/{name}", post(stream))
         .route("/v1/blob", post(put_blob))
@@ -615,13 +619,29 @@ struct BlobQuery {}
 /// The same arithmetic the desktop's `karmayoga://` handler uses, from the same
 /// module, so a video seeks over a network exactly as it seeks off a disk: two
 /// chunks decrypted rather than a whole file downloaded.
+/// Does this caller hold only scopes that write and never read?
+fn write_only(ctx: &Ctx) -> bool {
+    !ctx.scopes.is_empty()
+        && ctx.scopes.iter().all(|s| matches!(s, Scope::Heartbeats | Scope::HealthIngest))
+}
+
 async fn get_blob(
     State((server, transport)): Ctxt,
     Path(id): Path<String>,
     headers: HeaderMap,
     Query(_q): Query<BlobQuery>,
 ) -> Answer<Response> {
-    let _ctx = authenticate_media(&server, transport, &headers)?;
+    let ctx = authenticate_media(&server, transport, &headers)?;
+    // A write-only token -- a collector's heartbeats, a phone's health push
+    // -- reads nothing, and the blob store holds clinical documents and
+    // meal photos as well as pictures. It is the token most likely to leak.
+    if write_only(&ctx) {
+        return Err(CommandError::new(
+            karmayoga_service::error::codes::FORBIDDEN,
+            "this token cannot read",
+        )
+        .into());
+    }
     let id = BlobId::parse(&id).map_err(|_| CommandError::new("invalid", "not a blob address"))?;
 
     let total = server.service.blob_len(id)?;

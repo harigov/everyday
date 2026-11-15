@@ -18,6 +18,7 @@
   import MoneyNav from './MoneyNav.svelte'
   import ScreenTimeNav from './ScreenTimeNav.svelte'
   import FilesNav from './FilesNav.svelte'
+  import HealthNav from './HealthNav.svelte'
   import AssistantNav from './AssistantNav.svelte'
   import NotesNav from './NotesNav.svelte'
   import PaneResizer from './PaneResizer.svelte'
@@ -195,6 +196,8 @@
     <ScreenTimeNav />
   {:else if app.section === 'files'}
     <FilesNav />
+  {:else if app.section === 'health'}
+    <HealthNav />
   {:else}
     <nav class="scroll side-nav">
       <button

@@ -82,7 +82,13 @@
 //! then only while the person has let the assistant look through their files
 //! (Settings → Files): over MCP there is no conversation to have handed a
 //! file in, so with that switch off the file tools are not listed at all.
-//! [`by_name`] is the one list of such domains, so a fourth is one line
+//!
+//! Health is the fourth, for Money's reason: what somebody's body measured,
+//! the medicines they take and the diagnoses on their papers are not for a
+//! token minted before Health existed to wake up able to read. Its tools are
+//! offered only to a token that names `health`; the write-only
+//! `healthIngest` scope the phone's push is issued opens none of them.
+//! [`by_name`] is the one list of such domains, so a fifth is one line
 //! there.
 //!
 //! # Outward tools over MCP
@@ -518,6 +524,8 @@ fn by_name(domain: Domain) -> Option<(&'static str, Scope)> {
         Domain::Money => Some(("Money", Scope::Money)),
         Domain::ScreenTime => Some(("Screen time", Scope::ScreenTime)),
         Domain::Files => Some(("Files", Scope::Files)),
+        // Somebody's body, medicines and diagnoses: Money's reason, and more.
+        Domain::Health => Some(("Health", Scope::Health)),
         _ => None,
     }
 }

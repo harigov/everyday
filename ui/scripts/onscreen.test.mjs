@@ -44,6 +44,7 @@ const {
     moneyModule,
     screentimeModule,
     filesModule,
+    healthModule,
   ],
   close,
 } = await load(
@@ -58,6 +59,7 @@ const {
     '/src/lib/money.svelte.ts',
     '/src/lib/screentime.svelte.ts',
     '/src/lib/files.svelte.ts',
+    '/src/lib/health.svelte.ts',
   ],
   { svelte: true },
 )
@@ -71,6 +73,7 @@ const { feed } = feedModule
 const { money } = moneyModule
 const { screentime } = screentimeModule
 const { files } = filesModule
+const { health } = healthModule
 
 const { check, ok, finish } = makeCheck()
 
@@ -93,6 +96,12 @@ check(
   seen('txn', 't1', '')[0].label,
   'A transaction',
 )
+check(
+  'a medication with no name is a medication',
+  seen('medication', 'm1', '')[0].label,
+  'A medication',
+)
+check('a result with no name is a result', seen('labResult', 'l1', ' ')[0].label, 'A result')
 check(
   'a bank account is not a mail account',
   seen('bankAccount', 'a1', '')[0].label,
@@ -378,6 +387,53 @@ const personWire = JSON.stringify(toWire('files', now.showing))
 ok('files: and the name stays here', !personWire.includes('Asha'))
 check('files: no album narrows Photos', now.showing.within, [])
 files.setView('browse')
+
+// Health: the pane and its range in the interface's words, and the id of a
+// condition, a document or a workout that is open -- never a value, a
+// medication's name or a diagnosis, which are the person's most private
+// words and have to reach the service as ids it looks up, or not at all.
+app.section = 'health'
+await health.start()
+ok('the mock vault has a health catalogue', health.catalog.length > 0)
+health.setView('today')
+now = onScreenNow()
+check('health: the app', now.app, 'health')
+ok(
+  'health: the view says the pane',
+  typeof now.showing.view === 'string' && now.showing.view !== '',
+)
+check('health: nothing is open on Today', now.showing.open ?? [], [])
+
+health.setView('conditions')
+await health.reload()
+const condition = health.conditions[0]
+ok('the mock vault keeps a condition', condition !== undefined)
+health.openCondition(condition.id)
+now = onScreenNow()
+check(
+  'health: the open condition is what is open',
+  now.showing.open?.map((s) => [s.kind, s.id]),
+  [['condition', condition.id]],
+)
+const healthWire = JSON.stringify(toWire('health', now.showing))
+ok('health: no diagnosis leaves the interface', !healthWire.includes(condition.name))
+health.openCondition(null)
+now = onScreenNow()
+check('health: closing it closes it', now.showing.open ?? [], [])
+
+// The medication list is on screen as a pane and nothing more: a medicine's
+// name is no business of the model's until it asks for the list itself.
+health.setView('medications')
+await health.reload()
+const medication = health.medications[0]
+ok('the mock vault keeps a medication', medication !== undefined)
+now = onScreenNow()
+ok('health: the medications pane says what it lists', /medication/i.test(now.showing.view ?? ''))
+ok(
+  'health: no medication’s name leaves the interface',
+  !JSON.stringify(toWire('health', now.showing)).includes(medication.name),
+)
+health.setView('today')
 
 // Settings stands where the app was, so the app is not on screen at all.
 panels.openSettings('accounts')
