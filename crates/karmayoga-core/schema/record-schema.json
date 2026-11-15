@@ -4643,6 +4643,26 @@
         ],
         "type": "string"
       },
+      "NoteOrigin": {
+        "description": "Who started a note: the person, the assistant, or a recorded call.\n\nKept so the list can tell the three apart at a glance. A routine's\nweekly report and the notes from a call are not something the person\nwrote, and a list that draws them exactly like a recipe somebody typed\nleaves them to work out which is which from the title.\n\nIt says who *started* the note and never changes after. Editing the\nassistant's report does not make it yours, any more than tidying a\nmeeting's notes makes it not a meeting.",
+        "oneOf": [
+          {
+            "const": "own",
+            "description": "The person wrote it, or imported it.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "The assistant wrote it: a routine's report, a research job's answer,\na note it was asked to make.",
+            "type": "string"
+          },
+          {
+            "const": "meeting",
+            "description": "The meeting-notes pipeline wrote it from a recording.",
+            "type": "string"
+          }
+        ]
+      },
       "Purpose": {
         "description": "What a record is *for*.\n\nPointing at a role directly is not a degraded case of pointing at a goal.\nReading to a child at bedtime serves being a parent and no particular\noutcome, and an hour of it should count against that role rather than\nagainst nothing at all.",
         "oneOf": [
@@ -4702,6 +4722,17 @@
       "id": {
         "format": "uuid",
         "type": "string"
+      },
+      "origin": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/NoteOrigin"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Who started it. `None` on a note saved before this was kept, which\n[`Note::origin`] reads from its tags instead -- see\n[`NoteOrigin::guess`]. Left `None` when such a note is saved back:\nonly a writer that knows sets it, so a wrong guess is never kept."
       },
       "pinned": {
         "default": false,
@@ -6372,6 +6403,17 @@
             "format": "uuid",
             "type": "string"
           },
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/NoteOrigin"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who started it. `None` on a note saved before this was kept, which\n[`Note::origin`] reads from its tags instead -- see\n[`NoteOrigin::guess`]. Left `None` when such a note is saved back:\nonly a writer that knows sets it, so a wrong guess is never kept."
+          },
           "pinned": {
             "default": false,
             "description": "Kept at the top of the list. There is no starring here as well: a note\nlist is short and one kind of emphasis is enough.",
@@ -6411,6 +6453,26 @@
           "updatedAt"
         ],
         "type": "object"
+      },
+      "NoteOrigin": {
+        "description": "Who started a note: the person, the assistant, or a recorded call.\n\nKept so the list can tell the three apart at a glance. A routine's\nweekly report and the notes from a call are not something the person\nwrote, and a list that draws them exactly like a recipe somebody typed\nleaves them to work out which is which from the title.\n\nIt says who *started* the note and never changes after. Editing the\nassistant's report does not make it yours, any more than tidying a\nmeeting's notes makes it not a meeting.",
+        "oneOf": [
+          {
+            "const": "own",
+            "description": "The person wrote it, or imported it.",
+            "type": "string"
+          },
+          {
+            "const": "assistant",
+            "description": "The assistant wrote it: a routine's report, a research job's answer,\na note it was asked to make.",
+            "type": "string"
+          },
+          {
+            "const": "meeting",
+            "description": "The meeting-notes pipeline wrote it from a recording.",
+            "type": "string"
+          }
+        ]
       },
       "Outcome": {
         "description": "Where a proposal stands.",

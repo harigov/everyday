@@ -532,6 +532,12 @@ export interface Entry {
 }
 
 /**
+ * Who started a note -- `karmayoga_core::note::NoteOrigin`. Never changes
+ * after: editing the assistant's report does not make it yours.
+ */
+export type NoteOrigin = 'own' | 'assistant' | 'meeting'
+
+/**
  * A note: writing that is not a day.
  *
  * An entry without a journal or a date. It has a title because notes are
@@ -548,6 +554,10 @@ export interface Note {
   pinned: boolean
   purpose?: Purpose | null
   attachments: Attachment[]
+  /** Absent on a note saved before this was kept, and left absent when it
+   *  is saved back -- `noteOrigin` in `note-list.ts` reads it from the tags,
+   *  as the vault does, without the guess ever being stored. */
+  origin?: NoteOrigin | null
   createdAt: string
   updatedAt: string
 }
@@ -563,8 +573,16 @@ export interface NoteSummary {
   wordCount: number
   attachmentCount: number
   cover?: BlobId
+  origin: NoteOrigin
   createdAt: string
   updatedAt: string
+}
+
+/** A tag in use on notes, and how many carry it. `note_tags` answers these
+ *  most used first. */
+export interface NoteTag {
+  tag: string
+  count: number
 }
 
 // ── Templates ────────────────────────────────────────────────────────────

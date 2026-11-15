@@ -110,6 +110,44 @@ pub fn sort_notes(rows: &mut [NoteSummary], sort: NoteSort) {
     });
 }
 
+/// How many notes carry each tag, given every note's tags.
+///
+/// Grouped the way the list filters -- "Boats" and "boats" are one tag --
+/// so the number beside a tag is the number of notes picking it lists, and
+/// a note carrying both spellings counts once. Each group goes by the
+/// spelling most of its notes use, the alphabetically first on a tie, so
+/// the name does not change between two loads. Ordered by that name, case
+/// aside.
+pub fn count_tags(notes: impl IntoIterator<Item = Vec<String>>) -> Vec<(String, u64)> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // Lower-cased tag -> each spelling of it -> how many notes use that one.
+    let mut groups: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
+    for tags in notes {
+        let mut seen = BTreeSet::new();
+        for tag in tags {
+            let key = tag.to_lowercase();
+            if seen.insert(key.clone()) {
+                *groups.entry(key).or_default().entry(tag).or_default() += 1;
+            }
+        }
+    }
+    groups
+        .into_values()
+        .map(|spellings| {
+            let total = spellings.values().sum();
+            // `max_by` keeps the last of equals, and the map is in order, so
+            // reversing first makes a tie go to the alphabetically first.
+            let name = spellings
+                .into_iter()
+                .rev()
+                .max_by(|a, b| a.1.cmp(&b.1))
+                .map(|(name, _)| name)
+                .unwrap_or_default();
+            (name, total)
+        })
+        .collect()
+}
+
 /// What a backend must do to store notes.
 pub trait NoteStore: Send + Sync {
     fn list_notes(&self, query: &NoteQuery) -> Result<Vec<NoteSummary>>;
@@ -152,15 +190,10 @@ pub trait NoteStore: Send + Sync {
     /// List views must never pay for this.
     fn all_notes(&self) -> Result<Vec<Note>>;
 
-    /// Every tag in use, with how many notes carry it.
+    /// Every tag in use, with how many notes carry it -- case aside, as
+    /// [`NoteQuery::matches`] filters. See [`count_tags`].
     fn note_tags(&self) -> Result<Vec<(String, u64)>> {
-        let mut counts: std::collections::BTreeMap<String, u64> = Default::default();
-        for note in self.list_notes(&NoteQuery::default())? {
-            for tag in note.tags {
-                *counts.entry(tag).or_default() += 1;
-            }
-        }
-        Ok(counts.into_iter().collect())
+        Ok(count_tags(self.list_notes(&NoteQuery::default())?.into_iter().map(|n| n.tags)))
     }
 
     // ---- templates ------------------------------------------------------
@@ -197,6 +230,24 @@ mod tests {
         note.pinned = pinned;
         note.tags = tags.iter().map(|t| (*t).to_string()).collect();
         note.summarize()
+    }
+
+    #[test]
+    fn tags_are_counted_case_aside_under_their_usual_spelling() {
+        let tags = |list: &[&str]| list.iter().map(|t| (*t).to_string()).collect::<Vec<_>>();
+        let counted = count_tags([
+            tags(&["boats", "Sailing"]),
+            tags(&["Boats"]),
+            tags(&["boats", "BOATS"]),
+            tags(&["sailing"]),
+        ]);
+        assert_eq!(
+            counted,
+            vec![("boats".to_string(), 3), ("Sailing".to_string(), 2)],
+            "three notes carry boats however it is spelled, and one carrying two spellings \
+             counts once; a tie in spelling goes to the alphabetically first"
+        );
+        assert!(count_tags(Vec::<Vec<String>>::new()).is_empty());
     }
 
     #[test]

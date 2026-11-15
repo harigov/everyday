@@ -8,7 +8,7 @@ use super::{
 };
 use crate::error::{Error, Result};
 use crate::id::{NoteId, TemplateId};
-use crate::note::{Note, NoteSummary};
+use crate::note::{Note, NoteOrigin, NoteSummary};
 use crate::proposal::{About, AboutKind, Payload, ProposalKind, ProposedRecord};
 use crate::richtext::RichDoc;
 use crate::store::notes::{NoteQuery, NoteSort};
@@ -222,7 +222,8 @@ fn note_from_create_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Note>
             let template = find_template(ctx, wanted)?;
             let today = crate::model::local_date_in(jiff::Timestamp::now(), ctx.tz);
             let fill = Context { date: today, journal: None };
-            let mut note = Note::written(
+            let mut note = Note::written_by(
+                NoteOrigin::Assistant,
                 if title.is_empty() {
                     crate::template::fill(&template.title, &fill).trim().to_string()
                 } else {
@@ -233,7 +234,7 @@ fn note_from_create_args(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Note>
             note.tags = template.tags.clone();
             note
         }
-        None => Note::written(title, args.str("body")?),
+        None => Note::written_by(NoteOrigin::Assistant, title, args.str("body")?),
     };
     crate::template::merge_tags(&mut note.tags, args.strings("tags"));
     note.pinned = args.bool_or("pinned", false);

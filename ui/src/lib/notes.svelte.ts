@@ -17,6 +17,7 @@
 import { api, newRequestId } from './api'
 import { Autosave } from './autosave'
 import { registerApply, type ChangeWithIds } from './live-apply'
+import { noteOrigin, sameTag, sortNotes } from './note-list'
 import { proposals, recordAs } from './proposals.svelte'
 import { seen, type Showing } from './onscreen'
 import { app, handle, isConflict, isLocked } from './state.svelte'
@@ -29,8 +30,10 @@ import type {
   Note,
   NoteHit,
   NoteId,
+  NoteOrigin,
   NoteSort,
   NoteSummary,
+  NoteTag,
   Proposal,
   ProposalId,
   TemplateId,
@@ -50,7 +53,8 @@ export const SORTS: { value: NoteSort; label: string }[] = [
 ]
 
 class NotesState {
-  /** The list, pinned first. */
+  /** The list, pinned first, under the tag filter -- every kind of note. See
+   *  `visible` for the one the sidebar draws. */
   list = $state<NoteSummary[]>([])
   /** The note in the editor, whole. `null` when nothing is open. */
   open = $state<Note | null>(null)
@@ -64,7 +68,27 @@ class NotesState {
   sort = $state<NoteSort>('updatedDesc')
   /** `null` is every note; a tag narrows the list to notes carrying it. */
   tag = $state<string | null>(null)
-  tags = $state<string[]>([])
+  /** Every tag in use, with how many notes carry it, most used first. */
+  tags = $state<NoteTag[]>([])
+  /**
+   * `null` is every note; otherwise only the ones the person, the assistant
+   * or a call started. Applied here, over the rows already loaded, rather
+   * than by the backend: narrowing is instant, and the counts on the
+   * filter's chips come from the same rows it shows. Those rows are the
+   * newest `PAGE` -- the list itself stops there too -- so past five hundred
+   * notes the filter and its counts cover only those, as the list does.
+   */
+  origin = $state<NoteOrigin | null>(null)
+  /** The list the sidebar draws: `list` narrowed to one kind of note. */
+  visible = $derived(this.origin ? this.list.filter((n) => n.origin === this.origin) : this.list)
+  /**
+   * Whether this vault holds notes the person did not write, so whether the
+   * kind filter is worth drawing at all. Read again from every list that is
+   * not narrowed by a tag; while one is, it can only be told of a new kind
+   * arriving -- a filter that came and went as tags were clicked would move
+   * the list under the pointer.
+   */
+  mixed = $state(false)
   loading = $state(false)
   /** Search inside this app. Narrows the vault's index to notes. */
   query = $state('')
@@ -167,6 +191,8 @@ class NotesState {
     this.#selectedProposalId = null
     this.tag = null
     this.tags = []
+    this.origin = null
+    this.mixed = false
     this.clearSearch()
     this.conflict = false
     this.#base = null
@@ -217,6 +243,7 @@ class NotesState {
         })
         if (!isCurrent()) return
         this.list = list
+        this.#recountKinds()
 
         const tags = await api.noteTags()
         if (!isCurrent()) return
@@ -239,6 +266,7 @@ class NotesState {
     return applySingleChange(changes, {
       onDeleted: (id) => {
         this.list = this.list.filter((n) => n.id !== id)
+        this.#recountKinds()
       },
       // Answered synchronously -- see `Applier` -- with the fetch running
       // after. `#patchOne` falls back to `refresh()` itself if it fails, so
@@ -252,22 +280,23 @@ class NotesState {
     await patchOneFromChange({
       fetch: () => api.note(id),
       apply: (note) => {
-        if (this.tag && !note.tags.includes(this.tag)) {
+        const summary = summarize(note)
+        // A call's notes arriving from the pipeline, say, into a drawer that
+        // held only the person's own until now -- told before the tag check
+        // below, which a note off this tag never gets past.
+        if (summary.origin !== 'own') this.mixed = true
+        if (this.tag && !note.tags.some((t) => sameTag(t, this.tag))) {
           // No longer -- or never -- under the tag this list is filtered to.
           // Drop it if it was showing under an earlier tag; do nothing if it
           // was never in this list to begin with.
           this.list = this.list.filter((n) => n.id !== id)
           return
         }
-        const summary = summarize(note)
-        const at = this.list.findIndex((n) => n.id === id)
-        // Replaced in place when already shown, so its position in the sort
-        // order is left alone rather than guessed at; inserted at the front
-        // otherwise, which is right for the default "last changed" sort and
-        // an approximation everywhere else that the next real `refresh`
-        // corrects.
-        this.list =
-          at >= 0 ? this.list.map((n, i) => (i === at ? summary : n)) : [summary, ...this.list]
+        // Then put where a reload would put it, by the backend's own order:
+        // left where it was, an edited October note sat among October's
+        // rows saying "today", and a new one put at the front sat above the
+        // pinned ones -- each splitting a section in two around it.
+        this.list = sortNotes([...this.list.filter((n) => n.id !== id), summary], this.sort)
       },
       // A lock is not a failure to fall back from -- the same policy
       // everywhere else a background read meets a vault that just shut.
@@ -289,6 +318,24 @@ class NotesState {
     await this.refresh()
   }
 
+  setOrigin(origin: NoteOrigin | null) {
+    this.origin = origin
+  }
+
+  /** Read `mixed` again off a list no tag narrows -- see its own doc. */
+  #recountKinds() {
+    if (!this.tag) this.mixed = this.list.some((n) => n.origin !== 'own')
+  }
+
+  /**
+   * Let go of a kind filter that would hide `origin` -- for a note just
+   * made or opened, which would otherwise sit in the editor with no row in
+   * the sidebar and a heading counting notes it is not among.
+   */
+  #showKind(origin: NoteOrigin) {
+    if (this.origin && this.origin !== origin) this.origin = null
+  }
+
   async openNote(id: NoteId) {
     // Write what is in the editor before the editor is handed a different
     // document, or a save taken inside the autosave window lands against the
@@ -297,6 +344,7 @@ class NotesState {
     this.#selectedProposalId = null
     try {
       const note = await api.note(id)
+      this.#showKind(noteOrigin(note))
       this.open = note
       this.selected = id
       this.#base = note.updatedAt
@@ -320,6 +368,7 @@ class NotesState {
       const note = await api.newNote(templateId)
       if (title || !templateId) note.title = title
       await api.saveNote(note, null)
+      this.#showKind(noteOrigin(note))
       this.open = note
       this.selected = note.id
       this.#base = note.updatedAt
@@ -496,10 +545,13 @@ class NotesState {
 
   /** What is on screen, for the assistant -- see `onscreen.ts`. A tag is
    *  the person's own word for a filter rather than a record, so it is said
-   *  as the view. */
+   *  as the view; so is the kind filter, in words rather than its label,
+   *  since the assistant's own name on a chip means nothing said back to it. */
   get showing(): Showing {
+    const kind = this.origin ? ORIGIN_VIEWS[this.origin] : null
+    const tagged = this.tag ? `tagged ${this.tag}` : null
     return {
-      view: this.tag ? `notes tagged ${this.tag}` : null,
+      view: kind || tagged ? [kind ?? 'notes', tagged].filter(Boolean).join(' ') : null,
       open: seen('note', this.open?.id, this.open?.title ?? ''),
       query: this.query,
     }
@@ -562,6 +614,13 @@ class NotesState {
   }
 }
 
+/** The kind filter, as the view `showing` names it to the assistant. */
+const ORIGIN_VIEWS: Record<NoteOrigin, string> = {
+  own: 'notes the person wrote',
+  assistant: 'notes the assistant wrote',
+  meeting: 'meeting notes',
+}
+
 export const notes = new NotesState()
 
 /** Plain text out of a note's rich body -- what a read-only preview draws. */
@@ -592,6 +651,7 @@ function summarize(note: Note): NoteSummary {
     wordCount: text.split(/\s+/).filter(Boolean).length,
     attachmentCount: note.attachments.length,
     cover: note.attachments.find((a) => a.kind === 'image')?.blob,
+    origin: noteOrigin(note),
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
   }

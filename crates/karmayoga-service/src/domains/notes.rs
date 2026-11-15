@@ -17,7 +17,7 @@ use karmayoga_core::note::{Note, NoteSummary};
 use karmayoga_core::store::notes::NoteQuery;
 use karmayoga_core::template::Context;
 use karmayoga_core::{NoteId, TemplateId};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Deserialize)]
@@ -98,9 +98,30 @@ async fn delete_note(svc: Arc<Service>, _ctx: Ctx, args: NoteRef) -> CommandResu
     svc.on_vault(move |vault| vault.delete_note(args.id)).await
 }
 
-async fn note_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<String>> {
-    svc.on_vault(move |vault| Ok(vault.note_tags()?.into_iter().map(|(tag, _)| tag).collect()))
-        .await
+/// A tag in use, and how many notes carry it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteTag {
+    pub tag: String,
+    pub count: u64,
+}
+
+/// Every tag in use with its count, the most used first.
+///
+/// The count was always there -- the store tallies it -- and was dropped
+/// here, which left the sidebar no way to say which tags matter: forty of
+/// them drawn alike, thirty-one of which were on one note each. Ties go
+/// alphabetically, so the order does not shuffle between two loads.
+async fn note_tags(svc: Arc<Service>, _ctx: Ctx, _args: Nothing) -> CommandResult<Vec<NoteTag>> {
+    svc.on_vault(move |vault| {
+        let mut tags: Vec<NoteTag> =
+            vault.note_tags()?.into_iter().map(|(tag, count)| NoteTag { tag, count }).collect();
+        tags.sort_by(|a, b| {
+            b.count.cmp(&a.count).then_with(|| a.tag.to_lowercase().cmp(&b.tag.to_lowercase()))
+        });
+        Ok(tags)
+    })
+    .await
 }
 
 pub static COMMANDS: &[crate::command::Command] = &[
@@ -148,7 +169,7 @@ pub static COMMANDS: &[crate::command::Command] = &[
     },
     command! {
         name: "note_tags", scope: Notes, effect: Read,
-        args: Nothing, returns: "string[]", signature: &[],
+        args: Nothing, returns: "NoteTag[]", signature: &[],
         run: note_tags,
     },
 ];

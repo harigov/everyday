@@ -19,10 +19,22 @@ impl Vault {
         self.with_domain(Domain::Notes, |s| s.notes().map(f))
     }
 
+    /// The list, every row saying who started its note -- read from the
+    /// tags for a row sealed before that was kept. See
+    /// [`crate::note::NoteOrigin::guess`].
     pub fn notes(&self, query: &NoteQuery) -> Result<Vec<NoteSummary>> {
-        self.with_notes(|n| n.list_notes(query))
+        let mut rows = self.with_notes(|n| n.list_notes(query))?;
+        for row in &mut rows {
+            row.origin = Some(row.origin());
+        }
+        Ok(rows)
     }
 
+    /// One note, whole, exactly as stored. An older note's origin is left
+    /// unsaid rather than filled in from its tags: whoever reads it here may
+    /// save it back, and a guess saved is a guess nobody can take back -- a
+    /// note the person tagged "meeting" by hand would be a call's notes for
+    /// good. [`Note::origin`] reads it for anyone who needs to know.
     pub fn note(&self, id: NoteId) -> Result<Note> {
         self.with_notes(|n| n.get_note(id))
     }

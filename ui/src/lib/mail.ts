@@ -7,6 +7,7 @@ import {
   daysBetween,
   friendlyDate,
   relativeTime,
+  rowDate,
   timeOfDay,
   weekdayShort,
 } from './format'
@@ -216,21 +217,9 @@ export function threadListDate(instant: string): string {
   return sameDay ? timeOfDay(d) : friendlyDate(isoDate(d))
 }
 
-/**
- * A row's date, where the `dateSection` heading over it has already named the
- * day. "Yesterday" under a heading saying Yesterday only repeats it, so today's
- * and yesterday's rows both give the time, and older ones the short form:
- * "Mon", "Oct 3", "Oct 3, 2025". A date in the future, which `dateSection` puts
- * under Today all the same, gives its date too, or it would pass for today.
- */
-export function threadRowDate(instant: string, now = new Date()): string {
-  const d = new Date(instant)
-  const ago = daysBetween(startOfDay(isoDate(d)), now)
-  if (ago === 0 || ago === 1) return timeOfDay(d)
-  if (ago > 1 && ago < 7) return dateFormat({ weekday: 'short' }).format(d)
-  const year = d.getFullYear() === now.getFullYear() ? undefined : 'numeric'
-  return dateFormat({ month: 'short', day: 'numeric', year }).format(d)
-}
+/** A thread row's date, under the `dateSection` heading that already named
+ *  its day. `format.ts`'s `rowDate`, which the notes list shares. */
+export const threadRowDate = rowDate
 
 /**
  * "Today at 7:52 AM", "Yesterday at 6:30 AM", "Saturday at 9:10 PM": an open

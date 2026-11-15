@@ -8,6 +8,7 @@ use super::session::Domain;
 use crate::agent::MemoryOrigin;
 use crate::error::{Error, Result};
 use crate::id::{BlockId, MemoryId, NoteId, ProposalId, RoutineId, SkillId, TaskId};
+use crate::note::NoteOrigin;
 use crate::proposal::{
     DeclineReason, MAX_PENDING_PROPOSALS, Outcome, PROPOSAL_DAYS, Payload, Proposal, ProposalKind,
     ProposalTrace, ProposedRecord,
@@ -426,7 +427,8 @@ impl Vault {
     }
 
     /// Save the accepted record through the same domain save its own tool
-    /// would use, stamping `updated_at` and, for a memory, its `origin`.
+    /// would use, stamping `updated_at` and, for a memory or a note, its
+    /// `origin`.
     ///
     /// A task and a block go through their own `save_*`, which validate
     /// them again -- cheap, and one less place that can drift from what a
@@ -476,6 +478,14 @@ impl Vault {
             }
             ProposedRecord::Note(n) => {
                 n.updated_at = now;
+                // A replacement keeps whatever the note it replaces says
+                // about who started it; a new note was the assistant's
+                // proposal, which one made before notes recorded that does
+                // not say.
+                n.origin = match self.note(n.id) {
+                    Ok(current) => current.origin,
+                    Err(_) => Some(NoteOrigin::Assistant),
+                };
                 self.overwrite_note(n)
             }
             ProposedRecord::Skill(s) => {

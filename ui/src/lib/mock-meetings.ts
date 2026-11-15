@@ -437,9 +437,10 @@ const doneNote: Note = {
       ...para('Sam — mock up the empty state — by Friday.'),
     ],
   },
-  tags: ['meetings'],
+  tags: ['meeting'],
   pinned: false,
   attachments: [],
+  origin: 'meeting',
   createdAt: minutesAgo(15),
   updatedAt: minutesAgo(15),
 }
@@ -870,9 +871,10 @@ function runPipeline(r: Recording) {
               ...para('Written from the recording just finished.'),
             ],
           },
-          tags: ['meetings'],
+          tags: ['meeting'],
           pinned: false,
           attachments: [],
+          origin: 'meeting',
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         }

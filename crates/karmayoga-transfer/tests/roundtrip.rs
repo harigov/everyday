@@ -855,3 +855,47 @@ fn importing_a_note_keeps_the_source_created_timestamp() {
         })
         .unwrap();
 }
+
+/// Who started a note travels in its front matter, and a file that does not
+/// say -- an export from before the field, or one written in another editor
+/// -- leaves alone what the note already here recorded: who started a note
+/// never changes.
+#[test]
+fn a_notes_origin_goes_out_and_comes_back_and_is_never_wiped() {
+    use karmayoga_core::note::NoteOrigin;
+
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+    let report =
+        Note::written_by(NoteOrigin::Assistant, "Week in review", "Nine hours on the deck.");
+    let id = report.id;
+    vault.save_note(&report, None).unwrap();
+
+    let (bytes, _) = karmayoga_transfer::export(
+        &vault,
+        &Options { parts: vec!["notes".into()], media: false },
+        Vec::new(),
+    )
+    .unwrap();
+    let archive = zip::Reader::open(&bytes).unwrap();
+    let (name, body) = archive
+        .names()
+        .find(|n| n.starts_with("notes/") && n.ends_with(".md"))
+        .map(|n| (n.to_string(), String::from_utf8(archive.get(n).unwrap().to_vec()).unwrap()))
+        .expect("no note in the archive");
+    assert!(body.contains("origin: assistant"), "{body}");
+
+    // The same file with the line gone, laid back over the note.
+    let without: String =
+        body.lines().filter(|l| !l.starts_with("origin:")).collect::<Vec<_>>().join("\n");
+    let files = [(name, without.into_bytes())].into_iter().collect();
+    let reports = karmayoga_transfer::import(
+        &vault,
+        &zip::Reader::from_files(files),
+        &importable(),
+        Mode::Replace,
+    )
+    .unwrap();
+    assert!(reports.iter().flat_map(|r| &r.problems).next().is_none(), "{reports:?}");
+    assert_eq!(vault.note(id).unwrap().origin, Some(NoteOrigin::Assistant));
+}

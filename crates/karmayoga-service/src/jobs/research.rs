@@ -13,7 +13,9 @@
 
 use super::{Executor, Prepared};
 use crate::events::{Change, Kind, Op};
-use karmayoga_core::{Conversation, Error, Job, JobKind, JobOutput, Note, NoteId, RichDoc, Vault};
+use karmayoga_core::{
+    Conversation, Error, Job, JobKind, JobOutput, Note, NoteId, NoteOrigin, RichDoc, Vault,
+};
 use std::time::Duration;
 
 /// The most tool calls a research job's turn may make. The rail's own ceiling
@@ -91,7 +93,11 @@ impl Executor for Research {
         let note_id = match note_id {
             Some(id) => id,
             None => {
-                let mut note = Note::written(note_title(&question), &placeholder(&question));
+                let mut note = Note::written_by(
+                    NoteOrigin::Assistant,
+                    note_title(&question),
+                    &placeholder(&question),
+                );
                 note.tags = vec![TAG.to_string()];
                 vault.save_note(&note, None)?;
                 job.add_note(note.id);

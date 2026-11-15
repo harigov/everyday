@@ -31,6 +31,70 @@ use serde::{Deserialize, Serialize};
 /// Longest title we will store. Past this it is a body.
 pub const MAX_TITLE_BYTES: usize = 500;
 
+/// Who started a note: the person, the assistant, or a recorded call.
+///
+/// Kept so the list can tell the three apart at a glance. A routine's
+/// weekly report and the notes from a call are not something the person
+/// wrote, and a list that draws them exactly like a recipe somebody typed
+/// leaves them to work out which is which from the title.
+///
+/// It says who *started* the note and never changes after. Editing the
+/// assistant's report does not make it yours, any more than tidying a
+/// meeting's notes makes it not a meeting.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum NoteOrigin {
+    /// The person wrote it, or imported it.
+    #[default]
+    Own,
+    /// The assistant wrote it: a routine's report, a research job's answer,
+    /// a note it was asked to make.
+    Assistant,
+    /// The meeting-notes pipeline wrote it from a recording.
+    Meeting,
+}
+
+impl NoteOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NoteOrigin::Own => "own",
+            NoteOrigin::Assistant => "assistant",
+            NoteOrigin::Meeting => "meeting",
+        }
+    }
+
+    /// The best reading of a note saved before notes recorded who started
+    /// them, from the tags the two writers that are not the person always
+    /// put on what they make: the meeting pipeline's `meeting`, and a
+    /// research job's `research`. Everything else is taken to be the
+    /// person's -- including a routine's report from before then, which
+    /// carried no mark of its own.
+    pub fn guess(tags: &[String]) -> Self {
+        let has = |want: &str| tags.iter().any(|t| t.eq_ignore_ascii_case(want));
+        if has("meeting") {
+            NoteOrigin::Meeting
+        } else if has("research") {
+            NoteOrigin::Assistant
+        } else {
+            NoteOrigin::Own
+        }
+    }
+}
+
+impl std::str::FromStr for NoteOrigin {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim() {
+            "own" => Ok(NoteOrigin::Own),
+            "assistant" => Ok(NoteOrigin::Assistant),
+            "meeting" => Ok(NoteOrigin::Meeting),
+            other => Err(Error::Invalid(format!("{other:?} is not a note origin"))),
+        }
+    }
+}
+
 /// A note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -53,6 +117,12 @@ pub struct Note {
     /// Media referenced by the body, in document order.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
+    /// Who started it. `None` on a note saved before this was kept, which
+    /// [`Note::origin`] reads from its tags instead -- see
+    /// [`NoteOrigin::guess`]. Left `None` when such a note is saved back:
+    /// only a writer that knows sets it, so a wrong guess is never kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<NoteOrigin>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -68,6 +138,7 @@ impl Note {
             pinned: false,
             purpose: None,
             attachments: Vec::new(),
+            origin: Some(NoteOrigin::Own),
             created_at: now,
             updated_at: now,
         }
@@ -76,6 +147,17 @@ impl Note {
     /// A note with a body already in it, which is how the assistant makes one.
     pub fn written(title: impl Into<String>, markdown: &str) -> Self {
         Self { body: RichDoc::from_markdown(markdown), ..Self::new(title) }
+    }
+
+    /// The same, started by someone other than the person: the assistant,
+    /// or a recorded call.
+    pub fn written_by(origin: NoteOrigin, title: impl Into<String>, markdown: &str) -> Self {
+        Self { origin: Some(origin), ..Self::written(title, markdown) }
+    }
+
+    /// Who started it, read from its tags for a note older than the field.
+    pub fn origin(&self) -> NoteOrigin {
+        self.origin.unwrap_or_else(|| NoteOrigin::guess(&self.tags))
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -145,6 +227,7 @@ impl Note {
             word_count: plain.split_whitespace().count() as u32,
             attachment_count: self.attachments.len() as u32,
             cover: self.attachments.iter().find(|a| a.kind == MediaKind::Image).map(|a| a.blob),
+            origin: Some(self.origin()),
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -173,8 +256,21 @@ pub struct NoteSummary {
     pub attachment_count: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cover: Option<BlobId>,
+    /// Who started the note. `None` only on a summary sealed before this was
+    /// kept; [`crate::Vault::notes`] fills it in from the tags, as
+    /// [`NoteSummary::origin`] does, so every row handed out carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<NoteOrigin>,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
+}
+
+impl NoteSummary {
+    /// Who started the note, read from its tags for a row older than the
+    /// field -- the same reading [`Note::origin`] makes.
+    pub fn origin(&self) -> NoteOrigin {
+        self.origin.unwrap_or_else(|| NoteOrigin::guess(&self.tags))
+    }
 }
 
 #[cfg(test)]
@@ -210,6 +306,51 @@ mod tests {
         note.validate().unwrap();
         note.title = "x".repeat(MAX_TITLE_BYTES + 1);
         assert!(note.validate().is_err(), "past a point it is a body, not a title");
+    }
+
+    #[test]
+    fn a_note_says_who_started_it() {
+        assert_eq!(Note::new("mine").origin(), NoteOrigin::Own);
+        let report = Note::written_by(NoteOrigin::Assistant, "Week", "Eleven hours on the deck.");
+        assert_eq!(report.origin(), NoteOrigin::Assistant);
+        assert_eq!(report.summarize().origin, Some(NoteOrigin::Assistant));
+    }
+
+    #[test]
+    fn an_older_note_is_read_from_the_tags_its_writer_left() {
+        // Saved before the field existed: no `origin` in the payload at all.
+        let mut json = serde_json::to_value(Note::written("Design sync", "x")).unwrap();
+        json.as_object_mut().unwrap().remove("origin");
+        json["tags"] = serde_json::json!(["meeting", "design-sync"]);
+        let old: Note = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(old.origin, None);
+        assert_eq!(old.origin(), NoteOrigin::Meeting);
+        assert_eq!(old.summarize().origin, Some(NoteOrigin::Meeting));
+
+        json["tags"] = serde_json::json!(["Research"]);
+        let old: Note = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(old.origin(), NoteOrigin::Assistant, "case aside, as tags are");
+
+        json["tags"] = serde_json::json!(["boats"]);
+        let old: Note = serde_json::from_value(json).unwrap();
+        assert_eq!(old.origin(), NoteOrigin::Own);
+    }
+
+    #[test]
+    fn a_recorded_origin_outranks_the_tags() {
+        // A note the person wrote and tagged "meeting" by hand is still theirs.
+        let mut note = Note::written("Notes for Tuesday", "agenda");
+        note.tags = vec!["meeting".into()];
+        assert_eq!(note.origin(), NoteOrigin::Own);
+    }
+
+    #[test]
+    fn an_origin_round_trips_through_its_name() {
+        for origin in [NoteOrigin::Own, NoteOrigin::Assistant, NoteOrigin::Meeting] {
+            assert_eq!(origin.as_str().parse::<NoteOrigin>().unwrap(), origin);
+            assert_eq!(serde_json::to_value(origin).unwrap(), origin.as_str());
+        }
+        assert!("robot".parse::<NoteOrigin>().is_err());
     }
 
     #[test]
