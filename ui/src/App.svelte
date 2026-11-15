@@ -21,6 +21,7 @@
   import { money } from './lib/money.svelte'
   import { screentime } from './lib/screentime.svelte'
   import { files } from './lib/files.svelte'
+  import { health, type HealthQuestion } from './lib/health.svelte'
   import { assistant } from './lib/assistant.svelte'
   import { proposals } from './lib/proposals.svelte'
   import { purpose } from './lib/purpose.svelte'
@@ -49,6 +50,7 @@
   import MoneyView from './components/MoneyView.svelte'
   import ScreenTimeView from './components/ScreenTimeView.svelte'
   import FilesView from './components/FilesView.svelte'
+  import HealthView from './components/HealthView.svelte'
   import OverviewView from './components/OverviewView.svelte'
   import AssistantView from './components/AssistantView.svelte'
   import LockScreen from './components/LockScreen.svelte'
@@ -169,8 +171,25 @@
   // grown a clause per app and quietly gave any new one the *journal's*
   // accent, which is the one answer that is wrong everywhere.
   const accent = $derived(
-    APPS[app.section].accent({ app, todo, library, feed, money, screentime, files }),
+    APPS[app.section].accent({ app, todo, library, feed, money, screentime, files, health }),
   )
+
+  // Health's question is the one not already shaped for `ChoiceDialog`: it
+  // has one yes and, sometimes, a second ("Delete with its results"), where
+  // Money's and Screen time's carry their own `options` and `cancel`. Each
+  // answer takes the question down before it runs, whatever the store does
+  // after.
+  function healthOptions(q: HealthQuestion) {
+    const answer = (run: () => Promise<void>) => () => {
+      health.question = null
+      return run()
+    }
+    const options = [{ label: q.confirm, danger: true, run: answer(q.run) }]
+    if (q.alternative) {
+      options.push({ label: q.alternative.label, danger: true, run: answer(q.alternative.run) })
+    }
+    return options
+  }
 
   // Each app's sidebar folds on its own -- see `sidebar.svelte.ts` -- and a
   // peek belongs to the app it was raised over, so changing app (or opening
@@ -291,6 +310,20 @@
   />
 {/if}
 
+<!-- Health's "are you sure": forgetting a stretch of readings, deleting a
+     medication, a condition, a meal or a document. Asked by the store
+     (`health.question`), as Money's and Screen time's are, and naming what
+     goes, so it reads anywhere. -->
+{#if health.question}
+  {@const q = health.question}
+  <ChoiceDialog
+    title={q.title}
+    detail={q.body}
+    options={healthOptions(q)}
+    oncancel={() => (health.question = null)}
+  />
+{/if}
+
 <div class="app" style="--journal-accent: {accent}">
   {#if app.screen !== 'main'}
     <!-- The window's title bar on the screens that have no top bar. Off
@@ -384,6 +417,8 @@
               <ScreenTimeView />
             {:else if app.section === 'files'}
               <FilesView />
+            {:else if app.section === 'health'}
+              <HealthView />
             {:else if app.section === 'overview'}
               <OverviewView />
             {:else}

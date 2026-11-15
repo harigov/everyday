@@ -106,6 +106,7 @@ macro_rules! tool {
 
 mod calendar;
 mod conversations;
+mod health;
 mod jobs;
 mod journals;
 mod library;
@@ -213,13 +214,17 @@ pub enum Domain {
     /// and the sealed files -- see `agent::tools::files`. Gated by
     /// [`crate::files::FilesSettings::assistant_access`].
     Files,
+    /// Health: what a watch measured, medications and doses, conditions,
+    /// labs, documents and meals -- see `agent::tools::health`. Never a
+    /// dose change or a diagnosis.
+    Health,
 }
 
 impl Domain {
     /// Every domain there is, in no particular order. Exists so a test that
     /// means "every domain" can say so, rather than enumerating them by hand
     /// and silently going stale the day one is added.
-    pub const ALL: [Domain; 16] = [
+    pub const ALL: [Domain; 17] = [
         Domain::Journals,
         Domain::Notes,
         Domain::Tasks,
@@ -236,6 +241,7 @@ impl Domain {
         Domain::Money,
         Domain::ScreenTime,
         Domain::Files,
+        Domain::Health,
     ];
 
     /// Can this vault serve the domain, and may a model be shown it at all?
@@ -260,6 +266,7 @@ impl Domain {
                 Domain::Money => vault.supports_money(),
                 Domain::ScreenTime => vault.supports_screen_time(),
                 Domain::Files => vault.supports_files(),
+                Domain::Health => vault.supports_health(),
             }
     }
 
@@ -336,6 +343,15 @@ impl Domain {
             // the turn, and what was read reaches the model as untrusted
             // text. Finding files by name and date does not.
             | Domain::Files => Sensitivity::Ordinary,
+            // Somebody's body, medicines and diagnoses: as private as
+            // anything here, but the person asked for an assistant that
+            // reads it ("does rice spike me", "when is my TSH due"), and
+            // chose cloud models for it. Handled the money way: a health read
+            // taints the turn, and what a stranger wrote -- a document's text,
+            // a food database's names, a source's device names -- reaches the
+            // model as untrusted text. No tool changes a dose or a plan
+            // without the person. See `agent::tools::health`.
+            | Domain::Health => Sensitivity::Ordinary,
         }
     }
 }
@@ -387,6 +403,16 @@ impl TryFrom<RecordKind> for Domain {
             | RecordKind::MoneyRule => Ok(Domain::Money),
             RecordKind::ScreenApp | RecordKind::ScreenCategory => Ok(Domain::ScreenTime),
             RecordKind::File | RecordKind::Album => Ok(Domain::Files),
+            RecordKind::HealthSource
+            | RecordKind::Workout
+            | RecordKind::Medication
+            | RecordKind::Dose
+            | RecordKind::Condition
+            | RecordKind::LabResult
+            | RecordKind::HealthDocument
+            | RecordKind::Allergy
+            | RecordKind::Food
+            | RecordKind::Meal => Ok(Domain::Health),
             // Proposed work, not a domain a tool list is offered for.
             RecordKind::Proposal => Err(()),
             // No tools read writing help yet. The feedback pass that will is
@@ -1309,6 +1335,7 @@ fn all() -> &'static [Tool] {
             money::TOOLS,
             screentime::TOOLS,
             files::TOOLS,
+            health::TOOLS,
         ]
         .concat()
     })
@@ -1674,6 +1701,16 @@ mod tests {
             (RecordKind::ScreenCategory, Domain::ScreenTime),
             (RecordKind::File, Domain::Files),
             (RecordKind::Album, Domain::Files),
+            (RecordKind::HealthSource, Domain::Health),
+            (RecordKind::Workout, Domain::Health),
+            (RecordKind::Medication, Domain::Health),
+            (RecordKind::Dose, Domain::Health),
+            (RecordKind::Condition, Domain::Health),
+            (RecordKind::LabResult, Domain::Health),
+            (RecordKind::HealthDocument, Domain::Health),
+            (RecordKind::Allergy, Domain::Health),
+            (RecordKind::Food, Domain::Health),
+            (RecordKind::Meal, Domain::Health),
         ] {
             assert_eq!(Domain::try_from(kind), Ok(domain), "{kind:?}");
         }

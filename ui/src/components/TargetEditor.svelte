@@ -12,7 +12,7 @@
   // and a target half-typed ("Between 60 and") should not be written by
   // either until the field is left.
 
-  import { describeTarget } from '../lib/tracker'
+  import { describeTarget, isDayReading } from '../lib/tracker'
   import { PERIODS } from '../lib/types'
   import type { Period, Target, Tracker } from '../lib/types'
   import Icon from './Icon.svelte'
@@ -84,13 +84,24 @@
 
   function add() {
     const tally = fixedTally ?? 'value'
-    onchange([...targets, { min: null, max: null, per: 'week', tally }])
+    const per = isDayReading(tracker) ? 'day' : 'week'
+    onchange([...targets, { min: null, max: null, per, tally }])
   }
 
   function remove(i: number) {
     modes.splice(i, 1)
     onchange(targets.filter((_, j) => j !== i))
   }
+
+  /**
+   * The periods a target may be counted over. A reading from Health that is
+   * a value of its day -- an average, a last reading, a share in range -- is
+   * only ever "a day": the days of a week are not a sum of them. A target
+   * that was somehow saved over another period keeps it, so the field never
+   * goes blank on what it was set to.
+   */
+  const periodsFor = (t: Target): readonly Period[] =>
+    isDayReading(tracker) ? PERIODS.filter((p) => p === 'day' || p === t.per) : PERIODS
 
   const PERIOD_WORDS: Record<Period, string> = {
     day: 'a day',
@@ -161,7 +172,7 @@
           value={t.per}
           onchange={(e) => update(i, { per: e.currentTarget.value as Period })}
         >
-          {#each PERIODS as p (p)}<option value={p}>{PERIOD_WORDS[p]}</option>{/each}
+          {#each periodsFor(t) as p (p)}<option value={p}>{PERIOD_WORDS[p]}</option>{/each}
         </select>
         <button
           class="drop"

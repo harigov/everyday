@@ -441,6 +441,39 @@ pub enum TrackerSource {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         item: Option<String>,
     },
+    /// One value a day from the Health app: a metric's day under `stat` --
+    /// steps summed, resting heart rate averaged, the share of glucose in
+    /// range -- in the metric's canonical unit, counted in this machine's
+    /// time zone. "8,000 steps a day" and "time in range above 70%" are
+    /// targets on one of these.
+    Health {
+        metric: crate::health::Metric,
+        #[serde(default)]
+        stat: crate::health::Stat,
+    },
+}
+
+/// The unit a Health tracker's readings are shown in: a word a person would
+/// say rather than the catalogue's canonical spelling, which writes steps,
+/// floors and heart beats alike as `count`.
+fn health_unit(metric: crate::health::Metric) -> &'static str {
+    use crate::health::Metric;
+    match metric {
+        Metric::Steps => "steps",
+        Metric::FlightsClimbed => "floors",
+        Metric::StandHour => "hours",
+        Metric::Bmi => "",
+        Metric::RespiratoryRate => "breaths/min",
+        Metric::HeartRate
+        | Metric::RestingHeartRate
+        | Metric::WalkingHeartRate
+        | Metric::HeartRateRecovery => "bpm",
+        Metric::InsulinBasal | Metric::InsulinBolus => "U",
+        _ => match metric.info().unit {
+            "degC" => "°C",
+            unit => unit,
+        },
+    }
 }
 
 impl TrackerSource {
@@ -454,6 +487,7 @@ impl TrackerSource {
             TrackerSource::Time => "time",
             TrackerSource::Finished { .. } => "finished",
             TrackerSource::ScreenTime { .. } => "screenTime",
+            TrackerSource::Health { .. } => "health",
         }
     }
 }
@@ -736,7 +770,7 @@ impl Tracker {
             return hit.len() as f64;
         }
         let sum: f64 = days.iter().map(|d| d.sum).sum();
-        if self.kind.aggregate() != Aggregate::Mean {
+        if self.aggregate() != Aggregate::Mean {
             return sum;
         }
         let count: u32 = days.iter().map(|d| d.count).sum();
@@ -801,6 +835,12 @@ impl Tracker {
         match self.source {
             TrackerSource::Time | TrackerSource::ScreenTime { .. } => self.unit = "min".into(),
             TrackerSource::Finished { .. } => self.unit = String::new(),
+            // A share in range is drawn as a percentage; anything else in
+            // the metric's own canonical unit.
+            TrackerSource::Health { stat: crate::health::Stat::InRange { .. }, .. } => {
+                self.unit = "%".into()
+            }
+            TrackerSource::Health { metric, .. } => self.unit = health_unit(metric).to_string(),
             TrackerSource::Manual => {}
         }
         if self.kind == TrackerKind::Check {
@@ -821,6 +861,23 @@ impl Tracker {
             }
             t.normalize()
         });
+    }
+
+    /// How this tracker's days combine over a target's period: its kind's
+    /// own aggregate, except for a Health tracker whose daily value is not
+    /// an amount. A week of resting heart rate, weight or time in range is
+    /// the mean of its days -- summing seven daily percentages would call
+    /// 40% a day a target of 70% met.
+    pub fn aggregate(&self) -> Aggregate {
+        match &self.source {
+            TrackerSource::Health { metric, stat } => {
+                match crate::health::report::resolve_stat(*metric, *stat) {
+                    crate::health::Stat::Sum | crate::health::Stat::Count => Aggregate::Sum,
+                    _ => Aggregate::Mean,
+                }
+            }
+            _ => self.kind.aggregate(),
+        }
     }
 
     /// Clamp a value to what this tracker can mean.

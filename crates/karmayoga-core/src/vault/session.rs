@@ -82,6 +82,10 @@ pub(super) enum Domain {
     ScreenTime,
     /// The files catalog -- see [`crate::files`] and [`crate::store::files`].
     Files,
+    /// Health: series, sources, workouts, medications, conditions, labs,
+    /// documents, allergies, foods and meals -- see [`crate::health`] and
+    /// [`crate::store::health`].
+    Health,
 }
 
 impl Domain {
@@ -108,6 +112,7 @@ impl Domain {
             Domain::Money => "money (this vault's backend stores journals only)",
             Domain::ScreenTime => "screen time (this vault's backend stores journals only)",
             Domain::Files => "files (this vault's backend stores journals only)",
+            Domain::Health => "health (this vault's backend stores journals only)",
         }
     }
 }

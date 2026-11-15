@@ -747,6 +747,76 @@
     "title": "Album",
     "type": "object"
   },
+  "Allergy": {
+    "$defs": {
+      "AllergyKind": {
+        "enum": [
+          "drug",
+          "food",
+          "environment",
+          "other"
+        ],
+        "type": "string"
+      },
+      "Severity": {
+        "enum": [
+          "mild",
+          "moderate",
+          "severe"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/AllergyKind",
+        "default": "drug"
+      },
+      "noted": {
+        "format": "date",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "notes": {
+        "default": "",
+        "type": "string"
+      },
+      "reaction": {
+        "default": "",
+        "type": "string"
+      },
+      "severity": {
+        "$ref": "#/$defs/Severity",
+        "default": "mild"
+      },
+      "substance": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "substance",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Allergy",
+    "type": "object"
+  },
   "BankAccount": {
     "$defs": {
       "AccountKind": {
@@ -1406,6 +1476,547 @@
     "title": "Event",
     "type": "object"
   },
+  "Condition": {
+    "$defs": {
+      "CarePlan": {
+        "properties": {
+          "labs": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/LabSchedule"
+            },
+            "type": "array"
+          },
+          "medRules": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/$defs/MedRule"
+              },
+              "type": "array"
+            },
+            "default": {},
+            "description": "Medication timing rules the template suggested, keyed by the tag of\nthe medications they apply to (\"thyroid\" → empty stomach, apart from\ncalcium and iron). Offered when such a medication is added.",
+            "type": "object"
+          },
+          "targets": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/CareTarget"
+            },
+            "type": "array"
+          },
+          "templateVersion": {
+            "default": 0,
+            "description": "The template version the plan was copied from. A newer template is\noffered, never applied.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "trackerIds": {
+            "default": [],
+            "description": "Symptom trackers and target trackers this plan created, so they show\non the Overview and can be removed with it.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "watch": {
+            "default": [],
+            "description": "What the condition's dashboard shows, in order.",
+            "items": {
+              "$ref": "#/$defs/Measure"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "CareTarget": {
+        "description": "\"Time in range 70-180 at least 70% of the time\", \"A1c below 7%\", \"TSH\ninside the lab's own range\".",
+        "properties": {
+          "high": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "label": {
+            "type": "string"
+          },
+          "low": {
+            "description": "Canonical units. For an `InRange` stat these are shares, 0..=1.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "measure": {
+            "$ref": "#/$defs/Measure"
+          },
+          "note": {
+            "default": "",
+            "description": "Why, in a sentence, with where the default came from.",
+            "type": "string"
+          },
+          "useReferenceRange": {
+            "default": false,
+            "description": "For a lab: compare against each result's own reference range rather\nthan `low`/`high`.",
+            "type": "boolean"
+          },
+          "windowDays": {
+            "default": 0,
+            "description": "Days the value is averaged over (14 for time in range, 0 = latest).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "label",
+          "measure"
+        ],
+        "type": "object"
+      },
+      "Code": {
+        "description": "A coded identity from a terminology: RxNorm for a medication, LOINC for\na lab, ICD-10 or SNOMED CT for a condition. Optional everywhere.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "display": {
+            "default": "",
+            "type": "string"
+          },
+          "system": {
+            "description": "`rxnorm`, `loinc`, `icd10`, `snomed`, or a FHIR system URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "code"
+        ],
+        "type": "object"
+      },
+      "ConditionStatus": {
+        "enum": [
+          "active",
+          "remission",
+          "resolved"
+        ],
+        "type": "string"
+      },
+      "LabSchedule": {
+        "description": "A test that comes due on a schedule.",
+        "properties": {
+          "afterChangeDays": {
+            "description": "Also due this many days after any dose change of a medication\ncarrying `after_change_tag` (hypothyroidism: 42 after a\nlevothyroxine change).",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "afterChangeTag": {
+            "default": "",
+            "type": "string"
+          },
+          "code": {
+            "description": "LOINC, or a word for an exam with none (\"eye-exam\", \"foot-exam\").",
+            "type": "string"
+          },
+          "everyDays": {
+            "default": 0,
+            "description": "Due this many days after the last result. 0 = never by time alone.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ],
+        "type": "object"
+      },
+      "Measure": {
+        "description": "What a target or a \"watch\" entry measures.",
+        "oneOf": [
+          {
+            "properties": {
+              "metric": {
+                "$ref": "#/$defs/Metric"
+              },
+              "stat": {
+                "$ref": "#/$defs/Stat"
+              },
+              "type": {
+                "const": "metric",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "metric",
+              "stat"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A lab test, by LOINC code.",
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "type": {
+                "const": "lab",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "code"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MedRule": {
+        "description": "A timing rule a template suggests and the person confirms.",
+        "oneOf": [
+          {
+            "description": "Nothing to eat for `minutes` after the dose (levothyroxine: 30-60).",
+            "properties": {
+              "minutes": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "emptyStomach",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "minutes"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Take with a meal: a meal within `minutes` either side.",
+            "properties": {
+              "minutes": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "withFood",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "minutes"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Keep at least `hours` from any medication or supplement carrying one\nof `tags` (\"calcium\", \"iron\") -- either order.",
+            "properties": {
+              "hours": {
+                "format": "double",
+                "type": "number"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "apartFrom",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "tags",
+              "hours"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Metric": {
+        "oneOf": [
+          {
+            "enum": [
+              "steps",
+              "walking_running_distance",
+              "cycling_distance",
+              "swimming_distance",
+              "active_energy",
+              "basal_energy",
+              "exercise_time",
+              "stand_time",
+              "flights_climbed",
+              "time_in_daylight",
+              "heart_rate",
+              "resting_heart_rate",
+              "walking_heart_rate",
+              "heart_rate_recovery",
+              "vo2_max",
+              "respiratory_rate",
+              "oxygen_saturation",
+              "weight",
+              "body_fat",
+              "lean_body_mass",
+              "bmi",
+              "height",
+              "waist_circumference",
+              "body_temperature",
+              "blood_pressure_systolic",
+              "blood_pressure_diastolic",
+              "blood_glucose",
+              "insulin_basal",
+              "insulin_bolus",
+              "dietary_energy",
+              "dietary_carbs",
+              "dietary_protein",
+              "dietary_fat",
+              "dietary_fiber",
+              "dietary_sugar",
+              "dietary_sodium",
+              "dietary_caffeine",
+              "water",
+              "mindful_minutes"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "stand_hour",
+            "description": "One sample per hour stood in (value 1), Apple's stand ring.",
+            "type": "string"
+          },
+          {
+            "const": "heart_rate_variability",
+            "description": "SDNN, milliseconds -- what Apple Watch measures.",
+            "type": "string"
+          },
+          {
+            "const": "wrist_temperature",
+            "description": "The wrist's temperature while asleep, °C, as Apple Watch records it.",
+            "type": "string"
+          },
+          {
+            "const": "sleep_stage",
+            "description": "A category metric: each sample is one stretch of one\n[`SleepStage`](super::SleepStage), its value the stage's\n[`code`](super::SleepStage::code).",
+            "type": "string"
+          }
+        ]
+      },
+      "Stat": {
+        "description": "How a series query adds samples up.",
+        "oneOf": [
+          {
+            "description": "The metric's own default ([`metric::MetricInfo::stat`]).",
+            "properties": {
+              "type": {
+                "const": "auto",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "sum",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "mean",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "min",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "max",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "last",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "count",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Share of covered time (or of readings, for a series without\ndurations) inside `low..=high`, 0..=1. Whole canonical units, so the\nenum stays `Eq` for [`crate::tracker::TrackerSource`].",
+            "properties": {
+              "high": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "low": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "type": {
+                "const": "inRange",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "low",
+              "high"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "TemplateKey": {
+        "description": "The built-in condition templates. Data, not code paths: applying one\ncopies its [`CarePlan`] onto a [`Condition`], which is the person's to\nedit from then on.",
+        "enum": [
+          "type1Diabetes",
+          "type2Diabetes",
+          "hypothyroidism"
+        ],
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "codes": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/Code"
+        },
+        "type": "array"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "diagnosed": {
+        "format": "date",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "notes": {
+        "default": "",
+        "type": "string"
+      },
+      "plan": {
+        "$ref": "#/$defs/CarePlan",
+        "default": {
+          "labs": [],
+          "medRules": {},
+          "targets": [],
+          "templateVersion": 0,
+          "trackerIds": [],
+          "watch": []
+        }
+      },
+      "status": {
+        "$ref": "#/$defs/ConditionStatus",
+        "default": "active"
+      },
+      "template": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/TemplateKey"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Condition",
+    "type": "object"
+  },
   "Conversation": {
     "$defs": {
       "Via": {
@@ -1487,6 +2098,118 @@
       "updatedAt"
     ],
     "title": "Conversation",
+    "type": "object"
+  },
+  "Dose": {
+    "$defs": {
+      "DoseOrigin": {
+        "oneOf": [
+          {
+            "enum": [
+              "manual",
+              "assistant"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "reminder",
+            "description": "From a notification's \"Taken\" button.",
+            "type": "string"
+          },
+          {
+            "const": "source",
+            "description": "A connector's dose event.",
+            "type": "string"
+          }
+        ]
+      },
+      "DoseStatus": {
+        "oneOf": [
+          {
+            "enum": [
+              "taken",
+              "skipped"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "missed",
+            "description": "Past its window with nothing logged. Written only by the reminder\nsweep, never by a person.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "amount": {
+        "description": "In the medication's `dose_unit`; `None` is the medication's dose.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "at": {
+        "description": "When it was taken (or skipped).",
+        "format": "date-time",
+        "type": "string"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "hidden": {
+        "default": false,
+        "description": "A source's dose event the person deleted, kept so its key still\nmatches when the phone sends it again. Left out of every list.",
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "key": {
+        "default": "",
+        "description": "Keyed dedupe key for a source's dose event; empty otherwise.",
+        "type": "string"
+      },
+      "medicationId": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "note": {
+        "default": "",
+        "type": "string"
+      },
+      "origin": {
+        "$ref": "#/$defs/DoseOrigin",
+        "default": "manual"
+      },
+      "scheduledAt": {
+        "description": "The due time this answers, if it answers one.",
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/$defs/DoseStatus",
+        "default": "taken"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "medicationId",
+      "at",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Dose",
     "type": "object"
   },
   "Draft": {
@@ -2176,6 +2899,11 @@
             "const": "jobs",
             "description": "Written by a routine or a background job.",
             "type": "string"
+          },
+          {
+            "const": "health",
+            "description": "A clinical document or a meal's photograph kept by Health. Always\nsealed when Health adds it (Hari's call: what a clinician gave\nsomebody stays in the vault), and out of the assistant's file tools,\nwhich have Health's own gates to answer to instead.",
+            "type": "string"
           }
         ]
       },
@@ -2706,6 +3434,11 @@
             "const": "jobs",
             "description": "Written by a routine or a background job.",
             "type": "string"
+          },
+          {
+            "const": "health",
+            "description": "A clinical document or a meal's photograph kept by Health. Always\nsealed when Health adds it (Hari's call: what a clinician gave\nsomebody stays in the vault), and out of the assistant's file tools,\nwhich have Health's own gates to answer to instead.",
+            "type": "string"
           }
         ]
       }
@@ -2747,6 +3480,243 @@
       }
     },
     "title": "FilesSettings",
+    "type": "object"
+  },
+  "Food": {
+    "$defs": {
+      "FoodSource": {
+        "oneOf": [
+          {
+            "description": "Typed in here.",
+            "properties": {
+              "type": {
+                "const": "own",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "fdcId": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "usda",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "fdcId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "type": {
+                "const": "openFoodFacts",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "code"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Worked out from a Library recipe's ingredients.",
+            "properties": {
+              "itemId": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "type": {
+                "const": "recipe",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "itemId"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A model's estimate from a photo.",
+            "properties": {
+              "type": {
+                "const": "estimate",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Nutrients": {
+        "description": "Nutrients for some amount of food. Energy, protein, carbohydrate and fat\nalways; the rest when the source knew.",
+        "properties": {
+          "carbsG": {
+            "format": "double",
+            "type": "number"
+          },
+          "extra": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "default": {},
+            "description": "Anything else, by name (\"calcium_mg\", \"caffeine_mg\").",
+            "type": "object"
+          },
+          "fatG": {
+            "format": "double",
+            "type": "number"
+          },
+          "fiberG": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "kcal": {
+            "format": "double",
+            "type": "number"
+          },
+          "proteinG": {
+            "format": "double",
+            "type": "number"
+          },
+          "satFatG": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sodiumMg": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sugarG": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kcal",
+          "proteinG",
+          "carbsG",
+          "fatG"
+        ],
+        "type": "object"
+      },
+      "Serving": {
+        "properties": {
+          "grams": {
+            "format": "double",
+            "type": "number"
+          },
+          "name": {
+            "description": "\"1 cup\", \"1 slice\", \"100 g\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "grams"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "barcode": {
+        "default": "",
+        "type": "string"
+      },
+      "brand": {
+        "default": "",
+        "type": "string"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "favorite": {
+        "default": false,
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "lastUsed": {
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "type": "string"
+      },
+      "per100g": {
+        "$ref": "#/$defs/Nutrients",
+        "description": "Per 100 g (or 100 ml for a drink)."
+      },
+      "servings": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/Serving"
+        },
+        "type": "array"
+      },
+      "source": {
+        "$ref": "#/$defs/FoodSource",
+        "default": {
+          "type": "own"
+        }
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "useCount": {
+        "default": 0,
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "per100g",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Food",
     "type": "object"
   },
   "Goal": {
@@ -2836,6 +3806,789 @@
       "updatedAt"
     ],
     "title": "Goal",
+    "type": "object"
+  },
+  "HealthDocument": {
+    "$defs": {
+      "BlobId": {
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
+        "type": "string"
+      },
+      "Code": {
+        "description": "A coded identity from a terminology: RxNorm for a medication, LOINC for\na lab, ICD-10 or SNOMED CT for a condition. Optional everywhere.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "display": {
+            "default": "",
+            "type": "string"
+          },
+          "system": {
+            "description": "`rxnorm`, `loinc`, `icd10`, `snomed`, or a FHIR system URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "code"
+        ],
+        "type": "object"
+      },
+      "DocFile": {
+        "description": "One of a document's pages: a file in the files catalog, sealed, with\n[`crate::files::FileOrigin::Health`]. Somebody adds them through Files'\nown uploads, so a scan of many megabytes never crosses the webview whole,\nand the Files app shows them, says which document uses each, and keeps\nthem in its trash a while after the document is deleted.\n\nThe name, type and size are the catalog's at the moment the file was\nadded, so a list of documents is drawn without opening the catalog.",
+        "properties": {
+          "file": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file",
+          "name",
+          "mime",
+          "size"
+        ],
+        "type": "object"
+      },
+      "DocKind": {
+        "oneOf": [
+          {
+            "enum": [
+              "labReport",
+              "visitNote",
+              "imaging",
+              "discharge",
+              "prescription",
+              "immunization",
+              "insurance",
+              "ecg",
+              "other"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "fhir",
+            "description": "FHIR resources from a portal or the Apple export.",
+            "type": "string"
+          }
+        ]
+      },
+      "DocSource": {
+        "description": "What a connector sent for a document -- a FHIR resource's JSON, an ECG's\nCSV -- sealed in the blob store exactly as it arrived. The document's own\ndata, kept so it can be read again, rather than a file anybody handed in:\nnever in the files catalog, never one of [`HealthDocument::files`].",
+        "properties": {
+          "blob": {
+            "$ref": "#/$defs/BlobId"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "blob",
+          "name",
+          "mime",
+          "size"
+        ],
+        "type": "object"
+      },
+      "ExtractionState": {
+        "oneOf": [
+          {
+            "enum": [
+              "running",
+              "done",
+              "failed"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "none",
+            "description": "Nobody asked.",
+            "type": "string"
+          },
+          {
+            "const": "proposed",
+            "description": "Results are waiting in `pending_labs` for the person.",
+            "type": "string"
+          }
+        ]
+      },
+      "FhirEntry": {
+        "description": "One FHIR resource in a document, summarised for the screen.",
+        "properties": {
+          "codes": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/Code"
+            },
+            "type": "array"
+          },
+          "date": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "display": {
+            "type": "string"
+          },
+          "resourceType": {
+            "description": "`Observation`, `Condition`, `MedicationRequest`, ...",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "description": "A value, for an observation: \"5.4 %\".",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resourceType",
+          "display"
+        ],
+        "type": "object"
+      },
+      "LabFlag": {
+        "enum": [
+          "none",
+          "normal",
+          "low",
+          "high",
+          "abnormal",
+          "critical"
+        ],
+        "type": "string"
+      },
+      "LabOrigin": {
+        "oneOf": [
+          {
+            "enum": [
+              "manual",
+              "fhir"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "extracted",
+            "description": "Read out of a document by the model, and accepted.",
+            "type": "string"
+          }
+        ]
+      },
+      "LabResult": {
+        "properties": {
+          "code": {
+            "default": "",
+            "description": "LOINC, if known. What trends group by; results without one group by\n`name`.",
+            "type": "string"
+          },
+          "collected": {
+            "format": "date",
+            "type": "string"
+          },
+          "collectedAt": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "documentId": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flag": {
+            "$ref": "#/$defs/LabFlag",
+            "default": "none"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lab": {
+            "default": "",
+            "type": "string"
+          },
+          "name": {
+            "description": "As printed: \"TSH\", \"Hemoglobin A1c\".",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "type": "string"
+          },
+          "origin": {
+            "$ref": "#/$defs/LabOrigin",
+            "default": "manual"
+          },
+          "panel": {
+            "default": "",
+            "description": "\"Lipid panel\", \"CMP\".",
+            "type": "string"
+          },
+          "refHigh": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "refLow": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "refText": {
+            "default": "",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "description": "A result that is not a number (\"Negative\", \"See note\").",
+            "type": "string"
+          },
+          "unit": {
+            "default": "",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "value": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "collected",
+          "createdAt",
+          "updatedAt"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "conditionIds": {
+        "default": [],
+        "items": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "date": {
+        "format": "date",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "externalId": {
+        "default": "",
+        "description": "Where it came from, so a re-import finds it (a FHIR resource id).",
+        "type": "string"
+      },
+      "extraction": {
+        "$ref": "#/$defs/ExtractionState",
+        "default": "none"
+      },
+      "extractionError": {
+        "default": "",
+        "type": "string"
+      },
+      "fhir": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/FhirEntry"
+        },
+        "type": "array"
+      },
+      "files": {
+        "default": [],
+        "description": "What somebody added: its pages, in order.",
+        "items": {
+          "$ref": "#/$defs/DocFile"
+        },
+        "type": "array"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/DocKind",
+        "default": "other"
+      },
+      "notes": {
+        "default": "",
+        "type": "string"
+      },
+      "pendingLabs": {
+        "default": [],
+        "description": "Results read out of it, waiting to be accepted.",
+        "items": {
+          "$ref": "#/$defs/LabResult"
+        },
+        "type": "array"
+      },
+      "provider": {
+        "default": "",
+        "description": "The clinician, clinic or lab.",
+        "type": "string"
+      },
+      "source": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/DocSource"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "What a connector sent, when one brought it."
+      },
+      "text": {
+        "default": "",
+        "description": "Text read out of it (the PDF's text layer, or the model's reading\nof a scan). Sealed; what search and the assistant read.",
+        "type": "string"
+      },
+      "title": {
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "title",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "HealthDocument",
+    "type": "object"
+  },
+  "HealthSettings": {
+    "$defs": {
+      "ActivityGoals": {
+        "description": "Daily activity goals, Apple's three rings plus steps and sleep.",
+        "properties": {
+          "exerciseMin": {
+            "format": "double",
+            "type": "number"
+          },
+          "moveKcal": {
+            "format": "double",
+            "type": "number"
+          },
+          "sleepHours": {
+            "format": "double",
+            "type": "number"
+          },
+          "standHours": {
+            "format": "double",
+            "type": "number"
+          },
+          "steps": {
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "moveKcal",
+          "exerciseMin",
+          "standHours",
+          "steps",
+          "sleepHours"
+        ],
+        "type": "object"
+      },
+      "HealthUnits": {
+        "description": "How values are shown. Storage is always canonical.",
+        "properties": {
+          "distance": {
+            "description": "`km` or `mi`.",
+            "type": "string"
+          },
+          "energy": {
+            "description": "`kcal` or `kJ`.",
+            "type": "string"
+          },
+          "glucose": {
+            "description": "`mg/dL` or `mmol/L`.",
+            "type": "string"
+          },
+          "length": {
+            "description": "`cm` or `in`.",
+            "type": "string"
+          },
+          "temperature": {
+            "description": "`C` or `F`.",
+            "type": "string"
+          },
+          "weight": {
+            "description": "`kg` or `lb`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "glucose",
+          "weight",
+          "distance",
+          "energy",
+          "temperature",
+          "length"
+        ],
+        "type": "object"
+      },
+      "NutritionTargets": {
+        "description": "Daily nutrition targets. `None` is \"no target\".",
+        "properties": {
+          "carbsG": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "carbsPerMealG": {
+            "default": null,
+            "description": "Per-meal carbohydrate limit, for diabetes.",
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "fatG": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "fiberG": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "kcal": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "proteinG": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sodiumMg": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "doseReminders": {
+        "default": true,
+        "description": "Remind at a dose's time; off silences every medication.",
+        "type": "boolean"
+      },
+      "glucoseHigh": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "glucoseLow": {
+        "description": "Glucose alert thresholds the person set, canonical mg/dL. Notices\nafter the fact, never alarms.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "goals": {
+        "$ref": "#/$defs/ActivityGoals",
+        "default": {
+          "exerciseMin": 30.0,
+          "moveKcal": 500.0,
+          "sleepHours": 8.0,
+          "standHours": 12.0,
+          "steps": 8000.0
+        }
+      },
+      "nutrition": {
+        "$ref": "#/$defs/NutritionTargets",
+        "default": {
+          "carbsG": null,
+          "carbsPerMealG": null,
+          "fatG": null,
+          "fiberG": null,
+          "kcal": null,
+          "proteinG": null,
+          "sodiumMg": null
+        }
+      },
+      "priority": {
+        "default": [],
+        "description": "Source (device or app) names, most trusted first. A cumulative\nmetric's quarter hour counts only the first of these that reported\nin it; names not listed come after, in [`chunk::default_rank`]'s\norder. Empty means that order for everything.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "priorityByMetric": {
+        "additionalProperties": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "default": {},
+        "description": "Per-metric overrides of `priority`.",
+        "type": "object"
+      },
+      "staleHours": {
+        "default": 24,
+        "description": "Warn when no push has arrived from a Health Auto Export source for\nthis many hours. 0 never warns.",
+        "format": "uint32",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "units": {
+        "$ref": "#/$defs/HealthUnits",
+        "default": {
+          "distance": "km",
+          "energy": "kcal",
+          "glucose": "mg/dL",
+          "length": "cm",
+          "temperature": "C",
+          "weight": "kg"
+        }
+      }
+    },
+    "title": "HealthSettings",
+    "type": "object"
+  },
+  "HealthSource": {
+    "$defs": {
+      "AutomationSeen": {
+        "properties": {
+          "aggregation": {
+            "default": "",
+            "description": "`automation-aggregation` as sent.",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastAt": {
+            "default": null,
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lastCount": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "name": {
+            "default": "",
+            "type": "string"
+          },
+          "period": {
+            "default": "",
+            "description": "`automation-period` as sent (\"Since Last Sync\", \"Previous 7 Days\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "Connector": {
+        "description": "What kind of connector a [`HealthSource`] is.",
+        "oneOf": [
+          {
+            "const": "appleExport",
+            "description": "Apple Health's `export.zip`, imported from a file.",
+            "type": "string"
+          },
+          {
+            "const": "healthAutoExport",
+            "description": "The Health Auto Export iOS app's REST API automations, pushed to\n`/v1/health/hae/<source id>` over web access.",
+            "type": "string"
+          },
+          {
+            "const": "manual",
+            "description": "What a person types in here.",
+            "type": "string"
+          }
+        ]
+      },
+      "SourceStatus": {
+        "properties": {
+          "automations": {
+            "default": [],
+            "description": "Health Auto Export automations heard from, by `automation-id`.",
+            "items": {
+              "$ref": "#/$defs/AutomationSeen"
+            },
+            "type": "array"
+          },
+          "devices": {
+            "default": [],
+            "description": "Device and app names this source has brought, for the priority list.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "lastError": {
+            "default": "",
+            "type": "string"
+          },
+          "lastReceivedAt": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "newestSampleAt": {
+            "description": "The newest sample time anything from this source carried.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "samplesTotal": {
+            "default": 0,
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "description": "One connection health data arrives through. What a person chose (name,\npaused) and what arrival learned (`status`) live side by side; both are\nwritten inside the vault's exclusive write, so neither overwrites the\nother.",
+    "properties": {
+      "connector": {
+        "$ref": "#/$defs/Connector"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "paused": {
+        "default": false,
+        "description": "Pushes to a paused source are refused with `paused`.",
+        "type": "boolean"
+      },
+      "status": {
+        "$ref": "#/$defs/SourceStatus",
+        "default": {
+          "automations": [],
+          "devices": [],
+          "lastError": "",
+          "samplesTotal": 0
+        }
+      },
+      "tokenId": {
+        "default": "",
+        "description": "The registry id of the token minted for this source's phone push\n(`health_push_setup`), empty when none. A push is accepted only\nfrom that token, so one phone's token cannot write into another\nsource. Written only by `Vault::set_health_source_token`.",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "connector",
+      "name",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "HealthSource",
     "type": "object"
   },
   "Item": {
@@ -3398,6 +5151,74 @@
         },
         "type": "object"
       },
+      "Metric": {
+        "oneOf": [
+          {
+            "enum": [
+              "steps",
+              "walking_running_distance",
+              "cycling_distance",
+              "swimming_distance",
+              "active_energy",
+              "basal_energy",
+              "exercise_time",
+              "stand_time",
+              "flights_climbed",
+              "time_in_daylight",
+              "heart_rate",
+              "resting_heart_rate",
+              "walking_heart_rate",
+              "heart_rate_recovery",
+              "vo2_max",
+              "respiratory_rate",
+              "oxygen_saturation",
+              "weight",
+              "body_fat",
+              "lean_body_mass",
+              "bmi",
+              "height",
+              "waist_circumference",
+              "body_temperature",
+              "blood_pressure_systolic",
+              "blood_pressure_diastolic",
+              "blood_glucose",
+              "insulin_basal",
+              "insulin_bolus",
+              "dietary_energy",
+              "dietary_carbs",
+              "dietary_protein",
+              "dietary_fat",
+              "dietary_fiber",
+              "dietary_sugar",
+              "dietary_sodium",
+              "dietary_caffeine",
+              "water",
+              "mindful_minutes"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "stand_hour",
+            "description": "One sample per hour stood in (value 1), Apple's stand ring.",
+            "type": "string"
+          },
+          {
+            "const": "heart_rate_variability",
+            "description": "SDNN, milliseconds -- what Apple Watch measures.",
+            "type": "string"
+          },
+          {
+            "const": "wrist_temperature",
+            "description": "The wrist's temperature while asleep, °C, as Apple Watch records it.",
+            "type": "string"
+          },
+          {
+            "const": "sleep_stage",
+            "description": "A category metric: each sample is one stretch of one\n[`SleepStage`](super::SleepStage), its value the stage's\n[`code`](super::SleepStage::code).",
+            "type": "string"
+          }
+        ]
+      },
       "Period": {
         "description": "The calendar span a [`Target`] is counted over.\n\nCalendar-aligned rather than rolling: \"this week\" starts on the week's\nfirst day and \"this year\" on the first of January, because that is how\npeople plan, and a rolling seven days never says when it starts over.\nWhich day a week starts on is a setting of the interface, so anything\nhere that needs it takes it as a parameter.",
         "enum": [
@@ -3443,6 +5264,119 @@
             "required": [
               "type",
               "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Stat": {
+        "description": "How a series query adds samples up.",
+        "oneOf": [
+          {
+            "description": "The metric's own default ([`metric::MetricInfo::stat`]).",
+            "properties": {
+              "type": {
+                "const": "auto",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "sum",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "mean",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "min",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "max",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "last",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "count",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Share of covered time (or of readings, for a series without\ndurations) inside `low..=high`, 0..=1. Whole canonical units, so the\nenum stays `Eq` for [`crate::tracker::TrackerSource`].",
+            "properties": {
+              "high": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "low": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "type": {
+                "const": "inRange",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "low",
+              "high"
             ],
             "type": "object"
           }
@@ -3695,6 +5629,29 @@
             },
             "required": [
               "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One value a day from the Health app: a metric's day under `stat` --\nsteps summed, resting heart rate averaged, the share of glucose in\nrange -- in the metric's canonical unit, counted in this machine's\ntime zone. \"8,000 steps a day\" and \"time in range above 70%\" are\ntargets on one of these.",
+            "properties": {
+              "metric": {
+                "$ref": "#/$defs/Metric"
+              },
+              "stat": {
+                "$ref": "#/$defs/Stat",
+                "default": {
+                  "type": "auto"
+                }
+              },
+              "type": {
+                "const": "health",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "metric"
             ],
             "type": "object"
           }
@@ -4102,6 +6059,143 @@
       "updatedAt"
     ],
     "title": "Kind",
+    "type": "object"
+  },
+  "LabResult": {
+    "$defs": {
+      "LabFlag": {
+        "enum": [
+          "none",
+          "normal",
+          "low",
+          "high",
+          "abnormal",
+          "critical"
+        ],
+        "type": "string"
+      },
+      "LabOrigin": {
+        "oneOf": [
+          {
+            "enum": [
+              "manual",
+              "fhir"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "extracted",
+            "description": "Read out of a document by the model, and accepted.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "code": {
+        "default": "",
+        "description": "LOINC, if known. What trends group by; results without one group by\n`name`.",
+        "type": "string"
+      },
+      "collected": {
+        "format": "date",
+        "type": "string"
+      },
+      "collectedAt": {
+        "format": "date-time",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "documentId": {
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "flag": {
+        "$ref": "#/$defs/LabFlag",
+        "default": "none"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "lab": {
+        "default": "",
+        "type": "string"
+      },
+      "name": {
+        "description": "As printed: \"TSH\", \"Hemoglobin A1c\".",
+        "type": "string"
+      },
+      "note": {
+        "default": "",
+        "type": "string"
+      },
+      "origin": {
+        "$ref": "#/$defs/LabOrigin",
+        "default": "manual"
+      },
+      "panel": {
+        "default": "",
+        "description": "\"Lipid panel\", \"CMP\".",
+        "type": "string"
+      },
+      "refHigh": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "refLow": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "refText": {
+        "default": "",
+        "type": "string"
+      },
+      "text": {
+        "default": "",
+        "description": "A result that is not a number (\"Negative\", \"See note\").",
+        "type": "string"
+      },
+      "unit": {
+        "default": "",
+        "type": "string"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "value": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "collected",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "LabResult",
     "type": "object"
   },
   "LogEntry": {
@@ -4784,6 +6878,613 @@
       "highestModseq"
     ],
     "title": "Mailbox",
+    "type": "object"
+  },
+  "Meal": {
+    "$defs": {
+      "MealItem": {
+        "properties": {
+          "amount": {
+            "description": "How many of `unit`.",
+            "format": "double",
+            "type": "number"
+          },
+          "estimated": {
+            "default": false,
+            "description": "A model's guess from a photo, not weighed or looked up.",
+            "type": "boolean"
+          },
+          "foodId": {
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grams": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "nutrients": {
+            "$ref": "#/$defs/Nutrients",
+            "description": "For this amount, worked out when it was logged, so a later edit of\nthe food does not rewrite what was eaten."
+          },
+          "unit": {
+            "description": "A serving's name, or `g` / `ml`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "amount",
+          "unit",
+          "nutrients"
+        ],
+        "type": "object"
+      },
+      "MealSlot": {
+        "enum": [
+          "breakfast",
+          "lunch",
+          "dinner",
+          "snack"
+        ],
+        "type": "string"
+      },
+      "Nutrients": {
+        "description": "Nutrients for some amount of food. Energy, protein, carbohydrate and fat\nalways; the rest when the source knew.",
+        "properties": {
+          "carbsG": {
+            "format": "double",
+            "type": "number"
+          },
+          "extra": {
+            "additionalProperties": {
+              "format": "double",
+              "type": "number"
+            },
+            "default": {},
+            "description": "Anything else, by name (\"calcium_mg\", \"caffeine_mg\").",
+            "type": "object"
+          },
+          "fatG": {
+            "format": "double",
+            "type": "number"
+          },
+          "fiberG": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "kcal": {
+            "format": "double",
+            "type": "number"
+          },
+          "proteinG": {
+            "format": "double",
+            "type": "number"
+          },
+          "satFatG": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sodiumMg": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "sugarG": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kcal",
+          "proteinG",
+          "carbsG",
+          "fatG"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "at": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "items": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/MealItem"
+        },
+        "type": "array"
+      },
+      "name": {
+        "default": "",
+        "type": "string"
+      },
+      "note": {
+        "default": "",
+        "type": "string"
+      },
+      "offsetMin": {
+        "default": 0,
+        "format": "int16",
+        "maximum": 32767,
+        "minimum": -32768,
+        "type": "integer"
+      },
+      "photo": {
+        "description": "A photograph of the plate: a sealed file in the files catalog, like a\ndocument's pages (see [`DocFile`]).",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "slot": {
+        "$ref": "#/$defs/MealSlot",
+        "default": "snack"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "at",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Meal",
+    "type": "object"
+  },
+  "Medication": {
+    "$defs": {
+      "Code": {
+        "description": "A coded identity from a terminology: RxNorm for a medication, LOINC for\na lab, ICD-10 or SNOMED CT for a condition. Optional everywhere.",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "display": {
+            "default": "",
+            "type": "string"
+          },
+          "system": {
+            "description": "`rxnorm`, `loinc`, `icd10`, `snomed`, or a FHIR system URL.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "code"
+        ],
+        "type": "object"
+      },
+      "DoseChange": {
+        "properties": {
+          "dose": {
+            "format": "double",
+            "type": "number"
+          },
+          "note": {
+            "default": "",
+            "type": "string"
+          },
+          "on": {
+            "format": "date",
+            "type": "string"
+          },
+          "strength": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "on",
+          "dose"
+        ],
+        "type": "object"
+      },
+      "MedKind": {
+        "enum": [
+          "prescription",
+          "overTheCounter",
+          "supplement"
+        ],
+        "type": "string"
+      },
+      "MedRule": {
+        "description": "A timing rule a template suggests and the person confirms.",
+        "oneOf": [
+          {
+            "description": "Nothing to eat for `minutes` after the dose (levothyroxine: 30-60).",
+            "properties": {
+              "minutes": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "emptyStomach",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "minutes"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Take with a meal: a meal within `minutes` either side.",
+            "properties": {
+              "minutes": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "withFood",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "minutes"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Keep at least `hours` from any medication or supplement carrying one\nof `tags` (\"calcium\", \"iron\") -- either order.",
+            "properties": {
+              "hours": {
+                "format": "double",
+                "type": "number"
+              },
+              "tags": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "apartFrom",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "tags",
+              "hours"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MedSchedule": {
+        "description": "When a medication is taken.",
+        "oneOf": [
+          {
+            "description": "Every day at these local times.",
+            "properties": {
+              "times": {
+                "items": {
+                  "format": "partial-time",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "daily",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "times"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "On these weekdays (1 = Monday .. 7 = Sunday) at these times.",
+            "properties": {
+              "days": {
+                "items": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "times": {
+                "items": {
+                  "format": "partial-time",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "weekly",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "days",
+              "times"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Every `n` days counted from `from`, at these times.",
+            "properties": {
+              "from": {
+                "format": "date",
+                "type": "string"
+              },
+              "n": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "times": {
+                "items": {
+                  "format": "partial-time",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "everyNDays",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "n",
+              "from",
+              "times"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Only when needed; nothing is ever due.",
+            "properties": {
+              "type": {
+                "const": "asNeeded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MedStatus": {
+        "enum": [
+          "active",
+          "paused",
+          "stopped"
+        ],
+        "type": "string"
+      },
+      "Supply": {
+        "properties": {
+          "lastRefill": {
+            "format": "date",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refillDays": {
+            "default": 7,
+            "description": "Remind to refill when this many days are left.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "remaining": {
+            "description": "Doses (in `dose_unit`) left.",
+            "format": "double",
+            "type": "number"
+          }
+        },
+        "required": [
+          "remaining"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "codes": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/Code"
+        },
+        "type": "array"
+      },
+      "conditionIds": {
+        "default": [],
+        "items": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "dose": {
+        "default": 1.0,
+        "description": "How much one take is, in `dose_unit`.",
+        "format": "double",
+        "type": "number"
+      },
+      "doseUnit": {
+        "default": "",
+        "type": "string"
+      },
+      "form": {
+        "default": "",
+        "description": "\"tablet\", \"capsule\", \"injection\", \"drops\".",
+        "type": "string"
+      },
+      "history": {
+        "default": [],
+        "description": "Every change of dose or strength, oldest first -- what a lab recheck\nafter a dose change is counted from.",
+        "items": {
+          "$ref": "#/$defs/DoseChange"
+        },
+        "type": "array"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "kind": {
+        "$ref": "#/$defs/MedKind",
+        "default": "prescription"
+      },
+      "name": {
+        "type": "string"
+      },
+      "notes": {
+        "default": "",
+        "type": "string"
+      },
+      "pharmacy": {
+        "default": "",
+        "type": "string"
+      },
+      "prescriber": {
+        "default": "",
+        "type": "string"
+      },
+      "remind": {
+        "default": true,
+        "description": "Remind at each due time (subject to [`HealthSettings::dose_reminders`]).",
+        "type": "boolean"
+      },
+      "rules": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/MedRule"
+        },
+        "type": "array"
+      },
+      "schedule": {
+        "$ref": "#/$defs/MedSchedule",
+        "default": {
+          "times": [
+            "08:00:00"
+          ],
+          "type": "daily"
+        }
+      },
+      "sortOrder": {
+        "default": 0,
+        "format": "int64",
+        "type": "integer"
+      },
+      "sourceNames": {
+        "default": [],
+        "description": "Names a source's dose events used for this medication, so the next\none matches without asking.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "started": {
+        "format": "date",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "$ref": "#/$defs/MedStatus",
+        "default": "active"
+      },
+      "stopReason": {
+        "default": "",
+        "type": "string"
+      },
+      "stopped": {
+        "format": "date",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "strength": {
+        "default": "",
+        "description": "\"50 mcg\", \"500 mg\".",
+        "type": "string"
+      },
+      "supply": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Supply"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "tags": {
+        "default": [],
+        "description": "What other medications' [`MedRule::ApartFrom`] match against:\n\"calcium\", \"iron\", \"thyroid\", \"insulin\".",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "name",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Medication",
     "type": "object"
   },
   "Memory": {
@@ -10505,6 +13206,74 @@
   },
   "Tracker": {
     "$defs": {
+      "Metric": {
+        "oneOf": [
+          {
+            "enum": [
+              "steps",
+              "walking_running_distance",
+              "cycling_distance",
+              "swimming_distance",
+              "active_energy",
+              "basal_energy",
+              "exercise_time",
+              "stand_time",
+              "flights_climbed",
+              "time_in_daylight",
+              "heart_rate",
+              "resting_heart_rate",
+              "walking_heart_rate",
+              "heart_rate_recovery",
+              "vo2_max",
+              "respiratory_rate",
+              "oxygen_saturation",
+              "weight",
+              "body_fat",
+              "lean_body_mass",
+              "bmi",
+              "height",
+              "waist_circumference",
+              "body_temperature",
+              "blood_pressure_systolic",
+              "blood_pressure_diastolic",
+              "blood_glucose",
+              "insulin_basal",
+              "insulin_bolus",
+              "dietary_energy",
+              "dietary_carbs",
+              "dietary_protein",
+              "dietary_fat",
+              "dietary_fiber",
+              "dietary_sugar",
+              "dietary_sodium",
+              "dietary_caffeine",
+              "water",
+              "mindful_minutes"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "stand_hour",
+            "description": "One sample per hour stood in (value 1), Apple's stand ring.",
+            "type": "string"
+          },
+          {
+            "const": "heart_rate_variability",
+            "description": "SDNN, milliseconds -- what Apple Watch measures.",
+            "type": "string"
+          },
+          {
+            "const": "wrist_temperature",
+            "description": "The wrist's temperature while asleep, °C, as Apple Watch records it.",
+            "type": "string"
+          },
+          {
+            "const": "sleep_stage",
+            "description": "A category metric: each sample is one stretch of one\n[`SleepStage`](super::SleepStage), its value the stage's\n[`code`](super::SleepStage::code).",
+            "type": "string"
+          }
+        ]
+      },
       "Period": {
         "description": "The calendar span a [`Target`] is counted over.\n\nCalendar-aligned rather than rolling: \"this week\" starts on the week's\nfirst day and \"this year\" on the first of January, because that is how\npeople plan, and a rolling seven days never says when it starts over.\nWhich day a week starts on is a setting of the interface, so anything\nhere that needs it takes it as a parameter.",
         "enum": [
@@ -10550,6 +13319,119 @@
             "required": [
               "type",
               "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "Stat": {
+        "description": "How a series query adds samples up.",
+        "oneOf": [
+          {
+            "description": "The metric's own default ([`metric::MetricInfo::stat`]).",
+            "properties": {
+              "type": {
+                "const": "auto",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "sum",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "mean",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "min",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "max",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "last",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "count",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Share of covered time (or of readings, for a series without\ndurations) inside `low..=high`, 0..=1. Whole canonical units, so the\nenum stays `Eq` for [`crate::tracker::TrackerSource`].",
+            "properties": {
+              "high": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "low": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "type": {
+                "const": "inRange",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "low",
+              "high"
             ],
             "type": "object"
           }
@@ -10695,6 +13577,29 @@
             },
             "required": [
               "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One value a day from the Health app: a metric's day under `stat` --\nsteps summed, resting heart rate averaged, the share of glucose in\nrange -- in the metric's canonical unit, counted in this machine's\ntime zone. \"8,000 steps a day\" and \"time in range above 70%\" are\ntargets on one of these.",
+            "properties": {
+              "metric": {
+                "$ref": "#/$defs/Metric"
+              },
+              "stat": {
+                "$ref": "#/$defs/Stat",
+                "default": {
+                  "type": "auto"
+                }
+              },
+              "type": {
+                "const": "health",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "metric"
             ],
             "type": "object"
           }
@@ -11265,6 +14170,186 @@
       "updatedAt"
     ],
     "title": "Voiceprint",
+    "type": "object"
+  },
+  "Workout": {
+    "$defs": {
+      "Activity": {
+        "description": "The kinds of workout told apart. Apple has some eighty; the rest are\n[`Activity::Other`] with the source's name kept on the workout.",
+        "enum": [
+          "walking",
+          "running",
+          "cycling",
+          "swimming",
+          "hiking",
+          "rowing",
+          "elliptical",
+          "stair_climbing",
+          "strength_training",
+          "functional_training",
+          "core_training",
+          "hiit",
+          "yoga",
+          "pilates",
+          "dance",
+          "martial_arts",
+          "tennis",
+          "soccer",
+          "basketball",
+          "golf",
+          "cooldown",
+          "mindfulness",
+          "other"
+        ],
+        "type": "string"
+      },
+      "BlobId": {
+        "description": "Content address of an attachment payload.\n\nBlobs are content-addressed with BLAKE3 so that the same photo dropped into\ntwo entries is stored once, and so that a corrupted blob is detectable.\n\nIn an encrypted vault the address is BLAKE3 *keyed* by a subkey of the\nvault's own key -- see [`BlobId::keyed`] and `blobstore::address` -- not\nthe bare hash. The address is the one thing about a blob that is never\nsealed: it is a file's name on disk and a column on a Postgres server.\nA bare hash of the plaintext would let anybody holding a copy check it\nagainst files they already have -- a site's favicon, a book's cover, a\nnewsletter's picture -- and so learn which sites are followed, which books\nare on a shelf and which stories were opened, which is exactly what the\nencryption is there to keep. Keyed, the same bytes still get the same\naddress within one vault, and a different one in every other.",
+        "type": "string"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "activeEnergyKcal": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "activity": {
+        "$ref": "#/$defs/Activity"
+      },
+      "avgHr": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "createdAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "distanceM": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "effort": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "elevationUpM": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "end": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "externalId": {
+        "default": "",
+        "description": "The source's own id. Sealed; blanked in what commands answer.",
+        "type": "string"
+      },
+      "hidden": {
+        "default": false,
+        "description": "Deleted by the person, kept so the key still matches when the phone\nsends it again. Left out of every list and report.",
+        "type": "boolean"
+      },
+      "id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "indoor": {
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "key": {
+        "default": "",
+        "description": "Keyed hash of activity, start and end (see [`HEALTH_KEY_LABEL`]),\nset by the vault. The clear dedupe column.",
+        "type": "string"
+      },
+      "maxHr": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "name": {
+        "default": "",
+        "type": "string"
+      },
+      "note": {
+        "default": "",
+        "type": "string"
+      },
+      "offsetMin": {
+        "default": 0,
+        "format": "int16",
+        "maximum": 32767,
+        "minimum": -32768,
+        "type": "integer"
+      },
+      "route": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/BlobId"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Sealed blob of the route's [`RoutePoint`]s as JSON, if it has one."
+      },
+      "source": {
+        "default": "",
+        "type": "string"
+      },
+      "sourceId": {
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "start": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "totalEnergyKcal": {
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "updatedAt": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "activity",
+      "start",
+      "end",
+      "createdAt",
+      "updatedAt"
+    ],
+    "title": "Workout",
     "type": "object"
   },
   "WritingAssist": {

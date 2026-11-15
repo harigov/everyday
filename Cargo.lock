@@ -4270,6 +4270,7 @@ dependencies = [
  "fs4 1.1.0",
  "jiff",
  "psl",
+ "quick-xml 0.38.4",
  "rand 0.9.5",
  "schemars 1.2.2",
  "serde",
@@ -4279,6 +4280,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

@@ -8,7 +8,16 @@
 
 import { formatMinutes } from './format'
 import type { TargetProgress } from './habits'
-import type { Journal, Period, Reading, Target, Tracker } from './types'
+import type {
+  Journal,
+  Metric,
+  Period,
+  Reading,
+  Stat,
+  Target,
+  Tracker,
+  TrackerSource,
+} from './types'
 import { aggregateOf } from './types'
 
 /** Rounded the way a person writes a number: 45, not 45.0000001. */
@@ -88,6 +97,117 @@ export function durationMinutes(
 /** Is this a tracker somebody records readings of, rather than a derived one? */
 export function isManual(tracker: Pick<Tracker, 'source'>): boolean {
   return !tracker.source || tracker.source.type === 'manual'
+}
+
+/**
+ * One thing from the Health app a goal can be measured by: a metric's day
+ * counted one way.
+ *
+ * A short list rather than the whole catalogue, because a goal is aimed at
+ * what a person already thinks of as a number to hit. Sleep is not here:
+ * it is a night, not a day's value of a metric. `unit` is the metric's own
+ * canonical one, as `Metric::info` in the core says; the core sets a health
+ * tracker's unit from the metric when it is saved, so this only says what
+ * the editor reads before then.
+ */
+export interface HealthMeasure {
+  /** What follows `health:` in the picker's value. */
+  id: string
+  /** What the picker and the tracker it makes call it. */
+  name: string
+  metric: Metric
+  stat: Stat
+  unit: string
+  /** A name from `tracker-icons.ts`. */
+  icon: string
+}
+
+/** What a goal can be measured by, in the order the picker lists them. */
+export const HEALTH_MEASURES: readonly HealthMeasure[] = [
+  {
+    id: 'steps',
+    name: 'Steps',
+    metric: 'steps',
+    stat: { type: 'sum' },
+    unit: 'count',
+    icon: 'steps',
+  },
+  {
+    id: 'active_energy',
+    name: 'Active energy',
+    metric: 'active_energy',
+    stat: { type: 'sum' },
+    unit: 'kcal',
+    icon: 'flame',
+  },
+  {
+    id: 'exercise_time',
+    name: 'Exercise minutes',
+    metric: 'exercise_time',
+    stat: { type: 'sum' },
+    unit: 'min',
+    icon: 'run',
+  },
+  {
+    id: 'resting_heart_rate',
+    name: 'Resting heart rate',
+    metric: 'resting_heart_rate',
+    stat: { type: 'mean' },
+    unit: 'count/min',
+    icon: 'heart',
+  },
+  {
+    id: 'weight',
+    name: 'Weight',
+    metric: 'weight',
+    stat: { type: 'last' },
+    unit: 'kg',
+    icon: 'scales',
+  },
+  {
+    id: 'glucose_in_range',
+    name: 'Glucose time in range',
+    metric: 'blood_glucose',
+    // The consensus range for glucose, in mg/dL.
+    stat: { type: 'inRange', low: 70, high: 180 },
+    unit: '%',
+    icon: 'target',
+  },
+  {
+    id: 'blood_glucose',
+    name: 'Blood glucose (average)',
+    metric: 'blood_glucose',
+    stat: { type: 'mean' },
+    unit: 'mg/dL',
+    icon: 'pulse',
+  },
+]
+
+/** The measure a picker value (`health:steps`) names, if it names one. */
+export function healthMeasure(value: string): HealthMeasure | undefined {
+  if (!value.startsWith('health:')) return undefined
+  const id = value.slice('health:'.length)
+  return HEALTH_MEASURES.find((m) => m.id === id)
+}
+
+/** The source a tracker measured by `measure` carries. */
+export function healthSource(measure: HealthMeasure): Extract<TrackerSource, { type: 'health' }> {
+  return { type: 'health', metric: measure.metric, stat: { ...measure.stat } }
+}
+
+/**
+ * Is this tracker one health reading a day that does not add up across days?
+ *
+ * An average, a last reading, a lowest or highest, or a share in range is a
+ * value of its day; the days of a week are not a sum of them -- seven
+ * resting heart rates are not a heart rate -- and a day with no reading is
+ * not a zero. So a target on one is only ever counted "a day", and a day
+ * with nothing recorded is unrecorded rather than short or within a limit.
+ */
+export function isDayReading(tracker: Pick<Tracker, 'source'>): boolean {
+  const source = tracker.source
+  if (source?.type !== 'health') return false
+  return ['mean', 'min', 'max', 'last', 'inRange'].includes(source.stat.type)
 }
 
 /**

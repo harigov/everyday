@@ -156,6 +156,10 @@ pub async fn tick(service: &Arc<Service>) {
     // `keepintouch`.
     crate::keepintouch::sweep(service).await;
 
+    // Doses coming due, and a phone that has gone quiet. A vault with no
+    // health data answers at once. See `health::reminders`.
+    crate::health::reminders::sweep(service, &vault, service.now()).await;
+
     // Proposals: the expiry sweep, beside the snooze release just above and
     // independent of whether this vault has routines at all, on the same
     // reasoning -- a vault without proposals answers `false` immediately

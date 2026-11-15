@@ -90,6 +90,7 @@ pub mod dream;
 pub mod error;
 pub mod files;
 pub mod fsutil;
+pub mod health;
 pub mod ics;
 pub mod id;
 pub mod insights;
@@ -152,12 +153,14 @@ pub use files::{
     ImportOptions, MediaInfo,
 };
 pub use id::{
-    AccountId, AlbumId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId, ChatLinkId,
-    ConversationId, DraftId, EntryId, EventId, FileId, GoalId, ItemId, JobId, JournalId, KindId,
-    LogId, MailMessageId, MailboxId, MemoryId, MessageId, MoneyCategoryId, MoneyRuleId,
-    NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId, RoleId,
-    RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId, ScreenSpanId, SkillId, StoryId, TaskId,
-    TemplateId, ThreadId, TrackerId, TranscriptId, TxnId, VoiceprintId, WritingId,
+    AccountId, AlbumId, AllergyId, BankAccountId, BankLinkId, BlobId, BlockId, CalendarId,
+    ChatLinkId, ConditionId, ConversationId, DoseId, DraftId, EntryId, EventId, FileId, FoodId,
+    GoalId, HealthDocumentId, HealthSourceId, ItemId, JobId, JournalId, KindId, LabResultId, LogId,
+    MailMessageId, MailboxId, MealId, MedicationId, MemoryId, MessageId, MoneyCategoryId,
+    MoneyRuleId, NewsSourceId, NoteId, OpId, PackId, ProjectId, ProposalId, ReadingId, RecordingId,
+    RoleId, RoutineId, RoutineRunId, ScreenAppId, ScreenCategoryId, ScreenSpanId, SkillId, StoryId,
+    TaskId, TemplateId, ThreadId, TrackerId, TranscriptId, TxnId, VoiceprintId, WorkoutId,
+    WritingId,
 };
 pub use job::{Job, JobKind, JobOutput, JobStatus};
 pub use library::{
@@ -209,6 +212,7 @@ pub use store::accounts::AccountStore;
 pub use store::agent::{AgentStore, ConversationQuery};
 pub use store::calendars::{CalendarStore, EventQuery};
 pub use store::files::FilesStore;
+pub use store::health::HealthStore;
 pub use store::jobs::{JobQuery, JobStore};
 pub use store::library::{ItemQuery, ItemSort, LibraryStore, LogQuery};
 pub use store::mail::{IngestMessage, MailStore, ThreadFilter, ThreadPage};

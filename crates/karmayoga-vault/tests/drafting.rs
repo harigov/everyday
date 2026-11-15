@@ -326,6 +326,14 @@ const REFUSED_WHILE_DRAFTING: &[&str] = &[
     "save_file",
     "organize_files",
     "trash_files",
+    // What somebody ate, took and measured is a record of what happened to
+    // them, told by them. A dream was not there: a dose it logged would stand
+    // in the adherence count as taken, and a meal as eaten. None is one of
+    // the kinds a dream may propose.
+    "log_meal",
+    "log_dose",
+    "log_health_reading",
+    "add_lab_result",
 ];
 
 /// The two tools that write a real `Draft` while drafting and gain a linked

@@ -5,6 +5,31 @@
         {
           "name": "id",
           "required": true,
+          "type": "HealthDocumentId"
+        },
+        {
+          "name": "labs",
+          "required": true,
+          "type": "LabResult[]"
+        }
+      ],
+      "changes": {
+        "kind": "labResult",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "accept_document_labs",
+      "orScope": null,
+      "returns": "LabResult[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "ProposalId"
         },
         {
@@ -49,6 +74,61 @@
       "orScope": null,
       "returns": "Recording | null",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "title",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "required": true,
+          "type": "DocKind"
+        },
+        {
+          "name": "date",
+          "required": false,
+          "type": "string | null"
+        },
+        {
+          "name": "files",
+          "required": true,
+          "type": "FileId[]"
+        }
+      ],
+      "changes": {
+        "kind": "healthDocument",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "add_health_document",
+      "orScope": null,
+      "returns": "HealthDocument",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "reading",
+          "required": true,
+          "type": "ManualReading"
+        }
+      ],
+      "changes": {
+        "kind": "healthSample",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "add_health_reading",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -289,6 +369,42 @@
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "apple_import_status",
+      "orScope": null,
+      "returns": "ImportStatus",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "template",
+          "required": true,
+          "type": "TemplateKey"
+        },
+        {
+          "name": "choice",
+          "required": true,
+          "type": "TemplateChoice"
+        }
+      ],
+      "changes": {
+        "kind": "condition",
+        "op": "created"
+      },
+      "effect": "write",
+      "name": "apply_condition_template",
+      "orScope": null,
+      "returns": "Condition",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -611,6 +727,20 @@
     },
     {
       "args": [],
+      "changes": {
+        "kind": "healthSample",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "cancel_apple_import",
+      "orScope": null,
+      "returns": "boolean",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
       "changes": null,
       "effect": "write",
       "name": "cancel_backup",
@@ -867,6 +997,20 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "destructive",
+      "name": "clear_health_keys",
+      "orScope": null,
+      "returns": "void",
+      "scope": "all",
+      "sensitive": true,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "tier",
@@ -908,6 +1052,44 @@
       "orScope": null,
       "returns": "number",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "ConditionId"
+        },
+        {
+          "name": "date",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "condition_report",
+      "orScope": null,
+      "returns": "ConditionReport",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "condition_templates",
+      "orScope": null,
+      "returns": "TemplateInfo[]",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -1130,6 +1312,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "AllergyId"
+        }
+      ],
+      "changes": {
+        "kind": "allergy",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_allergy",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "BankAccountId"
         }
       ],
@@ -1240,6 +1442,31 @@
         {
           "name": "id",
           "required": true,
+          "type": "ConditionId"
+        },
+        {
+          "name": "removeTrackers",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "condition",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_condition",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "ConversationId"
         }
       ],
@@ -1272,6 +1499,26 @@
       "orScope": null,
       "returns": "void",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "DoseId"
+        }
+      ],
+      "changes": {
+        "kind": "dose",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_dose",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -1343,6 +1590,26 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "FoodId"
+        }
+      ],
+      "changes": {
+        "kind": "food",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_food",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "threads",
           "required": true,
           "type": "ThreadId[]"
@@ -1382,6 +1649,86 @@
       "orScope": null,
       "returns": "void",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "HealthDocumentId"
+        },
+        {
+          "name": "deleteLabs",
+          "required": true,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "healthDocument",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_health_document",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "metric",
+          "required": true,
+          "type": "Metric"
+        },
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "healthSample",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_health_samples",
+      "orScope": null,
+      "returns": "number",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "HealthSourceId"
+        }
+      ],
+      "changes": {
+        "kind": "healthSource",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_health_source",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -1470,6 +1817,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "LabResultId"
+        }
+      ],
+      "changes": {
+        "kind": "labResult",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_lab",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "LogId"
         }
       ],
@@ -1482,6 +1849,46 @@
       "orScope": null,
       "returns": "void",
       "scope": "library",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "MealId"
+        }
+      ],
+      "changes": {
+        "kind": "meal",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_meal",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "MedicationId"
+        }
+      ],
+      "changes": {
+        "kind": "medication",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_medication",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -1940,6 +2347,26 @@
         {
           "name": "id",
           "required": true,
+          "type": "WorkoutId"
+        }
+      ],
+      "changes": {
+        "kind": "workout",
+        "op": "deleted"
+      },
+      "effect": "destructive",
+      "name": "delete_workout",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "DraftId"
         }
       ],
@@ -2021,6 +2448,28 @@
       "orScope": null,
       "returns": "void",
       "scope": "meetings",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "date",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "doses_due",
+      "orScope": null,
+      "returns": "DueDose[]",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -2210,6 +2659,23 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "photo",
+          "required": true,
+          "type": "FileId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "estimate_meal_photo",
+      "orScope": null,
+      "returns": "MealItem[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",
@@ -2217,6 +2683,31 @@
       "orScope": null,
       "returns": "string",
       "scope": "news",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "HealthDocumentId"
+        },
+        {
+          "name": "text",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": {
+        "kind": "healthDocument",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "extract_health_document",
+      "orScope": null,
+      "returns": "HealthDocument",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -2482,6 +2973,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "HealthDocumentId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_health_document",
+      "orScope": null,
+      "returns": "HealthDocument",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "ItemId"
         }
       ],
@@ -2669,6 +3177,23 @@
         {
           "name": "id",
           "required": true,
+          "type": "WorkoutId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "get_workout",
+      "orScope": null,
+      "returns": "WorkoutDetail",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
           "type": "GoalId"
         }
       ],
@@ -2678,6 +3203,284 @@
       "orScope": null,
       "returns": "GoalActivity",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_activity",
+      "orScope": null,
+      "returns": "ActivityDay[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "health_catalog",
+      "orScope": null,
+      "returns": "MetricEntry[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "date",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_day_timeline",
+      "orScope": null,
+      "returns": "DayTimeline",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_glucose",
+      "orScope": null,
+      "returns": "GlucoseReport",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "health_keys",
+      "orScope": null,
+      "returns": "HealthKeysInfo",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "metrics",
+          "required": true,
+          "type": "Metric[]"
+        },
+        {
+          "name": "on",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_latest",
+      "orScope": null,
+      "returns": "Latest[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_nutrition",
+      "orScope": null,
+      "returns": "NutritionDay[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "metric",
+          "required": true,
+          "type": "Metric"
+        },
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_samples",
+      "orScope": null,
+      "returns": "SamplePoint[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "SeriesQuery"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_series",
+      "orScope": null,
+      "returns": "SeriesResult",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "health_settings",
+      "orScope": null,
+      "returns": "HealthSettings",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_sleep",
+      "orScope": null,
+      "returns": "SleepNight[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "date",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_today",
+      "orScope": null,
+      "returns": "HealthDay",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "conditionId",
+          "required": false,
+          "type": "ConditionId | null"
+        },
+        {
+          "name": "since",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "health_visit_brief",
+      "orScope": null,
+      "returns": "VisitBrief",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -2717,6 +3520,61 @@
       "orScope": null,
       "returns": "ImageResult[]",
       "scope": "web",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "sourceId",
+          "required": false,
+          "type": "HealthSourceId | null"
+        }
+      ],
+      "changes": {
+        "kind": "healthSample",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "import_apple_health",
+      "orScope": null,
+      "returns": "ImportStatus",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "file",
+          "required": true,
+          "type": "FileId"
+        },
+        {
+          "name": "sourceId",
+          "required": false,
+          "type": "HealthSourceId | null"
+        },
+        {
+          "name": "trashAfter",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "changes": {
+        "kind": "healthSample",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "import_apple_health_file",
+      "orScope": null,
+      "returns": "ImportStatus",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -2936,6 +3794,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "lab_trends",
+      "orScope": null,
+      "returns": "LabTrend[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "threads",
@@ -3031,6 +3900,17 @@
       "args": [],
       "changes": null,
       "effect": "read",
+      "name": "list_allergies",
+      "orScope": null,
+      "returns": "Allergy[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
       "name": "list_bank_accounts",
       "orScope": null,
       "returns": "BankAccount[]",
@@ -3089,6 +3969,17 @@
       "streams": false
     },
     {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_conditions",
+      "orScope": null,
+      "returns": "Condition[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [
         {
           "name": "limit",
@@ -3107,6 +3998,33 @@
       "orScope": null,
       "returns": "ConversationSummary[]",
       "scope": "agent",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "medicationId",
+          "required": false,
+          "type": "MedicationId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_doses",
+      "orScope": null,
+      "returns": "Dose[]",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -3200,6 +4118,23 @@
         {
           "name": "query",
           "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_foods",
+      "orScope": null,
+      "returns": "Food[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
           "type": "GoalQuery"
         }
       ],
@@ -3209,6 +4144,28 @@
       "orScope": null,
       "returns": "Goal[]",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_health_documents",
+      "orScope": null,
+      "returns": "HealthDocument[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_health_sources",
+      "orScope": null,
+      "returns": "HealthSource[]",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -3271,6 +4228,23 @@
     {
       "args": [
         {
+          "name": "key",
+          "required": false,
+          "type": "string | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_labs",
+      "orScope": null,
+      "returns": "LabResult[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "query",
           "required": true,
           "type": "LogQuery"
@@ -3299,6 +4273,39 @@
       "orScope": null,
       "returns": "Mailbox[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_meals",
+      "orScope": null,
+      "returns": "Meal[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "list_medications",
+      "orScope": null,
+      "returns": "Medication[]",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -3714,6 +4721,28 @@
     {
       "args": [
         {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "list_workouts",
+      "orScope": null,
+      "returns": "Workout[]",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "query",
           "required": false,
           "type": "WritingQuery"
@@ -3759,6 +4788,26 @@
     {
       "args": [
         {
+          "name": "dose",
+          "required": true,
+          "type": "Dose"
+        }
+      ],
+      "changes": {
+        "kind": "dose",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "log_dose",
+      "orScope": null,
+      "returns": "Dose",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "trackerId",
           "required": true,
           "type": "TrackerId"
@@ -3798,6 +4847,23 @@
       "orScope": null,
       "returns": "Reading",
       "scope": "trackers",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "code",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "lookup_barcode",
+      "orScope": null,
+      "returns": "FoodHit | null",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -4051,6 +5117,82 @@
       "orScope": null,
       "returns": "Op[]",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "MealId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "meal_response",
+      "orScope": null,
+      "returns": "MealResponse",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "medicationId",
+          "required": false,
+          "type": "MedicationId | null"
+        },
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "medication_adherence",
+      "orScope": null,
+      "returns": "Adherence",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "tz",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "medication_alerts",
+      "orScope": null,
+      "returns": "RuleAlert[]",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -5372,6 +6514,36 @@
     {
       "args": [
         {
+          "name": "sourceId",
+          "required": true,
+          "type": "HealthSourceId"
+        },
+        {
+          "name": "headers",
+          "required": true,
+          "type": "PushHeaders"
+        },
+        {
+          "name": "body",
+          "required": true,
+          "type": "unknown"
+        }
+      ],
+      "changes": {
+        "kind": "healthSample",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "record_health_push",
+      "orScope": null,
+      "returns": "HealthIngestReport",
+      "scope": "healthIngest",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "device",
           "required": true,
           "type": "string"
@@ -5934,6 +7106,26 @@
     {
       "args": [
         {
+          "name": "allergy",
+          "required": true,
+          "type": "Allergy"
+        }
+      ],
+      "changes": {
+        "kind": "allergy",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_allergy",
+      "orScope": null,
+      "returns": "Allergy",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "settings",
           "required": true,
           "type": "BackupSettings"
@@ -6084,6 +7276,26 @@
     {
       "args": [
         {
+          "name": "condition",
+          "required": true,
+          "type": "Condition"
+        }
+      ],
+      "changes": {
+        "kind": "condition",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_condition",
+      "orScope": null,
+      "returns": "Condition",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "draft",
           "required": true,
           "type": "Draft"
@@ -6169,6 +7381,26 @@
     {
       "args": [
         {
+          "name": "food",
+          "required": true,
+          "type": "Food"
+        }
+      ],
+      "changes": {
+        "kind": "food",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_food",
+      "orScope": null,
+      "returns": "Food",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "goal",
           "required": true,
           "type": "Goal"
@@ -6203,6 +7435,86 @@
       "orScope": null,
       "returns": "void",
       "scope": "purpose",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "document",
+          "required": true,
+          "type": "HealthDocument"
+        }
+      ],
+      "changes": {
+        "kind": "healthDocument",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_health_document",
+      "orScope": null,
+      "returns": "HealthDocument",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "fdcKey",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_health_keys",
+      "orScope": null,
+      "returns": "void",
+      "scope": "all",
+      "sensitive": true,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "settings",
+          "required": true,
+          "type": "HealthSettings"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_health_settings",
+      "orScope": null,
+      "returns": "void",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "source",
+          "required": true,
+          "type": "HealthSource"
+        }
+      ],
+      "changes": {
+        "kind": "healthSource",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_health_source",
+      "orScope": null,
+      "returns": "HealthSource",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -6309,6 +7621,26 @@
     {
       "args": [
         {
+          "name": "lab",
+          "required": true,
+          "type": "LabResult"
+        }
+      ],
+      "changes": {
+        "kind": "labResult",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_lab",
+      "orScope": null,
+      "returns": "LabResult",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "log",
           "required": true,
           "type": "LogEntry"
@@ -6393,6 +7725,46 @@
       "orScope": null,
       "returns": "MailWriting",
       "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "meal",
+          "required": true,
+          "type": "Meal"
+        }
+      ],
+      "changes": {
+        "kind": "meal",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_meal",
+      "orScope": null,
+      "returns": "Meal",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "medication",
+          "required": true,
+          "type": "Medication"
+        }
+      ],
+      "changes": {
+        "kind": "medication",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_medication",
+      "orScope": null,
+      "returns": "Medication",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -6879,6 +8251,26 @@
     {
       "args": [
         {
+          "name": "workout",
+          "required": true,
+          "type": "Workout"
+        }
+      ],
+      "changes": {
+        "kind": "workout",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_workout",
+      "orScope": null,
+      "returns": "Workout",
+      "scope": "health",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "account",
           "required": false,
           "type": "AccountId | null"
@@ -6988,6 +8380,23 @@
       "orScope": "notes",
       "returns": "SearchHit[]",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "query",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "search_foods",
+      "orScope": null,
+      "returns": "FoodHit[]",
+      "scope": "health",
       "sensitive": false,
       "streams": false
     },
@@ -7280,6 +8689,31 @@
       "orScope": null,
       "returns": "void",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "sourceId",
+          "required": true,
+          "type": "HealthSourceId"
+        },
+        {
+          "name": "tokenId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "healthSource",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "set_health_source_token",
+      "orScope": null,
+      "returns": "void",
+      "scope": "all",
       "sensitive": false,
       "streams": false
     },

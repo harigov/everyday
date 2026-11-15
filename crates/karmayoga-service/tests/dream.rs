@@ -111,9 +111,24 @@ async fn fake_model(script: Script) -> FakeModel {
                 let turn = asked;
                 tokio::spawn(async move {
                     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                    let mut buf = vec![0u8; 256 * 1024];
-                    let n = socket.read(&mut buf).await.unwrap_or(0);
-                    let raw = &buf[..n];
+                    // Read the whole request: a single `read` returns what one
+                    // segment held, and the full tool catalogue is larger than
+                    // that.
+                    let mut buf: Vec<u8> = Vec::new();
+                    let mut chunk = vec![0u8; 64 * 1024];
+                    loop {
+                        let n = socket.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if let Some(body_at) = find_body(&buf)
+                            && buf.len() - body_at >= content_length(&buf[..body_at])
+                        {
+                            break;
+                        }
+                    }
+                    let raw = &buf[..];
                     if let Some(body_at) = find_body(raw)
                         && let Ok(json) =
                             serde_json::from_slice::<serde_json::Value>(&raw[body_at..])
@@ -142,6 +157,17 @@ async fn fake_model(script: Script) -> FakeModel {
     });
 
     FakeModel { endpoint: format!("http://127.0.0.1:{port}/v1"), requests, _shutdown: tx }
+}
+
+/// The request's `Content-Length`, 0 when it names none.
+fn content_length(head: &[u8]) -> usize {
+    String::from_utf8_lossy(head)
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("content-length").then(|| value.trim().parse().ok())?
+        })
+        .unwrap_or(0)
 }
 
 fn find_body(raw: &[u8]) -> Option<usize> {

@@ -40,6 +40,36 @@ import type {
   FileQuery,
   FileUpdate,
   FilesSettings,
+  Allergy,
+  AllergyId,
+  Condition,
+  ConditionId,
+  DocKind,
+  Dose,
+  DoseId,
+  Food,
+  FoodId,
+  HealthDocument,
+  HealthDocumentId,
+  HealthSettings,
+  HealthSource,
+  HealthSourceId,
+  ImportStatus,
+  LabResult,
+  LabResultId,
+  ManualReading,
+  Meal,
+  MealId,
+  Medication,
+  MedicationId,
+  Metric,
+  PushHeaders,
+  PushSetup,
+  SeriesQuery,
+  TemplateChoice,
+  TemplateKey,
+  Workout,
+  WorkoutId,
   DeclineReason,
   AgentCallerKind,
   AgentEvent,
@@ -2152,6 +2182,160 @@ export const api = {
   revealFile: (id: FileId) => invoke<void>('reveal_file', { id }),
   /** Ask where to save copies of these files, and save them; how many were saved. */
   exportFiles: (ids: FileId[]) => invoke<number>('export_files', { ids }),
+
+  // ── Health ─────────────────────────────────────────────────────────
+  //
+  // What a watch and a phone measured, what somebody takes, eats and lives
+  // with, and the papers their clinicians gave them -- see
+  // `docs/plans/health.md`. Available only when `status.capabilities.health`
+  // is true. Named as the commands are; every value is in its metric's
+  // canonical unit, and `lib/health.ts` converts for display. `from` and `to`
+  // are local dates (`YYYY-MM-DD`) except where a comment says instants, and
+  // `tz` is the reader's IANA zone.
+  //
+  // `record_health_push` has a method here for completeness and no caller:
+  // the phone's automations post to it through the web-access route, with a
+  // write-only token, and no window sends one.
+
+  healthCatalog: () => call('healthCatalog', {}),
+  healthSettings: () => call('healthSettings', {}),
+  saveHealthSettings: (settings: HealthSettings) => call('saveHealthSettings', { settings }),
+  listHealthSources: () => call('listHealthSources', {}),
+  /** Name and paused only; what arrival learned (`status`) is kept as stored. */
+  saveHealthSource: (source: HealthSource) => call('saveHealthSource', { source }),
+  /** What the source brought stays. */
+  deleteHealthSource: (id: HealthSourceId) => call('deleteHealthSource', { id }),
+  recordHealthPush: (sourceId: HealthSourceId, headers: PushHeaders, body: unknown) =>
+    call('recordHealthPush', { sourceId, headers, body }),
+  /** Start importing an Apple `export.zip` by path. The shell's picker
+   *  (`healthImportApple`) is how a window gets one; this is the vault's half. */
+  importAppleHealth: (path: string, sourceId: HealthSourceId | null = null) =>
+    call('importAppleHealth', { path, sourceId: sourceId ?? undefined }),
+  /** Start importing an `export.zip` that is in Files: one a sync tool
+   *  brought from the phone, or one uploaded from a window on another
+   *  machine. `trashAfter` puts it in the Files trash once imported. */
+  importAppleHealthFile: (
+    file: FileId,
+    sourceId: HealthSourceId | null = null,
+    trashAfter = false,
+  ) => call('importAppleHealthFile', { file, sourceId: sourceId ?? undefined, trashAfter }),
+  appleImportStatus: () => call('appleImportStatus', {}),
+  /** Answers whether there was an import to stop. */
+  cancelAppleImport: () => call('cancelAppleImport', {}),
+  /** Whether the food-lookup key is set, and its last four characters. */
+  healthKeys: () => call('healthKeys', {}),
+  saveHealthKeys: (fdcKey: string) => call('saveHealthKeys', { fdcKey }),
+  clearHealthKeys: () => call('clearHealthKeys', {}),
+
+  healthToday: (date: string, tz: string) => call('healthToday', { date, tz }),
+  healthSeries: (query: SeriesQuery) => call('healthSeries', { query }),
+  /** Every sample of a metric between two instants -- at most three days. */
+  healthSamples: (metric: Metric, from: string, to: string) =>
+    call('healthSamples', { metric, from, to }),
+  /** The latest value of each metric at or before the end of `on`. */
+  healthLatest: (metrics: Metric[], on: string) => call('healthLatest', { metrics, on }),
+  addHealthReading: (reading: ManualReading) => call('addHealthReading', { reading }),
+  /** Between two instants, only `source`'s when given; answers how many went. */
+  deleteHealthSamples: (metric: Metric, from: string, to: string, source: string | null = null) =>
+    call('deleteHealthSamples', { metric, from, to, source: source ?? undefined }),
+  healthActivity: (from: string, to: string, tz: string) =>
+    call('healthActivity', { from, to, tz }),
+  healthSleep: (from: string, to: string, tz: string) => call('healthSleep', { from, to, tz }),
+  healthGlucose: (from: string, to: string, tz: string) => call('healthGlucose', { from, to, tz }),
+  healthNutrition: (from: string, to: string, tz: string) =>
+    call('healthNutrition', { from, to, tz }),
+  healthDayTimeline: (date: string, tz: string) => call('healthDayTimeline', { date, tz }),
+
+  /** Between two instants. */
+  listWorkouts: (from: string, to: string) => call('listWorkouts', { from, to }),
+  getWorkout: (id: WorkoutId) => call('getWorkout', { id }),
+  saveWorkout: (workout: Workout) => call('saveWorkout', { workout }),
+  deleteWorkout: (id: WorkoutId) => call('deleteWorkout', { id }),
+
+  listMedications: () => call('listMedications', {}),
+  saveMedication: (medication: Medication) => call('saveMedication', { medication }),
+  /** Its doses go with it. */
+  deleteMedication: (id: MedicationId) => call('deleteMedication', { id }),
+  /** Between two instants. */
+  listDoses: (from: string, to: string, medicationId: MedicationId | null = null) =>
+    call('listDoses', { from, to, medicationId: medicationId ?? undefined }),
+  logDose: (dose: Dose) => call('logDose', { dose }),
+  deleteDose: (id: DoseId) => call('deleteDose', { id }),
+  /** Every due time on a day, and the dose that answered it. */
+  dosesDue: (date: string, tz: string) => call('dosesDue', { date, tz }),
+  medicationAlerts: (from: string, to: string, tz: string) =>
+    call('medicationAlerts', { from, to, tz }),
+  medicationAdherence: (medicationId: MedicationId | null, from: string, to: string, tz: string) =>
+    call('medicationAdherence', { medicationId: medicationId ?? undefined, from, to, tz }),
+  listAllergies: () => call('listAllergies', {}),
+  saveAllergy: (allergy: Allergy) => call('saveAllergy', { allergy }),
+  deleteAllergy: (id: AllergyId) => call('deleteAllergy', { id }),
+
+  listConditions: () => call('listConditions', {}),
+  saveCondition: (condition: Condition) => call('saveCondition', { condition }),
+  /** `removeTrackers` also deletes the trackers its plan made. */
+  deleteCondition: (id: ConditionId, removeTrackers: boolean) =>
+    call('deleteCondition', { id, removeTrackers }),
+  conditionTemplates: () => call('conditionTemplates', {}),
+  applyConditionTemplate: (template: TemplateKey, choice: TemplateChoice) =>
+    call('applyConditionTemplate', { template, choice }),
+  conditionReport: (id: ConditionId, date: string, tz: string) =>
+    call('conditionReport', { id, date, tz }),
+
+  /** Every result, or the results of one test (`key`, as `LabTrend.key`). */
+  listLabs: (key: string | null = null) => call('listLabs', { key: key ?? undefined }),
+  saveLab: (lab: LabResult) => call('saveLab', { lab }),
+  deleteLab: (id: LabResultId) => call('deleteLab', { id }),
+  labTrends: () => call('labTrends', {}),
+  listHealthDocuments: () => call('listHealthDocuments', {}),
+  getHealthDocument: (id: HealthDocumentId) => call('getHealthDocument', { id }),
+  /** The files are added through Files first (`addFiles`, sealed, origin
+   *  `health`); this makes one document of them. */
+  addHealthDocument: (title: string, kind: DocKind, date: string | null, files: FileId[]) =>
+    call('addHealthDocument', { title, kind, date: date ?? undefined, files }),
+  saveHealthDocument: (document: HealthDocument) => call('saveHealthDocument', { document }),
+  /** `deleteLabs` also deletes the results accepted from it. */
+  deleteHealthDocument: (id: HealthDocumentId, deleteLabs: boolean) =>
+    call('deleteHealthDocument', { id, deleteLabs }),
+  /** Read lab results out of it with the model. `text` is a PDF's own text
+   *  layer, read here; without it the model reads the pages. */
+  extractHealthDocument: (id: HealthDocumentId, text?: string) =>
+    call('extractHealthDocument', { id, text }),
+  acceptDocumentLabs: (id: HealthDocumentId, labs: LabResult[]) =>
+    call('acceptDocumentLabs', { id, labs }),
+
+  listFoods: (query: string) => call('listFoods', { query }),
+  saveFood: (food: Food) => call('saveFood', { food }),
+  deleteFood: (id: FoodId) => call('deleteFood', { id }),
+  /** Only the search text leaves the machine. */
+  searchFoods: (query: string) => call('searchFoods', { query }),
+  lookupBarcode: (code: string) => call('lookupBarcode', { code }),
+  /** Between two instants. */
+  listMeals: (from: string, to: string) => call('listMeals', { from, to }),
+  saveMeal: (meal: Meal) => call('saveMeal', { meal }),
+  deleteMeal: (id: MealId) => call('deleteMeal', { id }),
+  /** A picture added through Files (sealed, origin `health`), sent to the
+   *  model: foods and grams, every item an estimate. */
+  estimateMealPhoto: (photo: FileId) => call('estimateMealPhoto', { photo }),
+  mealResponse: (id: MealId) => call('mealResponse', { id }),
+  /** A summary for a clinic visit, from the vault's own numbers. */
+  healthVisitBrief: (conditionId: ConditionId | null, since: string, tz: string) =>
+    call('healthVisitBrief', { conditionId: conditionId ?? undefined, since, tz }),
+
+  // This machine's half: the phone's push address and token, and the file
+  // dialog an Apple export is picked in. By name, not through `call`: they
+  // are the shell's own, and the path of the chosen file never reaches the
+  // webview.
+
+  /** Mint (or re-mint, revoking the old) the write-only token for a source.
+   *  The token is shown once. */
+  healthPushSetup: (sourceId: HealthSourceId) =>
+    invoke<PushSetup>('health_push_setup', { sourceId }),
+  /** Answers whether there was a token to revoke. */
+  healthPushRevoke: (sourceId: HealthSourceId) =>
+    invoke<boolean>('health_push_revoke', { sourceId }),
+  /** Ask for an `export.zip` and start importing it; `null` when nothing was picked. */
+  healthImportApple: () => invoke<ImportStatus | null>('health_import_apple'),
 
   // ── Accounts ───────────────────────────────────────────────────────
   //

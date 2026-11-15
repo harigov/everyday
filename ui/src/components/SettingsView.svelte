@@ -71,6 +71,7 @@
   import ModelsPanel from './ModelsPanel.svelte'
   import MoneySettingsPanel from './MoneySettingsPanel.svelte'
   import ScreenTimeSettingsPanel from './ScreenTimeSettingsPanel.svelte'
+  import HealthSettingsPanel from './HealthSettingsPanel.svelte'
   import McpPanel from './McpPanel.svelte'
   import ProfilePanel from './ProfilePanel.svelte'
   import SharePanel from './SharePanel.svelte'
@@ -248,6 +249,11 @@
     // waits, and what the assistant and the network may be told. See
     // `FilesSettingsPanel`.
     { id: 'files', label: 'Files', icon: 'folder', group: 'apps' },
+    // Where health data comes from -- a phone's automations, an Apple export
+    // -- the units and goals it is shown against, and the key for the food
+    // database. Not a pane of the app: those are for reading, and a token
+    // shown once is for setting up.
+    { id: 'health', label: 'Health', icon: 'heart-pulse', group: 'apps' },
     { id: 'meetings', label: 'Meetings', icon: 'mic', group: 'apps' },
     // After Meetings and not under it: one list serves the journal, notes and
     // meeting notes alike, and each of those picks from it in its own place.
@@ -292,6 +298,7 @@
       .filter((t) => t.id !== 'money' || app.supportsMoney)
       .filter((t) => t.id !== 'screentime' || app.supportsScreenTime)
       .filter((t) => t.id !== 'files' || files.supported)
+      .filter((t) => t.id !== 'health' || app.supportsHealth)
       .filter((t) => t.id !== 'keepintouch' || app.supportsLibrary)
       .filter((t) => t.id !== 'sorting' || (agent.supported && app.supportsMail))
       .filter((t) => t.id !== 'writing' || (agent.supported && app.supportsMail)),
@@ -484,6 +491,8 @@
         <ScreenTimeSettingsPanel />
       {:else if tab === 'files'}
         <FilesSettingsPanel />
+      {:else if tab === 'health'}
+        <HealthSettingsPanel />
       {:else if tab === 'meetings'}
         <MeetingsPanel />
       {:else if tab === 'templates'}

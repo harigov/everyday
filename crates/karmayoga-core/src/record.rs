@@ -121,6 +121,26 @@ pub enum RecordKind {
     File,
     /// An album of files -- see [`crate::files::Album`].
     Album,
+    /// A connection health data arrives through -- see [`crate::health::HealthSource`].
+    HealthSource,
+    /// A workout -- see [`crate::health::Workout`].
+    Workout,
+    /// A medication or supplement -- see [`crate::health::Medication`].
+    Medication,
+    /// One dose taken or skipped -- see [`crate::health::Dose`].
+    Dose,
+    /// A condition somebody lives with, and its care plan -- see [`crate::health::Condition`].
+    Condition,
+    /// One lab test result -- see [`crate::health::LabResult`].
+    LabResult,
+    /// A clinical document and its sealed files -- see [`crate::health::HealthDocument`].
+    HealthDocument,
+    /// An allergy -- see [`crate::health::Allergy`].
+    Allergy,
+    /// A food, with its nutrients -- see [`crate::health::Food`].
+    Food,
+    /// A meal eaten -- see [`crate::health::Meal`].
+    Meal,
 }
 
 impl RecordKind {
@@ -181,6 +201,16 @@ impl RecordKind {
             RecordKind::ScreenCategory => "screen_category",
             RecordKind::File => "file",
             RecordKind::Album => "album",
+            RecordKind::HealthSource => "health_source",
+            RecordKind::Workout => "workout",
+            RecordKind::Medication => "medication",
+            RecordKind::Dose => "dose",
+            RecordKind::Condition => "condition",
+            RecordKind::LabResult => "lab_result",
+            RecordKind::HealthDocument => "health_document",
+            RecordKind::Allergy => "allergy",
+            RecordKind::Food => "food",
+            RecordKind::Meal => "meal",
         }
     }
 
@@ -238,6 +268,16 @@ impl RecordKind {
             | RecordKind::ScreenCategory
             | RecordKind::File
             | RecordKind::Album => None,
+            RecordKind::HealthSource
+            | RecordKind::Workout
+            | RecordKind::Medication
+            | RecordKind::Dose
+            | RecordKind::Condition
+            | RecordKind::LabResult
+            | RecordKind::HealthDocument
+            | RecordKind::Allergy
+            | RecordKind::Food
+            | RecordKind::Meal => None,
         }
     }
 
@@ -297,6 +337,16 @@ impl RecordKind {
             | RecordKind::ScreenCategory
             | RecordKind::File
             | RecordKind::Album => None,
+            RecordKind::HealthSource
+            | RecordKind::Workout
+            | RecordKind::Medication
+            | RecordKind::Dose
+            | RecordKind::Condition
+            | RecordKind::LabResult
+            | RecordKind::HealthDocument
+            | RecordKind::Allergy
+            | RecordKind::Food
+            | RecordKind::Meal => None,
         }
     }
 
@@ -359,6 +409,16 @@ impl RecordKind {
             RecordKind::ScreenCategory => "screen_category",
             RecordKind::File => "file",
             RecordKind::Album => "album",
+            RecordKind::HealthSource => "health_source",
+            RecordKind::Workout => "workout",
+            RecordKind::Medication => "medication",
+            RecordKind::Dose => "dose",
+            RecordKind::Condition => "condition",
+            RecordKind::LabResult => "lab_result",
+            RecordKind::HealthDocument => "health_document",
+            RecordKind::Allergy => "allergy",
+            RecordKind::Food => "food",
+            RecordKind::Meal => "meal",
         }
     }
 }
@@ -872,6 +932,116 @@ impl RecordDescriptor for crate::files::Album {
     }
 }
 
+impl RecordDescriptor for crate::health::HealthSource {
+    const KIND: RecordKind = RecordKind::HealthSource;
+    type Id = crate::id::HealthSourceId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::health_source_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::Workout {
+    const KIND: RecordKind = RecordKind::Workout;
+    type Id = crate::id::WorkoutId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::workout_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::Medication {
+    const KIND: RecordKind = RecordKind::Medication;
+    type Id = crate::id::MedicationId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::medication_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::Dose {
+    const KIND: RecordKind = RecordKind::Dose;
+    type Id = crate::id::DoseId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::dose_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::Condition {
+    const KIND: RecordKind = RecordKind::Condition;
+    type Id = crate::id::ConditionId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::condition_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::LabResult {
+    const KIND: RecordKind = RecordKind::LabResult;
+    type Id = crate::id::LabResultId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::lab_result_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::HealthDocument {
+    const KIND: RecordKind = RecordKind::HealthDocument;
+    type Id = crate::id::HealthDocumentId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::health_document_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::Allergy {
+    const KIND: RecordKind = RecordKind::Allergy;
+    type Id = crate::id::AllergyId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::allergy_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::Food {
+    const KIND: RecordKind = RecordKind::Food;
+    type Id = crate::id::FoodId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::food_aad(id)
+    }
+}
+
+impl RecordDescriptor for crate::health::Meal {
+    const KIND: RecordKind = RecordKind::Meal;
+    type Id = crate::id::MealId;
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+    fn aad(id: Self::Id) -> Vec<u8> {
+        crate::store::health::meal_aad(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Ties [`RecordKind::aad_word`] to every [`RecordDescriptor::aad`],
@@ -946,6 +1116,16 @@ mod tests {
         check::<crate::screentime::ScreenCategory>(id());
         check::<crate::files::FileEntry>(id());
         check::<crate::files::Album>(id());
+        check::<crate::health::HealthSource>(id());
+        check::<crate::health::Workout>(id());
+        check::<crate::health::Medication>(id());
+        check::<crate::health::Dose>(id());
+        check::<crate::health::Condition>(id());
+        check::<crate::health::LabResult>(id());
+        check::<crate::health::HealthDocument>(id());
+        check::<crate::health::Allergy>(id());
+        check::<crate::health::Food>(id());
+        check::<crate::health::Meal>(id());
     }
 
     #[test]
@@ -963,7 +1143,7 @@ mod tests {
     /// Every kind, for the test above. Not `pub` -- nothing outside this
     /// module needs "all of them" as a list; `RecordDescriptor` impls are
     /// looked up by type, not iterated.
-    const ALL: [RecordKind; 45] = [
+    const ALL: [RecordKind; 55] = [
         RecordKind::Journal,
         RecordKind::Entry,
         RecordKind::Note,
@@ -1009,5 +1189,15 @@ mod tests {
         RecordKind::ScreenCategory,
         RecordKind::File,
         RecordKind::Album,
+        RecordKind::HealthSource,
+        RecordKind::Workout,
+        RecordKind::Medication,
+        RecordKind::Dose,
+        RecordKind::Condition,
+        RecordKind::LabResult,
+        RecordKind::HealthDocument,
+        RecordKind::Allergy,
+        RecordKind::Food,
+        RecordKind::Meal,
     ];
 }

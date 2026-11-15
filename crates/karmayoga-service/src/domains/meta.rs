@@ -222,6 +222,7 @@ pub fn scope_of(domain: tools::Domain) -> Scope {
         tools::Domain::Money => Scope::Money,
         tools::Domain::ScreenTime => Scope::ScreenTime,
         tools::Domain::Files => Scope::Files,
+        tools::Domain::Health => Scope::Health,
     }
 }
 

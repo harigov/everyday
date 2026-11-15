@@ -22,6 +22,71 @@
       "title": "Accept proposal"
     },
     {
+      "domain": "health",
+      "effect": "write",
+      "name": "add_lab_result",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "description": "The LOINC code, if they gave one.",
+            "type": "string"
+          },
+          "collected": {
+            "description": "The day it was collected. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "document_id": {
+            "description": "The document it came from, from list_health_documents.",
+            "type": "string"
+          },
+          "lab": {
+            "description": "Which laboratory.",
+            "type": "string"
+          },
+          "name": {
+            "description": "The test as printed: 'TSH', 'Hemoglobin A1c'.",
+            "type": "string"
+          },
+          "note": {
+            "description": "Anything worth noting alongside it.",
+            "type": "string"
+          },
+          "panel": {
+            "description": "The panel it belongs to: 'Lipid panel'.",
+            "type": "string"
+          },
+          "ref_high": {
+            "description": "The top of the lab's reference range.",
+            "type": "number"
+          },
+          "ref_low": {
+            "description": "The bottom of the lab's reference range.",
+            "type": "number"
+          },
+          "text": {
+            "description": "A result that is not a number: 'Negative'. Instead of value.",
+            "type": "string"
+          },
+          "unit": {
+            "description": "The unit as printed: 'mIU/L', '%'.",
+            "type": "string"
+          },
+          "value": {
+            "description": "The number. Give either value or text.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Add lab result"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "archive_thread",
@@ -95,6 +160,29 @@
       "scope": "money",
       "sensitivity": "ordinary",
       "title": "Categorize transactions"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "condition_status",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "condition": {
+            "description": "The condition: its id or its name, from list_conditions. Optional when they have only one.",
+            "type": "string"
+          },
+          "date": {
+            "description": "The day to judge it on. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Condition status"
     },
     {
       "domain": "agent",
@@ -1138,6 +1226,37 @@
       "title": "Discard draft"
     },
     {
+      "domain": "health",
+      "effect": "read",
+      "name": "dose_log",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "First day, inclusive. Defaults to 6 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "medication": {
+            "description": "Only this medication: its id or its name, from list_medications.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Dose log"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "draft_message",
@@ -1584,6 +1703,231 @@
       "title": "Get transcript"
     },
     {
+      "domain": "health",
+      "effect": "read",
+      "name": "glucose_report",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "First day, inclusive. Defaults to 13 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to today. At most 90 days in all. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Glucose report"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "health_readings",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Start, as a date and time in their time zone like 2026-09-08 07:30 (or RFC 3339 with an offset). Defaults to 24 hours before `to`.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "metric": {
+            "description": "Which measurement.",
+            "enum": [
+              "steps",
+              "walking_running_distance",
+              "cycling_distance",
+              "swimming_distance",
+              "active_energy",
+              "basal_energy",
+              "exercise_time",
+              "stand_time",
+              "stand_hour",
+              "flights_climbed",
+              "time_in_daylight",
+              "heart_rate",
+              "resting_heart_rate",
+              "walking_heart_rate",
+              "heart_rate_variability",
+              "heart_rate_recovery",
+              "vo2_max",
+              "respiratory_rate",
+              "oxygen_saturation",
+              "weight",
+              "body_fat",
+              "lean_body_mass",
+              "bmi",
+              "height",
+              "waist_circumference",
+              "body_temperature",
+              "wrist_temperature",
+              "blood_pressure_systolic",
+              "blood_pressure_diastolic",
+              "blood_glucose",
+              "insulin_basal",
+              "insulin_bolus",
+              "dietary_energy",
+              "dietary_carbs",
+              "dietary_protein",
+              "dietary_fat",
+              "dietary_fiber",
+              "dietary_sugar",
+              "dietary_sodium",
+              "dietary_caffeine",
+              "water",
+              "sleep_stage",
+              "mindful_minutes"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "description": "End, in the same form. Defaults to now. At most 3 days after from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Health readings"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "health_series",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "bucket": {
+            "description": "How wide one point is. Defaults to day.",
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "type": "string"
+          },
+          "from": {
+            "description": "First day, inclusive. Defaults to 30 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "high": {
+            "description": "For in_range: the top of the range, in their unit.",
+            "type": "number"
+          },
+          "low": {
+            "description": "For in_range: the bottom of the range, in their unit.",
+            "type": "number"
+          },
+          "metric": {
+            "description": "Which measurement.",
+            "enum": [
+              "steps",
+              "walking_running_distance",
+              "cycling_distance",
+              "swimming_distance",
+              "active_energy",
+              "basal_energy",
+              "exercise_time",
+              "stand_time",
+              "stand_hour",
+              "flights_climbed",
+              "time_in_daylight",
+              "heart_rate",
+              "resting_heart_rate",
+              "walking_heart_rate",
+              "heart_rate_variability",
+              "heart_rate_recovery",
+              "vo2_max",
+              "respiratory_rate",
+              "oxygen_saturation",
+              "weight",
+              "body_fat",
+              "lean_body_mass",
+              "bmi",
+              "height",
+              "waist_circumference",
+              "body_temperature",
+              "wrist_temperature",
+              "blood_pressure_systolic",
+              "blood_pressure_diastolic",
+              "blood_glucose",
+              "insulin_basal",
+              "insulin_bolus",
+              "dietary_energy",
+              "dietary_carbs",
+              "dietary_protein",
+              "dietary_fat",
+              "dietary_fiber",
+              "dietary_sugar",
+              "dietary_sodium",
+              "dietary_caffeine",
+              "water",
+              "sleep_stage",
+              "mindful_minutes"
+            ],
+            "type": "string"
+          },
+          "stat": {
+            "description": "How a bucket is added up. auto (the default) is the metric's own: steps add up, heart rate averages, weight takes the last reading. in_range gives the share of the time inside low..high as a percentage.",
+            "enum": [
+              "auto",
+              "sum",
+              "mean",
+              "min",
+              "max",
+              "last",
+              "count",
+              "in_range"
+            ],
+            "type": "string"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metric"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Health series"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "health_today",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "date": {
+            "description": "The day. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Health today"
+    },
+    {
       "domain": "jobs",
       "effect": "read",
       "name": "job_status",
@@ -1605,6 +1949,27 @@
       "scope": "agent",
       "sensitivity": "ordinary",
       "title": "Job status"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "lab_trend",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "test": {
+            "description": "The test: its name ('TSH', 'hemoglobin A1c') or its code from list_labs.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "test"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Lab trend"
     },
     {
       "domain": "mail",
@@ -1677,6 +2042,20 @@
       "scope": "calendars",
       "sensitivity": "ordinary",
       "title": "List calendars"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "list_conditions",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "List conditions"
     },
     {
       "domain": "journals",
@@ -1785,6 +2164,25 @@
       "title": "List goals"
     },
     {
+      "domain": "health",
+      "effect": "read",
+      "name": "list_health_documents",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "List health documents"
+    },
+    {
       "domain": "library",
       "effect": "read",
       "name": "list_items",
@@ -1849,6 +2247,37 @@
       "title": "List journals"
     },
     {
+      "domain": "health",
+      "effect": "read",
+      "name": "list_labs",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "Only results collected on or after this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "test": {
+            "description": "Only this test: its name ('A1c', 'TSH', part of a name will do) or its code as an earlier answer gave it.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Only results collected on or before this day. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "List labs"
+    },
+    {
       "domain": "library",
       "effect": "read",
       "name": "list_logs",
@@ -1891,6 +2320,52 @@
       "scope": "library",
       "sensitivity": "ordinary",
       "title": "List logs"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "list_meals",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "First day, inclusive. Defaults to 2 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to today. At most 90 days in all. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "List meals"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "list_medications",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "include_stopped": {
+            "description": "Also the ones they have stopped. Defaults to false.",
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "List medications"
     },
     {
       "domain": "meetings",
@@ -2411,6 +2886,157 @@
       "title": "List trackers"
     },
     {
+      "domain": "health",
+      "effect": "read",
+      "name": "list_workouts",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "First day, inclusive. Defaults to 13 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "Most rows to return. Defaults to 50, capped at 200.",
+            "type": "integer"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "List workouts"
+    },
+    {
+      "domain": "health",
+      "effect": "write",
+      "name": "log_dose",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "amount": {
+            "description": "How much, in the medication's own unit, when it was not the usual dose. Omit for the usual.",
+            "type": "number"
+          },
+          "at": {
+            "description": "When, as a date and time in their time zone like 2026-09-08 07:30. Defaults to now. At most 30 days back.",
+            "type": "string"
+          },
+          "medication": {
+            "description": "Which medication: its id or its name, from list_medications.",
+            "type": "string"
+          },
+          "note": {
+            "description": "Anything worth noting alongside it.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Taken (the default) or skipped.",
+            "enum": [
+              "taken",
+              "skipped"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "medication"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Log dose"
+    },
+    {
+      "domain": "health",
+      "effect": "write",
+      "name": "log_health_reading",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "When, as a date and time in their time zone like 2026-09-08 07:30. Defaults to now.",
+            "type": "string"
+          },
+          "metric": {
+            "description": "Which measurement. blood_pressure_systolic takes the top number in value and the bottom in `second`; blood_pressure is the same.",
+            "enum": [
+              "steps",
+              "walking_running_distance",
+              "cycling_distance",
+              "swimming_distance",
+              "active_energy",
+              "basal_energy",
+              "exercise_time",
+              "stand_time",
+              "stand_hour",
+              "flights_climbed",
+              "time_in_daylight",
+              "heart_rate",
+              "resting_heart_rate",
+              "walking_heart_rate",
+              "heart_rate_variability",
+              "heart_rate_recovery",
+              "vo2_max",
+              "respiratory_rate",
+              "oxygen_saturation",
+              "weight",
+              "body_fat",
+              "lean_body_mass",
+              "bmi",
+              "height",
+              "waist_circumference",
+              "body_temperature",
+              "wrist_temperature",
+              "blood_pressure_systolic",
+              "blood_pressure_diastolic",
+              "blood_glucose",
+              "insulin_basal",
+              "insulin_bolus",
+              "dietary_energy",
+              "dietary_carbs",
+              "dietary_protein",
+              "dietary_fat",
+              "dietary_fiber",
+              "dietary_sugar",
+              "dietary_sodium",
+              "dietary_caffeine",
+              "water",
+              "sleep_stage",
+              "mindful_minutes"
+            ],
+            "type": "string"
+          },
+          "second": {
+            "description": "For blood pressure only: the diastolic, the bottom number.",
+            "type": "number"
+          },
+          "unit": {
+            "description": "The unit of value, if it is not their own: 'lb', 'mmol/L'.",
+            "type": "string"
+          },
+          "value": {
+            "description": "The reading, in the unit health_series reports for the metric (their own), or in `unit`.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "metric",
+          "value"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Log health reading"
+    },
+    {
       "domain": "library",
       "effect": "write",
       "name": "log_item",
@@ -2476,6 +3102,102 @@
       "scope": "library",
       "sensitivity": "ordinary",
       "title": "Log item"
+    },
+    {
+      "domain": "health",
+      "effect": "write",
+      "name": "log_meal",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "description": "When it was eaten, as a date and time in their time zone like 2026-09-08 12:30. Defaults to now. At most a year back.",
+            "type": "string"
+          },
+          "items": {
+            "description": "What was eaten, one entry per food, at most 30.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "carbs_g": {
+                  "description": "Carbohydrate, in grams.",
+                  "type": "number"
+                },
+                "estimated": {
+                  "description": "True when the nutrients are your own estimate rather than a label's or a weighed food's.",
+                  "type": "boolean"
+                },
+                "fat_g": {
+                  "description": "Fat, in grams.",
+                  "type": "number"
+                },
+                "fiber_g": {
+                  "description": "Fibre, in grams, when known.",
+                  "type": "number"
+                },
+                "grams": {
+                  "description": "How much, in grams (millilitres for a drink).",
+                  "type": "number"
+                },
+                "kcal": {
+                  "description": "Energy in kilocalories, whatever unit they read. Give it with protein_g, carbs_g and fat_g.",
+                  "type": "number"
+                },
+                "name": {
+                  "description": "What it is, as they would say it: 'oatmeal', 'two eggs'.",
+                  "type": "string"
+                },
+                "protein_g": {
+                  "description": "Protein, in grams.",
+                  "type": "number"
+                },
+                "sat_fat_g": {
+                  "description": "Saturated fat, in grams, when known.",
+                  "type": "number"
+                },
+                "sodium_mg": {
+                  "description": "Sodium, in milligrams, when known.",
+                  "type": "number"
+                },
+                "sugar_g": {
+                  "description": "Sugars, in grams, when known.",
+                  "type": "number"
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "name": {
+            "description": "A name for the meal, if it has one: 'Lunch with Sam'.",
+            "type": "string"
+          },
+          "note": {
+            "description": "Anything worth noting alongside it.",
+            "type": "string"
+          },
+          "slot": {
+            "description": "Which meal. Defaults from the time of day.",
+            "enum": [
+              "breakfast",
+              "lunch",
+              "dinner",
+              "snack"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Log meal"
     },
     {
       "domain": "trackers",
@@ -2588,6 +3310,27 @@
       "title": "Mark unread"
     },
     {
+      "domain": "health",
+      "effect": "read",
+      "name": "meal_response",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "meal_id": {
+            "description": "From list_meals.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "meal_id"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Meal response"
+    },
+    {
       "domain": "mail",
       "effect": "write",
       "name": "move_thread",
@@ -2612,6 +3355,29 @@
       "scope": "mail",
       "sensitivity": "ordinary",
       "title": "Move thread"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "nutrition_report",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "First day, inclusive. Defaults to 6 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Last day, inclusive. Defaults to today. At most 90 days in all. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Nutrition report"
     },
     {
       "domain": "files",
@@ -2777,6 +3543,27 @@
       "scope": "files",
       "sensitivity": "ordinary",
       "title": "Read file"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "read_health_document",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "document_id": {
+            "description": "From list_health_documents.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document_id"
+        ],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Read health document"
     },
     {
       "domain": "journals",
@@ -3245,6 +4032,32 @@
             "description": "File the tracker under this goal. From list_goals.",
             "type": "string"
           },
+          "health_high": {
+            "description": "For health_stat in_range: the top of the range, in their unit.",
+            "type": "number"
+          },
+          "health_low": {
+            "description": "For health_stat in_range: the bottom of the range, in their unit.",
+            "type": "number"
+          },
+          "health_metric": {
+            "description": "For 'health': which measurement, by its key, e.g. steps, resting_heart_rate, weight, blood_glucose, active_energy, sleep_stage.",
+            "type": "string"
+          },
+          "health_stat": {
+            "description": "For 'health': how a day is worked out. Defaults to the metric's own (steps add up, heart rate averages, weight takes the last reading). in_range is the share of the day inside health_low..health_high, as a percentage.",
+            "enum": [
+              "auto",
+              "sum",
+              "mean",
+              "min",
+              "max",
+              "last",
+              "count",
+              "in_range"
+            ],
+            "type": "string"
+          },
           "kind": {
             "description": "For 'new': 'check' for a yes/no habit, 'amount' for a quantity (the default), 'dose' for medication.",
             "enum": [
@@ -3259,11 +4072,12 @@
             "type": "number"
           },
           "measure": {
-            "description": "When there is no tracker_id, what to count: 'time' is minutes of logged time filed under the goal or role; 'finished' is things finished off a shelf (a re-read counts); 'screen' is minutes of screen time from the Screen time app, all of it or narrowed by `screen_category` or `screen_item`; 'new' makes a tracker recorded by hand, named by `name`.",
+            "description": "When there is no tracker_id, what to count: 'time' is minutes of logged time filed under the goal or role; 'finished' is things finished off a shelf (a re-read counts); 'screen' is minutes of screen time from the Screen time app, all of it or narrowed by `screen_category` or `screen_item`; 'health' is a day's figure from the Health app, named by `health_metric` (or written 'health:<metric>'); 'new' makes a tracker recorded by hand, named by `name`.",
             "enum": [
               "time",
               "finished",
               "screen",
+              "health",
               "new"
             ],
             "type": "string"
@@ -3324,6 +4138,29 @@
       "scope": "trackers",
       "sensitivity": "ordinary",
       "title": "Set target"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "sleep_report",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "description": "First night's date, inclusive. Defaults to 6 days before `to`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "to": {
+            "description": "Last night's date, inclusive: a night is filed under the day it ended on. Defaults to today. At most 90 days in all. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Sleep report"
     },
     {
       "domain": "mail",
@@ -4427,6 +5264,33 @@
       "scope": "money",
       "sensitivity": "ordinary",
       "title": "Update transactions"
+    },
+    {
+      "domain": "health",
+      "effect": "read",
+      "name": "visit_facts",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "condition": {
+            "description": "Only this condition: its id or name. Omit for all of them.",
+            "type": "string"
+          },
+          "since": {
+            "description": "Start of the period. Defaults to 90 days before `until`. Format: YYYY-MM-DD.",
+            "type": "string"
+          },
+          "until": {
+            "description": "End of the period. Defaults to today. Format: YYYY-MM-DD.",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "scope": "health",
+      "sensitivity": "ordinary",
+      "title": "Visit facts"
     },
     {
       "domain": "journals",

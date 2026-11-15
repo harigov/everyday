@@ -41,6 +41,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod health;
 pub mod mcp;
 pub mod pairing;
 pub mod routes;

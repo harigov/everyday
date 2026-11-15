@@ -242,6 +242,16 @@ pub async fn with_files(
                     format!("{} is in the trash, so it cannot be sent.", file.name),
                 ));
             }
+            // A clinical document's page or a meal's photograph is Health's,
+            // shown to a model only through the health tools and their gates.
+            // The composer never offers one; a caller that names one anyway
+            // is refused rather than let past them.
+            if file.origin == karmayoga_core::files::FileOrigin::Health {
+                return Err(CommandError::new(
+                    codes::FORBIDDEN,
+                    format!("{} is one of Health's files and cannot be sent here.", file.name),
+                ));
+            }
             // A picture the interface already made ready from this very file
             // -- a composer that keeps the original in Files and prepares the
             // copy for the model, both -- is not made a second time, nor

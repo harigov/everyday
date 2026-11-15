@@ -201,6 +201,16 @@ impl TryFrom<RecordKind> for ProposalKind {
             | RecordKind::ScreenCategory
             | RecordKind::File
             | RecordKind::Album => Err(()),
+            RecordKind::HealthSource
+            | RecordKind::Workout
+            | RecordKind::Medication
+            | RecordKind::Dose
+            | RecordKind::Condition
+            | RecordKind::LabResult
+            | RecordKind::HealthDocument
+            | RecordKind::Allergy
+            | RecordKind::Food
+            | RecordKind::Meal => Err(()),
         }
     }
 }
@@ -480,6 +490,16 @@ impl TryFrom<RecordKind> for AboutKind {
             | RecordKind::ScreenCategory
             | RecordKind::File
             | RecordKind::Album => Err(()),
+            RecordKind::HealthSource
+            | RecordKind::Workout
+            | RecordKind::Medication
+            | RecordKind::Dose
+            | RecordKind::Condition
+            | RecordKind::LabResult
+            | RecordKind::HealthDocument
+            | RecordKind::Allergy
+            | RecordKind::Food
+            | RecordKind::Meal => Err(()),
         }
     }
 }

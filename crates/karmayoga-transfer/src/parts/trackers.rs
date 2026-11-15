@@ -24,8 +24,10 @@
 //! `days` before `per` when it counts days rather than adding values up:
 //! `60..120 per week`, `..60 per day`, `3.. days per week`. Its source is
 //! `manual`, `time`, or `finished` with a shelf's id after it when it counts
-//! one shelf. A derived tracker's file holds no readings: they are worked
-//! out from the blocks and the library log, which travel on their own.
+//! one shelf; a tracker counting screen time or a health metric has what it
+//! counts after the word, as JSON. A derived tracker's file holds no
+//! readings: they are worked out from the blocks, the library log, screen
+//! time and health data, which travel on their own.
 //!
 //! Archives written before targets had a `target` column (a daily amount)
 //! and a `cadence` column (`3 per week`); both are still read.
@@ -34,6 +36,7 @@ use super::doc;
 use super::index::{Namer, index_map, owner};
 use crate::text::{Csv, Table, safe_name};
 use crate::{Files, Mode, Options, Part, Portable, Report, Spec, land};
+use karmayoga_core::health::{Metric, Stat};
 use karmayoga_core::store::JournalStore;
 use karmayoga_core::store::trackers::{ReadingQuery, TrackerStore};
 use karmayoga_core::tracker::{
@@ -389,6 +392,12 @@ fn source_text(source: &TrackerSource) -> String {
             let what = serde_json::json!({ "category": category, "item": item });
             format!("screenTime {what}")
         }
+        // The metric and how a day of it is added up, as JSON: a share in
+        // range carries two numbers of its own.
+        TrackerSource::Health { metric, stat } => {
+            let what = serde_json::json!({ "metric": metric, "stat": stat });
+            format!("health {what}")
+        }
         other => other.as_str().to_string(),
     }
 }
@@ -410,6 +419,20 @@ fn parse_source(text: &str) -> TrackerSource {
             }
             let what: What = serde_json::from_str(what).unwrap_or_default();
             TrackerSource::ScreenTime { category: what.category, item: what.item }
+        }
+        ("health", what) => {
+            #[derive(serde::Deserialize)]
+            struct What {
+                metric: Metric,
+                #[serde(default)]
+                stat: Stat,
+            }
+            // A metric this build does not know reads as manual, like
+            // anything else unrecognised.
+            match serde_json::from_str::<What>(what) {
+                Ok(What { metric, stat }) => TrackerSource::Health { metric, stat },
+                Err(_) => TrackerSource::Manual,
+            }
         }
         _ => TrackerSource::Manual,
     }
@@ -462,10 +485,20 @@ mod tests {
                 category: Some(karmayoga_core::ScreenCategoryId::new()),
                 item: Some("app:my app.exe".into()),
             },
+            TrackerSource::Health { metric: Metric::Steps, stat: Stat::Auto },
+            TrackerSource::Health { metric: Metric::RestingHeartRate, stat: Stat::Mean },
+            TrackerSource::Health {
+                metric: Metric::BloodGlucose,
+                stat: Stat::InRange { low: 70, high: 180 },
+            },
         ] {
             assert_eq!(parse_source(&source_text(&source)), source);
         }
         assert_eq!(parse_source(""), TrackerSource::Manual);
+        // A metric this build has never heard of reads as manual, as
+        // anything unrecognised does.
+        assert_eq!(parse_source("health {\"metric\":\"nonsense\"}"), TrackerSource::Manual);
+        assert_eq!(parse_source("health"), TrackerSource::Manual);
     }
 
     #[test]

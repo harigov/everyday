@@ -47,7 +47,17 @@ Object.defineProperty(globalThis, 'navigator', {
 })
 
 const {
-  modules: [storeModule, helpers, stateModule, apiModule, notifyModule, iconsModule, symbolsModule],
+  modules: [
+    storeModule,
+    helpers,
+    stateModule,
+    apiModule,
+    notifyModule,
+    iconsModule,
+    symbolsModule,
+    uiModule,
+    healthModule,
+  ],
   close,
 } = await load(
   [
@@ -58,6 +68,8 @@ const {
     '/src/lib/notify.svelte.ts',
     '/src/lib/icons.ts',
     '/src/lib/symbols.ts',
+    '/src/lib/files-ui.svelte.ts',
+    '/src/lib/health.svelte.ts',
   ],
   { svelte: true },
 )
@@ -68,6 +80,8 @@ const { api } = apiModule
 const { notify } = notifyModule
 const { ICONS } = iconsModule
 const { SYMBOLS } = symbolsModule
+const { ORIGIN_LABELS, USE_LABELS, fileMenu, openUse } = uiModule
+const { health } = healthModule
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -817,6 +831,88 @@ await files.changed()
 app.section = 'journal'
 assert.equal(files.changed(), undefined, 'but not while another app is')
 app.section = 'files'
+
+// ── Health's files ───────────────────────────────────────────────────
+
+// Every origin a file can have is named in words, Health's included, and
+// every kind of record that can use one says which app it is.
+{
+  const [page] = await addFiles([new File(['x'], 'lab.pdf')], { origin: 'health', encrypted: true })
+  assert.equal(page.origin, 'health')
+  assert.equal(page.storage.kind, 'sealed')
+  assert.equal(ORIGIN_LABELS[page.origin], 'Health')
+  assert.equal(ORIGIN_LABELS.mail, 'Mail')
+  const origins = new Set((await api.listFiles({ includeHidden: true })).files.map((f) => f.origin))
+  for (const origin of origins) assert.ok(ORIGIN_LABELS[origin], `${origin} has a name`)
+  assert.deepEqual(Object.keys(USE_LABELS).sort(), [
+    'entry',
+    'healthDocument',
+    'meal',
+    'message',
+    'note',
+  ])
+  assert.equal(USE_LABELS.healthDocument, 'Health document')
+  assert.equal(USE_LABELS.meal, 'Meal')
+
+  // Files can be told to leave Health's out, as the assistant's tools do.
+  const without = await api.listFiles({ excludeOrigins: ['health'], text: 'lab.pdf' })
+  assert.equal(without.total, 0)
+  assert.equal((await api.listFiles({ text: 'lab.pdf' })).total, 1)
+}
+
+// A "used in" row opens the record it names, in Health.
+{
+  app.section = 'files'
+  await openUse({
+    owner: { kind: 'healthDocument', id: 'doc-october' },
+    title: 'Lab report, October',
+  })
+  assert.equal(app.section, 'health')
+  assert.equal(health.documentId, 'doc-october')
+  assert.equal(health.view, 'records', 'on the pane documents are drawn on')
+
+  app.section = 'files'
+  const eaten = new Date(Date.now() - 9 * 86_400_000)
+  const day = [eaten.getFullYear(), eaten.getMonth() + 1, eaten.getDate()]
+    .map((n, i) => (i === 0 ? String(n) : String(n).padStart(2, '0')))
+    .join('-')
+  await openUse({
+    owner: { kind: 'meal', id: 'meal-1' },
+    title: 'Lunch',
+    when: eaten.toISOString(),
+  })
+  assert.equal(app.section, 'health')
+  assert.equal(health.view, 'nutrition')
+  assert.equal(health.date, day, 'on the day it was eaten')
+  assert.equal(health.anchor, day, 'in a window that holds it')
+
+  // Without a time it opens on today.
+  app.section = 'files'
+  await openUse({ owner: { kind: 'meal', id: 'meal-1' }, title: 'Lunch' })
+  assert.equal(health.date, new Date().toLocaleDateString('en-CA'))
+  health.reset()
+}
+
+// An archive can be imported into Health from its menu.
+{
+  files.setView('browse')
+  const [zip] = await addFiles([new File(['PK'], 'export.zip')], { dir: 'Documents' })
+  const [text] = await addFiles([new File(['x'], 'notes.txt')], { dir: 'Documents' })
+  const labels = (item) => fileMenu(item).map((i) => i.label)
+  assert.ok(labels(zip).includes('Import into Health'))
+  assert.ok(!labels(text).includes('Import into Health'), 'only an archive')
+  const upper = { ...zip, name: 'EXPORT.ZIP' }
+  assert.ok(labels(upper).includes('Import into Health'), 'whatever its case')
+  const item = fileMenu(zip).find((i) => i.label === 'Import into Health')
+  assert.equal(item.icon, 'heart-pulse')
+  assert.ok(item.icon in ICONS, 'and the icon is drawn')
+  await item.run()
+  assert.equal(health.importStatus?.state, 'running')
+  assert.equal(health.importStatus?.fileName, 'export.zip')
+  assert.equal(toast('health-import-started').title, 'Importing into Health.')
+  assert.match(toast('health-import-started').body, /Settings → Health/)
+  health.reset()
+}
 
 // ── a lock ───────────────────────────────────────────────────────────
 

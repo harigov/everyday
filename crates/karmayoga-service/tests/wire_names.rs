@@ -81,6 +81,17 @@ fn all_kinds() -> Vec<Kind> {
         Kind::ScreenSpan,
         Kind::File,
         Kind::Album,
+        Kind::HealthSource,
+        Kind::Workout,
+        Kind::Medication,
+        Kind::Dose,
+        Kind::Condition,
+        Kind::LabResult,
+        Kind::HealthDocument,
+        Kind::Allergy,
+        Kind::Food,
+        Kind::Meal,
+        Kind::HealthSample,
         Kind::Settings,
         Kind::BackgroundTask,
     ]
@@ -137,6 +148,17 @@ fn assert_every_kind_is_named(k: Kind) {
         | Kind::ScreenSpan
         | Kind::File
         | Kind::Album
+        | Kind::HealthSource
+        | Kind::Workout
+        | Kind::Medication
+        | Kind::Dose
+        | Kind::Condition
+        | Kind::LabResult
+        | Kind::HealthDocument
+        | Kind::Allergy
+        | Kind::Food
+        | Kind::Meal
+        | Kind::HealthSample
         | Kind::Settings
         | Kind::BackgroundTask => {}
     }
@@ -177,6 +199,7 @@ fn capabilities_baseline() -> Capabilities {
         money: false,
         screentime: false,
         files: false,
+        health: false,
     }
 }
 
@@ -209,6 +232,7 @@ fn capabilities_all_true() -> Capabilities {
         money: true,
         screentime: true,
         files: true,
+        health: true,
     }
 }
 

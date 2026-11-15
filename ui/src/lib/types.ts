@@ -388,6 +388,9 @@ export type TrackerSource =
   /** Minutes of screen time a day: all of it, one category's, or one app's
    *  or site's by its item key (`site:youtube.com`). */
   | { type: 'screenTime'; category?: ScreenCategoryId | null; item?: string | null }
+  /** One value a day from Health: a metric's day under `stat`, in its
+   *  canonical unit (an `inRange` share as a percentage). */
+  | { type: 'health'; metric: Metric; stat: Stat }
 
 /**
  * A thing you have decided to record.
@@ -1122,6 +1125,8 @@ export interface Capabilities {
   /** The files catalog: the Files app, and apps keeping files in the
    *  files folder rather than as blobs inside their own records. */
   files?: boolean
+  /** The Health app: samples, medications, conditions, labs, meals. */
+  health?: boolean
 }
 
 export interface VaultStatus {
@@ -3596,6 +3601,7 @@ export const ON_SCREEN_APPS = [
   'money',
   'screentime',
   'files',
+  'health',
   'assistant',
   'journal',
   'settings',
@@ -3629,6 +3635,12 @@ export const SHOWN_KINDS = [
   'txn',
   'file',
   'album',
+  'medication',
+  'condition',
+  'healthDocument',
+  'labResult',
+  'workout',
+  'meal',
 ] as const
 export type ShownKind = (typeof SHOWN_KINDS)[number]
 
@@ -5314,7 +5326,16 @@ export type FileKind = 'image' | 'video' | 'audio' | 'document' | 'other'
 /** Which app put a file in the catalog. `found` is the reconciler: put in the
  *  folder by another program or a sync tool. */
 export type FileOrigin =
-  'files' | 'found' | 'journal' | 'notes' | 'assistant' | 'chat' | 'mail' | 'jobs'
+  | 'files'
+  | 'found'
+  | 'journal'
+  | 'notes'
+  | 'assistant'
+  | 'chat'
+  | 'mail'
+  | 'jobs'
+  /** A clinical document's page or a meal's photograph, sealed by Health. */
+  | 'health'
 
 export type FileStatus =
   | { state: 'present' }
@@ -5438,6 +5459,8 @@ export interface FileQuery {
   favourite?: boolean
   minRating?: number | null
   origin?: FileOrigin | null
+  /** None of these origins. */
+  excludeOrigins?: FileOrigin[]
   status?: StatusFilter
   storage?: StorageKind | null
   from?: string | null
@@ -5504,7 +5527,7 @@ export interface FileUpdate {
   takenAt?: string | null
 }
 
-export type RefKind = 'entry' | 'note' | 'message'
+export type RefKind = 'entry' | 'note' | 'message' | 'healthDocument' | 'meal'
 
 export interface RefOwner {
   kind: RefKind
@@ -5600,4 +5623,854 @@ export interface FileDetail {
   file: FileEntry
   uses: FileUse[]
   albums: Album[]
+}
+
+// ── Health -- docs/plans/health.md ───────────────────────────────────────
+//
+// `karmayoga_core::health`. Every value is in its metric's canonical unit
+// (see `MetricEntry.unit`); `lib/health.ts` converts for display from
+// `HealthUnits`. Times are RFC 3339 strings, dates `YYYY-MM-DD`, local
+// times `HH:MM:SS`.
+
+export type HealthSourceId = string
+export type WorkoutId = string
+export type MedicationId = string
+export type DoseId = string
+export type ConditionId = string
+export type LabResultId = string
+export type HealthDocumentId = string
+export type AllergyId = string
+export type FoodId = string
+export type MealId = string
+
+export type Metric =
+  | 'steps'
+  | 'walking_running_distance'
+  | 'cycling_distance'
+  | 'swimming_distance'
+  | 'active_energy'
+  | 'basal_energy'
+  | 'exercise_time'
+  | 'stand_time'
+  | 'stand_hour'
+  | 'flights_climbed'
+  | 'time_in_daylight'
+  | 'heart_rate'
+  | 'resting_heart_rate'
+  | 'walking_heart_rate'
+  | 'heart_rate_variability'
+  | 'heart_rate_recovery'
+  | 'vo2_max'
+  | 'respiratory_rate'
+  | 'oxygen_saturation'
+  | 'weight'
+  | 'body_fat'
+  | 'lean_body_mass'
+  | 'bmi'
+  | 'height'
+  | 'waist_circumference'
+  | 'body_temperature'
+  | 'wrist_temperature'
+  | 'blood_pressure_systolic'
+  | 'blood_pressure_diastolic'
+  | 'blood_glucose'
+  | 'insulin_basal'
+  | 'insulin_bolus'
+  | 'dietary_energy'
+  | 'dietary_carbs'
+  | 'dietary_protein'
+  | 'dietary_fat'
+  | 'dietary_fiber'
+  | 'dietary_sugar'
+  | 'dietary_sodium'
+  | 'dietary_caffeine'
+  | 'water'
+  | 'sleep_stage'
+  | 'mindful_minutes'
+
+export type MetricKind = 'cumulative' | 'discrete' | 'category'
+export type MetricGroup =
+  | 'activity'
+  | 'heart'
+  | 'respiratory'
+  | 'body'
+  | 'vitals'
+  | 'metabolic'
+  | 'nutrition'
+  | 'sleep'
+  | 'mind'
+
+/** How samples add up. `inRange` bounds are whole canonical units. */
+export type Stat =
+  | { type: 'auto' }
+  | { type: 'sum' }
+  | { type: 'mean' }
+  | { type: 'min' }
+  | { type: 'max' }
+  | { type: 'last' }
+  | { type: 'count' }
+  | { type: 'inRange'; low: number; high: number }
+
+export type BucketSize = 'raw' | 'quarterHour' | 'hour' | 'day' | 'week' | 'month'
+
+export interface MetricEntry {
+  metric: Metric
+  name: string
+  /** The canonical unit every value of it is in. */
+  unit: string
+  kind: MetricKind
+  group: MetricGroup
+  stat: Stat
+}
+
+export interface SamplePoint {
+  start: string
+  end: string
+  value: number
+  source: string
+}
+
+export interface ManualReading {
+  metric: Metric
+  at: string
+  value: number
+  /** The unit `value` is in; empty is canonical. */
+  unit: string
+  /** The diastolic half, when `metric` is the systolic one. */
+  second?: number | null
+  tz: string
+}
+
+export interface SeriesQuery {
+  metric: Metric
+  from: string
+  to: string
+  tz: string
+  bucket: BucketSize
+  stat: Stat
+}
+
+export interface SeriesPoint {
+  at: string
+  value: number
+  min?: number | null
+  max?: number | null
+  count: number
+}
+
+export interface SeriesResult {
+  metric: Metric
+  unit: string
+  stat: Stat
+  points: SeriesPoint[]
+  latest?: SamplePoint | null
+}
+
+export type Connector = 'appleExport' | 'healthAutoExport' | 'manual'
+
+export interface AutomationSeen {
+  id: string
+  name: string
+  period: string
+  aggregation: string
+  lastAt?: string | null
+  lastCount: number
+}
+
+export interface SourceStatus {
+  lastReceivedAt?: string | null
+  newestSampleAt?: string | null
+  lastError: string
+  samplesTotal: number
+  automations: AutomationSeen[]
+  devices: string[]
+}
+
+export interface HealthSource {
+  id: HealthSourceId
+  connector: Connector
+  name: string
+  paused: boolean
+  status: SourceStatus
+  /** The registry id of the token minted for this source's phone push, empty
+   *  when there is none. Written only by the vault. */
+  tokenId: string
+  createdAt: string
+  updatedAt: string
+}
+
+/**
+ * The headers Health Auto Export sends beside a push, as the server route
+ * read them. Every one is optional: a hand-made `curl` sends none. Only the
+ * route sends this -- no window does -- but it is on the wire, so it is here.
+ */
+export interface PushHeaders {
+  automationId?: string
+  automationName?: string
+  automationPeriod?: string
+  automationAggregation?: string
+  sessionId?: string
+}
+
+export interface HealthIngestReport {
+  samplesAdded: number
+  samplesDuplicate: number
+  samplesRejected: number
+  workoutsAdded: number
+  workoutsUpdated: number
+  dosesAdded: number
+  dosesUnmatched: number
+  documentsAdded: number
+  skipped: Record<string, number>
+  first?: string | null
+  last?: string | null
+}
+
+export interface ImportStatus {
+  /** `idle`, `running`, `done`, `failed`, `cancelled`. */
+  state: string
+  fileName: string
+  read: number
+  total: number
+  report: HealthIngestReport
+  error: string
+  startedAt?: string | null
+  finishedAt?: string | null
+}
+
+/** What `health_push_setup` (a shell call) answers. */
+export interface PushSetup {
+  url: string
+  /** Shown once. */
+  token: string
+  webOn: boolean
+  problem: string
+}
+
+export interface HealthUnits {
+  /** `mg/dL` or `mmol/L`. */
+  glucose: string
+  /** `kg` or `lb`. */
+  weight: string
+  /** `km` or `mi`. */
+  distance: string
+  /** `kcal` or `kJ`. */
+  energy: string
+  /** `C` or `F`. */
+  temperature: string
+  /** `cm` or `in`. */
+  length: string
+}
+
+export interface ActivityGoals {
+  moveKcal: number
+  exerciseMin: number
+  standHours: number
+  steps: number
+  sleepHours: number
+}
+
+export interface NutritionTargets {
+  kcal?: number | null
+  proteinG?: number | null
+  carbsG?: number | null
+  fatG?: number | null
+  fiberG?: number | null
+  sodiumMg?: number | null
+  carbsPerMealG?: number | null
+}
+
+export interface HealthSettings {
+  units: HealthUnits
+  goals: ActivityGoals
+  nutrition: NutritionTargets
+  /** Source names, most trusted first. */
+  priority: string[]
+  priorityByMetric: Partial<Record<Metric, string[]>>
+  glucoseLow?: number | null
+  glucoseHigh?: number | null
+  doseReminders: boolean
+  staleHours: number
+}
+
+export interface HealthKeysInfo {
+  fdcKeySet: boolean
+  fdcKeyHint: string
+}
+
+export type Activity =
+  | 'walking'
+  | 'running'
+  | 'cycling'
+  | 'swimming'
+  | 'hiking'
+  | 'rowing'
+  | 'elliptical'
+  | 'stair_climbing'
+  | 'strength_training'
+  | 'functional_training'
+  | 'core_training'
+  | 'hiit'
+  | 'yoga'
+  | 'pilates'
+  | 'dance'
+  | 'martial_arts'
+  | 'tennis'
+  | 'soccer'
+  | 'basketball'
+  | 'golf'
+  | 'cooldown'
+  | 'mindfulness'
+  | 'other'
+
+export interface Workout {
+  id: WorkoutId
+  activity: Activity
+  name: string
+  start: string
+  end: string
+  offsetMin: number
+  activeEnergyKcal?: number | null
+  totalEnergyKcal?: number | null
+  distanceM?: number | null
+  elevationUpM?: number | null
+  avgHr?: number | null
+  maxHr?: number | null
+  effort?: number | null
+  indoor?: boolean | null
+  source: string
+  sourceId?: HealthSourceId | null
+  externalId: string
+  route?: BlobId | null
+  note: string
+  key: string
+  /** Deleted by the person, kept so the key still matches when the phone
+   *  sends it again. Left out of every list and report. */
+  hidden: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RoutePoint {
+  at: string
+  lat: number
+  lon: number
+  alt?: number | null
+}
+
+export interface WorkoutDetail {
+  workout: Workout
+  heartRate: SamplePoint[]
+  route: RoutePoint[]
+}
+
+export type MedKind = 'prescription' | 'overTheCounter' | 'supplement'
+export type MedStatus = 'active' | 'paused' | 'stopped'
+
+/** `times` are local `HH:MM:SS`; `days` 1 = Monday .. 7 = Sunday. */
+export type MedSchedule =
+  | { type: 'daily'; times: string[] }
+  | { type: 'weekly'; days: number[]; times: string[] }
+  | { type: 'everyNDays'; n: number; from: string; times: string[] }
+  | { type: 'asNeeded' }
+
+export type MedRule =
+  | { type: 'emptyStomach'; minutes: number }
+  | { type: 'withFood'; minutes: number }
+  | { type: 'apartFrom'; tags: string[]; hours: number }
+
+export interface DoseChange {
+  on: string
+  dose: number
+  strength: string
+  note: string
+}
+
+export interface Supply {
+  remaining: number
+  refillDays: number
+  lastRefill?: string | null
+}
+
+export interface Code {
+  system: string
+  code: string
+  display: string
+}
+
+export interface Medication {
+  id: MedicationId
+  name: string
+  kind: MedKind
+  form: string
+  strength: string
+  dose: number
+  doseUnit: string
+  schedule: MedSchedule
+  rules: MedRule[]
+  tags: string[]
+  status: MedStatus
+  started?: string | null
+  stopped?: string | null
+  stopReason: string
+  history: DoseChange[]
+  conditionIds: ConditionId[]
+  prescriber: string
+  pharmacy: string
+  supply?: Supply | null
+  remind: boolean
+  codes: Code[]
+  sourceNames: string[]
+  notes: string
+  sortOrder: number
+  createdAt: string
+  updatedAt: string
+}
+
+export type DoseStatus = 'taken' | 'skipped' | 'missed'
+export type DoseOrigin = 'manual' | 'reminder' | 'source' | 'assistant'
+
+export interface Dose {
+  id: DoseId
+  medicationId: MedicationId
+  scheduledAt?: string | null
+  at: string
+  status: DoseStatus
+  amount?: number | null
+  origin: DoseOrigin
+  note: string
+  key: string
+  /** A source's dose event the person deleted, kept so its key still matches
+   *  when the phone sends it again. Left out of every list. */
+  hidden: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DueDose {
+  medicationId: MedicationId
+  name: string
+  dueAt: string
+  dose?: Dose | null
+  overdue: boolean
+}
+
+export interface RuleAlert {
+  medicationId: MedicationId
+  at: string
+  rule: MedRule
+  message: string
+  mealId?: MealId | null
+  otherMedicationId?: MedicationId | null
+}
+
+export interface Adherence {
+  due: number
+  taken: number
+  skipped: number
+  missed: number
+  onTime: number
+}
+
+export type AllergyKind = 'drug' | 'food' | 'environment' | 'other'
+export type Severity = 'mild' | 'moderate' | 'severe'
+
+export interface Allergy {
+  id: AllergyId
+  substance: string
+  kind: AllergyKind
+  reaction: string
+  severity: Severity
+  noted?: string | null
+  notes: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type TemplateKey = 'type1Diabetes' | 'type2Diabetes' | 'hypothyroidism'
+export type ConditionStatus = 'active' | 'remission' | 'resolved'
+
+export type Measure = { type: 'metric'; metric: Metric; stat: Stat } | { type: 'lab'; code: string }
+
+export interface CareTarget {
+  label: string
+  measure: Measure
+  low?: number | null
+  high?: number | null
+  useReferenceRange: boolean
+  windowDays: number
+  note: string
+}
+
+export interface LabSchedule {
+  code: string
+  name: string
+  everyDays: number
+  afterChangeDays?: number | null
+  afterChangeTag: string
+}
+
+export interface CarePlan {
+  watch: Measure[]
+  targets: CareTarget[]
+  labs: LabSchedule[]
+  /** Timing rules suggested for medications carrying each tag. */
+  medRules: Record<string, MedRule[]>
+  trackerIds: TrackerId[]
+  templateVersion: number
+}
+
+export interface Condition {
+  id: ConditionId
+  name: string
+  template?: TemplateKey | null
+  status: ConditionStatus
+  diagnosed?: string | null
+  codes: Code[]
+  plan: CarePlan
+  notes: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface TemplateInfo {
+  key: TemplateKey
+  name: string
+  summary: string
+  version: number
+  plan: CarePlan
+  symptoms: string[]
+  codes: Code[]
+}
+
+export interface TemplateChoice {
+  plan?: CarePlan | null
+  symptoms: string[]
+  diagnosed?: string | null
+}
+
+export interface TargetStanding {
+  target: CareTarget
+  value?: number | null
+  at?: string | null
+  /** `met`, `notMet`, `unknown`. */
+  state: string
+}
+
+export interface LabDue {
+  schedule: LabSchedule
+  last?: string | null
+  due?: string | null
+  reason: string
+  overdue: boolean
+}
+
+export interface ConditionReport {
+  condition: Condition
+  targets: TargetStanding[]
+  labsDue: LabDue[]
+  medications: Medication[]
+  adherence: Adherence
+  alerts: RuleAlert[]
+}
+
+export type LabFlag = 'none' | 'normal' | 'low' | 'high' | 'abnormal' | 'critical'
+export type LabOrigin = 'manual' | 'extracted' | 'fhir'
+
+export interface LabResult {
+  id: LabResultId
+  code: string
+  name: string
+  value?: number | null
+  text: string
+  unit: string
+  refLow?: number | null
+  refHigh?: number | null
+  refText: string
+  flag: LabFlag
+  collected: string
+  collectedAt?: string | null
+  lab: string
+  panel: string
+  documentId?: HealthDocumentId | null
+  origin: LabOrigin
+  note: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface LabTrend {
+  /** LOINC code, or `name:<lower-cased name>`. */
+  key: string
+  name: string
+  unit: string
+  results: LabResult[]
+}
+
+export type DocKind =
+  | 'labReport'
+  | 'visitNote'
+  | 'imaging'
+  | 'discharge'
+  | 'prescription'
+  | 'immunization'
+  | 'insurance'
+  | 'fhir'
+  | 'ecg'
+  | 'other'
+
+/** One of a document's pages: a file in the files catalog, sealed as
+ *  Health's. Name, type and size are the catalog's when it was added. */
+export interface DocFile {
+  file: FileId
+  name: string
+  mime: string
+  size: number
+}
+
+/** What a connector sent for a document (a FHIR resource's JSON, an ECG's
+ *  CSV), sealed in the vault as it arrived. Not a file in the catalog. */
+export interface DocSource {
+  blob: BlobId
+  name: string
+  mime: string
+  size: number
+}
+
+export interface FhirEntry {
+  resourceType: string
+  display: string
+  date?: string | null
+  codes: Code[]
+  value: string
+}
+
+export type ExtractionState = 'none' | 'running' | 'proposed' | 'done' | 'failed'
+
+export interface HealthDocument {
+  id: HealthDocumentId
+  title: string
+  kind: DocKind
+  date?: string | null
+  provider: string
+  /** What somebody added: its pages, in order. */
+  files: DocFile[]
+  /** What a connector sent, when one brought it. */
+  source?: DocSource
+  text: string
+  fhir: FhirEntry[]
+  extraction: ExtractionState
+  extractionError: string
+  pendingLabs: LabResult[]
+  conditionIds: ConditionId[]
+  externalId: string
+  notes: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Nutrients {
+  kcal: number
+  proteinG: number
+  carbsG: number
+  fatG: number
+  fiberG?: number | null
+  sugarG?: number | null
+  satFatG?: number | null
+  sodiumMg?: number | null
+  extra: Record<string, number>
+}
+
+export interface Serving {
+  name: string
+  grams: number
+}
+
+export type FoodSource =
+  | { type: 'own' }
+  | { type: 'usda'; fdcId: number }
+  | { type: 'openFoodFacts'; code: string }
+  | { type: 'recipe'; itemId: ItemId }
+  | { type: 'estimate' }
+
+export interface Food {
+  id: FoodId
+  name: string
+  brand: string
+  barcode: string
+  source: FoodSource
+  /** Per 100 g (or 100 ml). */
+  per100g: Nutrients
+  servings: Serving[]
+  favorite: boolean
+  lastUsed?: string | null
+  useCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface FoodHit {
+  food: Food
+  /** `mine`, `usda`, `openFoodFacts`. */
+  origin: string
+}
+
+export type MealSlot = 'breakfast' | 'lunch' | 'dinner' | 'snack'
+
+export interface MealItem {
+  foodId?: FoodId | null
+  name: string
+  amount: number
+  unit: string
+  grams?: number | null
+  nutrients: Nutrients
+  estimated: boolean
+}
+
+export interface Meal {
+  id: MealId
+  at: string
+  offsetMin: number
+  slot: MealSlot
+  name: string
+  items: MealItem[]
+  /** A photograph of the plate: a sealed file in the files catalog. */
+  photo?: FileId | null
+  note: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface NutritionDay {
+  date: string
+  logged: Nutrients
+  imported: Nutrients
+  meals: number
+}
+
+export interface MealResponse {
+  mealId: MealId
+  baseline?: number | null
+  peak?: number | null
+  peakAfterMin?: number | null
+  rise?: number | null
+  recoveredAfterMin?: number | null
+  iauc?: number | null
+  points: SamplePoint[]
+  carbsG: number
+}
+
+export interface ActivityDay {
+  date: string
+  activeKcal: number
+  exerciseMin: number
+  standHours: number
+  steps: number
+  distanceM: number
+  flights: number
+  restingHr?: number | null
+  hrvMs?: number | null
+  workouts: number
+}
+
+export type SleepStage = 'inBed' | 'awake' | 'asleep' | 'core' | 'deep' | 'rem'
+
+export interface SleepSegment {
+  stage: SleepStage
+  start: string
+  end: string
+}
+
+export interface SleepNight {
+  date: string
+  inBedStart?: string | null
+  sleepStart?: string | null
+  sleepEnd?: string | null
+  asleepMin: number
+  inBedMin: number
+  awakeMin: number
+  coreMin: number
+  deepMin: number
+  remMin: number
+  efficiency?: number | null
+  hr?: number | null
+  hrvMs?: number | null
+  respiratoryRate?: number | null
+  score?: number | null
+  scoreParts: Record<string, number>
+  segments: SleepSegment[]
+}
+
+export interface AgpSlot {
+  minute: number
+  p5: number
+  p25: number
+  p50: number
+  p75: number
+  p95: number
+}
+
+export interface GlucoseEvent {
+  start: string
+  end: string
+  extreme: number
+  /** `low`, `veryLow`, `high`, `veryHigh`. */
+  kind: string
+}
+
+export interface GlucoseReport {
+  from?: string | null
+  to?: string | null
+  readings: number
+  coverage: number
+  mean?: number | null
+  gmi?: number | null
+  cv?: number | null
+  veryLow: number
+  low: number
+  inRange: number
+  high: number
+  veryHigh: number
+  agp: AgpSlot[]
+  events: GlucoseEvent[]
+}
+
+export interface DayTimeline {
+  date: string
+  glucose: SamplePoint[]
+  heartRate: SeriesPoint[]
+  meals: Meal[]
+  doses: Dose[]
+  insulin: SamplePoint[]
+  workouts: Workout[]
+  sleep: SleepSegment[]
+}
+
+export interface Latest {
+  metric: Metric
+  value: number
+  at: string
+  source: string
+  previous?: number | null
+}
+
+export interface HealthDay {
+  date: string
+  activity: ActivityDay
+  goals: ActivityGoals
+  sleep?: SleepNight | null
+  latest: Latest[]
+  dosesDue: DueDose[]
+  nutrition: NutritionDay
+  workouts: Workout[]
+  glucose?: GlucoseReport | null
+  alerts: RuleAlert[]
+  labsDue: LabDue[]
+  staleSources: HealthSource[]
+}
+
+export interface VisitBrief {
+  markdown: string
+  since: string
+  conditionId?: ConditionId | null
 }

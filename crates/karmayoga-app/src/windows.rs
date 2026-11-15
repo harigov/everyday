@@ -74,6 +74,7 @@ const APPS: &[(&str, &str)] = &[
     ("money", "Money"),
     ("screentime", "Screen time"),
     ("files", "Files"),
+    ("health", "Health"),
     ("assistant", "Assistant"),
     ("journal", "Journal"),
 ];

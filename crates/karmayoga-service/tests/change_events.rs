@@ -54,6 +54,13 @@
 //!   stores it, and is never synced or disconnected. (`sync_bank_links` is
 //!   *not* skipped: run before any bank exists, it has nothing to ask
 //!   Plaid, answers `[]`, and still announces its `change:`.)
+//! - **Health, the three that cannot be offline**: `import_apple_health` and
+//!   `import_apple_health_file` read an export on a thread of their own and
+//!   raise their own changes whenever it ends, which this capture would race,
+//!   and `extract_health_document` asks the large model to read the
+//!   document. (`cancel_apple_import` is *not*
+//!   skipped: with no import running it answers `false` and still announces
+//!   its `change:`.)
 //! - **`respond_to_invite`**: needs a message carrying a real,
 //!   ICS-bearing invite written into the local pack store -- more raw-byte
 //!   plumbing than this net is trying to buy -- and its own reply queues an
@@ -147,7 +154,10 @@ use base64::Engine;
 use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::account::{Account, Provider};
 use karmayoga_core::agent::tools::Effect;
-use karmayoga_core::id::{MailMessageId, MailboxId, NewsSourceId, PackId, StoryId, ThreadId};
+use karmayoga_core::id::{
+    AllergyId, DoseId, FoodId, HealthSourceId, LabResultId, MailMessageId, MailboxId, MealId,
+    MedicationId, NewsSourceId, PackId, StoryId, ThreadId, WorkoutId,
+};
 use karmayoga_core::library::Kind;
 use karmayoga_core::mail::{Address, CategorySource, Mailbox, MailboxRole, Message, MessageFlags};
 use karmayoga_core::meeting::{MeetingSettings, Recording};
@@ -295,10 +305,19 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("download_speech_model", "a real ~40MB network download"),
     ("edit_thread_draft", "needs a draft's copy synced from a server to carry on writing"),
     ("enrol_voice", "needs the speech/voice model kit to embed real audio"),
+    ("extract_health_document", "asks the large model to read the document's pages"),
     ("fetch_attachment", "needs a message's raw bytes from a real synced pack"),
     ("fetch_full_article", "fetches the page a story links to over the network"),
     ("fetch_image", "fetches a remote image over HTTP"),
     ("finish_recording", "moves the recording into the transcription pipeline: background work"),
+    (
+        "import_apple_health",
+        "reads the export on a thread of its own, which raises its own changes",
+    ),
+    (
+        "import_apple_health_file",
+        "reads the export on a thread of its own, which raises its own changes",
+    ),
     ("name_speaker", "needs a transcript, which only a finished recording produces"),
     ("respond_to_invite", "needs an ICS-bearing message in the local pack store, and sends"),
     (
@@ -874,6 +893,277 @@ async fn every_offline_write_announces_what_was_written_down() {
     .await;
     run(&svc, &h, "delete_screen_app", json!({ "id": terminal.id })).await;
     run(&svc, &h, "delete_screen_category", json!({ "id": side_projects.id })).await;
+
+    // ---- health -----------------------------------------------------------
+    //
+    // The phone's half first: a source for it to push to, and one push of one
+    // reading in Health Auto Export's own shape. Then a person's: the
+    // settings, the food-lookup key set and cleared, a reading typed in and
+    // taken away, and one record of every kind written and deleted -- a
+    // workout, a medication and a dose, an allergy, a condition from a
+    // template, a lab result, a document from a file already in the blob
+    // store with the result read out of it accepted, a food and a meal.
+    // Cancelling an import is here, with none running; starting one and the
+    // model's reading of a document are not (see SKIPPED_COMMANDS).
+    let health_now = Timestamp::now();
+    let hour = SignedDuration::from_hours(1);
+    let mut health_settings = call(&svc, &h, "health_settings", json!({})).await;
+    health_settings["staleHours"] = json!(12);
+    run(&svc, &h, "save_health_settings", json!({ "settings": health_settings })).await;
+
+    let phone = HealthSourceId::new();
+    run(
+        &svc,
+        &h,
+        "save_health_source",
+        json!({ "source": {
+            "id": phone,
+            "connector": "healthAutoExport",
+            "name": "Phone, for the snapshot",
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    run(
+        &svc,
+        &h,
+        "set_health_source_token",
+        json!({ "sourceId": phone, "tokenId": "phone-token-for-the-snapshot" }),
+    )
+    .await;
+    let steps_at = (health_now - hour * 2)
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .strftime("%Y-%m-%d %H:%M:%S %z")
+        .to_string();
+    run(
+        &svc,
+        &h,
+        "record_health_push",
+        json!({
+            "sourceId": phone,
+            "headers": {
+                "automationId": "hourly",
+                "automationName": "Hourly",
+                "automationPeriod": "Since Last Sync",
+            },
+            "body": { "data": { "metrics": [{
+                "name": "step_count",
+                "units": "count",
+                "data": [{ "date": steps_at, "qty": 120, "source": "Watch" }],
+            }]}},
+        }),
+    )
+    .await;
+    run(&svc, &h, "cancel_apple_import", json!({})).await;
+    run(&svc, &h, "save_health_keys", json!({ "fdcKey": "key-for-the-snapshot-1234" })).await;
+    run(&svc, &h, "clear_health_keys", json!({})).await;
+    run(
+        &svc,
+        &h,
+        "add_health_reading",
+        json!({ "reading": { "metric": "weight", "at": health_now, "value": 80.5, "unit": "kg" } }),
+    )
+    .await;
+    run(
+        &svc,
+        &h,
+        "delete_health_samples",
+        json!({
+            "metric": "weight",
+            "from": health_now - hour,
+            "to": health_now + hour,
+            "source": null,
+        }),
+    )
+    .await;
+
+    let workout = WorkoutId::new();
+    run(
+        &svc,
+        &h,
+        "save_workout",
+        json!({ "workout": {
+            "id": workout,
+            "activity": "running",
+            "name": "Morning run",
+            "start": health_now - hour,
+            "end": health_now - SignedDuration::from_mins(30),
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    run(&svc, &h, "delete_workout", json!({ "id": workout })).await;
+
+    let medication = MedicationId::new();
+    run(
+        &svc,
+        &h,
+        "save_medication",
+        json!({ "medication": {
+            "id": medication,
+            "name": "Levothyroxine",
+            "strength": "50 mcg",
+            "started": "2026-01-01",
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    let dose = DoseId::new();
+    run(
+        &svc,
+        &h,
+        "log_dose",
+        json!({ "dose": {
+            "id": dose,
+            "medicationId": medication,
+            "at": health_now,
+            "status": "taken",
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    run(&svc, &h, "delete_dose", json!({ "id": dose })).await;
+    run(&svc, &h, "delete_medication", json!({ "id": medication })).await;
+
+    let allergy = AllergyId::new();
+    run(
+        &svc,
+        &h,
+        "save_allergy",
+        json!({ "allergy": {
+            "id": allergy,
+            "substance": "Penicillin",
+            "kind": "drug",
+            "severity": "severe",
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    run(&svc, &h, "delete_allergy", json!({ "id": allergy })).await;
+
+    let condition = run(
+        &svc,
+        &h,
+        "apply_condition_template",
+        json!({ "template": "type2Diabetes", "choice": {} }),
+    )
+    .await;
+    let mut reviewed = condition.clone();
+    reviewed["notes"] = json!("Reviewed with the clinic.");
+    run(&svc, &h, "save_condition", json!({ "condition": reviewed })).await;
+    run(&svc, &h, "delete_condition", json!({ "id": condition["id"], "removeTrackers": true }))
+        .await;
+
+    let lab = LabResultId::new();
+    run(
+        &svc,
+        &h,
+        "save_lab",
+        json!({ "lab": {
+            "id": lab,
+            "name": "TSH",
+            "code": "3016-3",
+            "value": 2.4,
+            "unit": "mIU/L",
+            "collected": "2026-11-01",
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    run(&svc, &h, "delete_lab", json!({ "id": lab })).await;
+
+    let report = b"%PDF-1.4 a lab report, for the snapshot";
+    // Added to the files catalog first, sealed as Health's, the way the
+    // interface adds a page before it makes a document of it.
+    let sealed = karmayoga_core::files::ImportOptions {
+        encrypted: Some(true),
+        ..karmayoga_core::files::ImportOptions::new(karmayoga_core::files::FileOrigin::Health)
+    };
+    let page = vault.import_bytes(report, "report.pdf", &sealed).unwrap().id;
+    let document = run(
+        &svc,
+        &h,
+        "add_health_document",
+        json!({
+            "title": "Lab report",
+            "kind": "labReport",
+            "date": "2026-11-01",
+            "files": [page],
+        }),
+    )
+    .await;
+    let mut annotated = document.clone();
+    annotated["provider"] = json!("The clinic's lab");
+    run(&svc, &h, "save_health_document", json!({ "document": annotated })).await;
+    run(
+        &svc,
+        &h,
+        "accept_document_labs",
+        json!({
+            "id": document["id"],
+            "labs": [{
+                "id": LabResultId::new(),
+                "name": "Hemoglobin A1c",
+                "code": "4548-4",
+                "value": 6.8,
+                "unit": "%",
+                "collected": "2026-11-01",
+                "createdAt": health_now,
+                "updatedAt": health_now,
+            }],
+        }),
+    )
+    .await;
+    run(&svc, &h, "delete_health_document", json!({ "id": document["id"], "deleteLabs": true }))
+        .await;
+
+    let oats = FoodId::new();
+    let per_100g = json!({ "kcal": 379.0, "proteinG": 13.0, "carbsG": 68.0, "fatG": 6.5 });
+    run(
+        &svc,
+        &h,
+        "save_food",
+        json!({ "food": {
+            "id": oats,
+            "name": "Rolled oats",
+            "per100g": per_100g,
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    let breakfast = MealId::new();
+    run(
+        &svc,
+        &h,
+        "save_meal",
+        json!({ "meal": {
+            "id": breakfast,
+            "at": health_now,
+            "slot": "breakfast",
+            "name": "Porridge",
+            "items": [{
+                "foodId": oats,
+                "name": "Rolled oats",
+                "amount": 50.0,
+                "unit": "g",
+                "grams": 50.0,
+                "nutrients": { "kcal": 190.0, "proteinG": 6.5, "carbsG": 34.0, "fatG": 3.3 },
+            }],
+            "createdAt": health_now,
+            "updatedAt": health_now,
+        }}),
+    )
+    .await;
+    run(&svc, &h, "delete_meal", json!({ "id": breakfast })).await;
+    run(&svc, &h, "delete_food", json!({ "id": oats })).await;
+    run(&svc, &h, "delete_health_source", json!({ "id": phone })).await;
 
     // ---- meetings -----------------------------------------------------------
     let meeting_settings = MeetingSettings { enabled: false, ..Default::default() };

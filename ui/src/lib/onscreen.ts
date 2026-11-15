@@ -90,6 +90,12 @@ const UNTITLED: Record<ShownKind, string> = {
   txn: 'A transaction',
   file: 'A file',
   album: 'An album',
+  medication: 'A medication',
+  condition: 'A condition',
+  healthDocument: 'A document',
+  labResult: 'A result',
+  workout: 'A workout',
+  meal: 'A meal',
 }
 
 /** The most `send_message` will carry of each list -- the service reads no

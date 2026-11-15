@@ -632,6 +632,18 @@ class AppState {
   }
 
   /**
+   * Can this vault run Health?
+   *
+   * One capability, as Money's and Screen time's. Nothing in it needs a
+   * device: what a watch or an export brings is added from inside, and a
+   * vault with none is a place to keep medications, results and meals by
+   * hand.
+   */
+  get supportsHealth(): boolean {
+    return this.status?.capabilities?.health === true
+  }
+
+  /**
    * Is this section available on the vault that is open?
    *
    * Reads `apps.ts`'s registry rather than a switch of its own: that used to

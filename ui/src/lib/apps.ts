@@ -41,6 +41,7 @@ import type { feed as feedSingleton } from './feed.svelte'
 import type { money as moneySingleton } from './money.svelte'
 import type { screentime as screentimeSingleton } from './screentime.svelte'
 import type { files as filesSingleton } from './files.svelte'
+import type { health as healthSingleton } from './health.svelte'
 import type { overview as overviewSingleton } from './overview.svelte'
 import type { assistant as assistantSingleton } from './assistant.svelte'
 import type { agent as agentSingleton } from './agent.svelte'
@@ -56,6 +57,7 @@ type FeedLike = typeof feedSingleton
 type MoneyLike = typeof moneySingleton
 type ScreenTimeLike = typeof screentimeSingleton
 type FilesLike = typeof filesSingleton
+type HealthLike = typeof healthSingleton
 type OverviewLike = typeof overviewSingleton
 type AssistantLike = typeof assistantSingleton
 type AgentLike = typeof agentSingleton
@@ -77,6 +79,7 @@ export const APP_ORDER = [
   'money',
   'screentime',
   'files',
+  'health',
   'assistant',
   'journal',
 ] as const
@@ -95,6 +98,7 @@ export interface AppDeps {
   money: MoneyLike
   screentime: ScreenTimeLike
   files: FilesLike
+  health: HealthLike
   overview: OverviewLike
 }
 
@@ -124,6 +128,7 @@ export interface AccentDeps {
   money: MoneyLike
   screentime: ScreenTimeLike
   files: FilesLike
+  health: HealthLike
 }
 
 /** What `shortcuts.svelte.ts`'s "start the next thing" needs from every
@@ -139,6 +144,7 @@ export interface CreateDeps {
   money: MoneyLike
   screentime: ScreenTimeLike
   files: FilesLike
+  health: HealthLike
   overview: OverviewLike
   assistant: AssistantLike
   /** The conversation, which is what the Assistant app starts a new one of. */
@@ -342,6 +348,22 @@ export const APPS: Record<Section, AppModule> = {
       query: d.files.search,
       set: (q) => d.files.setSearch(q),
     }),
+  },
+  health: {
+    section: 'health',
+    label: 'Health',
+    icon: 'heart-pulse',
+    symbol: 'heart-pulse',
+    supported: (app) => app.supportsHealth,
+    accent: (d) => d.health.accent,
+    // A meal on Nutrition, a medication on Medications, a reading anywhere
+    // else: what the open pane has to be told. See `health.create`.
+    create: (d) => d.health.create(),
+    onScreen: (d) => d.health.showing,
+    // What is listed -- a week of readings, a few medicines, a handful of
+    // results -- is read at a glance or opened from its own pane; there is
+    // nothing for a search to narrow.
+    search: () => null,
   },
   assistant: {
     section: 'assistant',

@@ -231,6 +231,26 @@ pub enum Kind {
     File,
     /// An album of files.
     Album,
+    /// A connection health data arrives through -- the Apple export, the
+    /// phone's Health Auto Export.
+    HealthSource,
+    Workout,
+    /// A medication or supplement.
+    Medication,
+    /// A dose taken or skipped.
+    Dose,
+    /// A condition and its care plan.
+    Condition,
+    LabResult,
+    /// A clinical document.
+    HealthDocument,
+    Allergy,
+    Food,
+    Meal,
+    /// Health samples arrived or were deleted. Never with an id, for
+    /// [`Kind::ScreenSpan`]'s reason: a phone pushes every hour, and what a
+    /// listener does about any of it is reload what it shows.
+    HealthSample,
     /// The vault's own settings: auto-lock, the assistant's configuration.
     Settings,
     /// One of [`crate::supervisor::Supervisor`]'s long-lived keyed tasks --
@@ -303,7 +323,20 @@ impl TryFrom<Kind> for RecordKind {
             Kind::Album => Ok(RecordKind::Album),
             // Not a record kind: spans are written by the thousand and
             // never one at a time by a person.
+            Kind::HealthSource => Ok(RecordKind::HealthSource),
+            Kind::Workout => Ok(RecordKind::Workout),
+            Kind::Medication => Ok(RecordKind::Medication),
+            Kind::Dose => Ok(RecordKind::Dose),
+            Kind::Condition => Ok(RecordKind::Condition),
+            Kind::LabResult => Ok(RecordKind::LabResult),
+            Kind::HealthDocument => Ok(RecordKind::HealthDocument),
+            Kind::Allergy => Ok(RecordKind::Allergy),
+            Kind::Food => Ok(RecordKind::Food),
+            Kind::Meal => Ok(RecordKind::Meal),
             Kind::ScreenSpan => Err(()),
+            // Not a record kind either: samples are filed by the thousand
+            // into series days.
+            Kind::HealthSample => Err(()),
             // Not a record: the vault's own settings.
             Kind::Settings => Err(()),
             // Not a record: a supervisor task's status.
@@ -363,6 +396,16 @@ impl TryFrom<RecordKind> for Kind {
             RecordKind::ScreenCategory => Ok(Kind::ScreenCategory),
             RecordKind::File => Ok(Kind::File),
             RecordKind::Album => Ok(Kind::Album),
+            RecordKind::HealthSource => Ok(Kind::HealthSource),
+            RecordKind::Workout => Ok(Kind::Workout),
+            RecordKind::Medication => Ok(Kind::Medication),
+            RecordKind::Dose => Ok(Kind::Dose),
+            RecordKind::Condition => Ok(Kind::Condition),
+            RecordKind::LabResult => Ok(Kind::LabResult),
+            RecordKind::HealthDocument => Ok(Kind::HealthDocument),
+            RecordKind::Allergy => Ok(Kind::Allergy),
+            RecordKind::Food => Ok(Kind::Food),
+            RecordKind::Meal => Ok(Kind::Meal),
             // Folded into `Kind::Thread` -- see this impl's docs.
             RecordKind::MailMessage | RecordKind::Op => Err(()),
             // Folded into `Kind::Conversation` -- see this impl's docs.
@@ -545,7 +588,7 @@ mod tests {
     //! the docs on those impls name.
     use super::*;
 
-    const RECORD_KINDS: [Kind; 40] = [
+    const RECORD_KINDS: [Kind; 50] = [
         Kind::Journal,
         Kind::Entry,
         Kind::Note,
@@ -586,13 +629,23 @@ mod tests {
         Kind::ScreenCategory,
         Kind::File,
         Kind::Album,
+        Kind::HealthSource,
+        Kind::Workout,
+        Kind::Medication,
+        Kind::Dose,
+        Kind::Condition,
+        Kind::LabResult,
+        Kind::HealthDocument,
+        Kind::Allergy,
+        Kind::Food,
+        Kind::Meal,
     ];
 
     #[test]
     fn every_record_backed_change_kind_round_trips_through_record_kind() {
         for kind in RECORD_KINDS {
             let record = RecordKind::try_from(kind).unwrap_or_else(|()| {
-                panic!("{kind:?} is one of the 35 record-backed kinds and should convert")
+                panic!("{kind:?} is one of the 48 record-backed kinds and should convert")
             });
             assert_eq!(Kind::try_from(record), Ok(kind), "{kind:?}");
         }
