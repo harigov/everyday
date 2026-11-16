@@ -505,7 +505,7 @@
     padding: var(--sp-3);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    background: var(--bg-raised);
+    background: var(--float);
     box-shadow: var(--shadow-lg);
   }
 

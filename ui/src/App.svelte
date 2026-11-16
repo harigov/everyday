@@ -586,7 +586,7 @@
     z-index: 50;
     padding: var(--sp-2) var(--sp-4);
     border-radius: 999px;
-    background: var(--bg-raised);
+    background: var(--float);
     border: 1px solid var(--border);
     box-shadow: var(--shadow);
     font-size: var(--text-sm);

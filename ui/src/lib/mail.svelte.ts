@@ -617,6 +617,9 @@ class MailState {
     this.sendsView = { list: 'scheduled', account: accountId }
     this.selectedThread = null
     this.openThread = null
+    // Picked threads would be out of sight under a list of sends, and yet
+    // still what `e` and `#` act on.
+    this.clearChecked()
   }
 
   /** An Outbox row picked in the nav: one account's, or every account's. */
@@ -624,6 +627,7 @@ class MailState {
     this.sendsView = { list: 'outbox', account: accountId }
     this.selectedThread = null
     this.openThread = null
+    this.clearChecked()
     void this.refreshOutbox()
   }
 

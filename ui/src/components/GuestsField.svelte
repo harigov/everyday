@@ -358,7 +358,7 @@
     padding: 4px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--bg-raised);
+    background: var(--float);
     box-shadow: var(--shadow-lg);
   }
   .suggestion {

@@ -162,7 +162,8 @@
  *                    tokens, and is handed this colour to stand on instead
  *
  * Floating layers -- menus, sheets, toasts
- *   --float          their fill; may be translucent when --glass-blur is set
+ *   --float          their fill; at least 0.97 opaque even with --glass-blur,
+ *                    since what they cover is usually text
  *   --glass-blur     a `backdrop-filter` value, or `none`
  *   --edge           an inset highlight along a card's rim (`0 0 #0000` = none)
  *   --scrim          the dimming under a sheet

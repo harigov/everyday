@@ -478,7 +478,7 @@
     padding: var(--sp-3);
     border-radius: var(--radius-lg);
     border: 1px solid var(--border);
-    background: var(--bg-raised);
+    background: var(--float);
     box-shadow: var(--shadow-lg);
   }
 

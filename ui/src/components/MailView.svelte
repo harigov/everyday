@@ -491,552 +491,668 @@
     mail.wantsLabel = null
     if (ids) void mail.labelMany(ids, labelName)
   }
+
+  /** Is the reading pane there at all? Only with one thread open, or a new
+   *  message being written in it. With nothing open, or with threads picked
+   *  -- whose actions are a bar over the list instead -- the list takes the
+   *  whole width, and its rows go to one line with more of each message. */
+  const paneOpen = $derived(
+    (mail.composing !== null && !mail.composeInline) ||
+      (mail.checked.size === 0 && mail.openThread !== null),
+  )
+
+  /** The mailbox's own list, to bring the open thread's row back into view
+   *  once the list has narrowed under it -- see `showSelected`. */
+  let threadList: { scrollToIndex(index: number): void } | undefined = $state()
+
+  /** Scroll the selected row into view. Opening a thread from the full-width
+   *  list narrows it, its one-line rows go to two, and a row clicked near
+   *  the bottom would end up below the fold; `VirtualList` only scrolls to
+   *  its selection when the selection changes, which was before that. */
+  function showSelected() {
+    const at = listRows.findIndex((row) => rowKey(row) === mail.selectedThread)
+    if (at >= 0) threadList?.scrollToIndex(at)
+  }
+
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)')
+  // With no motion the pane is there at once: bring the row back as soon as
+  // the narrowed list has measured its rows.
+  $effect(() => {
+    if (paneOpen && still.matches) requestAnimationFrame(() => requestAnimationFrame(showSelected))
+  })
+
+  /**
+   * The reading pane coming and going, one bidirectional transition with `t`
+   * as how open it is, so a close begun mid-open turns back from where it
+   * is rather than starting over.
+   *
+   * The pane is pinned at its full size the whole time and only uncovered,
+   * from its left edge, while the list beside it narrows by exactly as much
+   * -- so the list's edge is the pane's, frame for frame, and the thread
+   * inside never lays itself out at an in-between width (each mail body is
+   * a frame that measures its own height whenever its width moves). Both
+   * are driven from this one `tick` rather than a CSS transition on each,
+   * which could drift a frame apart. The list's in-between width is a
+   * `flex-grow` between 0 (its own width) and 1 (all of it): a lone item
+   * growing by less than 1 takes that share of the free space, so the width
+   * moves in step with `t`. A dragged width is never animated, since only
+   * this moves it.
+   *
+   * The list's contents are laid out once, at the width the list is going
+   * to, and the list's own box clips them while it moves (`.sliding`):
+   * otherwise every frame would lay out every rendered row again, and the
+   * rows crossing the one-line/two-line width halfway would all be
+   * measured again by the virtual list.
+   */
+  function slide(node: HTMLElement) {
+    const list = node.parentElement?.querySelector<HTMLElement>(':scope > .list')
+    const box = node.parentElement
+    /** Which way the list's contents were last laid out for. */
+    let laidFor: boolean | null = null
+    return {
+      duration: still.matches ? 0 : 260,
+      easing: (t: number) => 1 - Math.pow(1 - t, 4),
+      tick: (t: number) => {
+        if (!list || !box) return
+        // Fully open, or gone: CSS has it from here.
+        if (t === 1 || (t === 0 && !paneOpen)) {
+          node.style.clipPath = ''
+          list.style.flexGrow = ''
+          list.style.removeProperty('--slide-w')
+          list.classList.remove('sliding')
+          laidFor = null
+          if (t === 1) showSelected()
+          return
+        }
+        if (laidFor !== paneOpen) {
+          laidFor = paneOpen
+          const to = paneOpen ? box.clientWidth - node.offsetWidth : box.clientWidth
+          list.style.setProperty('--slide-w', `${to}px`)
+          list.classList.add('sliding')
+        }
+        node.style.clipPath = `inset(0 0 0 ${(1 - t) * 100}%)`
+        list.style.flexGrow = String(1 - t)
+      },
+    }
+  }
 </script>
 
 <svelte:window onfocus={() => mail.seeOpenThread()} />
 <svelte:document onvisibilitychange={() => mail.seeOpenThread()} />
 
-<section class="list" data-thread-list data-mail-pane>
-  <div class="top">
-    <div class="pane-titles">
-      <span class="pane-title">{heading}</span>
-      {#if unreadLine}<span class="pane-sub">{unreadLine}</span>{/if}
+<!-- The list and the reading pane, as one positioned box: the pane stands
+     in it at a fixed place, out of the flow, so the list can widen under it
+     while it goes -- see `slide`. -->
+<div class="mail">
+  <section class="list" class:wide={!paneOpen} data-thread-list data-mail-pane>
+    <div class="top">
+      <div class="pane-titles">
+        <span class="pane-title">{heading}</span>
+        {#if unreadLine}<span class="pane-sub">{unreadLine}</span>{/if}
+      </div>
+      <button
+        class="plus"
+        class:spinning={syncing}
+        title={syncTitle}
+        aria-label={syncing ? 'Syncing' : 'Sync now'}
+        aria-busy={syncing}
+        onclick={() => void mail.syncAll(syncScope.length > 0 ? syncScope : undefined)}
+      >
+        <Icon name="refresh" size={17} />
+      </button>
+      <button
+        class="plus"
+        title="Quick cleanup"
+        aria-label="Quick cleanup"
+        aria-haspopup="dialog"
+        onclick={() => (cleaning = true)}
+      >
+        <Icon name="broom" size={17} />
+      </button>
+      <button
+        class="plus compose"
+        title="Compose (C)"
+        aria-label="Compose"
+        onclick={() => void mail.compose()}
+      >
+        <Icon name="pencil" size={16} />
+      </button>
     </div>
-    <button
-      class="plus"
-      class:spinning={syncing}
-      title={syncTitle}
-      aria-label={syncing ? 'Syncing' : 'Sync now'}
-      aria-busy={syncing}
-      onclick={() => void mail.syncAll(syncScope.length > 0 ? syncScope : undefined)}
-    >
-      <Icon name="refresh" size={17} />
-    </button>
-    <button
-      class="plus"
-      title="Quick cleanup"
-      aria-label="Quick cleanup"
-      aria-haspopup="dialog"
-      onclick={() => (cleaning = true)}
-    >
-      <Icon name="broom" size={17} />
-    </button>
-    <button
-      class="plus compose"
-      title="Compose (C)"
-      aria-label="Compose"
-      onclick={() => void mail.compose()}
-    >
-      <Icon name="pencil" size={16} />
-    </button>
-  </div>
 
-  {#if mail.sendsView?.list === 'scheduled' && mail.sendsView.account}
-    <MailScheduled accountId={mail.sendsView.account} />
-  {:else if mail.sendsView?.list === 'outbox'}
-    <MailOutbox accountId={mail.sendsView.account} />
-  {:else}
-    {#if showTabs && !mail.searchQuery.trim()}
-      <!-- The shared filter bar (app.css's "Filter bars"), as Todo's and the
+    {#if mail.sendsView?.list === 'scheduled' && mail.sendsView.account}
+      <MailScheduled accountId={mail.sendsView.account} />
+    {:else if mail.sendsView?.list === 'outbox'}
+      <MailOutbox accountId={mail.sendsView.account} />
+    {:else}
+      {#if mail.checked.size > 0}
+        <!-- What can be done to every picked thread at once, over the list
+           they were picked from rather than in a reading pane of its own:
+           the list keeps the whole width while they are. -->
+        <div class="bulk" role="toolbar" aria-label="Picked conversations">
+          <span class="bulk-count">
+            {plural(mail.checked.size, 'conversation')} selected
+          </span>
+          <button
+            class="btn btn-sm btn-outline"
+            onclick={() => void mail.archiveMany(mail.targets)}
+          >
+            <Icon name="layers" size={14} /> Archive <kbd>E</kbd>
+          </button>
+          {#if mail.emptiableRole !== 'trash'}
+            <button
+              class="btn btn-sm btn-outline"
+              onclick={() => void mail.trashMany(mail.targets)}
+            >
+              <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
+            </button>
+          {/if}
+          {#if mail.emptiableRole && mail.mailbox}
+            {@const box = mail.mailbox}
+            <button
+              class="btn btn-sm btn-outline"
+              onclick={() => (mail.wantsForever = { ids: mail.targets, mailbox: box })}
+            >
+              <Icon name="trash" size={14} /> Delete forever…
+              {#if mail.emptiableRole === 'trash'}<kbd>#</kbd>{/if}
+            </button>
+          {/if}
+          {#if pickedThreads.some((t) => t.unreadCount > 0)}
+            <button
+              class="btn btn-sm btn-outline"
+              onclick={() => void mail.markReadMany(mail.targets)}
+            >
+              <Icon name="check" size={14} /> Mark read <kbd>I</kbd>
+            </button>
+          {:else}
+            <button
+              class="btn btn-sm btn-outline"
+              onclick={() => void mail.markUnreadMany(mail.targets)}
+            >
+              <Icon name="check" size={14} /> Mark unread <kbd>U</kbd>
+            </button>
+          {/if}
+          {#if !inSnoozedView}
+            <button
+              class="btn btn-sm btn-outline"
+              onclick={() => (mail.wantsSnooze = mail.targets)}
+            >
+              <Icon name="clock" size={14} /> Snooze… <kbd>H</kbd>
+            </button>
+          {/if}
+          <button class="btn btn-sm btn-outline" onclick={(e) => menu.show(e, bulkMenu())}>
+            More…
+          </button>
+          <button
+            class="bulk-clear"
+            title="Clear selection (Esc)"
+            aria-label="Clear selection"
+            onclick={() => mail.clearChecked()}
+          >
+            <Icon name="close" size={14} />
+          </button>
+          <p class="bulk-hint">
+            Shift-click or <kbd>Shift</kbd>+<kbd>↓</kbd> picks a run of threads, {modKey}-click adds
+            or removes one, and <kbd>X</kbd> picks the one under the cursor.
+          </p>
+        </div>
+      {/if}
+      {#if showTabs && !mail.searchQuery.trim()}
+        <!-- The shared filter bar (app.css's "Filter bars"), as Todo's and the
            library's are: the open category named, the rest an icon and its
            count -- six labelled tabs and their counts are wider than the
            list column, and wrapped onto two rows they read as a paragraph
            rather than a control. Every chip is still named, in its title
            and to assistive technology, and its count turns the accent when
            anything under it is unread. -->
-      <div class="tabs">
-        <div class="filters" role="tablist" aria-label="Mail categories">
-          {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
-            {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
-            {@const number = tabNumber(count)}
-            {@const on = mail.category === tab.key}
-            <button
-              class="filter"
-              role="tab"
-              aria-selected={on}
-              aria-label={tab.label}
-              class:on
-              title={count.threads > 0
-                ? `${tab.label}: ${plural(count.threads, 'conversation')}, ${count.unread.toLocaleString()} unread`
-                : tab.label}
-              onclick={() => mail.setCategory(tab.key)}
-            >
-              <Icon name={TAB_ICONS[tab.key ?? 'all']} size={15} />
-              {#if on}<span>{tab.label}</span>{/if}
-              {#if number}
-                <span class="n" class:has-unread={count.unread > 0}>{compactCount(number)}</span>
-              {/if}
-            </button>
-          {/each}
-        </div>
-      </div>
-    {/if}
-
-    {#if mail.selectedMailbox && !mail.searchQuery.trim()}
-      <div class="only" role="group" aria-label="Show only">
-        {#each MAIL_ONLY as { key, label } (key)}
-          {@const on = mail.only.has(key)}
-          <button
-            class="only-toggle"
-            class:on
-            aria-pressed={on}
-            title={key === 'unread' ? `Show only ${label.toLowerCase()} (G then R)` : undefined}
-            onclick={() => mail.toggleOnly(key)}
-          >
-            <Icon name={ONLY_ICONS[key]} size={13} filled={on && key === 'starred'} />
-            {label}
-          </button>
-        {/each}
-      </div>
-    {/if}
-
-    {#if mail.emptiableRole && mail.mailbox && (mail.threads.length > 0 || mail.only.size > 0)}
-      {@const box = mail.mailbox}
-      <div class="empty-bar">
-        <span>Emptying can't be undone.</span>
-        <button class="empty-btn" onclick={() => (mail.wantsEmpty = box)}>
-          <Icon name="trash" size={13} /> Empty {mailboxDisplayName(box)}
-        </button>
-      </div>
-    {/if}
-
-    {#if mail.searchQuery.trim()}
-      <p class="hint operator-hint">
-        Try <code>from:</code>, <code>to:</code>, <code>subject:</code>,
-        <code>has:attachment</code>, <code>before:</code>, <code>after:</code>, <code>in:</code>
-        or <code>is:unread</code>.
-      </p>
-      {#if mail.searching && mail.searchResults.length === 0}
-        <p class="hint">Searching…</p>
-      {:else if mail.searchResults.length === 0}
-        <p class="hint">Nothing matched “{mail.searchQuery}”.</p>
-      {:else}
-        <!-- `SearchMailResult.threads` is the same `Thread` shape every other
-             row already draws from -- see `types.ts`'s own doc on why a
-             search hit is not a narrower type of its own. -->
-        <div class="scroll thread-rows">
-          {#each searchRows as row (rowKey(row))}
-            {#if row.type === 'header'}
-              <div class="date-section" aria-hidden="true">{row.label}</div>
-            {:else}
-              {@render threadRow(threadOf(row), null)}
-            {/if}
-          {/each}
-          {#if mail.searchCursor}
-            <button
-              class="load-more"
-              disabled={mail.searching}
-              onclick={() => void mail.loadMoreSearchResults()}
-            >
-              {mail.searching ? 'Loading…' : 'Load more'}
-            </button>
-          {/if}
+        <div class="tabs">
+          <div class="filters" role="tablist" aria-label="Mail categories">
+            {#each [{ key: null, label: 'All' }, ...CATEGORY_TABS] as tab (tab.key ?? 'all')}
+              {@const count = categoryTabCount(mail.categoryCounts, tab.key)}
+              {@const number = tabNumber(count)}
+              {@const on = mail.category === tab.key}
+              <button
+                class="filter"
+                role="tab"
+                aria-selected={on}
+                aria-label={tab.label}
+                class:on
+                title={count.threads > 0
+                  ? `${tab.label}: ${plural(count.threads, 'conversation')}, ${count.unread.toLocaleString()} unread`
+                  : tab.label}
+                onclick={() => mail.setCategory(tab.key)}
+              >
+                <Icon name={TAB_ICONS[tab.key ?? 'all']} size={15} />
+                {#if on}<span>{tab.label}</span>{/if}
+                {#if number}
+                  <span class="n" class:has-unread={count.unread > 0}>{compactCount(number)}</span>
+                {/if}
+              </button>
+            {/each}
+          </div>
         </div>
       {/if}
-    {:else if mail.loading && listEmpty}
-      <p class="hint">Loading…</p>
-    {:else if listEmpty && mail.only.size > 0}
-      <EmptyState lead={onlyEmptyLead(mail.only)}>
-        {#snippet action()}
-          <button class="btn btn-outline" onclick={() => mail.setOnly(new Set())}>
-            Show all mail
+
+      {#if mail.selectedMailbox && !mail.searchQuery.trim()}
+        <div class="only" role="group" aria-label="Show only">
+          {#each MAIL_ONLY as { key, label } (key)}
+            {@const on = mail.only.has(key)}
+            <button
+              class="only-toggle"
+              class:on
+              aria-pressed={on}
+              title={key === 'unread' ? `Show only ${label.toLowerCase()} (G then R)` : undefined}
+              onclick={() => mail.toggleOnly(key)}
+            >
+              <Icon name={ONLY_ICONS[key]} size={13} filled={on && key === 'starred'} />
+              {label}
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if mail.emptiableRole && mail.mailbox && (mail.threads.length > 0 || mail.only.size > 0)}
+        {@const box = mail.mailbox}
+        <div class="empty-bar">
+          <span>Emptying can't be undone.</span>
+          <button class="empty-btn" onclick={() => (mail.wantsEmpty = box)}>
+            <Icon name="trash" size={13} /> Empty {mailboxDisplayName(box)}
           </button>
-        {/snippet}
-      </EmptyState>
-    {:else if listEmpty}
-      <EmptyState lead="Nothing here.">
-        {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
-      </EmptyState>
-    {:else}
-      <!-- The scrolling parent `VirtualList` needs: `virtua` watches its
-           container's parent for scroll, and `section.list` itself never
-           scrolls, so without this the rows past the first screen were
-           unreachable and `onEndReached` never fired. -->
-      <div class="scroll thread-rows">
-        <VirtualList
-          items={listRows}
-          getKey={rowKey}
-          selectedId={mail.selectedThread}
-          onEndReached={() => void mail.loadMore()}
-        >
-          {#snippet children(row: ListRow)}
-            {#if row.type === 'header'}
-              <div class="date-section" aria-hidden="true">{row.label}</div>
-            {:else}
-              {@const kind = followUpOf(row)}
-              {#if kind}
-                {@render followUpRow(threadOf(row), kind)}
+        </div>
+      {/if}
+
+      {#if mail.searchQuery.trim()}
+        <p class="hint operator-hint">
+          Try <code>from:</code>, <code>to:</code>, <code>subject:</code>,
+          <code>has:attachment</code>, <code>before:</code>, <code>after:</code>, <code>in:</code>
+          or <code>is:unread</code>.
+        </p>
+        {#if mail.searching && mail.searchResults.length === 0}
+          <p class="hint">Searching…</p>
+        {:else if mail.searchResults.length === 0}
+          <p class="hint">Nothing matched “{mail.searchQuery}”.</p>
+        {:else}
+          <!-- `SearchMailResult.threads` is the same `Thread` shape every other
+             row already draws from -- see `types.ts`'s own doc on why a
+             search hit is not a narrower type of its own. -->
+          <div class="scroll thread-rows">
+            {#each searchRows as row (rowKey(row))}
+              {#if row.type === 'header'}
+                <div class="date-section" aria-hidden="true">{row.label}</div>
               {:else}
                 {@render threadRow(threadOf(row), null)}
               {/if}
+            {/each}
+            {#if mail.searchCursor}
+              <button
+                class="load-more"
+                disabled={mail.searching}
+                onclick={() => void mail.loadMoreSearchResults()}
+              >
+                {mail.searching ? 'Loading…' : 'Load more'}
+              </button>
             {/if}
+          </div>
+        {/if}
+      {:else if mail.loading && listEmpty}
+        <p class="hint">Loading…</p>
+      {:else if listEmpty && mail.only.size > 0}
+        <EmptyState lead={onlyEmptyLead(mail.only)}>
+          {#snippet action()}
+            <button class="btn btn-outline" onclick={() => mail.setOnly(new Set())}>
+              Show all mail
+            </button>
           {/snippet}
-        </VirtualList>
-      </div>
+        </EmptyState>
+      {:else if listEmpty}
+        <EmptyState lead="Nothing here.">
+          {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
+        </EmptyState>
+      {:else}
+        <!-- The scrolling parent `VirtualList` needs: `virtua` watches its
+           container's parent for scroll, and `section.list` itself never
+           scrolls, so without this the rows past the first screen were
+           unreachable and `onEndReached` never fired. -->
+        <div class="scroll thread-rows">
+          <VirtualList
+            bind:this={threadList}
+            items={listRows}
+            getKey={rowKey}
+            selectedId={mail.selectedThread}
+            onEndReached={() => void mail.loadMore()}
+          >
+            {#snippet children(row: ListRow)}
+              {#if row.type === 'header'}
+                <div class="date-section" aria-hidden="true">{row.label}</div>
+              {:else}
+                {@const kind = followUpOf(row)}
+                {#if kind}
+                  {@render followUpRow(threadOf(row), kind)}
+                {:else}
+                  {@render threadRow(threadOf(row), null)}
+                {/if}
+              {/if}
+            {/snippet}
+          </VirtualList>
+        </div>
+      {/if}
     {/if}
-  {/if}
-  <PaneResizer
-    cssVar="--mail-list-w"
-    storageKey="pane-w:mail-list"
-    defaultWidth={380}
-    min={280}
-    max={640}
-  />
-</section>
+    {#if paneOpen}
+      <PaneResizer
+        cssVar="--mail-list-w"
+        storageKey="pane-w:mail-list"
+        defaultWidth={380}
+        min={280}
+        max={640}
+      />
+    {/if}
+  </section>
 
-<!-- One thread in a list -- the mailbox's own and a search's draw the same
+  <!-- One thread in a list -- the mailbox's own and a search's draw the same
      row. Whether it is unread is said once, down the left edge, and by how
      bright its words are, and everything else on the row keeps quiet: most of
      an inbox can be unread at once, so anything louder repeats on every line.
      The tick takes the dot's place once the row is picked. `followUp` is the
      section at the top it is drawn in, if any, which a pill names. -->
-{#snippet threadRow(t: Thread, followUp: FollowUpKind | null)}
-  {@const picked = mail.checked.has(t.id)}
-  {@const preview = snippetText(t.snippet)}
-  {@const sorted = sorting.categoryOf(t)}
-  <button
-    class="row list-row"
-    data-thread={t.id}
-    class:sel={mail.selectedThread === t.id}
-    class:checked={picked}
-    class:unread={t.unreadCount > 0}
-    class:follow={followUp !== null}
-    onmousedown={noTextRange}
-    onclick={(e) => clickRow(e, t.id)}
-    oncontextmenu={(e) => menu.show(e, menuFor(t))}
-  >
-    {#if picked}
-      <span class="tick" aria-hidden="true"><Icon name="tick" size={13} weight={2.5} /></span>
-    {:else}
-      <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
-    {/if}
-    <span class="who">
-      <span class="from">{threadPeople(t.participants, accounts.ownAddresses(t.accountId))}</span>
-      {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
-    </span>
-    <span class="gist">
-      <span class="words">
-        <span class="subject">{t.subject || '(no subject)'}</span>
-        {#if preview}<span class="snippet">{preview}</span>{/if}
+  {#snippet threadRow(t: Thread, followUp: FollowUpKind | null)}
+    {@const picked = mail.checked.has(t.id)}
+    {@const preview = snippetText(t.snippet)}
+    {@const sorted = sorting.categoryOf(t)}
+    <button
+      class="row list-row"
+      data-thread={t.id}
+      class:sel={mail.selectedThread === t.id}
+      class:checked={picked}
+      class:unread={t.unreadCount > 0}
+      class:follow={followUp !== null}
+      onmousedown={noTextRange}
+      onclick={(e) => clickRow(e, t.id)}
+      oncontextmenu={(e) => menu.show(e, menuFor(t))}
+    >
+      {#if picked}
+        <span class="tick" aria-hidden="true"><Icon name="tick" size={13} weight={2.5} /></span>
+      {:else}
+        <span class="dot" class:on={t.unreadCount > 0} aria-hidden="true"></span>
+      {/if}
+      <span class="who">
+        <span class="from">{threadPeople(t.participants, accounts.ownAddresses(t.accountId))}</span>
+        {#if t.messageCount > 1}<span class="count">{t.messageCount}</span>{/if}
       </span>
-      {#if followUp && t.followUp}
-        <span class="sorted waiting" title={WAITING[followUp]}>{followUpPill(t.followUp)}</span>
-      {/if}
-      {#if sorted}
-        <span class="sorted" title="Sorted as {sorted.name}">{sorted.name}</span>
-      {/if}
-      {#if mail.searchQuery.trim()}
-        {@const place = searchPlace(mail.searchPlaces[t.id])}
-        {#if place}<span class="sorted place" title="Where this conversation is">{place}</span>{/if}
-      {/if}
-    </span>
-    <span class="side">
-      {#if t.category === 'priority'}
-        <span class="mark priority" title="Priority"><Icon name="flag" size={12} /></span>
-      {/if}
-      {#if t.starred}
-        <span class="mark starred" title="Starred"><Icon name="star" size={12} filled /></span>
-      {/if}
-      {#if t.hasAttachments}
-        <span class="mark" title="Has an attachment"><Icon name="paperclip" size={12} /></span>
-      {/if}
-      <span class="date">{rowDate(t)}</span>
-      {#if unifiedView}
-        <span
-          class="acct"
-          style:background={accountColor(t.accountId, accountIds)}
-          title={accountLabel(t.accountId)}
-        ></span>
-      {/if}
-    </span>
-  </button>
-{/snippet}
+      <span class="gist">
+        <span class="words">
+          <span class="subject">{t.subject || '(no subject)'}</span>
+          {#if preview}<span class="snippet">{preview}</span>{/if}
+        </span>
+        {#if followUp && t.followUp}
+          <span class="sorted waiting" title={WAITING[followUp]}>{followUpPill(t.followUp)}</span>
+        {/if}
+        {#if sorted}
+          <span class="sorted" title="Sorted as {sorted.name}">{sorted.name}</span>
+        {/if}
+        {#if mail.searchQuery.trim()}
+          {@const place = searchPlace(mail.searchPlaces[t.id])}
+          {#if place}<span class="sorted place" title="Where this conversation is">{place}</span
+            >{/if}
+        {/if}
+      </span>
+      <span class="side">
+        {#if t.category === 'priority'}
+          <span class="mark priority" title="Priority"><Icon name="flag" size={12} /></span>
+        {/if}
+        {#if t.starred}
+          <span class="mark starred" title="Starred"><Icon name="star" size={12} filled /></span>
+        {/if}
+        {#if t.hasAttachments}
+          <span class="mark" title="Has an attachment"><Icon name="paperclip" size={12} /></span>
+        {/if}
+        <span class="date">{rowDate(t)}</span>
+        {#if unifiedView}
+          <span
+            class="acct"
+            style:background={accountColor(t.accountId, accountIds)}
+            title={accountLabel(t.accountId)}
+          ></span>
+        {/if}
+      </span>
+    </button>
+  {/snippet}
 
-<!-- A row in a follow-up section at the top of the Inbox: the ordinary row,
+  <!-- A row in a follow-up section at the top of the Inbox: the ordinary row,
      and beside it -- not inside it, a button cannot hold another -- the tick
      that says it is not needed, in a gutter the row leaves for it. -->
-{#snippet followUpRow(t: Thread, kind: FollowUpKind)}
-  <div class="follow-row">
-    {@render threadRow(t, kind)}
-    <button
-      class="follow-done"
-      title="Not needed — take it off the top"
-      aria-label="Not needed — take it off the top"
-      onclick={() => void mail.dismissFollowUp(t.id)}
-    >
-      <Icon name="tick" size={13} weight={2.5} />
-    </button>
-  </div>
-{/snippet}
+  {#snippet followUpRow(t: Thread, kind: FollowUpKind)}
+    <div class="follow-row">
+      {@render threadRow(t, kind)}
+      <button
+        class="follow-done"
+        title="Not needed — take it off the top"
+        aria-label="Not needed — take it off the top"
+        onclick={() => void mail.dismissFollowUp(t.id)}
+      >
+        <Icon name="tick" size={13} weight={2.5} />
+      </button>
+    </div>
+  {/snippet}
 
-<main class="main" data-mail-pane>
-  {#if mail.composing && !mail.composeInline}
-    <!-- A new message, or a draft reopened, where a thread is read rather
+  {#if paneOpen}
+    <main class="main" data-mail-pane transition:slide>
+      {#if mail.composing && !mail.composeInline}
+        <!-- A new message, or a draft reopened, where a thread is read rather
          than in a dialog over everything: the list stays in reach beside
          it. Keyed, so a second draft opened over the first is a fresh sheet
          rather than the first one's working copy under another name. -->
-    {#key mail.composeKey}
-      <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
-    {/key}
-  {:else if mail.checked.size > 0}
-    <div class="bulk">
-      <h2>{plural(mail.checked.size, 'conversation')} selected</h2>
-      <div class="bulk-actions">
-        <button class="btn btn-outline" onclick={() => void mail.archiveMany(mail.targets)}>
-          <Icon name="layers" size={14} /> Archive <kbd>E</kbd>
-        </button>
-        {#if mail.emptiableRole !== 'trash'}
-          <button class="btn btn-outline" onclick={() => void mail.trashMany(mail.targets)}>
-            <Icon name="trash" size={14} /> Trash <kbd>#</kbd>
-          </button>
-        {/if}
-        {#if mail.emptiableRole && mail.mailbox}
-          {@const box = mail.mailbox}
-          <button
-            class="btn btn-outline"
-            onclick={() => (mail.wantsForever = { ids: mail.targets, mailbox: box })}
-          >
-            <Icon name="trash" size={14} /> Delete forever…
-            {#if mail.emptiableRole === 'trash'}<kbd>#</kbd>{/if}
-          </button>
-        {/if}
-        {#if pickedThreads.some((t) => t.unreadCount > 0)}
-          <button class="btn btn-outline" onclick={() => void mail.markReadMany(mail.targets)}>
-            <Icon name="check" size={14} /> Mark read <kbd>I</kbd>
-          </button>
-        {:else}
-          <button class="btn btn-outline" onclick={() => void mail.markUnreadMany(mail.targets)}>
-            <Icon name="check" size={14} /> Mark unread <kbd>U</kbd>
-          </button>
-        {/if}
-        {#if !inSnoozedView}
-          <button class="btn btn-outline" onclick={() => (mail.wantsSnooze = mail.targets)}>
-            <Icon name="clock" size={14} /> Snooze… <kbd>H</kbd>
-          </button>
-        {/if}
-        <button class="btn btn-outline" onclick={(e) => menu.show(e, bulkMenu())}> More… </button>
-      </div>
-      <p class="bulk-hint">
-        Shift-click or <kbd>Shift</kbd>+<kbd>↓</kbd> picks a run of threads, {modKey}-click adds or
-        removes one, and <kbd>X</kbd> picks the one under the cursor.
-      </p>
-      <button class="link" onclick={() => mail.clearChecked()}>Clear selection (Esc)</button>
-    </div>
-  {:else if mail.openThread}
-    <!-- Captured once, rather than re-read as `mail.openThread.thread.id`
+        {#key mail.composeKey}
+          <MailCompose draft={mail.composing} onclose={() => mail.closeCompose()} />
+        {/key}
+      {:else if mail.openThread}
+        <!-- Captured once, rather than re-read as `mail.openThread.thread.id`
          inside every button below: a closure does not inherit the
          narrowing this `{#if}` gives the expression directly above it, so
          without this each one would have to re-assert past `| null` by
          hand. `open` is itself never reassigned for the life of the block,
          so every closure below closes over the same non-null value. -->
-    {@const open = mail.openThread}
-    {@const newest = open.messages.at(-1)}
-    <div class="thread-head">
-      <!-- The toolbar: what to do with this thread, grouped the way the
+        {@const open = mail.openThread}
+        {@const newest = open.messages.at(-1)}
+        <div class="thread-head">
+          <!-- The toolbar: what to do with this thread, grouped the way the
            hands reach for it -- answer it, put it away, mark it -- each group
            one pill, so a row of twelve icons reads as three decisions. -->
-      <div class="thread-toolbar" role="toolbar" aria-label="Thread actions">
-        <button
-          class="tool back"
-          onclick={() => mail.closeThread()}
-          title="Back to the list (Escape)"
-          aria-label="Back to the list"
-        >
-          <Icon name="chevron" size={15} />
-        </button>
-        {#if newest}
-          <div class="group">
+          <div class="thread-toolbar" role="toolbar" aria-label="Thread actions">
             <button
-              class="tool"
-              title="Reply (R)"
-              aria-label="Reply"
-              onclick={() => mail.reply(newest.id, false)}
+              class="tool back"
+              onclick={() => mail.closeThread()}
+              title="Back to the list (Escape)"
+              aria-label="Back to the list"
             >
-              <Icon name="reply" size={17} />
+              <Icon name="chevron" size={15} />
             </button>
-            <button
-              class="tool"
-              title="Reply all (W)"
-              aria-label="Reply all"
-              onclick={() => mail.reply(newest.id, true)}
-            >
-              <Icon name="reply-all" size={17} />
-            </button>
-            <button
-              class="tool"
-              title="Forward (F)"
-              aria-label="Forward"
-              onclick={() => mail.forward(newest.id)}
-            >
-              <Icon name="forward" size={17} />
-            </button>
+            {#if newest}
+              <div class="group">
+                <button
+                  class="tool"
+                  title="Reply (R)"
+                  aria-label="Reply"
+                  onclick={() => mail.reply(newest.id, false)}
+                >
+                  <Icon name="reply" size={17} />
+                </button>
+                <button
+                  class="tool"
+                  title="Reply all (W)"
+                  aria-label="Reply all"
+                  onclick={() => mail.reply(newest.id, true)}
+                >
+                  <Icon name="reply-all" size={17} />
+                </button>
+                <button
+                  class="tool"
+                  title="Forward (F)"
+                  aria-label="Forward"
+                  onclick={() => mail.forward(newest.id)}
+                >
+                  <Icon name="forward" size={17} />
+                </button>
+              </div>
+            {/if}
+            <div class="group">
+              <button
+                class="tool"
+                title="Archive (E)"
+                aria-label="Archive"
+                onclick={() => void mail.archive(open.thread.id)}
+              >
+                <Icon name="archive" size={17} />
+              </button>
+              <button
+                class="tool"
+                title="Snooze… (H)"
+                aria-label="Snooze"
+                onclick={() => (mail.wantsSnooze = [open.thread.id])}
+              >
+                <Icon name="clock" size={17} />
+              </button>
+              {#if mail.emptiableRole === 'trash' && mail.mailbox}
+                {@const box = mail.mailbox}
+                <button
+                  class="tool"
+                  title="Delete forever… (#)"
+                  aria-label="Delete forever"
+                  onclick={() => (mail.wantsForever = { ids: [open.thread.id], mailbox: box })}
+                >
+                  <Icon name="trash" size={17} />
+                </button>
+              {:else}
+                <button
+                  class="tool"
+                  title="Trash (#)"
+                  aria-label="Trash"
+                  onclick={() => void mail.trash(open.thread.id)}
+                >
+                  <Icon name="trash" size={17} />
+                </button>
+              {/if}
+            </div>
+            <div class="group">
+              <button
+                class="tool"
+                class:on={open.thread.category === 'priority'}
+                title={open.thread.category === 'priority'
+                  ? 'Remove from priority (!)'
+                  : 'Mark as priority (!)'}
+                aria-label="Toggle priority"
+                aria-pressed={open.thread.category === 'priority'}
+                onclick={() =>
+                  void mail.setPriority(open.thread.id, open.thread.category !== 'priority')}
+              >
+                <Icon name="flag" size={17} />
+              </button>
+              <button
+                class="tool"
+                title="Mark unread (U)"
+                aria-label="Mark unread"
+                onclick={() => void mail.markUnread(open.thread.id)}
+              >
+                <Icon name="mail" size={17} />
+              </button>
+              <button
+                class="tool"
+                title="Label… (L)"
+                aria-label="Label"
+                onclick={() => (mail.wantsLabel = [open.thread.id])}
+              >
+                <Icon name="tag" size={17} />
+              </button>
+            </div>
+            <span class="spacer"></span>
+            {#if canSummarize}
+              <button
+                class="summarize"
+                title="Summarise (Z)"
+                disabled={mail.summarizing}
+                onclick={() => void mail.summarizeOpenThread()}
+              >
+                <Icon name="sparkle" size={14} />
+                {mail.summarizing ? 'Summarising…' : 'Summarise'}
+              </button>
+            {/if}
           </div>
-        {/if}
-        <div class="group">
-          <button
-            class="tool"
-            title="Archive (E)"
-            aria-label="Archive"
-            onclick={() => void mail.archive(open.thread.id)}
-          >
-            <Icon name="archive" size={17} />
-          </button>
-          <button
-            class="tool"
-            title="Snooze… (H)"
-            aria-label="Snooze"
-            onclick={() => (mail.wantsSnooze = [open.thread.id])}
-          >
-            <Icon name="clock" size={17} />
-          </button>
-          {#if mail.emptiableRole === 'trash' && mail.mailbox}
-            {@const box = mail.mailbox}
-            <button
-              class="tool"
-              title="Delete forever… (#)"
-              aria-label="Delete forever"
-              onclick={() => (mail.wantsForever = { ids: [open.thread.id], mailbox: box })}
-            >
-              <Icon name="trash" size={17} />
-            </button>
-          {:else}
-            <button
-              class="tool"
-              title="Trash (#)"
-              aria-label="Trash"
-              onclick={() => void mail.trash(open.thread.id)}
-            >
-              <Icon name="trash" size={17} />
-            </button>
-          {/if}
+          <div class="subject-block">
+            <h1>{open.thread.subject || '(no subject)'}</h1>
+            <p class="meta">
+              <span>{plural(open.messages.length, 'message')}</span>
+              {#if openAccount && mailAccounts.length > 1}
+                <span class="sep">·</span>
+                <span class="meta-acct">
+                  <span
+                    class="acct"
+                    style:background={accountColor(openAccount.id, accountIds)}
+                    aria-hidden="true"
+                  ></span>
+                  {openAccount.displayName || openAccount.address}
+                </span>
+              {/if}
+              {#if open.thread.category === 'priority'}
+                <span class="sep">·</span>
+                <span class="priority-mark"><Icon name="flag" size={12} /> Priority</span>
+              {/if}
+              {#if sorting.categoryOf(open.thread)}
+                <span class="sep">·</span>
+                <span class="sorted-mark" title="Sorted by the decision model">
+                  <Icon name="tag" size={12} />
+                  {sorting.categoryOf(open.thread)?.name}
+                </span>
+              {/if}
+            </p>
+            {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
+              <p class="snoozed-banner">
+                <Icon name="clock" size={13} />
+                <span>Snoozed until {weekdayAndTime(open.thread.snoozedUntil)}</span>
+                <button class="link" onclick={() => void mail.unsnooze(open.thread.id)}
+                  >Unsnooze</button
+                >
+              </p>
+            {/if}
+            <MailFollowUpBanner detail={open} />
+            {#if recentActionLines.length > 0}
+              <p class="recent-actions">
+                {#each recentActionLines as line, i (i)}
+                  {#if i > 0}<span class="sep">·</span>{/if}<span>{line}</span>
+                {/each}
+              </p>
+            {/if}
+          </div>
         </div>
-        <div class="group">
-          <button
-            class="tool"
-            class:on={open.thread.category === 'priority'}
-            title={open.thread.category === 'priority'
-              ? 'Remove from priority (!)'
-              : 'Mark as priority (!)'}
-            aria-label="Toggle priority"
-            aria-pressed={open.thread.category === 'priority'}
-            onclick={() =>
-              void mail.setPriority(open.thread.id, open.thread.category !== 'priority')}
-          >
-            <Icon name="flag" size={17} />
-          </button>
-          <button
-            class="tool"
-            title="Mark unread (U)"
-            aria-label="Mark unread"
-            onclick={() => void mail.markUnread(open.thread.id)}
-          >
-            <Icon name="mail" size={17} />
-          </button>
-          <button
-            class="tool"
-            title="Label… (L)"
-            aria-label="Label"
-            onclick={() => (mail.wantsLabel = [open.thread.id])}
-          >
-            <Icon name="tag" size={17} />
-          </button>
-        </div>
-        <span class="spacer"></span>
-        {#if canSummarize}
-          <button
-            class="summarize"
-            title="Summarise (Z)"
-            disabled={mail.summarizing}
-            onclick={() => void mail.summarizeOpenThread()}
-          >
+        {#if mail.summary && mail.summary.threadId === open.thread.id}
+          <div class="summary-panel">
             <Icon name="sparkle" size={14} />
-            {mail.summarizing ? 'Summarising…' : 'Summarise'}
-          </button>
-        {/if}
-      </div>
-      <div class="subject-block">
-        <h1>{open.thread.subject || '(no subject)'}</h1>
-        <p class="meta">
-          <span>{plural(open.messages.length, 'message')}</span>
-          {#if openAccount && mailAccounts.length > 1}
-            <span class="sep">·</span>
-            <span class="meta-acct">
-              <span
-                class="acct"
-                style:background={accountColor(openAccount.id, accountIds)}
-                aria-hidden="true"
-              ></span>
-              {openAccount.displayName || openAccount.address}
-            </span>
-          {/if}
-          {#if open.thread.category === 'priority'}
-            <span class="sep">·</span>
-            <span class="priority-mark"><Icon name="flag" size={12} /> Priority</span>
-          {/if}
-          {#if sorting.categoryOf(open.thread)}
-            <span class="sep">·</span>
-            <span class="sorted-mark" title="Sorted by the decision model">
-              <Icon name="tag" size={12} />
-              {sorting.categoryOf(open.thread)?.name}
-            </span>
-          {/if}
-        </p>
-        {#if open.thread.snoozedUntil && new Date(open.thread.snoozedUntil) > new Date()}
-          <p class="snoozed-banner">
-            <Icon name="clock" size={13} />
-            <span>Snoozed until {weekdayAndTime(open.thread.snoozedUntil)}</span>
-            <button class="link" onclick={() => void mail.unsnooze(open.thread.id)}>Unsnooze</button
+            <p>{mail.summary.text}</p>
+            <button
+              class="close"
+              aria-label="Dismiss the summary"
+              onclick={() => mail.dismissSummary()}><Icon name="close" size={13} /></button
             >
-          </p>
-        {/if}
-        <MailFollowUpBanner detail={open} />
-        {#if recentActionLines.length > 0}
-          <p class="recent-actions">
-            {#each recentActionLines as line, i (i)}
-              {#if i > 0}<span class="sep">·</span>{/if}<span>{line}</span>
-            {/each}
-          </p>
-        {/if}
-      </div>
-    </div>
-    {#if mail.summary && mail.summary.threadId === open.thread.id}
-      <div class="summary-panel">
-        <Icon name="sparkle" size={14} />
-        <p>{mail.summary.text}</p>
-        <button class="close" aria-label="Dismiss the summary" onclick={() => mail.dismissSummary()}
-          ><Icon name="close" size={13} /></button
-        >
-      </div>
-    {/if}
-    <div class="scroll">
-      <MailThread messages={open.messages} expanded={mail.expanded} sending={open.sending} />
-      {#if draftCards.length > 0}
-        <MailThreadDrafts drafts={draftCards} />
-      {/if}
-      {#if mail.composing && mail.composeInline}
-        {#key mail.composeKey}
-          <div class="inline-reply" use:scrollIntoViewOnMount>
-            <MailCompose
-              draft={mail.composing}
-              placement="thread"
-              onclose={() => mail.closeCompose()}
-            />
           </div>
-        {/key}
+        {/if}
+        <div class="scroll">
+          <MailThread messages={open.messages} expanded={mail.expanded} sending={open.sending} />
+          {#if draftCards.length > 0}
+            <MailThreadDrafts drafts={draftCards} />
+          {/if}
+          {#if mail.composing && mail.composeInline}
+            {#key mail.composeKey}
+              <div class="inline-reply" use:scrollIntoViewOnMount>
+                <MailCompose
+                  draft={mail.composing}
+                  placement="thread"
+                  onclose={() => mail.closeCompose()}
+                />
+              </div>
+            {/key}
+          {/if}
+        </div>
       {/if}
-    </div>
-  {:else}
-    <EmptyState lead={mail.sendsView ? 'Nothing open' : 'Select a thread'}>
-      {#snippet note()}
-        {mail.sendsView?.list === 'scheduled'
-          ? 'Edit, reschedule, send now or cancel a message from the list.'
-          : mail.sendsView?.list === 'outbox'
-            ? 'Edit, send again or discard a message from the list.'
-            : 'j and k move, Enter opens.'}
-      {/snippet}
-    </EmptyState>
+    </main>
   {/if}
-</main>
+</div>
 
 {#if mail.wantsSnooze}
   <MailSnoozePicker onchoose={snooze} oncancel={() => (mail.wantsSnooze = null)} />
@@ -1092,18 +1208,44 @@
 {/if}
 
 <style>
+  /* The list and the reading pane. Stated heights, not stretched, here and
+     in both: see `.shell-stage` in app.css. */
+  .mail {
+    position: relative;
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    /* The list's width beside the pane: the dragged one, short of leaving
+       the pane less than 360px. The two always tile, never overlap -- the
+       pane has no background of its own to hide the list with. Percentages
+       here resolve where it is used, against this box, for both. */
+    --list-at: max(220px, min(var(--mail-list-w), 100% - 360px));
+  }
   .list {
-    /* As tall as the stage by a stated height, not stretched: see
-       `.shell-stage` in app.css. */
     height: 100%;
     position: relative;
     /* Mail's own variable -- `--list-w` is shared with the journal's and
        the calendar's lists, which a drag here must leave alone. */
-    width: var(--mail-list-w);
-    flex: none;
+    width: var(--list-at);
+    flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     border-right: 1px solid var(--border);
+  }
+  /* Nothing open beside it: all of the width. `slide` moves it between. */
+  .list.wide {
+    flex-grow: 1;
+    border-right-color: transparent;
+  }
+  /* Moving: its contents stay at the width it is going to -- see `slide`,
+     which sets the class (so global, or it would be pruned as unused). */
+  .list:global(.sliding) {
+    overflow: hidden;
+  }
+  .list:global(.sliding) > * {
+    width: var(--slide-w);
+    flex-shrink: 0;
   }
   .top {
     display: flex;
@@ -1517,16 +1659,14 @@
     font-weight: 600;
   }
 
+  /* Beside the list, out of the flow so the list can widen under it as it
+     goes (see `slide`), and as wide as what the list leaves. */
   .main {
-    /* As tall as the stage by a stated height, not stretched: see
-       `.shell-stage` in app.css. */
+    position: absolute;
+    top: 0;
+    right: 0;
     height: 100%;
-    flex: 1;
-    /* Never crushed to nothing by the list column beside it growing --
-       `PaneResizer`'s own `max` on `.list` already stops short of most
-       window widths, but a narrow window plus a list dragged wide should
-       still leave a reading pane rather than squeeze it to a sliver. */
-    min-width: 360px;
+    width: calc(100% - var(--list-at));
     display: flex;
     flex-direction: column;
   }
@@ -1713,25 +1853,34 @@
     container-type: inline-size;
   }
 
+  /* The picked threads' actions, a row of small pills over the list. */
   .bulk {
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
     align-items: center;
-    gap: var(--sp-3);
-    margin: auto;
-    padding: var(--sp-6);
-    max-width: 520px;
-    text-align: center;
+    gap: var(--sp-2);
+    margin: 0 var(--sp-3) var(--sp-2);
+    padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+    border-radius: var(--radius-lg);
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+    flex: none;
   }
-  .bulk h2 {
-    font-size: var(--text-lg);
+  .bulk-count {
+    margin-right: auto;
+    font-size: var(--text-sm);
     font-weight: 620;
   }
-  .bulk-actions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: var(--sp-2);
+  .bulk-clear {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    color: var(--fg-muted);
+  }
+  .bulk-clear:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
   }
   .bulk kbd {
     padding: 0 4px;
@@ -1742,15 +1891,11 @@
     color: var(--fg-faint);
   }
   .bulk-hint {
+    flex-basis: 100%;
     margin: 0;
     font-size: var(--text-xs);
-    color: var(--fg-faint);
+    color: var(--fg-subtle);
     line-height: var(--leading-normal);
-  }
-  .bulk .link {
-    font-size: var(--text-sm);
-    color: var(--journal-accent, var(--accent));
-    font-weight: 600;
   }
 
   .undo-toast {
@@ -1764,7 +1909,7 @@
     gap: var(--sp-3);
     padding: var(--sp-2) var(--sp-4);
     border-radius: 999px;
-    background: var(--bg-raised);
+    background: var(--float);
     border: 1px solid var(--border);
     box-shadow: var(--shadow-lg);
     font-size: var(--text-sm);

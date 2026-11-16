@@ -20,6 +20,22 @@ const {
 const { THEMES, THEME_TOKENS, DERIVED_TOKENS, APP_COLOURS, parseThemeChoice, resolveTheme } = themes
 const { check, ok, finish } = makeCheck()
 
+// The alpha reader itself, on the forms a theme might write.
+for (const [value, want] of [
+  ['#fffefc', 1],
+  ['#fff', 1],
+  ['#ffffffcc', 0.8],
+  ['#fffc', 0.8],
+  ['rgb(255 255 255 / 0.98)', 0.98],
+  ['rgb(255 255 255 / 80%)', 0.8],
+  ['rgba(255,255,255,.8)', 0.8],
+  ['rgb(1, 2, 3)', 1],
+  ['color-mix(in oklab, white 80%, transparent)', null],
+]) {
+  const got = alphaOf(value)
+  ok(`alphaOf(${value}) is ${want}`, want === null ? got === null : Math.abs(got - want) < 0.001)
+}
+
 const styles = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'styles')
 const strip = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '')
 const themesCss = strip(readFileSync(join(styles, 'themes.css'), 'utf8'))
@@ -39,6 +55,32 @@ function blocks(css) {
     out.push({ selector: m[1].trim(), decls })
   }
   return out
+}
+
+/**
+ * A colour's alpha, 0 to 1, for the forms a theme writes: hex of 3, 4, 6 or
+ * 8 digits, and `rgb()`/`rgba()` with commas or a slash and a number or a
+ * percentage. Anything else -- a `color-mix()`, a `var()` -- is `null`, which
+ * the check that uses this fails rather than lets through.
+ */
+function alphaOf(value) {
+  const v = value.trim().toLowerCase()
+  const hex = /^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/.exec(v)
+  if (hex) {
+    const h = hex[1]
+    if (h.length === 3 || h.length === 6) return 1
+    const a = h.length === 4 ? h[3] + h[3] : h.slice(6)
+    return parseInt(a, 16) / 255
+  }
+  const fn = /^rgba?\((.*)\)$/.exec(v)
+  if (!fn) return null
+  const parts = fn[1].split(/\s*[,/]\s*|\s+/).filter(Boolean)
+  if (parts.length === 3) return 1
+  if (parts.length !== 4) return null
+  const a = parts[3]
+  const n = Number(a.endsWith('%') ? a.slice(0, -1) : a)
+  if (!Number.isFinite(n)) return null
+  return a.endsWith('%') ? n / 100 : n
 }
 
 const sorted = (xs) => [...xs].sort()
@@ -76,6 +118,14 @@ for (const theme of THEMES) {
   check(`${theme.id}: frame.subtle is --fg-subtle`, theme.frame.subtle, decls.get('--fg-subtle'))
   if (!theme.glass)
     check(`${theme.id}: a flat frame.page is --bg`, theme.frame.page, decls.get('--bg'))
+  // Menus and popovers stand over text, and a webview may draw no blur
+  // under them: at 0.8 the words under a context menu read through its own.
+  const float = alphaOf(decls.get('--float') ?? '')
+  ok(
+    `${theme.id}: --float is a colour this test can read (${decls.get('--float')})`,
+    float !== null,
+  )
+  ok(`${theme.id}: --float is at least 0.97 opaque`, float !== null && float >= 0.97)
 }
 
 // theme.css: layout on :root, the derived tokens on [data-theme], and no
