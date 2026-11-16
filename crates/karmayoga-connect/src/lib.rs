@@ -57,8 +57,9 @@ pub enum Endpoint {
     /// Streamable HTTP at `url`, with `headers` on every request and
     /// `bearer`, if any, as `Authorization: Bearer`.
     Http { url: String, headers: Vec<(String, String)>, bearer: Option<String> },
-    /// A program spoken to over its standard streams. `env` is added to the
-    /// inherited environment.
+    /// A program spoken to over its standard streams. `env` is added to a
+    /// short list of the variables this process has, not to all of them: see
+    /// [`transport::stdio`]'s `is_inherited`.
     Stdio { command: String, args: Vec<String>, env: Vec<(String, String)>, cwd: Option<PathBuf> },
 }
 

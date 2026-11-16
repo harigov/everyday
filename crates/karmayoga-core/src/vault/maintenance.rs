@@ -72,9 +72,12 @@ impl Vault {
     /// everything else -- and under a read lock a save landing between them
     /// stores a blob the first pass could not have seen and the second pass
     /// deletes. The write lock closes that window inside this process;
-    /// `grace` is what covers the rest, including a draft that has not been
-    /// saved yet and a second process holding one open. See
-    /// [`JournalStore::collect_garbage`].
+    /// `grace` is what covers the rest, including a picture pasted into a
+    /// draft that has not been saved yet and a second process holding one
+    /// open. A draft that *has* been saved is not left to `grace`: its
+    /// attachments and pasted pictures are read from the draft itself, so a
+    /// message written on Friday and scheduled for Monday still has them.
+    /// See [`JournalStore::collect_garbage`].
     pub fn collect_garbage(&self, grace: std::time::Duration) -> Result<u64> {
         self.writable()?;
         self.write(|u| u.store.collect_garbage(grace))

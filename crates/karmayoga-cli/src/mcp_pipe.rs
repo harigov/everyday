@@ -112,7 +112,7 @@ pub(crate) fn mcp(port: Option<u16>, token: Option<String>) -> Result<()> {
     let (url, token) = mcp_endpoint(&config, port, token);
     eprintln!("Forwarding stdio to {url}. Press Ctrl-D to stop.");
 
-    let client = reqwest::blocking::Client::new();
+    let client = local_client();
     let stdin = std::io::stdin();
     // `Stdout`, not `stdout.lock()`: `mcp_pipe` shares its writer with an
     // SSE thread (see its doc), and `StdoutLock` is not `Send` -- there is
@@ -121,6 +121,22 @@ pub(crate) fn mcp(port: Option<u16>, token: Option<String>) -> Result<()> {
     // already goes through `Stdout`'s internal lock besides.
     let stdout = std::io::stdout();
     mcp_pipe(&client, &url, &token, stdin.lock(), stdout)
+}
+
+/// The HTTP client the pipe talks to this machine's listener with.
+///
+/// Never through a proxy. `reqwest` reads `HTTP_PROXY` and `ALL_PROXY` from
+/// the environment by default, and this process is started by an AI client
+/// whose environment is anybody's guess; with one set, every line piped here
+/// would be handed -- bearer token and all -- to the proxy to forward to
+/// `127.0.0.1`, which is a hop whose only possible effect is that somebody
+/// else reads it. The listener is on this computer; there is nothing for a
+/// proxy to carry it to.
+fn local_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("an HTTP client with no proxy and no other settings always builds")
 }
 
 /// Work out which listener to talk to and which token to present, from
@@ -445,7 +461,7 @@ mod tests {
 
     #[test]
     fn a_transport_failure_answers_as_a_wellformed_json_dash_rpc_error_carrying_the_request_id() {
-        let client = reqwest::blocking::Client::new();
+        let client = local_client();
         // Port 0 is never a real listener to connect to: binding picks a
         // fresh port, but nothing has bound *this* address, so the
         // connection itself fails before any HTTP exchange happens -- the
@@ -473,8 +489,37 @@ mod tests {
     }
 
     #[test]
+    fn the_client_ignores_the_environments_proxy() {
+        // A local listener, and a proxy variable pointing at a port nobody
+        // answers on: a client that honoured the variable would fail to
+        // connect to the proxy, and one that ignores it reaches the
+        // listener. Passed through the builder rather than the process
+        // environment, which other tests share.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut socket, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf);
+                let _ = socket.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok",
+                );
+            }
+        });
+        let dead_proxy = reqwest::Proxy::all("http://127.0.0.1:1").unwrap();
+        let honouring = reqwest::blocking::Client::builder().proxy(dead_proxy).build().unwrap();
+        assert!(
+            honouring.get(format!("http://127.0.0.1:{port}/")).send().is_err(),
+            "the control must fail, or this test proves nothing"
+        );
+        let reply = local_client().get(format!("http://127.0.0.1:{port}/")).send().unwrap();
+        assert_eq!(reply.text().unwrap(), "ok");
+    }
+
+    #[test]
     fn a_line_with_no_id_answers_with_a_null_id_not_a_missing_one() {
-        let client = reqwest::blocking::Client::new();
+        let client = local_client();
         let url = "http://127.0.0.1:0/mcp";
         // Not even valid JSON -- the pipe must still answer something a
         // client can parse, rather than propagating a parse error of its
@@ -491,7 +536,7 @@ mod tests {
 
     #[test]
     fn a_transport_failure_does_not_end_the_pipe() {
-        let client = reqwest::blocking::Client::new();
+        let client = local_client();
         let url = "http://127.0.0.1:0/mcp";
         let input = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n\
                        {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n";
@@ -581,7 +626,7 @@ mod tests {
         });
         let address = address_rx.recv().unwrap();
 
-        let client = reqwest::blocking::Client::new();
+        let client = local_client();
         let url = format!("http://{address}/mcp");
         (client, url, token, [vault_dir, config_dir])
     }

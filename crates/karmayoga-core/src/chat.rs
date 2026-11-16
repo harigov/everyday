@@ -167,6 +167,26 @@ impl MatrixLink {
         if rest.trim_matches('/').is_empty() {
             return Err(Error::Invalid("the homeserver address has no host".into()));
         }
+        let parsed = url::Url::parse(home)
+            .map_err(|_| Error::Invalid("the homeserver address is not a web address".into()))?;
+        let host = parsed
+            .host_str()
+            .filter(|h| !h.is_empty())
+            .ok_or_else(|| Error::Invalid("the homeserver address has no host".into()))?;
+        // The bot signs in with a password and then carries an access token
+        // on every request, so plain HTTP is only for a server that is on
+        // this machine or on a network the person already controls: a
+        // private address, a tailnet, a `.local` name. Anywhere else the
+        // credentials would cross the open internet in the clear -- and the
+        // likeliest way to get there is pasting a public address without its
+        // scheme and having `http://` put in front of it.
+        if parsed.scheme() == "http" && !is_private_network_host(host) {
+            return Err(Error::Invalid(
+                "an http:// homeserver would send the bot's password unencrypted; use https:// \
+                 unless the server is on this computer, your own network or your tailnet"
+                    .into(),
+            ));
+        }
         valid_user_id(&self.user_id, "the bot's Matrix ID")?;
         valid_user_id(&self.owner, "your Matrix ID")?;
         if self.user_id == self.owner {
@@ -174,6 +194,77 @@ impl MatrixLink {
         }
         Ok(())
     }
+}
+
+/// Whether a host names a machine on the person's own network rather than on
+/// the open internet: this computer, a private (RFC 1918 or unique-local) or
+/// link-local address, a Tailscale address (`100.64.0.0/10`,
+/// `fd7a:115c:a1e0::/48`, `*.ts.net`), a `.local` or other home-network name,
+/// or a bare single-label name such as `nas`.
+///
+/// Two callers lean on it for opposite reasons. Anything that would send a
+/// credential over plain `http://` allows it only for a host this says yes
+/// to, because a network the person runs is not one a stranger can read.
+/// And the Feed's assistant tool refuses to *follow* such a host, because a
+/// source it adds is fetched on a schedule and a private address is the one
+/// thing a prompt-injected "follow this feed" must never reach; a person
+/// adding their own self-hosted feed does it in the interface instead.
+///
+/// Textual, with no lookup, so that it answers the same offline and cannot be
+/// moved by DNS. It is therefore about what the *name* says: a public name
+/// that happens to resolve to a private address is not one of these, which is
+/// why a fetch that must not reach the private network also filters what the
+/// name resolves to (see `karmayoga_service::http::public_client`).
+///
+/// `host` is as `url::Url::host_str` gives it: an IPv6 literal may keep its
+/// brackets. Written against raw octets and segments for the reason
+/// `karmayoga_service::http::is_forbidden_address` is.
+pub fn is_private_network_host(host: &str) -> bool {
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(v4) => {
+                let o = v4.octets();
+                o[0] == 127
+                    || o == [0, 0, 0, 0]
+                    || o[0] == 10
+                    || (o[0] == 172 && (16..=31).contains(&o[1]))
+                    || (o[0] == 192 && o[1] == 168)
+                    || (o[0] == 169 && o[1] == 254)
+                    || (o[0] == 100 && (64..=127).contains(&o[1]))
+            }
+            std::net::IpAddr::V6(v6) => {
+                let s = v6.segments();
+                s == [0, 0, 0, 0, 0, 0, 0, 1]
+                    || s == [0; 8]
+                    // fe80::/10 link-local, fec0::/10 (deprecated) site-local,
+                    // and fc00::/7 unique-local, which holds Tailscale's
+                    // fd7a:115c:a1e0::/48.
+                    || s[0] & 0xffc0 == 0xfe80
+                    || s[0] & 0xffc0 == 0xfec0
+                    || s[0] & 0xfe00 == 0xfc00
+            }
+        };
+    }
+    // A name that is all digits and dots but did not parse as an address is
+    // not a home-network name; treating it as one would hand a malformed
+    // address the exemption.
+    if host.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return false;
+    }
+    !host.contains('.')
+        || host.ends_with(".localhost")
+        || [".local", ".ts.net", ".lan", ".home.arpa", ".internal"]
+            .iter()
+            .any(|suffix| host.ends_with(suffix))
 }
 
 /// `@localpart:server`, loosely: enough to catch a display name or a bare
@@ -255,6 +346,54 @@ mod tests {
         assert!(matrix("https://h", "bot", "@me:h").validate().is_err());
         assert!(matrix("https://h", "@bot:h", "Me Myself").validate().is_err());
         assert!(matrix("https://h", "@me:h", "@me:h").validate().is_err());
+    }
+
+    #[test]
+    fn plain_http_is_for_this_computer_and_the_persons_own_network_only() {
+        let ok = |home: &str| matrix(home, "@bot:h", "@me:h").validate().is_ok();
+        // Loopback, private ranges, a tailnet in both of its spellings, and
+        // names that only a home network answers.
+        assert!(ok("http://127.0.0.1:6167"));
+        assert!(ok("http://localhost:6167"));
+        assert!(ok("http://[::1]:6167"));
+        assert!(ok("http://192.168.1.20:6167"));
+        assert!(ok("http://10.1.2.3"));
+        assert!(ok("http://172.16.0.9"));
+        assert!(ok("http://100.101.102.103:6167"));
+        assert!(ok("http://[fd7a:115c:a1e0::1]:6167"));
+        assert!(ok("http://conduit.tail1234.ts.net:6167"));
+        assert!(ok("http://nas.local"));
+        assert!(ok("http://nas:6167"));
+        // Anywhere else the password would cross the internet in the clear.
+        assert!(!ok("http://matrix.example.org"));
+        assert!(!ok("http://8.8.8.8:6167"));
+        assert!(!ok("http://172.32.0.1"));
+        assert!(!ok("http://100.128.0.1"));
+        assert!(!ok("http://127.0.0.1.evil.example"));
+        // The same hosts are fine over https.
+        assert!(ok("https://matrix.example.org"));
+    }
+
+    #[test]
+    fn private_network_hosts_are_told_from_public_ones() {
+        for host in [
+            "localhost",
+            "LOCALHOST.",
+            "127.1.2.3",
+            "169.254.169.254",
+            "[fe80::1]",
+            "fc00::1",
+            "fec0::1",
+            "box.local",
+            "box.home.arpa",
+            "myhost.tailnet.ts.net",
+            "router",
+        ] {
+            assert!(is_private_network_host(host), "{host} should be private");
+        }
+        for host in ["example.com", "8.8.8.8", "2606:4700::1111", "100.63.255.255", "", "1.2.3"] {
+            assert!(!is_private_network_host(host), "{host} should be public");
+        }
     }
 
     #[test]

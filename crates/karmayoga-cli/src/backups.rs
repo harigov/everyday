@@ -258,12 +258,14 @@ async fn report_progress(progress: Arc<Progress>) {
 }
 
 /// `karmayoga restore`: no vault needed, and none opened.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn restore(
     from: &str,
     into: &Path,
     snapshot: Option<String>,
     config: bool,
     files_to: Option<&Path>,
+    allow_unencrypted: bool,
     location: &LocationArgs,
     password: Option<String>,
 ) -> Result<()> {
@@ -271,6 +273,13 @@ pub(crate) fn restore(
     let target = Target::open(&destination, None).map_err(|e| Error::Invalid(e.message))?;
     let rt = runtime()?;
     let header = rt.block_on(backup::restore::read_header(&target)).map_err(failed)?;
+    // Before any prompt, and before anything is read: a header that says
+    // "not encrypted" asks for no password, which is exactly what somebody
+    // who can write to the destination would want it to say. See
+    // `BackupKeys::from_header`.
+    if !header.is_encrypted() && !allow_unencrypted {
+        return Err(Error::Invalid(karmayoga_core::backup::UNENCRYPTED_BACKUP_REFUSAL.into()));
+    }
     let password = if header.is_encrypted() {
         Some(match password {
             Some(p) => p,
@@ -293,6 +302,7 @@ pub(crate) fn restore(
                     config_into,
                     files_into: files_to.map(Path::to_path_buf),
                     password,
+                    allow_unencrypted,
                 },
                 Some(&progress),
             )
@@ -301,6 +311,14 @@ pub(crate) fn restore(
             result
         })
         .map_err(failed)?;
+    if !report.passed_over.is_empty() {
+        eprintln!(
+            "Passed over {} newer backup file(s) that do not open with this vault's key, and \
+             restored the newest that does: {}",
+            report.passed_over.len(),
+            report.passed_over.join(", ")
+        );
+    }
     println!(
         "Restored {}: {} file(s), {}. Open {} in Karma Yoga with the same password.",
         report.snapshot,
@@ -339,9 +357,14 @@ pub(crate) fn restore(
         }
     }
     if report.files_folder_left_out > 0 {
+        let was = match &report.files_folder_recorded {
+            Some(folder) => format!("the copy says that folder was {folder}, which is not"),
+            None => "the copy does not say where that folder was, and it is not".into(),
+        };
         println!(
-            "{} file(s) from the files folder were not put back: the copy does not say where \
-             that folder was. Name one with --files-to.",
+            "{} file(s) from the files folder were not put back: {was} this computer's own \
+             Karma Yoga folder, and a restore does not write wherever a backup says. Name the \
+             folder you want them in with --files-to.",
             report.files_folder_left_out
         );
     }

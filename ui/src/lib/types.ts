@@ -4138,7 +4138,12 @@ export interface ProposalPolicy {
  * more than twenty transactions, after a stranger's words -- a transfer's
  * memo, a mail -- were read this turn. `'connection'` is a tool on a connected
  * MCP server (Slack, Linear, ...) that its policy says to ask about -- the
- * subject names the connection, the tool and the arguments in full. See
+ * subject names the connection, the tool and the arguments in full. `'keep'`
+ * is something that every later prompt, or a run nobody watches, would read
+ * as the person's own wishes -- a memory, the profile, a skill, a routine, a
+ * task for the assistant, an accepted proposal -- written after a stranger's
+ * words were read this conversation: the subject's first line says what, and
+ * the lines after it are the whole text that would be saved. See
  * `agent::tools::mail`'s module docs in the
  * Rust core, `ConfirmGate` in the service, and the service's `browser`
  * module, for the whole of the reasoning behind each.
@@ -4153,6 +4158,7 @@ export const CONFIRM_KINDS = [
   'routine',
   'rewrite',
   'connection',
+  'keep',
 ] as const
 export type ConfirmKind = (typeof CONFIRM_KINDS)[number]
 
@@ -4657,6 +4663,8 @@ export interface NewsSource {
   retention?: Retention | null
   paused: boolean
   sortOrder: number
+  /** Followed by the assistant: fetched from the internet only. Absent for the person's own. */
+  addedByAssistant?: boolean
   createdAt: string
   updatedAt: string
 }

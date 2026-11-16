@@ -38,7 +38,9 @@
         "script-src": "'self'",
         "connect-src": "'self' ipc: http://ipc.localhost karmayoga: http://karmayoga.localhost",
         "frame-src": "'self'",
-        "object-src": "'none'"
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'"
       },
       "assetProtocol": { "enable": false, "scope": [] }
     }

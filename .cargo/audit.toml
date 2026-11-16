@@ -1,0 +1,12 @@
+# `cargo audit` (see .github/workflows/audit.yml). Every ignore names why.
+[advisories]
+ignore = [
+  # ammonia is held at =4.1.4 on purpose: from 4.1.5 it panics on the
+  # sanitiser's configuration (`<style>` allowed while style attributes are
+  # filtered). These are about CSS `url()` handling and SVG animation; no SVG
+  # is allowed, and every `url()` passes `guard_style_urls` after ammonia,
+  # inside a scriptless frame. See crates/karmayoga-mail/Cargo.toml.
+  "RUSTSEC-2021-0157",
+  "RUSTSEC-2021-0158",
+  "RUSTSEC-2026-0373",
+]

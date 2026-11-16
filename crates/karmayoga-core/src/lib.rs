@@ -92,6 +92,7 @@ pub mod error;
 pub mod files;
 pub mod fsutil;
 pub mod health;
+pub mod hidden;
 pub mod ics;
 pub mod id;
 pub mod insights;

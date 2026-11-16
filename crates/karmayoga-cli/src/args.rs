@@ -309,6 +309,14 @@ pub enum Command {
         /// a different user, than the one that made the backup.
         #[arg(long = "files-to", value_name = "DIR")]
         files_to: Option<PathBuf>,
+        /// Restore a backup whose header says the vault had no password.
+        /// Refused without this: that header is a plain file anybody who can
+        /// write to the backup's place could have replaced, and an
+        /// unencrypted backup is sealed under a key everybody knows. Say it
+        /// only for a vault that never had a password, from a place only you
+        /// can write to.
+        #[arg(long)]
+        unencrypted: bool,
         #[command(flatten)]
         location: LocationArgs,
     },

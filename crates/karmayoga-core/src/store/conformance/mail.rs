@@ -1662,6 +1662,51 @@ pub(super) fn garbage_collection_learns_about_mail_attachments(store: &dyn Journ
     store.accounts().unwrap().delete_account(account).unwrap();
     assert_eq!(store.collect_garbage(std::time::Duration::ZERO).unwrap(), 1);
     assert!(!store.has_blob(attached).unwrap(), "an attachment nothing points at is collectable");
+
+    garbage_collection_keeps_what_a_draft_holds(store);
+}
+
+/// A draft holds its attachments and the pictures pasted into its body by
+/// nothing but its own record, and one scheduled for Monday is written on
+/// Friday: the collector's day of grace is not what keeps them. Run with a
+/// grace of nothing, so only the reference walk is being asked.
+fn garbage_collection_keeps_what_a_draft_holds(store: &dyn JournalStore) {
+    use crate::mail::DraftAttachment;
+    let m = mail_store(store);
+
+    let account = AccountId::new();
+    let attached = store.put_blob(b"a contract waiting to be sent").unwrap();
+    let pasted = store.put_blob(b"a screenshot pasted into the body").unwrap();
+    let orphan = store.put_blob(b"a blob nothing holds").unwrap();
+
+    let mut draft = Draft::new(account, "me@example.com", Origin::Person);
+    draft.attachments = vec![DraftAttachment {
+        blob: attached,
+        filename: "contract.pdf".into(),
+        mime_type: "application/pdf".into(),
+    }];
+    draft.body_html =
+        format!("<p>see below</p><img src=\"karmayoga://blob/x\" data-blob=\"{pasted}\">");
+    m.put_draft(&draft).unwrap();
+
+    let removed = store.collect_garbage(std::time::Duration::ZERO).unwrap();
+    assert_eq!(removed, 1, "only the blob nothing holds");
+    assert!(store.has_blob(attached).unwrap(), "a draft's attachment is a live reference");
+    assert!(store.has_blob(pasted).unwrap(), "a picture pasted into a draft is a live reference");
+    assert!(!store.has_blob(orphan).unwrap());
+
+    // The same for one that is queued to send, which is the state a
+    // send-later message waits in.
+    draft.state = crate::mail::DraftState::Queued { op: crate::id::OpId::new() };
+    m.put_draft(&draft).unwrap();
+    assert_eq!(store.collect_garbage(std::time::Duration::ZERO).unwrap(), 0);
+    assert!(store.has_blob(attached).unwrap() && store.has_blob(pasted).unwrap());
+
+    // ...and they are collectable once the draft is gone.
+    m.delete_draft(draft.id).unwrap();
+    assert_eq!(store.collect_garbage(std::time::Duration::ZERO).unwrap(), 2);
+    assert!(!store.has_blob(attached).unwrap());
+    assert!(!store.has_blob(pasted).unwrap());
 }
 
 /// An archived thread that receives a reply in the Inbox is shown there

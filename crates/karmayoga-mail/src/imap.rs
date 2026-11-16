@@ -144,6 +144,42 @@ enum Verifier {
 /// stream catches up.
 const RAW_BATCH_SIZE: usize = 20;
 
+/// The most a single raw batch is allowed to hold, by the sizes the server
+/// declares. Twenty messages is a fair count and a poor bound: twenty
+/// forwarded videos is a gigabyte held at once. A batch is closed as soon
+/// as the next message would carry it past this, and a message bigger than
+/// it goes alone -- it has to be held whole either way.
+const RAW_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How many uids [`ImapSession::raw`] asks the sizes of in one go, before
+/// splitting them into batches. Sizes are a few bytes each, so this is large
+/// enough that the extra question is a small fraction of the round trips.
+const RAW_PROBE_SIZE: usize = 200;
+
+/// Group `sizes` -- uids in order with their declared `RFC822.SIZE` -- into
+/// batches of at most [`RAW_BATCH_SIZE`] messages and, unless one message is
+/// bigger than that on its own, [`RAW_BATCH_BYTES`] in all.
+fn plan_raw_batches(sizes: &[(Uid, u32)]) -> Vec<UidSet> {
+    let mut out = Vec::new();
+    let mut current: Vec<Uid> = Vec::new();
+    let mut held = 0u64;
+    for &(uid, size) in sizes {
+        let size = u64::from(size);
+        if !current.is_empty()
+            && (current.len() >= RAW_BATCH_SIZE || held.saturating_add(size) > RAW_BATCH_BYTES)
+        {
+            out.push(current.drain(..).collect());
+            held = 0;
+        }
+        current.push(uid);
+        held = held.saturating_add(size);
+    }
+    if !current.is_empty() {
+        out.push(current.into_iter().collect());
+    }
+    out
+}
+
 /// The batch size for [`ImapSession::changes_since`]'s non-`CONDSTORE`
 /// flag refetch -- see that branch's own docs for why one `UID FETCH`
 /// naming every known uid at once is not safe. A `FLAGS`-only fetch is far
@@ -242,6 +278,31 @@ impl ImapSession {
 
     fn take_session(&mut self) -> Result<ImapLibSession<TlsStream>> {
         self.session.take().ok_or_else(Self::missing_session)
+    }
+
+    /// The declared `RFC822.SIZE` of each of `uids` the server still has,
+    /// in uid order. Cheap: a size is a number, not a message.
+    async fn raw_sizes(&mut self, uids: &UidSet) -> Result<Vec<(Uid, u32)>> {
+        let command = format!("UID FETCH {} (UID RFC822.SIZE)", uids.to_imap());
+        let mut out = Vec::new();
+        let session = self.session_mut()?;
+        run_fetch_command(session, &command, |_seq, attrs| {
+            let mut uid = None;
+            let mut size = None;
+            for attr in attrs {
+                match attr {
+                    AttributeValue::Uid(v) => uid = Some(*v),
+                    AttributeValue::Rfc822Size(v) => size = Some(*v),
+                    _ => {}
+                }
+            }
+            if let (Some(uid), Some(size)) = (uid, size) {
+                out.push((uid, size));
+            }
+        })
+        .await?;
+        out.sort_unstable_by_key(|&(uid, _)| uid);
+        Ok(out)
     }
 
     async fn fetch_raw_batch(&mut self, batch: &UidSet) -> Result<Vec<(Uid, Vec<u8>)>> {
@@ -457,20 +518,33 @@ impl MailSession for ImapSession {
     }
 
     async fn raw(&mut self, uids: &UidSet) -> Result<RawStream<'_>> {
-        let batches: VecDeque<UidSet> = uids.chunks(RAW_BATCH_SIZE).into_iter().collect();
-        let state = (self, batches, VecDeque::<(Uid, Vec<u8>)>::new());
-        let stream = stream::unfold(state, |(session, mut batches, mut buffer)| async move {
-            loop {
-                if let Some(item) = buffer.pop_front() {
-                    return Some((Ok(item), (session, batches, buffer)));
+        // Sized before fetched, a group of uids at a time: how many messages
+        // make a batch is the easy part; how big they are decides whether
+        // twenty of them fit in memory at once. A server that says nothing
+        // about sizes gets the plain count-sized batches it always did.
+        let groups: VecDeque<UidSet> = uids.chunks(RAW_PROBE_SIZE).into_iter().collect();
+        let state = (self, groups, VecDeque::<UidSet>::new(), VecDeque::<(Uid, Vec<u8>)>::new());
+        let stream =
+            stream::unfold(state, |(session, mut groups, mut batches, mut buffer)| async move {
+                loop {
+                    if let Some(item) = buffer.pop_front() {
+                        return Some((Ok(item), (session, groups, batches, buffer)));
+                    }
+                    if let Some(batch) = batches.pop_front() {
+                        match session.fetch_raw_batch(&batch).await {
+                            Ok(items) => buffer.extend(items),
+                            Err(e) => return Some((Err(e), (session, groups, batches, buffer))),
+                        }
+                        continue;
+                    }
+                    let group = groups.pop_front()?;
+                    match session.raw_sizes(&group).await {
+                        Ok(sizes) if !sizes.is_empty() => batches.extend(plan_raw_batches(&sizes)),
+                        Ok(_) => batches.extend(group.chunks(RAW_BATCH_SIZE)),
+                        Err(e) => return Some((Err(e), (session, groups, batches, buffer))),
+                    }
                 }
-                let batch = batches.pop_front()?;
-                match session.fetch_raw_batch(&batch).await {
-                    Ok(items) => buffer.extend(items),
-                    Err(e) => return Some((Err(e), (session, batches, buffer))),
-                }
-            }
-        });
+            });
         Ok(Box::pin(stream))
     }
 
@@ -1599,6 +1673,32 @@ mod tests {
             set.insert(uid);
         }
         assert_eq!(set.to_imap(), "1:5,9");
+    }
+
+    #[test]
+    fn raw_batches_are_bounded_by_bytes_as_well_as_count() {
+        const MIB: u32 = 1024 * 1024;
+        // Small messages: by count alone.
+        let small: Vec<(Uid, u32)> = (1..=45).map(|u| (u, 1000)).collect();
+        let batches = plan_raw_batches(&small);
+        assert_eq!(batches.iter().map(UidSet::len).collect::<Vec<_>>(), [20, 20, 5]);
+
+        // Big ones: three 30 MiB messages do not fit in 64 MiB together.
+        let big: Vec<(Uid, u32)> = (1..=5).map(|u| (u, 30 * MIB)).collect();
+        let batches = plan_raw_batches(&big);
+        assert_eq!(batches.iter().map(UidSet::len).collect::<Vec<_>>(), [2, 2, 1]);
+
+        // One bigger than the whole allowance goes alone, and its
+        // neighbours do not ride with it.
+        let mixed = [(1, 1000), (2, 100 * MIB), (3, 1000), (4, 1000)];
+        let batches = plan_raw_batches(&mixed);
+        assert_eq!(batches.iter().map(UidSet::len).collect::<Vec<_>>(), [1, 1, 2]);
+        assert!(batches[1].contains(2));
+
+        // Every uid is somewhere exactly once.
+        let all: Vec<Uid> = batches.iter().flat_map(|b| b.iter()).collect();
+        assert_eq!(all, [1, 2, 3, 4]);
+        assert!(plan_raw_batches(&[]).is_empty());
     }
 
     #[test]

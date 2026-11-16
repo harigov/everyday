@@ -68,8 +68,8 @@ use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
 use super::{
-    RemoteCalendar, calendar_after_retry_after, deterministic_event_id, retry_after_delay,
-    sync_window,
+    MAX_API_BYTES, RemoteCalendar, calendar_after_retry_after, deterministic_event_id,
+    require_same_origin, retry_after_delay, sync_window,
 };
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
@@ -343,7 +343,20 @@ async fn delta_sync(
     since: Option<&str>,
 ) -> CommandResult<(Vec<GraphEvent>, Vec<String>, Option<String>)> {
     let mut url = match since {
-        Some(link) => link.to_string(),
+        Some(link) => {
+            // The stored delta link comes out of the vault, but it came from
+            // a response body in the first place, and is about to carry the
+            // access token. One that is not Graph's own is as good as an
+            // expired one: starting a fresh delta is what the caller does
+            // on this code, and costs nothing but a longer sync.
+            if require_same_origin(link, base, "Microsoft Graph").is_err() {
+                return Err(CommandError::new(
+                    codes::CONFLICT,
+                    "Microsoft Graph's delta link has expired",
+                ));
+            }
+            link.to_string()
+        }
         None => {
             let (from, to) = sync_window();
             format!(
@@ -371,8 +384,16 @@ async fn delta_sync(
             }
         }
         if let Some(next) = page.next_link {
+            require_same_origin(&next, base, "Microsoft Graph")?;
             url = next;
             continue;
+        }
+        // Checked before it is kept, not only when it is next followed: it
+        // is stored in the vault and presented again at the next sync, and a
+        // link refused now fails this sync with a sentence instead of
+        // failing every later one.
+        if let Some(link) = &page.delta_link {
+            require_same_origin(link, base, "Microsoft Graph")?;
         }
         delta_link = page.delta_link;
         break;
@@ -401,6 +422,9 @@ async fn windowed_sync(
     while let Some(url) = next.take() {
         let page: DeltaPage = get_json_full_url(&url, token).await?;
         items.extend(page.value.into_iter().filter(|e| e.removed.is_none()));
+        if let Some(link) = &page.next_link {
+            require_same_origin(link, base, "Microsoft Graph")?;
+        }
         next = page.next_link;
     }
     Ok((items, Vec::new(), None))
@@ -526,9 +550,10 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
             .send()
             .await
             .map_err(|e| {
+                // `reqwest`'s own text names the address it was asking.
                 CommandError::new(
                     http::transport_code(&e),
-                    format!("could not reach Microsoft Graph: {e}"),
+                    format!("could not reach Microsoft Graph: {}", http::strip_url(&e.to_string())),
                 )
             })?;
         let status = response.status().as_u16();
@@ -580,7 +605,11 @@ async fn get_json_full_url<T: serde::de::DeserializeOwned>(
                 format!("Microsoft Graph answered {status}"),
             ));
         }
-        return response.json().await.map_err(|e| {
+        let body = http::read_capped(response, MAX_API_BYTES, || {
+            "Microsoft Graph's answer was larger than this app will read".to_string()
+        })
+        .await?;
+        return serde_json::from_slice(&body).map_err(|e| {
             CommandError::new(
                 codes::NETWORK,
                 format!("could not read Microsoft Graph's answer: {e}"),
@@ -768,10 +797,11 @@ mod tests {
     #[tokio::test]
     async fn delta_paging_collects_every_page_and_treats_removed_as_deletions() {
         let first_page = mock_delta_pages().await;
-        // `since` already names a full `@odata.nextLink` here, so `base` is
-        // never consulted -- see `delta_sync`'s own doc.
+        // `since` already names a full `@odata.nextLink`, so `base` is only
+        // consulted for its origin: the links must point back at it.
+        let base = first_page.trim_end_matches("/delta1").to_string();
         let (items, removed, delta_link) =
-            delta_sync("unused-base", "token-does-not-matter-here", Some(&first_page))
+            delta_sync(&base, "token-does-not-matter-here", Some(&first_page))
                 .await
                 .expect("the mock server answers both pages");
 
@@ -783,6 +813,100 @@ mod tests {
             delta_link.as_deref().is_some_and(|link| link.ends_with("/delta-resume-token")),
             "the final page's deltaLink is what a later sync resumes from: {delta_link:?}"
         );
+    }
+
+    // ---- a link that names another server is never followed ---------------
+
+    /// A mock whose one page, at `path`, carries `link` under `link_key`,
+    /// and which records the `Authorization` of every request it is sent, so
+    /// a test can see where the bearer token did and did not go.
+    async fn mock_page_naming(
+        path: &'static str,
+        link_key: &'static str,
+        link: String,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use axum::Json;
+        use axum::routing::get;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_for_route = seen.clone();
+        let app = axum::Router::new().route(
+            path,
+            get(move |headers: axum::http::HeaderMap| {
+                let link = link.clone();
+                let seen = seen_for_route.clone();
+                async move {
+                    let auth = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    seen.lock().unwrap().push(auth);
+                    Json(serde_json::json!({ "value": [], link_key: link }))
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        (format!("http://127.0.0.1:{port}"), seen)
+    }
+
+    #[tokio::test]
+    async fn a_next_link_to_another_server_is_not_followed_with_the_token() {
+        // The "other server" is a second local listener on a different port:
+        // the same host, but not the same origin, which is what a check on
+        // the host name alone would have let through.
+        let (elsewhere, elsewhere_seen) =
+            mock_page_naming("/delta1", "@odata.nextLink", "http://127.0.0.1:1/x".into()).await;
+        let (base, seen) =
+            mock_page_naming("/delta1", "@odata.nextLink", format!("{elsewhere}/delta1")).await;
+        let err =
+            delta_sync(&base, "secret-token", Some(&format!("{base}/delta1"))).await.unwrap_err();
+        assert!(err.message.contains("some other server"), "{}", err.message);
+        assert!(!err.message.contains("127.0.0.1"), "{}", err.message);
+        assert_eq!(seen.lock().unwrap().len(), 1, "only the first page was asked for");
+        assert!(elsewhere_seen.lock().unwrap().is_empty(), "the token was sent nowhere else");
+    }
+
+    #[tokio::test]
+    async fn the_windowed_poll_refuses_a_next_link_to_another_server_too() {
+        let (elsewhere, elsewhere_seen) =
+            mock_page_naming("/x", "@odata.nextLink", "http://127.0.0.1:1/x".into()).await;
+        let (base, _seen) = mock_page_naming(
+            "/me/calendars/cal1/calendarView",
+            "@odata.nextLink",
+            format!("{elsewhere}/x"),
+        )
+        .await;
+        let err = windowed_sync(&base, "secret-token", "cal1").await.unwrap_err();
+        assert!(err.message.contains("some other server"), "{}", err.message);
+        assert!(elsewhere_seen.lock().unwrap().is_empty(), "the token was sent nowhere else");
+    }
+
+    #[tokio::test]
+    async fn a_delta_link_to_another_server_is_refused_before_it_is_kept() {
+        let (base, _seen) =
+            mock_page_naming("/delta1", "@odata.deltaLink", "https://evil.example/resume".into())
+                .await;
+        let err =
+            delta_sync(&base, "secret-token", Some(&format!("{base}/delta1"))).await.unwrap_err();
+        assert!(err.message.contains("some other server"), "{}", err.message);
+    }
+
+    #[tokio::test]
+    async fn a_stored_delta_link_on_another_server_reads_as_expired_and_is_never_asked() {
+        let err = delta_sync(
+            "https://graph.microsoft.com/v1.0",
+            "secret-token",
+            Some("https://evil.example/resume"),
+        )
+        .await
+        .unwrap_err();
+        // The code `sync` answers with a fresh full delta; nothing is sent.
+        assert_eq!(err.code, codes::CONFLICT);
     }
 
     // ---- finding 2: 403 is not a bad credential; 429 and 503 are retried --
@@ -985,7 +1109,7 @@ mod tests {
                                      "end": {"dateTime": end, "timeZone": "UTC"},
                                      "isAllDay": false, "showAs": "busy"},
                                 ],
-                                "@odata.deltaLink": "http://unused/fresh-delta",
+                                "@odata.deltaLink": format!("{base_for_route}/fresh-delta"),
                             }))
                             .into_response()
                         }

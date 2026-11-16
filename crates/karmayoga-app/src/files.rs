@@ -250,7 +250,7 @@ pub async fn pick_files_folder(app: tauri::AppHandle) -> CommandResult<Option<St
 // ---- opening and showing ------------------------------------------------------
 
 /// Open a file in the program the system uses for it. A sealed file is
-/// decrypted into the folder's private `open` folder first (the vault's
+/// decrypted into a private folder outside the files folder first (the vault's
 /// `open_file_copy`), which is why this is not left to the interface to do with
 /// a path.
 ///
@@ -268,8 +268,9 @@ pub async fn open_file_externally(
             return Err(CommandError::new(
                 codes::FORBIDDEN,
                 format!(
-                    "{} is a program, and Karma Yoga will not start one for you. Show it in \
-                     its folder to open it yourself.",
+                    "{} is a program, script or web page that can run code when it is opened, \
+                     and Karma Yoga will not open one for you. Show it in its folder to open it \
+                     yourself.",
                     entry.name
                 ),
             ));
@@ -332,12 +333,113 @@ fn here(state: &AppState) -> CommandResult<std::sync::Arc<karmayoga_service::Ser
 /// "open" on one of these is the oldest way there is to run something somebody
 /// else chose. Showing it in its folder is still there for the person who means
 /// it.
+///
+/// Also the kinds that are documents in name only. A web page, an SVG and an
+/// MHT archive are opened by the browser, which runs their scripts from a
+/// `file://` page that can read other local files; a macro-enabled Office
+/// file, a compiled help file and a disk image ask to be run or mounted; a
+/// `.url`, `.webloc` or `.lnk` is a shortcut to somewhere else. A list of
+/// what is dangerous is never complete, so this one is only as long as what
+/// has been seen to be.
 fn runs_a_program(name: &str) -> bool {
     const PROGRAMS: &[&str] = &[
-        "exe", "com", "bat", "cmd", "msi", "msp", "scr", "pif", "lnk", "url", "cpl", "reg", "ps1",
-        "psm1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "hta", "jar", "app", "command", "sh",
-        "bash", "run", "desktop", "appimage", "deb", "rpm", "pkg", "dmg", "apk", "scpt",
+        // Run by Windows, or by any desktop.
+        "exe",
+        "com",
+        "bat",
+        "cmd",
+        "msi",
+        "msp",
+        "scr",
+        "pif",
+        "lnk",
+        "url",
+        "cpl",
+        "reg",
+        "ps1",
+        "psm1",
+        "psd1",
+        "ps1xml",
+        "vbs",
+        "vbe",
+        "js",
+        "jse",
+        "mjs",
+        "cjs",
+        "wsf",
+        "wsh",
+        "wsc",
+        "hta",
+        "jar",
+        "jnlp",
+        "app",
+        "command",
+        "tool",
+        "sh",
+        "bash",
+        "zsh",
+        "ksh",
+        "csh",
+        "fish",
+        "run",
+        "desktop",
+        "appimage",
+        "deb",
+        "rpm",
+        "pkg",
+        "dmg",
+        "apk",
+        "scpt",
         "workflow",
+        "action",
+        "inf",
+        "gadget",
+        "application",
+        "appref-ms",
+        "diagcab",
+        "webloc",
+        "terminal",
+        // Scripts for the languages an interpreter is usually installed for.
+        "py",
+        "pyw",
+        "pyz",
+        "pyc",
+        "pl",
+        "pm",
+        "rb",
+        "php",
+        "phtml",
+        "lua",
+        "tcl",
+        // Pages and images a browser runs scripts in.
+        "html",
+        "htm",
+        "xhtml",
+        "xht",
+        "shtml",
+        "mht",
+        "mhtml",
+        "svg",
+        "svgz",
+        // Documents that carry macros, and what asks to be mounted or run.
+        "docm",
+        "dotm",
+        "xlsm",
+        "xltm",
+        "xlam",
+        "xlsb",
+        "pptm",
+        "potm",
+        "ppam",
+        "ppsm",
+        "sldm",
+        "chm",
+        "iqy",
+        "slk",
+        "iso",
+        "img",
+        "vhd",
+        "vhdx",
     ];
     Path::new(name)
         .extension()
@@ -605,10 +707,68 @@ mod tests {
 
     #[test]
     fn opening_a_program_is_refused_and_opening_a_document_is_not() {
-        for program in ["setup.exe", "SETUP.EXE", "run.sh", "x.desktop", "a.b.bat", "link.lnk"] {
+        for program in [
+            "setup.exe",
+            "SETUP.EXE",
+            "run.sh",
+            "x.desktop",
+            "a.b.bat",
+            "link.lnk",
+            // What a browser or an interpreter runs, and what carries macros.
+            "page.html",
+            "PAGE.HTM",
+            "a.xhtml",
+            "logo.svg",
+            "saved.mht",
+            "saved.mhtml",
+            "tool.py",
+            "tool.pyw",
+            "tool.pl",
+            "tool.rb",
+            "index.php",
+            "app.js",
+            "app.mjs",
+            "run.vbs",
+            "run.ps1",
+            "budget.docm",
+            "budget.xlsm",
+            "deck.pptm",
+            "help.chm",
+            "disk.iso",
+            "disk.img",
+            "app.jnlp",
+            "x.desktop",
+            "x.AppImage",
+            "bundle.jar",
+            "site.url",
+            "site.webloc",
+            "a.lnk",
+            "x.scr",
+            "x.msi",
+            "x.hta",
+            "x.reg",
+            "x.command",
+            "x.tool",
+        ] {
             assert!(runs_a_program(program), "{program}");
         }
-        for document in ["photo.jpg", "film.mov", "paper.pdf", "a.tar.gz", "notes", "x.jsonl"] {
+        for document in [
+            "photo.jpg",
+            "film.mov",
+            "paper.pdf",
+            "a.tar.gz",
+            "notes",
+            "x.jsonl",
+            "n.txt",
+            "sheet.xlsx",
+            "memo.docx",
+            "deck.pptx",
+            "song.mp3",
+            "photo.png",
+            "data.json",
+            "page.html.txt",
+            "export.xml",
+        ] {
             assert!(!runs_a_program(document), "{document}");
         }
     }

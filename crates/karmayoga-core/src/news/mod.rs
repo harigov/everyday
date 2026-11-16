@@ -106,6 +106,15 @@ pub struct NewsSource {
     pub paused: bool,
     #[serde(default)]
     pub sort_order: i64,
+    /// Followed by the assistant rather than added by the person. Such a
+    /// source is fetched from the internet only: its address may have come
+    /// from whatever the assistant last read, and it is fetched again every
+    /// few minutes for as long as it exists. One the person added reaches
+    /// wherever they pointed it, their own network included. Written only
+    /// when set, so every source from before it existed reads as the
+    /// person's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub added_by_assistant: bool,
     pub created_at: Timestamp,
     pub updated_at: Timestamp,
 }
@@ -131,6 +140,7 @@ impl NewsSource {
             retention: None,
             paused: false,
             sort_order: 0,
+            added_by_assistant: false,
             created_at: now,
             updated_at: now,
         }

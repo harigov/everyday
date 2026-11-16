@@ -705,7 +705,7 @@ async fn validators_and_caching_headers_are_sent_and_read() {
     let mut state = FetchState::new(NewsSourceId::new());
 
     let Fetched::Body { bytes, etag, last_modified, final_url, hints } =
-        fetch::feed(&url, &state).await.unwrap()
+        fetch::feed(&url, &state, fetch::Reach::Typed).await.unwrap()
     else {
         panic!("the first answer is a body")
     };
@@ -718,7 +718,7 @@ async fn validators_and_caching_headers_are_sent_and_read() {
 
     state.etag = etag;
     state.last_modified = last_modified;
-    match fetch::feed(&url, &state).await.unwrap() {
+    match fetch::feed(&url, &state, fetch::Reach::Typed).await.unwrap() {
         Fetched::NotModified { hints } => assert_eq!(hints.max_age_secs, Some(900)),
         other => panic!("expected 304, got {other:?}"),
     }
@@ -736,15 +736,15 @@ async fn a_failure_carries_retry_after_as_seconds_or_as_a_date() {
     .await;
     let state = FetchState::new(NewsSourceId::new());
 
-    let err = fetch::feed(&server.url("/seconds"), &state).await.unwrap_err();
+    let err = fetch::feed(&server.url("/seconds"), &state, fetch::Reach::Typed).await.unwrap_err();
     assert_eq!(err.hints.retry_after_secs, Some(120));
     assert!(err.message.contains("trouble") && err.message.contains("503"), "{}", err.message);
 
-    let err = fetch::feed(&server.url("/date"), &state).await.unwrap_err();
+    let err = fetch::feed(&server.url("/date"), &state, fetch::Reach::Typed).await.unwrap_err();
     assert!(err.hints.retry_after_secs.unwrap() > 86_400 * 365, "{:?}", err.hints);
 
     // Only a 429 or a 503 is asking to wait.
-    let err = fetch::feed(&server.url("/other"), &state).await.unwrap_err();
+    let err = fetch::feed(&server.url("/other"), &state, fetch::Reach::Typed).await.unwrap_err();
     assert_eq!(err.hints, Hints::default());
 }
 
@@ -752,7 +752,9 @@ async fn a_failure_carries_retry_after_as_seconds_or_as_a_date() {
 async fn a_fetch_error_is_a_sentence_and_never_the_address() {
     let server = Server::start(|_| Reply::status(404)).await;
     let state = FetchState::new(NewsSourceId::new());
-    let err = fetch::feed(&server.url("/secret-token/feed.xml"), &state).await.unwrap_err();
+    let err = fetch::feed(&server.url("/secret-token/feed.xml"), &state, fetch::Reach::Typed)
+        .await
+        .unwrap_err();
     assert!(err.message.contains("nothing at that address"), "{}", err.message);
     assert!(!err.message.contains("127.0.0.1") && !err.message.contains("secret-token"));
 
@@ -762,7 +764,9 @@ async fn a_fetch_error_is_a_sentence_and_never_the_address() {
         gone.local_addr().unwrap().port()
     };
     let err =
-        fetch::feed(&format!("http://127.0.0.1:{port}/secret-token"), &state).await.unwrap_err();
+        fetch::feed(&format!("http://127.0.0.1:{port}/secret-token"), &state, fetch::Reach::Typed)
+            .await
+            .unwrap_err();
     assert!(err.message.contains("could not reach"), "{}", err.message);
     assert!(!err.message.contains("127.0.0.1") && !err.message.contains("secret-token"));
 }
@@ -770,7 +774,7 @@ async fn a_fetch_error_is_a_sentence_and_never_the_address() {
 #[tokio::test]
 async fn an_address_that_is_not_a_web_address_is_refused_before_anything_is_sent() {
     let state = FetchState::new(NewsSourceId::new());
-    let err = fetch::feed("file:///etc/passwd", &state).await.unwrap_err();
+    let err = fetch::feed("file:///etc/passwd", &state, fetch::Reach::Typed).await.unwrap_err();
     assert!(!err.message.contains("passwd"), "{}", err.message);
     assert!(fetch::json("ftp://example.com/x").await.is_err());
 }
@@ -783,7 +787,7 @@ async fn a_feed_over_sixteen_megabytes_and_an_answer_over_two_are_refused() {
     })
     .await;
     let state = FetchState::new(NewsSourceId::new());
-    let err = fetch::feed(&server.url("/feed"), &state).await.unwrap_err();
+    let err = fetch::feed(&server.url("/feed"), &state, fetch::Reach::Typed).await.unwrap_err();
     assert!(err.message.contains("16 MB"), "{}", err.message);
     let err = fetch::json(&server.url("/json")).await.unwrap_err();
     assert!(err.message.contains("2 MB"), "{}", err.message);

@@ -81,7 +81,7 @@ use super::{
     API, GoogleWhen, LocalStart, bearer, draft_for_series, is_rate_limit_reason, urlencoding_light,
     zone_or_utc,
 };
-use crate::accountcal::{calendar_after_retry_after, retry_after_delay};
+use crate::accountcal::{MAX_API_BYTES, calendar_after_retry_after, retry_after_delay};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::Service;
@@ -665,13 +665,19 @@ async fn send(
                 .body(payload.clone());
         }
         let response = request.send().await.map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not reach Google Calendar: {e}"))
+            CommandError::new(
+                codes::NETWORK,
+                format!("could not reach Google Calendar: {}", http::strip_url(&e.to_string())),
+            )
         })?;
         let status = response.status().as_u16();
         let retry_after = retry_after_delay(response.headers());
-        let answer = response.bytes().await.map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
-        })?;
+        // Capped, and with `reqwest`'s own wording left out of it: see the
+        // parent's `get_bytes`.
+        let answer = http::read_capped(response, MAX_API_BYTES, || {
+            "Google's answer was larger than this app will read".to_string()
+        })
+        .await?;
         if matches!(status, 429 | 503) || (status == 403 && is_rate_limit_reason(&answer)) {
             let policy = calendar_after_retry_after();
             if policy.gives_up_after(attempt) {

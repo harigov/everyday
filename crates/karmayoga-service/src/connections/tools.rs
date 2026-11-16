@@ -42,6 +42,16 @@ const MAX_LIMIT: usize = 25;
 const DESCRIPTION_CHARS: usize = 600;
 /// How much of a server's own instructions a search passes on.
 const INSTRUCTION_CHARS: usize = 800;
+/// How much of a tool's title a match carries.
+const TITLE_CHARS: usize = 200;
+/// The most of one tool's input schema a match carries, as written out. Up to
+/// twenty-five matches go to the model in one answer, and a server decides
+/// how long its schemas are; past this, the arguments are described by the
+/// description alone.
+const SCHEMA_CHARS: usize = 8_000;
+/// The most of a call's `structuredContent` handed to the model, as written
+/// out: what the text of the same answer is held to.
+const STRUCTURED_CHARS: usize = karmayoga_connect::MAX_RESULT_CHARS;
 /// How many tool names an unknown-tool error lists.
 const NAMES_LISTED: usize = 15;
 
@@ -238,15 +248,22 @@ async fn find(vault: &Arc<Vault>, unattended: bool, arguments: &Value) -> Result
     let tools: Vec<Value> = found
         .iter()
         .map(|m| {
+            let (schema, shown) = schema_within_cap(&m.tool.input_schema);
             let mut tool = json!({
                 "connection": m.connection,
                 "tool": m.tool.name,
                 "description": clip_to(&m.tool.description, DESCRIPTION_CHARS),
-                "inputSchema": m.tool.input_schema,
+                "inputSchema": schema,
                 "asks": m.policy == ToolPolicy::Ask,
             });
+            if !shown {
+                tool["inputSchemaNote"] = json!(
+                    "The input schema was too long to show; the description is all there is to \
+                     go on for the arguments."
+                );
+            }
             if let Some(title) = m.tool.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-                tool["title"] = json!(title);
+                tool["title"] = json!(clip_to(title, TITLE_CHARS));
             }
             tool
         })
@@ -373,9 +390,36 @@ async fn call(vault: &Arc<Vault>, unattended: bool, arguments: &Value) -> Result
         "text": result.text,
     });
     if let Some(structured) = result.structured {
-        answer["structured"] = structured;
+        add_structured(&mut answer, structured);
     }
     Ok(answer)
+}
+
+/// `schema` as it is to be shown, and whether it was shown whole: one past
+/// [`SCHEMA_CHARS`] is an empty object schema instead.
+fn schema_within_cap(schema: &Value) -> (Value, bool) {
+    let length = serde_json::to_string(schema).map_or(usize::MAX, |text| text.chars().count());
+    if length <= SCHEMA_CHARS {
+        (schema.clone(), true)
+    } else {
+        (json!({ "type": "object" }), false)
+    }
+}
+
+/// Put a call's `structuredContent` in `answer`, if it is no longer than the
+/// text beside it may be. The text is cut and says so; this is data, and half
+/// a JSON document is worse than none, so a long one is left out and the
+/// answer says that.
+fn add_structured(answer: &mut Value, structured: Value) {
+    let length = serde_json::to_string(&structured).map_or(usize::MAX, |t| t.chars().count());
+    if length <= STRUCTURED_CHARS {
+        answer["structured"] = structured;
+    } else {
+        answer["structuredNote"] = json!(
+            "The service also sent structured data, too long to include; `text` has what it \
+             could be summarised as."
+        );
+    }
 }
 
 /// A hub failure as the model should hear it.
@@ -795,5 +839,23 @@ mod tests {
         // Not for a routine: refused before anything is connected.
         let e = call(&vault, true, &used("Linear", "list_issues", json!({}))).await.unwrap_err();
         assert!(e.contains("scheduled runs"), "{e}");
+    }
+
+    #[test]
+    fn a_long_schema_or_structured_answer_is_not_handed_to_the_model_whole() {
+        let small = json!({ "type": "object", "properties": { "q": { "type": "string" } } });
+        assert_eq!(schema_within_cap(&small), (small, true));
+        let big = json!({ "type": "object", "properties": { "p": { "description": "x".repeat(SCHEMA_CHARS) } } });
+        assert_eq!(schema_within_cap(&big), (json!({ "type": "object" }), false));
+
+        let mut answer = json!({ "ok": true });
+        add_structured(&mut answer, json!({ "a": 1 }));
+        assert_eq!(answer["structured"], json!({ "a": 1 }));
+        assert!(answer.get("structuredNote").is_none());
+
+        let mut answer = json!({ "ok": true });
+        add_structured(&mut answer, json!({ "rows": "x".repeat(STRUCTURED_CHARS) }));
+        assert!(answer.get("structured").is_none());
+        assert!(answer["structuredNote"].as_str().unwrap().contains("too long"));
     }
 }

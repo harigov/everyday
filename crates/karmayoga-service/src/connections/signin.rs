@@ -20,7 +20,7 @@ use karmayoga_mail::oauth::{Loopback, LoopbackError};
 use reqwest::header::{ACCEPT, CONTENT_TYPE, WWW_AUTHENTICATE};
 use tokio::sync::watch;
 
-use super::{HubError, core_token_auth, http_client, hub, read_connection, vault_task};
+use super::{HubError, OAuthHttp, core_token_auth, hub, read_connection, vault_task};
 use crate::error::codes;
 
 /// How long the browser has to come back.
@@ -74,10 +74,14 @@ impl ConnectionSignIns {
         // given a moment to let go of it.
         self.end_for(id).await;
 
-        let http = http_client();
+        // Which client this is, and what the server's own answers may point
+        // it at, is decided by the address the person typed: see [`OAuthHttp`].
+        let net = OAuthHttp::for_server(url);
+        let http = net.client().clone();
         let (resource_metadata, challenge_scope) = challenge(&http, url).await;
-        let discovery =
-            oauth::discover(&http, url, resource_metadata.as_deref()).await.map_err(oauth_error)?;
+        let discovery = oauth::discover_gated(&http, url, resource_metadata.as_deref(), net.gate())
+            .await
+            .map_err(oauth_error)?;
 
         let port = redirect_port.unwrap_or(0);
         let loopback = Loopback::bind_port(port).await.map_err(|e| {

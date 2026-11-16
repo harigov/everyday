@@ -244,18 +244,67 @@ impl Default for KdfParams {
     }
 }
 
+/// The most memory a vault header may ask Argon2 to use: 4 GiB. Far above
+/// anything this program writes (see [`KdfParams::default`]) and enough room
+/// for somebody who chose to make unlocking dear; far below what a header
+/// can ask for, which is whatever fits in a `u32` of KiB.
+pub const MAX_KDF_MEMORY_KIB: u32 = 4 * 1024 * 1024;
+/// The most passes a header may ask for.
+pub const MAX_KDF_ITERATIONS: u32 = 64;
+/// The most lanes a header may ask for.
+pub const MAX_KDF_LANES: u32 = 64;
+
 impl KdfParams {
     /// Deliberately weak parameters for tests, so the suite does not spend
     /// seconds burning memory. Never use outside `cfg(test)` code paths.
     pub fn insecure_fast() -> Self {
         Self { memory_kib: 8, iterations: 1, lanes: 1 }
     }
+
+    /// Refuse numbers no honest header holds.
+    ///
+    /// The parameters are read from a plaintext file -- the vault's header,
+    /// or the copy of it kept beside backups -- before anybody has proved
+    /// anything, so whoever can write that file chooses them. Taken as they
+    /// came, a header asking for four billion KiB makes opening the vault, or
+    /// a restore from a bucket that somebody else can write to, allocate
+    /// until the process is killed. These limits are the ones that stop that
+    /// without refusing anything this program has ever written.
+    pub fn validate(&self) -> Result<()> {
+        let refuse = |what: &str, got: u32, most: u32| {
+            Err(Error::Invalid(format!(
+                "this vault's header asks for {what} of {got}, which is more than Karma Yoga will \
+                 spend on a password ({most}); the header has been damaged or tampered with"
+            )))
+        };
+        if self.memory_kib == 0 || self.iterations == 0 || self.lanes == 0 {
+            return Err(Error::Invalid(
+                "this vault's header has a zero where the password's key derivation needs a \
+                 number; the header has been damaged or tampered with"
+                    .into(),
+            ));
+        }
+        if self.memory_kib > MAX_KDF_MEMORY_KIB {
+            return refuse("a memory cost in KiB", self.memory_kib, MAX_KDF_MEMORY_KIB);
+        }
+        if self.iterations > MAX_KDF_ITERATIONS {
+            return refuse("a number of passes", self.iterations, MAX_KDF_ITERATIONS);
+        }
+        if self.lanes > MAX_KDF_LANES {
+            return refuse("a degree of parallelism", self.lanes, MAX_KDF_LANES);
+        }
+        Ok(())
+    }
 }
 
 /// Derive the key-encryption key from a password.
+///
+/// The parameters are checked first -- see [`KdfParams::validate`] -- because
+/// callers pass what a header says.
 pub fn derive_key(password: &str, salt: &[u8], params: KdfParams) -> Result<SecretKey> {
     use argon2::{Algorithm, Argon2, ParamsBuilder, Version};
 
+    params.validate()?;
     let params = ParamsBuilder::new()
         .m_cost(params.memory_kib)
         .t_cost(params.iterations)
@@ -375,6 +424,35 @@ mod tests {
         let c = derive_key("hunter2", &[2u8; SALT_LEN], p).unwrap();
         assert_eq!(a.expose(), b.expose());
         assert_ne!(a.expose(), c.expose());
+    }
+
+    #[test]
+    fn a_header_cannot_ask_for_a_key_derivation_that_exhausts_the_machine() {
+        let salt = [1u8; SALT_LEN];
+        let refused = |p: KdfParams| matches!(derive_key("pw", &salt, p), Err(Error::Invalid(_)));
+        let fast = KdfParams::insecure_fast();
+        // Checked before Argon2 runs, so none of these allocates anything.
+        assert!(refused(KdfParams { memory_kib: MAX_KDF_MEMORY_KIB + 1, ..fast }));
+        assert!(refused(KdfParams { memory_kib: u32::MAX, ..fast }));
+        assert!(refused(KdfParams { iterations: MAX_KDF_ITERATIONS + 1, ..fast }));
+        assert!(refused(KdfParams { iterations: u32::MAX, ..fast }));
+        assert!(refused(KdfParams { lanes: MAX_KDF_LANES + 1, ..fast }));
+        assert!(refused(KdfParams { memory_kib: 0, ..fast }));
+        assert!(refused(KdfParams { iterations: 0, ..fast }));
+        assert!(refused(KdfParams { lanes: 0, ..fast }));
+    }
+
+    #[test]
+    fn what_this_program_writes_is_well_inside_the_limits() {
+        KdfParams::default().validate().unwrap();
+        KdfParams::insecure_fast().validate().unwrap();
+        let most = KdfParams {
+            memory_kib: MAX_KDF_MEMORY_KIB,
+            iterations: MAX_KDF_ITERATIONS,
+            lanes: MAX_KDF_LANES,
+        };
+        most.validate().unwrap();
+        assert!(KdfParams::default().memory_kib * 8 < MAX_KDF_MEMORY_KIB);
     }
 
     #[test]

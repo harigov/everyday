@@ -347,6 +347,21 @@ async fn an_opml_import_adds_what_is_new_and_skips_what_is_not() {
 }
 
 #[tokio::test]
+async fn an_opml_import_skips_feeds_on_a_private_network() {
+    let (svc, _dir) = support::vault::service(None);
+    let xml = r#"<?xml version="1.0"?>
+<opml version="2.0"><body>
+  <outline type="rss" text="Public" xmlUrl="https://feeds.example.com/a.xml"/>
+  <outline type="rss" text="Metadata" xmlUrl="http://169.254.169.254/latest/meta-data/"/>
+  <outline type="rss" text="Loopback" xmlUrl="http://127.0.0.1:7398/mcp"/>
+  <outline type="rss" text="Router" xmlUrl="http://router/rss"/>
+</body></opml>"#;
+    let report = call(&svc, "import_opml", json!({ "xml": xml })).await;
+    assert_eq!(report["added"], 1, "{report}");
+    assert_eq!(report["skipped"], 3, "{report}");
+}
+
+#[tokio::test]
 async fn something_that_is_not_opml_is_refused() {
     let (svc, _dir) = support::vault::service(None);
     let e = fails(&svc, "import_opml", json!({ "xml": "this is not xml" })).await;

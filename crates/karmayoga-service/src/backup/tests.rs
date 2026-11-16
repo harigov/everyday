@@ -94,6 +94,7 @@ fn a_backup_restores_into_a_vault_that_opens_with_the_password() {
                 config_into: None,
                 files_into: None,
                 password: Some(PASSWORD.into()),
+                allow_unencrypted: false,
             },
             None,
         )
@@ -212,7 +213,7 @@ fn another_vault_and_a_wrong_password_open_nothing() {
         );
 
         let target = Target::folder(dest.path());
-        let err = super::restore::open_repository(&target, Some("wrong")).await.unwrap_err();
+        let err = super::restore::open_repository(&target, Some("wrong"), false).await.unwrap_err();
         assert!(matches!(err, BackupError::Vault(karmayoga_core::Error::BadPassword)), "{err}");
     });
 }
@@ -261,6 +262,7 @@ fn a_damaged_chunk_is_refused_on_restore() {
                 config_into: None,
                 files_into: None,
                 password: Some(PASSWORD.into()),
+                allow_unencrypted: false,
             },
             None,
         )
@@ -319,6 +321,7 @@ fn settings_files_come_back_only_when_asked_and_never_over_what_is_there() {
                 config_into: Some(new_config.path().to_path_buf()),
                 files_into: None,
                 password: Some(PASSWORD.into()),
+                allow_unencrypted: false,
             },
             None,
         )
@@ -435,11 +438,11 @@ fn keys_from_the_header_match_the_running_vaults() {
     let v = vault(home.path(), PASSWORD);
     let header: karmayoga_core::vault::VaultHeader =
         serde_json::from_slice(&v.backup_header().unwrap()).unwrap();
-    let from_header = BackupKeys::from_header(&header, Some(PASSWORD)).unwrap();
+    let from_header = BackupKeys::from_header(&header, Some(PASSWORD), false).unwrap();
     let live = v.backup_keys().unwrap();
     assert_eq!(from_header.repository_id(), live.repository_id());
     assert_eq!(from_header.chunk_name(b"x"), live.chunk_name(b"x"));
-    assert!(BackupKeys::from_header(&header, Some("nope")).is_err());
+    assert!(BackupKeys::from_header(&header, Some("nope"), false).is_err());
 }
 
 #[test]
@@ -724,6 +727,7 @@ fn the_files_folder_is_in_the_copy_under_files_and_comes_back_without_what_a_sca
             config_into: None,
             files_into: Some(files_back.clone()),
             password: Some(PASSWORD.into()),
+            allow_unencrypted: false,
         };
         let report = super::restore(&target, options("vault"), None).await.unwrap();
         assert_eq!((report.files_folder_restored, report.files_folder_kept), (2, 0));
@@ -787,6 +791,7 @@ fn a_files_folder_that_is_not_there_is_carried_forward_and_never_recorded_empty(
                 config_into: None,
                 files_into: Some(files_back.clone()),
                 password: Some(PASSWORD.into()),
+                allow_unencrypted: false,
             },
             None,
         )
@@ -869,5 +874,249 @@ fn one_file_comes_back_from_the_newest_copy_that_holds_it_and_never_over_a_file(
             None
         );
         assert!(!elsewhere.exists());
+    });
+}
+
+// ---- what a destination somebody else can write to may say ---------------------
+
+fn restore_options(into: &Path, password: Option<&str>) -> RestoreOptions {
+    RestoreOptions {
+        snapshot: None,
+        into: into.to_path_buf(),
+        config_into: None,
+        files_into: None,
+        password: password.map(str::to_string),
+        allow_unencrypted: false,
+    }
+}
+
+/// The header kept at `dest`, changed by `edit` and put back.
+fn edit_header(dest: &Path, edit: impl FnOnce(&mut serde_json::Value)) {
+    let path = dest.join(repo::HEADER);
+    let mut header: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    edit(&mut header);
+    std::fs::write(&path, serde_json::to_vec_pretty(&header).unwrap()).unwrap();
+}
+
+#[test]
+fn a_header_at_the_destination_that_says_none_does_not_skip_the_password() {
+    let (home, dest, out) =
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let v = vault(home.path(), PASSWORD);
+    note(&v, "private");
+    rt().block_on(async {
+        super::run(v.clone(), plan(dest.path(), 7), Progress::new(false)).await.unwrap();
+        let target = Target::folder(dest.path());
+
+        // Whoever can write to the destination says the vault is not
+        // encrypted, and that nothing is needed to open it.
+        edit_header(dest.path(), |h| {
+            let fields = h.as_object_mut().unwrap();
+            fields.insert("cipher".into(), "none".into());
+            for key in ["kdf", "salt", "wrappedKey", "keyCheck"] {
+                fields.remove(key);
+            }
+        });
+        let into = out.path().join("v");
+        for password in [None, Some(PASSWORD)] {
+            let err =
+                super::restore(&target, restore_options(&into, password), None).await.unwrap_err();
+            assert!(
+                matches!(err, BackupError::Refused(ref why) if why.contains("--unencrypted")),
+                "{err}"
+            );
+        }
+        assert!(!into.exists(), "nothing was laid down");
+
+        // Only one word changed, the rest left as it was: the same.
+        edit_header(dest.path(), |h| {
+            *h = serde_json::from_slice(&v.backup_header().unwrap()).unwrap();
+            h["cipher"] = "none".into();
+        });
+        assert!(
+            super::restore(&target, restore_options(&into, Some(PASSWORD)), None).await.is_err()
+        );
+        let err = super::restore::open_repository(&target, Some(PASSWORD), true).await.unwrap_err();
+        assert!(err.to_string().contains("not encrypted"), "{err}");
+    });
+}
+
+#[test]
+fn a_vault_that_really_has_no_password_restores_when_that_is_said() {
+    let (home, dest, out) =
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let v = unencrypted(home.path());
+    rt().block_on(async {
+        super::run(v.clone(), plan(dest.path(), 7), Progress::new(false)).await.unwrap();
+        let target = Target::folder(dest.path());
+        let into = out.path().join("v");
+
+        let err = super::restore(&target, restore_options(&into, None), None).await.unwrap_err();
+        assert!(err.to_string().contains("--unencrypted"), "{err}");
+        assert!(!into.exists());
+
+        let options = RestoreOptions { allow_unencrypted: true, ..restore_options(&into, None) };
+        super::restore(&target, options, None).await.unwrap();
+        assert!(into.join("vault.json").is_file());
+    });
+}
+
+#[test]
+fn a_header_at_the_destination_cannot_ask_for_a_key_derivation_that_exhausts_memory() {
+    let (home, dest) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let v = vault(home.path(), PASSWORD);
+    rt().block_on(async {
+        super::run(v.clone(), plan(dest.path(), 7), Progress::new(false)).await.unwrap();
+        edit_header(dest.path(), |h| h["kdf"]["memoryKib"] = u32::MAX.into());
+        let target = Target::folder(dest.path());
+        let err =
+            super::restore::open_repository(&target, Some(PASSWORD), false).await.unwrap_err();
+        assert!(
+            matches!(err, BackupError::Vault(karmayoga_core::Error::Invalid(_))),
+            "refused before Argon2 ran: {err}"
+        );
+    });
+}
+
+#[test]
+fn files_named_in_a_copy_go_only_where_this_computer_keeps_its_files_folder_or_where_told() {
+    let (home, dest, folder, out) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    std::fs::write(folder.path().join("a.txt"), b"alpha").unwrap();
+    let v = with_files(home.path(), folder.path());
+    rt().block_on(async {
+        super::run(v.clone(), with_files_plan(dest.path(), 7), Progress::new(false)).await.unwrap();
+        let target = Target::folder(dest.path());
+        let (_, manifest) = newest(&target, &v).await;
+        assert!(manifest.files_folder.is_some(), "the copy names the folder it was made from");
+
+        // Nothing named: the copy's say-so is not enough, so the files are
+        // left out and the vault still comes back.
+        std::fs::remove_file(folder.path().join("a.txt")).unwrap();
+        let report =
+            super::restore(&target, restore_options(&out.path().join("v"), Some(PASSWORD)), None)
+                .await
+                .unwrap();
+        assert_eq!((report.files_folder_restored, report.files_folder_left_out), (0, 1));
+        assert_eq!(report.files_folder, None);
+        assert_eq!(report.files_folder_recorded, manifest.files_folder);
+        assert!(!folder.path().join("a.txt").exists(), "nothing was written where it said");
+        assert!(out.path().join("v/vault.json").is_file());
+
+        // Named: it goes there.
+        let options = RestoreOptions {
+            files_into: Some(out.path().join("Files")),
+            ..restore_options(&out.path().join("v2"), Some(PASSWORD))
+        };
+        let report = super::restore(&target, options, None).await.unwrap();
+        assert_eq!(report.files_folder_restored, 1);
+        assert_eq!(std::fs::read(out.path().join("Files/a.txt")).unwrap(), b"alpha");
+    });
+}
+
+/// Write `name` into `snapshots/` the way somebody with write access to the
+/// destination would, with something that is not a manifest.
+fn plant(dest: &Path, stamp: &str) -> String {
+    let name = karmayoga_core::backup::snapshot_name(stamp.parse().unwrap());
+    std::fs::write(dest.join(repo::snapshot_object(&name)), b"not a manifest of anybody's")
+        .unwrap();
+    name
+}
+
+#[test]
+fn a_planted_name_from_the_far_future_neither_costs_real_copies_nor_wins_a_restore() {
+    let (home, dest, out) =
+        (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let v = vault(home.path(), PASSWORD);
+    let kept = note(&v, "survives");
+    rt().block_on(async {
+        let mut p = plan(dest.path(), 2);
+        super::run(v.clone(), p.clone(), Progress::new(false)).await.unwrap();
+        p.expect_existing = true;
+        let second = super::run(v.clone(), p.clone(), Progress::new(false)).await.unwrap();
+        let target = Target::folder(dest.path());
+        let planted = plant(dest.path(), "2999-01-01T00:00:00Z");
+        let real_before = repo::snapshots(&target).await.unwrap().len() - 1;
+        assert_eq!(real_before, 2);
+
+        // Keeping two, this run makes a third and lets go of exactly one
+        // real copy: the planted name is not "the newest" to keep.
+        let third = super::run(v.clone(), p, Progress::new(false)).await.unwrap();
+        assert_eq!(third.removed_snapshots, 1, "{third:?}");
+        assert!(third.snapshot < planted, "named by the clock, not after the plant");
+        let names = repo::snapshots(&target).await.unwrap();
+        assert!(names.contains(&planted), "an object that is not ours is left where it is");
+        assert!(names.contains(&second.snapshot) && names.contains(&third.snapshot), "{names:?}");
+        assert_eq!(names.len(), 3);
+
+        // A default restore takes the newest that opens, and says what it
+        // passed over.
+        let into = out.path().join("v");
+        let report =
+            super::restore(&target, restore_options(&into, Some(PASSWORD)), None).await.unwrap();
+        assert_eq!(report.snapshot, third.snapshot);
+        assert_eq!(report.passed_over, std::slice::from_ref(&planted));
+        let back = karmayoga_vault::open(&into).unwrap();
+        back.unlock(Some(PASSWORD)).unwrap();
+        assert_eq!(back.note(kept.id).unwrap().title, "survives");
+
+        // Asking for the planted one by name is an error, not a fallback.
+        let options = RestoreOptions {
+            snapshot: Some(planted),
+            ..restore_options(&out.path().join("w"), Some(PASSWORD))
+        };
+        assert!(super::restore(&target, options, None).await.is_err());
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn what_a_restore_writes_for_the_vault_and_the_settings_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let (home, dest, out, config, new_config) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    std::fs::write(config.path().join("mcp.json"), b"{\"token\":\"t\"}").unwrap();
+    std::fs::create_dir_all(config.path().join("certs/room")).unwrap();
+    std::fs::write(config.path().join("certs/room/key.pem"), b"secret").unwrap();
+    let v = vault(home.path(), PASSWORD);
+    rt().block_on(async {
+        let mut p = plan(dest.path(), 7);
+        p.config_dir = Some(config.path().to_path_buf());
+        super::run(v.clone(), p, Progress::new(false)).await.unwrap();
+        let target = Target::folder(dest.path());
+        let into = out.path().join("v");
+        let settings = new_config.path().join("settings");
+        let options = RestoreOptions {
+            config_into: Some(settings.clone()),
+            ..restore_options(&into, Some(PASSWORD))
+        };
+        super::restore(&target, options, None).await.unwrap();
+
+        assert_eq!(mode(&settings.join("mcp.json")), 0o600);
+        assert_eq!(mode(&settings), 0o700, "a folder the restore made");
+        assert_eq!(mode(&settings.join("certs/room/key.pem")), 0o600);
+        assert_eq!(mode(&settings.join("certs")), 0o700);
+        assert_eq!(mode(&settings.join("certs/room")), 0o700);
+        assert_eq!(mode(&into), 0o700);
+        assert_eq!(mode(&into.join("vault.json")), 0o600);
+        assert_eq!(mode(&into.join("vault.json.bak")), 0o600);
+        let store_files =
+            karmayoga_core::backup::list_files(&into.join("store"), "", &|_| false).unwrap();
+        assert!(!store_files.is_empty());
+        for f in store_files {
+            assert_eq!(mode(&f.source), 0o600, "{}", f.path);
+        }
+        assert_eq!(mode(&into.join("store")), 0o700);
     });
 }

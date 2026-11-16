@@ -841,11 +841,30 @@ fn read_at<R: Read + Seek>(reader: &mut R, from: u64, len: u64) -> Option<Vec<u8
     Some(out)
 }
 
+/// How far either side of a `/Type /Pages` a page tree node is looked for:
+/// back to the `obj` that opens it, forward to the `endobj` that closes it.
+/// A node listing a couple of thousand kids is some 30 KiB, so this is
+/// roughly the biggest tree that is read; a bigger one answers `None`, which
+/// is what a page count that cannot be found does anyway.
+const PAGES_WINDOW: usize = 32 * 1024;
+
+/// How many `/Type /Pages` nodes in one buffer are looked at. A real file
+/// has a handful to a few dozen (a root and the nodes under it); a file
+/// that repeats the words by the thousand is somebody making this scan slow.
+const MAX_PAGES_NODES: usize = 64;
+
 /// The `/Count` of the last root `/Type /Pages` object in `buf`.
+///
+/// Bounded in what it does for each node ([`PAGES_WINDOW`]) and in how many
+/// nodes it looks at ([`MAX_PAGES_NODES`]), because the file is whatever
+/// arrived in the folder. Without them each match searched the whole buffer
+/// behind it for an `obj` and the whole buffer ahead of it for an `endobj`:
+/// a megabyte of nothing but `/Type/Pages` cost ten billion comparisons.
 fn root_page_count(buf: &[u8]) -> Option<u32> {
     const TYPE: &[u8] = b"/Type";
     let mut count = None;
     let mut from = 0;
+    let mut nodes = 0;
     while let Some(found) = find_bytes(&buf[from..], TYPE) {
         let after = from + found + TYPE.len();
         from = after;
@@ -855,9 +874,17 @@ fn root_page_count(buf: &[u8]) -> Option<u32> {
         if !name.starts_with(b"/Pages") || name.get(6).is_some_and(u8::is_ascii_alphanumeric) {
             continue;
         }
-        // The object it is in: from the last `obj` before to the next `endobj`.
-        let start = buf[..after].windows(3).rposition(|w| w == b"obj").map_or(0, |at| at + 3);
-        let end = find_bytes(&buf[after..], b"endobj").map_or(buf.len(), |at| after + at);
+        nodes += 1;
+        if nodes > MAX_PAGES_NODES {
+            break;
+        }
+        // The object it is in: from the last `obj` before to the next `endobj`,
+        // neither looked for further away than the window.
+        let low = after.saturating_sub(PAGES_WINDOW);
+        let start =
+            buf[low..after].windows(3).rposition(|w| w == b"obj").map_or(low, |at| low + at + 3);
+        let high = (after + PAGES_WINDOW).min(buf.len());
+        let end = find_bytes(&buf[after..high], b"endobj").map_or(high, |at| after + at);
         let object = &buf[start..end];
         if find_bytes(object, b"/Parent").is_some() {
             continue;
@@ -1300,6 +1327,35 @@ mod tests {
             2 0 obj\n<< /Type /Pages /Kids [] /Count 4 >>\nendobj\n\
             %%EOF\n";
         assert_eq!(probe_bytes(pdf, "application/pdf").pages, Some(4));
+    }
+
+    #[test]
+    fn a_file_of_nothing_but_page_trees_is_read_in_bounded_time() {
+        // A megabyte of `/Type/Pages`, no `obj` or `endobj` anywhere: each
+        // match used to search everything behind and ahead of it.
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        while pdf.len() < 1 << 20 {
+            pdf.extend_from_slice(b"/Type/Pages ");
+        }
+        assert_eq!(root_page_count(&pdf), None);
+        assert_eq!(probe_bytes(&pdf, "application/pdf").pages, None);
+
+        // The same with an `obj` at the very start and a `/Count` at the very
+        // end: both further away than the window, so neither is found.
+        let mut far = b"1 0 obj ".to_vec();
+        far.extend(std::iter::repeat_n(b' ', 1 << 20));
+        far.extend_from_slice(b"/Type /Pages ");
+        far.extend(std::iter::repeat_n(b' ', 1 << 20));
+        far.extend_from_slice(b"/Count 9 endobj");
+        assert_eq!(root_page_count(&far), None);
+    }
+
+    #[test]
+    fn a_page_tree_with_a_long_kids_list_is_still_counted() {
+        let kids = "3 0 R ".repeat(1500);
+        let pdf =
+            format!("%PDF-1.4\n2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count 1500 >>\nendobj\n");
+        assert_eq!(root_page_count(pdf.as_bytes()), Some(1500));
     }
 
     #[test]

@@ -71,6 +71,10 @@
 //! comes back exactly as it went. Numbers, dates and ids are written by this
 //! code and are what they look like, so `-3.5` stays a number.
 //!
+//! The rule itself, and its undoing on the way in, is in `crate::text`
+//! (`Csv::row` and `Row::get`), so every kind of export has it and this one
+//! need not remember to.
+//!
 //! # Reading it back
 //!
 //! Medications, conditions, lab results, allergies, foods, meals and
@@ -639,30 +643,11 @@ fn round(value: f64) -> String {
     ((value * 100.0).round() / 100.0).to_string()
 }
 
-/// Would a spreadsheet run this cell? See the module doc.
-fn runs(value: &str) -> bool {
-    let first = value.trim_start_matches(' ').chars().next();
-    matches!(first, Some('=' | '+' | '-' | '@' | '\t' | '\r'))
-}
-
-/// Does this cell need an apostrophe in front? One that would run does; so
-/// does one that already starts with an apostrophe before something that
-/// would, or reading it back would take that apostrophe off.
-fn needs_guard(value: &str) -> bool {
-    runs(value) || value.strip_prefix('\'').is_some_and(needs_guard)
-}
-
-/// A cell of somebody's text, made safe to open in a spreadsheet.
+/// A cell of somebody's text. Written as it is: `Csv::row` puts the
+/// apostrophe in front of any cell a spreadsheet would run, for every kind
+/// of export alike, and `Row::get` takes it off again.
 fn text(value: &str) -> String {
-    if needs_guard(value) { format!("'{value}") } else { value.to_string() }
-}
-
-/// [`text`], undone.
-fn untext(value: &str) -> String {
-    match value.strip_prefix('\'') {
-        Some(rest) if needs_guard(rest) => rest.to_string(),
-        _ => value.to_string(),
-    }
+    value.to_string()
 }
 
 /// An enum's own word on the wire -- `running`, `taken` -- so the file says
@@ -692,7 +677,7 @@ fn found<T>(result: Result<T>) -> Result<Option<T>> {
 
 /// A cell of text, its apostrophe taken off and trimmed.
 fn cell(row: &Row<'_>, column: &str) -> String {
-    untext(row.get(column)).trim().to_string()
+    row.get(column).trim().to_string()
 }
 
 /// The records of a JSON sidecar, each read on its own: one that cannot be
@@ -1309,26 +1294,6 @@ mod tests {
 
     fn first_row(table: &Table) -> Row<'_> {
         table.rows().next().expect("a row")
-    }
-
-    #[test]
-    fn a_cell_that_would_run_as_a_formula_is_written_as_text() {
-        for risky in ["=cmd|' /C calc'!A0", "+SUM(1+1)", "-2+3", "@cmd", "\t=1", "\r=1", "  =1"] {
-            assert!(text(risky).starts_with('\''), "{risky:?}");
-        }
-        for plain in ["Apple Watch", "TSH", "", "1-800-FLOWERS", "Café", "'quoted'"] {
-            assert_eq!(text(plain), plain);
-        }
-    }
-
-    #[test]
-    fn every_cell_comes_back_exactly_as_it_went() {
-        for value in [
-            "=1", "'=1", "''=1", "  =1", "' =1", "'", "''", "'quoted'", "plain", "", "-", "'-",
-            "@home",
-        ] {
-            assert_eq!(untext(&text(value)), value, "{value:?} -> {:?}", text(value));
-        }
     }
 
     #[test]

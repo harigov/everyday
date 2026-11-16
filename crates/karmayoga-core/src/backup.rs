@@ -444,6 +444,16 @@ impl std::fmt::Debug for BackupKeys {
     }
 }
 
+/// What a restore says when the header at the backup's destination claims the
+/// vault was never encrypted and the person has not said that is expected.
+/// See [`BackupKeys::from_header`].
+pub const UNENCRYPTED_BACKUP_REFUSAL: &str = "this backup says it is not encrypted, so restoring \
+    it would ask for no password. A backup's header is a plain file that anyone who can write to \
+    the folder or bucket could have replaced, and an unencrypted backup is sealed under a key \
+    everybody knows -- so anyone with that access could have swapped in a vault of their own \
+    making, and nothing here could tell. If this vault really never had a password, run the \
+    restore again with --unencrypted; otherwise, do not restore from this place.";
+
 const SEAL_LABEL: &str = "karmayoga.backup.seal.v1";
 const NAME_LABEL: &str = "karmayoga.backup.name.v1";
 
@@ -468,7 +478,30 @@ impl BackupKeys {
     /// From a vault header and its password, for a restore that has no vault
     /// open -- see [`crate::vault::VaultHeader`]. `None` for an unencrypted
     /// vault, whose header holds no key.
-    pub fn from_header(header: &crate::vault::VaultHeader, password: Option<&str>) -> Result<Self> {
+    ///
+    /// A header that says the vault is not encrypted is refused unless
+    /// `allow_unencrypted` is set, and that is the whole point of the
+    /// argument. The header kept beside a backup is plaintext and
+    /// unauthenticated, and an unencrypted vault's keys come from nothing
+    /// secret: the same all-zero key for every one. So "none" in a header
+    /// somebody else could have written is not a statement to act on -- it
+    /// skips the password, and with it everything that makes the copy
+    /// anybody's own. Anyone able to write to the bucket could put down a
+    /// header saying so, a marker computed from that public key, and a whole
+    /// repository of their own sealing, and a restore that believed the
+    /// header would lay it down as the person's vault. A header that says
+    /// the opposite needs no such care: its keys come out of the password,
+    /// and a header somebody else wrote for a password they chose opens
+    /// nothing of this vault's -- the manifests are sealed under the real
+    /// key, which only the real header and the real password produce.
+    pub fn from_header(
+        header: &crate::vault::VaultHeader,
+        password: Option<&str>,
+        allow_unencrypted: bool,
+    ) -> Result<Self> {
+        if !header.is_encrypted() && !allow_unencrypted {
+            return Err(Error::Invalid(UNENCRYPTED_BACKUP_REFUSAL.into()));
+        }
         let cipher: Box<dyn Cipher> = match crate::vault::data_key_from(header, password)? {
             Some(dek) => Box::new(AeadCipher::new(&dek)),
             None => Box::new(crate::crypto::NullCipher),
@@ -717,6 +750,23 @@ mod tests {
         let a = BackupKeys::from_cipher(&NullCipher, "2026-01-01T00:00:00Z");
         let b = BackupKeys::from_cipher(&NullCipher, "2026-02-02T00:00:00Z");
         assert_ne!(a.repository_id(), b.repository_id());
+    }
+
+    #[test]
+    fn a_header_that_says_none_is_not_restored_from_unless_that_was_asked_for() {
+        let header: crate::vault::VaultHeader = serde_json::from_str(
+            r#"{"format":1,"name":"x","backend":"sqlite","cipher":"none",
+                "createdAt":"2026-01-01T00:00:00Z"}"#,
+        )
+        .unwrap();
+        // The password, if one is offered, is no way round it.
+        let err = BackupKeys::from_header(&header, Some("anything"), false).unwrap_err();
+        assert!(err.to_string().contains("--unencrypted"), "{err}");
+        assert!(BackupKeys::from_header(&header, None, false).is_err());
+        // Asked for, it is the all-known key it always was.
+        let keys = BackupKeys::from_header(&header, None, true).unwrap();
+        let null = BackupKeys::from_cipher(&crate::crypto::NullCipher, &vault_identity(&header));
+        assert_eq!(keys.repository_id(), null.repository_id());
     }
 
     #[test]

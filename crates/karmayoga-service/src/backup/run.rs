@@ -126,40 +126,77 @@ async fn run_locked(
     let cache = ManifestCache::new(plan.cache_dir.clone());
     let existing = repo::snapshots(target).await?;
     // This copy will be the newest (see `next_name`), so the copies that
-    // stay are it and the newest `keep - 1` of these; the rest go.
+    // stay are it and the newest `keep - 1` of these *that open*; the rest
+    // of those that open go.
+    //
+    // By what opens, not by name. The destination is a place somebody else
+    // may be able to write to, and a name is only a name: a file called for
+    // the year 2999 counted as the newest copy would make every real one
+    // look old, and be the one kept while they were deleted. So the names
+    // are walked newest first, each manifest opened under this vault's key,
+    // and only those that open are counted, kept or let go of. A name that
+    // does not open is left exactly where it is -- it may be somebody's
+    // plant, or a real copy that could not be read just now, and nothing
+    // here knows which.
     let keep = plan.keep.max(1) as usize;
-    let stay = existing.len().min(keep - 1);
-    let (gone, staying) = existing.split_at(existing.len() - stay);
+    let mut staying = 0usize;
+    let mut gone: Vec<String> = Vec::new();
+    let mut readable: Vec<String> = Vec::new();
+    // Names that did not open, newest first.
+    let mut unopened: Vec<String> = Vec::new();
+    // A copy that could not be read for a reason that says nothing about
+    // whether it is a copy: the destination failing, not the file.
+    let mut uncertain = false;
 
     // Read only what is needed, one manifest at a time: the chunks every
     // copy that stays names, as one set, and the newest copy whole, for the
     // files that have not changed since. A manifest of a large vault is tens
     // of megabytes; holding all of them at once is not.
     let mut referenced: HashSet<String> = HashSet::new();
-    let mut staying_readable = true;
     let mut previous: Option<Manifest> = None;
-    for (i, name) in existing.iter().enumerate().rev() {
-        let newest = i + 1 == existing.len();
-        let stays = staying.contains(name);
-        if !newest && !stays {
-            continue;
-        }
+    let mut oldest_staying: Option<String> = None;
+    for name in existing.iter().rev() {
         check(progress)?;
         match repo::load_manifest(target, keys, name, &cache).await {
             Ok(m) => {
-                if stays {
+                readable.push(name.clone());
+                if staying + 1 < keep {
+                    staying += 1;
                     referenced.extend(m.chunks().map(str::to_string));
+                    oldest_staying = Some(name.clone());
+                } else {
+                    gone.push(name.clone());
                 }
                 if previous.is_none() {
                     previous = Some(m);
                 }
             }
+            Err(BackupError::Refused(why)) => {
+                tracing::warn!(snapshot = %name, %why, "backup: a file in snapshots/ does not open, and is left alone");
+                unopened.push(name.clone());
+            }
             Err(e) => {
-                tracing::warn!(snapshot = %name, error = %e, "backup: an earlier copy does not read");
-                staying_readable &= !stays;
+                tracing::warn!(snapshot = %name, error = %e, "backup: an earlier copy could not be read");
+                uncertain = true;
             }
         }
     }
+    // Chunks are let go of only when nothing that might be a copy that stays
+    // is unaccounted for: an unreadable copy newer than the oldest one kept
+    // might need any of them. One named for a time well after now is not a
+    // copy this program made -- its names are stamped by its own clock, which
+    // can be behind but not a day ahead -- and is not allowed to stop the
+    // clearing-out for good.
+    let not_before_tomorrow =
+        Timestamp::now().checked_add(jiff::SignedDuration::from_hours(24)).ok();
+    let staying_readable = !uncertain
+        && !unopened.iter().any(|name| {
+            let in_window = oldest_staying.as_ref().is_some_and(|oldest| name > oldest);
+            let implausible = parse_snapshot_name(name)
+                .zip(not_before_tomorrow)
+                .is_some_and(|(stamp, limit)| stamp > limit);
+            in_window && !implausible
+        });
     let present = repo::chunks(target).await?;
     let previous_files_folder = previous.as_ref().and_then(|m| m.files_folder.clone());
     let previous: HashMap<(Area, String), FileEntry> = previous
@@ -262,7 +299,9 @@ async fn run_locked(
 
     // Every chunk is there: the copy can be named.
     let now = Timestamp::now();
-    let snapshot = next_name(&existing, now);
+    // Named after the newest copy that opens, not the newest name: a planted
+    // far-future name would otherwise date every copy from then on.
+    let snapshot = next_name(&readable, now);
     let mut entries = produced.entries;
     entries.extend(carried);
     let manifest = Manifest {
@@ -295,20 +334,20 @@ async fn run_locked(
     progress.set_phase(BackupPhase::Pruning);
     referenced.extend(manifest.chunks().map(str::to_string));
     drop(manifest);
-    for name in gone {
+    for name in &gone {
         target.delete(&snapshot_object(name)).await?;
         cache.forget(name);
         report.removed_snapshots += 1;
     }
-    // Chunks are let go of only when every copy that stays could be read:
-    // one that could not might need any of them.
+    // Chunks are let go of only when every copy that stays could be read --
+    // see `staying_readable` above.
     if staying_readable {
         let garbage: Vec<String> =
             produced.known.into_iter().filter(|c| !referenced.contains(c)).collect();
         report.removed_chunks = delete_all(target, garbage, parallelism).await?;
     } else {
         tracing::warn!(
-            "backup: an earlier copy could not be read, so no chunks were removed this time"
+            "backup: a file among the copies could not be read, so no chunks were removed this time"
         );
     }
     Ok(report)

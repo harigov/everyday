@@ -155,7 +155,9 @@ impl Ics {
             .replace(';', "\\;")
             .replace(',', "\\,")
             .replace("\r\n", "\\n")
-            .replace('\n', "\\n");
+            // A lone CR, left in, is a line break to some readers and so
+            // lets a title start a new property of its own.
+            .replace(['\n', '\r'], "\\n");
         self.raw(key, &escaped)
     }
 
@@ -371,5 +373,18 @@ mod tests {
         ics.event(&e);
         let parsed = parse(&ics.finish());
         assert_eq!(parsed.events[0].description, "one, two; three\nfour");
+    }
+
+    #[test]
+    fn a_lone_carriage_return_cannot_start_a_new_property() {
+        let mut e = write_test_event();
+        e.title = "Lunch\rATTENDEE:mailto:x@example.com\r\ny".into();
+        let mut ics = Ics::new("x");
+        ics.event(&e);
+        let text = ics.finish();
+        // Every CR in the output is the one of a CRLF line end.
+        assert!(!text.replace("\r\n", "").contains('\r'), "a bare CR got through: {text:?}");
+        let parsed = parse(&text);
+        assert!(parsed.events[0].attendees.is_empty());
     }
 }

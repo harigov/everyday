@@ -162,10 +162,26 @@ fn https_connector() -> CommandResult<Connector> {
         // own roots, and `http://` is only ever reached because the person
         // administering that account typed it themselves, the same trust
         // decision `Endpoint::starttls`'s IMAP/SMTP side already lets
-        // `Provider::Custom` make.
+        // `Provider::Custom` make. "Reached" is narrower than it reads,
+        // though: [`client_for`] refuses an `http://` server that is not on
+        // this machine or a network the person runs, because Basic auth over
+        // plain HTTP puts the account's password on the wire for anybody
+        // on the path to read -- see [`plain_http_refused`].
         .https_or_http()
         .enable_http1()
         .wrap_connector(http))
+}
+
+/// Whether `server` is an `http://` address that would carry the account's
+/// credential over somewhere other than this computer or a network the
+/// person runs: a loopback, private, link-local or tailnet address, or a
+/// `.local`, `.ts.net` or single-label name, is fine; any other host is not.
+/// `https://` is never refused here. See
+/// [`karmayoga_core::chat::is_private_network_host`] for what counts, which
+/// the Matrix homeserver check shares.
+fn plain_http_refused(server: &Uri) -> bool {
+    server.scheme_str().is_some_and(|s| s.eq_ignore_ascii_case("http"))
+        && !server.host().is_some_and(karmayoga_core::chat::is_private_network_host)
 }
 
 /// A transport that signs requests to `server` -- the account's own, its
@@ -173,6 +189,14 @@ fn https_connector() -> CommandResult<Connector> {
 /// The server is an argument rather than something worked out later so that
 /// no caller can build a client that has to guess it.
 fn client_for(credential: Credential, server: &Uri) -> CommandResult<Client> {
+    if plain_http_refused(server) {
+        return Err(CommandError::new(
+            codes::INVALID,
+            "this calendar server's address starts with http://, which would send the account's \
+             password unencrypted; use https:// unless the server is on this computer, your own \
+             network or your tailnet",
+        ));
+    }
     let https = https_connector()?;
     let raw: LegacyClient<Connector, String> =
         LegacyClient::builder(TokioExecutor::new()).build(https);
@@ -1761,6 +1785,50 @@ mod tests {
             !is_own_server(None, &Uri::from_static("https://caldav.icloud.com/")),
             "an account address with no origin sends the credential nowhere"
         );
+    }
+
+    #[test]
+    fn plain_http_is_for_this_computer_and_the_persons_own_network_only() {
+        let refused = |uri: &'static str| plain_http_refused(&Uri::from_static(uri));
+        // Loopback, private ranges, a tailnet in both spellings, home names.
+        for ok in [
+            "http://127.0.0.1:8080/dav/",
+            "http://localhost:5232/",
+            "http://[::1]:5232/",
+            "http://192.168.1.20/dav/",
+            "http://10.0.0.7:5232/",
+            "http://172.20.1.1/",
+            "http://100.101.102.103:5232/",
+            "http://[fd7a:115c:a1e0::2]:5232/",
+            "http://radicale.tail1234.ts.net:5232/",
+            "http://nas.local/dav/",
+            "http://nas:5232/",
+            "https://caldav.icloud.com/",
+            "https://caldav.example.com:8443/",
+        ] {
+            assert!(!refused(ok), "{ok} should be allowed");
+        }
+        for bad in [
+            "http://caldav.example.com/dav/",
+            "http://caldav.icloud.com/",
+            "http://93.184.216.34/",
+            "http://172.32.0.1/",
+            "http://100.128.0.1/",
+            "http://localhost.example.com/",
+            "http://127.0.0.1.example.com/",
+        ] {
+            assert!(refused(bad), "{bad} should be refused");
+        }
+    }
+
+    #[test]
+    fn a_client_is_never_built_to_send_a_password_over_plain_http_to_the_internet() {
+        let server = Uri::from_static("http://caldav.example.com/dav/");
+        let basic = tokens::BasicAuth { username: "me".into(), password: "hunter2".into() };
+        let err = client_for(Credential::Basic(basic), &server).expect_err("refused");
+        assert_eq!(err.code, codes::INVALID);
+        assert!(err.message.contains("unencrypted"), "{}", err.message);
+        assert!(!err.message.contains("hunter2"));
     }
 
     /// Records each request's address and `Authorization` header in place of

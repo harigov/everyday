@@ -762,6 +762,21 @@ pub trait MailStore: Send + Sync {
     /// treats as live. See `crate::mail::PartRef::blob`.
     fn attachment_blob_refs(&self) -> Result<Vec<BlobId>>;
 
+    /// Every blob any draft still holds, in any state and for any account:
+    /// the files attached to it ([`Draft::attachments`]) and the pictures
+    /// pasted into its body (`<img data-blob>` in [`Draft::body_html`]),
+    /// as [`draft_blob_refs_of`] reads them.
+    ///
+    /// What [`JournalStore::collect_garbage`](super::JournalStore::collect_garbage)
+    /// also treats as live. A draft is the one place a blob can be wanted for
+    /// longer than the collector's grace: a message written on Friday and
+    /// scheduled for Monday, or left open in a window over a weekend, holds
+    /// its attachments by nothing but this record. Without this walk the
+    /// first sweep after a day deleted them, and the message went out -- or
+    /// was sent later -- without them. An outbox [`Op`] names its draft, not
+    /// a blob, so this is the whole of what a queued send needs.
+    fn draft_blob_refs(&self) -> Result<Vec<BlobId>>;
+
     /// Every pack id `account`'s messages currently point at, deduplicated
     /// -- the "store's referenced-pack query" half of a
     /// [`crate::packstore::ReferencedSnapshot`], so a
@@ -965,6 +980,49 @@ pub fn draft_aad(id: DraftId) -> Vec<u8> {
     format!("everyday.draft.v1:{id}").into_bytes()
 }
 
+/// Every blob `draft` holds: its attachments, and the pictures pasted into
+/// its body. See [`MailStore::draft_blob_refs`] for why this matters to the
+/// collector.
+///
+/// The body is HTML the compose sheet wrote, with each pasted picture an
+/// `<img data-blob="<blob id>">` (the `karmayoga-mail` crate's `compose`
+/// module names the attribute). A picture is normally an attachment too, but the body is
+/// read as well, because a picture whose attachment entry was lost should
+/// still keep its bytes. Scanned for the attribute rather than parsed as
+/// HTML: a draft is sealed text of any shape, and an attribute that is not
+/// quite well formed is exactly the one that must not be missed. Whatever
+/// follows `data-blob=` that is not a blob id is skipped.
+pub fn draft_blob_refs_of(draft: &Draft) -> Vec<BlobId> {
+    let mut out: Vec<BlobId> = draft.attachments.iter().map(|a| a.blob).collect();
+    out.extend(picture_blobs(&draft.body_html));
+    out
+}
+
+/// The blob ids named by `data-blob` attributes in `html`.
+fn picture_blobs(html: &str) -> Vec<BlobId> {
+    const ATTRIBUTE: &str = "data-blob";
+    // Lower-cased for the search only: ASCII case-folding keeps every byte
+    // offset, so a position found in it is the same position in `html`.
+    let lower = html.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find(ATTRIBUTE) {
+        let start = from + at + ATTRIBUTE.len();
+        from = start;
+        let Some(rest) = html[start..].trim_start().strip_prefix('=') else { continue };
+        let rest = rest.trim_start();
+        let value = match rest.chars().next() {
+            Some(quote @ ('"' | '\'')) => rest[1..].split(quote).next(),
+            Some(_) => rest.split(|c: char| c.is_whitespace() || c == '>').next(),
+            None => None,
+        };
+        if let Some(blob) = value.and_then(|v| v.parse::<BlobId>().ok()) {
+            out.push(blob);
+        }
+    }
+    out
+}
+
 pub fn op_aad(id: OpId) -> Vec<u8> {
     format!("everyday.op.v1:{id}").into_bytes()
 }
@@ -1007,5 +1065,28 @@ mod tests {
         assert_ne!(draft_aad(DraftId(same)), op_aad(OpId(same)));
         assert_ne!(message_aad(MailMessageId(same)), body_aad(MailMessageId(same)));
         assert_ne!(mailbox_aad(MailboxId::new()), mailbox_aad(MailboxId::new()));
+    }
+
+    #[test]
+    fn a_drafts_blobs_are_its_attachments_and_the_pictures_in_its_body() {
+        use crate::mail::{DraftAttachment, Origin};
+        let (file, picture, lone) = (BlobId::of(b"file"), BlobId::of(b"pic"), BlobId::of(b"lone"));
+        let mut draft = Draft::new(AccountId::new(), "me@example.com", Origin::Person);
+        draft.attachments = vec![DraftAttachment {
+            blob: file,
+            filename: "a.pdf".into(),
+            mime_type: "application/pdf".into(),
+        }];
+        draft.body_html = format!(
+            "<p>hi</p><img src=\"karmayoga://x\" data-blob=\"{picture}\">\
+             <IMG DATA-BLOB = '{lone}' alt=x><img data-blob=\"not a blob\"><img data-blob>"
+        );
+        assert_eq!(draft_blob_refs_of(&draft), vec![file, picture, lone]);
+
+        draft.body_html = format!("<img data-blob={picture}>");
+        draft.attachments.clear();
+        assert_eq!(draft_blob_refs_of(&draft), vec![picture]);
+        draft.body_html.clear();
+        assert!(draft_blob_refs_of(&draft).is_empty());
     }
 }

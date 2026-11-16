@@ -20,6 +20,30 @@ use crate::{
 /// paging is broken, and this is how that is told from a long list.
 const MAX_PAGES: usize = 50;
 
+/// The most tools kept from one server. What is listed is written into the
+/// vault and offered to a model, and a server decides how much of it there
+/// is; the biggest real ones have a few hundred.
+const MAX_TOOLS: usize = 500;
+
+/// The most of one tool's description kept, in bytes: a paragraph or two.
+const MAX_DESCRIPTION_BYTES: usize = 4 * 1024;
+
+/// The most of one tool's input schema kept, as written out. A real one is a
+/// few kilobytes; past this it is replaced by an empty object schema.
+const MAX_SCHEMA_BYTES: usize = 32 * 1024;
+
+/// The longest tool name or title kept. A name is what a call is made by, so
+/// one past this is a tool left out, not one cut short.
+const MAX_NAME_BYTES: usize = 256;
+
+/// The most of the server's own name, version and instructions kept.
+const MAX_SERVER_TEXT_BYTES: usize = 8 * 1024;
+
+/// What is appended to a description whose schema was too big to keep, so
+/// that a model reading it knows the arguments are not described.
+const SCHEMA_DROPPED_NOTE: &str =
+    " [This tool's input schema was too large to keep; its arguments are not described here.]";
+
 const META_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
 const META_CLIENT_INFO: &str = "io.modelcontextprotocol/clientInfo";
 const META_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
@@ -133,6 +157,11 @@ impl Client {
             let page = self.rpc("tools/list", params).await?;
             if let Some(listed) = page.get("tools").and_then(Value::as_array) {
                 tools.extend(listed.iter().filter_map(tool_from_json));
+            }
+            if tools.len() >= MAX_TOOLS {
+                tools.truncate(MAX_TOOLS);
+                tracing::warn!(kept = MAX_TOOLS, "a server listed more tools than are kept");
+                return Ok(tools);
             }
             cursor = page
                 .get("nextCursor")
@@ -322,20 +351,38 @@ fn server_info(result: &Value, protocol_version: String) -> ServerInfo {
         info.and_then(|i| i.get(key)).and_then(Value::as_str).unwrap_or_default().to_string()
     };
     ServerInfo {
-        name: text("name"),
-        version: text("version"),
+        name: clip_bytes(&text("name"), MAX_NAME_BYTES),
+        version: clip_bytes(&text("version"), MAX_NAME_BYTES),
         protocol_version,
         instructions: result
             .get("instructions")
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
-            .map(str::to_string),
+            .map(|s| clip_bytes(s, MAX_SERVER_TEXT_BYTES)),
     }
 }
 
-/// One entry of `tools/list`, or `None` if it has no name to call it by.
+/// `text` cut to at most `max` bytes, on a character boundary.
+fn clip_bytes(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// One entry of `tools/list`, or `None` if it has no name to call it by (or
+/// one too long to be a name). What a server wrote is kept only up to a
+/// bound: see [`MAX_DESCRIPTION_BYTES`] and [`MAX_SCHEMA_BYTES`].
 fn tool_from_json(value: &Value) -> Option<Tool> {
-    let name = value.get("name").and_then(Value::as_str).filter(|n| !n.is_empty())?.to_string();
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|n| !n.is_empty() && n.len() <= MAX_NAME_BYTES)?
+        .to_string();
     let annotations = value.get("annotations");
     let hint = |key: &str| annotations.and_then(|a| a.get(key)).and_then(Value::as_bool);
     let title = value
@@ -343,19 +390,29 @@ fn tool_from_json(value: &Value) -> Option<Tool> {
         .and_then(Value::as_str)
         .or_else(|| annotations.and_then(|a| a.get("title")).and_then(Value::as_str))
         .filter(|t| !t.is_empty())
-        .map(str::to_string);
+        .map(|t| clip_bytes(t, MAX_NAME_BYTES));
+    let mut description = clip_bytes(
+        value.get("description").and_then(Value::as_str).unwrap_or_default(),
+        MAX_DESCRIPTION_BYTES,
+    );
     let input_schema = match value.get("inputSchema") {
-        Some(schema) if schema.is_object() => schema.clone(),
+        // Measured as it would be written out, which is what the vault and a
+        // model's tool list would hold.
+        Some(schema) if schema.is_object() => {
+            if serde_json::to_vec(schema).map_or(usize::MAX, |bytes| bytes.len()) > MAX_SCHEMA_BYTES
+            {
+                description.push_str(SCHEMA_DROPPED_NOTE);
+                json!({ "type": "object" })
+            } else {
+                schema.clone()
+            }
+        }
         _ => json!({ "type": "object" }),
     };
     Some(Tool {
         name,
         title,
-        description: value
-            .get("description")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
+        description,
         input_schema,
         annotations: ToolAnnotations {
             read_only: hint("readOnlyHint"),
@@ -519,6 +576,40 @@ mod tests {
         assert_eq!(own_title.input_schema, json!({ "type": "object" }));
 
         assert!(tool_from_json(&json!({ "description": "no name" })).is_none());
+    }
+
+    #[test]
+    fn what_a_server_wrote_about_a_tool_is_kept_only_up_to_a_bound() {
+        // A description is cut on a character boundary, not through one.
+        let long = "\u{e9}".repeat(MAX_DESCRIPTION_BYTES);
+        let tool = tool_from_json(&json!({ "name": "t", "description": long })).unwrap();
+        assert!(tool.description.len() <= MAX_DESCRIPTION_BYTES);
+        assert!(tool.description.len() >= MAX_DESCRIPTION_BYTES - 1);
+        assert!(tool.description.chars().all(|c| c == '\u{e9}'));
+
+        // A schema that fits is kept as sent; one that does not is replaced,
+        // and the description says so.
+        let small = json!({ "type": "object", "properties": { "q": { "type": "string" } } });
+        let kept = tool_from_json(&json!({ "name": "t", "inputSchema": small.clone() })).unwrap();
+        assert_eq!(kept.input_schema, small);
+        let big = json!({ "type": "object", "properties": { "p": { "description": "x".repeat(MAX_SCHEMA_BYTES) } } });
+        let dropped =
+            tool_from_json(&json!({ "name": "t", "description": "d", "inputSchema": big }))
+                .unwrap();
+        assert_eq!(dropped.input_schema, json!({ "type": "object" }));
+        assert!(dropped.description.starts_with("d ["), "{}", dropped.description);
+        assert!(dropped.description.contains("too large"));
+
+        // A name is not cut: a tool whose name is too long is not offered.
+        assert!(tool_from_json(&json!({ "name": "n".repeat(MAX_NAME_BYTES + 1) })).is_none());
+        let titled = tool_from_json(&json!({ "name": "t", "title": "T".repeat(5000) })).unwrap();
+        assert_eq!(titled.title.unwrap().len(), MAX_NAME_BYTES);
+
+        let info = server_info(
+            &json!({ "serverInfo": { "name": "s" }, "instructions": "i".repeat(100_000) }),
+            "2025-11-25".into(),
+        );
+        assert_eq!(info.instructions.unwrap().len(), MAX_SERVER_TEXT_BYTES);
     }
 
     #[test]

@@ -33,6 +33,10 @@
 //! text get the apostrophe; amounts, dates and ids are written by this code
 //! and are what they look like, so `-12.50` stays a number.
 //!
+//! The rule itself, and its undoing on the way in, is in `crate::text`
+//! (`Csv::row` and `Row::get`), so every kind of export has it and this one
+//! need not remember to.
+//!
 //! # Not read back
 //!
 //! Transactions are not imported: a bank hands them over again, and an
@@ -277,15 +281,11 @@ fn category_row(category: &MoneyCategory, currency: &str) -> Vec<String> {
     ]
 }
 
-/// A cell of somebody's text, made safe to open in a spreadsheet: one that
-/// starts the way a formula does gets an apostrophe in front, which a
-/// spreadsheet shows as text. Leading spaces are looked past, since some
-/// programs look past them too. See the module doc.
+/// A cell of somebody's text. Written as it is: `Csv::row` puts the
+/// apostrophe in front of any cell a spreadsheet would run, for every kind
+/// of export alike, and `Row::get` takes it off again.
 fn text(value: &str) -> String {
-    match value.trim_start_matches(' ').chars().next() {
-        Some('=' | '+' | '-' | '@' | '\t' | '\r') => format!("'{value}"),
-        _ => value.to_string(),
-    }
+    value.to_string()
 }
 
 /// An enum's own word on the wire -- `cash`, `expense` -- so the file says
@@ -300,16 +300,6 @@ fn word<T: serde::Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_cell_that_would_run_as_a_formula_is_written_as_text() {
-        for risky in ["=cmd|' /C calc'!A0", "+SUM(1+1)", "-2+3", "@cmd", "\t=1", "\r=1", "  =1"] {
-            assert!(text(risky).starts_with('\''), "{risky:?}");
-        }
-        for plain in ["Whole Foods", "AT&T", "", "1-800-FLOWERS", "Café"] {
-            assert_eq!(text(plain), plain);
-        }
-    }
 
     #[test]
     fn enums_are_written_in_the_words_the_app_uses() {

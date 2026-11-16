@@ -7863,6 +7863,10 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "description": "Something a person chose to follow.",
     "properties": {
+      "addedByAssistant": {
+        "description": "Followed by the assistant rather than added by the person. Such a\nsource is fetched from the internet only: its address may have come\nfrom whatever the assistant last read, and it is fetched again every\nfew minutes for as long as it exists. One the person added reaches\nwherever they pointed it, their own network included. Written only\nwhen set, so every source from before it existed reads as the\nperson's.",
+        "type": "boolean"
+      },
       "createdAt": {
         "format": "date-time",
         "type": "string"

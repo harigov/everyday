@@ -72,8 +72,8 @@ use tokio::time::sleep;
 
 use super::tokens::{self, Credential, Resource};
 use super::{
-    RemoteCalendar, calendar_after_retry_after, deterministic_event_id, retry_after_delay,
-    sync_window,
+    MAX_API_BYTES, RemoteCalendar, calendar_after_retry_after, deterministic_event_id,
+    retry_after_delay, sync_window,
 };
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
@@ -418,7 +418,7 @@ async fn list_events(
             format!("{base}/calendars/{calendar_id}/events?singleEvents=true&maxResults=250");
         match &mode {
             IncrementalOrFull::Incremental(sync_token) => {
-                url.push_str(&format!("&syncToken={sync_token}"));
+                url.push_str(&format!("&syncToken={}", urlencoding_light(sync_token)));
             }
             IncrementalOrFull::Windowed(from, to) => {
                 url.push_str(&format!(
@@ -429,7 +429,7 @@ async fn list_events(
             }
         }
         if let Some(pt) = &page_token {
-            url.push_str(&format!("&pageToken={pt}"));
+            url.push_str(&format!("&pageToken={}", urlencoding_light(pt)));
         }
         let bytes = get_bytes(&url, token).await?;
         let mut page: EventsResponse = serde_json::from_slice(&bytes).map_err(|e| {
@@ -640,9 +640,10 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
     loop {
         attempt += 1;
         let response = http::client()?.get(url).bearer_auth(token).send().await.map_err(|e| {
+            // `reqwest`'s own text names the address it was asking.
             CommandError::new(
                 http::transport_code(&e),
-                format!("could not reach Google Calendar: {e}"),
+                format!("could not reach Google Calendar: {}", http::strip_url(&e.to_string())),
             )
         })?;
         let status = response.status().as_u16();
@@ -654,7 +655,12 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
         }
         if status == 403 {
             let retry_after = retry_after_delay(response.headers());
-            let body = response.bytes().await.unwrap_or_default();
+            // Capped: a 403's body is read in full to look for a reason, and
+            // one that never ends must not be read without limit. A body
+            // that is too large to read is read as having no reason.
+            let body = http::read_capped(response, MAX_ERROR_BODY_BYTES, String::new)
+                .await
+                .unwrap_or_default();
             if is_rate_limit_reason(&body) {
                 let policy = calendar_after_retry_after();
                 if policy.gives_up_after(attempt) {
@@ -671,7 +677,7 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
             // fine, but this calendar specifically refused the request.
             return Err(CommandError::new(
                 codes::NETWORK,
-                format!("Google Calendar refused this request: {}", String::from_utf8_lossy(&body)),
+                format!("Google Calendar refused this request{}", refusal_reason(&body)),
             ));
         }
         if status == 410 {
@@ -683,9 +689,47 @@ async fn get_bytes(url: &str, token: &str) -> CommandResult<Vec<u8>> {
                 format!("Google Calendar answered {status}"),
             ));
         }
-        return response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not read Google's answer: {e}"))
-        });
+        return http::read_capped(response, MAX_API_BYTES, || {
+            "Google's answer was larger than this app will read".to_string()
+        })
+        .await;
+    }
+}
+
+/// The most of a 403's body that is read.
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+
+/// How much of Google's own reason is shown to a person.
+const MAX_REASON_CHARS: usize = 200;
+
+/// What Google said was wrong, as ": the reason" to follow a sentence, or
+/// nothing when the body is not Google's usual `{"error":{"message":...}}`.
+///
+/// The body used to be echoed whole, which put whatever came back -- an HTML
+/// error page from a proxy, a page of JSON -- in a `last_error` the
+/// interface shows and the vault stores. Only the message is kept, cut
+/// short, and with anything that looks like an address taken out of it.
+fn refusal_reason(body: &[u8]) -> String {
+    #[derive(Deserialize)]
+    struct Body {
+        error: Option<Detail>,
+    }
+    #[derive(Deserialize)]
+    struct Detail {
+        message: Option<String>,
+    }
+    let message = serde_json::from_slice::<Body>(body)
+        .ok()
+        .and_then(|b| b.error)
+        .and_then(|d| d.message)
+        .map(|m| http::strip_url(m.trim()))
+        .filter(|m| !m.is_empty());
+    match message {
+        Some(m) => {
+            let short: String = m.chars().take(MAX_REASON_CHARS).collect();
+            format!(": {short}")
+        }
+        None => String::new(),
     }
 }
 
@@ -1110,6 +1154,51 @@ mod tests {
             "a calendar this account cannot read is not a bad credential"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1, "not a rate limit, so never retried");
+    }
+
+    #[test]
+    fn a_403_shows_only_googles_own_short_reason_and_never_an_address() {
+        let body = br#"{"error":{"code":403,"message":"The caller does not have permission"}}"#;
+        assert_eq!(refusal_reason(body), ": The caller does not have permission");
+        // A proxy's HTML page, an empty body and a message with an address
+        // in it say nothing, nothing, and the part that is not the address.
+        assert_eq!(refusal_reason(b"<html><body>Blocked by corporate proxy</body></html>"), "");
+        assert_eq!(refusal_reason(b""), "");
+        let leaky = br#"{"error":{"message":"see https://secret.example/token=abc for details"}}"#;
+        let said = refusal_reason(leaky);
+        assert!(!said.contains("secret.example") && said.contains("for details"), "{said}");
+        // Cut short, by characters rather than bytes.
+        let long = format!(r#"{{"error":{{"message":"{}"}}}}"#, "é".repeat(1000));
+        assert_eq!(refusal_reason(long.as_bytes()).chars().count(), 2 + MAX_REASON_CHARS);
+    }
+
+    #[tokio::test]
+    async fn a_403_body_that_never_ends_is_not_read_without_limit() {
+        use axum::body::Body;
+        let app = axum::Router::new().route(
+            "/x",
+            get(|| async {
+                let chunks = futures::stream::iter(
+                    (0..64).map(|_| Ok::<_, std::io::Error>(bytes::Bytes::from(vec![b'x'; 65536]))),
+                );
+                (axum::http::StatusCode::FORBIDDEN, Body::from_stream(chunks)).into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        let err = get_bytes(&format!("http://127.0.0.1:{port}/x"), "tok").await.unwrap_err();
+        // Four megabytes were on offer; the cap stopped the read, and what
+        // is left of it reads as a refusal with no reason given.
+        assert_eq!(err.code, codes::NETWORK);
+        assert_eq!(err.message, "Google Calendar refused this request");
+    }
+
+    #[test]
+    fn a_page_or_sync_token_cannot_add_parameters_to_the_request() {
+        assert_eq!(urlencoding_light("abc&calendarId=other#x"), "abc%26calendarId%3Dother%23x");
     }
 
     #[tokio::test]

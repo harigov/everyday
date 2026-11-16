@@ -94,7 +94,28 @@ export function mailOrigin(): string {
 export function applyPlatformOrigin(html: string): string {
   const origin = mailOrigin()
   if (origin === 'karmayoga://mail') return html
-  return allowWebOrigin(html.split('karmayoga://mail/').join(`${origin}/`))
+  return allowWebOrigin(pointOwnAddresses(html, `${origin}/`))
+}
+
+/**
+ * `html` with `karmayoga://mail/` swapped for `to` where the sanitiser puts
+ * one -- an `src`, a `srcset`, a table's `background`, a CSS `url(` -- and
+ * nowhere else. On web access `to` carries the session's media token, and a
+ * sender who wrote the scheme into a link's address
+ * (`href="https://evil.example/?u=karmayoga://mail/"`) would otherwise be
+ * handed that token by anyone who clicked it.
+ */
+export function pointOwnAddresses(html: string, to: string): string {
+  const own = 'karmayoga://mail/'
+  return html
+    .replace(
+      /(\s(?:src|srcset|background)\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)/gi,
+      (_whole, lead: string, value: string) => lead + value.split(own).join(to),
+    )
+    .replace(
+      /(url\(\s*(?:"|'|&quot;|&#39;|&#x27;)?)karmayoga:\/\/mail\//gi,
+      (_whole, lead: string) => lead + to,
+    )
 }
 
 /**
