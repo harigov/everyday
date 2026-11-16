@@ -1,12 +1,21 @@
-# `cargo audit` (see .github/workflows/audit.yml). Every ignore names why.
+# `cargo audit` (see .github/workflows/audit.yml). Every ignore names why,
+# and what would let it go.
 [advisories]
 ignore = [
-  # ammonia is held at =4.1.4 on purpose: from 4.1.5 it panics on the
-  # sanitiser's configuration (`<style>` allowed while style attributes are
-  # filtered). These are about CSS `url()` handling and SVG animation; no SVG
-  # is allowed, and every `url()` passes `guard_style_urls` after ammonia,
-  # inside a scriptless frame. See crates/karmayoga-mail/Cargo.toml.
-  "RUSTSEC-2021-0157",
-  "RUSTSEC-2021-0158",
-  "RUSTSEC-2026-0373",
+  # libsqlite3-sys 0.38 bundles SQLite before 3.54, which can return
+  # uninitialised page-cache memory when it opens a database beside a `-wal`
+  # file of a different page size. Only reachable by somebody who can write
+  # files into the vault's own directory, who could already do far worse.
+  # Held by matrix-sdk-sqlite 0.19, which requires rusqlite ^0.40.2, and one
+  # build may link only one SQLite. Goes when matrix-sdk moves to rusqlite
+  # 0.41 (libsqlite3-sys 0.39).
+  "RUSTSEC-2026-0459",
+  # zip 2.4.2 is only a build dependency of sherpa-onnx-sys, used at build
+  # time to unpack its own native library -- an archive CI and the release
+  # build check against a pinned SHA-256 (scripts/sherpa-archives.sh). All
+  # four are in `extract` on hostile archives. The app's own zip is 9.x.
+  "RUSTSEC-2026-0367",
+  "RUSTSEC-2026-0368",
+  "RUSTSEC-2026-0369",
+  "RUSTSEC-2026-0429",
 ]

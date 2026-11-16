@@ -78,8 +78,7 @@ pub fn read_export<R: Read + Seek>(
     let index = export_xml_index(&archive)?;
     // The routes and documents sit beside `export.xml`, in a folder that
     // is named in the phone's language.
-    let root = archive
-        .name_for_index(index)
+    let root = entry_name(&archive, index)
         .and_then(|name| name.rfind('/').map(|slash| name[..=slash].to_string()))
         .unwrap_or_default();
     let pending = {
@@ -118,12 +117,19 @@ fn zip_error(e: ZipError) -> Error {
     }
 }
 
+/// The name of the entry at `index`, when it has one this can read. An entry
+/// whose name will not decode is not one of the files an export holds, and
+/// is passed over like any other stranger in the archive.
+fn entry_name<R: Read + Seek>(archive: &ZipArchive<R>, index: usize) -> Option<String> {
+    archive.name_for_index(index)?.ok().map(|name| name.into_owned())
+}
+
 /// The entry that is `export.xml`, whatever folder it is in. Not
 /// `export_cda.xml`, and not a macOS resource fork (`._export.xml`).
 fn export_xml_index<R: Read + Seek>(archive: &ZipArchive<R>) -> Result<usize> {
     (0..archive.len())
         .find(|&i| {
-            archive.name_for_index(i).is_some_and(|name| {
+            entry_name(archive, i).is_some_and(|name| {
                 name.rsplit('/').next().is_some_and(|base| base.eq_ignore_ascii_case("export.xml"))
             })
         })
@@ -446,10 +452,19 @@ fn sleep_stage(value: &str) -> Option<SleepStage> {
 
 /// An attribute's value, unescaped (`Hari&apos;s` is `Hari's`). One that
 /// uses an entity the file never declared is kept as written.
+///
+/// Decoded and unescaped, not "normalised": quick-xml's normalising read
+/// turns every literal line break and tab in a value into a space, as the
+/// XML specification says, and a note typed into Health with a line break
+/// in it would then import differently from how it always had.
 fn text(a: &Attribute<'_>, decoder: Decoder) -> String {
-    match a.decode_and_unescape_value(decoder) {
-        Ok(value) => value.into_owned(),
-        Err(_) => String::from_utf8_lossy(&a.value).into_owned(),
+    let lossy = || String::from_utf8_lossy(&a.value).into_owned();
+    match decoder.decode(&a.value) {
+        Ok(decoded) => match quick_xml::escape::unescape(&decoded) {
+            Ok(value) => value.into_owned(),
+            Err(_) => decoded.into_owned(),
+        },
+        Err(_) => lossy(),
     }
 }
 
@@ -774,7 +789,7 @@ fn read_documents<R: Read + Seek>(
 ) -> Result<()> {
     let wanted: Vec<(usize, String, Extra)> = (0..archive.len())
         .filter_map(|i| {
-            let name = archive.name_for_index(i)?;
+            let name = entry_name(archive, i)?;
             let lower = name.to_ascii_lowercase();
             let extra = if lower.contains("clinical-records/") && lower.ends_with(".json") {
                 Extra::Clinical
@@ -783,7 +798,7 @@ fn read_documents<R: Read + Seek>(
             } else {
                 return None;
             };
-            Some((i, name.rsplit('/').next().unwrap_or(name).to_string(), extra))
+            Some((i, name.rsplit('/').next().unwrap_or(&name).to_string(), extra))
         })
         .collect();
     let mut batch = HealthBatch::default();
@@ -855,6 +870,17 @@ mod tests {
 
     fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
+    }
+
+    /// A value keeps its line breaks and loses its entities, as it always
+    /// did: quick-xml's normalising read would have made the break a space.
+    #[test]
+    fn an_attribute_keeps_its_line_breaks_and_is_unescaped() {
+        let mut reader = Reader::from_str("<r note=\"Hari&apos;s\nsecond line\" odd=\"&nope;\"/>");
+        let Ok(Event::Empty(e)) = reader.read_event() else { panic!("an element") };
+        let decoder = reader.decoder();
+        assert_eq!(attr(&e, decoder, b"note").as_deref(), Some("Hari's\nsecond line"));
+        assert_eq!(attr(&e, decoder, b"odd").as_deref(), Some("&nope;"), "kept as written");
     }
 
     /// Fold `b` into `all`, as the vault does batch by batch.

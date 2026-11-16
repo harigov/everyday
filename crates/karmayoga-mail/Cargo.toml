@@ -30,17 +30,14 @@ lol_html = "=3.0.1"
 
 # HTML in, second pass: the allow-list that removes anything with behaviour.
 #
-# Held at 4.1.4 on purpose. From 4.1.5 ammonia panics when `<style>` is an
-# allowed tag while style attributes are filtered too, and this sanitiser
-# does exactly that (see `sanitize.rs`'s module docs). The advisories against
-# 4.1.4 -- RUSTSEC-2021-0157/0158 and RUSTSEC-2026-0373 -- are about CSS
-# `url()` escaping and matching in style attributes, and SVG animation
-# elements. No SVG is on the allow-list, and every `url()` in an attribute
-# or a block passes `guard_style_urls` -- case-insensitive, after ammonia --
-# which drops any address that was not proxied, inside a frame with no script
-# and its own content security policy. Moving past 4.1.4 means taking style
-# blocks through ammonia some other way first.
-ammonia = "=4.1.4"
+# Pinned exactly. From 4.1.5 ammonia refuses to filter style-attribute
+# properties while `<style>` is an allowed tag, so this sanitiser no longer
+# asks it to: `<style>` blocks stay on its tag list, and the property
+# allow-list for `style=""` attributes is applied by `sanitize.rs` itself,
+# in the pass after ammonia that already guards every `url()`. That is what
+# let this move off 4.1.4 and its advisories (RUSTSEC-2021-0157/0158,
+# RUSTSEC-2026-0373, RUSTSEC-2026-0533).
+ammonia = "=4.1.9"
 
 # HTML out: the plain-text body and the assistant's `model_text`. `css`
 # is the feature that lets it resolve `display: none` from inline and

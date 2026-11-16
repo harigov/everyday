@@ -24,8 +24,9 @@
 //!    it. The same pass drops `@import` and CSS `expression()` outright, and
 //!    removes images that look like tracking pixels, recording that it did.
 //! 2. **[`ammonia`]** then applies an allow-list built for email: tables and
-//!    common formatting survive, inline styles survive with their properties
-//!    filtered, links get `rel="noopener noreferrer"` and `target="_blank"`,
+//!    common formatting survive, inline styles survive (their properties are
+//!    filtered in the pass after, see [`keep_allowed_properties`]), links get
+//!    `rel="noopener noreferrer"` and `target="_blank"`,
 //!    and everything with behaviour -- `<script>`, `<iframe>`, `<object>`,
 //!    `<form>`, event handler attributes, `javascript:` URLs, `<meta
 //!    http-equiv="refresh">` -- is gone, because none of those tags are on
@@ -42,9 +43,11 @@
 //! `url()`s and `@import`s the same way it scrubs an inline style -- a
 //! `<style>` block is exactly as capable of phoning home through a
 //! `background-image` as an `<img>` tag is, and ammonia does not look inside
-//! it at all (`filter_style_properties` only ever inspects the `style`
-//! *attribute*, not a `<style>` *element*'s content, which is why the
-//! rewriting for both happens in the same place: `scrub_css` below).
+//! it at all, which is why the rewriting for both happens in the same place:
+//! `scrub_css` below. Ammonia will not filter style-attribute properties at
+//! all while `<style>` is an allowed tag (it refuses, from 4.1.5), so that
+//! filter is this module's too: [`keep_allowed_properties`], in the guard
+//! pass after ammonia.
 //!
 //! ## What this does not catch
 //!
@@ -174,8 +177,12 @@ pub fn sanitize(html: &str, rewrite: &Rewrite) -> Sanitised {
 
     // The final wall: see `guard_style_urls`'s own docs for what this
     // catches that the two passes above should already have caught, and
-    // why it is worth running anyway.
-    let guarded = guard_style_urls(&cleaned, &rewrite.scheme).unwrap_or_else(|_| cleaned.clone());
+    // why it is worth running anyway. It is also where the style-property
+    // allow-list is applied, so a document it cannot get through is shown
+    // as nothing rather than as ammonia left it: failing closed costs one
+    // pathological message its body, failing open would hand that message
+    // every property and address the wall exists to stop.
+    let guarded = guard_style_urls(&cleaned, &rewrite.scheme).unwrap_or_default();
 
     let shared =
         Rc::try_unwrap(shared).map(RefCell::into_inner).unwrap_or_else(|rc| rc.borrow().clone());
@@ -227,7 +234,7 @@ fn guard_style_urls(html: &str, scheme: &str) -> Result<String, lol_html::errors
             // to keep -- see the module docs on why this pass exists at all.
             let decoded = crate::entities::decode_entities(&style);
             let guarded = scrub_css(&decoded, &mut |url| guard_one_url(url, &scheme_for_attr));
-            el.set_attribute("style", &guarded)?;
+            el.set_attribute("style", &keep_allowed_properties(&guarded))?;
         }
         Ok(())
     });
@@ -657,10 +664,74 @@ fn ammonia_clean(html: &str, scheme: &str) -> String {
         // reader folds away (`ui/src/lib/mailbody.ts`). Inert, like `cite`.
         .add_tag_attributes("blockquote", &["type"])
         .add_url_schemes(&schemes)
-        .set_tag_attribute_value("a", "target", "_blank")
-        .filter_style_properties(ALLOWED_STYLE_PROPERTIES.iter().copied().collect());
+        .set_tag_attribute_value("a", "target", "_blank");
 
     builder.clean(html).to_string()
+}
+
+/// `style`, an inline style already through [`scrub_css`], with only the
+/// declarations whose property is in [`ALLOWED_STYLE_PROPERTIES`].
+///
+/// What ammonia's `filter_style_properties` did, done here because ammonia
+/// will not do it while `<style>` blocks are allowed. A small splitter is
+/// enough after `scrub_css`: it has removed comments and refused anything
+/// with a backslash, so the only places a `;` or `:` can sit without ending
+/// or splitting a declaration are inside quotes and parentheses, and those
+/// are tracked. Line breaks are folded to spaces first, and the folded text
+/// is what is written back: a browser ends a quoted string at a line break
+/// (a "bad string") and splits at the next `;`, where this splitter would
+/// not, and `font-family:'x<LF>;position:fixed` must not be one declaration
+/// here and two in the frame. A declaration that is not `name: value`, or
+/// whose name is not on the list, is dropped; the rest are written back as
+/// `name:value`, joined by `;`, the shape ammonia wrote.
+///
+/// This bounds inline styles only. A `<style>` block can still say
+/// anything CSS can (its `url()`s are what this module guards there); what
+/// keeps a message's CSS inside the message is the frame it is drawn in,
+/// with no script and no way to navigate, not this list.
+fn keep_allowed_properties(style: &str) -> String {
+    let folded = style.replace(['\r', '\n', '\x0c'], " ");
+    let mut kept = String::with_capacity(folded.len());
+    for declaration in split_declarations(&folded) {
+        let Some((name, value)) = declaration.split_once(':') else { continue };
+        let name = name.trim();
+        let value = value.trim();
+        if value.is_empty()
+            || !ALLOWED_STYLE_PROPERTIES.iter().any(|allowed| allowed.eq_ignore_ascii_case(name))
+        {
+            continue;
+        }
+        if !kept.is_empty() {
+            kept.push(';');
+        }
+        kept.push_str(&name.to_ascii_lowercase());
+        kept.push(':');
+        kept.push_str(value);
+    }
+    kept
+}
+
+/// `css`'s declarations: split at each `;` that is outside quotes and
+/// parentheses.
+fn split_declarations(css: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut quote, mut start) = (0usize, None::<char>, 0usize);
+    for (i, c) in css.char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => depth = depth.saturating_sub(1),
+            (None, ';') if depth == 0 => {
+                parts.push(&css[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&css[start..]);
+    parts
 }
 
 /// Heuristics for "this `<img>` exists only to be counted, not seen". A real
@@ -1393,14 +1464,48 @@ mod tests {
         assert!(out.html.contains("2x"));
     }
 
+    /// The property allow-list, applied here now that ammonia does not:
+    /// only listed properties survive, whatever their case, and a `;` or `:`
+    /// inside quotes or parentheses does not split a declaration.
+    #[test]
+    fn only_allowed_style_properties_survive() {
+        assert_eq!(
+            keep_allowed_properties(
+                "COLOR: red; position: fixed; top:0; background: url(\"karmayoga://mail/img/m/a;b\") no-repeat; font-family: 'A; B', serif"
+            ),
+            "color:red;background:url(\"karmayoga://mail/img/m/a;b\") no-repeat;font-family:'A; B', serif"
+        );
+        assert_eq!(keep_allowed_properties("position:absolute;z-index:9"), "");
+        // A line break ends a quoted string in a browser, so it cannot hide
+        // a declaration inside one here: what is written back has no line
+        // break, and the browser reads it as the one string this did.
+        let kept = keep_allowed_properties("font-family:'x\n;position:fixed;inset:0;z-index:99999");
+        assert!(!kept.contains(['\n', '\r']), "{kept:?}");
+        assert!(kept.starts_with("font-family:'x ;position"), "{kept:?}");
+        assert_eq!(split_declarations(&kept).len(), 1, "one declaration to a browser too");
+        assert_eq!(keep_allowed_properties("color:;width"), "");
+        assert_eq!(keep_allowed_properties(""), "");
+    }
+
+    #[test]
+    fn a_style_attribute_loses_what_is_not_on_the_list_through_the_whole_pipeline() {
+        let out = sanitize(
+            r#"<style>p { color: blue }</style><p style="position:fixed;inset:0;color:red">x</p>"#,
+            &Rewrite::new("m"),
+        );
+        assert!(out.html.contains("<style>"), "the block stays: {}", out.html);
+        assert!(!out.html.contains("position"), "{}", out.html);
+        assert!(out.html.contains("color:red"), "{}", out.html);
+    }
+
     /// Finding 4: `ALLOWED_STYLE_PROPERTIES` had `background` and
     /// `background-color` but not the longhands a lot of real HTML mail
-    /// actually uses -- ammonia's `filter_style_properties` deletes a
-    /// declaration outright when its property is not on the list, so
-    /// `background-image` was silently dropped before it ever reached
-    /// `guard_style_urls`, regardless of what that pass would have allowed.
+    /// actually uses -- the property filter (ammonia's then, this module's
+    /// [`keep_allowed_properties`] now) deletes a declaration outright when
+    /// its property is not on the list, so `background-image` was silently
+    /// dropped regardless of what the url guard would have allowed.
     #[test]
-    fn a_background_image_property_survives_ammonias_allow_list() {
+    fn a_background_image_property_survives_the_allow_list() {
         let out = sanitize(
             r#"<div style="background-image:url(https://cdn.example.com/hero.png)">hi</div>"#,
             &rewrite(),
