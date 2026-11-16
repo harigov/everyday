@@ -881,6 +881,22 @@ pub trait JournalStore: Send + Sync {
         Err(Error::Unsupported("storing backup settings"))
     }
 
+    // ---- karma ------------------------------------------------------------
+
+    /// When Karma started -- see [`crate::karma::KarmaBook`] -- or `None`
+    /// before anything has asked for it.
+    ///
+    /// On the base trait, as backups are: Karma is drawn from every domain
+    /// and belongs to none of them.
+    fn karma_book(&self) -> Result<Option<crate::karma::KarmaBook>> {
+        Ok(None)
+    }
+
+    fn put_karma_book(&self, book: &crate::karma::KarmaBook) -> Result<()> {
+        let _ = book;
+        Err(Error::Unsupported("keeping Karma"))
+    }
+
     // ---- connections ------------------------------------------------------
 
     /// The MCP servers the assistant may use -- see [`crate::connection`] --

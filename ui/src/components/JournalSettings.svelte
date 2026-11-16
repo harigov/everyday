@@ -20,6 +20,7 @@
   import { todayIso } from '../lib/time'
   import { tracking } from '../lib/tracking.svelte'
   import { describeTarget, isManual } from '../lib/tracker'
+  import { defaultKarma, signed } from '../lib/karma'
   import { KIND_COPY, TRACKER_PRESETS, fromPreset } from '../lib/tracker-presets'
   import { TRACKER_ICON_GROUPS } from '../lib/tracker-icons'
   import { focusOnMount, trapFocus } from '../lib/focus'
@@ -53,6 +54,22 @@
 
   /** The tracker being edited, or a freshly minted one being added. */
   let editing = $state<Tracker | null>(null)
+
+  /** The Karma a tracker can be set to: a few steps either way, and the
+   *  value it already has if somebody set an odd one elsewhere. */
+  const KARMA_STEPS = [20, 10, 5, 0, -5, -10, -20, -50]
+  function karmaChoices(current: number | null | undefined): number[] {
+    return current == null || KARMA_STEPS.includes(current)
+      ? KARMA_STEPS
+      : [...KARMA_STEPS, current].sort((a, b) => b - a)
+  }
+
+  /** "Earns 5 a day it is kept", "Costs 20 a day it happens", "Nothing". */
+  function karmaChoice(k: number): string {
+    if (k > 0) return `Earns ${signed(k)} a day it is kept`
+    if (k < 0) return `Costs ${signed(k)} a day it happens`
+    return 'Nothing either way'
+  }
   let adding = $state(false)
   let pickingIcon = $state(false)
   let newName = $state('')
@@ -883,6 +900,26 @@
                 onchange={(next: Target[]) => editing && (editing.targets = next)}
               />
             </div>
+
+            <!-- What a day of it is worth. A habit being built earns on a day
+                 it is kept; one being broken -- a drink, a cigarette -- costs
+                 on a day it happens, or with a daily limit, a day over it. -->
+            <label class="lbl">
+              Karma
+              <select
+                class="text"
+                value={editing.karma == null ? '' : String(editing.karma)}
+                onchange={(e) => {
+                  const v = e.currentTarget.value
+                  if (editing) editing.karma = v === '' ? null : Number(v)
+                }}
+              >
+                <option value="">Default ({karmaChoice(defaultKarma(editing))})</option>
+                {#each karmaChoices(editing.karma) as k (k)}
+                  <option value={String(k)}>{karmaChoice(k)}</option>
+                {/each}
+              </select>
+            </label>
 
             <label class="check">
               <input type="checkbox" bind:checked={editing.onCalendar} />

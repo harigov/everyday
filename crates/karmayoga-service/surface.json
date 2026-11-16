@@ -3928,6 +3928,28 @@
       "streams": false
     },
     {
+      "args": [
+        {
+          "name": "from",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "karma",
+      "orScope": null,
+      "returns": "KarmaReport",
+      "scope": "all",
+      "sensitive": false,
+      "streams": false
+    },
+    {
       "args": [],
       "changes": null,
       "effect": "read",

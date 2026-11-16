@@ -178,6 +178,7 @@ mod files;
 mod health;
 mod jobs;
 mod journals;
+mod karma;
 mod library;
 pub mod mail;
 mod meetings;

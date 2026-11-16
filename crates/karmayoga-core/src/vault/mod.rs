@@ -38,6 +38,7 @@ mod header;
 mod health;
 mod jobs;
 mod journal;
+mod karma;
 mod keepintouch;
 mod keys;
 mod library;

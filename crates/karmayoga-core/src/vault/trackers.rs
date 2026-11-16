@@ -141,7 +141,7 @@ impl Vault {
 
     /// [`tracker_days`](Vault::tracker_days), for a caller that already holds
     /// the tracker definitions and should not have them listed again.
-    fn tracker_days_among(
+    pub(super) fn tracker_days_among(
         &self,
         query: &ReadingQuery,
         trackers: Option<&[Tracker]>,

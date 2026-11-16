@@ -127,6 +127,40 @@ export const NEEDS = [
   'going',
   /** Who on the Contacts shelf is due a catch-up. See docs/plans/keep-in-touch.md. */
   'people',
+  /**
+   * Open tasks due today or earlier, for "Tasks for today". Not `weekTasks`
+   * re-cut: that is the week *on screen*, whatever state its tasks are in,
+   * so paging the page back a week would take today's list with it -- and a
+   * task that slipped last month is exactly the one this card is for, and
+   * no week's read would hold it.
+   */
+  'todayTasks',
+  /**
+   * Inbox threads filed Priority or Important, across every account, for
+   * "Important mail". Two reads -- one per category, since a thread filter
+   * names one -- over every account's Inbox at once.
+   */
+  'importantMail',
+  /** What is snoozed out of every account's Inbox, for "Snoozed mail". */
+  'snoozedMail',
+  /**
+   * The follow-ups the top of the Inbox draws -- waiting on you, waiting on
+   * them -- every account's at once, for "Mail to follow up".
+   */
+  'mailFollowUps',
+  /**
+   * Today's events on the calendars left visible, with the calendars for
+   * their colours. Not `today`, which is your own blocks and the timer: a
+   * card about time recorded should not pay for a calendar read, nor the
+   * reverse.
+   */
+  'todayEvents',
+  /**
+   * Karma: every day of the last year that came to anything, and the total
+   * since it started. One read whatever the card's size -- the narrower
+   * heatmap is the same year with its older weeks left undrawn.
+   */
+  'karma',
 ] as const
 export type Need = (typeof NEEDS)[number]
 
@@ -179,6 +213,33 @@ export interface WidgetSpec {
  */
 export const WIDGETS = {
   // ── Today ──────────────────────────────────────────────────────────
+  karma: {
+    label: 'Karma',
+    note: 'What each day came to, a square a day: earned for what you did, lost for the habits you are breaking.',
+    group: 'Today',
+    icon: 'sparkle',
+    size: 'large',
+    sizes: ['medium', 'large'],
+    needs: ['karma'],
+  },
+  todayEvents: {
+    label: "Today's events",
+    note: 'What is on the calendar today, with the one under way picked out.',
+    group: 'Today',
+    icon: 'calendar',
+    size: 'medium',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['todayEvents'],
+  },
+  todayTasks: {
+    label: 'Tasks for today',
+    note: 'Open tasks due today and the ones that have slipped, each ready to tick off.',
+    group: 'Today',
+    icon: 'taskList',
+    size: 'medium',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['todayTasks'],
+  },
   whatsGoingOn: {
     label: "What's going on",
     note: 'What you are in the middle of these days: projects, what you are reading and watching, the goals you are working on.',
@@ -382,6 +443,38 @@ export const WIDGETS = {
   },
 
   // ── Mail ───────────────────────────────────────────────────────────
+  //
+  // The first three are the Inbox itself rather than counts of it: what to
+  // read, what to answer or chase, and what is coming back. Every account's
+  // at once, the way "All inboxes" is, because a page you open to see what
+  // matters should not make you pick an account first.
+  importantMail: {
+    label: 'Important mail',
+    note: 'Priority and important mail that is unread or waiting on your reply.',
+    group: 'Mail',
+    icon: 'inbox',
+    size: 'small',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['importantMail'],
+  },
+  mailFollowUps: {
+    label: 'Mail to follow up',
+    note: 'Who is waiting on your reply, whose reply you are waiting on, and for how long.',
+    group: 'Mail',
+    icon: 'reply',
+    size: 'small',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['mailFollowUps'],
+  },
+  snoozedMail: {
+    label: 'Snoozed mail',
+    note: 'What you put off, soonest back first, and when each one returns.',
+    group: 'Mail',
+    icon: 'hourglass',
+    size: 'small',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['snoozedMail'],
+  },
   topSenders: {
     label: 'Who sends you the most',
     note: 'Senders ranked by messages, with how many are still unread.',
@@ -461,6 +554,37 @@ export const WIDGETS = {
   },
 
   // ── Everything else ────────────────────────────────────────────────
+  //
+  // One card per shelf for the three shelves people are most often part-way
+  // through, each reading the same `going` read "What's going on" does and
+  // keeping its own shelf's rows -- see `NOW_SHELVES`.
+  readingNow: {
+    label: 'Reading now',
+    note: 'The books you have started and not finished, with how far in you are.',
+    group: 'Everything else',
+    icon: 'book',
+    size: 'small',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['going'],
+  },
+  watchingNow: {
+    label: 'Watching now',
+    note: 'The shows you are part-way through.',
+    group: 'Everything else',
+    icon: 'film',
+    size: 'small',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['going'],
+  },
+  playingNow: {
+    label: 'Playing now',
+    note: 'The games you are in the middle of.',
+    group: 'Everything else',
+    icon: 'play',
+    size: 'small',
+    sizes: ['small', 'medium', 'large'],
+    needs: ['going'],
+  },
   shelves: {
     label: 'On the shelves',
     note: 'What you are part-way through, and what you finished this year.',
@@ -552,16 +676,24 @@ export interface Widget {
  * nobody edits, because the cost of removing eleven things is higher than the
  * cost of ignoring the tab. Adding is the easy direction; the Overview's Add
  * button exists to make it two clicks.
+ *
+ * Ordered as the page you open to see what matters right now reads: what is
+ * on and what is due, side by side; then the mail that is waiting on you,
+ * three narrow cards to a row; then what you are in the middle of. Each row
+ * closes on six columns, so nothing on a first run is stretched to fill a
+ * gap -- but for the last card, which is alone on its row on purpose and
+ * takes the width (`fillRows`).
  */
 export function defaultLayout(): Widget[] {
   return [
+    widget('karma'),
+    widget('todayEvents'),
+    widget('todayTasks'),
+    widget('importantMail'),
+    widget('mailFollowUps'),
+    widget('snoozedMail'),
     widget('whatsGoingOn'),
-    widget('dueToday'),
-    widget('recordedToday'),
-    widget('onNow'),
     widget('habitsToday'),
-    widget('roleBalance'),
-    widget('goalProgress'),
   ]
 }
 
@@ -616,23 +748,55 @@ export function addWidget(
  * at the top of a page once -- so somebody whose page predates it is shown
  * it rather than having to find it behind Add -- and never again, so one
  * they remove stays removed. Newest last.
+ *
+ * The nine after "What's going on" arrived together, Karma first, as the
+ * cards that make the Overview a home page -- and in the order listed, which is the order
+ * they land in at the top of the page: see `introduce`.
  */
-export const INTRODUCED: WidgetType[] = ['whatsGoingOn']
+export const INTRODUCED: WidgetType[] = [
+  'whatsGoingOn',
+  'karma',
+  'todayEvents',
+  'todayTasks',
+  'importantMail',
+  'mailFollowUps',
+  'snoozedMail',
+  'readingNow',
+  'watchingNow',
+  'playingNow',
+]
 
 /**
  * `list` with every card in `INTRODUCED` that `seen` does not name put at
  * the top -- unless the page already has one -- and the types now seen.
+ *
+ * The newcomers go on as one block, in `INTRODUCED`'s order, ahead of
+ * whatever was there. Not one at a time to the top, which is what this did
+ * while there was only ever one: prepending each in turn stacks them in
+ * reverse, so a batch written down as "events, tasks, mail" arrived as
+ * "mail, tasks, events" -- the list's own order read upside down, and
+ * nowhere obvious to look for why.
+ *
+ * `arranged` is false for a page nobody has arranged -- nothing stored, so
+ * `list` is `defaultLayout()` -- and then nothing is added and everything
+ * counts as seen. Those cards were made for pages that predate them; a new
+ * vault's page already *is* the page as it stands now, and topping it with
+ * every card it chose to leave out would be a default nobody chose.
  */
 export function introduce(
   list: Widget[],
   seen: string[],
+  arranged = true,
 ): { widgets: Widget[]; seen: WidgetType[] } {
-  let widgets = list
+  if (!arranged) return { widgets: list, seen: [...INTRODUCED] }
+  const arrivals: Widget[] = []
   for (const type of INTRODUCED) {
-    if (seen.includes(type) || widgets.some((w) => w.type === type)) continue
-    widgets = [widget(type, null, nextId(widgets, type)), ...widgets]
+    if (seen.includes(type) || list.some((w) => w.type === type)) continue
+    arrivals.push(widget(type, null, nextId([...arrivals, ...list], type)))
   }
-  return { widgets, seen: [...INTRODUCED] }
+  // The very same array when nothing arrived, which is how the store knows
+  // there is nothing to write back.
+  return { widgets: arrivals.length > 0 ? [...arrivals, ...list] : list, seen: [...INTRODUCED] }
 }
 
 export function removeWidget(list: Widget[], id: string): Widget[] {
@@ -802,6 +966,121 @@ export function byTimeOrLast<T>(items: T[], timeOf: (item: T) => string | null):
     if (tb === null) return -1
     return ta < tb ? -1 : ta > tb ? 1 : 0
   })
+}
+
+// ── The home cards ───────────────────────────────────────────────────────
+//
+// The ordering rules behind the cards that make this page somewhere to start
+// the day: today's tasks and events, the mail waiting, what is on the shelf.
+// Here rather than in the component for the reason everything else in this
+// file is: an agenda that put four o'clock before nine, or a snoozed list
+// that put next month first, would draw without complaint and be wrong.
+// Each takes the least shape it reads, so the tests can hand it plain
+// objects rather than build whole records.
+
+/**
+ * Which shelf each "… now" card is about, by the shelf's stable `slug` --
+ * never its name, which the person can change, and which the builtin TV
+ * shelf has already been renamed under once ("Series" to "TV Shows").
+ */
+export const NOW_SHELVES = {
+  readingNow: 'book',
+  watchingNow: 'series',
+  playingNow: 'game',
+} as const satisfies Partial<Record<WidgetType, string>>
+
+/** The shelf slug a widget type is about, or `null` for one that is not a shelf card. */
+export function nowShelf(type: WidgetType): string | null {
+  return (NOW_SHELVES as Partial<Record<WidgetType, string>>)[type] ?? null
+}
+
+/**
+ * Today's list, from tasks due today or earlier: whatever slipped first,
+ * oldest due date at the top, then today's by the clock with untimed ones
+ * after the timed -- `byTimeOrLast`'s rule, applied first so the date sort
+ * after it (stable) keeps it within each day. Each row says whether it is
+ * overdue, so the card can mark it without doing date arithmetic in markup.
+ *
+ * A task with no due date, or one due after `today`, is not today's and is
+ * dropped rather than trusted to the query that fetched it: the list can
+ * outlive midnight on a page left open.
+ */
+export function tasksForToday<T extends { dueDate?: string | null; dueTime?: string | null }>(
+  tasks: T[],
+  today: string,
+): { task: T; overdue: boolean }[] {
+  return byTimeOrLast(
+    tasks.filter((t) => !!t.dueDate && t.dueDate <= today),
+    (t) => t.dueTime ?? null,
+  )
+    .sort((a, b) => (a.dueDate! < b.dueDate! ? -1 : a.dueDate! > b.dueDate! ? 1 : 0))
+    .map((task) => ({ task, overdue: task.dueDate! < today }))
+}
+
+/**
+ * The "Important mail" list, from one listing per category: each thread
+ * once -- a thread can be in two Inboxes, and the two listings are asked
+ * separately -- kept if it is unread or somebody is waiting on your reply,
+ * newest first. A read thread nobody is waiting on is mail already dealt
+ * with, however important it was filed as.
+ */
+export function importantThreads<
+  T extends {
+    id: string
+    lastDate: string
+    unreadCount: number
+    followUp?: { kind: string } | null
+  },
+>(lists: T[][]): T[] {
+  const seen = new Set<string>()
+  const out: T[] = []
+  for (const thread of lists.flat()) {
+    if (seen.has(thread.id)) continue
+    seen.add(thread.id)
+    if (thread.unreadCount > 0 || thread.followUp?.kind === 'reply') out.push(thread)
+  }
+  return out.sort((a, b) => Date.parse(b.lastDate) - Date.parse(a.lastDate))
+}
+
+/**
+ * Snoozed threads, the one coming back soonest first -- the order that
+ * matters for something you put off, where newest-first (the order the
+ * listing arrives in) would put next month's above this afternoon's. One
+ * with no `snoozedUntil` goes last; it should not be in a snoozed listing at
+ * all, but a list that sorted it first would be led by the one row with
+ * nothing to say.
+ */
+export function soonestBack<T extends { snoozedUntil?: string | null }>(threads: T[]): T[] {
+  const at = (t: T) => (t.snoozedUntil ? Date.parse(t.snoozedUntil) : Number.POSITIVE_INFINITY)
+  return [...threads].sort((a, b) => at(a) - at(b))
+}
+
+/**
+ * A day's events as an agenda reads: all-day ones first, then by when each
+ * starts. Compared as instants, not strings: two calendars in two time zones
+ * write the same moment with two different offsets.
+ */
+export function dayAgenda<T extends { allDay: boolean; start: string }>(events: T[]): T[] {
+  return [...events].sort(
+    (a, b) => Number(b.allDay) - Number(a.allDay) || Date.parse(a.start) - Date.parse(b.start),
+  )
+}
+
+/**
+ * Where an event stands against `now`, in milliseconds: over, under way, or
+ * still to come. An all-day event is never "under way" -- the whole day is
+ * not one meeting, and highlighting it from midnight would leave the actual
+ * meeting in progress looking like the second thing on -- and never over
+ * until the day is, which is when it leaves the card anyway.
+ */
+export function eventPhase(
+  event: { allDay: boolean; start: string; end: string },
+  now: number,
+): 'past' | 'now' | 'later' {
+  if (event.allDay) return 'later'
+  if (Date.parse(event.end) <= now) return 'past'
+  if (Date.parse(event.start) <= now) return 'now'
+  return 'later'
 }
 
 // ── The Weather widget ───────────────────────────────────────────────────

@@ -559,6 +559,13 @@ pub struct Tracker {
     /// first is the one a view with room for one draws.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<Target>,
+    /// Karma on a day this counts, signed: positive for a habit being built,
+    /// earned on a day it is kept; negative for one being broken -- a drink,
+    /// a cigarette -- lost on a day it happens (or, with a daily maximum, a
+    /// day over it). `None` is [`crate::karma::default_points`], `Some(0)`
+    /// is "nothing either way". Held to ±[`crate::karma::HABIT_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub karma: Option<i32>,
     /// Retired: kept for its history, gone from the day's chips.
     ///
     /// The alternative — deleting the tracker — would take a year of
@@ -617,6 +624,8 @@ struct TrackerRecord {
     #[serde(default)]
     targets: Vec<Target>,
     #[serde(default)]
+    karma: Option<i32>,
+    #[serde(default)]
     archived: bool,
     #[serde(default)]
     sort_order: i32,
@@ -666,6 +675,7 @@ impl From<TrackerRecord> for Tracker {
             purpose: r.purpose,
             source: r.source,
             targets,
+            karma: r.karma,
             archived: r.archived,
             sort_order: r.sort_order,
             created_at: r.created_at,
@@ -716,6 +726,7 @@ impl Tracker {
             purpose: None,
             source: TrackerSource::Manual,
             targets: Vec::new(),
+            karma: None,
             archived: false,
             sort_order: 0,
             created_at: now,
@@ -825,6 +836,8 @@ impl Tracker {
             self.scale_max = DEFAULT_SCALE_MAX;
         }
         self.scale_max = self.scale_max.min(100.0);
+        self.karma =
+            self.karma.map(|k| k.clamp(-crate::karma::HABIT_LIMIT, crate::karma::HABIT_LIMIT));
         // A derived tracker's readings are a sum of something: minutes, or
         // things finished. Nothing is ever recorded at a minute, so there is
         // nothing to put on the calendar either.

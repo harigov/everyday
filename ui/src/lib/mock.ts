@@ -11,6 +11,8 @@
 
 import type {
   AddedItem,
+  Deed,
+  KarmaReport,
   QuickAskRow,
   Account,
   AccountView,
@@ -189,6 +191,7 @@ import {
   mockStoryBody,
   mockStoryForLibrary,
 } from './mock-feed'
+import { FINISHED_POINTS, JOURNAL_POINTS, habitPoints, scoreDay, taskPoints } from './karma'
 import { mockBackup } from './mock-backup'
 import { mockConnections } from './mock-connections'
 import { mockMoney } from './mock-money'
@@ -1458,6 +1461,11 @@ const trackers: Tracker[] = [
     source: { type: 'time' },
     targets: [{ min: 300, max: 600, per: 'week', tally: 'value' }],
     purpose: { type: 'goal', id: 'g-ship' },
+  }),
+  tracker('t-drink', 'Alcohol', 'check', 'dot', '#78716c', {
+    sortOrder: 7,
+    // A habit being broken: every day one is recorded costs Karma.
+    karma: -20,
   }),
   tracker('t-books', 'Books finished', 'amount', 'book', '#9333ea', {
     sortOrder: 6,
@@ -3606,6 +3614,7 @@ const readings: Reading[] = (() => {
     if ([1, 3, 6, 8, 13].includes(d)) push('t-run', d, 25 + ((d * 5) % 20), 7)
     if ([2, 3, 9].includes(d)) push('t-head', d, 3 + (d % 4), 15, d === 3 ? 'after the flight' : '')
     if (d === 3) push('t-head', d, 6, 21)
+    if ([2, 5, 6, 12].includes(d)) push('t-drink', d, 1, 20)
   }
   return out
 })()
@@ -4804,6 +4813,90 @@ function matchReadings(q: ReadingQuery, paginate = true): Reading[] {
         a.id.localeCompare(b.id),
     )
     .slice(0, (paginate ? q.limit : null) ?? undefined)
+}
+
+/** One row per tracker per day, recorded and derived -- `tracker_days`. */
+function trackerDaysOf(q: ReadingQuery): TrackerDay[] {
+  const days = new Map<string, TrackerDay>()
+  for (const r of matchReadings(q, false)) {
+    const key = `${r.localDate}/${r.trackerId}`
+    const d = days.get(key) ?? {
+      trackerId: r.trackerId,
+      date: r.localDate,
+      count: 0,
+      sum: 0,
+      max: 0,
+      firstAt: null,
+      lastAt: null,
+    }
+    d.count += 1
+    d.sum += r.value
+    d.max = Math.max(d.max, r.value)
+    if (r.at) {
+      d.firstAt = d.firstAt && d.firstAt < r.at ? d.firstAt : r.at
+      d.lastAt = d.lastAt && d.lastAt > r.at ? d.lastAt : r.at
+    }
+    days.set(key, d)
+  }
+  for (const d of derivedDays(q)) days.set(`${d.date}/${d.trackerId}`, d)
+  return [...days.values()].sort(
+    (a, b) => a.date.localeCompare(b.date) || a.trackerId.localeCompare(b.trackerId),
+  )
+}
+
+/**
+ * `karma`, from the mock's own records, by the rules `karma.ts` mirrors.
+ *
+ * Karma "started" a fortnight ago here rather than today, which is what a
+ * real vault does on its first read: the mock's readings reach back fifteen
+ * days, and a heatmap with one square on it shows nothing worth checking.
+ * Time on goals is left out -- the mock's blocks are a week of fixtures, not
+ * a history.
+ */
+function mockKarma(from: string, to: string): KarmaReport {
+  const since = day(14)
+  const today = day(0)
+  const byDay = new Map<string, Deed[]>()
+  const add = (date: string, deed: Deed) => {
+    if (date < since || date > today || deed.points === 0) return
+    const list = byDay.get(date) ?? []
+    list.push(deed)
+    byDay.set(date, list)
+  }
+  for (const t of tasks) {
+    if (t.status !== 'done' || !t.completedAt || t.assignee === 'assistant') continue
+    const project = projects.find((p) => p.id === t.projectId)
+    add(isoDate(new Date(t.completedAt)), {
+      kind: 'task',
+      label: t.title,
+      points: taskPoints(!!t.purpose || !!project?.purpose),
+    })
+  }
+  const days = trackerDaysOf({ from: since, to: today })
+  for (const tracker of trackers) {
+    for (const d of days.filter((d) => d.trackerId === tracker.id)) {
+      add(d.date, { kind: 'habit', label: tracker.name, points: habitPoints(tracker, d) })
+    }
+  }
+  const wrote = new Set(
+    entries.filter((e) => e.journalId !== 'j-assistant').map((e) => e.localDate),
+  )
+  for (const date of wrote) {
+    add(date, { kind: 'journal', label: 'Wrote in the journal', points: JOURNAL_POINTS })
+  }
+  for (const log of logs) {
+    if (log.event !== 'finished' && log.event !== 'revisited') continue
+    const item = items.find((i) => i.id === log.itemId)
+    add(log.date, { kind: 'finished', label: item?.title ?? '', points: FINISHED_POINTS })
+  }
+  const scored = [...byDay].sort(([a], [b]) => a.localeCompare(b)).map(([d, l]) => scoreDay(d, l))
+  return {
+    since,
+    total: scored.reduce((sum, d) => sum + d.net, 0),
+    today: scored.find((d) => d.date === today)?.net ?? 0,
+    days: scored.filter((d) => d.date >= from && d.date <= to),
+    rules: 1,
+  }
 }
 
 /**
@@ -6217,31 +6310,12 @@ export const mockInvoke = async <T>(
 
     case 'tracker_days': {
       requireUnlocked()
-      const days = new Map<string, TrackerDay>()
-      for (const r of matchReadings(args.query ?? {}, false)) {
-        const key = `${r.localDate}/${r.trackerId}`
-        const d = days.get(key) ?? {
-          trackerId: r.trackerId,
-          date: r.localDate,
-          count: 0,
-          sum: 0,
-          max: 0,
-          firstAt: null,
-          lastAt: null,
-        }
-        d.count += 1
-        d.sum += r.value
-        d.max = Math.max(d.max, r.value)
-        if (r.at) {
-          d.firstAt = d.firstAt && d.firstAt < r.at ? d.firstAt : r.at
-          d.lastAt = d.lastAt && d.lastAt > r.at ? d.lastAt : r.at
-        }
-        days.set(key, d)
-      }
-      for (const d of derivedDays(args.query ?? {})) days.set(`${d.date}/${d.trackerId}`, d)
-      return [...days.values()].sort(
-        (a, b) => a.date.localeCompare(b.date) || a.trackerId.localeCompare(b.trackerId),
-      ) as T
+      return trackerDaysOf(args.query ?? {}) as T
+    }
+
+    case 'karma': {
+      requireUnlocked()
+      return mockKarma(str(args.from), str(args.to)) as T
     }
 
     case 'log_reading': {

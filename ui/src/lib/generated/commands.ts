@@ -134,6 +134,7 @@ import type {
   JobQuery,
   Journal,
   JournalId,
+  KarmaReport,
   KeepInTouchSettings,
   KeepInTouchStatus,
   Kind,
@@ -647,6 +648,7 @@ export interface Commands {
     }
     result: InboxSender[]
   }
+  karma: { args: { from: string; to: string }; result: KarmaReport }
   keepInTouchStatus: { args: Record<string, never>; result: KeepInTouchStatus }
   labTrends: { args: Record<string, never>; result: LabTrend[] }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
@@ -1329,6 +1331,7 @@ export const COMMAND_NAMES = {
   importTransactions: 'import_transactions',
   improveWriting: 'improve_writing',
   inboxSenders: 'inbox_senders',
+  karma: 'karma',
   keepInTouchStatus: 'keep_in_touch_status',
   labTrends: 'lab_trends',
   label: 'label',
@@ -1862,6 +1865,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'import_transactions',
   'improve_writing',
   'inbox_senders',
+  'karma',
   'keep_in_touch_status',
   'lab_trends',
   'label',

@@ -544,6 +544,13 @@ fn every_typed_id_kind_is_pinned() {
     assert_eq!(OpId::KIND, "op");
 }
 
+// ---- karma (crate::karma) ---------------------------------------------------
+
+#[test]
+fn karma_book_aad_label_is_pinned() {
+    assert_eq!(karmayoga_core::karma::book_aad(), b"karmayoga.karma-book.v1");
+}
+
 // ---- backups (crate::backup) ------------------------------------------------
 
 #[test]

@@ -646,6 +646,18 @@ impl Service {
             crate::money::ensure_task(self, &vault);
             crate::backup::task::ensure_task(self, &vault);
             crate::files::task::ensure_task(self, &vault);
+            // Karma's book: started on the first of these, and the days old
+            // enough to settle settled -- the only writes Karma makes, kept
+            // out of the report, which is a read. Off the caller's thread,
+            // since a long absence is a few weeks of records to score.
+            let now = self.now();
+            tokio::task::spawn_blocking(move || {
+                let today =
+                    karmayoga_core::model::local_date_in(now, &karmayoga_core::model::system_tz());
+                if let Err(e) = vault.settle_karma(today) {
+                    tracing::warn!(error = %e, "could not settle Karma");
+                }
+            });
         }
     }
 

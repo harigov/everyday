@@ -633,6 +633,57 @@ class TodoState {
     this.setStatus(id, task.status === 'done' ? 'todo' : 'done')
   }
 
+  /**
+   * Tick or untick a task another page read for itself -- the Overview's
+   * "Tasks for today" -- and answer the task as written, or `null` if the
+   * write did not go.
+   *
+   * `toggleDone` when the task is in this store's scope, so the list here
+   * and the card there move from one mutation, and the write goes through
+   * the same queue every other edit does (flushed at once: the caller wants
+   * to know it landed). When it is not -- the todo app not opened since the
+   * unlock, or opened on a project this task is not in -- the same change
+   * `setStatus` makes, stamped the way `optimisticPatch` stamps one, and
+   * written directly: there is no row here to patch, and adopting the task
+   * into `tasks` would draw it in whatever list happened to be open.
+   */
+  async toggleDoneOf(task: Task): Promise<Task | null> {
+    if (this.tasks.some((t) => t.id === task.id)) {
+      this.toggleDone(task.id)
+      try {
+        await this.flush()
+      } catch {
+        // `#writeTasks` has already reported it, and the queue kept it.
+        return null
+      }
+      const written = this.tasks.find((t) => t.id === task.id)
+      return written ? $state.snapshot(written) : null
+    }
+    try {
+      // Read again rather than written back from the copy the card holds:
+      // that copy is as old as the page, and the task may have been edited
+      // since -- in another window, or by the assistant -- and saving it
+      // whole would quietly undo those edits. The direction is still the
+      // card's -- a tick on an open row means done, even if it was ticked
+      // somewhere else meanwhile.
+      const status: TaskStatus = task.status === 'done' ? 'todo' : 'done'
+      const current = await api.task(task.id)
+      const now = new Date().toISOString()
+      const next: Task = {
+        ...current,
+        status,
+        completedAt: status === 'done' ? (current.completedAt ?? now) : null,
+        updatedAt: now,
+      }
+      await api.saveTask(next)
+      void this.refreshStats()
+      return next
+    } catch (e) {
+      await handle(e)
+      return null
+    }
+  }
+
   // ── capture ──────────────────────────────────────────────────────────
 
   /**

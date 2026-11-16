@@ -97,6 +97,7 @@ pub mod ics;
 pub mod id;
 pub mod insights;
 pub mod job;
+pub mod karma;
 pub mod keepintouch;
 pub mod legacy;
 pub mod library;

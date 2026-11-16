@@ -32,18 +32,26 @@ const {
   addWidget,
   aqiTier,
   byTimeOrLast,
+  dayAgenda,
   defaultLayout,
+  eventPhase,
   fillRows,
+  importantThreads,
   introduce,
+  INTRODUCED,
   moveWidget,
   needsOf,
   nextId,
+  NOW_SHELVES,
+  nowShelf,
   parseLayout,
   removeWidget,
   reorderWidget,
   setDays,
   setSize,
+  soonestBack,
   SPAN,
+  tasksForToday,
   trackerWindow,
   weatherIcon,
   widget,
@@ -189,18 +197,23 @@ check('ids on the default page are distinct', new Set(ids(start)).size, start.le
 
 {
   // The regression this was written for: "Goals under way" (medium, 3) is
-  // the only thing on its row because the real default layout's other rows
+  // the only thing on its row because the default layout's rows above it
   // close at exactly six. Alone, it should take the whole width rather than
   // leaving the other half of a wide window blank.
-  const page = defaultLayout()
+  const page = [...defaultLayout(), widget('goalProgress')]
   const filled = fillRows(page)
   check('a lone medium widget on its own row fills it', filled.get('goalProgress:1'), 6)
   // The rows above it close exactly on six already, so nothing about them
   // should move.
   check(
     'a row that already closes on six keeps its members as they were',
-    [filled.get('dueToday:1'), filled.get('recordedToday:1'), filled.get('onNow:1')],
+    [filled.get('importantMail:1'), filled.get('mailFollowUps:1'), filled.get('snoozedMail:1')],
     [2, 2, 2],
+  )
+  check(
+    "...and so does a row of two halves: today's events beside today's tasks",
+    [filled.get('todayEvents:1'), filled.get('todayTasks:1')],
+    [3, 3],
   )
 }
 
@@ -273,10 +286,23 @@ check(
 // share two reads between eight of them; fifteen since the Feed's, whose two
 // reads are one need; sixteen since "What's going on", whose three reads --
 // projects, what is under way, the shelves' verbs -- are one need too;
-// seventeen since "Who to get in touch with", one read of who is due.
+// seventeen since "Who to get in touch with", one read of who is due;
+// twenty-two since the home cards -- today's tasks, today's events, and the
+// three Inbox cards, each a read of its own so a page with one of them does
+// not decrypt the other two's threads. The three shelf cards share `going`.
 ok(
   'the union of every need is bounded',
-  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 17,
+  needsOf(WIDGET_TYPES.reduce((list, t) => addWidget(list, t), [])).size <= 23,
+)
+check(
+  'the three shelf cards share one read with "What\'s going on"',
+  [...needsOf(['readingNow', 'watchingNow', 'playingNow'].reduce((l, t) => addWidget(l, t), []))],
+  ['going'],
+)
+check(
+  'each Inbox card asks only for its own read',
+  ['importantMail', 'mailFollowUps', 'snoozedMail'].map((t) => [...needsOf(addWidget([], t))]),
+  [['importantMail'], ['mailFollowUps'], ['snoozedMail']],
 )
 check(
   'the people card asks only for who is due',
@@ -527,20 +553,169 @@ check('an empty list means nobody has arranged one', parseLayout('[]'), null)
 {
   const arranged = [widget('dueToday'), widget('onNow')]
   const first = introduce(arranged, [])
-  check('a new card arrives at the top of an older page', ids(first.widgets), [
-    'whatsGoingOn:1',
+  check('new cards arrive at the top of an older page, in the order listed', ids(first.widgets), [
+    ...INTRODUCED.map((t) => `${t}:1`),
     'dueToday:1',
     'onNow:1',
   ])
   const removed = first.widgets.filter((w) => w.type !== 'whatsGoingOn')
   const again = introduce(removed, first.seen)
-  check('and does not come back once removed', ids(again.widgets), ['dueToday:1', 'onNow:1'])
-  ok('a page that has nothing new is left as it was', again.widgets === removed)
-  const fresh = introduce(defaultLayout(), [])
   check(
-    'a fresh page already has it, once',
-    fresh.widgets.filter((w) => w.type === 'whatsGoingOn').length,
+    'and does not come back once removed',
+    again.widgets.some((w) => w.type === 'whatsGoingOn'),
+    false,
+  )
+  ok('a page that has nothing new is left as it was', again.widgets === removed)
+
+  // The owner's case: a page arranged after "What's going on" arrived, and
+  // before the home cards did. They land as one block, in the order they
+  // were written down -- not stacked in reverse, which is what prepending
+  // each in turn did.
+  const older = [widget('whatsGoingOn'), widget('roleBalance')]
+  check(
+    'the home cards arrive in the order they read',
+    introduce(older, ['whatsGoingOn']).widgets.map((w) => w.type),
+    [
+      'karma',
+      'todayEvents',
+      'todayTasks',
+      'importantMail',
+      'mailFollowUps',
+      'snoozedMail',
+      'readingNow',
+      'watchingNow',
+      'playingNow',
+      'whatsGoingOn',
+      'roleBalance',
+    ],
+  )
+  check(
+    'a card the page already has is not added twice',
+    introduce([widget('todayTasks')], ['whatsGoingOn']).widgets.filter(
+      (w) => w.type === 'todayTasks',
+    ).length,
     1,
+  )
+
+  // A page nobody arranged is the default as it stands now, and is shown as
+  // such -- not topped with every card the default chose to leave out.
+  const fresh = introduce(defaultLayout(), [], false)
+  check('a page nobody arranged is left as the default', ids(fresh.widgets), ids(defaultLayout()))
+  check('...and everything counts as seen', fresh.seen, INTRODUCED)
+  check(
+    'every introduced card is a real one',
+    INTRODUCED.filter((t) => !WIDGET_TYPES.includes(t)),
+    [],
+  )
+}
+
+// ── The home cards ───────────────────────────────────────────────────
+
+{
+  const today = '2026-11-16'
+  const tasks = [
+    { id: 'later', dueDate: today, dueTime: '17:00:00' },
+    { id: 'untimed', dueDate: today, dueTime: null },
+    { id: 'tomorrow', dueDate: '2026-11-17', dueTime: null },
+    { id: 'early', dueDate: today, dueTime: '09:00:00' },
+    { id: 'slipped', dueDate: '2026-11-10', dueTime: null },
+    { id: 'undated', dueDate: null },
+    { id: 'yesterday', dueDate: '2026-11-15', dueTime: '08:00:00' },
+  ]
+  const rows = tasksForToday(tasks, today)
+  check(
+    "today's tasks: what slipped first, oldest first, then today by the clock",
+    rows.map((r) => r.task.id),
+    ['slipped', 'yesterday', 'early', 'later', 'untimed'],
+  )
+  check(
+    '...and each says whether it is overdue',
+    rows.map((r) => r.overdue),
+    [true, true, false, false, false],
+  )
+  check('nothing due is nothing to show', tasksForToday([], today), [])
+}
+
+{
+  const t = (id, lastDate, unreadCount, followUp = null) => ({
+    id,
+    lastDate,
+    unreadCount,
+    followUp,
+  })
+  const priority = [
+    t('read-and-done', '2026-11-16T09:00:00Z', 0),
+    t('unread', '2026-11-15T09:00:00Z', 2),
+    t('owed', '2026-11-16T08:00:00Z', 0, { kind: 'reply' }),
+  ]
+  const important = [
+    t('unread', '2026-11-15T09:00:00Z', 2),
+    t('chasing', '2026-11-16T10:00:00Z', 0, { kind: 'nudge' }),
+    t('newest', '2026-11-16T07:00:00-05:00', 1),
+  ]
+  check(
+    'important mail: unread or owed a reply, each once, newest first',
+    importantThreads([priority, important]).map((x) => x.id),
+    ['newest', 'owed', 'unread'],
+  )
+}
+
+{
+  const rows = [
+    { id: 'month', snoozedUntil: '2026-12-16T08:00:00Z' },
+    { id: 'never', snoozedUntil: null },
+    { id: 'afternoon', snoozedUntil: '2026-11-16T14:00:00Z' },
+    { id: 'tomorrow', snoozedUntil: '2026-11-17T08:00:00Z' },
+  ]
+  check(
+    'snoozed mail: soonest back first, and one with no time last',
+    soonestBack(rows).map((r) => r.id),
+    ['afternoon', 'tomorrow', 'month', 'never'],
+  )
+}
+
+{
+  const events = [
+    { id: 'lunch', allDay: false, start: '2026-11-16T12:00:00Z', end: '2026-11-16T13:00:00Z' },
+    { id: 'holiday', allDay: true, start: '2026-11-16T00:00:00Z', end: '2026-11-17T00:00:00Z' },
+    // 11:00Z, written two hours east: compared as an instant it sorts before
+    // lunch, where comparing the strings ("13:00" against "12:00") would not.
+    {
+      id: 'standup',
+      allDay: false,
+      start: '2026-11-16T13:00:00+02:00',
+      end: '2026-11-16T13:15:00+02:00',
+    },
+  ]
+  check(
+    "today's events: all-day first, then by the instant each starts",
+    dayAgenda(events).map((e) => e.id),
+    ['holiday', 'standup', 'lunch'],
+  )
+  const noon = Date.parse('2026-11-16T12:30:00Z')
+  check(
+    'an event is over, on, or still to come -- and an all-day one is never "on"',
+    events.map((e) => eventPhase(e, noon)),
+    ['now', 'later', 'past'],
+  )
+  check(
+    'an event that has just ended is over',
+    eventPhase(events[0], Date.parse('2026-11-16T13:00:00Z')),
+    'past',
+  )
+}
+
+{
+  check(
+    'the shelf cards are about books, TV and games, by slug',
+    ['readingNow', 'watchingNow', 'playingNow'].map(nowShelf),
+    ['book', 'series', 'game'],
+  )
+  check('any other card is about no shelf', nowShelf('shelves'), null)
+  check(
+    'every shelf card is a real widget',
+    Object.keys(NOW_SHELVES).filter((t) => !WIDGET_TYPES.includes(t)),
+    [],
   )
 }
 

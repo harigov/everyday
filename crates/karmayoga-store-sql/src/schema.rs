@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 32;
+pub const SCHEMA_VERSION: i64 = 33;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -121,7 +121,22 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v30(d),
         v31(d),
         v32(d),
+        v33(d),
     ]
+}
+
+/// Version 33: Karma's book -- `karmayoga_core::karma::KarmaBook`, the day
+/// Karma started. One sealed row, on [`v32`]'s pattern. Karma itself is
+/// worked out from the other records whenever it is asked for, so this is
+/// all there is to keep. Nothing in the clear. Additive.
+fn v33(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS karma_book (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
 }
 
 /// Version 32: what writing help has learned from the replies the person
