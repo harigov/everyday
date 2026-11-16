@@ -331,8 +331,10 @@
 
      Frosted (`.frost`): over the app rather than over the backdrop, a glass
      theme's translucent sidebar would otherwise let the list underneath read
-     through it. Its own fill, not the floating one, so in a flat theme it is
-     the same sidebar it is when it is in the row. */
+     through it. Its own fill over the floating one: in a flat theme that is
+     the same sidebar it is in the row, and in a glass theme its tint, on a
+     base solid enough that the list stays out of it where the webview draws
+     no blur. */
   .sidebar.folded {
     position: absolute;
     top: 0;
@@ -341,7 +343,7 @@
     height: auto;
     left: calc(var(--bar-w, var(--appbar-w)) + var(--shell-gap));
     z-index: 40;
-    background: var(--sidebar);
+    background: linear-gradient(var(--sidebar), var(--sidebar)) var(--float);
     visibility: hidden;
     opacity: 0;
     translate: -10px 0;

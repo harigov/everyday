@@ -19,9 +19,10 @@
  *   the content does. Light glass keeps the content nearly opaque white; dark
  *   glass tints it with the backdrop's own hue at about half strength, which
  *   the backdrop can afford because it is smooth -- there is nothing behind
- *   the text to read through it. `--bg-raised` stays nearly opaque in every
- *   theme, since popovers across the app sit on it over text, and only the
- *   shared floating layers (`.frost` in app.css) blur what is under them.
+ *   the text to read through it. Menus, popovers and toasts sit over text,
+ *   so their `--float` stays nearly opaque in every theme (themes.test holds
+ *   it at 0.97 or more): the blur under them only tints, and where a webview
+ *   draws no `backdrop-filter` the words beneath must not show through.
  *
  * A new theme copies the nearest block, gives it a new id, and adds a row to
  * `THEMES`. Nothing in a component needs to know it exists.
@@ -165,7 +166,7 @@
   --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
   --card: #f3f7fc;
 
-  --float: rgb(255 255 255 / 0.8);
+  --float: rgb(255 255 255 / 0.98);
   --glass-blur: blur(28px) saturate(1.8);
   --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
   --scrim: rgb(20 55 110 / 0.2);
@@ -226,7 +227,7 @@
   --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
   --card: #fcf4f6;
 
-  --float: rgb(255 255 255 / 0.8);
+  --float: rgb(255 255 255 / 0.98);
   --glass-blur: blur(28px) saturate(1.8);
   --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
   --scrim: rgb(110 30 60 / 0.2);
@@ -287,7 +288,7 @@
   --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
   --card: #f3f8f3;
 
-  --float: rgb(255 255 255 / 0.8);
+  --float: rgb(255 255 255 / 0.98);
   --glass-blur: blur(28px) saturate(1.8);
   --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
   --scrim: rgb(20 70 40 / 0.2);
@@ -348,7 +349,7 @@
   --bg-selected: color-mix(in oklab, var(--accent) 14%, transparent);
   --card: #fbf5ec;
 
-  --float: rgb(255 255 255 / 0.8);
+  --float: rgb(255 255 255 / 0.98);
   --glass-blur: blur(28px) saturate(1.8);
   --edge: inset 0 1px 0 rgb(255 255 255 / 0.9), inset 0 0 0 1px rgb(255 255 255 / 0.45);
   --scrim: rgb(90 55 20 / 0.2);
@@ -408,7 +409,7 @@
   --bg-selected: rgb(190 170 255 / 0.2);
   --card: #2a1d57;
 
-  --float: rgb(54 42 118 / 0.72);
+  --float: rgb(54 42 118 / 0.98);
   --glass-blur: blur(28px) saturate(1.7);
   --edge:
     inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(190 170 255 / 0.4),
@@ -470,7 +471,7 @@
   --bg-selected: rgb(255 185 150 / 0.2);
   --card: #3f1d1a;
 
-  --float: rgb(84 36 30 / 0.72);
+  --float: rgb(84 36 30 / 0.98);
   --glass-blur: blur(28px) saturate(1.7);
   --edge:
     inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(255 185 150 / 0.4),
@@ -532,7 +533,7 @@
   --bg-selected: rgb(150 180 255 / 0.2);
   --card: #262a6b;
 
-  --float: rgb(46 52 136 / 0.72);
+  --float: rgb(46 52 136 / 0.98);
   --glass-blur: blur(28px) saturate(1.7);
   --edge:
     inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(150 180 255 / 0.4),
@@ -594,7 +595,7 @@
   --bg-selected: rgb(140 225 255 / 0.2);
   --card: #0f3552;
 
-  --float: rgb(20 68 106 / 0.72);
+  --float: rgb(20 68 106 / 0.98);
   --glass-blur: blur(28px) saturate(1.7);
   --edge:
     inset 0 1px 0 rgb(255 255 255 / 0.2), inset 0 -1px 0 rgb(140 225 255 / 0.4),

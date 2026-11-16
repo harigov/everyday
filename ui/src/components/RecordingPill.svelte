@@ -182,7 +182,7 @@
     padding: var(--sp-4);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    background: var(--bg-raised);
+    background: var(--float);
     box-shadow: var(--shadow-lg);
   }
 
@@ -256,7 +256,7 @@
     padding: var(--sp-4);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    background: var(--bg-raised);
+    background: var(--float);
     box-shadow: var(--shadow-lg);
   }
   .prompt p {

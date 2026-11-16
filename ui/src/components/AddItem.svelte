@@ -397,7 +397,7 @@
     padding: var(--sp-1);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--bg-raised);
+    background: var(--float);
     box-shadow: var(--shadow-lg);
     max-height: 340px;
     overflow-y: auto;
