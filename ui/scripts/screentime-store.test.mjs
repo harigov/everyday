@@ -147,7 +147,12 @@ screentime.setRange('week')
 assert.equal(stored.get('karmayoga.screentime.range'), 'week', 'the range is remembered here')
 assert.equal(screentime.from, week.from)
 assert.equal(screentime.to, week.to)
-await until('the week loads', () => screentime.report?.from === week.from)
+// By both ends: on the first day of a week, today's report starts where the
+// week does, and would pass for it before the week's had arrived.
+await until(
+  'the week loads',
+  () => screentime.report?.from === week.from && screentime.report?.to === week.to,
+)
 assert.equal(screentime.report.days.length, 7, 'every day of the week, empty ones too')
 addsUp(screentime.report, 'this week')
 
