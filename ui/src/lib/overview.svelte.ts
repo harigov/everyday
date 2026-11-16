@@ -23,14 +23,18 @@
 //   4. Loads are generation-guarded, because several requests go out at once
 //      and a lock in the middle of them must not let one land afterwards.
 
+import { accounts } from './accounts.svelte'
 import { api } from './api'
 import { byRole, neglected, type RoleTotals } from './balance'
 import { calendar } from './calendar.svelte'
 import {
   activityWindows,
   addWidget,
+  dayAgenda,
   defaultLayout,
+  importantThreads,
   introduce,
+  LAYOUT_KEY,
   moveWidget,
   needsOf,
   parseLayout,
@@ -39,6 +43,7 @@ import {
   setDays,
   setSize,
   setSubject,
+  soonestBack,
   specOf,
   trackerWindow,
   type Need,
@@ -47,6 +52,7 @@ import {
   type WidgetType,
 } from './dashboard'
 import { periodStart, streakTarget, summarise, type HabitSummary } from './habits'
+import { promoteGmailInbox } from './mail'
 import type { Showing } from './onscreen'
 import { purpose } from './purpose.svelte'
 import { pref } from './prefs'
@@ -54,30 +60,41 @@ import { proposals } from './proposals.svelte'
 import { app, errorMessage, handle, isLocked } from './state.svelte'
 import { latest } from './store/latest'
 import { addDays, isoDate, localeWeekStart, minutesBetween, startOfWeek, todayIso } from './time'
+import { todo } from './todo.svelte'
 import { tracking } from './tracking.svelte'
-import { VaultError } from './types'
+import { isOpen, TASK_STATUSES, VaultError } from './types'
 import type {
   BalanceReport,
+  CalendarEvent,
   CalendarInfo,
   EntrySummary,
   Item,
+  KarmaReport,
   KindInfo,
   Project,
   LibraryStats,
   PersonDue,
   MailActivity,
+  MailCategory,
+  MailboxId,
   MeetingActivity,
   NoteSummary,
   SourceSummary,
   Story,
   Task,
   TaskStats,
+  Thread,
+  ThreadPage,
+  ThreadFilter,
   TrackerDay,
   WeatherReport,
 } from './types'
 
 /** How far back a heatmap looks. Long enough for a streak to mean something. */
 const HABIT_DAYS = 120
+
+/** How far back the Karma card reads: a year, the widest its heatmap draws. */
+export const KARMA_DAYS = 364
 
 /**
  * How often the Weather widget re-reads the forecast while the Overview is
@@ -117,6 +134,68 @@ const introducedPref = pref<string[]>(
   [],
   (types) => JSON.stringify(types),
 )
+
+/**
+ * Has a page ever been written down? Read raw, apart from `layoutPref`,
+ * whose `get` answers `defaultLayout()` for "nothing stored" and so cannot
+ * say which it was. A string that does not parse into a single card counts
+ * as nothing, the same as `parseLayout` treats it.
+ */
+function hasArrangedPage(): boolean {
+  try {
+    return parseLayout(localStorage.getItem(LAYOUT_KEY)) !== null
+  } catch {
+    return true
+  }
+}
+
+/** Every status a task is still open in. */
+const OPEN_STATUSES = TASK_STATUSES.filter(isOpen)
+
+/**
+ * How many threads each Inbox read asks for. Well past the most rows a
+ * full-width card draws, so the unread-or-waiting cut `importantThreads`
+ * makes after the read still has a page's worth left -- and nowhere near
+ * the thousands an "All inboxes" scroll can reach, because every thread
+ * listed is a thread decrypted.
+ */
+const MAIL_ROWS = 50
+
+/**
+ * One listing over every Inbox in `ids`, as the Mail app's "All inboxes"
+ * asks it: across them at once when there are several, and through the
+ * plain one-mailbox read when there is only one, which is the command a
+ * single account's Inbox has always been listed with.
+ */
+function listInboxes(ids: MailboxId[], filter: ThreadFilter): Promise<Thread[]> {
+  return inboxPage(ids, filter, null).then((p) => p.threads)
+}
+
+function inboxPage(ids: MailboxId[], filter: ThreadFilter, cursor: string | null) {
+  return ids.length === 1
+    ? api.threads(ids[0]!, filter, cursor, MAIL_ROWS)
+    : api.threadsAcross(ids, filter, cursor, MAIL_ROWS)
+}
+
+/**
+ * The most snoozed threads "Snoozed mail" will page through. The list runs
+ * newest first and the card runs soonest back first, so the first page is
+ * not enough: the thread coming back this afternoon can be an old one. A
+ * snoozed pile is small for almost everybody; this only stops a runaway.
+ */
+const SNOOZED_LIMIT = 500
+
+/** Every snoozed thread in `ids`, up to `SNOOZED_LIMIT`, every page read. */
+async function allSnoozed(ids: MailboxId[]): Promise<Thread[]> {
+  const out: Thread[] = []
+  let cursor: string | null = null
+  do {
+    const page: ThreadPage = await inboxPage(ids, { snoozed: true }, cursor)
+    out.push(...page.threads)
+    cursor = page.nextCursor ?? null
+  } while (cursor && out.length < SNOOZED_LIMIT)
+  return out
+}
 
 class OverviewState {
   // ── what is on screen ────────────────────────────────────────────────
@@ -187,6 +266,26 @@ class OverviewState {
   goingItems = $state<Item[]>([])
   goingShelves = $state<KindInfo[]>([])
 
+  /** Karma over the last year and in all, for the Karma card. */
+  karma = $state<KarmaReport | null>(null)
+
+  /**
+   * Open tasks due today or before, for "Tasks for today". A row ticked on
+   * the card stays here, done, until the next load -- see `tickTask` -- so
+   * a tick by mistake can be taken back where it was made.
+   */
+  todayTasks = $state<Task[]>([])
+  /** Priority and Important Inbox threads that are unread or want a reply,
+   *  every account's, newest first -- see `importantThreads`. */
+  importantMail = $state<Thread[]>([])
+  /** What is snoozed out of every account's Inbox, soonest back first. */
+  snoozedMail = $state<Thread[]>([])
+  /** Every account's follow-ups, as `mail_follow_ups` gives them: reply ones
+   *  first, newest first. The card splits them by kind. */
+  followUps = $state<Thread[]>([])
+  /** Today's events on the visible calendars, all-day first, then by start. */
+  todayEvents = $state<CalendarEvent[]>([])
+
   /** The forecast where you live, for the Weather widget. `null` until a
    *  read lands, or while the card is showing one of the two states below
    *  instead. */
@@ -214,7 +313,10 @@ class OverviewState {
     // A card added to the catalogue since this page was arranged arrives at
     // its top, once -- see `introduce`.
     const stored = layoutPref.get()
-    const { widgets, seen } = introduce(stored, introducedPref.get())
+    // Nothing under the key means nobody has arranged this page, and the
+    // default it fell back to is already the current one -- see `introduce`
+    // on why that is not a page to top with every newcomer.
+    const { widgets, seen } = introduce(stored, introducedPref.get(), hasArrangedPage())
     this.widgets = widgets
     if (widgets !== stored) layoutPref.set(widgets)
     introducedPref.set(seen)
@@ -444,6 +546,17 @@ class OverviewState {
     this.calendars = []
     this.newsSources = []
     this.newsStories = []
+    // Titles, senders, subjects and what is on the shelf: decrypted, so not
+    // to be left behind a lock any more than the counts above are.
+    this.goingProjects = []
+    this.goingItems = []
+    this.goingShelves = []
+    this.karma = null
+    this.todayTasks = []
+    this.importantMail = []
+    this.snoozedMail = []
+    this.followUps = []
+    this.todayEvents = []
     this.bookedToday = { logged: 0, planned: 0 }
     this.weather = null
     this.weatherNoLocation = false
@@ -509,6 +622,20 @@ class OverviewState {
     // mount.
     if (needs.has('weather')) this.#startWeatherPoll()
     else this.#stopWeatherPoll()
+    // "Today's events" dims what is over and picks out what is on, against
+    // the same wall clock -- so it needs it ticking for the same reason.
+    if (needs.has('todayEvents') && app.supportsCalendar) calendar.watchClock()
+
+    // The Inbox cards draw "Me" the way the mail list does, from each
+    // account's own addresses, and the Inbox reads below are over the
+    // accounts that keep mail. The account list loads once and keeps itself
+    // current from then on, so this is a round trip on the first refresh and
+    // nothing after it -- awaited here rather than raced, because two loads
+    // of it at once land only the later one, and a read that waited on the
+    // earlier would find the list still empty.
+    const inbox = app.supportsMail && (needs.has('importantMail') || needs.has('snoozedMail'))
+    if (app.supportsMail && (inbox || needs.has('mailFollowUps'))) await accounts.load()
+    const inboxes = inbox ? this.#inboxes() : Promise.resolve([] as MailboxId[])
 
     // One read per distinct window, each ending today. Asked only where the
     // backend carries the domain: a vault without mail has nothing to count,
@@ -555,6 +682,8 @@ class OverviewState {
         mail,
         meetings,
         calendars,
+        [todayTasks, importantMail, snoozedMail, followUps, todayEvents],
+        karma,
       ] = await Promise.all([
         Promise.all([
           ask(needs.has('balance'), () => api.balance(this.weekStart, this.weekEnd), null),
@@ -609,7 +738,67 @@ class OverviewState {
         ]),
         counted('mail', app.supportsMail, api.mailActivity),
         counted('meetings', app.supportsCalendar, api.meetingActivity),
-        ask(needs.has('meetings') && app.supportsCalendar, () => api.calendars(), []),
+        // The calendars give a meeting row its colour, and an event on "Today's
+        // events" too.
+        ask(
+          (needs.has('meetings') || needs.has('todayEvents')) && app.supportsCalendar,
+          () => api.calendars(),
+          [],
+        ),
+        // The home cards: today's tasks and events, and the three Inbox
+        // cards. Each through `ask`, so an account whose server is down
+        // leaves its card empty rather than the page.
+        Promise.all([
+          ask(
+            needs.has('todayTasks') && app.supportsTasks,
+            // Everything due up to today that is still open: the todo app's
+            // own Today list, which counts what slipped as today's problem.
+            () => api.tasks({ dueTo: today, statuses: OPEN_STATUSES, sort: 'dueAsc', limit: 200 }),
+            [],
+          ),
+          ask(
+            needs.has('importantMail') && app.supportsMail,
+            async () => {
+              const ids = await inboxes
+              if (ids.length === 0) return []
+              // One read per category, since a filter names one. Snoozed
+              // threads are left out, as the Inbox itself leaves them out.
+              const lists = await Promise.all(
+                (['priority', 'important'] as MailCategory[]).map((category) =>
+                  listInboxes(ids, { category, snoozed: false }),
+                ),
+              )
+              return importantThreads(lists)
+            },
+            [],
+          ),
+          ask(
+            needs.has('snoozedMail') && app.supportsMail,
+            async () => {
+              const ids = await inboxes
+              return ids.length === 0 ? [] : soonestBack(await allSnoozed(ids))
+            },
+            [],
+          ),
+          ask(
+            needs.has('mailFollowUps') && app.supportsMail,
+            () => api.mailFollowUps(null).then((list) => list.threads),
+            [],
+          ),
+          ask(
+            needs.has('todayEvents') && app.supportsCalendar,
+            // Visible calendars only, as the Calendar draws them: one somebody
+            // hid is one they asked not to be shown.
+            () =>
+              api
+                .events({ from: today, to: today, visibleOnly: true })
+                .then((events) => dayAgenda(events)),
+            [],
+          ),
+        ]),
+        // A year of Karma, whatever the card's size: the narrower heatmap
+        // draws fewer of the same weeks.
+        ask(needs.has('karma'), () => api.karma(addDays(today, -KARMA_DAYS), today), null),
       ])
       if (!this.#generation.isCurrent(mine)) return
 
@@ -629,6 +818,12 @@ class OverviewState {
       this.goingItems = goingItems
       this.goingShelves = goingShelves
       this.peopleDue = peopleDue
+      this.todayTasks = todayTasks
+      this.importantMail = importantMail
+      this.snoozedMail = snoozedMail
+      this.followUps = followUps
+      this.todayEvents = todayEvents
+      this.karma = karma
       this.bookedToday = blocks.reduce(
         (sum, b) => {
           if (b.localDate !== today) return sum
@@ -658,6 +853,50 @@ class OverviewState {
       await handle(e)
     } finally {
       if (this.#generation.isCurrent(mine)) this.loading = false
+    }
+  }
+
+  /**
+   * Every mail account's Inbox, by id: the mailboxes "All inboxes" gathers.
+   *
+   * The same two rules the Mail app's own `refreshMailboxes` keeps, because
+   * this is the same question asked from another page. Only accounts that
+   * keep mail -- a calendar-only account has no Inbox to ask about -- and
+   * each account's list through `promoteGmailInbox` first, since a Gmail
+   * account synced before the label fix has its Inbox filed as an ordinary
+   * label, and reading `role` alone would skip it. A pseudo-mailbox (the
+   * mock's own Snoozed and Starred) is never an Inbox, whatever it says.
+   */
+  async #inboxes(): Promise<MailboxId[]> {
+    const ids = accounts.list.filter((a) => a.services.mail).map((a) => a.id)
+    const lists = await Promise.all(ids.map((id) => api.mailboxes(id).then(promoteGmailInbox)))
+    return lists
+      .flat()
+      .filter((m) => m.role === 'inbox' && !m.pseudo)
+      .map((m) => m.id)
+  }
+
+  /**
+   * Tick a task on "Tasks for today" done, or a ticked one back to open.
+   *
+   * The write is the todo store's -- see rule 3 at the top of this file --
+   * and the card's row is replaced with what it wrote rather than dropped,
+   * so a tick by mistake can be undone where it was made. The row leaves on
+   * the next load, which only asks for what is open. The counts on "Due
+   * today" and "Tasks, counted" move with it, when either is on the page:
+   * a list that lost a task under a tile still claiming it would be the
+   * page disagreeing with itself.
+   */
+  async tickTask(task: Task) {
+    const saved = await todo.toggleDoneOf(task)
+    if (!saved) return
+    this.todayTasks = this.todayTasks.map((t) => (t.id === saved.id ? saved : t))
+    if (this.needs.has('taskStats')) {
+      try {
+        this.taskStats = await api.taskStats()
+      } catch {
+        /* a stale count is not worth a banner over a tick that landed */
+      }
     }
   }
 

@@ -26,7 +26,8 @@
   import { lastLine, lateness } from '../lib/keepintouch'
   import { calendar } from '../lib/calendar.svelte'
   import { api } from '../lib/api'
-  import { overview } from '../lib/overview.svelte'
+  import { KARMA_DAYS, overview } from '../lib/overview.svelte'
+  import { signed } from '../lib/karma'
   import { ask, quick } from '../lib/quick.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { proposals, recordAs } from '../lib/proposals.svelte'
@@ -35,6 +36,8 @@
   import { tracking } from '../lib/tracking.svelte'
   import { notes as noteStore } from '../lib/notes.svelte'
   import { mail as mailStore } from '../lib/mail.svelte'
+  import { accounts } from '../lib/accounts.svelte'
+  import { snoozedUntilLabel, threadListDate, threadPeople, waitingSinceLabel } from '../lib/mail'
   import { feed } from '../lib/feed.svelte'
   import { library } from '../lib/library.svelte'
   import { folderUnread, topStories } from '../lib/feed'
@@ -50,12 +53,30 @@
   import { describeStreak, streakTarget } from '../lib/habits'
   import { addDays, localeWeekStart, startOfDay, startOfWeek, todayIso } from '../lib/time'
   import { formatValue } from '../lib/tracker'
-  import { aqiTier, byTimeOrLast, weatherIcon, type Widget } from '../lib/dashboard'
+  import {
+    aqiTier,
+    byTimeOrLast,
+    eventPhase,
+    nowShelf,
+    tasksForToday,
+    weatherIcon,
+    type Widget,
+  } from '../lib/dashboard'
   import { panels } from '../lib/panels.svelte'
-  import type { Proposal, Story, WeatherCurrent, WeatherDay } from '../lib/types'
+  import type {
+    CalendarEvent,
+    Item,
+    Proposal,
+    Story,
+    Thread,
+    WeatherCurrent,
+    WeatherDay,
+  } from '../lib/types'
   import BalanceBars from './BalanceBars.svelte'
   import ColumnChart from './ColumnChart.svelte'
+  import Cover from './Cover.svelte'
   import HabitHeatmap from './HabitHeatmap.svelte'
+  import KarmaHeatmap from './KarmaHeatmap.svelte'
   import RankTable from './RankTable.svelte'
   import Meter from './Meter.svelte'
   import ProposalGhost from './ProposalGhost.svelte'
@@ -575,6 +596,159 @@
     await feed.open(id)
   }
 
+  // ── The home cards ───────────────────────────────────────────────────
+  //
+  // Today's tasks and events, the mail waiting on you, and what is on three
+  // of the shelves: lists rather than counts, each row a way into the app
+  // that owns it, because the point of opening the page is to go and do
+  // the thing. The ordering rules are `dashboard.ts`'s, tested there.
+
+  /** Rows a list card draws: a few when narrow, a page's worth across. */
+  const listRows = $derived(widget.size === 'small' ? 5 : widget.size === 'large' ? 12 : 8)
+
+  /** "Tasks for today", what slipped first. Ticked rows stay until the next load. */
+  const todayRows = $derived(tasksForToday(overview.todayTasks, today))
+
+  async function openTask(id: string) {
+    // Today's scope, which is where every one of these is listed: due today
+    // or before, and open when the card was drawn.
+    if (!(await app.goTo('todo'))) return
+    await todo.setScope({ kind: 'today' })
+    await todo.open(id)
+  }
+
+  /**
+   * When an event says it is: "All day", its start, or -- for one that began
+   * before today and is still going, a night flight or a conference -- when
+   * it ends, since its start is yesterday's news.
+   */
+  function eventWhen(event: CalendarEvent): string {
+    if (event.allDay) return 'All day'
+    if (event.localDate < today) return `until ${timeOfDay(new Date(event.end))}`
+    return timeOfDay(new Date(event.start))
+  }
+
+  /**
+   * Today's events as rows, each with its calendar's colour and where it
+   * stands against the clock. `calendar.now` ticks every half minute while
+   * this card is on the page (see `overview.refresh`), so the highlight
+   * moves on to the next meeting without anybody reloading.
+   */
+  const agenda = $derived(
+    overview.todayEvents.map((event) => ({
+      event,
+      // The same tidied title the Calendar draws, when that is switched on.
+      title: calendar.tidyTitle(event.title).trim() || 'Untitled event',
+      color: calendarOf(event.calendarId)?.color ?? 'var(--fg-subtle)',
+      when: eventWhen(event),
+      phase: eventPhase(event, calendar.now),
+    })),
+  )
+
+  /** Open the Calendar on today, with the event picked out in its rail. */
+  async function openEvent(id: string) {
+    if (!(await app.goTo('calendar'))) return
+    calendar.goToday()
+    calendar.selection = { kind: 'event', id }
+  }
+
+  /** Who a mail row is from: the mail list's own rule, "Me" and all. */
+  function mailWho(thread: Thread): string {
+    return threadPeople(thread.participants, accounts.ownAddresses(thread.accountId)) || 'Nobody'
+  }
+
+  /** What a mail card says while it has no rows, for each card's own empty. */
+  function inboxWaiting(empty: string): string {
+    if (!app.supportsMail) return 'This vault does not keep mail.'
+    return overview.loading ? 'Reading the Inbox…' : empty
+  }
+
+  /**
+   * "Mail to follow up", split by who is waiting on whom, each thread once.
+   *
+   * The rows are shared between the two halves rather than given to each:
+   * half each when both have plenty, and whatever one cannot use goes to the
+   * other -- so a narrow card with nine replies owed and nothing to chase
+   * shows five replies, not three and an empty half.
+   */
+  const followGroups = $derived.by(() => {
+    const seen = new Set<string>()
+    const reply: Thread[] = []
+    const nudge: Thread[] = []
+    for (const thread of overview.followUps) {
+      const kind = thread.followUp?.kind
+      if (!kind || seen.has(thread.id)) continue
+      seen.add(thread.id)
+      ;(kind === 'reply' ? reply : nudge).push(thread)
+    }
+    const half = Math.ceil(listRows / 2)
+    const replies = Math.min(reply.length, Math.max(half, listRows - nudge.length))
+    const nudges = Math.min(nudge.length, listRows - replies)
+    return [
+      {
+        key: 'reply',
+        label: 'Waiting on you',
+        rows: reply.slice(0, replies),
+        more: reply.length - replies,
+      },
+      {
+        key: 'nudge',
+        label: 'Waiting on them',
+        rows: nudge.slice(0, nudges),
+        more: nudge.length - nudges,
+      },
+    ].filter((g) => g.rows.length > 0)
+  })
+
+  // The three shelf cards share one branch: which shelf is the only thing
+  // that differs, and `nowShelf` answers it by slug.
+  const shelfSlug = $derived(nowShelf(widget.type))
+  const shelf = $derived(
+    shelfSlug ? (overview.goingShelves.find((k) => k.slug === shelfSlug) ?? null) : null,
+  )
+  const shelfItems = $derived(shelf ? overview.goingItems.filter((i) => i.kindId === shelf.id) : [])
+
+  /**
+   * What a shelf card says with nothing on it, naming the shelf -- by its
+   * own name when it exists, and by the name the app gives it when it does
+   * not, so "Watching now" on a vault with no TV shelf says which shelf it
+   * was looking for rather than that nothing is happening.
+   */
+  const shelfEmpty = $derived.by(() => {
+    if (!app.supportsLibrary) return 'This vault does not keep a library.'
+    if (overview.loading && overview.goingShelves.length === 0) return 'Looking at the shelves…'
+    const fallback: Record<string, [string, string]> = {
+      book: ['Books', 'Reading'],
+      series: ['TV Shows', 'Watching'],
+      game: ['Games', 'Playing'],
+    }
+    const [name, verb]: [string, string] = shelf
+      ? [shelf.name, shelf.verbs.active || 'Started']
+      : (fallback[shelfSlug ?? ''] ?? ['this shelf', 'Started'])
+    if (!shelf && overview.goingShelves.length > 0) {
+      return `There is no ${name} shelf in the Library.`
+    }
+    return `Nothing on ${name} is under way. Mark one “${verb}” and it shows here.`
+  })
+
+  /** How far through, as words: "120 of 300 pages", "4 episodes". Null with nothing to say. */
+  function progressLine(item: Item): string | null {
+    const p = item.progress
+    if (!p || p.position <= 0) return null
+    if (p.total) {
+      return p.unit
+        ? `${p.position.toLocaleString()} of ${plural(p.total, p.unit)}`
+        : `${p.position.toLocaleString()} of ${p.total.toLocaleString()}`
+    }
+    return p.unit ? plural(p.position, p.unit) : null
+  }
+
+  /** The share done, 0 to 1, where there is a finish line to measure against. */
+  function progressShare(item: Item): number | null {
+    const p = item.progress
+    return p && p.total ? Math.min(Math.max(p.position / p.total, 0), 1) : null
+  }
+
   /** "16 km/h W, gusts 27": one string, so the template cannot space it wrongly. */
   function windLine(cur: WeatherCurrent, unit: string): string {
     let line = `${Math.round(cur.windSpeed ?? 0)} ${unit}`
@@ -592,7 +766,57 @@
   }
 </script>
 
-{#if widget.type === 'whatsGoingOn'}
+<!-- One mail row, the same on all three Inbox cards: who, and the card's own
+     word on it -- when it came, how long it has waited, when it comes back --
+     over the subject. Two lines rather than one, because a narrow card is a
+     third of the page, and a sender and a subject on one line at that width
+     is neither. -->
+{#snippet mailRow(thread: Thread, meta: string)}
+  <li>
+    <button
+      class="notelink mail-row"
+      class:unread={thread.unreadCount > 0}
+      onclick={() => void mailStore.openFromElsewhere(thread.id)}
+    >
+      <span class="mail-line">
+        <span class="nname">{mailWho(thread)}</span>
+        <span class="mail-meta">{meta}</span>
+      </span>
+      <span class="mail-subject">{thread.subject.trim() || '(no subject)'}</span>
+    </button>
+  </li>
+{/snippet}
+
+{#if widget.type === 'karma'}
+  {#if !overview.karma}
+    <p class="dim">Karma has not been worked out yet.</p>
+  {:else}
+    {@const k = overview.karma}
+    <div class="karma-head">
+      <StatTile
+        value="{signed(k.total)} Karma"
+        note="{signed(k.today)} today · counting since {friendlyDate(k.since)}"
+        warn={k.total < 0}
+      />
+    </div>
+    <KarmaHeatmap
+      days={k.days}
+      from={addDays(today, widget.size === 'large' ? -KARMA_DAYS : -139)}
+      to={today}
+      since={k.since}
+      {weekStart}
+    />
+    {#if k.days.length === 0 || k.since === today}
+      <p class="footnote">
+        Karma started {k.since === today ? 'today' : friendlyDate(k.since)}, at zero. Tasks
+        finished, habits kept, a journal entry and time on your goals earn it; a habit you are
+        breaking, like a drink, costs it. Set what each habit is worth in its tracker's settings.
+      </p>
+    {/if}
+  {/if}
+
+  <!-- ── What's going on ───────────────────────────────────────────── -->
+{:else if widget.type === 'whatsGoingOn'}
   {#if goingRows.length === 0}
     <p class="dim">
       Nothing under way yet. A project in progress, a book you are reading or a goal you are working
@@ -1119,6 +1343,182 @@
     {/if}
   {/if}
 
+  <!-- ── Today's events ────────────────────────────────────────────── -->
+{:else if widget.type === 'todayEvents'}
+  {#if !app.supportsCalendar}
+    <p class="dim">This vault does not keep a calendar.</p>
+  {:else if agenda.length === 0}
+    <p class="dim">
+      {overview.loading ? 'Reading the calendar…' : 'Nothing on the calendar today.'}
+    </p>
+  {:else}
+    <ul class="plain">
+      {#each agenda.slice(0, listRows) as row (row.event.id)}
+        <li>
+          <button
+            class="notelink agenda-row"
+            class:past={row.phase === 'past'}
+            class:on={row.phase === 'now'}
+            class:cancelled={row.event.status === 'cancelled'}
+            onclick={() => void openEvent(row.event.id)}
+          >
+            <span class="dot" style="background: {row.color}"></span>
+            <span class="when">{row.when}</span>
+            <span class="nname">{row.title}</span>
+            {#if row.phase === 'now'}<span class="now-pill">Now</span>{/if}
+          </button>
+        </li>
+      {/each}
+    </ul>
+    {#if agenda.length > listRows}
+      <p class="footnote">And {plural(agenda.length - listRows, 'more event')}.</p>
+    {/if}
+  {/if}
+
+  <!-- ── Tasks for today ───────────────────────────────────────────── -->
+  <!-- The tick is the todo store's own (`overview.tickTask` hands it on),
+       and a ticked row stays, struck through, until the next load -- so the
+       same box takes a mistaken tick back. -->
+{:else if widget.type === 'todayTasks'}
+  {#if !app.supportsTasks}
+    <p class="dim">This vault does not keep tasks.</p>
+  {:else if todayRows.length === 0}
+    <p class="dim">
+      {overview.loading ? 'Reading the list…' : 'Nothing is due today, and nothing has slipped.'}
+    </p>
+  {:else}
+    <ul class="plain">
+      {#each todayRows.slice(0, listRows) as row (row.task.id)}
+        {@const done = row.task.status === 'done'}
+        {@const title = row.task.title.trim() || 'Untitled task'}
+        <li class="task-row" class:done>
+          <button
+            class="tick"
+            class:on={done}
+            title={done ? 'Mark as not done' : 'Mark as done'}
+            aria-label={done ? `Mark ${title} as not done` : `Mark ${title} as done`}
+            onclick={() => void overview.tickTask(row.task)}
+          >
+            <Icon name={done ? 'check' : 'circle'} size={16} weight={1.6} />
+          </button>
+          <button class="notelink" onclick={() => void openTask(row.task.id)}>
+            <span class="nname">{title}</span>
+            {#if row.overdue && !done}
+              <span class="late" title="Was due {friendlyDate(row.task.dueDate!)}">
+                {widget.size === 'small'
+                  ? 'Overdue'
+                  : `Overdue · ${friendlyDate(row.task.dueDate!)}`}
+              </span>
+            {:else if row.task.dueTime}
+              <span class="dim">{formatClock(row.task.dueTime)}</span>
+            {/if}
+          </button>
+        </li>
+      {/each}
+    </ul>
+    {#if todayRows.length > listRows}
+      <p class="footnote">And {plural(todayRows.length - listRows, 'more task')}.</p>
+    {/if}
+  {/if}
+
+  <!-- ── Important mail ────────────────────────────────────────────── -->
+{:else if widget.type === 'importantMail'}
+  {#if overview.importantMail.length === 0}
+    <p class="dim">{inboxWaiting('Nothing important is unread or waiting on your reply.')}</p>
+  {:else}
+    <ul class="plain">
+      {#each overview.importantMail.slice(0, listRows) as thread (thread.id)}
+        {@render mailRow(
+          thread,
+          thread.followUp?.kind === 'reply'
+            ? `Reply · ${threadListDate(thread.lastDate)}`
+            : threadListDate(thread.lastDate),
+        )}
+      {/each}
+    </ul>
+    {#if overview.importantMail.length > listRows}
+      <p class="footnote">
+        And {plural(overview.importantMail.length - listRows, 'more thread')}.
+      </p>
+    {/if}
+  {/if}
+
+  <!-- ── Mail to follow up ─────────────────────────────────────────── -->
+{:else if widget.type === 'mailFollowUps'}
+  {#if followGroups.length === 0}
+    <p class="dim">
+      {inboxWaiting('Nobody is waiting on you, and you are not waiting on anybody.')}
+    </p>
+  {:else}
+    {#each followGroups as group (group.key)}
+      <h4 class="group-head">{group.label}</h4>
+      <ul class="plain">
+        {#each group.rows as thread (thread.id)}
+          {@render mailRow(thread, thread.followUp ? waitingSinceLabel(thread.followUp.since) : '')}
+        {/each}
+      </ul>
+      {#if group.more > 0}
+        <p class="footnote">And {group.more.toLocaleString()} more.</p>
+      {/if}
+    {/each}
+  {/if}
+
+  <!-- ── Snoozed mail ──────────────────────────────────────────────── -->
+{:else if widget.type === 'snoozedMail'}
+  {#if overview.snoozedMail.length === 0}
+    <p class="dim">{inboxWaiting('Nothing is snoozed.')}</p>
+  {:else}
+    <ul class="plain">
+      {#each overview.snoozedMail.slice(0, listRows) as thread (thread.id)}
+        {@render mailRow(
+          thread,
+          thread.snoozedUntil
+            ? snoozedUntilLabel(thread.snoozedUntil)
+            : threadListDate(thread.lastDate),
+        )}
+      {/each}
+    </ul>
+    {#if overview.snoozedMail.length > listRows}
+      <p class="footnote">And {plural(overview.snoozedMail.length - listRows, 'more thread')}.</p>
+    {/if}
+  {/if}
+
+  <!-- ── Reading, watching, playing now ────────────────────────────── -->
+{:else if shelfSlug !== null}
+  {#if shelfItems.length === 0}
+    <p class="dim">{shelfEmpty}</p>
+  {:else}
+    <ul class="plain shelf-list">
+      {#each shelfItems.slice(0, listRows) as item (item.id)}
+        {@const line = progressLine(item)}
+        {@const share = progressShare(item)}
+        {@const tint = shelf?.color ?? 'var(--accent)'}
+        <li>
+          <button class="shelf-row" onclick={() => void openItem(item.id)}>
+            <span class="shelf-cover">
+              <Cover blob={item.cover} title={item.title} icon={shelf?.icon ?? ''} color={tint} />
+            </span>
+            <span class="shelf-text">
+              <span class="nname">{item.title}</span>
+              {#if item.creator}<span class="shelf-by">{item.creator}</span>{/if}
+              {#if share !== null}
+                <span class="shelf-bar" aria-hidden="true">
+                  <span style="width: {share * 100}%; background: {tint}"></span>
+                </span>
+              {/if}
+              {#if line && widget.size !== 'small'}<span class="shelf-by">{line}</span>{/if}
+            </span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+    {#if shelfItems.length > listRows}
+      <p class="footnote">
+        And {(shelfItems.length - listRows).toLocaleString()} more on {shelf?.name}.
+      </p>
+    {/if}
+  {/if}
+
   <!-- ── What you have written ─────────────────────────────────────── -->
 {:else if widget.type === 'writing'}
   <StatTile
@@ -1144,6 +1544,10 @@
 {/if}
 
 <style>
+  .karma-head {
+    margin-bottom: var(--sp-3);
+  }
+
   /* What's going on: a label per kind of thing, and its names beside it. */
   .going {
     display: grid;
@@ -1445,5 +1849,181 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--fg);
+  }
+
+  /* ── The home cards ─────────────────────────────────────────────── */
+
+  /* Today's events: the calendar's dot, the time in a column of its own so
+     the titles line up, then the title. What is over fades rather than
+     going, so the day still reads as a day; what is on now is tinted, the
+     one row on the card that says "you should be here". */
+  .agenda-row .dot {
+    align-self: center;
+  }
+  .agenda-row .when {
+    flex: none;
+    min-width: 4.5em;
+    color: var(--fg-faint);
+    font-size: var(--text-sm);
+    font-variant-numeric: tabular-nums;
+  }
+  .agenda-row.past {
+    opacity: 0.55;
+  }
+  .agenda-row.on {
+    background: color-mix(in oklab, var(--accent) 10%, transparent);
+  }
+  .agenda-row.on .when {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .agenda-row.cancelled .nname {
+    text-decoration: line-through;
+  }
+  .now-pill {
+    flex: none;
+    align-self: center;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--bg);
+    font-size: var(--text-xs);
+    font-weight: 650;
+  }
+
+  /* Tasks for today: a circle to tick, and the row beside it to open.
+     Two buttons rather than one, so a click meant for the title can never
+     tick the task by landing a few pixels left. */
+  .task-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-1);
+  }
+  .task-row .notelink {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+    margin: 0;
+  }
+  /* The todo list's own tick (`TaskRow`), a size smaller for a card. */
+  .tick {
+    display: flex;
+    flex: none;
+    color: var(--fg-faint);
+    transition:
+      color var(--fast) var(--ease),
+      scale var(--fast) var(--ease);
+  }
+  .tick:hover {
+    color: var(--accent);
+    scale: 1.08;
+  }
+  .tick.on {
+    color: var(--accent);
+  }
+  .task-row.done .nname {
+    color: var(--fg-faint);
+    text-decoration: line-through;
+  }
+  .late {
+    flex: none;
+    color: var(--danger);
+    font-size: var(--text-sm);
+  }
+
+  /* Mail: who and when on the first line, the subject under it. */
+  .mail-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1px;
+  }
+  .mail-line {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    min-width: 0;
+  }
+  .mail-row.unread .nname {
+    font-weight: 600;
+  }
+  .mail-meta {
+    flex: none;
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+  }
+  .mail-subject {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+  }
+  /* "Waiting on you" over one half, "Waiting on them" over the other: the
+     same small capitals "What's going on" labels its rows with. */
+  .group-head {
+    margin: var(--sp-3) 0 var(--sp-1);
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .group-head:first-child {
+    margin-top: 0;
+  }
+
+  /* The shelf cards: a small cover, the title and who made it, and how far
+     in, as a hairline in the shelf's own colour. */
+  .shelf-list {
+    gap: var(--sp-2);
+  }
+  .shelf-row {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    width: 100%;
+    padding: var(--sp-1) var(--sp-2);
+    margin: 0 calc(var(--sp-2) * -1);
+    border-radius: var(--radius-sm);
+    text-align: left;
+    color: var(--fg-muted);
+    font-size: var(--text-base);
+  }
+  .shelf-row:hover {
+    background: var(--bg-hover);
+  }
+  .shelf-cover {
+    flex: none;
+    width: 34px;
+  }
+  .shelf-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .shelf-text .nname {
+    flex: none;
+  }
+  .shelf-by {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--fg-faint);
+    font-size: var(--text-xs);
+  }
+  .shelf-bar {
+    display: block;
+    height: 3px;
+    margin-top: 2px;
+    border-radius: 999px;
+    background: var(--bg-active);
+    overflow: hidden;
+  }
+  .shelf-bar span {
+    display: block;
+    height: 100%;
   }
 </style>

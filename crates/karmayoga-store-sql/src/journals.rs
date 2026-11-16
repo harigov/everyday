@@ -199,6 +199,14 @@ impl JournalStore for SqlStore {
         self.write_backup_status(status)
     }
 
+    fn karma_book(&self) -> Result<Option<karmayoga_core::karma::KarmaBook>> {
+        self.read_karma_book()
+    }
+
+    fn put_karma_book(&self, book: &karmayoga_core::karma::KarmaBook) -> Result<()> {
+        self.write_karma_book(book)
+    }
+
     fn connection_settings(
         &self,
     ) -> Result<Option<karmayoga_core::connection::ConnectionSettings>> {

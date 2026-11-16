@@ -432,6 +432,13 @@ export interface Tracker {
    * streak.
    */
   targets?: Target[]
+  /**
+   * Karma on a day this counts, signed: earned on a day a habit being built
+   * is kept, lost on a day one being broken happens (or, with a daily
+   * maximum, a day over it). Absent is the default for its kind -- see
+   * `defaultKarma` in `karma.ts` -- and `0` is nothing either way.
+   */
+  karma?: number | null
   /** Retired: keeps its history, leaves the day's chips. */
   archived: boolean
   sortOrder: number
@@ -476,6 +483,46 @@ export interface TrackerDay {
   max: number
   firstAt?: string | null
   lastAt?: string | null
+}
+
+/** Where a deed came from -- `karmayoga_core::karma::DeedKind`. */
+export const DEED_KINDS = ['task', 'habit', 'journal', 'time', 'finished'] as const
+export type DeedKind = (typeof DEED_KINDS)[number]
+
+/** One thing done, or slipped into, and what it was worth before any cap. */
+export interface Deed {
+  kind: DeedKind
+  /** A task's title, a tracker's name, "Wrote in the journal". */
+  label: string
+  /** Signed: a habit being broken is negative. */
+  points: number
+}
+
+/** One day's Karma -- `karmayoga_core::karma::KarmaDay`. */
+export interface KarmaDay {
+  date: string
+  /** The good deeds, after every cap. Never negative. */
+  earned: number
+  /** What the day's slips cost. Never positive, never capped. */
+  lost: number
+  /** `earned + lost`. */
+  net: number
+  /** Gains first, at their own worth before the caps. */
+  deeds: Deed[]
+}
+
+/** `karma`: Karma over a window, and in all. */
+export interface KarmaReport {
+  /** The day Karma started. Nothing before it counts. */
+  since: string
+  /** Every day's net since `since`. Can be below zero. */
+  total: number
+  /** Today's net so far. */
+  today: number
+  /** The days asked for that have anything, oldest first. */
+  days: KarmaDay[]
+  /** Which version of the rules scored it. */
+  rules: number
 }
 
 export interface ReadingQuery {

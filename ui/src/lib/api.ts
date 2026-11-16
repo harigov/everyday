@@ -1505,6 +1505,13 @@ export const api = {
   trackerDays: (query: ReadingQuery) => call('trackerDays', { query }),
 
   /**
+   * Karma: every day from `from` to `to` that came to anything, and the
+   * total since Karma started. Worked out from the other records on each
+   * call -- see `karmayoga_core::karma`.
+   */
+  karma: (from: string, to: string) => call('karma', { from, to }),
+
+  /**
    * Record one value, and let the backend decide what "when" means.
    *
    * Pass `at` to state the time outright. Otherwise a reading on today's

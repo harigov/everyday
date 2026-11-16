@@ -19,6 +19,7 @@ pub mod health;
 pub mod insights;
 pub mod jobs;
 pub mod journals;
+pub mod karma;
 pub mod library;
 pub mod mail;
 pub mod mailcleanup;
@@ -103,6 +104,7 @@ pub fn catalog() -> &'static [&'static Command] {
             notes::COMMANDS,
             templates::COMMANDS,
             trackers::COMMANDS,
+            karma::COMMANDS,
             purpose::COMMANDS,
             routines::COMMANDS,
             jobs::COMMANDS,

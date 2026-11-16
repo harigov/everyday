@@ -755,6 +755,20 @@ fn backup_settings_and_status_are_written_apart() {
 }
 
 #[test]
+fn the_karma_book_is_kept_and_replaced() {
+    use karmayoga_core::karma::KarmaBook;
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(ctx(dir.path(), true)).unwrap();
+    assert!(store.karma_book().unwrap().is_none());
+    let book = KarmaBook::new("2026-11-16".parse().unwrap());
+    store.put_karma_book(&book).unwrap();
+    assert_eq!(store.karma_book().unwrap(), Some(book));
+    let later = KarmaBook::new("2026-12-01".parse().unwrap());
+    store.put_karma_book(&later).unwrap();
+    assert_eq!(store.karma_book().unwrap(), Some(later));
+}
+
+#[test]
 fn connection_settings_and_states_are_written_apart() {
     use karmayoga_core::connection::{
         AuthMethod, Connection, ConnectionSettings, ConnectionState, ConnectionStates, Transport,

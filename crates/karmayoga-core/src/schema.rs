@@ -84,6 +84,7 @@ pub fn bundle() -> Value {
         schema_of::<crate::health::HealthSettings>("HealthSettings"),
         schema_of::<crate::tracker::Tracker>("Tracker"),
         schema_of::<crate::tracker::Reading>("Reading"),
+        schema_of::<crate::karma::KarmaReport>("KarmaReport"),
         schema_of::<crate::purpose::Role>("Role"),
         schema_of::<crate::purpose::Goal>("Goal"),
         schema_of::<crate::routine::Routine>("Routine"),
