@@ -11,17 +11,37 @@
   // Recent mail is sorted unasked; older mail only from the button at the
   // bottom, because sorting somebody's whole archive on a settings change is
   // a bill and a reshuffle nobody agreed to.
+  //
+  // Follow-ups are here too, rather than a pane of their own: the same model,
+  // under the same per-account switch, reading the same mail, decides which
+  // threads wait at the top of the Inbox -- `karmayoga_core::mail::follow_up`.
 
   import { onDestroy } from 'svelte'
   import { accounts } from '../lib/accounts.svelte'
   import { longDate, plural } from '../lib/format'
-  import { CATEGORY_TABS } from '../lib/mail'
+  import {
+    CATEGORY_TABS,
+    FOLLOW_UP_DEFAULTS,
+    FOLLOW_UP_MAX_WINDOW_DAYS,
+    FOLLOW_UP_MIN_WINDOW_DAYS,
+    followUpSettingsProblems,
+  } from '../lib/mail'
   import { panels } from '../lib/panels.svelte'
   import { sorting } from '../lib/sorting.svelte'
-  import type { MailCategory, MailSorting, SortCategory } from '../lib/types'
+  import type { FollowUpSettings, MailCategory, MailSorting, SortCategory } from '../lib/types'
   import Icon from './Icon.svelte'
 
-  let draft = $state<MailSorting | null>(null)
+  /** `MailSorting` as this pane edits it: with its follow-up settings always
+   *  there to bind to, the defaults standing in for a record saved before
+   *  they existed. */
+  type Editing = MailSorting & { followUp: FollowUpSettings }
+
+  function editable(s: MailSorting): Editing {
+    const copy = structuredClone(s)
+    return { ...copy, followUp: { ...FOLLOW_UP_DEFAULTS, ...copy.followUp } }
+  }
+
+  let draft = $state<Editing | null>(null)
   let notice = $state<string | null>(null)
   let saving = $state(false)
   let olderDays = $state<number | null>(365)
@@ -51,9 +71,16 @@
   // Fresh every time the tab opens, as the models pane is: a draft seeded
   // from a cached copy would save over what another window changed.
   void sorting.refresh().then((ok) => {
-    if (ok && sorting.sorting) draft = structuredClone($state.snapshot(sorting.sorting))
+    if (ok && sorting.sorting) draft = editable($state.snapshot(sorting.sorting))
   })
   void accounts.load()
+
+  /** What is wrong with the follow-up numbers, said under each, and what
+   *  holds Save back until it is put right. */
+  const problems = $derived(
+    draft ? followUpSettingsProblems(draft.followUp) : { windowDays: null, nudgeAfterDays: null },
+  )
+  const followUpsWrong = $derived(problems.windowDays !== null || problems.nudgeAfterDays !== null)
 
   const WINDOWS: { days: number; label: string }[] = [
     { days: 1, label: 'The last day' },
@@ -93,12 +120,12 @@
   }
 
   async function save() {
-    if (!draft) return
+    if (!draft || followUpsWrong) return
     notice = null
     saving = true
     try {
       await sorting.save($state.snapshot(draft))
-      draft = structuredClone($state.snapshot(sorting.sorting!))
+      draft = editable($state.snapshot(sorting.sorting!))
       confirm('Saved.')
     } catch (e) {
       notice = e instanceof Error ? e.message : String(e)
@@ -249,9 +276,72 @@
       </p>
     </section>
 
+    <section class="card" aria-labelledby="sorting-follow-ups">
+      <span class="eyebrow" id="sorting-follow-ups">Follow-ups</span>
+      <label class="switch">
+        <input type="checkbox" bind:checked={draft.followUp.on} />
+        <span class="switch-text">
+          <span class="switch-label">
+            Show mail that needs your reply, and mail to nudge, at the top of the Inbox
+          </span>
+          <span class="switch-blurb">
+            Somebody waiting on an answer from you, and mail you sent that nobody has answered.
+          </span>
+        </span>
+      </label>
+      <div class="row numbers">
+        <label class="setting">
+          <span>Look back</span>
+          <span class="days">
+            <input
+              type="number"
+              min={FOLLOW_UP_MIN_WINDOW_DAYS}
+              max={FOLLOW_UP_MAX_WINDOW_DAYS}
+              step="1"
+              aria-invalid={problems.windowDays !== null}
+              aria-describedby={problems.windowDays ? 'follow-up-window-problem' : undefined}
+              bind:value={draft.followUp.windowDays}
+            />
+            days
+          </span>
+          {#if problems.windowDays}
+            <span class="problem" id="follow-up-window-problem">{problems.windowDays}</span>
+          {/if}
+        </label>
+        <label class="setting">
+          <span>Offer a nudge after</span>
+          <span class="days">
+            <input
+              type="number"
+              min="1"
+              max={Math.max(1, draft.followUp.windowDays - 1)}
+              step="1"
+              aria-invalid={problems.nudgeAfterDays !== null}
+              aria-describedby={problems.nudgeAfterDays ? 'follow-up-nudge-problem' : undefined}
+              bind:value={draft.followUp.nudgeAfterDays}
+            />
+            days
+          </span>
+          {#if problems.nudgeAfterDays}
+            <span class="problem" id="follow-up-nudge-problem">{problems.nudgeAfterDays}</span>
+          {/if}
+        </label>
+      </div>
+      <p class="hint">
+        It runs on the decision model, for each account whose sorting is switched on under Settings
+        → Accounts. It reads the same parts of a message sorting does, and for a nudge your own last
+        message as well. Cold outreach, newsletters and automated mail are left out: a stranger's
+        pitch ends in a question too, but it is not waiting on you.
+      </p>
+    </section>
+
     <div class="save">
       {#if notice}<span class="notice">{notice}</span>{/if}
-      <button class="btn btn-primary" onclick={() => void save()} disabled={saving}>
+      <button
+        class="btn btn-primary"
+        onclick={() => void save()}
+        disabled={saving || followUpsWrong}
+      >
         {saving ? 'Saving…' : 'Save'}
       </button>
     </div>
@@ -443,6 +533,35 @@
   input[type='checkbox'] {
     width: auto;
     padding: 0;
+  }
+
+  /* The follow-up numbers: two short fields side by side, each with its unit
+     after it and what is wrong with it under it -- so the row lines up by its
+     tops, not by whichever field has a line under it. */
+  .row.numbers {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: var(--sp-3) var(--sp-5);
+  }
+  .setting > .days {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    font-size: var(--text-sm);
+    font-weight: 400;
+    color: var(--fg-muted);
+  }
+  .days input {
+    width: 5.5em;
+    font-variant-numeric: tabular-nums;
+  }
+  .days input[aria-invalid='true'] {
+    border-color: var(--danger, var(--border));
+  }
+  .setting > .problem {
+    font-size: var(--text-xs);
+    font-weight: 400;
+    color: var(--danger, var(--fg));
   }
 
   .stored {

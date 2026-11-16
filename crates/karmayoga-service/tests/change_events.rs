@@ -333,6 +333,7 @@ const SKIPPED_COMMANDS: &[(&str, &str)] = &[
     ("send_message", "streams: true, unreachable through Service::call at all"),
     ("settle_writing_assist", "needs an assist, which needs a model; announces nothing either"),
     ("sort_older_mail", "refuses without a decision model, which would be asked over the network"),
+    ("learn_from_replies", "asks the medium model; see tests/mailvoicelearn.rs"),
     ("stop_send", "needs a send a mail server refused that is waiting to be tried again"),
     ("start_bank_link", "asks Plaid for a Hosted Link session"),
     ("start_chat_verification", "needs a chat bot signed in to a real Matrix server"),
@@ -627,6 +628,9 @@ async fn every_offline_write_announces_what_was_written_down() {
     let until = (Timestamp::now() + SignedDuration::from_hours(2)).to_string();
     run(&svc, &h, "snooze", json!({ "threads": [thread_id.to_string()], "until": until })).await;
     run(&svc, &h, "unsnooze", json!({ "threads": [thread_id.to_string()] })).await;
+    // Nothing decided it was waiting, so there is nothing to take away; the
+    // thread is announced all the same, as a person's dismissal always is.
+    run(&svc, &h, "dismiss_follow_up", json!({ "id": thread_id.to_string() })).await;
     run(
         &svc,
         &h,
@@ -677,6 +681,8 @@ async fn every_offline_write_announces_what_was_written_down() {
     run(&svc, &h, "save_mail_sorting", json!({ "sorting": sorting["sorting"] })).await;
     let writing = call(&svc, &h, "mail_writing", json!({})).await;
     run(&svc, &h, "save_mail_writing", json!({ "writing": writing })).await;
+    run(&svc, &h, "save_voice_learning", json!({ "notes": "- Says yes in one line." })).await;
+    run(&svc, &h, "save_voice_learning", json!({ "notes": "" })).await;
     // Forgets a sort of older mail that is not running: session state only,
     // announced by nothing.
     run(&svc, &h, "stop_sorting_older_mail", json!({})).await;

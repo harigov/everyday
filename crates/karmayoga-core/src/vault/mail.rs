@@ -664,6 +664,20 @@ impl Vault {
         self.with_mail(|m| m.put_mail_writing(writing))
     }
 
+    /// What writing help has learned from the replies they sent -- see
+    /// [`crate::mail::learning`].
+    pub fn voice_learning(&self) -> Result<crate::mail::VoiceLearning> {
+        self.with_mail(|m| m.voice_learning())
+    }
+
+    /// Replace it. Checked the way their own instructions are, since the
+    /// person can type into it too.
+    pub fn save_voice_learning(&self, learning: &crate::mail::VoiceLearning) -> Result<()> {
+        self.writable()?;
+        learning.validate()?;
+        self.with_mail(|m| m.put_voice_learning(learning))
+    }
+
     /// A decision model's answer for one message -- see
     /// [`crate::store::mail::MailStore::sort_message`]. Answers whether
     /// anything was written: a person's own mark is never replaced.
@@ -841,6 +855,43 @@ impl Vault {
     pub fn set_thread_ai_priority_asked(&self, thread: ThreadId, message_count: u32) -> Result<()> {
         self.writable()?;
         self.with_mail(|m| m.set_thread_ai_priority_asked(thread, message_count))
+    }
+
+    /// The follow-up pass's answer for one thread -- see
+    /// [`crate::store::mail::MailStore::set_thread_follow_up`]. Answers
+    /// whether it was written: not, when the thread moved on meanwhile.
+    pub fn set_thread_follow_up(
+        &self,
+        thread: ThreadId,
+        mark: crate::mail::FollowUpMark,
+        follow_up: Option<crate::mail::FollowUp>,
+    ) -> Result<bool> {
+        self.writable()?;
+        let wrote = self.with_mail(|m| m.set_thread_follow_up(thread, mark, follow_up))?;
+        if wrote {
+            self.wrote(RecordKind::Thread, thread);
+        }
+        Ok(wrote)
+    }
+
+    /// Only a thread's follow-up mark -- see
+    /// [`crate::store::mail::MailStore::set_thread_follow_up_asked`].
+    pub fn set_thread_follow_up_asked(
+        &self,
+        thread: ThreadId,
+        mark: crate::mail::FollowUpMark,
+    ) -> Result<bool> {
+        self.writable()?;
+        self.with_mail(|m| m.set_thread_follow_up_asked(thread, mark))
+    }
+
+    /// A person dismissed a thread's follow-up -- see
+    /// [`crate::store::mail::MailStore::clear_thread_follow_up`].
+    pub fn dismiss_follow_up(&self, thread: ThreadId) -> Result<()> {
+        self.writable()?;
+        self.with_mail(|m| m.clear_thread_follow_up(thread))?;
+        self.wrote(RecordKind::Thread, thread);
+        Ok(())
     }
 
     // ---- releasing a snooze -----------------------------------------------

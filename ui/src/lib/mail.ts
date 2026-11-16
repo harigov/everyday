@@ -18,6 +18,9 @@ import type {
   AccountId,
   CategoryCount,
   Draft,
+  FollowUp,
+  FollowUpKind,
+  FollowUpSettings,
   InboxSender,
   Mailbox,
   MailboxId,
@@ -322,9 +325,12 @@ export function dateSection(instant: string, now = new Date()): DateSection {
 /** One row `MailView.svelte`'s list column actually draws: a thread, or a
  *  `dateSection` heading ahead of a run of them. Never selectable on its
  *  own -- a header's `key` never collides with a `Thread.id`, so
- *  `VirtualList`'s own `selectedId` naturally never matches one. */
+ *  `VirtualList`'s own `selectedId` naturally never matches one. A thread
+ *  drawn in a follow-up section at the top says which (`followUp`), so the
+ *  row can carry its pill and its "Not needed". */
 export type ListRow =
-  { type: 'header'; key: string; label: string } | { type: 'thread'; thread: Thread }
+  | { type: 'header'; key: string; label: string }
+  | { type: 'thread'; thread: Thread; followUp?: FollowUpKind }
 
 /**
  * Interleaves `dateSection` headings ahead of each run of threads that
@@ -363,6 +369,211 @@ export function withDateSections(
     out.push({ type: 'thread', thread })
   }
   return out
+}
+
+// ── Follow-ups at the top of the Inbox ──────────────────────────────────
+//
+// Threads somebody is waiting on the person to answer ("reply"), and their
+// own mail nobody has answered ("nudge"), drawn above the date sections the
+// way Superhuman draws them. A decision model picks them in the background
+// (`mail_follow_ups`); what is here is which of them a tab shows, where they
+// go in the list, and how a row says how long it has waited.
+
+/**
+ * Which list `mail_follow_ups` is asked for, for the mailbox on screen: one
+ * account's Inbox, every account's for "All inboxes" (`account: null`), and
+ * none for anything else. Snoozed is an Inbox filtered to what is away, so it
+ * is not one, whichever of its three shapes it takes.
+ */
+export function followUpScope(
+  mailbox: Pick<Mailbox, 'id' | 'accountId' | 'role' | 'pseudo'> | null | undefined,
+): { account: AccountId | null } | null {
+  if (!mailbox || mailbox.role !== 'inbox' || isSnoozedMailbox(mailbox)) return null
+  if (isUnifiedMailbox(mailbox)) {
+    return mailbox.id === unifiedMailboxId('inbox') ? { account: null } : null
+  }
+  return { account: mailbox.accountId }
+}
+
+/** The follow-ups a list draws at the top, by kind, each in the order
+ *  `mail_follow_ups` gave them -- newest first. */
+export interface FollowUpRows {
+  reply: Thread[]
+  nudge: Thread[]
+}
+
+/**
+ * Which follow-ups the list draws at the top, for the tab and toggles on: a
+ * reply on the tab its thread is filed under (every one on All), a nudge only
+ * on All and Priority -- what you are waiting on is no one kind of mail, and
+ * those are the two tabs somebody reads for what needs doing. The toggles
+ * narrow them as they narrow the list, but for a row in `keep`: one read or
+ * unstarred here a moment ago, which stays put, as it does in the list (see
+ * `MailState.#lingering`). A thread is drawn once, however often the backend
+ * sent it, and one whose follow-up has gone -- dismissed here, before the
+ * next load -- not at all.
+ */
+export function followUpRows(
+  followUps: readonly Thread[],
+  category: MailCategory | null,
+  only: ReadonlySet<MailOnly>,
+  keep: ReadonlySet<ThreadId> = new Set(),
+): FollowUpRows {
+  const rows: FollowUpRows = { reply: [], nudge: [] }
+  const seen = new Set<ThreadId>()
+  const nudges = category === null || category === 'priority'
+  for (const thread of followUps) {
+    const kind = thread.followUp?.kind
+    if (!kind || seen.has(thread.id)) continue
+    seen.add(thread.id)
+    if (!matchesOnly(thread, only) && !keep.has(thread.id)) continue
+    if (kind === 'reply' && category !== null && thread.category !== category) continue
+    if (kind === 'nudge' && !nudges) continue
+    rows[kind].push(thread)
+  }
+  return rows
+}
+
+/**
+ * The threads in the order the list draws them: the follow-ups at the top,
+ * then the mailbox's own without the ones already drawn above. What `j`/`k`,
+ * Shift+click and Mod+A all walk, so the keys go where the eye does. `threads`
+ * itself when there is nothing at the top.
+ */
+export function followUpsFirst(rows: FollowUpRows, threads: readonly Thread[]): readonly Thread[] {
+  const top = [...rows.reply, ...rows.nudge]
+  if (top.length === 0) return threads
+  const drawn = new Set(top.map((t) => t.id))
+  return [...top, ...threads.filter((t) => !drawn.has(t.id))]
+}
+
+/** The headings over the follow-ups, keyed apart from anything `dateSection`
+ *  can answer: the list keys a heading by it, and two alike freeze the list. */
+const FOLLOW_UP_HEADINGS: Record<FollowUpKind, { key: string; label: string }> = {
+  reply: { key: 'followups:reply', label: 'Needs your reply' },
+  nudge: { key: 'followups:nudge', label: 'Follow up' },
+}
+
+/**
+ * The list column's rows with the follow-ups first: "Needs your reply" over
+ * the replies, "Follow up" over the nudges -- each heading only over rows of
+ * its own -- then `withDateSections` over the rest of `threads`, without any
+ * thread already drawn above. A thread twice in one keyed list is the
+ * `each_key_duplicate` error that stops `{#each}` drawing, so this is where
+ * that is made impossible, whatever it is handed.
+ */
+export function withFollowUpSections(
+  rows: FollowUpRows,
+  threads: readonly Thread[],
+  dateOf: (t: Thread) => string,
+  now = new Date(),
+): ListRow[] {
+  const out: ListRow[] = []
+  const drawn = new Set<ThreadId>()
+  for (const kind of ['reply', 'nudge'] as const) {
+    const fresh = rows[kind].filter((t) => !drawn.has(t.id))
+    if (fresh.length === 0) continue
+    out.push({ type: 'header', ...FOLLOW_UP_HEADINGS[kind] })
+    for (const thread of fresh) {
+      drawn.add(thread.id)
+      out.push({ type: 'thread', thread, followUp: kind })
+    }
+  }
+  if (drawn.size === 0) return withDateSections(threads, dateOf, now)
+  return [
+    ...out,
+    ...withDateSections(
+      threads.filter((t) => !drawn.has(t.id)),
+      dateOf,
+      now,
+    ),
+  ]
+}
+
+/** Whole days `since` has waited, and never fewer than one: a nudge is only
+ *  offered days on, and "0 days" would read as nothing to wait for. */
+export function followUpDays(since: string, now = new Date()): number {
+  const days = Math.floor((now.getTime() - new Date(since).getTime()) / 86_400_000)
+  return Number.isFinite(days) ? Math.max(1, days) : 1
+}
+
+/** A follow-up row's pill: "Reply", or "Nudge · 4d" -- how long your own
+ *  message has gone unanswered, which is what decides whether to chase it. */
+export function followUpPill(followUp: Pick<FollowUp, 'kind' | 'since'>, now = new Date()): string {
+  return followUp.kind === 'reply' ? 'Reply' : `Nudge · ${followUpDays(followUp.since, now)}d`
+}
+
+/** "since 9:14", "since yesterday", "since Tuesday", "since 4 November": how
+ *  long somebody has been waiting on a reply, for the open thread's banner. */
+export function waitingSinceLabel(since: string, now = new Date()): string {
+  const d = new Date(since)
+  const ago = daysBetween(startOfDay(isoDate(d)), now)
+  if (ago <= 0) return `since ${timeOfDay(d)}`
+  if (ago === 1) return 'since yesterday'
+  return `since ${friendlyDate(isoDate(d), now)}`
+}
+
+/**
+ * Who a nudge would chase, for the banner: the people your last message went
+ * to -- its To, or its Cc when the To was only you -- by first name, or by
+ * address for somebody who gave none. "Priya", "Priya or Tom", "Priya, Tom or
+ * Ana", "Priya, Tom or 3 others". Empty when it went to nobody but you.
+ */
+export function nudgeRecipients(
+  message: Pick<MailMessage, 'to' | 'cc'>,
+  own: ReadonlySet<string>,
+): string {
+  const others = (list: readonly MailAddress[]) =>
+    list.filter((p) => !own.has(p.email.toLowerCase()))
+  const to = others(message.to)
+  const people = to.length > 0 ? to : others(message.cc)
+  const names = people.map((p) => (p.name.trim() ? firstName(p) : p.email))
+  if (names.length <= 1) return names[0] ?? ''
+  if (names.length > 3) return `${names.slice(0, 2).join(', ')} or ${names.length - 2} others`
+  return `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}`
+}
+
+/** `karmayoga_core::mail::FollowUpSettings::default()` -- what a sorting
+ *  record saved before follow-ups existed is read as. */
+export const FOLLOW_UP_DEFAULTS: Readonly<FollowUpSettings> = {
+  on: true,
+  windowDays: 14,
+  nudgeAfterDays: 3,
+}
+/** `MIN_WINDOW_DAYS` in `crates/karmayoga-core/src/mail/follow_up.rs`. */
+export const FOLLOW_UP_MIN_WINDOW_DAYS = 2
+/** `MAX_WINDOW_DAYS` in `crates/karmayoga-core/src/mail/follow_up.rs`. */
+export const FOLLOW_UP_MAX_WINDOW_DAYS = 60
+
+/** What is wrong with each follow-up number, for under its field. */
+export interface FollowUpProblems {
+  windowDays: string | null
+  nudgeAfterDays: string | null
+}
+
+/**
+ * What is wrong with each of Settings → Mail sorting's two follow-up numbers,
+ * in words for under the field, or `null` -- the checks
+ * `FollowUpSettings::validate` makes, so Save is held back rather than
+ * refused. The nudge is only judged against a look-back that is itself right.
+ * A field left empty arrives as something other than a number, and is wrong.
+ */
+export function followUpSettingsProblems(
+  s: Pick<FollowUpSettings, 'windowDays' | 'nudgeAfterDays'>,
+): FollowUpProblems {
+  const given = (n: unknown): n is number => typeof n === 'number' && !Number.isNaN(n)
+  const w = s.windowDays
+  const n = s.nudgeAfterDays
+  let windowDays: string | null = null
+  // Two days at least: a nudge waits a day or more, and less than the window.
+  if (!given(w) || w < FOLLOW_UP_MIN_WINDOW_DAYS || w > FOLLOW_UP_MAX_WINDOW_DAYS) {
+    windowDays = `Between ${FOLLOW_UP_MIN_WINDOW_DAYS} and ${FOLLOW_UP_MAX_WINDOW_DAYS} days.`
+  } else if (!Number.isInteger(w)) windowDays = 'Whole days only.'
+  let nudgeAfterDays: string | null = null
+  if (!given(n) || n < 1) nudgeAfterDays = 'At least a day.'
+  else if (!Number.isInteger(n)) nudgeAfterDays = 'Whole days only.'
+  else if (windowDays === null && n >= w) nudgeAfterDays = `Less than the ${w} days it looks back.`
+  return { windowDays, nudgeAfterDays }
 }
 
 // ── Marks from origin ───────────────────────────────────────────────────

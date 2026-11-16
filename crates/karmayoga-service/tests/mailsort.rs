@@ -172,6 +172,11 @@ fn env(api: DecisionApi, url: &str) -> (Arc<Service>, tempfile::TempDir, Account
     };
     vault.save_model_settings(&models).unwrap();
     vault.set_model_key(karmayoga_core::llm::ModelSlot::Decision, "ds-key").unwrap();
+    // Follow-ups ask the same model after sorting does, and these tests count
+    // what sorting asks; tests/mailfollowup.rs is where those are counted.
+    let mut sorting = vault.mail_sorting().unwrap();
+    sorting.follow_up.on = false;
+    vault.save_mail_sorting(&sorting).unwrap();
 
     let mut account = Account::new(Provider::Custom, "me@example.com");
     account.services.mail = true;

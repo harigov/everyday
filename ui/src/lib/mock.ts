@@ -150,7 +150,14 @@ import type {
 import { sameAccount, validateLink } from './chat'
 import { signatureFor } from './mailwrite'
 import { speechEndpointOf } from './accounts'
-import { mockDraftWithAi, mockImproveWriting, mockSuggestReplies } from './mock-mailwrite'
+import {
+  mockDraftWithAi,
+  mockImproveWriting,
+  mockLearnFromReplies,
+  mockSaveVoiceLearning,
+  mockSuggestReplies,
+  mockVoiceLearning,
+} from './mock-mailwrite'
 import {
   mockAnswerJob,
   mockCancelJob,
@@ -194,7 +201,9 @@ import {
   mockCategoryCounts,
   mockDiscardDraft,
   mockDeleteThreadDraft,
+  mockDismissFollowUp,
   mockEditThreadDraft,
+  mockFollowUps,
   mockRestoreDraft,
   mockFetchAttachment,
   mockPreviewAttachment,
@@ -7889,6 +7898,16 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       return mockCategoryCounts(str(args.mailbox)) as T
 
+    // ── Follow-ups at the top of the Inbox ────────────────────────────────
+
+    case 'mail_follow_ups':
+      requireUnlocked()
+      return mockFollowUps(args.account == null ? null : str(args.account)) as T
+    case 'dismiss_follow_up':
+      requireUnlocked()
+      mockDismissFollowUp(str(args.id))
+      return undefined as T
+
     case 'fetch_attachment':
       requireUnlocked()
       return mockFetchAttachment(str(args.messageId), Number(args.index)) as T
@@ -8003,6 +8022,26 @@ export const mockInvoke = async <T>(
       requireUnlocked()
       mockSaveMailWriting(args.writing as MailWriting)
       return mockMailWriting() as T
+
+    case 'voice_learning':
+      requireUnlocked()
+      return mockVoiceLearning() as T
+
+    case 'save_voice_learning':
+      requireUnlocked()
+      return mockSaveVoiceLearning(str(args.notes)) as T
+
+    case 'learn_from_replies': {
+      requireUnlocked()
+      // `learn_now`'s second refusal: nothing it may read.
+      if (!accounts.some((a) => a.services.mail && a.mailAi?.writing)) {
+        throw new VaultError(
+          'forbidden',
+          'no account has writing help on, so there are no replies it may read; switch it on under Settings → Accounts',
+        )
+      }
+      return (await mockLearnFromReplies()) as T
+    }
 
     case 'mail_sorting':
       requireUnlocked()

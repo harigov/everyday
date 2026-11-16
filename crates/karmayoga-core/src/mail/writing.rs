@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_INSTRUCTIONS_CHARS: usize = 4_000;
 
 /// The sealed singleton behind Settings → Mail writing.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct MailWriting {
@@ -31,6 +31,22 @@ pub struct MailWriting {
     /// to have one account's mail read is not agreeing to that.
     #[serde(default)]
     pub use_calendar: bool,
+    /// Whether writing help learns from the replies they send -- see
+    /// [`crate::mail::learning`]. On from the start: it reads the same sent
+    /// mail, on the same model, under the same switch, that the voice already
+    /// reads for every suggestion.
+    #[serde(default = "yes")]
+    pub learn: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for MailWriting {
+    fn default() -> Self {
+        Self { instructions: String::new(), use_calendar: false, learn: true }
+    }
 }
 
 impl MailWriting {
@@ -55,6 +71,7 @@ mod tests {
         let read: MailWriting = serde_json::from_str(r#"{"instructions":"Be brief."}"#).unwrap();
         assert!(!read.use_calendar);
         assert_eq!(read.instructions, "Be brief.");
+        assert!(read.learn, "learning from sent replies is on unless switched off");
     }
 
     #[test]

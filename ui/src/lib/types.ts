@@ -2120,6 +2120,37 @@ export interface Thread {
   sortedAs?: SortedAs | null
   /** When a decision model was last asked about it -- `SortMark`. */
   aiSorted?: SortMark | null
+  /** Somebody waiting on the person, or the person waiting on somebody --
+   *  `karmayoga_core::mail::FollowUp`. Absent for a thread that is neither. */
+  followUp?: FollowUp | null
+  /** When the follow-up pass last asked about it. */
+  followUpAsked?: FollowUpMark | null
+}
+
+/** `karmayoga_core::mail::FollowUpKind`: `reply`, somebody is waiting on your
+ *  answer; `nudge`, you are waiting on theirs. */
+export type FollowUpKind = 'reply' | 'nudge'
+
+/** `karmayoga_core::mail::FollowUp`. */
+export interface FollowUp {
+  kind: FollowUpKind
+  /** The message it was decided about: theirs for `reply`, yours for `nudge`. */
+  message: MailMessageId
+  /** When that message was sent -- how long it has been waiting. */
+  since: string
+}
+
+/** `karmayoga_core::mail::FollowUpMark`. */
+export interface FollowUpMark {
+  message: MailMessageId
+  messageCount: number
+  at: string
+}
+
+/** `mail_follow_ups`: threads waiting, for the top of the Inbox. */
+export interface FollowUpList {
+  /** Each with `followUp` set: `reply` ones first, newest first. */
+  threads: Thread[]
 }
 
 /** `karmayoga_core::mail::SortMark`. */
@@ -2153,6 +2184,19 @@ export interface MailSorting {
   categories: SortCategory[]
   /** How many days back mail is sorted without being asked. */
   windowDays: number
+  /** Follow-ups at the top of the Inbox. Absent from a record saved before
+   *  they existed; the backend reads that as the defaults. */
+  followUp?: FollowUpSettings
+}
+
+/** Settings → Mail sorting, "Follow-ups" -- `karmayoga_core::mail::FollowUpSettings`. */
+export interface FollowUpSettings {
+  on: boolean
+  /** How many days back threads are looked at (2-60, 14 to start). */
+  windowDays: number
+  /** How long your own message waits for an answer before it is offered as a
+   *  nudge (at least 1, under `windowDays`; 3 to start). */
+  nudgeAfterDays: number
 }
 
 /** Settings → Mail writing -- `karmayoga_core::mail::MailWriting`. */
@@ -2161,6 +2205,22 @@ export interface MailWriting {
   instructions: string
   /** Whether writing help is given the next four weeks of calendar. */
   useCalendar: boolean
+  /** Whether writing help learns from the replies they send. On unless
+   *  switched off; absent reads as on. */
+  learn?: boolean
+}
+
+/** What writing help has learned from the replies they sent --
+ *  `karmayoga_service::mailvoicelearn::VoiceLearningView`. */
+export interface VoiceLearningView {
+  /** One rule a line. Empty until the first pass, or once forgotten. */
+  notes: string
+  /** When the notes were last written, by a pass or by them. */
+  learnedAt: string | null
+  /** How many of their replies it has learned from, all told. */
+  repliesRead: number
+  /** They edited the notes since the last pass. */
+  edited: boolean
 }
 
 /** An asked-for sort of older mail, while it runs. */

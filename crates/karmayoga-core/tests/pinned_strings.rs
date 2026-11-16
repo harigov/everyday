@@ -310,6 +310,7 @@ fn mail_domain_aad_labels_are_pinned() {
     assert_eq!(store::mail::contacts_aad(), b"everyday.mail_contacts.v1".to_vec());
     assert_eq!(store::mail::mail_sorting_aad(), b"everyday.mail_sorting.v1".to_vec());
     assert_eq!(store::mail::mail_writing_aad(), b"everyday.mail_writing.v1".to_vec());
+    assert_eq!(store::mail::voice_learning_aad(), b"everyday.mail_voice_learning.v1".to_vec());
 }
 
 // ---- notes ------------------------------------------------------------

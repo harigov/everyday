@@ -200,6 +200,7 @@ fn choice_of(options: &[ChoiceOption], probs: &[f64]) -> CommandResult<Choice> {
     Ok(Choice {
         name: options[best].name.trim().to_string(),
         confidence: Some(entropy_confidence(probs)),
+        probability: Some(probs[best]),
     })
 }
 
@@ -764,6 +765,10 @@ mod tests {
         let choice = choice_of(&[option("A", ""), option("B", "")], &[0.2, 0.8]).unwrap();
         assert_eq!(choice.name, "B");
         assert!(choice.confidence.unwrap() > 0.0);
+        // The probability is the one a provider would report; the entropy
+        // measure is much lower for the same answer.
+        assert_eq!(choice.probability, Some(0.8));
+        assert!(choice.confidence.unwrap() < 0.8);
     }
 
     #[test]

@@ -36,6 +36,8 @@ pub mod categorize;
 pub mod cleanup;
 pub mod compose;
 pub mod contacts;
+pub mod follow_up;
+pub mod learning;
 pub mod outbox;
 pub mod rate_limit;
 pub mod records;
@@ -46,6 +48,8 @@ pub mod writing;
 pub use ai_gate::{MailAiFeature, MailAiRefusal, mail_ai_allowed};
 pub use categorize::{CategorizeInput, CategoryMatch, CategoryRule, CategoryRules, categorize};
 pub use contacts::{ContactBook, MailContact};
+pub use follow_up::{FollowUp, FollowUpKind, FollowUpMark, FollowUpSettings};
+pub use learning::{OfferedReplies, VoiceLearning};
 pub use outbox::{
     RETRY_BACKOFF, UNDO_SEND_DEFAULT_SECONDS, UNDO_SEND_MAX_SECONDS, UNDO_SEND_MIN_SECONDS,
     apply_optimistic, backoff_for_attempt, revert, undo_send_delay,

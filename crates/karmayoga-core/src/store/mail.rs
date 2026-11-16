@@ -699,6 +699,40 @@ pub trait MailStore: Send + Sync {
     /// decision model -- see [`crate::mail::Thread::ai_sorted`].
     fn set_thread_ai_sorted(&self, thread: ThreadId, mark: crate::mail::SortMark) -> Result<()>;
 
+    /// The follow-up pass's answer for one thread: its
+    /// [`crate::mail::Thread::follow_up_asked`] set to `mark` and its
+    /// [`crate::mail::Thread::follow_up`] to `follow_up`, together -- but only
+    /// while the thread still has `mark.message_count` messages and
+    /// `mark.message` is still its newest message that is not a draft. One
+    /// that has moved on since it was read -- even with the same count, a
+    /// reply sent as its draft is deleted -- is left as it is, for the next
+    /// pass to ask about afresh, rather than given an answer about a message
+    /// that is no longer its newest. Answers whether it wrote; a thread this
+    /// store does not have is `false`.
+    fn set_thread_follow_up(
+        &self,
+        thread: ThreadId,
+        mark: crate::mail::FollowUpMark,
+        follow_up: Option<crate::mail::FollowUp>,
+    ) -> Result<bool>;
+
+    /// Only [`crate::mail::Thread::follow_up_asked`], on the terms
+    /// [`MailStore::set_thread_follow_up`] writes it, with the thread's
+    /// follow-up left exactly as stored -- for a thread asked about already,
+    /// whose count only a draft moved. A follow-up dismissed meanwhile stays
+    /// dismissed.
+    fn set_thread_follow_up_asked(
+        &self,
+        thread: ThreadId,
+        mark: crate::mail::FollowUpMark,
+    ) -> Result<bool>;
+
+    /// A person dismissed a thread's follow-up: it goes, and
+    /// [`crate::mail::Thread::follow_up_asked`] stays, so it is not asked
+    /// about again until something new arrives. A thread this store does not
+    /// have is a no-op.
+    fn clear_thread_follow_up(&self, thread: ThreadId) -> Result<()>;
+
     /// Every thread, across every account, whose `snoozed_until` is set and
     /// has passed `now` -- what the minute scheduler reads to decide which
     /// threads return to the inbox this tick. Oldest-due first, capped at
@@ -933,6 +967,11 @@ pub trait MailStore: Send + Sync {
     fn mail_writing(&self) -> Result<MailWriting>;
     /// Replace it.
     fn put_mail_writing(&self, writing: &MailWriting) -> Result<()>;
+    /// What writing help has learned from the replies the person sent -- see
+    /// [`crate::mail::learning`]. Nothing learned until something is saved.
+    fn voice_learning(&self) -> Result<crate::mail::VoiceLearning>;
+    /// Replace it.
+    fn put_voice_learning(&self, learning: &crate::mail::VoiceLearning) -> Result<()>;
 
     /// A decision model's answer for one message: its category set to
     /// `category`, [`crate::mail::CategorySource::Model`] written beside it,
@@ -1044,6 +1083,12 @@ pub fn mail_sorting_aad() -> Vec<u8> {
 /// [`remote_image_settings_aad`] is.
 pub fn mail_writing_aad() -> Vec<u8> {
     b"everyday.mail_writing.v1".to_vec()
+}
+
+/// The one row of [`crate::mail::VoiceLearning`], sealed on the same terms
+/// [`remote_image_settings_aad`] is.
+pub fn voice_learning_aad() -> Vec<u8> {
+    b"everyday.mail_voice_learning.v1".to_vec()
 }
 
 /// The one row of [`crate::mail::ContactBook`], sealed on the same terms

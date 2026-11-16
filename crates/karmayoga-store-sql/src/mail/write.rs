@@ -504,20 +504,56 @@ pub(super) fn set_thread_snoozed_until(
 /// than an error. What
 /// [`karmayoga_core::store::mail::MailStore::set_thread_ai_categorize_asked`]
 /// and its auto-draft sibling both are, once `patch` names which field.
-fn patch_thread(store: &SqlStore, thread: ThreadId, patch: impl FnOnce(&mut Thread)) -> Result<()> {
+pub(super) fn patch_thread(
+    store: &SqlStore,
+    thread: ThreadId,
+    patch: impl FnOnce(&mut Thread),
+) -> Result<()> {
+    patch_thread_when(store, thread, |_, t| {
+        patch(t);
+        Ok(true)
+    })
+    .map(|_| ())
+}
+
+/// [`patch_thread`] for a change that may decide, inside the same
+/// transaction, not to be made: `patch` sees the transaction and the thread,
+/// and answers whether to write. Answers whether it wrote; a thread this
+/// store does not have is `false`.
+fn patch_thread_when(
+    store: &SqlStore,
+    thread: ThreadId,
+    patch: impl FnOnce(&mut dyn Sql, &mut Thread) -> Result<bool>,
+) -> Result<bool> {
     let mut conn = store.write();
     let mut tx = conn.begin()?;
     let Some(row) =
         tx.query_opt("SELECT data FROM threads WHERE id = ?1", &vals![thread.to_string()])?
     else {
-        return Ok(());
+        return Ok(false);
     };
     let mut t: Thread = store.unseal(&thread_aad(thread), &row.bytes(0)?)?;
-    patch(&mut t);
+    if !patch(&mut *tx, &mut t)? {
+        return Ok(false);
+    }
     let sealed = store.seal(&thread_aad(thread), &t)?;
     let (sql, args) = upsert_stmt(&t, sealed);
     tx.execute(&sql, &args)?;
-    tx.commit()
+    tx.commit()?;
+    Ok(true)
+}
+
+/// The id of `thread`'s newest message that is not a draft -- what a
+/// follow-up is about, since a reply still being written answers nobody.
+/// Ties on date settle by id, as everywhere else.
+fn newest_sent_message(tx: &mut dyn Sql, thread: ThreadId) -> Result<Option<String>> {
+    tx.query_opt(
+        "SELECT id FROM mail_messages WHERE thread_id = ?1 AND flags & 8 = 0 \
+         ORDER BY date_us DESC, id DESC LIMIT 1",
+        &vals![thread.to_string()],
+    )?
+    .map(|row| row.text(0))
+    .transpose()
 }
 
 /// See
@@ -537,6 +573,53 @@ pub(super) fn set_thread_ai_sorted(
     mark: karmayoga_core::mail::SortMark,
 ) -> Result<()> {
     patch_thread(store, thread, |t| t.ai_sorted = Some(mark))
+}
+
+/// See [`karmayoga_core::store::mail::MailStore::set_thread_follow_up`]:
+/// refused, in the same transaction as the write, for a thread whose count or
+/// newest message has moved on since the pass read it, so a message arriving
+/// between the check and the write cannot slip past it.
+pub(super) fn set_thread_follow_up(
+    store: &SqlStore,
+    thread: ThreadId,
+    mark: karmayoga_core::mail::FollowUpMark,
+    follow_up: Option<karmayoga_core::mail::FollowUp>,
+) -> Result<bool> {
+    patch_thread_when(store, thread, |tx, t| {
+        if !still_as_read(tx, t, &mark)? {
+            return Ok(false);
+        }
+        t.follow_up_asked = Some(mark);
+        t.follow_up = follow_up;
+        Ok(true)
+    })
+}
+
+/// See
+/// [`karmayoga_core::store::mail::MailStore::set_thread_follow_up_asked`].
+pub(super) fn set_thread_follow_up_asked(
+    store: &SqlStore,
+    thread: ThreadId,
+    mark: karmayoga_core::mail::FollowUpMark,
+) -> Result<bool> {
+    patch_thread_when(store, thread, |tx, t| {
+        if !still_as_read(tx, t, &mark)? {
+            return Ok(false);
+        }
+        t.follow_up_asked = Some(mark);
+        Ok(true)
+    })
+}
+
+/// Whether `t` is as the follow-up pass read it for `mark`: the same count,
+/// and the same newest message that is not a draft.
+fn still_as_read(
+    tx: &mut dyn Sql,
+    t: &Thread,
+    mark: &karmayoga_core::mail::FollowUpMark,
+) -> Result<bool> {
+    Ok(t.message_count == mark.message_count
+        && newest_sent_message(tx, t.id)?.as_deref() == Some(mark.message.to_string().as_str()))
 }
 
 /// See
@@ -1093,6 +1176,17 @@ pub(super) fn recompute_thread(
     {
         thread.sorted_as = None;
     }
+    // A follow-up is about the newest message that is not a draft -- a reply
+    // being written does not answer anybody yet. Once another one is newest,
+    // somebody has answered, and what is waiting is the next pass's to say.
+    // Asked only of the few threads that have one, not of every thread an
+    // initial sync recomputes.
+    if let Some(follow_up) = &thread.follow_up
+        && newest_sent_message(tx, thread_id)?.as_deref()
+            != Some(follow_up.message.to_string().as_str())
+    {
+        thread.follow_up = None;
+    }
 
     let sealed = store.seal(&thread_aad(thread_id), &thread)?;
     let (sql, args) = upsert_stmt(&thread, sealed);
@@ -1138,6 +1232,8 @@ fn seed_thread(
             ai_priority_asked_at_count: None,
             sorted_as: None,
             ai_sorted: None,
+            follow_up: None,
+            follow_up_asked: None,
         });
     }
 
@@ -1186,6 +1282,8 @@ fn seed_thread(
         ai_priority_asked_at_count: None,
         sorted_as: None,
         ai_sorted: None,
+        follow_up: None,
+        follow_up_asked: None,
     })
 }
 

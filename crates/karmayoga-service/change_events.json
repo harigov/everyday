@@ -525,6 +525,18 @@
       ]
     },
     {
+      "command": "dismiss_follow_up",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 1,
+          "kind": "thread",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
       "command": "move_to_mailbox",
       "events": [
         {
@@ -630,6 +642,30 @@
     },
     {
       "command": "save_mail_writing",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_voice_learning",
+      "events": [
+        {
+          "idPresent": false,
+          "idsLen": 0,
+          "kind": "settings",
+          "op": "updated",
+          "origin": "local"
+        }
+      ]
+    },
+    {
+      "command": "save_voice_learning",
       "events": [
         {
           "idPresent": false,
@@ -2715,6 +2751,10 @@
     {
       "name": "import_apple_health_file",
       "reason": "reads the export on a thread of its own, which raises its own changes"
+    },
+    {
+      "name": "learn_from_replies",
+      "reason": "asks the medium model; see tests/mailvoicelearn.rs"
     },
     {
       "name": "name_speaker",

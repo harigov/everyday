@@ -2547,6 +2547,26 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "ThreadId"
+        }
+      ],
+      "changes": {
+        "kind": "thread",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "dismiss_follow_up",
+      "orScope": null,
+      "returns": "void",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "calendarId",
           "required": true,
           "type": "CalendarId"
@@ -3956,6 +3976,20 @@
     },
     {
       "args": [],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "learn_from_replies",
+      "orScope": null,
+      "returns": "VoiceLearningView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
       "changes": null,
       "effect": "read",
       "name": "library_stats",
@@ -5069,6 +5103,23 @@
       "name": "mail_activity",
       "orScope": null,
       "returns": "MailActivity",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
+          "name": "account",
+          "required": false,
+          "type": "AccountId | null"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "mail_follow_ups",
+      "orScope": null,
+      "returns": "FollowUpList",
       "scope": "mail",
       "sensitive": false,
       "streams": false
@@ -8396,6 +8447,26 @@
     {
       "args": [
         {
+          "name": "notes",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "changes": {
+        "kind": "settings",
+        "op": "updated"
+      },
+      "effect": "write",
+      "name": "save_voice_learning",
+      "orScope": null,
+      "returns": "VoiceLearningView",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "workout",
           "required": true,
           "type": "Workout"
@@ -10154,6 +10225,17 @@
       "orScope": null,
       "returns": "void",
       "scope": "journals",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [],
+      "changes": null,
+      "effect": "read",
+      "name": "voice_learning",
+      "orScope": null,
+      "returns": "VoiceLearningView",
+      "scope": "mail",
       "sensitive": false,
       "streams": false
     },

@@ -12741,6 +12741,71 @@
         ],
         "type": "string"
       },
+      "FollowUp": {
+        "description": "A thread that is waiting -- [`crate::mail::Thread::follow_up`].",
+        "properties": {
+          "kind": {
+            "$ref": "#/$defs/FollowUpKind"
+          },
+          "message": {
+            "description": "The message it was decided about: the newest message that is not a\ndraft, theirs for [`FollowUpKind::Reply`], yours for\n[`FollowUpKind::Nudge`].",
+            "format": "uuid",
+            "type": "string"
+          },
+          "since": {
+            "description": "When that message was sent -- how long it has been waiting.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "message",
+          "since"
+        ],
+        "type": "object"
+      },
+      "FollowUpKind": {
+        "description": "Which way a thread is waiting.",
+        "oneOf": [
+          {
+            "const": "reply",
+            "description": "Somebody is waiting on your answer.",
+            "type": "string"
+          },
+          {
+            "const": "nudge",
+            "description": "You are waiting on theirs, and might nudge them.",
+            "type": "string"
+          }
+        ]
+      },
+      "FollowUpMark": {
+        "description": "When the follow-up pass last asked about a thread, and about which\nmessage -- [`crate::mail::Thread::follow_up_asked`]. Whatever it answered,\nincluding nothing at all because the thread was plainly not one to ask\nabout (a newsletter, your own message too new to nudge about is *not*\nmarked: it is asked about once it is old enough).\n\nThe message rather than only the count, so that a draft coming and going\n-- which changes the count but not what anybody is waiting on -- does not\nhave the model asked again.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "message": {
+            "description": "The newest message that is not a draft, when it was asked.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "messageCount": {
+            "description": "The thread's message count then -- a thread whose count has not moved\nsince is skipped without reading its messages.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "message",
+          "messageCount",
+          "at"
+        ],
+        "type": "object"
+      },
       "SortMark": {
         "description": "When a decision model was last asked about a thread, and how many\nmessages it had then -- [`super::Thread::ai_sorted`].\n\nIts own marker rather than the small model's\n`ai_categorize_asked_at_count`: that one says a thread was asked about\nthe *five tabs*, which is not an answer to the person's own categories,\nand sharing it would leave every thread Small had already looked at\nunsorted the day a decision model is switched on. The time is what lets\nan asked-for re-sort tell a thread it has reached from one sorted before\nit began, without remembering every thread it has been through.",
         "properties": {
@@ -12834,6 +12899,28 @@
             "type": "null"
           }
         ]
+      },
+      "followUp": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FollowUp"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Somebody waiting on the person, or the person waiting on somebody --\nsee [`super::follow_up`]. `None` for a thread that is not, has not been\nasked about, has moved on since, or was dismissed."
+      },
+      "followUpAsked": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/FollowUpMark"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "When the follow-up pass last asked about this thread -- see\n[`super::FollowUpMark`]. `None`: never."
       },
       "hasAttachments": {
         "default": false,

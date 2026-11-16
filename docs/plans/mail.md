@@ -887,6 +887,31 @@ Two changes this phase's tool file cannot make itself, because they live in
   **Snoozed** is the inbox filtered to snoozed threads, drawn by the
   interface, since snooze never leaves the device.
 
+#### Added in November 2026
+
+- **Follow-ups** at the top of the Inbox: mail waiting on the person and mail
+  to nudge, decided by the decision model. See `docs/plans/mail-sorting.md`,
+  "Follow-ups".
+- **Writing help learns from what is sent** (`karmayoga_core::mail::learning`,
+  `karmayoga_service::mailvoicelearn`). The voice's examples are now reply
+  pairs -- the message answered, then what was sent -- rather than loose sent
+  mail. `suggest_replies` keeps what it offered (`VoiceLearning.offered`, at
+  most 40, a month), and at most once a day, once five replies have been sent
+  since the last time, the medium model reads up to fifteen recent replies,
+  each beside the message it answered and anything offered for it, and
+  rewrites short notes on how the person replies. The notes go into every
+  drafting system prompt after the fixed rules and before the person's own
+  instructions, which win; they never exempt a phrase from the cleanup, as
+  the person's own words can. Settings → Mail writing shows them to edit or
+  forget, with **Learn now**, behind `MailWriting.learn` (on from the start:
+  it reads the same sent mail, on the same model, under the same switch, as
+  the voice already does). Its own sealed row (schema v32,
+  `mail_voice_learning`), since `MailWriting` is saved whole from the pane and
+  would otherwise put back notes a pass had just replaced.
+- **The three suggestions** now lead with the one the person would most
+  likely send, and vary length and detail instead of inventing a refusal when
+  the message plainly wants one answer.
+
 ### Phase 8 — Words
 
 - README: an Accounts section, a Mail section in the voice of the others,

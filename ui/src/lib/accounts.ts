@@ -79,7 +79,7 @@ export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string 
   {
     key: 'categorize',
     label: 'Categorise',
-    hint: 'Sort new mail into Priority, Important, Other, Newsletters and Notifications, or into your own categories under Settings → Mail sorting. Reads who it is from and to, the subject, and the start of the message.',
+    hint: 'Sort new mail into Priority, Important, Other, Newsletters and Notifications, or into your own categories under Settings → Mail sorting. Reads who it is from and to, the subject, and the start of the message. With a decision model, also says which recent threads need your reply or a nudge, which reads the start of your own last message too.',
   },
   {
     key: 'autoDraft',
@@ -94,7 +94,7 @@ export const MAIL_AI_SWITCHES: { key: keyof MailAi; label: string; hint: string 
   {
     key: 'writing',
     label: 'Writing help',
-    hint: 'Suggest three replies when you open a thread, write a draft from a few words, and polish what you wrote, all in your own voice, with your calendar for suggesting times. Settings → Mail writing is how you steer it.',
+    hint: 'Suggest three replies when you open a thread, write a draft from a few words, and polish what you wrote, all in your own voice, with your calendar for suggesting times. It also learns how you reply: about once a day, once you have sent a few replies, the medium model reads your recent ones beside the messages they answered and keeps short notes on how you write. Settings → Mail writing is how you steer it, and where learning is switched off.',
   },
 ]
 

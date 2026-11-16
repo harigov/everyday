@@ -17,7 +17,7 @@ use karmayoga_core::id::{CalendarId, EventId, MailMessageId, PackId, ThreadId};
 use karmayoga_core::llm::{LLMConfig, LLMModelConfig, ModelSettings};
 use karmayoga_core::mail::{
     Address, Body, Category, CategorySource, MailWriting, Mailbox, MailboxRole, Message,
-    MessageFlags,
+    MessageFlags, VoiceLearning,
 };
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::store::mail::IngestMessage;
@@ -564,6 +564,97 @@ async fn too_much_to_say_is_refused() {
     assert_eq!(e.svc.get().unwrap().mail_writing().unwrap(), MailWriting::default());
 }
 
+// ---- what was learned from their replies -----------------------------------
+
+#[tokio::test]
+async fn what_was_learned_reaches_the_suggestions_until_learning_is_switched_off() {
+    let fake = fake_model(three_replies()).await;
+    let e = env(&fake.endpoint);
+    let vault = e.svc.get().unwrap();
+    let learned = VoiceLearning { notes: "- Says yes in one line.".into(), ..Default::default() };
+    vault.save_voice_learning(&learned).unwrap();
+
+    suggest(&e).await;
+    let (system, user) = fake.prompt(0);
+    assert!(system.contains("What was learned from the replies they actually sent"), "{system}");
+    assert!(system.contains("---\n- Says yes in one line.\n---"), "{system}");
+    assert!(!user.contains("Says yes in one line"), "said once, where it carries: {user}");
+
+    // Edited in Settings: the next suggestion is written from the edit.
+    e.svc
+        .call(Ctx::local(), "save_voice_learning", json!({ "notes": "- Never says sorry." }))
+        .await
+        .unwrap();
+    let before = fake.asked();
+    suggest(&e).await;
+    assert!(fake.asked() > before, "saving it throws away what was written without it");
+    assert!(fake.prompt(before).0.contains("- Never says sorry."));
+
+    e.svc
+        .call(
+            Ctx::local(),
+            "save_mail_writing",
+            json!({ "writing": { "instructions": "", "useCalendar": false, "learn": false } }),
+        )
+        .await
+        .unwrap();
+    let before = fake.asked();
+    suggest(&e).await;
+    let (system, _) = fake.prompt(before);
+    assert!(!system.contains("Never says sorry"), "switched off, it goes: {system}");
+    assert!(!system.contains("What was learned"), "{system}");
+}
+
+#[tokio::test]
+async fn what_was_offered_is_kept_to_be_read_beside_what_they_send() {
+    let fake = fake_model(three_replies()).await;
+    let e = env(&fake.endpoint);
+
+    let answer = suggest(&e).await;
+
+    // Kept beside the answer rather than before it, so it lands a moment
+    // after the suggestions do.
+    let vault = e.svc.get().unwrap();
+    let mut learning = vault.voice_learning().unwrap();
+    for _ in 0..200 {
+        if !learning.offered.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        learning = vault.voice_learning().unwrap();
+    }
+    assert_eq!(learning.offered.len(), 1, "{learning:?}");
+    let offered = &learning.offered[0];
+    assert_eq!(offered.account, e.account.id);
+    assert_eq!(offered.thread, e.thread);
+    assert_eq!(offered.message, e.message, "the message the replies answer");
+    assert_eq!(offered.at, thursday_morning());
+    let shown: Vec<&str> = answer["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["bodyText"].as_str().unwrap())
+        .collect();
+    assert_eq!(offered.replies, shown, "as they were offered, after cleaning");
+
+    // Reopened, the thread is answered from the cache, and nothing is kept twice.
+    suggest(&e).await;
+    assert_eq!(e.svc.get().unwrap().voice_learning().unwrap().offered.len(), 1);
+}
+
+#[tokio::test]
+async fn nothing_offered_is_kept_while_learning_is_off() {
+    let fake = fake_model(three_replies()).await;
+    let e = env(&fake.endpoint);
+    let vault = e.svc.get().unwrap();
+    vault.save_mail_writing(&MailWriting { learn: false, ..Default::default() }).unwrap();
+
+    suggest(&e).await;
+
+    assert!(fake.asked() > 0);
+    assert!(vault.voice_learning().unwrap().offered.is_empty());
+}
+
 /// A suggestion that says "Tuesday at 2" must not still be offered on Tuesday
 /// at 3, with the thread unchanged all the while.
 #[tokio::test]
@@ -850,7 +941,11 @@ async fn an_auto_draft_is_signed_and_follows_what_they_said() {
     account.mail_ai = MailAi { auto_draft: true, ..Default::default() };
     vault.save_account(&account).unwrap();
     vault
-        .save_mail_writing(&MailWriting { instructions: "Be brief.".into(), use_calendar: true })
+        .save_mail_writing(&MailWriting {
+            instructions: "Be brief.".into(),
+            use_calendar: true,
+            ..Default::default()
+        })
         .unwrap();
     seed_week(&e);
 

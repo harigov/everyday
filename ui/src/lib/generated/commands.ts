@@ -96,6 +96,7 @@ import type {
   FilesSettings,
   FilesStatus,
   FolderListing,
+  FollowUpList,
   Food,
   FoodHit,
   FoodId,
@@ -327,6 +328,7 @@ import type {
   VaultStatus,
   VerificationAnswer,
   VisitBrief,
+  VoiceLearningView,
   VoiceprintId,
   VoiceprintInfo,
   WeatherReport,
@@ -526,6 +528,7 @@ export interface Commands {
   discardDraft: { args: { id: DraftId }; result: void }
   discardRecording: { args: { id: RecordingId }; result: void }
   discoverFeeds: { args: { url: string }; result: FoundFeed[] }
+  dismissFollowUp: { args: { id: ThreadId }; result: void }
   dismissMeetingOffer: {
     args: { calendarId: CalendarId; uid: string; series?: string | null; never: boolean }
     result: void
@@ -647,6 +650,7 @@ export interface Commands {
   keepInTouchStatus: { args: Record<string, never>; result: KeepInTouchStatus }
   labTrends: { args: Record<string, never>; result: LabTrend[] }
   label: { args: { threads: ThreadId[]; label: string }; result: Op[] }
+  learnFromReplies: { args: Record<string, never>; result: VoiceLearningView }
   libraryStats: { args: Record<string, never>; result: LibraryStats }
   lintTemplate: { args: { template: Template }; result: string[] }
   listAccountCalendars: { args: { account: AccountId }; result: RemoteCalendarInfo[] }
@@ -756,6 +760,7 @@ export interface Commands {
     result: MailActionByOrigin[]
   }
   mailActivity: { args: { from: string; to: string; tz?: string }; result: MailActivity }
+  mailFollowUps: { args: { account?: AccountId | null }; result: FollowUpList }
   mailSorting: { args: Record<string, never>; result: MailSortingView }
   mailWriting: { args: Record<string, never>; result: MailWriting }
   markAllStoriesRead: { args: { sources: NewsSourceId[]; upTo: string }; result: StoryId[] }
@@ -988,6 +993,7 @@ export interface Commands {
   saveTasks: { args: { tasks: Task[] }; result: void }
   saveTemplate: { args: { template: Template }; result: void }
   saveTracker: { args: { tracker: Tracker }; result: void }
+  saveVoiceLearning: { args: { notes: string }; result: VoiceLearningView }
   saveWorkout: { args: { workout: Workout }; result: Workout }
   scheduledSends: { args: { account?: AccountId | null }; result: ScheduledSend[] }
   screenTimeCollector: { args: Record<string, never>; result: CollectorConfig }
@@ -1125,6 +1131,7 @@ export interface Commands {
   updateTransactions: { args: { ids: TxnId[]; patch: TxnPatch }; result: TxnId[] }
   vaultStats: { args: Record<string, never>; result: StoreStats }
   verifyPassword: { args: { password: string }; result: void }
+  voiceLearning: { args: Record<string, never>; result: VoiceLearningView }
   weather: { args: { place?: string | null }; result: WeatherReport }
   webSearch: { args: { request: SearchRequest }; result: SearchResult[] }
   writeImport: { args: { handle: string; offset: number; data: string }; result: ImportProgress }
@@ -1255,6 +1262,7 @@ export const COMMAND_NAMES = {
   discardDraft: 'discard_draft',
   discardRecording: 'discard_recording',
   discoverFeeds: 'discover_feeds',
+  dismissFollowUp: 'dismiss_follow_up',
   dismissMeetingOffer: 'dismiss_meeting_offer',
   dosesDue: 'doses_due',
   downloadDecisionModel: 'download_decision_model',
@@ -1324,6 +1332,7 @@ export const COMMAND_NAMES = {
   keepInTouchStatus: 'keep_in_touch_status',
   labTrends: 'lab_trends',
   label: 'label',
+  learnFromReplies: 'learn_from_replies',
   libraryStats: 'library_stats',
   lintTemplate: 'lint_template',
   listAccountCalendars: 'list_account_calendars',
@@ -1395,6 +1404,7 @@ export const COMMAND_NAMES = {
   lookupMetadata: 'lookup_metadata',
   mailActionsByOrigin: 'mail_actions_by_origin',
   mailActivity: 'mail_activity',
+  mailFollowUps: 'mail_follow_ups',
   mailSorting: 'mail_sorting',
   mailWriting: 'mail_writing',
   markAllStoriesRead: 'mark_all_stories_read',
@@ -1559,6 +1569,7 @@ export const COMMAND_NAMES = {
   saveTasks: 'save_tasks',
   saveTemplate: 'save_template',
   saveTracker: 'save_tracker',
+  saveVoiceLearning: 'save_voice_learning',
   saveWorkout: 'save_workout',
   scheduledSends: 'scheduled_sends',
   screenTimeCollector: 'screen_time_collector',
@@ -1643,6 +1654,7 @@ export const COMMAND_NAMES = {
   updateTransactions: 'update_transactions',
   vaultStats: 'vault_stats',
   verifyPassword: 'verify_password',
+  voiceLearning: 'voice_learning',
   weather: 'weather',
   webSearch: 'web_search',
   writeImport: 'write_import',
@@ -1783,6 +1795,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'discard_draft',
   'discard_recording',
   'discover_feeds',
+  'dismiss_follow_up',
   'dismiss_meeting_offer',
   'doses_due',
   'download_decision_model',
@@ -1852,6 +1865,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'keep_in_touch_status',
   'lab_trends',
   'label',
+  'learn_from_replies',
   'library_stats',
   'lint_template',
   'list_account_calendars',
@@ -1923,6 +1937,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'lookup_metadata',
   'mail_actions_by_origin',
   'mail_activity',
+  'mail_follow_ups',
   'mail_sorting',
   'mail_writing',
   'mark_all_stories_read',
@@ -2087,6 +2102,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tasks',
   'save_template',
   'save_tracker',
+  'save_voice_learning',
   'save_workout',
   'scheduled_sends',
   'screen_time_collector',
@@ -2170,6 +2186,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'update_transactions',
   'vault_stats',
   'verify_password',
+  'voice_learning',
   'weather',
   'web_search',
   'write_import',
@@ -2287,6 +2304,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'delete_workout',
   'discard_draft',
   'discard_recording',
+  'dismiss_follow_up',
   'dismiss_meeting_offer',
   'download_decision_model',
   'download_speech_model',
@@ -2310,6 +2328,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'import_opml',
   'import_transactions',
   'label',
+  'learn_from_replies',
   'lock',
   'log_dose',
   'log_reading',
@@ -2411,6 +2430,7 @@ export const WRITE_COMMANDS: ReadonlySet<string> = new Set([
   'save_tasks',
   'save_template',
   'save_tracker',
+  'save_voice_learning',
   'save_workout',
   'seed_roles',
   'send_draft',
@@ -2561,6 +2581,7 @@ export const CHANGE_KINDS = {
   delete_workout: 'workout',
   discard_draft: 'draft',
   discard_recording: 'recording',
+  dismiss_follow_up: 'thread',
   download_decision_model: 'settings',
   download_speech_model: 'settings',
   edit_thread_draft: 'draft',
@@ -2580,6 +2601,7 @@ export const CHANGE_KINDS = {
   import_opml: 'newsSource',
   import_transactions: 'txn',
   label: 'thread',
+  learn_from_replies: 'settings',
   log_dose: 'dose',
   log_reading: 'reading',
   mark_all_stories_read: 'story',
@@ -2671,6 +2693,7 @@ export const CHANGE_KINDS = {
   save_tasks: 'task',
   save_template: 'template',
   save_tracker: 'tracker',
+  save_voice_learning: 'settings',
   save_workout: 'workout',
   seed_roles: 'role',
   send_draft: 'draft',

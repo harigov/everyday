@@ -6835,6 +6835,7 @@ mod tests {
             .save_mail_writing(&karmayoga_core::mail::MailWriting {
                 instructions: "Never apologise.".into(),
                 use_calendar: true,
+                ..Default::default()
             })
             .unwrap();
         let said = mail_voice_guidance(&vault).unwrap();

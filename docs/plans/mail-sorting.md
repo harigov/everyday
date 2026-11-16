@@ -78,6 +78,50 @@ the Inbox, 20 pages a tick, after recent mail. `again` re-asks threads
 already sorted (for after the categories change). A restart forgets a sort
 half done; asking again skips what is already sorted.
 
+## Follow-ups (Nov 2026)
+
+The same model also says which recent threads are waiting: on the person
+(**Needs your reply**) or on somebody else (**Follow up**, a nudge). They are
+drawn above the date sections at the top of the Inbox. The record is
+`karmayoga_core::mail::follow_up`; the pass is `karmayoga_service::mailfollowup`,
+run by `categorize_tick` straight after `sort_tick`.
+
+- **Same switch, same model, same budget.** `MailAiFeature::Categorize`
+  against the decision acknowledgement, `mail_sort_take`, and nothing at all
+  while no decision model is usable. A nudge question shows the model the
+  person's own last message, which the sorting never did; it is still mail,
+  sent where they already agreed mail goes, and the Accounts hint says so.
+- **Settings.** `MailSorting.follow_up = { on, windowDays, nudgeAfterDays }`,
+  14 and 3 to start, on from the start (`serde(default)`, so a saved record
+  from before reads as on).
+- **Two questions.** About a thread whose newest message that is not a draft
+  is somebody else's: *Needs your reply* / *Cold outreach* / *No reply
+  needed*. About one whose newest is the person's own, at least
+  `nudgeAfterDays` old: *Waiting on them* / *Nothing expected*. Only the
+  first answer of each makes a follow-up.
+- **Cold outreach.** Rules first, for free: a thread filed under
+  Newsletters or Notifications, a sender whose address reads as a machine,
+  or mail not addressed to the person by name is marked asked without a
+  request. "Cold outreach" is its own option, described as concretely as the
+  one it is confused with. The model is told whether the person has ever
+  written to the sender and whether they wrote in the thread, and a stranger
+  in a thread they never wrote in needs `FIRST_CONTACT_CONFIDENCE` (0.75) to
+  be shown -- the first use of the model's confidence anywhere.
+- **The record.** Sealed on the thread: `follow_up = { kind, message, since }`
+  and `follow_up_asked = { message, messageCount, at }`. `recompute_thread`
+  drops the follow-up when the newest message that is not a draft is another
+  one (a reply being written answers nobody yet), and `set_thread_follow_up`
+  refuses a thread whose count moved while the model was being asked.
+  Dismissing clears the follow-up and keeps the mark, so it is not asked
+  again until something new arrives. The mark names the message as well as
+  the count, so a draft coming and going does not cost a request.
+- **Reading them back.** `mail_follow_ups { account? }` pages the Inbox
+  (needs a reply) and Sent (nudges) back to the window, leaving snoozed
+  threads out: the field is sealed, so there is no index to ask, and two
+  weeks of two mailboxes is a few pages. A thread archived after it was
+  decided drops out of the Reply list; a nudge is found in Sent, so
+  archiving does not hide it -- **Not needed** does.
+
 ## On this computer (Nov 2026)
 
 A decision model can also run here, with no provider: `DecisionApi::Local`,
@@ -171,5 +215,6 @@ was not allowed in the session that built this.
   excerpt, and every token costs time here.
 - Filtering the list by one of the person's categories: the label is sealed,
   and the tab it files under is the filter.
-- Using the model's confidence: every answer is applied.
+- Using the model's confidence for sorting: every category answer is applied
+  (follow-ups use it for strangers only).
 - Images (OpenAI's API takes them, Jev does not yet).

@@ -1869,6 +1869,21 @@ export const api = {
 
   mailWriting: () => call('mailWriting', {}),
   saveMailWriting: (writing: MailWriting) => call('saveMailWriting', { writing }),
+  /** What writing help has learned from the replies they sent. */
+  voiceLearning: () => call('voiceLearning', {}),
+  /** The notes as the person left them; empty forgets everything learned. */
+  saveVoiceLearning: (notes: string) => call('saveVoiceLearning', { notes }),
+  /** A learning pass now, on the medium model -- several seconds, and refused,
+   *  saying why, when there is nothing it may read. */
+  learnFromReplies: () => call('learnFromReplies', {}),
+
+  // ── Follow-ups: the top of the Inbox ─────────────────────────────────
+
+  /** Threads waiting on a reply, and threads to nudge: one account's, or
+   *  every mail account's when `account` is omitted. */
+  mailFollowUps: (account?: AccountId | null) =>
+    call('mailFollowUps', { account: account ?? null }),
+  dismissFollowUp: (id: ThreadId) => call('dismissFollowUp', { id }),
 
   // ── Mail sorting: the categories a decision model sorts into ─────────
 

@@ -743,6 +743,15 @@ pub struct Thread {
     /// answered -- see [`super::SortMark`]. `None`: never.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai_sorted: Option<super::SortMark>,
+    /// Somebody waiting on the person, or the person waiting on somebody --
+    /// see [`super::follow_up`]. `None` for a thread that is not, has not been
+    /// asked about, has moved on since, or was dismissed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<super::FollowUp>,
+    /// When the follow-up pass last asked about this thread -- see
+    /// [`super::FollowUpMark`]. `None`: never.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up_asked: Option<super::FollowUpMark>,
 }
 
 // ---- drafts ---------------------------------------------------------------

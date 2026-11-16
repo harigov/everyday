@@ -26,6 +26,9 @@ import {
   CATEGORY_TABS,
   applyInviteResponse,
   applyRowPatch,
+  followUpRows as pickFollowUpRows,
+  followUpScope,
+  followUpsFirst,
   isSnoozedMailbox,
   isUnifiedMailbox,
   keepLingering,
@@ -56,10 +59,12 @@ import {
   unifiedMailboxes as buildUnifiedMailboxes,
   visibleThreadList,
   withOnly,
+  type FollowUpRows,
   type MailOnly,
 } from './mail'
 import { pref } from './prefs'
 import { seen, type Showing } from './onscreen'
+import { sorting } from './sorting.svelte'
 import { app, handle, quietly } from './state.svelte'
 import { applySingleChange } from './store/live-patch'
 import { guardedRefresh } from './store/refresh'
@@ -248,6 +253,19 @@ class MailState {
   /** Threads for the open mailbox, in list order. Read `VirtualList`'s own
    *  doc for why this is `.raw` rather than deeply reactive. */
   threads = $state.raw<Thread[]>([])
+  /**
+   * The open Inbox's follow-ups -- threads somebody is waiting on the person
+   * to answer, and their own mail nobody has answered -- as `mail_follow_ups`
+   * last gave them, for the top of the list. Apart from `threads`, because
+   * neither kind need be on the page loaded: a reply can be older than it
+   * reaches, and a nudge is from Sent. Read through `followUps`.
+   */
+  #followUps = $state.raw<Thread[]>([])
+  /** Whose follow-ups those are -- an account's id, `''` for every
+   *  account's, `null` for nobody's -- so one Inbox's never show for a moment
+   *  under another while that one's are on their way. */
+  #followUpsFor: string | null = null
+  #followUpGeneration = 0
   nextCursor = $state<string | null>(null)
   loadingMore = $state(false)
   loading = $state(false)
@@ -339,6 +357,9 @@ class MailState {
     this.mailboxes = []
     this.unifiedMailboxes = []
     this.threads = []
+    this.#followUps = []
+    this.#followUpsFor = null
+    this.#followUpGeneration += 1
     this.nextCursor = null
     this.openThread = null
     this.unreadCounts = new Map()
@@ -698,6 +719,9 @@ class MailState {
    * a row held on to: there it says nothing, so `#goneFrom` asks by id.
    */
   async refresh() {
+    // The top of an Inbox comes along with every reload of it -- opening it,
+    // Sync now, a live change -- and goes as another list is opened.
+    void this.refreshFollowUps()
     // `listTarget` is where the mailbox ids actually meant for the backend
     // come from -- the mailbox itself, ordinarily, except for the synthetic
     // Snoozed row `refreshMailboxes` stands in for an account whose own
@@ -733,16 +757,17 @@ class MailState {
         this.threads = keepLingering(rows, shown, this.#lingering)
         this.#putBack = new Set(this.threads.map((t) => t.id).filter((id) => !served.has(id)))
         this.nextCursor = page.nextCursor ?? null
+        // A follow-up drawn over the page is a row on screen as much as one
+        // of the page's own, though it may be older than the page reaches,
+        // or from Sent: still one to keep picked, or open.
+        const listed = new Set(followUpsFirst(this.followUpRows, this.threads).map((t) => t.id))
         if (this.checked.size > 0) {
-          const listed = new Set(this.threads.map((t) => t.id))
           const kept = [...this.checked].filter((id) => listed.has(id))
           if (kept.length !== this.checked.size) this.checked = new Set(kept)
         }
         const open = this.selectedThread
         const unlisted =
-          this.only.size === 0 &&
-          !this.#lingering.has(open ?? '') &&
-          !this.threads.some((t) => t.id === open)
+          this.only.size === 0 && !this.#lingering.has(open ?? '') && !listed.has(open ?? '')
         if (open && (gone.has(open) || unlisted)) {
           // A reply being written under it has nowhere left to be drawn: set
           // aside, and said so, rather than left in `composing` out of sight.
@@ -815,6 +840,71 @@ class MailState {
       return mailApi.listThreads(only, filter, cursor, limit)
     }
     return mailApi.listThreadsAcross(mailboxIds, filter, cursor, limit)
+  }
+
+  // ── follow-ups at the top of the Inbox ────────────────────────────
+
+  /**
+   * Ask again which threads go at the top of the Inbox on screen: one
+   * account's, or every account's under "All inboxes" -- and none for any
+   * other list, which `followUpScope` decides. Called by every `refresh`,
+   * which a live thread change and a sync pass both end in, so the top keeps
+   * up with the follow-up pass as the list keeps up with sync. Quiet on
+   * failure: an Inbox without its follow-ups is still an Inbox.
+   */
+  async refreshFollowUps() {
+    const generation = ++this.#followUpGeneration
+    const scope = followUpScope(this.mailbox)
+    const owner = scope ? (scope.account ?? '') : null
+    if (owner !== this.#followUpsFor) {
+      this.#followUpsFor = owner
+      this.#followUps = []
+    }
+    if (!scope) return
+    try {
+      const { threads } = await mailApi.followUps(scope.account)
+      if (generation !== this.#followUpGeneration) return
+      this.#followUps = threads
+    } catch (e) {
+      await quietly(e)
+    }
+  }
+
+  /** The follow-ups for the Inbox on screen: none over a search or a list of
+   *  sends, both of which stand in the list column's place, and none once
+   *  they are switched off in Settings → Mail sorting -- a list loaded just
+   *  before is not left standing until the next load. */
+  get followUps(): readonly Thread[] {
+    if (this.sendsView !== null || this.searchQuery.trim()) return []
+    if (sorting.sorting?.followUp?.on === false) return []
+    return this.#followUps
+  }
+
+  /** The follow-ups drawn at the top, for the tab and toggles on -- see
+   *  `mail.ts`'s `followUpRows`. A row read or unstarred here keeps its
+   *  place, as it does in the list below. */
+  get followUpRows(): FollowUpRows {
+    const tab = mailboxHasTabs(this.mailbox) ? this.category : null
+    return pickFollowUpRows(this.followUps, tab, this.only, this.#lingering)
+  }
+
+  /**
+   * "Not needed": the thread's follow-up goes, here at once and then for
+   * good, until something new arrives in it. Put back, and said why, if the
+   * backend refuses.
+   *
+   * A row drawn only at the top -- a nudge, which is from Sent -- leaves the
+   * list altogether, so the cursor moves on as it does for anything leaving;
+   * a reply's row merely drops to its date below, and stays open.
+   */
+  async dismissFollowUp(id: ThreadId) {
+    if (!this.threads.some((t) => t.id === id)) this.#advanceIfOpen(new Set([id]))
+    // A load already on its way asked before this, and would bring it back.
+    this.#followUpGeneration++
+    await this.#act([id], { followUp: null }, async (ids) => {
+      await Promise.all(ids.map((t) => mailApi.dismissFollowUp(t)))
+      void this.refreshFollowUps()
+    })
   }
 
   // ── the open thread ────────────────────────────────────────────────
@@ -924,9 +1014,13 @@ class MailState {
     this.summary = null
   }
 
-  /** Whichever list is on screen -- see `visibleThreadList`. */
-  get #shownThreads(): readonly Thread[] {
-    return visibleThreadList(this.searchQuery, this.threads, this.searchResults)
+  /** Whichever list is on screen, in the order it is drawn -- see
+   *  `visibleThreadList`, and `followUpsFirst` for the follow-ups over an
+   *  Inbox. What `j`/`k`, Shift+click, Mod+A and the action keys all walk, so
+   *  each goes where the eye already has. */
+  get shownThreads(): readonly Thread[] {
+    const listed = followUpsFirst(this.followUpRows, this.threads)
+    return visibleThreadList(this.searchQuery, listed, this.searchResults)
   }
 
   /** The next and previous thread in list order, for `j`/`k` and prefetch.
@@ -934,7 +1028,7 @@ class MailState {
    *  results were what was actually on screen, so `j`/`k` moved through the
    *  mailbox behind the search rather than through the rows visible. */
   #neighbour(step: 1 | -1): Thread | null {
-    return neighbourThread(this.#shownThreads, this.selectedThread, step)
+    return neighbourThread(this.shownThreads, this.selectedThread, step)
   }
 
   async moveSelection(step: 1 | -1) {
@@ -959,7 +1053,7 @@ class MailState {
   clickThread(id: ThreadId, mods: { shift?: boolean; toggle?: boolean } = {}) {
     if (mods.shift) {
       const from = this.#anchor ?? this.selectedThread
-      const range = threadRange(this.#shownThreads, from, id)
+      const range = threadRange(this.shownThreads, from, id)
       this.checked = new Set(mods.toggle ? [...this.checked, ...range] : range)
       return
     }
@@ -993,7 +1087,7 @@ class MailState {
    * it and the next are picked together.
    */
   extendChecked(step: 1 | -1) {
-    const shown = this.#shownThreads
+    const shown = this.shownThreads
     const listed = (id: ThreadId | null) => id !== null && shown.some((t) => t.id === id)
     const next = this.#neighbour(step)
     if (!next) return
@@ -1008,7 +1102,7 @@ class MailState {
 
   /** Mod+A: every thread the list has loaded. */
   checkAll() {
-    this.checked = new Set(this.#shownThreads.map((t) => t.id))
+    this.checked = new Set(this.shownThreads.map((t) => t.id))
   }
 
   clearChecked() {
@@ -1019,7 +1113,7 @@ class MailState {
    *  one, else nothing. In list order, so a batch reads top to bottom. */
   get targets(): ThreadId[] {
     if (this.checked.size > 0) {
-      return this.#shownThreads.filter((t) => this.checked.has(t.id)).map((t) => t.id)
+      return this.shownThreads.filter((t) => this.checked.has(t.id)).map((t) => t.id)
     }
     return this.selectedThread ? [this.selectedThread] : []
   }
@@ -1032,7 +1126,7 @@ class MailState {
    */
   #prefetching = new Set<ThreadId>()
   async #prefetchNeighbours(around: ThreadId) {
-    const list = this.#shownThreads
+    const list = this.shownThreads
     const at = list.findIndex((t) => t.id === around)
     if (at < 0) return
     for (const t of [list[at - 1], list[at + 1]]) {
@@ -1067,7 +1161,7 @@ class MailState {
     if (this.composeInline) this.closeCompose()
     // The nearest neighbour that is not leaving too -- several can go at
     // once, from a multi-thread selection.
-    const list = this.#shownThreads
+    const list = this.shownThreads
     const at = list.findIndex((t) => t.id === open)
     const after = list.slice(at + 1).find((t) => !ids.has(t.id))
     const before = list
@@ -1100,6 +1194,9 @@ class MailState {
     if (ids.length === 0) return
     const befores: Thread[] = []
     const searchBefores: Thread[] = []
+    // The top of the Inbox too: its rows are copies of their own, and a nudge
+    // is drawn nowhere else.
+    const followBefores: Thread[] = []
     for (const id of ids) {
       const { rows, before } = applyRowPatch(this.threads, id, patch)
       this.threads = rows
@@ -1111,13 +1208,22 @@ class MailState {
       )
       this.searchResults = searchRows
       if (searchBefore) searchBefores.push(searchBefore)
+      const { rows: followRows, before: followBefore } = applyRowPatch(this.#followUps, id, patch)
+      if (followBefore) {
+        this.#followUps = followRows
+        followBefores.push(followBefore)
+      }
     }
     // A row this stops matching stays listed; one it matches again does not
     // need to be, should it be read elsewhere later. Both undone if this fails.
     const lingered: ThreadId[] = []
     const released: ThreadId[] = []
     if (this.only.size > 0) {
-      for (const before of befores) {
+      // Each thread once, wherever it is drawn.
+      const touched = new Map(
+        [...followBefores, ...befores].map((t): [ThreadId, Thread] => [t.id, t]),
+      )
+      for (const before of touched.values()) {
         const stopsMatching = !matchesOnly({ ...before, ...patch }, this.only)
         if (stopsMatching && !this.#lingering.has(before.id)) {
           this.#lingering.add(before.id)
@@ -1144,6 +1250,9 @@ class MailState {
       for (const before of befores) this.threads = revertRow(this.threads, before.id, before)
       for (const before of searchBefores) {
         this.searchResults = revertRow(this.searchResults, before.id, before)
+      }
+      for (const before of followBefores) {
+        this.#followUps = revertRow(this.#followUps, before.id, before)
       }
       if (openBefore && this.openThread?.thread.id === openBefore.id) {
         this.openThread = { ...this.openThread, thread: openBefore }
@@ -1172,6 +1281,8 @@ class MailState {
     // the index it was taken from.
     const removed: { row: Thread; index: number }[] = []
     const searchRemoved: { row: Thread; index: number }[] = []
+    // Archived, trashed or snoozed, a thread is done with: off the top too.
+    const followRemoved: { row: Thread; index: number }[] = []
     for (const id of ids) {
       const out = removeRow(this.threads, id)
       this.threads = out.rows
@@ -1179,6 +1290,11 @@ class MailState {
       const searchOut = removeRow(this.searchResults, id)
       this.searchResults = searchOut.rows
       if (searchOut.removed) searchRemoved.push(searchOut.removed)
+      const followOut = removeRow(this.#followUps, id)
+      if (followOut.removed) {
+        this.#followUps = followOut.rows
+        followRemoved.push(followOut.removed)
+      }
     }
     try {
       await call([...ids])
@@ -1187,6 +1303,9 @@ class MailState {
       for (const r of removed.reverse()) this.threads = restoreRow(this.threads, r)
       for (const r of searchRemoved.reverse()) {
         this.searchResults = restoreRow(this.searchResults, r)
+      }
+      for (const r of followRemoved.reverse()) {
+        this.#followUps = restoreRow(this.#followUps, r)
       }
       await handle(e)
     }
@@ -1234,6 +1353,7 @@ class MailState {
             this.searchResults = applyRowPatch(this.searchResults, thread, {
               unreadCount: 0,
             }).rows
+            this.#followUps = applyRowPatch(this.#followUps, thread, { unreadCount: 0 }).rows
           }
           done += ids.length
           cursor = page.nextCursor ?? null
@@ -1398,8 +1518,10 @@ class MailState {
       rows.flatMap((row, index) => (gone.has(row.id) ? [{ row, index }] : []))
     const removed = removedFrom(this.threads)
     const searchRemoved = removedFrom(this.searchResults)
+    const followRemoved = removedFrom(this.#followUps)
     this.threads = this.threads.filter((t) => !gone.has(t.id))
     this.searchResults = this.searchResults.filter((t) => !gone.has(t.id))
+    this.#followUps = this.#followUps.filter((t) => !gone.has(t.id))
     let sent = 0
     try {
       while (sent < unique.length) {
@@ -1414,6 +1536,7 @@ class MailState {
       // supersedes the stale one before it can land at all.
       this.threads = this.threads.filter((t) => !gone.has(t.id))
       this.searchResults = this.searchResults.filter((t) => !gone.has(t.id))
+      this.#followUps = this.#followUps.filter((t) => !gone.has(t.id))
       if (this.loading) void this.refresh()
       return true
     } catch (e) {
@@ -1427,6 +1550,7 @@ class MailState {
           .reduce((acc, r) => (acc.some((t) => t.id === r.row.id) ? acc : restoreRow(acc, r)), rows)
       this.threads = putBack(this.threads, removed)
       this.searchResults = putBack(this.searchResults, searchRemoved)
+      this.#followUps = putBack(this.#followUps, followRemoved)
       await handle(e)
       return false
     } finally {
@@ -2012,6 +2136,7 @@ class MailState {
         this.#advanceIfOpen(new Set([id]))
         this.threads = this.threads.filter((t) => t.id !== id)
         this.searchResults = this.searchResults.filter((t) => t.id !== id)
+        this.#followUps = this.#followUps.filter((t) => t.id !== id)
       },
       onUpserted: (id) => {
         void this.#patchOne(id)
@@ -2062,6 +2187,11 @@ class MailState {
     const version = this.selectedThread === id ? ++this.#openVersion : this.#openVersion
     try {
       const detail = await mailApi.getThread(id)
+      // At the top as well, or instead: answered meanwhile, its follow-up is
+      // gone from the fresh copy, and so is its row there.
+      if (this.#followUps.some((t) => t.id === id)) {
+        this.#followUps = this.#followUps.map((t) => (t.id === id ? detail.thread : t))
+      }
       const at = this.threads.findIndex((t) => t.id === id)
       if (at >= 0) {
         this.threads = this.threads.map((t, i) => (i === at ? detail.thread : t))
