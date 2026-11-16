@@ -2,15 +2,19 @@
 // and `improve_writing` -- so the interface can be driven in a browser
 // without a model behind it. Each keeps the shape of a short, plain email
 // rather than anything that reads as generated: a greeting, a line or two,
-// a sign-off, the same as `mock-mail.ts`'s own seeded messages do.
+// a sign-off, the same as `mock-mail.ts`'s own seeded messages do. And what
+// writing help has learned from the replies sent -- `voice_learning` and the
+// two commands that change it.
 
-import { mockGetThread } from './mock-mail'
+import { mockGetThread, mockMailWriting } from './mock-mail'
+import { VaultError } from './types'
 import type {
   ImproveMode,
   MailMessageDetail,
   ReplySuggestion,
   ReplySuggestions,
   ThreadId,
+  VoiceLearningView,
   WrittenText,
 } from './types'
 
@@ -135,4 +139,65 @@ export async function mockImproveWriting(opts: {
   await delay(500)
   const text = transform(opts.text, opts.mode)
   return { bodyText: text, bodyHtml: paragraphs(text.split(/\n+/).filter(Boolean)) }
+}
+
+// ── What it has learned from the replies sent ──────────────────────────
+
+/** `MAX_NOTES_CHARS` in `crates/karmayoga-core/src/mail/learning.rs`. */
+const MAX_NOTES_CHARS = 2_000
+
+/** Nothing learned yet, as a vault starts. */
+let learning: VoiceLearningView = { notes: '', learnedAt: null, repliesRead: 0, edited: false }
+
+export function mockVoiceLearning(): VoiceLearningView {
+  return { ...learning }
+}
+
+/** `save_voice_learning`: the notes as the person left them, or -- empty --
+ *  everything learned forgotten, the count with it. */
+export function mockSaveVoiceLearning(notes: string): VoiceLearningView {
+  const kept = notes.trim()
+  if (kept.length > MAX_NOTES_CHARS) {
+    throw new VaultError(
+      'invalid',
+      `that is too long to go with every reply; keep it under ${MAX_NOTES_CHARS} characters`,
+    )
+  }
+  if (!kept) {
+    learning = { notes: '', learnedAt: null, repliesRead: 0, edited: false }
+  } else if (kept !== learning.notes) {
+    learning = { ...learning, notes: kept, edited: true, learnedAt: new Date().toISOString() }
+  }
+  return mockVoiceLearning()
+}
+
+/** What a pass "learns": the sort of rules a model writes about how somebody
+ *  replies, a line each, the newest pass rewriting the whole set. */
+const LEARNED_NOTES = [
+  'Replies are short: two or three sentences, rarely more.',
+  'Opens with the first name and no greeting word ("Priya —"), never "Hope you are well".',
+  'Says yes or no in the first sentence, then the one reason.',
+  'Signs off "Thanks" with colleagues and with nothing at all with family.',
+  'Turns down meetings before 10 and offers a time instead of asking for one.',
+]
+
+/** `learn_from_replies`: refused, saying why, as the real pass is when
+ *  learning is off; otherwise the notes rewritten, and a few more replies
+ *  read. Takes a moment, the way a model does. */
+export async function mockLearnFromReplies(): Promise<VoiceLearningView> {
+  if (mockMailWriting().learn === false) {
+    throw new VaultError(
+      'invalid',
+      'learning from your replies is switched off under Settings → Mail writing',
+    )
+  }
+  await delay(900)
+  const read = learning.repliesRead + 4 + (learning.repliesRead % 3)
+  learning = {
+    notes: LEARNED_NOTES.slice(0, Math.min(LEARNED_NOTES.length, 3 + (read % 3))).join('\n'),
+    learnedAt: new Date().toISOString(),
+    repliesRead: read,
+    edited: false,
+  }
+  return mockVoiceLearning()
 }

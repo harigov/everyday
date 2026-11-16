@@ -22,6 +22,8 @@ import type {
   CategoryCount,
   Draft,
   DraftId,
+  FollowUpKind,
+  FollowUpList,
   InboxSender,
   InboxSendersArgs,
   MailActionByOrigin,
@@ -625,6 +627,62 @@ function seedPriorityThreads(s: Seeded): void {
 }
 seedPriorityThreads(seed)
 
+// ── Follow-ups: two waiting on a reply, one to nudge ───────────────────
+//
+// Marked on the seed the way the follow-up pass marks a thread
+// (`Thread.followUp`, naming the newest message and when it was sent), so
+// `mail_follow_ups` below has the backend's own shape to read back. Picked by
+// what they are rather than by index, so a change to the generator above
+// moves which threads they are without leaving them pointing at nothing:
+//
+//   - waiting on a reply: the first ordinary conversation in each account's
+//     Inbox -- past the newest few, which the store's own tests take as the
+//     top of the list;
+//   - to nudge: the first message Google sent to a person, at least three
+//     days ago, that nobody has answered.
+function seedFollowUps(s: Seeded): void {
+  const filedIn = (t: Thread, role: MailboxRole) =>
+    (s.threadMailboxes.get(t.id) ?? []).includes(mailboxId(t.accountId, role))
+  const newest = (t: Thread) =>
+    [...s.messages.values()]
+      .filter((m) => m.threadId === t.id)
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .at(-1)
+  const mark = (t: Thread | undefined, kind: FollowUpKind) => {
+    const last = t && newest(t)
+    if (t && last) t.followUp = { kind, message: last.id, since: last.date }
+  }
+  for (const account of [GOOGLE, FASTMAIL]) {
+    mark(
+      s.threads.find(
+        (t) =>
+          t.accountId === account &&
+          t.category === 'important' &&
+          !t.snoozedUntil &&
+          filedIn(t, 'inbox') &&
+          newest(t)?.from.email !== ME.email,
+      ),
+      'reply',
+    )
+  }
+  const threeDaysAgo = new Date(Date.now() - 3 * 86_400_000).toISOString()
+  mark(
+    s.threads.find((t) => {
+      const last = newest(t)
+      return (
+        t.accountId === GOOGLE &&
+        !t.snoozedUntil &&
+        filedIn(t, 'sent') &&
+        last?.from.email === ME.email &&
+        PEOPLE.some((p) => last.to.some((r) => r.email === p.email)) &&
+        last.date <= threeDaysAgo
+      )
+    }),
+    'nudge',
+  )
+}
+seedFollowUps(seed)
+
 // ── The Overview's mail cards ────────────────────────────────────────
 
 /** Every address the mock's accounts send as. */
@@ -876,6 +934,39 @@ export function mockCategoryCounts(mailbox: MailboxId): CategoryCount[] {
     counts.set(key, row)
   }
   return [...counts.values()]
+}
+
+/**
+ * `mail_follow_ups`: every thread the seed marks as waiting, `account`'s or
+ * every account's -- reply ones from an Inbox, nudge ones from Sent, none
+ * snoozed, reply first and newest first within each kind, as
+ * `karmayoga_service::mailfollowup::follow_ups` answers. A thread archived or
+ * answered since has left the mailbox it was waiting in, and so the list.
+ * Nothing at all with follow-ups switched off.
+ */
+export function mockFollowUps(account: AccountId | null): FollowUpList {
+  if (mockSorting.followUp?.on === false) return { threads: [] }
+  const from = (t: Thread, role: MailboxRole) =>
+    (seed.threadMailboxes.get(t.id) ?? []).includes(mailboxId(t.accountId, role))
+  const waiting = seed.threads.filter((t) => {
+    if (!t.followUp || t.snoozedUntil != null) return false
+    if (account && t.accountId !== account) return false
+    return from(t, t.followUp.kind === 'reply' ? 'inbox' : 'sent')
+  })
+  const order = (kind: FollowUpKind) =>
+    waiting
+      .filter((t) => t.followUp?.kind === kind)
+      .sort((a, b) => b.lastDate.localeCompare(a.lastDate))
+  return { threads: [...order('reply'), ...order('nudge')].map((t) => ({ ...t })) }
+}
+
+/** `dismiss_follow_up`: gone until something new arrives in the thread. */
+export function mockDismissFollowUp(id: ThreadId): void {
+  const at = seed.threads.findIndex((t) => t.id === id)
+  const t = seed.threads[at]
+  if (!t) throw new VaultError('notFound', 'no such thread')
+  // A new row, as `mockDeliverToThread` makes, so the list sees a change.
+  seed.threads[at] = { ...t, followUp: null }
 }
 
 /**
@@ -1247,7 +1338,8 @@ export function mockSetThreadPriority(ids: ThreadId[], priority: boolean): void 
 
 // ── Mail writing (what writing help is told) ───────────────────────────
 
-let mockWriting: MailWriting = { instructions: '', useCalendar: false }
+/** `MailWriting::default()`: learning from sent replies is on from the start. */
+let mockWriting: MailWriting = { instructions: '', useCalendar: false, learn: true }
 
 export function mockMailWriting(): MailWriting {
   return structuredClone(mockWriting)
@@ -1325,6 +1417,7 @@ export function mockDefaultSorting(): MailSorting {
       c('other', 'Other', 'Anything that fits none of the other categories.', 'other'),
     ],
     windowDays: 30,
+    followUp: { on: true, windowDays: 14, nudgeAfterDays: 3 },
   }
 }
 
@@ -1352,7 +1445,19 @@ export function mockSaveMailSorting(sorting: MailSorting): void {
   if (sorting.windowDays < 1 || sorting.windowDays > 90) {
     throw new VaultError('invalid', 'mail is sorted unasked for between 1 and 90 days back')
   }
-  mockSorting = structuredClone(sorting)
+  // `FollowUpSettings::validate`; absent reads as the defaults, as serde has it.
+  const followUp = { on: true, windowDays: 14, nudgeAfterDays: 3, ...sorting.followUp }
+  const { windowDays, nudgeAfterDays } = followUp
+  if (!Number.isInteger(windowDays) || windowDays < 1 || windowDays > 60) {
+    throw new VaultError('invalid', 'follow-ups look back between 1 and 60 days')
+  }
+  if (!Number.isInteger(nudgeAfterDays) || nudgeAfterDays < 1 || nudgeAfterDays >= windowDays) {
+    throw new VaultError(
+      'invalid',
+      `a nudge waits at least a day, and less than the ${windowDays} days follow-ups look back`,
+    )
+  }
+  mockSorting = structuredClone({ ...sorting, followUp })
 }
 
 export function mockOlderSortViews(): OlderSortView[] {
@@ -1644,6 +1749,9 @@ export function mockDeliverToThread(
     lastDate: now,
     snippet: message.snippet,
     unreadCount: thread.unreadCount + (seen ? 0 : 1),
+    // Its newest message is another now -- answered, or answered again -- so
+    // what it was waiting on is over, as `recompute_thread` has it.
+    followUp: null,
   }
   mockRaiseChange({ kind: 'thread', op: 'updated', origin: 'mock-sync' })
   return message

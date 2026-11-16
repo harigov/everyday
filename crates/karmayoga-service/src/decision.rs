@@ -47,7 +47,14 @@ pub struct ChoiceOption {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Choice {
     pub name: String,
+    /// The model's own measure of how sure it is. Not one scale: a provider's
+    /// reads like a probability, a model on this computer's is one minus the
+    /// answers' normalised entropy, which is far stricter.
     pub confidence: Option<f64>,
+    /// The probability it gave the answer it chose, which is one scale
+    /// everywhere -- what a threshold is held against. A provider that gives
+    /// no probabilities leaves its confidence here.
+    pub probability: Option<f64>,
 }
 
 /// What the content is, twice: as fields, for TypeSafe's `state` (which takes
@@ -179,10 +186,19 @@ pub fn parse_answer(api: DecisionApi, response: &Value) -> CommandResult<Choice>
             "the decision model's answer named no choice",
         ));
     };
-    Ok(Choice {
-        name: name.to_string(),
-        confidence: answer.get("confidence").and_then(Value::as_f64),
-    })
+    let confidence = answer.get("confidence").and_then(Value::as_f64);
+    // TypeSafe maps each answer to its probability; OpenAI lists them.
+    let probability = match answer.get("probabilities") {
+        Some(Value::Object(by_name)) => by_name.get(name).and_then(Value::as_f64),
+        Some(Value::Array(listed)) => listed
+            .iter()
+            .find(|p| p.get("value").and_then(Value::as_str) == Some(name))
+            .and_then(|p| p.get("probability"))
+            .and_then(Value::as_f64),
+        _ => None,
+    }
+    .or(confidence);
+    Ok(Choice { name: name.to_string(), confidence, probability })
 }
 
 /// Whether `e` is about the one request it answered -- the model declined
@@ -307,7 +323,7 @@ mod tests {
         });
         assert_eq!(
             parse_answer(DecisionApi::TypeSafe, &typesafe).unwrap(),
-            Choice { name: "Receipts".into(), confidence: Some(0.7) }
+            Choice { name: "Receipts".into(), confidence: Some(0.7), probability: Some(0.8) }
         );
 
         let openai = json!({ "answers": [{
@@ -316,7 +332,14 @@ mod tests {
         }]});
         assert_eq!(
             parse_answer(DecisionApi::OpenAi, &openai).unwrap(),
-            Choice { name: "Other".into(), confidence: Some(0.93) }
+            Choice { name: "Other".into(), confidence: Some(0.93), probability: Some(0.9) }
+        );
+
+        let bare = json!({ "answers": { "category": { "choice": "Other", "confidence": 0.6 } } });
+        assert_eq!(
+            parse_answer(DecisionApi::TypeSafe, &bare).unwrap().probability,
+            Some(0.6),
+            "no probabilities: the confidence stands in"
         );
 
         let refusal = json!({ "answers": [{ "type": "refusal", "name": "category" }] });

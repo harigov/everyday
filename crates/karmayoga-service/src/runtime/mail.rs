@@ -76,6 +76,22 @@ pub(crate) struct MailRuntime {
     /// the window -- see `crate::mailsort::FULL_LOOK_EVERY` for why the
     /// ticks in between read only the top of the Inbox.
     sort_full_looks: Mutex<HashMap<AccountId, Timestamp>>,
+    /// As [`MailRuntime::sort_full_looks`], for the follow-up pass
+    /// (`crate::mailfollowup`), which reads the Inbox and Sent back to its own
+    /// window.
+    follow_up_full_looks: Mutex<HashMap<AccountId, Timestamp>>,
+    /// Threads the follow-up pass read and had to leave for later, per
+    /// account -- see [`crate::mailfollowup::SkipNote`]. Replaced on every
+    /// full look, so it never holds more than the window.
+    follow_up_skips: Mutex<HashMap<AccountId, HashMap<ThreadId, crate::mailfollowup::SkipNote>>>,
+    /// Held across every read-change-write of the learned voice
+    /// (`karmayoga_core::mail::VoiceLearning`): `suggest_replies` adds what it
+    /// offered while a learning pass may be replacing the notes, and neither
+    /// may put back a copy read before the other wrote.
+    voice_learning: Mutex<()>,
+    /// When the unattended learning pass last looked for replies to learn
+    /// from -- see `crate::mailvoicelearn`'s `LOOK_AGAIN`.
+    voice_learn_looked: Mutex<Option<Timestamp>>,
     /// `summarize_thread`'s cache: a thread's summary, keyed by how many
     /// messages it had when it was written. A thread that has grown since
     /// -- a new message landed -- misses the cache and is summarised again;
@@ -151,6 +167,10 @@ impl MailRuntime {
             )),
             older_sorts: Mutex::new(HashMap::new()),
             sort_full_looks: Mutex::new(HashMap::new()),
+            follow_up_full_looks: Mutex::new(HashMap::new()),
+            follow_up_skips: Mutex::new(HashMap::new()),
+            voice_learning: Mutex::new(()),
+            voice_learn_looked: Mutex::new(None),
             summary_cache: Mutex::new(HashMap::new()),
             categorize_cursor: Mutex::new(HashMap::new()),
             autodraft_cursor: Mutex::new(HashMap::new()),
@@ -385,6 +405,49 @@ impl MailRuntime {
         self.voice_cache.lock().unwrap().remove(&account);
     }
 
+    pub(crate) fn follow_up_full_look(&self, account: AccountId) -> Option<Timestamp> {
+        self.follow_up_full_looks.lock().unwrap().get(&account).copied()
+    }
+
+    pub(crate) fn set_follow_up_full_look(&self, account: AccountId, at: Option<Timestamp>) {
+        let mut looks = self.follow_up_full_looks.lock().unwrap();
+        match at {
+            Some(at) => {
+                looks.insert(account, at);
+            }
+            None => {
+                looks.remove(&account);
+            }
+        }
+    }
+
+    pub(crate) fn follow_up_skips(
+        &self,
+        account: AccountId,
+    ) -> HashMap<ThreadId, crate::mailfollowup::SkipNote> {
+        self.follow_up_skips.lock().unwrap().get(&account).cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn set_follow_up_skips(
+        &self,
+        account: AccountId,
+        skips: HashMap<ThreadId, crate::mailfollowup::SkipNote>,
+    ) {
+        self.follow_up_skips.lock().unwrap().insert(account, skips);
+    }
+
+    pub(crate) fn voice_learn_looked(&self) -> Option<Timestamp> {
+        *self.voice_learn_looked.lock().unwrap()
+    }
+
+    pub(crate) fn set_voice_learn_looked(&self, at: Option<Timestamp>) {
+        *self.voice_learn_looked.lock().unwrap() = at;
+    }
+
+    pub(crate) fn voice_learning_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.voice_learning.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(crate) fn replies_cache_clear(&self) {
         self.reply_cache.lock().unwrap().clear();
     }
@@ -448,6 +511,7 @@ impl MailRuntime {
     fn forget_writing_caches(&self) {
         self.voice_cache.lock().unwrap().clear();
         self.reply_cache.lock().unwrap().clear();
+        *self.voice_learn_looked.lock().unwrap() = None;
     }
 
     /// Called once, by [`Service::close`](crate::service::Service::close),

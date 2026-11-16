@@ -11,6 +11,7 @@
     CATEGORY_TABS,
     MAIL_ONLY,
     categoryTabCount,
+    followUpPill,
     isSnoozedMailbox,
     isUnifiedMailbox,
     mailboxDisplayName,
@@ -27,6 +28,7 @@
     weekdayAndTime,
     searchPlace,
     withDateSections,
+    withFollowUpSections,
     type ListRow,
     type MailOnly,
   } from '../lib/mail'
@@ -39,6 +41,7 @@
   import type { IconName } from '../lib/icons'
   import type {
     AccountId,
+    FollowUpKind,
     Mailbox,
     MailAddress,
     MailCategory,
@@ -50,6 +53,7 @@
   import Icon from './Icon.svelte'
   import MailCleanup from './MailCleanup.svelte'
   import MailCompose from './MailCompose.svelte'
+  import MailFollowUpBanner from './MailFollowUpBanner.svelte'
   import MailLabelPicker from './MailLabelPicker.svelte'
   import MailScheduled from './MailScheduled.svelte'
   import MailOutbox from './MailOutbox.svelte'
@@ -134,6 +138,12 @@
     attachments: 'paperclip',
   }
 
+  /** What a follow-up row's pill means, for its title. */
+  const WAITING: Record<FollowUpKind, string> = {
+    reply: 'Waiting on your reply',
+    nudge: 'Nobody has answered your last message',
+  }
+
   /**
    * The number on a tab: its conversations, or with Unread on, the unread
    * ones. `null` with another toggle on, since `category_counts` does not
@@ -198,14 +208,25 @@
    *  `snoozed` filter). */
   const inSnoozedView = $derived(isSnoozedMailbox(mail.mailbox))
 
-  /** The list column's own rows, headings interleaved -- never grouped in
-   *  the Snoozed view, whose rows already read "comes back", not "arrived",
+  /** The follow-ups drawn over an Inbox's own rows, for the tab and toggles
+   *  on -- nothing for any other list, search included: see
+   *  `mail.followUpRows`. */
+  const followUpRows = $derived(mail.followUpRows)
+  const followUpCount = $derived(followUpRows.reply.length + followUpRows.nudge.length)
+
+  /** The list column's own rows, headings interleaved, an Inbox's follow-ups
+   *  in sections of their own above the dates -- never grouped in the
+   *  Snoozed view, whose rows already read "comes back", not "arrived",
    *  which `dateSection`'s own headings have nothing to say about. */
   const listRows = $derived<ListRow[]>(
     inSnoozedView
       ? mail.threads.map((thread) => ({ type: 'thread', thread }))
-      : withDateSections(mail.threads, (t) => t.lastDate),
+      : withFollowUpSections(followUpRows, mail.threads, (t) => t.lastDate),
   )
+  /** Nothing to draw at all: no rows of the mailbox's own, and nothing
+   *  waiting at the top -- which a tab with no mail of its own can still
+   *  have, in a nudge. */
+  const listEmpty = $derived(mail.threads.length === 0 && followUpCount === 0)
   const searchRows = $derived<ListRow[]>(withDateSections(mail.searchResults, (t) => t.lastDate))
 
   function rowKey(row: ListRow): string {
@@ -218,6 +239,12 @@
    *  every field of an un-narrowed `row.thread` as an unsafe `any`. */
   function threadOf(row: Extract<ListRow, { type: 'thread' }>): Thread {
     return row.thread
+  }
+
+  /** Which follow-up section a thread row is drawn in, if it is in one --
+   *  spelled out for the same reason `threadOf` is. */
+  function followUpOf(row: Extract<ListRow, { type: 'thread' }>): FollowUpKind | null {
+    return row.followUp ?? null
   }
 
   /** (p) TODO: only the inbox has a split to tab through -- see
@@ -291,6 +318,13 @@
     const vip = vipSenderFor(t)
     return tidyMenu([
       { label: 'Open', icon: 'inbox', run: () => void mail.openThreadById(t.id) },
+      // First after Open on a follow-up: being done with what it is waiting
+      // on is the one thing its place at the top asks of somebody.
+      t.followUp && {
+        label: 'Not needed',
+        icon: 'tick',
+        run: () => void mail.dismissFollowUp(t.id),
+      },
       {
         label: t.unreadCount > 0 ? 'Mark read' : 'Mark unread',
         icon: 'check',
@@ -373,12 +407,9 @@
     else notify.success(`Deleted ${plural(count, 'conversation')} for good`, { body: name })
   }
 
-  /** The picked threads, in list order -- see `mail.checked`. */
-  const pickedThreads = $derived(
-    (mail.searchQuery.trim() ? mail.searchResults : mail.threads).filter((t) =>
-      mail.checked.has(t.id),
-    ),
-  )
+  /** The picked threads, in list order -- see `mail.checked`. The follow-ups
+   *  at the top count: a nudge is in no other list to be found in. */
+  const pickedThreads = $derived(mail.shownThreads.filter((t) => mail.checked.has(t.id)))
 
   /** Everything the bulk pane and a picked row's own menu offer, for every
    *  picked thread at once. Move to… only lists one account's folders, so
@@ -588,7 +619,7 @@
             {#if row.type === 'header'}
               <div class="date-section" aria-hidden="true">{row.label}</div>
             {:else}
-              {@render threadRow(threadOf(row))}
+              {@render threadRow(threadOf(row), null)}
             {/if}
           {/each}
           {#if mail.searchCursor}
@@ -602,9 +633,9 @@
           {/if}
         </div>
       {/if}
-    {:else if mail.loading && mail.threads.length === 0}
+    {:else if mail.loading && listEmpty}
       <p class="hint">Loading…</p>
-    {:else if mail.threads.length === 0 && mail.only.size > 0}
+    {:else if listEmpty && mail.only.size > 0}
       <EmptyState lead={onlyEmptyLead(mail.only)}>
         {#snippet action()}
           <button class="btn btn-outline" onclick={() => mail.setOnly(new Set())}>
@@ -612,7 +643,7 @@
           </button>
         {/snippet}
       </EmptyState>
-    {:else if mail.threads.length === 0}
+    {:else if listEmpty}
       <EmptyState lead="Nothing here.">
         {#snippet note()}This mailbox has no threads matching what is showing.{/snippet}
       </EmptyState>
@@ -632,7 +663,12 @@
             {#if row.type === 'header'}
               <div class="date-section" aria-hidden="true">{row.label}</div>
             {:else}
-              {@render threadRow(threadOf(row))}
+              {@const kind = followUpOf(row)}
+              {#if kind}
+                {@render followUpRow(threadOf(row), kind)}
+              {:else}
+                {@render threadRow(threadOf(row), null)}
+              {/if}
             {/if}
           {/snippet}
         </VirtualList>
@@ -652,8 +688,9 @@
      row. Whether it is unread is said once, down the left edge, and by how
      bright its words are, and everything else on the row keeps quiet: most of
      an inbox can be unread at once, so anything louder repeats on every line.
-     The tick takes the dot's place once the row is picked. -->
-{#snippet threadRow(t: Thread)}
+     The tick takes the dot's place once the row is picked. `followUp` is the
+     section at the top it is drawn in, if any, which a pill names. -->
+{#snippet threadRow(t: Thread, followUp: FollowUpKind | null)}
   {@const picked = mail.checked.has(t.id)}
   {@const preview = snippetText(t.snippet)}
   {@const sorted = sorting.categoryOf(t)}
@@ -663,6 +700,7 @@
     class:sel={mail.selectedThread === t.id}
     class:checked={picked}
     class:unread={t.unreadCount > 0}
+    class:follow={followUp !== null}
     onmousedown={noTextRange}
     onclick={(e) => clickRow(e, t.id)}
     oncontextmenu={(e) => menu.show(e, menuFor(t))}
@@ -681,6 +719,9 @@
         <span class="subject">{t.subject || '(no subject)'}</span>
         {#if preview}<span class="snippet">{preview}</span>{/if}
       </span>
+      {#if followUp && t.followUp}
+        <span class="sorted waiting" title={WAITING[followUp]}>{followUpPill(t.followUp)}</span>
+      {/if}
       {#if sorted}
         <span class="sorted" title="Sorted as {sorted.name}">{sorted.name}</span>
       {/if}
@@ -709,6 +750,23 @@
       {/if}
     </span>
   </button>
+{/snippet}
+
+<!-- A row in a follow-up section at the top of the Inbox: the ordinary row,
+     and beside it -- not inside it, a button cannot hold another -- the tick
+     that says it is not needed, in a gutter the row leaves for it. -->
+{#snippet followUpRow(t: Thread, kind: FollowUpKind)}
+  <div class="follow-row">
+    {@render threadRow(t, kind)}
+    <button
+      class="follow-done"
+      title="Not needed — take it off the top"
+      aria-label="Not needed — take it off the top"
+      onclick={() => void mail.dismissFollowUp(t.id)}
+    >
+      <Icon name="tick" size={13} weight={2.5} />
+    </button>
+  </div>
 {/snippet}
 
 <main class="main" data-mail-pane>
@@ -931,6 +989,7 @@
             >
           </p>
         {/if}
+        <MailFollowUpBanner detail={open} />
         {#if recentActionLines.length > 0}
           <p class="recent-actions">
             {#each recentActionLines as line, i (i)}
@@ -1237,10 +1296,11 @@
     container-type: inline-size;
   }
 
-  /* A grouping heading over a run of rows -- never a button, never
-     focusable: `j`/`k` and a row's own context menu read `mail.threads`
-     directly, which never contains one of these, so there is nothing here
-     for either to skip over by accident. Lined up with the row's text. */
+  /* A grouping heading over a run of rows -- a date, or a follow-up section
+     -- never a button, never focusable: `j`/`k` and a row's own context menu
+     read `mail.shownThreads`, which never contains one of these, so there is
+     nothing here for either to skip over by accident. Lined up with the
+     row's text. */
   .date-section {
     padding: var(--sp-4) var(--sp-5) var(--sp-1) calc(var(--sp-2) + var(--sp-5));
     font-size: var(--text-xs);
@@ -1395,6 +1455,47 @@
     white-space: nowrap;
     text-overflow: ellipsis;
   }
+  /* A follow-up's pill: the same quiet word, in the accent, since why it is at
+     the top is the one thing on the row worth saying first. */
+  .sorted.waiting {
+    color: var(--journal-accent, var(--accent));
+    font-weight: 600;
+  }
+
+  /* A follow-up row and its tick. The row keeps its own card; the tick sits
+     in a gutter the row leaves at its right edge, so it covers nothing. */
+  .follow-row {
+    position: relative;
+  }
+  .row.follow {
+    padding-right: calc(var(--sp-3) + 28px);
+  }
+  /* Hovering the tick is still hovering the row it belongs to. */
+  .follow-row:hover .row:not(.sel):not(.checked) {
+    background: var(--bg-hover);
+  }
+  .follow-done {
+    position: absolute;
+    top: 50%;
+    right: calc(var(--sp-2) + 6px);
+    translate: 0 -50%;
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    color: var(--fg-faint);
+    transition:
+      background var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .follow-done:hover,
+  .follow-done:focus-visible {
+    background: color-mix(in oklab, var(--accent) 14%, transparent);
+    color: var(--journal-accent, var(--accent));
+    outline: none;
+  }
+
   .sorted-mark {
     display: inline-flex;
     align-items: center;

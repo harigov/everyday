@@ -199,6 +199,7 @@ pub async fn categorize_tick(service: &Arc<Service>) {
     match vault.decision_access() {
         Ok(decision) => {
             crate::mailsort::sort_tick(service, &vault, &accounts, &decision).await;
+            crate::mailfollowup::follow_up_tick(service, &vault, &accounts, &decision).await;
             return;
         }
         Err(e) => {
@@ -1420,6 +1421,8 @@ mod tests {
             ai_priority_asked_at_count: None,
             sorted_as: None,
             ai_sorted: None,
+            follow_up: None,
+            follow_up_asked: None,
         }
     }
 
@@ -1627,7 +1630,7 @@ mod tests {
             "On Tue wrote:\n> old stuff\n\nCan you confirm Friday?".to_string(),
         )];
         let voice = VoiceContext {
-            examples: vec!["Thanks, sounds good.".to_string()],
+            examples: vec!["Thanks, sounds good.".into()],
             name: Some("Hari".to_string()),
             ..Default::default()
         };

@@ -71,6 +71,10 @@ pub struct MailSorting {
     /// this is sorted only when somebody asks.
     #[serde(default = "default_window_days")]
     pub window_days: u32,
+    /// Mail waiting on the person, and mail they are waiting on, at the top
+    /// of the Inbox -- see [`super::follow_up`].
+    #[serde(default)]
+    pub follow_up: super::FollowUpSettings,
 }
 
 fn default_window_days() -> u32 {
@@ -135,6 +139,7 @@ impl Default for MailSorting {
                 ),
             ],
             window_days: DEFAULT_WINDOW_DAYS,
+            follow_up: super::FollowUpSettings::default(),
         }
     }
 }
@@ -156,6 +161,7 @@ impl MailSorting {
                 "mail is sorted unasked for between 1 and {MAX_WINDOW_DAYS} days back"
             )));
         }
+        self.follow_up.validate()?;
         let mut names = std::collections::HashSet::new();
         let mut ids = std::collections::HashSet::new();
         for (i, category) in self.categories.iter().enumerate() {

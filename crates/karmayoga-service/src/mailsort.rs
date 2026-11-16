@@ -213,12 +213,25 @@ pub(crate) async fn sort_tick(
 /// smaller bites rather than holding the pass -- and the new mail waiting
 /// behind it to be announced -- for minutes at a time.
 fn share(decision: &DecisionAccess) -> usize {
-    let Some(model) = decision.config.local_model() else { return PER_ACCOUNT };
+    share_of(decision, PER_ACCOUNT, LOCAL_SHARE, LOCAL_FIRST)
+}
+
+/// [`share`] on another pass's own numbers: `per_account` at a provider; on
+/// this computer, as many as fit in `local_share` at the pace the model has
+/// been going, `local_first` before that pace is known. The follow-up pass
+/// (`crate::mailfollowup`) asks on the same model after this one.
+pub(crate) fn share_of(
+    decision: &DecisionAccess,
+    per_account: usize,
+    local_share: std::time::Duration,
+    local_first: usize,
+) -> usize {
+    let Some(model) = decision.config.local_model() else { return per_account };
     match crate::local::decide::ms_per_message(model) {
-        None => LOCAL_FIRST,
-        Some(ms) => (LOCAL_SHARE.as_millis() as u64 / ms.max(1)) as usize,
+        None => local_first,
+        Some(ms) => (local_share.as_millis() as u64 / ms.max(1)) as usize,
     }
-    .clamp(1, PER_ACCOUNT)
+    .clamp(1, per_account)
 }
 
 /// Where an older sort goes after this tick.

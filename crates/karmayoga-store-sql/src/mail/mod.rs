@@ -29,6 +29,7 @@ use karmayoga_core::store::mail::{
     CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad,
     category_rules_aad, contacts_aad, draft_aad, draft_blob_refs_of, mail_sorting_aad,
     mail_writing_aad, mailbox_aad, message_aad, op_aad, remote_image_settings_aad,
+    voice_learning_aad,
 };
 
 use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
@@ -759,6 +760,29 @@ impl MailStore for SqlStore {
         write::set_thread_ai_sorted(self, thread, mark)
     }
 
+    fn set_thread_follow_up(
+        &self,
+        thread: ThreadId,
+        mark: karmayoga_core::mail::FollowUpMark,
+        follow_up: Option<karmayoga_core::mail::FollowUp>,
+    ) -> Result<bool> {
+        write::set_thread_follow_up(self, thread, mark, follow_up)
+    }
+
+    fn set_thread_follow_up_asked(
+        &self,
+        thread: ThreadId,
+        mark: karmayoga_core::mail::FollowUpMark,
+    ) -> Result<bool> {
+        write::set_thread_follow_up_asked(self, thread, mark)
+    }
+
+    fn clear_thread_follow_up(&self, thread: ThreadId) -> Result<()> {
+        write::patch_thread(self, thread, |t| {
+            t.follow_up = None;
+        })
+    }
+
     fn due_snoozed_threads(&self, now: Timestamp, limit: u32) -> Result<Vec<ThreadId>> {
         let mut sql = "SELECT id FROM threads WHERE snoozed_until_us IS NOT NULL \
              AND snoozed_until_us <= ?1"
@@ -1029,6 +1053,25 @@ impl MailStore for SqlStore {
         let data = self.seal(&mail_writing_aad(), writing)?;
         self.write().execute(
             "INSERT INTO mail_writing (id, data) VALUES (1, ?1)
+             ON CONFLICT (id) DO UPDATE SET data = ?1",
+            &vals![data],
+        )?;
+        Ok(())
+    }
+
+    fn voice_learning(&self) -> Result<karmayoga_core::mail::VoiceLearning> {
+        let sealed =
+            self.read().sealed("SELECT data FROM mail_voice_learning WHERE id = 1", &[])?;
+        match sealed {
+            Some(sealed) => self.unseal(&voice_learning_aad(), &sealed),
+            None => Ok(karmayoga_core::mail::VoiceLearning::default()),
+        }
+    }
+
+    fn put_voice_learning(&self, learning: &karmayoga_core::mail::VoiceLearning) -> Result<()> {
+        let data = self.seal(&voice_learning_aad(), learning)?;
+        self.write().execute(
+            "INSERT INTO mail_voice_learning (id, data) VALUES (1, ?1)
              ON CONFLICT (id) DO UPDATE SET data = ?1",
             &vals![data],
         )?;

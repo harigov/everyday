@@ -118,6 +118,101 @@ mail.selectedThread = 'not-a-real-id'
 await mail.refresh()
 assert.equal(mail.selectedThread, null, 'a selection not in the reloaded page is cleared')
 
+// ── Follow-ups at the top of the Inbox ───────────────────────────────
+//
+// The mock marks a thread waiting on a reply in each account's Inbox, and one
+// of Google's sent messages to nudge. Before anything below archives mail,
+// and both of Google's are dismissed by the end, so the Google Inbox the
+// tests further down pick from is drawn exactly as its page is.
+
+{
+  await mail.refreshFollowUps()
+  const top = mail.followUpRows
+  assert.equal(top.reply.length, 2, "All inboxes: both accounts' replies")
+  assert.equal(top.nudge.length, 1, 'and the nudge')
+  assert.ok(
+    mail.followUps.every((t) => t.followUp),
+    'each says why it is there',
+  )
+  const [nudge] = top.nudge
+  assert.ok(!mail.threads.some((t) => t.id === nudge.id), 'a nudge is from Sent, in no Inbox page')
+  assert.deepEqual(
+    mail.shownThreads.slice(0, 3).map((t) => t.id),
+    [...top.reply, ...top.nudge].map((t) => t.id),
+    'the keys walk the top first, in the order it is drawn',
+  )
+  const walked = mail.shownThreads.map((t) => t.id)
+  assert.equal(new Set(walked).size, walked.length, 'and every thread once')
+
+  // A tab shows the replies filed under it; nudges, only All and Priority.
+  mail.setCategory('newsletter')
+  await mail.refresh()
+  assert.equal(mail.followUpRows.reply.length + mail.followUpRows.nudge.length, 0)
+  mail.setCategory('priority')
+  await mail.refresh()
+  assert.deepEqual(
+    mail.followUpRows.nudge.map((t) => t.id),
+    [nudge.id],
+    'the nudge is on Priority',
+  )
+  mail.setCategory(null)
+  await mail.refresh()
+
+  // Nothing over a search, or for a list that is no Inbox.
+  mail.setSearchQuery('nothing at all like this')
+  assert.equal(mail.followUps.length, 0, 'none over a search')
+  mail.clearSearch()
+  assert.equal(mail.followUps.length, 3, 'and back once it goes')
+  const google = mail.mailboxes.find((m) => m.accountId === 'acct-google' && m.role === 'inbox')
+  const googleSent = mail.mailboxes.find((m) => m.accountId === 'acct-google' && m.role === 'sent')
+  await mail.selectMailbox(googleSent.id)
+  assert.equal(mail.followUps.length, 0, 'Sent has none, not even for a moment')
+  await mail.selectMailbox(google.id)
+  await mail.refreshFollowUps()
+  assert.ok(mail.followUps.length > 0)
+  assert.ok(
+    mail.followUps.every((t) => t.accountId === 'acct-google'),
+    "one account's Inbox has its own only",
+  )
+
+  // "Not needed" on a reply: off the top at once, but still in the Inbox,
+  // and still open.
+  const reply = mail.followUpRows.reply[0]
+  await mail.openThreadById(reply.id)
+  await mail.dismissFollowUp(reply.id)
+  assert.ok(!mail.followUpRows.reply.some((t) => t.id === reply.id), 'off the top')
+  assert.ok(
+    mail.threads.some((t) => t.id === reply.id),
+    'still in the list below',
+  )
+  assert.equal(mail.selectedThread, reply.id, 'and still open')
+  assert.equal(mail.openThread?.thread.followUp, null, 'with no banner')
+  await mail.refreshFollowUps()
+  assert.ok(!mail.followUps.some((t) => t.id === reply.id), 'and gone for good')
+
+  // Refused: put back, and said why.
+  const googleNudge = mail.followUpRows.nudge[0]
+  assert.ok(googleNudge, "Google's nudge is in Google's Inbox")
+  const dismiss = api.dismissFollowUp
+  api.dismissFollowUp = () => Promise.reject(new Error('refused'))
+  await mail.dismissFollowUp(googleNudge.id)
+  api.dismissFollowUp = dismiss
+  const nudges = mail.followUpRows.nudge.map((t) => t.id)
+  assert.deepEqual(nudges, [googleNudge.id], 'a refusal puts it back')
+  assert.equal(app.error, 'refused', 'and says why')
+  app.error = null
+
+  // On a nudge, which is drawn nowhere else: it leaves the list, and the
+  // cursor moves on, as it does for anything that leaves.
+  await mail.openThreadById(googleNudge.id)
+  await mail.dismissFollowUp(googleNudge.id)
+  assert.equal(mail.followUpRows.nudge.length, 0)
+  assert.notEqual(mail.selectedThread, googleNudge.id, 'the cursor moved on')
+  assert.equal(mail.openThread, null)
+
+  await mail.selectMailbox('unified:inbox')
+}
+
 // ── loadMore ─────────────────────────────────────────────────────────
 
 if (mail.nextCursor) {

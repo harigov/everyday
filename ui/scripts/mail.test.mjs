@@ -59,6 +59,16 @@ const {
   threadRange,
   categoryTabCount,
   parseTypedAddress,
+  followUpScope,
+  followUpRows,
+  followUpsFirst,
+  withFollowUpSections,
+  followUpDays,
+  followUpPill,
+  waitingSinceLabel,
+  nudgeRecipients,
+  followUpSettingsProblems,
+  FOLLOW_UP_DEFAULTS,
 } = mailLib
 
 function person(name, email) {
@@ -1154,6 +1164,207 @@ assert.equal(searchPlace(['sent', 'all']), 'Sent')
 assert.equal(searchPlace(['drafts']), 'Draft')
 assert.equal(searchPlace(['all']), 'Archived')
 assert.equal(searchPlace(['other', 'all']), 'Not in Inbox')
+
+// ── Follow-ups at the top of the Inbox ──────────────────────────────────
+
+// Which list `mail_follow_ups` is asked for: an Inbox's, and nothing else's.
+assert.deepEqual(
+  followUpScope({ id: 'mb-g-inbox', accountId: 'acct-google', role: 'inbox' }),
+  { account: 'acct-google' },
+  "one account's Inbox: that account's",
+)
+assert.deepEqual(
+  followUpScope({ id: unifiedMailboxId('inbox'), accountId: '', role: 'inbox', pseudo: 'unified' }),
+  { account: null },
+  'All inboxes: every account at once',
+)
+const unifiedSnoozed = { id: unifiedMailboxId('snoozed'), accountId: '', role: 'other' }
+assert.equal(
+  followUpScope({ ...unifiedSnoozed, pseudo: 'unified' }),
+  null,
+  'the unified Snoozed is no Inbox',
+)
+assert.equal(
+  followUpScope({ id: 'mb-g-snoozed', accountId: 'acct-google', role: 'other', pseudo: 'snoozed' }),
+  null,
+  "nor is an account's",
+)
+assert.equal(followUpScope({ id: 'mb-g-sent', accountId: 'acct-google', role: 'sent' }), null)
+assert.equal(followUpScope(null), null)
+
+{
+  const now = new Date('2026-09-14T10:00:00') // a Monday, as `mondayNow`
+  const waiting = (id, kind, extra = {}) => ({
+    ...thread(id, '2026-09-10T09:00:00'),
+    category: 'important',
+    starred: false,
+    hasAttachments: false,
+    followUp: { kind, message: `${id}-message`, since: '2026-09-10T09:00:00' },
+    ...extra,
+  })
+  const followUps = [
+    waiting('r1', 'reply', { unreadCount: 1 }),
+    waiting('r2', 'reply', { category: 'priority' }),
+    waiting('n1', 'nudge', { category: 'other' }),
+    waiting('r1', 'reply'),
+    waiting('gone', 'reply', { followUp: null }),
+  ]
+  const ids = (rows) => ({ reply: rows.reply.map((t) => t.id), nudge: rows.nudge.map((t) => t.id) })
+
+  assert.deepEqual(
+    ids(followUpRows(followUps, null, new Set())),
+    { reply: ['r1', 'r2'], nudge: ['n1'] },
+    'All shows every one, each once, and none dismissed since the last load',
+  )
+  assert.deepEqual(
+    ids(followUpRows(followUps, 'priority', new Set())),
+    { reply: ['r2'], nudge: ['n1'] },
+    'Priority: the replies filed under it, and every nudge',
+  )
+  assert.deepEqual(
+    ids(followUpRows(followUps, 'important', new Set())),
+    { reply: ['r1'], nudge: [] },
+    'any other tab: its own replies, and no nudges',
+  )
+  assert.deepEqual(
+    ids(followUpRows(followUps, null, new Set(['unread']))),
+    { reply: ['r1'], nudge: [] },
+    'the toggles narrow them as they narrow the list',
+  )
+  assert.deepEqual(
+    ids(followUpRows(followUps, null, new Set(['unread']), new Set(['r2']))),
+    { reply: ['r1', 'r2'], nudge: [] },
+    'but one read here a moment ago keeps its place',
+  )
+
+  const rows = followUpRows(followUps, null, new Set())
+  const empty = { reply: [], nudge: [] }
+  const list = [
+    thread('a', '2026-09-14T09:00:00'),
+    thread('b', '2026-09-13T09:00:00'),
+    thread('r1', '2026-09-10T09:00:00'),
+  ]
+
+  // The order the keys walk: the top first, then the rest without it.
+  assert.deepEqual(
+    followUpsFirst(rows, list).map((t) => t.id),
+    ['r1', 'r2', 'n1', 'a', 'b'],
+  )
+  assert.equal(followUpsFirst(empty, list), list, 'nothing at the top: the list itself')
+
+  const byLastDate = (t) => t.lastDate
+  const named = (r) => {
+    if (r.type === 'header') return `#${r.key}`
+    return r.followUp ? `${r.followUp}:${r.thread.id}` : r.thread.id
+  }
+  const drawn = withFollowUpSections(rows, list, byLastDate, now)
+  assert.deepEqual(
+    drawn.map(named),
+    [
+      '#followups:reply',
+      'reply:r1',
+      'reply:r2',
+      '#followups:nudge',
+      'nudge:n1',
+      '#today',
+      'a',
+      '#yesterday',
+      'b',
+    ],
+    'replies, then nudges, then the dates -- and r1 only at the top',
+  )
+  const labels = drawn.filter((r) => r.type === 'header').map((r) => r.label)
+  assert.deepEqual(labels.slice(0, 2), ['Needs your reply', 'Follow up'])
+  // `MailView`'s own `rowKey`: two rows with one key freeze a keyed list.
+  const keys = drawn.map((r) => (r.type === 'header' ? `header:${r.key}` : r.thread.id))
+  assert.equal(new Set(keys).size, keys.length, 'no key twice')
+
+  const onlyNudges = { reply: [], nudge: [waiting('n1', 'nudge')] }
+  assert.deepEqual(
+    withFollowUpSections(onlyNudges, [], byLastDate, now).map(named),
+    ['#followups:nudge', 'nudge:n1'],
+    'a heading only over rows of its own',
+  )
+  const twice = { reply: [waiting('x', 'reply')], nudge: [waiting('x', 'nudge')] }
+  assert.deepEqual(
+    withFollowUpSections(twice, [thread('x', '2026-09-14T09:00:00')], byLastDate, now).map(named),
+    ['#followups:reply', 'reply:x'],
+    'handed one thread twice, it is still drawn once',
+  )
+  assert.deepEqual(
+    withFollowUpSections(empty, list, byLastDate, now),
+    withDateSections(list, byLastDate, now),
+    'nothing at the top: the date sections alone',
+  )
+
+  // How long each has waited.
+  assert.equal(followUpPill({ kind: 'reply', since: '2026-09-10T09:00:00' }, now), 'Reply')
+  assert.equal(followUpPill({ kind: 'nudge', since: '2026-09-10T09:00:00' }, now), 'Nudge · 4d')
+  assert.equal(followUpDays('2026-09-14T09:00:00', now), 1, 'an hour is a day, never none')
+  assert.equal(followUpDays('not a date', now), 1)
+  assert.match(waitingSinceLabel('2026-09-14T08:30:00', now), /^since \d/, 'today: the time')
+  assert.equal(waitingSinceLabel('2026-09-13T08:30:00', now), 'since yesterday')
+  assert.equal(waitingSinceLabel('2026-09-11T08:30:00', now), 'since Friday')
+}
+
+// Who a nudge would chase.
+{
+  const own = new Set(['me@gmail.com'])
+  const me = person('Me', 'me@gmail.com')
+  const priya = person('Priya Raman', 'priya@example.com')
+  const tom = person('Tom Fenwick', 'tom@example.com')
+  const ana = person('Ana Ferreira', 'ana@example.com')
+  assert.equal(nudgeRecipients({ to: [priya], cc: [] }, own), 'Priya')
+  assert.equal(
+    nudgeRecipients({ to: [priya, person('', 'ben@example.com')], cc: [] }, own),
+    'Priya or ben@example.com',
+    'by address, for somebody who gave no name',
+  )
+  assert.equal(nudgeRecipients({ to: [priya, me, tom, ana], cc: [] }, own), 'Priya, Tom or Ana')
+  const yuki = person('Yuki Tanaka', 'yuki@example.com')
+  const five = [priya, tom, ana, yuki, person('Dad', 'dad@example.com')]
+  assert.equal(nudgeRecipients({ to: five, cc: [] }, own), 'Priya, Tom or 3 others')
+  assert.equal(nudgeRecipients({ to: [me], cc: [ana] }, own), 'Ana', 'only you in To: the Cc')
+  assert.equal(nudgeRecipients({ to: [me], cc: [] }, own), '', 'to nobody but you')
+}
+
+// What Settings → Mail sorting holds Save back for.
+{
+  const fine = { windowDays: null, nudgeAfterDays: null }
+  assert.deepEqual(followUpSettingsProblems(FOLLOW_UP_DEFAULTS), fine, 'the defaults are right')
+  assert.deepEqual(followUpSettingsProblems({ windowDays: 60, nudgeAfterDays: 59 }), fine)
+  assert.equal(
+    followUpSettingsProblems({ windowDays: 61, nudgeAfterDays: 3 }).windowDays,
+    'Between 2 and 60 days.',
+  )
+  assert.notEqual(
+    followUpSettingsProblems({ windowDays: null, nudgeAfterDays: 3 }).windowDays,
+    null,
+    'a field left empty is wrong',
+  )
+  assert.equal(
+    followUpSettingsProblems({ windowDays: 14, nudgeAfterDays: 14 }).nudgeAfterDays,
+    'Less than the 14 days it looks back.',
+  )
+  assert.equal(
+    followUpSettingsProblems({ windowDays: 14, nudgeAfterDays: 0 }).nudgeAfterDays,
+    'At least a day.',
+  )
+  assert.equal(
+    followUpSettingsProblems({ windowDays: 14, nudgeAfterDays: 2.5 }).nudgeAfterDays,
+    'Whole days only.',
+  )
+  assert.equal(
+    followUpSettingsProblems({ windowDays: 1, nudgeAfterDays: 1 }).windowDays,
+    'Between 2 and 60 days.',
+    'a day leaves nothing to nudge about',
+  )
+  assert.equal(
+    followUpSettingsProblems({ windowDays: 90, nudgeAfterDays: 70 }).nudgeAfterDays,
+    null,
+    'not judged against a look-back that is wrong itself',
+  )
+}
 
 await close()
 console.log('mail: all checks passed')

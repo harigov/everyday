@@ -85,7 +85,25 @@ impl Vault {
     pub fn delete_account(&self, id: AccountId) -> Result<()> {
         self.writable()?;
         self.with_accounts(|a| a.delete_account(id))?;
+        self.forget_offered_replies(id)?;
         self.wrote(RecordKind::Account, id);
+        Ok(())
+    }
+
+    /// The replies suggested for an account's mail, kept to learn from (see
+    /// [`crate::mail::learning`]), go with it: they are drawn from that
+    /// account's messages and sit in a singleton no account's cascade
+    /// reaches. The notes stay. They say how the person writes, never what
+    /// any message said, and Settings → Mail writing is where they are
+    /// forgotten.
+    fn forget_offered_replies(&self, id: AccountId) -> Result<()> {
+        // A backend without mail has nothing learned to forget.
+        let Ok(mut learning) = self.voice_learning() else { return Ok(()) };
+        let before = learning.offered.len();
+        learning.offered.retain(|o| o.account != id);
+        if learning.offered.len() != before {
+            self.save_voice_learning(&learning)?;
+        }
         Ok(())
     }
 

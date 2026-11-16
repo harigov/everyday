@@ -994,11 +994,27 @@ what plainly needs you soon — a direct question, a deadline, someone
 waiting — and says no more often than yes. Your own mark always outranks
 the model's: a thread you took out of Priority stays out.
 
+**Follow-ups** sit above everything else in the Inbox, the way Superhuman
+shows them: **Needs your reply**, mail somebody is waiting on you to
+answer, and **Follow up**, mail you sent days ago that nobody has answered
+and that asked for something, ready to nudge. With a decision model sorting
+your mail, it also reads the last two weeks for these, under the same switch
+and over the same parts of a message, plus your own last message for a
+nudge. Cold outreach is the case it is built around: newsletters, automated
+mail and mail not addressed to you are never asked about, "cold outreach"
+is an answer of its own rather than an exception to remember, and mail from
+somebody you have never written to has to clear a higher bar. Answer the
+thread and it leaves the top; tick **Not needed** and it stays off until
+something new arrives. A nudge can be written for you from the thread, in
+your voice. How far back it looks, and how long a message waits before it is
+offered as a nudge, are under Settings → Mail sorting.
+
 ### Writing in your own voice
 
 With **Writing help** on for an account, opening a thread offers three
-short replies beside Reply, Reply all and Forward, each taking a different
-line — yes, not this time, a question back. Pick one (or press `1`, `2`,
+short replies beside Reply, Reply all and Forward: first the one you would
+most likely send, then two that take another line where the message leaves
+room for one — not this time, a question back. Pick one (or press `1`, `2`,
 `3`) and it opens as a reply, ready to change and send; nothing is ever
 sent for you. While writing, **Write** (`Mod G`) turns a few words ("yes to
 Thursday, ask for the agenda") into the message, and **Improve** polishes,
@@ -1020,6 +1036,17 @@ HTML: it answers in plain text, which is escaped here.
 **Settings → Mail writing** is where you tell it what your sent mail cannot:
 how you want to sound, in your own words. That goes with every reply, draft
 and rewrite, the assistant's included, and wins over what was measured.
+
+It also learns how you answer. The examples it is shown are your replies
+beside the messages they answered, not loose sent mail, and once you have
+sent a few replies (at most once a day) the medium model reads your recent
+ones — each next to the message it answered and, where there were some, the
+replies that were suggested for it — and rewrites a short list of notes on
+how you reply: that you say yes in one line, that suggestions keep being cut
+in half before you send them. Those notes go with every reply, draft and
+rewrite, under your own words, which win. They are on the same page, to
+read, correct or forget, with **Learn now** beside them; switch learning off
+there and nothing more is read for it.
 
 The same page can let the three replies and **Write** read your calendar, so a
 reply can offer real times. It is off until you tick it. The next four weeks of

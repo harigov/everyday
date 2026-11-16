@@ -257,6 +257,51 @@ impl Service {
         self.mail.set_sort_full_look(account, at);
     }
 
+    /// When `account`'s Inbox and Sent were last read back to the follow-up
+    /// window -- see `crate::mailfollowup`.
+    pub fn mail_follow_up_full_look(&self, account: AccountId) -> Option<jiff::Timestamp> {
+        self.mail.follow_up_full_look(account)
+    }
+
+    /// Remember (or, with `None`, forget) when `account`'s mail was last read
+    /// back to the follow-up window.
+    pub fn set_mail_follow_up_full_look(&self, account: AccountId, at: Option<jiff::Timestamp>) {
+        self.mail.set_follow_up_full_look(account, at);
+    }
+
+    /// The threads the follow-up pass left for later in `account`'s mail --
+    /// see `crate::mailfollowup::SkipNote`.
+    pub(crate) fn mail_follow_up_skips(
+        &self,
+        account: AccountId,
+    ) -> std::collections::HashMap<ThreadId, crate::mailfollowup::SkipNote> {
+        self.mail.follow_up_skips(account)
+    }
+
+    pub(crate) fn set_mail_follow_up_skips(
+        &self,
+        account: AccountId,
+        skips: std::collections::HashMap<ThreadId, crate::mailfollowup::SkipNote>,
+    ) {
+        self.mail.set_follow_up_skips(account, skips);
+    }
+
+    /// When the unattended learning pass last looked -- see
+    /// `crate::mailvoicelearn`.
+    pub(crate) fn mail_voice_learn_looked(&self) -> Option<Timestamp> {
+        self.mail.voice_learn_looked()
+    }
+
+    pub(crate) fn set_mail_voice_learn_looked(&self, at: Option<Timestamp>) {
+        self.mail.set_voice_learn_looked(at);
+    }
+
+    /// Hold this across a read, change and write of the learned voice -- see
+    /// `crate::mailvoicelearn`. A plain lock, never held over an `.await`.
+    pub(crate) fn voice_learning_lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.mail.voice_learning_lock()
+    }
+
     /// Start, move on or (with `None`) finish `account`'s sort of older mail.
     pub fn set_mail_older_sort(
         &self,
@@ -1106,6 +1151,11 @@ impl Service {
                 crate::mailai::auto_draft_tick(&svc).await;
             }
         });
+        // Learning from sent replies asks the medium model for up to a minute,
+        // once a day: beside the passes rather than in them, so new mail is
+        // never announced late for it. It returns at once when not due.
+        let learner = self.clone();
+        self.detach_run(None, async move { crate::mailvoicelearn::learn_tick(&learner).await });
     }
 
     /// Whether a run of `routine` is going on beside the tick.

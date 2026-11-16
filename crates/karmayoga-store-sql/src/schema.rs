@@ -25,7 +25,7 @@ use crate::dialect::Dialect;
 use karmayoga_core::error::{Error, Result};
 
 /// Schema the code in this crate expects. Bumped by adding a step below.
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 32;
 
 /// How a driver remembers which step a database has reached.
 ///
@@ -120,7 +120,24 @@ pub fn steps(d: Dialect) -> Vec<Vec<String>> {
         v29(d),
         v30(d),
         v31(d),
+        v32(d),
     ]
+}
+
+/// Version 32: what writing help has learned from the replies the person
+/// sent -- `karmayoga_core::mail::learning`. One sealed row, the way
+/// [`v21`]'s `mail_writing` is, and beside it rather than inside it: that row
+/// is the person's, saved whole from Settings, and this one is mostly written
+/// by a background pass, so neither may carry a stale copy of the other over
+/// it. Nothing in the clear. Additive.
+fn v32(d: Dialect) -> Vec<String> {
+    let (blob, int) = (d.blob(), d.int());
+    vec![format!(
+        "CREATE TABLE IF NOT EXISTS mail_voice_learning (
+             id          {int} PRIMARY KEY CHECK (id = 1),
+             data        {blob} NOT NULL
+         )"
+    )]
 }
 
 /// Version 31: connections -- the MCP servers the assistant may use. See

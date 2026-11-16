@@ -47,7 +47,11 @@ pub fn run_mail_suite(store: &dyn JournalStore) {
     priority_asked_marker_round_trips(store);
     mail_sorting_round_trips(store);
     mail_writing_round_trips(store);
+    voice_learning_round_trips(store);
     a_sorted_label_lasts_until_the_thread_moves_on(store);
+    a_follow_up_lasts_until_somebody_answers(store);
+    a_follow_up_is_not_written_over_a_thread_that_moved_on(store);
+    a_follow_up_needs_the_same_newest_message_not_only_the_same_count(store);
     a_tie_on_date_still_labels_the_message_listed_last(store);
     removing_forty_thousand_uids_does_not_hit_the_parameter_limit(store);
     deleting_a_mailbox_with_forty_thousand_messages_does_not_hit_the_parameter_limit(store);
@@ -1302,6 +1306,11 @@ fn mail_sorting_round_trips(store: &dyn JournalStore) {
             treat_as: Category::Important,
         }],
         window_days: 7,
+        follow_up: crate::mail::FollowUpSettings {
+            on: false,
+            window_days: 30,
+            nudge_after_days: 5,
+        },
     };
     m.put_mail_sorting(&mine).unwrap();
     assert_eq!(m.mail_sorting().unwrap(), mine);
@@ -1316,12 +1325,218 @@ fn mail_writing_round_trips(store: &dyn JournalStore) {
     let m = mail_store(store);
     assert_eq!(m.mail_writing().unwrap(), MailWriting::default(), "the defaults");
 
-    let mine =
-        MailWriting { instructions: "Short. No exclamation marks.".into(), use_calendar: false };
+    let mine = MailWriting {
+        instructions: "Short. No exclamation marks.".into(),
+        use_calendar: false,
+        learn: false,
+    };
     m.put_mail_writing(&mine).unwrap();
     assert_eq!(m.mail_writing().unwrap(), mine);
     m.put_mail_writing(&MailWriting::default()).unwrap();
     assert_eq!(m.mail_writing().unwrap(), MailWriting::default(), "replaced, not merged");
+}
+
+/// What was learned from sent replies is its own sealed singleton, beside
+/// [`MailWriting`](crate::mail::MailWriting) and untouched by saving that.
+fn voice_learning_round_trips(store: &dyn JournalStore) {
+    use crate::mail::{MailWriting, OfferedReplies, VoiceLearning};
+
+    let m = mail_store(store);
+    assert_eq!(m.voice_learning().unwrap(), VoiceLearning::default(), "nothing learned yet");
+
+    let now = Timestamp::now();
+    let learned = VoiceLearning {
+        notes: "- Says yes in one line.".into(),
+        learned_at: Some(now),
+        replies_read: 7,
+        learned_through: Some(now - SignedDuration::from_hours(3)),
+        edited: false,
+        offered: vec![OfferedReplies {
+            account: AccountId::new(),
+            thread: ThreadId::new(),
+            message: MailMessageId::new(),
+            at: now,
+            replies: vec!["Sounds good.".into()],
+        }],
+    };
+    m.put_voice_learning(&learned).unwrap();
+    m.put_mail_writing(&MailWriting::default()).unwrap();
+    assert_eq!(m.voice_learning().unwrap(), learned, "saving the settings leaves it alone");
+    m.put_voice_learning(&VoiceLearning::default()).unwrap();
+    assert_eq!(m.voice_learning().unwrap(), VoiceLearning::default(), "replaced, not merged");
+}
+
+/// A follow-up names the message it was decided about. It survives what
+/// does not answer anybody -- a flag, a draft -- and goes once somebody does;
+/// dismissing it keeps the mark, so it is not asked about again.
+fn a_follow_up_lasts_until_somebody_answers(store: &dyn JournalStore) {
+    use crate::mail::{FollowUp, FollowUpKind, FollowUpMark};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let drafts = Mailbox::new(account, "Drafts", MailboxRole::Drafts);
+    m.put_mailbox(&inbox).unwrap();
+    m.put_mailbox(&drafts).unwrap();
+
+    let thread_id = ThreadId::new();
+    let t0 = Timestamp::now() - SignedDuration::from_hours(5);
+    let ask = message(account, thread_id, "Lunch?", "ada@example.com", t0);
+    m.ingest(account, vec![IngestMessage { message: ask.clone(), mailbox: inbox.id, uid: 1 }])
+        .unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!((thread.follow_up.clone(), thread.follow_up_asked), (None, None));
+
+    let mark = FollowUpMark { message: ask.id, message_count: 1, at: Timestamp::now() };
+    let waiting = FollowUp { kind: FollowUpKind::Reply, message: ask.id, since: ask.date };
+    assert!(m.set_thread_follow_up(thread_id, mark, Some(waiting.clone())).unwrap());
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.follow_up, Some(waiting.clone()));
+    assert_eq!(thread.follow_up_asked, Some(mark));
+
+    m.update_flags(inbox.id, 1, MessageFlags { seen: true, ..Default::default() }).unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.follow_up, Some(waiting.clone()), "reading it");
+
+    // A reply being written, newer than the question, answers nobody yet.
+    let mut draft = message(
+        account,
+        thread_id,
+        "Re: Lunch?",
+        "me@example.com",
+        t0 + SignedDuration::from_hours(1),
+    );
+    draft.flags.draft = true;
+    m.ingest(account, vec![IngestMessage { message: draft, mailbox: drafts.id, uid: 1 }]).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.message_count, 2);
+    assert_eq!(thread.follow_up, Some(waiting.clone()), "a draft is not an answer");
+
+    // Dismissed: gone, and the mark stays.
+    m.clear_thread_follow_up(thread_id).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.follow_up, None);
+    assert_eq!(thread.follow_up_asked, Some(mark));
+
+    // Decided again, then answered: gone.
+    let mark = FollowUpMark { message_count: 2, ..mark };
+    assert!(m.set_thread_follow_up(thread_id, mark, Some(waiting)).unwrap());
+    let reply = message(
+        account,
+        thread_id,
+        "Re: Lunch?",
+        "me@example.com",
+        t0 + SignedDuration::from_hours(2),
+    );
+    m.ingest(account, vec![IngestMessage { message: reply, mailbox: inbox.id, uid: 2 }]).unwrap();
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!(thread.follow_up, None, "the newest message is not the one it was about");
+    assert_eq!(thread.follow_up_asked, Some(mark), "what was asked is still known");
+
+    cleanup_account(store, account);
+}
+
+/// An answer about a thread as it was read is not written once another
+/// message has arrived: the next pass asks about the thread as it is now.
+fn a_follow_up_is_not_written_over_a_thread_that_moved_on(store: &dyn JournalStore) {
+    use crate::mail::{FollowUp, FollowUpKind, FollowUpMark};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    m.put_mailbox(&inbox).unwrap();
+    let thread_id = ThreadId::new();
+    let t0 = Timestamp::now() - SignedDuration::from_hours(5);
+    let first = message(account, thread_id, "Contract", "sam@example.com", t0);
+    let second = message(
+        account,
+        thread_id,
+        "Re: Contract",
+        "sam@example.com",
+        t0 + SignedDuration::from_hours(1),
+    );
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: first.clone(), mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: second, mailbox: inbox.id, uid: 2 },
+        ],
+    )
+    .unwrap();
+
+    let stale = FollowUpMark { message: first.id, message_count: 1, at: Timestamp::now() };
+    let about_first = FollowUp { kind: FollowUpKind::Reply, message: first.id, since: first.date };
+    assert!(!m.set_thread_follow_up(thread_id, stale, Some(about_first)).unwrap());
+    let (thread, _) = m.thread(thread_id).unwrap();
+    assert_eq!((thread.follow_up, thread.follow_up_asked), (None, None));
+    assert!(
+        !m.set_thread_follow_up(ThreadId::new(), stale, None).unwrap(),
+        "a thread this store does not have"
+    );
+
+    cleanup_account(store, account);
+}
+
+/// The count alone does not say a thread is as it was read: a reply sent as
+/// its draft is deleted leaves the count where it was. And marking a thread
+/// again leaves its follow-up as the store has it -- a dismissal made while
+/// the pass was busy is not undone.
+fn a_follow_up_needs_the_same_newest_message_not_only_the_same_count(store: &dyn JournalStore) {
+    use crate::mail::{FollowUp, FollowUpKind, FollowUpMark};
+
+    let m = mail_store(store);
+    let account = AccountId::new();
+    let inbox = Mailbox::new(account, "INBOX", MailboxRole::Inbox);
+    let drafts = Mailbox::new(account, "Drafts", MailboxRole::Drafts);
+    let sent = Mailbox::new(account, "Sent", MailboxRole::Sent);
+    for mailbox in [&inbox, &drafts, &sent] {
+        m.put_mailbox(mailbox).unwrap();
+    }
+    let thread_id = ThreadId::new();
+    let t0 = Timestamp::now() - SignedDuration::from_hours(5);
+    let ask = message(account, thread_id, "Lunch?", "ada@example.com", t0);
+    let mut draft = message(
+        account,
+        thread_id,
+        "Re: Lunch?",
+        "me@example.com",
+        t0 + SignedDuration::from_hours(1),
+    );
+    draft.flags.draft = true;
+    m.ingest(
+        account,
+        vec![
+            IngestMessage { message: ask.clone(), mailbox: inbox.id, uid: 1 },
+            IngestMessage { message: draft, mailbox: drafts.id, uid: 1 },
+        ],
+    )
+    .unwrap();
+    let mark = FollowUpMark { message: ask.id, message_count: 2, at: Timestamp::now() };
+    let waiting = FollowUp { kind: FollowUpKind::Reply, message: ask.id, since: ask.date };
+
+    // Kept as stored by a mark alone: set, then dismissed, then marked again.
+    assert!(m.set_thread_follow_up(thread_id, mark, Some(waiting.clone())).unwrap());
+    assert!(m.set_thread_follow_up_asked(thread_id, mark).unwrap());
+    assert_eq!(m.thread(thread_id).unwrap().0.follow_up, Some(waiting.clone()));
+    m.clear_thread_follow_up(thread_id).unwrap();
+    assert!(m.set_thread_follow_up_asked(thread_id, mark).unwrap());
+    assert_eq!(m.thread(thread_id).unwrap().0.follow_up, None, "still dismissed");
+
+    // The reply is sent and its draft deleted: two messages still.
+    m.remove_uids(drafts.id, &[1]).unwrap();
+    let reply = message(
+        account,
+        thread_id,
+        "Re: Lunch?",
+        "me@example.com",
+        t0 + SignedDuration::from_hours(2),
+    );
+    m.ingest(account, vec![IngestMessage { message: reply, mailbox: sent.id, uid: 1 }]).unwrap();
+    assert_eq!(m.thread(thread_id).unwrap().0.message_count, 2);
+    assert!(!m.set_thread_follow_up(thread_id, mark, Some(waiting)).unwrap());
+    assert!(!m.set_thread_follow_up_asked(thread_id, mark).unwrap());
+    assert_eq!(m.thread(thread_id).unwrap().0.follow_up, None);
+
+    cleanup_account(store, account);
 }
 
 /// [`MailStore::sort_message`] files the message and labels its thread in

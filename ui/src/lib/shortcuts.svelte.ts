@@ -1866,10 +1866,11 @@ function stepThread(step: 1 | -1) {
   })
 }
 
-/** Is a thread list on screen for Mod+A to select from -- a mailbox's, or a
- *  search's -- rather than the Scheduled list, which has no threads. */
+/** Is a thread list on screen for Mod+A to select from -- a mailbox's, its
+ *  follow-ups at the top included, or a search's -- rather than the
+ *  Scheduled list, which has no threads. */
 function mailListShowing(): boolean {
-  return !mail.sendsView && (mail.searchQuery.trim() ? mail.searchResults : mail.threads).length > 0
+  return !mail.sendsView && mail.shownThreads.length > 0
 }
 
 /** Is suggested reply `n` (1-3) offered right now, with nothing else the

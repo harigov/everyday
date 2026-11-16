@@ -76,10 +76,12 @@ async fn save_mail_sorting(
     let s = svc.clone();
     blocking(move || {
         vault.save_mail_sorting(&args.sorting)?;
-        // A longer window reaches mail the last full look stopped short of.
+        // A longer window reaches mail the last full look stopped short of --
+        // sorting's, and the follow-ups', which have a window of their own.
         if vault.supports_accounts() {
             for account in vault.accounts()? {
                 s.set_mail_sort_full_look(account.id, None);
+                s.set_mail_follow_up_full_look(account.id, None);
             }
         }
         Ok(view(&s, &vault)?)

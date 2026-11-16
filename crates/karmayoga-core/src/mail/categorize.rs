@@ -141,7 +141,7 @@ fn looks_automated(input: &CategorizeInput<'_>) -> bool {
 /// complete, but because a wrong guess here only costs a message sitting in
 /// `Other` instead of `Notification` until a correction or the model puts it
 /// right — never the other way round.
-fn looks_like_notification_sender(email: &str) -> bool {
+pub fn looks_like_notification_sender(email: &str) -> bool {
     let email = email.trim().to_ascii_lowercase();
     let Some((local, domain)) = email.split_once('@') else { return false };
 

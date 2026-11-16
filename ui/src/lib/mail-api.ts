@@ -25,6 +25,7 @@ import type {
   CategoryCount,
   Draft,
   DraftId,
+  FollowUpList,
   InboxSender,
   InboxSendersArgs,
   MailAddress,
@@ -77,6 +78,12 @@ export const getThread = (id: ThreadId): Promise<ThreadDetail> => api.thread(id)
  *  tabs show beside their names. */
 export const categoryCounts = (mailbox: MailboxId): Promise<CategoryCount[]> =>
   api.categoryCounts(mailbox)
+/** The follow-ups for the top of an Inbox: `account`'s, or every mail
+ *  account's for "All inboxes" (`null`). Reply ones first, newest first. */
+export const followUps = (account: AccountId | null): Promise<FollowUpList> =>
+  api.mailFollowUps(account)
+/** "Not needed": the thread's follow-up goes until something new arrives. */
+export const dismissFollowUp = (id: ThreadId): Promise<void> => api.dismissFollowUp(id)
 
 /** Fetch one part left `available: false` on a `MailMessageDetail` -- over
  *  the account's attachment cap, with no blob yet. Returns the same shape,
