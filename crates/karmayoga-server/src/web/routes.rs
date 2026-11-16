@@ -80,8 +80,16 @@ const PROXY_HEADERS: &[&str] =
 /// with `frame-ancestors` so no other page can frame this one.
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
     img-src 'self' data: blob:; media-src 'self' data: blob:; font-src 'self' data:; \
-    connect-src 'self'; frame-src 'self' blob: data:; worker-src 'self' blob:; \
+    connect-src 'self'; frame-src 'self'; worker-src 'self' blob:; \
     object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
+
+/// What everything under `/v1/` is sent with unless its route said
+/// otherwise: the same sandbox the desktop's `karmayoga:` responses carry.
+/// A blob's type is sniffed from its bytes, and a picture can be an SVG; a
+/// person opening one by its address in this browser would otherwise run
+/// its script on this origin, where the session cookie goes with every
+/// request it makes.
+const API_POLICY: &str = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
 
 pub(crate) struct WebState {
     pub server: Arc<Server>,
@@ -183,8 +191,12 @@ async fn gatekeeper(State(state): State<Arc<WebState>>, mut req: Request, next: 
         mark(req.headers_mut(), &session.id, "full");
     }
 
+    let api = req.uri().path().starts_with("/v1/");
     let mut response = next.run(req).await;
     let headers = response.headers_mut();
+    if api && !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(API_POLICY));
+    }
     headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
     headers.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN"));
@@ -750,6 +762,9 @@ mod tests {
         )
         .await;
         assert_eq!(picture.status(), StatusCode::OK);
+        // Sandboxed as a document, so a blob that sniffs as an SVG and is
+        // opened by its address runs nothing on this origin.
+        assert_eq!(picture.headers()[header::CONTENT_SECURITY_POLICY], API_POLICY);
         let bytes = axum::body::to_bytes(picture.into_body(), 1 << 20).await.unwrap();
         assert_eq!(&bytes[..], b"a picture");
 

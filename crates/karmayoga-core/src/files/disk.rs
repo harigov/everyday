@@ -48,15 +48,18 @@ pub const MARKER: &str = "folder.json";
 const STIGNORE: &str = ".stignore";
 
 /// The comment above the line [`Folder::ensure_ignored`] writes.
-const IGNORE_NOTE: &str = "// Karma Yoga keeps its trash, uploads in progress and decrypted copies \
-                           here; they stay on this computer.";
+const IGNORE_NOTE: &str = "// Karma Yoga keeps its trash and uploads in progress here; they stay \
+                           on this computer.";
 
 /// Files being written, before they are linked into place.
 const TMP: &str = "tmp";
 const TRASH: &str = "trash";
 /// Uploads in progress, one staging file each.
 const UPLOADS: &str = "uploads";
-/// Decrypted copies of sealed files, opened in another program.
+/// Where decrypted copies of sealed files used to be kept, opened in another
+/// program. They are kept outside the folder now ([`OpenCopies`]); the name
+/// stays so that what an older build left here is found and swept
+/// ([`Folder::sweep_open`]).
 const OPEN: &str = "open";
 
 /// How much is read, hashed and written at a time. A whole film is never in
@@ -184,10 +187,19 @@ impl Folder {
     pub fn set_up(&self) -> Result<()> {
         fs::create_dir_all(&self.root).map_err(|e| Error::io(&self.root, e))?;
         let internal = self.root.join(INTERNAL_DIR);
-        for dir in [TMP, TRASH, UPLOADS, OPEN] {
+        // Owner-only, for what is in them: an upload on its way to being
+        // sealed is plaintext, and for as long as it is being received it
+        // sits here under a name nobody chose. The folder is often on a disk
+        // other accounts can read, and `.stignore` keeps the sync tool out,
+        // not the people at the keyboard. An internal folder that is already
+        // there is tightened too: they are ours, unlike the files folder
+        // around them.
+        for dir in [TMP, TRASH, UPLOADS] {
             let dir = internal.join(dir);
-            fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+            private_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+            restrict(&dir);
         }
+        restrict(&internal);
         let marker = serde_json::json!({
             "karmayoga": 1,
             "createdAt": jiff::Timestamp::now().to_string(),
@@ -201,8 +213,9 @@ impl Folder {
     /// that lacks it, everything already in it left as it was.
     ///
     /// Not optional, even in somebody else's file. `INTERNAL_DIR` holds
-    /// plaintext that must never leave this computer -- a sealed file opened
-    /// in another program, an upload on its way to being sealed -- and a
+    /// plaintext that must never leave this computer -- an upload on its way
+    /// to being sealed (decrypted copies of sealed files are not here at all:
+    /// see [`OpenCopies`]; `.stignore` reaches Syncthing only) -- and a
     /// folder already shared with Syncthing would otherwise copy it to every
     /// device the person shares the folder with. Run on every set-up and on
     /// every pass of the reconciler, so a `.stignore` written or replaced
@@ -380,9 +393,9 @@ impl Folder {
     /// A new, empty file in `INTERNAL_DIR/tmp`, open for writing.
     fn stage(&self) -> Result<(Staged, File)> {
         let dir = self.internal(&[TMP])?;
-        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        private_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
         let path = dir.join(format!("{}.part", uuid::Uuid::now_v7()));
-        let file = OpenOptions::new()
+        let file = private_options()
             .write(true)
             .create_new(true)
             .open(&path)
@@ -398,9 +411,9 @@ impl Folder {
     pub fn begin_upload(&self, upload: &str) -> Result<u64> {
         let path = self.upload_file(upload)?;
         if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir).map_err(|e| Error::io(dir, e))?;
+            private_dir_all(dir).map_err(|e| Error::io(dir, e))?;
         }
-        let file = OpenOptions::new()
+        let file = private_options()
             .create(true)
             .append(true)
             .open(&path)
@@ -768,28 +781,201 @@ impl Folder {
         Ok(items)
     }
 
-    /// A private folder for a decrypted copy of a sealed file opened in
-    /// another program: `INTERNAL_DIR/open/<id>/`, created empty.
-    pub fn open_dir(&self, id: FileId) -> Result<PathBuf> {
-        let id = id.to_string();
-        let dir = self.internal(&[OPEN, id.as_str()])?;
+    /// Delete what an older build left in `INTERNAL_DIR/open`: decrypted
+    /// copies of sealed files, which it kept here inside the folder a sync
+    /// tool may be sharing. Newer builds keep them in [`OpenCopies`], and
+    /// nothing is written here any more, so this is for clearing out what
+    /// was. Answers how many went.
+    ///
+    /// A copy's age is that of the newest thing in it, so one somebody is
+    /// still saving changes to is not pulled from under them; pass
+    /// `Duration::ZERO` to clear all of them.
+    pub fn sweep_open(&self, older_than: Duration) -> Result<u32> {
+        let dir = self.internal(&[OPEN])?;
+        sweep_dir(&dir, older_than, |meta| !meta.file_type().is_symlink())
+    }
+}
+
+/// Where decrypted copies of sealed files are kept for another program to
+/// open: a private folder of this vault's own, *outside* the files folder.
+///
+/// Not in the files folder, not even under `INTERNAL_DIR`. A sealed file is
+/// one the person chose to keep encrypted -- a passport, a lab report -- and
+/// the folder is one they may well share with Dropbox, iCloud Drive or
+/// Syncthing. Only Syncthing reads a `.stignore`; the others would carry a
+/// decrypted passport to every device and to their servers. So the copies
+/// live in the user's cache directory (`$XDG_CACHE_HOME` or `~/.cache`,
+/// `~/Library/Caches`, `%LOCALAPPDATA%`), on disk and outside anything a
+/// sync tool is pointed at, in a folder named for the vault so two vaults
+/// open at once do not meet. Not the runtime directory, which is a RAM disk
+/// of a tenth of memory on most Linux systems: a sealed video would not fit. The folder is made owner-only
+/// (`0700`) and one that is not -- or is a link -- is refused, so a place
+/// somebody else made first is never trusted with a copy.
+///
+/// While a test binary runs the folder is made inside the vault's own
+/// directory instead, which a test removes with the rest of its files; a
+/// test must not leave decrypted copies in the real cache directory.
+#[derive(Debug, Clone)]
+pub struct OpenCopies {
+    root: PathBuf,
+}
+
+/// The user's own cache directory, when the environment says where it is.
+fn cache_dir() -> Option<PathBuf> {
+    let absolute = |dir: PathBuf| dir.is_absolute().then_some(dir);
+    let var = |name: &str| std::env::var_os(name).map(PathBuf::from).and_then(absolute);
+    if cfg!(windows) {
+        return var("LOCALAPPDATA");
+    }
+    if cfg!(target_os = "macos") {
+        return var("HOME").map(|home| home.join("Library").join("Caches"));
+    }
+    var("XDG_CACHE_HOME").or_else(|| var("HOME").map(|home| home.join(".cache")))
+}
+
+/// What the folder of decrypted copies is called, before the vault's key.
+const OPEN_COPIES_PREFIX: &str = "karmayoga-open-";
+
+impl OpenCopies {
+    /// The place for the vault at `vault`. Nothing is created until a copy
+    /// is asked for.
+    pub fn for_vault(vault: &Path) -> Self {
+        let base = if crate::fsutil::under_test() {
+            vault.to_path_buf()
+        } else {
+            cache_dir().unwrap_or_else(std::env::temp_dir)
+        };
+        let key = crate::fsutil::stable_path_name(vault);
+        Self { root: base.join(format!("{OPEN_COPIES_PREFIX}{key}")) }
+    }
+
+    /// The place at `root`, for a test that wants to look inside.
+    pub fn at(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Make the place if it is not there, and be sure it is ours alone.
+    fn ensure(&self) -> Result<()> {
+        crate::fsutil::create_private_dir(&self.root)?;
+        let meta = fs::symlink_metadata(&self.root).map_err(|e| Error::io(&self.root, e))?;
+        if !meta.is_dir() {
+            return Err(Error::Invalid(format!(
+                "{} is not a folder, so decrypted copies cannot be kept there",
+                self.root.display()
+            )));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if meta.permissions().mode() & 0o077 != 0 {
+                // Ours to tighten, or the change is refused and so is the
+                // folder: one that somebody else owns is not trusted.
+                let _ = fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700));
+                let again =
+                    fs::symlink_metadata(&self.root).map_err(|e| Error::io(&self.root, e))?;
+                if again.permissions().mode() & 0o077 != 0 {
+                    return Err(Error::Invalid(format!(
+                        "{} can be read by other people, so decrypted copies cannot be kept there",
+                        self.root.display()
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// A private, empty folder for a decrypted copy of the sealed file `id`:
+    /// `<place>/<id>/`. A copy there already is removed, so an older version
+    /// of the file is not opened by mistake.
+    pub fn dir(&self, id: FileId) -> Result<PathBuf> {
+        self.ensure()?;
+        let dir = self.root.join(id.to_string());
         match fs::remove_dir_all(&dir) {
             Ok(()) => {}
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(Error::io(&dir, e)),
         }
-        fs::create_dir_all(&dir).map_err(|e| Error::io(&dir, e))?;
+        crate::fsutil::create_private_dir(&dir)?;
         Ok(dir)
     }
 
-    /// Delete decrypted copies older than `older_than`. Answers how many.
+    /// Delete copies older than `older_than`. Answers how many.
     ///
     /// A copy's age is that of the newest thing in it, so one somebody is
-    /// still saving changes to is not pulled from under them.
-    pub fn sweep_open(&self, older_than: Duration) -> Result<u32> {
-        let dir = self.internal(&[OPEN])?;
-        sweep_dir(&dir, older_than, |meta| !meta.file_type().is_symlink())
+    /// still saving changes to is not pulled from under them. A place that
+    /// is not there has nothing in it.
+    pub fn sweep(&self, older_than: Duration) -> Result<u32> {
+        sweep_dir(&self.root, older_than, |meta| !meta.file_type().is_symlink())
     }
+}
+
+/// `path` and any parents it lacks, the folders made owner-only on unix.
+fn private_dir_all(path: &Path) -> std::io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(path)
+}
+
+/// Make an existing folder of ours owner-only. Best effort: a filesystem
+/// with no modes says so by not complying, and that is not a reason to fail
+/// a set-up.
+fn restrict(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+}
+
+/// Options for a file that is created owner-only on unix: the staging files
+/// in `INTERNAL_DIR`. The mode applies to a file this call creates.
+fn private_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+}
+
+/// Give the staging file `path` the mode a file made by an ordinary
+/// `File::create` gets (the process's umask applied to `0666`), once it is
+/// to become one of the person's own files. Best effort.
+fn ordinary(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::OnceLock;
+        static MODE: OnceLock<Option<u32>> = OnceLock::new();
+        // Asked of the operating system by making a file, because the umask
+        // can be read in no other way without changing it. It does not
+        // change while the process runs.
+        let mode = *MODE.get_or_init(|| {
+            let probe = path.with_file_name(format!("{}.mode", uuid::Uuid::now_v7()));
+            let file = File::create(&probe).ok()?;
+            let mode = file.metadata().ok()?.permissions().mode() & 0o777;
+            drop(file);
+            let _ = fs::remove_file(&probe);
+            Some(mode)
+        });
+        if let Some(mode) = mode {
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Remove the entries of `dir` whose newest modification is older than
@@ -927,6 +1113,11 @@ fn place(from: &Path, rel: &str, dest: &Path) -> Result<()> {
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
+    // The staging file was made owner-only, and a hard link is the same
+    // file: left as it is, every file a person put in their folder would
+    // arrive readable by them alone, whatever their umask says. It is given
+    // the mode any other file they make gets before it is linked.
+    ordinary(from);
     match fs::hard_link(from, dest) {
         Ok(()) => {
             // The name in `tmp` was only the means; the bytes are at `dest`.
@@ -1565,9 +1756,11 @@ mod tests {
         let root = tmp.path().join("deep").join("er").join("Karma Yoga");
         let folder = Folder::new(&root);
         folder.set_up().unwrap();
-        for dir in [TMP, TRASH, UPLOADS, OPEN] {
+        for dir in [TMP, TRASH, UPLOADS] {
             assert!(root.join(INTERNAL_DIR).join(dir).is_dir(), "{dir}");
         }
+        // Decrypted copies are not kept in the folder any more.
+        assert!(!root.join(INTERNAL_DIR).join(OPEN).exists());
         let marker: serde_json::Value =
             serde_json::from_slice(&fs::read(root.join(INTERNAL_DIR).join(MARKER)).unwrap())
                 .unwrap();
@@ -2265,46 +2458,138 @@ mod tests {
 
     // ---- decrypted copies -------------------------------------------------
 
+    fn copies() -> (TempDir, OpenCopies) {
+        let tmp = tempfile::tempdir().unwrap();
+        let copies = OpenCopies::at(tmp.path().join("runtime").join("karmayoga-open-test"));
+        (tmp, copies)
+    }
+
     #[test]
-    fn open_dir_is_a_private_empty_folder_per_file() {
-        let (_tmp, folder) = folder();
+    fn open_copies_dir_is_a_private_empty_folder_per_file() {
+        let (_tmp, copies) = copies();
         let id = FileId::new();
-        let dir = folder.open_dir(id).unwrap();
-        assert_eq!(dir, folder.root().join(INTERNAL_DIR).join(OPEN).join(id.to_string()));
+        let dir = copies.dir(id).unwrap();
+        assert_eq!(dir, copies.root().join(id.to_string()));
         assert!(dir.is_dir());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
         fs::write(dir.join("photo.jpg"), b"decrypted").unwrap();
         // Opening again starts clean: no stale copy of an older version.
-        let again = folder.open_dir(id).unwrap();
+        let again = copies.dir(id).unwrap();
         assert_eq!(again, dir);
         assert_eq!(fs::read_dir(&again).unwrap().count(), 0);
-        // Not part of the catalog's view of the folder.
-        fs::write(again.join("photo.jpg"), b"decrypted").unwrap();
-        assert!(folder.walk().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_copies_are_owner_only_and_a_wide_open_place_is_tightened() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let (_tmp, copies) = copies();
+        let dir = copies.dir(FileId::new()).unwrap();
+        assert_eq!(mode(copies.root()), 0o700);
+        assert_eq!(mode(&dir), 0o700);
+
+        // A place that already exists with wider modes, and is ours, is
+        // tightened rather than trusted as it is.
+        fs::set_permissions(copies.root(), fs::Permissions::from_mode(0o755)).unwrap();
+        copies.dir(FileId::new()).unwrap();
+        assert_eq!(mode(copies.root()), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_copies_refuse_a_link_where_the_place_should_be() {
+        let (tmp, copies) = copies();
+        let elsewhere = tmp.path().join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::create_dir_all(copies.root().parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, copies.root()).unwrap();
+        assert!(copies.dir(FileId::new()).is_err());
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn open_copies_live_outside_the_files_folder() {
+        let (tmp, folder) = folder();
+        let copies = OpenCopies::for_vault(&tmp.path().join("vault"));
+        assert!(!copies.root().starts_with(folder.root()));
+        // Not in the real cache directory: a test binary keeps them in
+        // the vault's own directory.
+        assert!(copies.root().starts_with(tmp.path().join("vault")));
     }
 
     #[cfg(unix)]
     #[test]
     fn old_decrypted_copies_are_swept_and_newer_ones_are_not() {
-        let (_tmp, folder) = folder();
+        let (_tmp, copies) = copies();
         let (old, new) = (FileId::new(), FileId::new());
-        let old_dir = folder.open_dir(old).unwrap();
+        let old_dir = copies.dir(old).unwrap();
         fs::write(old_dir.join("a.jpg"), b"a").unwrap();
-        let new_dir = folder.open_dir(new).unwrap();
+        let new_dir = copies.dir(new).unwrap();
         fs::write(new_dir.join("b.jpg"), b"b").unwrap();
         backdate(&old_dir.join("a.jpg"), 3);
         backdate(&old_dir, 3);
 
         let day = Duration::from_secs(86_400);
-        assert_eq!(folder.sweep_open(day).unwrap(), 1);
+        assert_eq!(copies.sweep(day).unwrap(), 1);
         assert!(!old_dir.exists());
         assert!(new_dir.join("b.jpg").exists());
-        assert_eq!(folder.sweep_open(day).unwrap(), 0);
+        assert_eq!(copies.sweep(day).unwrap(), 0);
         // A copy touched recently inside an old folder is still in use.
-        let kept = folder.open_dir(old).unwrap();
+        let kept = copies.dir(old).unwrap();
         fs::write(kept.join("c.jpg"), b"c").unwrap();
         backdate(&kept, 3);
-        assert_eq!(folder.sweep_open(day).unwrap(), 0);
+        assert_eq!(copies.sweep(day).unwrap(), 0);
         assert!(kept.join("c.jpg").exists());
+    }
+
+    #[test]
+    fn sweeping_a_place_that_is_not_there_sweeps_nothing() {
+        let (_tmp, copies) = copies();
+        assert_eq!(copies.sweep(Duration::ZERO).unwrap(), 0);
+    }
+
+    #[test]
+    fn what_an_older_build_left_in_the_folders_open_folder_is_cleared() {
+        let (_tmp, folder) = folder();
+        let legacy = folder.root().join(INTERNAL_DIR).join(OPEN).join("old-id");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("passport.pdf"), b"decrypted").unwrap();
+        assert_eq!(folder.sweep_open(Duration::ZERO).unwrap(), 1);
+        assert!(!legacy.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn internal_folders_and_staging_files_are_owner_only_but_placed_files_are_ordinary() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let (_tmp, folder) = folder();
+        let internal = folder.root().join(INTERNAL_DIR);
+        for dir in [TMP, TRASH, UPLOADS] {
+            assert_eq!(mode(&internal.join(dir)), 0o700, "{dir}");
+        }
+        assert_eq!(mode(&internal), 0o700);
+
+        // An upload on its way is owner-only...
+        folder.begin_upload("abc").unwrap();
+        assert_eq!(mode(&internal.join(UPLOADS).join("abc")), 0o600);
+        folder.append_upload("abc", 0, b"bytes").unwrap();
+        assert_eq!(mode(&internal.join(UPLOADS).join("abc")), 0o600);
+
+        // ...and a file placed in the folder gets the mode any file made
+        // there would, not the staging file's.
+        let probe = folder.root().join("probe.txt");
+        fs::write(&probe, b"x").unwrap();
+        let ordinary = mode(&probe);
+        folder.write_bytes("a.txt", b"hello").unwrap();
+        assert_eq!(mode(&folder.root().join("a.txt")), ordinary);
+        folder.finish_upload("abc", "b.txt").unwrap();
+        assert_eq!(mode(&folder.root().join("b.txt")), ordinary);
+
+        // An internal folder an earlier build made wide is tightened.
+        fs::set_permissions(internal.join(UPLOADS), fs::Permissions::from_mode(0o755)).unwrap();
+        folder.set_up().unwrap();
+        assert_eq!(mode(&internal.join(UPLOADS)), 0o700);
     }
 }

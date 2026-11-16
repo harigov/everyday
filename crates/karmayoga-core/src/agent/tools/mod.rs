@@ -1441,6 +1441,35 @@ pub fn effect_for(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Optio
     Some(if reaches_people { Effect::Outward } else { tool.effect })
 }
 
+/// Whether any string anywhere in `value` holds a [hidden](crate::hidden)
+/// character.
+fn value_has_hidden(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.chars().any(crate::hidden::is_hidden),
+        Value::Array(items) => items.iter().any(value_has_hidden),
+        Value::Object(map) => map.values().any(value_has_hidden),
+        _ => false,
+    }
+}
+
+/// `value` with every [hidden](crate::hidden) character taken out of every
+/// string in it, keys included -- a key is as free for a model to write as a
+/// value is.
+fn value_without_hidden(value: &Value) -> Value {
+    match value {
+        Value::String(s) => Value::String(crate::hidden::strip_hidden(s).into_owned()),
+        Value::Array(items) => Value::Array(items.iter().map(value_without_hidden).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    (crate::hidden::strip_hidden(k).into_owned(), value_without_hidden(v))
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 /// Run one tool call.
 ///
 /// Refuses a tool the vault cannot serve rather than failing somewhere
@@ -1472,6 +1501,22 @@ pub fn dispatch(ctx: &ToolContext<'_>, name: &str, arguments: &Value) -> Result<
         ));
     }
 
+    // What a write is handed has its invisible characters taken out first. A
+    // model that read a stranger's mail may copy words into a fact, a skill,
+    // a routine or a task, and a line of zero-width or Unicode tag characters
+    // is how an instruction rides along unseen by anybody who looks at the
+    // saved record afterwards -- and is read as plain ASCII by some models
+    // every time it is loaded back into a prompt. Taken out here, in the one
+    // place every write passes, rather than in each tool's own parsing, so a
+    // tool added next year is covered too. Reads keep what they were given:
+    // a search for a string the person pasted should look for that string.
+    let cleaned;
+    let arguments = if tool.effect.is_write() && value_has_hidden(arguments) {
+        cleaned = value_without_hidden(arguments);
+        &cleaned
+    } else {
+        arguments
+    };
     let args = Args::new(tool.name, arguments);
 
     if let Some(drafting) = &ctx.drafting

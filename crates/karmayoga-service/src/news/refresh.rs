@@ -474,6 +474,12 @@ async fn refresh_one(
     Turn { report, health_changed: paused || state.last_error != before }
 }
 
+/// How far a source's own address may reach: anywhere for one the person
+/// added, the internet only for one the assistant followed.
+fn reach(source: &NewsSource) -> fetch::Reach {
+    if source.added_by_assistant { fetch::Reach::Outside } else { fetch::Reach::Typed }
+}
+
 /// One source's fetch, and storing what came of it.
 async fn attempt(
     svc: &Arc<Service>,
@@ -483,7 +489,7 @@ async fn attempt(
     now: Timestamp,
 ) -> Result<Arrived, FetchError> {
     match &source.kind {
-        SourceKind::Web { url } => match fetch::feed(url, state).await? {
+        SourceKind::Web { url } => match fetch::feed(url, state, reach(source)).await? {
             Fetched::NotModified { hints } => Ok(Arrived::unchanged(hints)),
             Fetched::Body { bytes, etag, last_modified, final_url, mut hints } => {
                 let payload = Payload::Feed { bytes, base: final_url };

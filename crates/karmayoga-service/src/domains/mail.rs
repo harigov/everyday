@@ -1209,6 +1209,53 @@ fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
+/// Whether an invitation's `ORGANIZER` is somebody the message plausibly
+/// came from, and an error saying so when it is not.
+///
+/// The organiser is a line in the calendar file; the sender is who the
+/// message says it is from. Nothing ties the two, so a stranger can send a
+/// plain invitation naming a third party as organiser, and a click on
+/// "Accept" would then have this account send that person a mail they
+/// never expected, from the person's own address -- a reflector, with the
+/// reply's subject and body written by the stranger's event title. An
+/// invitation sent on someone's behalf is real (a secretary, a booking
+/// tool), and the file's `SENT-BY` is how it says so, but the invite
+/// reader does not keep that parameter, so the test is the plainer one: the
+/// same address, or the same domain.
+///
+/// Asked only of the assistant, a routine and an MCP client -- callers that
+/// may be answering on the word of the invitation itself. The person's own
+/// click is theirs to make: the invitation card shows who it is from and
+/// who organised it, and an iCloud or booking-tool invitation, sent from a
+/// service's address on the organiser's behalf, is an everyday thing to
+/// accept. The two addresses are named in the error so the assistant can
+/// say what it would not do and why.
+fn refuse_a_reply_to_a_stranger(
+    from: &karmayoga_core::mail::Address,
+    organizer: &karmayoga_core::mail::Address,
+) -> CommandResult<()> {
+    let domain = |a: &str| a.rsplit_once('@').map(|(_, d)| d.trim().to_lowercase());
+    let sender = from.email.trim().to_lowercase();
+    let organiser = organizer.email.trim().to_lowercase();
+    let same_address = !organiser.is_empty() && sender == organiser;
+    let same_domain = match (domain(&sender), domain(&organiser)) {
+        (Some(a), Some(b)) => !a.is_empty() && a == b,
+        _ => false,
+    };
+    if same_address || same_domain {
+        return Ok(());
+    }
+    Err(CommandError::new(
+        codes::INVALID,
+        format!(
+            "this invitation names {} as its organiser but was sent by {}, so a reply is not \
+             sent automatically; reply to the organiser by hand if you know them",
+            if organiser.is_empty() { "nobody" } else { organiser.as_str() },
+            if sender.is_empty() { "an unknown sender" } else { sender.as_str() },
+        ),
+    ))
+}
+
 /// Build and queue an iTIP `REPLY` to the invitation carried by `message_id`,
 /// and update that message's own
 /// [`karmayoga_core::mail::Invite::my_response`] so the thread reflects the
@@ -1253,6 +1300,10 @@ fn respond_to_invite_inner(
             codes::INVALID,
             "a cancelled invitation, or another reply, cannot be responded to",
         ));
+    }
+
+    if origin != Origin::Person {
+        refuse_a_reply_to_a_stranger(&message.from, &inv.organizer)?;
     }
 
     let account = vault.account(message.account_id)?;
@@ -2457,7 +2508,31 @@ pub static COMMANDS: &[crate::command::Command] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use karmayoga_core::mail::PartRef;
+    use karmayoga_core::mail::{Address, PartRef};
+
+    #[test]
+    fn a_reply_goes_only_to_an_organiser_the_message_came_from() {
+        let from = Address::new("Priya", "Priya@Example.com");
+        // The same address, in another case, and a colleague on the same domain.
+        assert!(
+            refuse_a_reply_to_a_stranger(&from, &Address::new("", "priya@example.com")).is_ok()
+        );
+        assert!(refuse_a_reply_to_a_stranger(&from, &Address::new("", "room@example.com")).is_ok());
+        // A third party: refused, and both addresses are named.
+        let err = refuse_a_reply_to_a_stranger(&from, &Address::new("", "victim@elsewhere.org"))
+            .unwrap_err();
+        let said = err.to_string();
+        assert!(
+            said.contains("victim@elsewhere.org") && said.contains("priya@example.com"),
+            "{said}"
+        );
+        // No organiser at all is not a recipient.
+        assert!(refuse_a_reply_to_a_stranger(&from, &Address::new("", "")).is_err());
+        assert!(
+            refuse_a_reply_to_a_stranger(&Address::new("", ""), &Address::new("", "a@b.c"))
+                .is_err()
+        );
+    }
 
     fn part(filename: Option<&str>, mime: &str, cid: Option<&str>) -> PartRef {
         PartRef {

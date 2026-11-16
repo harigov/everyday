@@ -49,8 +49,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The folder inside the files folder Karma Yoga keeps its own things in:
-/// the marker, the trash, uploads in progress, decrypted copies opened in
-/// another program. Never catalogued, never listed, never backed up.
+/// the marker, the trash, uploads in progress. Never catalogued, never listed,
+/// never backed up. (Decrypted copies of sealed files opened in another
+/// program are not here: see [`disk::OpenCopies`].)
 pub const INTERNAL_DIR: &str = ".karmayoga";
 
 /// The files folder's name when nobody chose one: `~/Karma Yoga`.

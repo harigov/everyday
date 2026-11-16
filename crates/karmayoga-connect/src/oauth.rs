@@ -40,6 +40,26 @@ const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long one token request may take; the same as the mail sign-in's.
 const TOKEN_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// The most of any one answer this module will read: metadata, a
+/// registration, a token. Real ones are a few kilobytes. Every address here
+/// was named by a server, and a server that answers with an endless body
+/// should cost a failed sign-in, not this process's memory.
+const MAX_BODY: usize = 1024 * 1024;
+
+/// Whether an address a server named may be fetched at all, beyond being
+/// `https` (or plain `http` to this computer), which is always required.
+/// The service decides: it knows whether the person typed an address on this
+/// computer or on the internet, and a server on the internet must not be able
+/// to send this computer's requests to a printer, a router or a cloud
+/// metadata address. `Err` says why not, briefly.
+pub type UrlGate<'a> = &'a (dyn Fn(&Url) -> Result<(), String> + Send + Sync);
+
+/// A gate that lets everything through, for a caller that has already
+/// decided (and for tests against a server on this computer).
+pub fn any_address(_: &Url) -> Result<(), String> {
+    Ok(())
+}
+
 /// RFC 9728 protected resource metadata, as far as a client needs it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtectedResource {
@@ -203,8 +223,48 @@ fn describe(error: reqwest::Error) -> String {
     }
 }
 
+/// Read a response body, refusing to grow past `max` bytes. Both the length
+/// the server claims and what actually arrives are checked: the first is a
+/// claim, the second a fact.
+async fn read_capped(mut response: reqwest::Response, max: usize) -> Result<Vec<u8>, String> {
+    if response.content_length().is_some_and(|n| n > max as u64) {
+        return Err("the answer was too large".to_string());
+    }
+    let mut body: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(describe)? {
+        if body.len() + chunk.len() > max {
+            return Err("the answer was too large".to_string());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Whether an address may carry a code, a verifier, a secret or a token: `https`,
+/// or plain `http` to this computer. The rule a connection's own address is
+/// held to.
+fn is_safe_scheme(url: &Url) -> bool {
+    match url.scheme() {
+        "https" => url.host_str().is_some(),
+        "http" => url.host_str().is_some_and(is_loopback),
+        _ => false,
+    }
+}
+
+/// Refuse `raw` before anything is sent to it: not an address, not `https`
+/// (or this computer), or one the service's gate will not have. The one
+/// place every request this module makes passes first.
+fn guard(raw: &str, gate: UrlGate<'_>) -> Result<(), String> {
+    let url = Url::parse(raw.trim()).map_err(|_| "not a web address".to_string())?;
+    if !is_safe_scheme(&url) {
+        return Err("not a secure address".to_string());
+    }
+    gate(&url)
+}
+
 /// GET `url` and read the body as JSON. `Err` says why not, briefly.
-async fn fetch_json(http: &reqwest::Client, url: &str) -> Result<Value, String> {
+async fn fetch_json(http: &reqwest::Client, url: &str, gate: UrlGate<'_>) -> Result<Value, String> {
+    guard(url, gate)?;
     let response = http
         .get(url)
         .header(ACCEPT, "application/json")
@@ -216,7 +276,44 @@ async fn fetch_json(http: &reqwest::Client, url: &str) -> Result<Value, String> 
     if status != StatusCode::OK {
         return Err(format!("HTTP {}", status.as_u16()));
     }
-    response.json::<Value>().await.map_err(|_| "the answer was not JSON".to_string())
+    let body = read_capped(response, MAX_BODY).await?;
+    serde_json::from_slice::<Value>(&body).map_err(|_| "the answer was not JSON".to_string())
+}
+
+/// Whether two addresses are the same place: scheme, host, port and path
+/// (a trailing slash does not count) and query. Falls back to comparing the
+/// text when either is not an address.
+fn same_address(a: &str, b: &str) -> bool {
+    match (Url::parse(a.trim()), Url::parse(b.trim())) {
+        (Ok(a), Ok(b)) => {
+            a.scheme() == b.scheme()
+                && a.host_str() == b.host_str()
+                && a.port_or_known_default() == b.port_or_known_default()
+                && a.path().trim_end_matches('/') == b.path().trim_end_matches('/')
+                && a.query() == b.query()
+        }
+        _ => a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/'),
+    }
+}
+
+/// Whether protected resource metadata that calls its `resource` `claimed`
+/// is about the server at `server`
+/// ([RFC 9728 §3.3](https://www.rfc-editor.org/rfc/rfc9728#section-3.3)): the
+/// same scheme, host and port, and a path that is the server's own or one of
+/// its parents (Slack's is `https://mcp.slack.com` for `.../mcp`). Without
+/// this, a server could say its token should be asked for as somebody
+/// else's resource, and the token it was given would be good there.
+fn resource_covers(server: &Url, claimed: &str) -> bool {
+    let Ok(claimed) = Url::parse(claimed.trim()) else { return false };
+    if claimed.scheme() != server.scheme()
+        || claimed.host_str() != server.host_str()
+        || claimed.port_or_known_default() != server.port_or_known_default()
+    {
+        return false;
+    }
+    let parent = claimed.path().trim_end_matches('/');
+    let own = server.path().trim_end_matches('/');
+    own == parent || own.starts_with(&format!("{parent}/"))
 }
 
 /// A non-empty string field.
@@ -296,6 +393,24 @@ pub async fn discover(
     server_url: &str,
     resource_metadata: Option<&str>,
 ) -> Result<Discovery, OAuthError> {
+    discover_gated(http, server_url, resource_metadata, &any_address).await
+}
+
+/// [`discover`], with every address the server's own answers name -- the
+/// `resource_metadata` of its 401, its authorization server, that server's
+/// endpoints -- held to `gate` as well as to `https`, and checked *before* it
+/// is fetched. The address the person typed is not gated: they chose it.
+///
+/// What the metadata says is checked against what was asked. Its `resource`
+/// must be the server's own address (or a parent of it), and an
+/// authorization server's `issuer` must be the address it was fetched for,
+/// so that a document served from one place cannot speak for another.
+pub async fn discover_gated(
+    http: &reqwest::Client,
+    server_url: &str,
+    resource_metadata: Option<&str>,
+    gate: UrlGate<'_>,
+) -> Result<Discovery, OAuthError> {
     let server = Url::parse(server_url.trim())
         .ok()
         .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
@@ -319,25 +434,40 @@ pub async fn discover(
     candidates.push(format!("{origin}/.well-known/oauth-protected-resource"));
 
     // The addresses tried are not written into any error: for some hosted
-    // servers the path is itself the credential.
+    // servers the path is itself the credential. One the gate refuses is
+    // simply not tried, like one that does not answer: the 401 that named it
+    // came from the server, and the well-known places below are on the
+    // address the person typed.
     let mut resource = None;
     for candidate in &candidates {
-        if let Ok(value) = fetch_json(http, candidate).await
+        if let Ok(value) = fetch_json(http, candidate, gate).await
             && let Some(found) = read_resource(&value)
         {
             resource = Some(found);
             break;
         }
     }
-    let resource = resource.unwrap_or_else(|| ProtectedResource {
-        resource: canonical_resource(&server),
-        authorization_servers: vec![origin],
-        scopes_supported: Vec::new(),
-    });
+    let resource = match resource {
+        Some(found) => {
+            if !resource_covers(&server, &found.resource) {
+                return Err(OAuthError::Discovery(
+                    "the server's sign-in details are for a different address than the one \
+                     it was reached at, so they were not trusted"
+                        .to_string(),
+                ));
+            }
+            found
+        }
+        None => ProtectedResource {
+            resource: canonical_resource(&server),
+            authorization_servers: vec![origin],
+            scopes_supported: Vec::new(),
+        },
+    };
 
     let issuer = resource.authorization_servers[0].clone();
-    let server = discover_server(http, &issuer).await?;
-    check_server(&server)?;
+    let server = discover_server(http, &issuer, gate).await?;
+    check_server_gated(&server, gate)?;
     Ok(Discovery { resource, server })
 }
 
@@ -346,25 +476,30 @@ pub async fn discover(
 /// allowed only to this computer -- the same rule a connection's own address
 /// is held to. A server that lists no challenge methods at all is taken at
 /// its word that it follows the specification, which requires S256.
+#[cfg(test)]
 fn check_server(server: &AuthServer) -> Result<(), OAuthError> {
+    check_server_gated(server, &any_address)
+}
+
+/// [`check_server`], and every endpoint it names passes `gate` too.
+fn check_server_gated(server: &AuthServer, gate: UrlGate<'_>) -> Result<(), OAuthError> {
     let endpoints = [
         Some(server.authorization_endpoint.as_str()),
         Some(server.token_endpoint.as_str()),
         server.registration_endpoint.as_deref(),
     ];
     for endpoint in endpoints.into_iter().flatten() {
-        let safe = Url::parse(endpoint).ok().is_some_and(|u| match u.scheme() {
-            "https" => true,
-            "http" => u.host_str().is_some_and(is_loopback),
-            _ => false,
-        });
-        if !safe {
+        let url = Url::parse(endpoint).ok().filter(is_safe_scheme);
+        let Some(url) = url else {
             return Err(OAuthError::Discovery(
                 "the service signs in over an unencrypted connection, which would send its \
                  tokens in the clear"
                     .to_string(),
             ));
-        }
+        };
+        gate(&url).map_err(|why| {
+            OAuthError::Discovery(format!("the service signs in at an address that {why}"))
+        })?;
     }
     if !server.code_challenge_methods.is_empty()
         && !server.code_challenge_methods.iter().any(|m| m == "S256")
@@ -386,7 +521,14 @@ fn is_loopback(host: &str) -> bool {
 
 /// Read an authorization server's metadata from the places RFC 8414 and OIDC
 /// put it, for the issuer `issuer`.
-async fn discover_server(http: &reqwest::Client, issuer: &str) -> Result<AuthServer, OAuthError> {
+///
+/// Each address is checked by [`fetch_json`] before it is fetched, and a
+/// document whose own `issuer` is not `issuer` is not taken for it.
+async fn discover_server(
+    http: &reqwest::Client,
+    issuer: &str,
+    gate: UrlGate<'_>,
+) -> Result<AuthServer, OAuthError> {
     let parsed = Url::parse(issuer)
         .ok()
         .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some())
@@ -412,9 +554,10 @@ async fn discover_server(http: &reqwest::Client, issuer: &str) -> Result<AuthSer
 
     let mut reasons: Vec<String> = Vec::new();
     for candidate in &candidates {
-        match fetch_json(http, candidate).await {
+        match fetch_json(http, candidate, gate).await {
             Ok(value) => match read_server(&value, issuer) {
-                Some(found) => return Ok(found),
+                Some(found) if same_address(issuer, &found.issuer) => return Ok(found),
+                Some(_) => reasons.push(format!("{candidate}: it names a different issuer")),
                 None => reasons.push(format!("{candidate}: no authorization or token endpoint")),
             },
             Err(reason) => reasons.push(format!("{candidate}: {reason}")),
@@ -439,6 +582,8 @@ pub async fn register(
     let Some(endpoint) = server.registration_endpoint.as_deref() else {
         return Err(OAuthError::NoRegistration);
     };
+    guard(endpoint, &any_address)
+        .map_err(|why| OAuthError::Discovery(format!("the registration address is {why}")))?;
     // A public client is the point of registering on the spot -- there is
     // nowhere safe in a desktop app to keep a secret -- so `none` is asked
     // for whenever the server offers it or does not say what it offers (RFC
@@ -471,7 +616,7 @@ pub async fn register(
         .await
         .map_err(|e| OAuthError::Http(describe(e)))?;
     let status = response.status();
-    let text = response.text().await.map_err(|e| OAuthError::Http(describe(e)))?;
+    let text = read_text(response).await?;
     let value = serde_json::from_str::<Value>(&text).ok();
     let map = value.as_ref().and_then(Value::as_object);
 
@@ -613,6 +758,11 @@ async fn token_request(
     // Built in a block of its own: the serializer holds a `dyn Fn` that is
     // not `Sync`, and one still in scope at the `await` below would make this
     // whole future `!Send` -- unusable from a spawned task.
+    // A secret, a code and a verifier go to this address; it must be one they
+    // may be sent to even if it did not come through discovery (a grant
+    // stored by an older version).
+    guard(token_endpoint, &any_address)
+        .map_err(|why| OAuthError::Discovery(format!("the token address is {why}")))?;
     let (body, basic) = {
         let mut body = url::form_urlencoded::Serializer::new(String::new());
         for (key, value) in fields {
@@ -648,8 +798,14 @@ async fn token_request(
     }
     let response = request.send().await.map_err(|e| OAuthError::Http(describe(e)))?;
     let status = response.status();
-    let text = response.text().await.map_err(|e| OAuthError::Http(describe(e)))?;
+    let text = read_text(response).await?;
     read_grant(status, &text)
+}
+
+/// A response body as text, read no further than [`MAX_BODY`].
+async fn read_text(response: reqwest::Response) -> Result<String, OAuthError> {
+    let bytes = read_capped(response, MAX_BODY).await.map_err(OAuthError::Http)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// At most 300 characters of text a server wrote, so one that answers with a
@@ -935,5 +1091,158 @@ mod tests {
         assert_eq!(seconds_of(&serde_json::json!("3600")), Some(3600));
         assert_eq!(seconds_of(&serde_json::json!(0)), None);
         assert_eq!(seconds_of(&serde_json::json!("soon")), None);
+    }
+
+    /// A fake authorization server on this computer, answering `resource` as
+    /// its protected resource metadata and `as_issuer` as the issuer in its
+    /// own. Returns its base address.
+    async fn fake_metadata(resource: &str, as_issuer: &str) -> String {
+        use axum::{Json, Router, routing::get};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let resource = serde_json::json!({
+            "resource": resource.replace("BASE", &base),
+            "authorization_servers": [base.clone()],
+        });
+        let server = serde_json::json!({
+            "issuer": as_issuer.replace("BASE", &base),
+            "authorization_endpoint": format!("{base}/authorize"),
+            "token_endpoint": format!("{base}/token"),
+            "code_challenge_methods_supported": ["S256"],
+        });
+        let router = Router::new()
+            .route(
+                "/.well-known/oauth-protected-resource",
+                get(move || {
+                    let resource = resource.clone();
+                    async move { Json(resource) }
+                }),
+            )
+            .route(
+                "/.well-known/oauth-authorization-server",
+                get(move || {
+                    let server = server.clone();
+                    async move { Json(server) }
+                }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        base
+    }
+
+    fn local_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn metadata_that_speaks_for_another_resource_or_issuer_is_not_trusted() {
+        // Its own address, and a parent of it, are fine.
+        for resource in ["BASE/mcp", "BASE/mcp/", "BASE"] {
+            let base = fake_metadata(resource, "BASE").await;
+            let found = discover(&local_client(), &format!("{base}/mcp"), None).await;
+            assert!(found.is_ok(), "{resource}: {found:?}");
+        }
+        // Another host, another port, another path: not.
+        for resource in ["https://elsewhere.example/mcp", "http://127.0.0.1:1/mcp", "BASE/other"] {
+            let base = fake_metadata(resource, "BASE").await;
+            let error = discover(&local_client(), &format!("{base}/mcp"), None).await.unwrap_err();
+            assert!(
+                matches!(&error, OAuthError::Discovery(m) if m.contains("different address")),
+                "{resource}: {error:?}"
+            );
+        }
+        // An authorization server that says it is somebody else.
+        let base = fake_metadata("BASE/mcp", "https://login.example").await;
+        let error = discover(&local_client(), &format!("{base}/mcp"), None).await.unwrap_err();
+        assert!(
+            matches!(&error, OAuthError::Discovery(m) if m.contains("different issuer")),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_address_the_gate_refuses_is_never_fetched() {
+        // Nothing here could be reached if it were tried: the reasons must be
+        // the gate's (and the scheme's), not a failure to connect.
+        let refuse = |_: &Url| Err::<(), String>("points at a private network".to_string());
+        let error = discover_gated(
+            &local_client(),
+            "https://mcp.invalid/mcp",
+            Some("http://169.254.169.254/latest/meta-data"),
+            &refuse,
+        )
+        .await
+        .unwrap_err();
+        let OAuthError::Discovery(reason) = error else { panic!("wrong error") };
+        assert!(reason.contains("points at a private network"), "{reason}");
+        assert!(!reason.contains("connect"), "{reason}");
+        assert!(!reason.contains("169.254"), "{reason}");
+    }
+
+    #[test]
+    fn endpoints_are_held_to_the_gate_as_well_as_to_https() {
+        let ok = server("https://as.example/authorize", "https://as.example/token", &["S256"]);
+        assert!(check_server_gated(&ok, &any_address).is_ok());
+        let only_as_example = |u: &Url| {
+            if u.host_str() == Some("as.example") {
+                Ok(())
+            } else {
+                Err("is not allowed".to_string())
+            }
+        };
+        assert!(check_server_gated(&ok, &only_as_example).is_ok());
+        let elsewhere =
+            server("https://as.example/authorize", "https://169.254.169.254/token", &[]);
+        assert!(matches!(
+            check_server_gated(&elsewhere, &only_as_example),
+            Err(OAuthError::Discovery(m)) if m.contains("is not allowed")
+        ));
+    }
+
+    #[test]
+    fn a_resource_must_be_the_server_or_a_parent_of_it() {
+        let server = Url::parse("https://mcp.example.com/v1/mcp").unwrap();
+        assert!(resource_covers(&server, "https://mcp.example.com/v1/mcp"));
+        assert!(resource_covers(&server, "https://MCP.example.com/v1/mcp/"));
+        assert!(resource_covers(&server, "https://mcp.example.com/v1"));
+        assert!(resource_covers(&server, "https://mcp.example.com"));
+        assert!(resource_covers(&server, "https://mcp.example.com:443/"));
+        assert!(!resource_covers(&server, "https://mcp.example.com/v1/mcpx"));
+        assert!(!resource_covers(&server, "https://mcp.example.com/v2"));
+        assert!(!resource_covers(&server, "https://mcp.example.com/v1/mcp/deeper"));
+        assert!(!resource_covers(&server, "https://other.example.com/v1/mcp"));
+        assert!(!resource_covers(&server, "http://mcp.example.com/v1/mcp"));
+        assert!(!resource_covers(&server, "https://mcp.example.com:8443/v1/mcp"));
+        assert!(!resource_covers(&server, "not an address"));
+    }
+
+    #[test]
+    fn an_issuer_is_the_address_it_was_asked_for() {
+        assert!(same_address("https://as.example", "https://as.example/"));
+        assert!(same_address("https://as.example/t/", "https://AS.example/t"));
+        assert!(same_address("https://as.example:443", "https://as.example"));
+        assert!(!same_address("https://as.example/t", "https://as.example"));
+        assert!(!same_address("https://as.example", "https://evil.example"));
+        assert!(!same_address("https://as.example", "http://as.example"));
+    }
+
+    #[test]
+    fn an_address_must_be_secure_before_the_gate_is_asked() {
+        let asked = std::sync::atomic::AtomicUsize::new(0);
+        let count = |_: &Url| {
+            asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        };
+        assert!(guard("https://x.example/m", &count).is_ok());
+        assert!(guard("http://127.0.0.1:9/m", &count).is_ok());
+        assert!(guard("http://x.example/m", &count).is_err());
+        assert!(guard("file:///etc/passwd", &count).is_err());
+        assert!(guard("nonsense", &count).is_err());
+        assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 }

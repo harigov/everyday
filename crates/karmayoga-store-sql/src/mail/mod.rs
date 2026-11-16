@@ -27,8 +27,8 @@ use karmayoga_core::mail::{
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::store::mail::{
     CategoryCount, IngestMessage, MailStore, ThreadFilter, ThreadPage, body_aad,
-    category_rules_aad, contacts_aad, draft_aad, mail_sorting_aad, mail_writing_aad, mailbox_aad,
-    message_aad, op_aad, remote_image_settings_aad,
+    category_rules_aad, contacts_aad, draft_aad, draft_blob_refs_of, mail_sorting_aad,
+    mail_writing_aad, mailbox_aad, message_aad, op_aad, remote_image_settings_aad,
 };
 
 use crate::conn::{Sql, SqlExt, ToValue, Value, Where};
@@ -883,8 +883,18 @@ impl MailStore for SqlStore {
                 })?;
             let body: Body = self.unseal(&body_aad(mid), &data)?;
             out.extend(body.parts.into_iter().filter_map(|p| p.blob));
+            // A remote image cached the first time it was allowed is a blob
+            // held by this body and nothing else.
+            out.extend(body.remote_images.into_iter().filter_map(|r| r.cached_blob));
         }
         Ok(out)
+    }
+
+    fn draft_blob_refs(&self) -> Result<Vec<BlobId>> {
+        // Every draft, whatever its state or account: see the trait's docs.
+        let rows = self.read().records("SELECT id, data FROM drafts", &[])?;
+        let drafts = self.collect::<Draft, _>(rows, draft_aad)?;
+        Ok(drafts.iter().flat_map(draft_blob_refs_of).collect())
     }
 
     fn referenced_pack_ids(&self, account: AccountId) -> Result<Vec<PackId>> {

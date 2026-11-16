@@ -5,6 +5,17 @@
 //! connection lets the assistant act as the person somewhere else; nothing
 //! narrower than a paired desktop may add, change or sign one in.
 //!
+//! `All` is not enough for the program, though. A paired phone and a web
+//! session over the tailnet both hold `All`, and a stdio connection is a
+//! command line this computer will run: whoever may write one may run
+//! anything the person's account can. So a connection that runs a program
+//! may be made, pointed at another program (or other arguments, variables or
+//! directory), given values for the variables it names, or connected to
+//! only by the shell on this computer -- see [`is_local`]. What a phone may
+//! still do with one is what carries no command: switch it on or off, rename
+//! it, choose what its tools may do, remove it. An address on the internet
+//! is another matter and is open to every caller, as it always was.
+//!
 //! Every write answers the view of what it touched, so the panel is always
 //! drawn from what the vault says.
 
@@ -20,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::command;
 use crate::connections::{HubError, hub};
-use crate::ctx::Ctx;
+use crate::ctx::{Caller, Ctx};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::service::{Service, blocking};
 
@@ -139,6 +150,32 @@ pub struct BegunConnectionSignIn {
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSignInRef {
     pub sign_in_id: String,
+}
+
+/// Why a caller that is not the shell on this machine may not set up, change
+/// or start a program.
+const PROGRAMS_ARE_LOCAL: &str = "a connection that runs a program can be set up, changed or \
+    started only from this computer's own window: from anywhere else it would be a way to run \
+    anything on it";
+
+/// Whether this caller is the shell on the vault's own machine. The same
+/// question, and the same answer, as the Files app's folder picker asks.
+fn is_local(ctx: &Ctx) -> bool {
+    matches!(ctx.caller, Caller::Local | Caller::Window(_))
+}
+
+/// Whether `transport` is a program this computer would run.
+fn runs_a_program(transport: &Transport) -> bool {
+    matches!(transport, Transport::Stdio { .. })
+}
+
+/// Refuse what only the desktop itself may do.
+fn require_local(ctx: &Ctx) -> CommandResult<()> {
+    if is_local(ctx) {
+        Ok(())
+    } else {
+        Err(CommandError::new(codes::FORBIDDEN, PROGRAMS_ARE_LOCAL))
+    }
 }
 
 /// A [`HubError`] as the error a command answers with. A sign-in that has
@@ -271,9 +308,12 @@ async fn connections(
 /// Add a connection, with any secrets it came with. Does not connect.
 async fn add_connection(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: AddConnection,
 ) -> CommandResult<ConnectionView> {
+    if runs_a_program(&args.transport) {
+        require_local(&ctx)?;
+    }
     let vault = svc.require_unlocked()?;
     blocking(move || {
         let mut connection = Connection::new(args.name, args.transport, args.auth);
@@ -293,17 +333,25 @@ async fn add_connection(
 /// connects with what was saved.
 async fn update_connection(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: UpdateConnection,
 ) -> CommandResult<ConnectionView> {
     let vault = svc.require_unlocked()?;
     let id = args.connection.id;
     let writing = Arc::clone(&vault);
+    let local = is_local(&ctx);
     blocking(move || {
         // `save_connection` adds what it does not know; an edit of one that
         // has been removed meanwhile is an error, not a resurrection.
         let before = writing.connection(id)?;
         let mut after = args.connection.normalized();
+        // Compared as it is stored, after the same tidying: a program
+        // already set up may be switched on or off and renamed from
+        // anywhere, but not pointed at anything else, and no connection may
+        // become one.
+        if !local && runs_a_program(&after.transport) && before.transport != after.transport {
+            return Err(CommandError::new(codes::FORBIDDEN, PROGRAMS_ARE_LOCAL));
+        }
         // Pointed somewhere else -- another host, another program -- or
         // signing in another way: the token was given to the old one, and
         // the tools it listed, their hints and the person's choices about
@@ -354,14 +402,21 @@ async fn remove_connection(
 /// Change some of a connection's secrets.
 async fn set_connection_secrets(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: SetConnectionSecrets,
 ) -> CommandResult<ConnectionView> {
     let vault = svc.require_unlocked()?;
     let id = args.id;
     let writing = Arc::clone(&vault);
+    let local = is_local(&ctx);
     blocking(move || {
         let connection = writing.connection(id)?;
+        // The values a program is started with are part of what it runs: a
+        // library to load, a script to run first. They are named by the
+        // transport, which a phone cannot change, but the values it could.
+        if !local && args.patch.env.is_some() && runs_a_program(&connection.transport) {
+            return Err(CommandError::new(codes::FORBIDDEN, PROGRAMS_ARE_LOCAL));
+        }
         let mut secret = writing.connection_secret(id)?;
         apply_patch(&mut secret, args.patch, &connection);
         writing.set_connection_secret(id, &secret)?;
@@ -384,13 +439,18 @@ async fn set_connection_secrets(
 /// worked: the state says how it went.
 async fn check_connection(
     svc: Arc<Service>,
-    _ctx: Ctx,
+    ctx: Ctx,
     args: ConnectionRef,
 ) -> CommandResult<ConnectionView> {
     let vault = svc.require_unlocked()?;
     let id = args.id;
     let reading = Arc::clone(&vault);
-    blocking(move || Ok(reading.connection(id).map(|_| ())?)).await?;
+    let connection = blocking(move || Ok(reading.connection(id)?)).await?;
+    // Checking starts the program. Refused before anything is forgotten or
+    // tried, so a phone cannot even stop the one that is running.
+    if runs_a_program(&connection.transport) {
+        require_local(&ctx)?;
+    }
     // A fresh handshake, not whatever is already open: a check that reused a
     // working client could not say the settings are right.
     hub().forget(id);
@@ -696,5 +756,26 @@ mod tests {
             command_error(HubError::coded(codes::CANCELLED, "x"), codes::PROVIDER).code,
             codes::CANCELLED
         );
+    }
+
+    #[test]
+    fn only_this_computers_own_windows_may_run_programs() {
+        for (caller, local) in [
+            (Caller::Local, true),
+            (Caller::Window("window:app-notes".into()), true),
+            (Caller::Socket, false),
+            (Caller::Device("phone".into()), false),
+            (Caller::Assistant("run-1".into()), false),
+        ] {
+            let ctx = Ctx { caller: caller.clone(), ..Ctx::local() };
+            assert_eq!(is_local(&ctx), local, "{caller:?}");
+            assert_eq!(require_local(&ctx).is_ok(), local, "{caller:?}");
+        }
+        let stdio = Transport::Stdio { command: "x".into(), args: vec![], env: vec![], cwd: None };
+        assert!(runs_a_program(&stdio));
+        assert!(!runs_a_program(&Transport::Http {
+            url: "https://x.test".into(),
+            headers: vec![]
+        }));
     }
 }

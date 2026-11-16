@@ -278,8 +278,8 @@ pub struct Described {
     /// [`super::turn_note`].
     pub text: String,
     /// Whether it quotes mail -- a subject, a sender, a reply's recipients
-    /// -- which is somebody else's writing arriving in the model's context
-    /// exactly as `read_thread`'s output does. The turn arms the same
+    /// -- or an invitation's title, which is somebody else's writing arriving
+    /// in the model's context exactly as `read_thread`'s output does. The turn arms the same
     /// safeguard on it: a web search or a page fetch after reading mail
     /// stops to ask first, because a model that has read a stranger's words
     /// can be talked into sending them somewhere. An open thread is mail
@@ -352,6 +352,13 @@ impl Said {
 
     /// A mail record, described with some of what a stranger wrote.
     fn mail(text: String) -> Option<Said> {
+        Some(Said { text, has_id: true, quotes_mail: true })
+    }
+
+    /// A record other than mail whose title or text somebody else chose --
+    /// an invitation's. Counted exactly as mail is: see
+    /// [`Described::quotes_mail`].
+    fn stranger(text: String) -> Option<Said> {
         Some(Said { text, has_id: true, quotes_mail: true })
     }
 }
@@ -446,7 +453,11 @@ fn line(ctx: &ToolContext<'_>, tz: &TimeZone, shown: Shown) -> Option<Said> {
             let when = span(event.start, event.end, event.all_day, event.local_date, tz);
             let calendar = vault.calendar(event.calendar_id).map(|c| c.name).unwrap_or_default();
             let on = quote(&calendar).map(|c| format!(", on the calendar {c}")).unwrap_or_default();
-            Said::with_id(format!("the calendar event {} (id {id}), {when}{on}.", q(&event.title)))
+            // An event's title is whatever its sender wrote: an invitation
+            // can come from anybody, and a feed from anywhere. So it counts
+            // as mail does -- words from a stranger arriving in the turn --
+            // and arms the same safeguards.
+            Said::stranger(format!("the calendar event {} (id {id}), {when}{on}.", q(&event.title)))
         }
         Shown::Shelf(id) => {
             let shelf = vault.kind(id).ok()?;
@@ -803,7 +814,10 @@ fn status_word(status: TaskStatus) -> &'static str {
 /// escaped, so whatever it says stays inside the quotation marks. `None` for
 /// nothing but whitespace.
 fn quote(text: &str) -> Option<String> {
-    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Without the characters nobody can see: whatever is quoted here may be
+    // a stranger's subject or an invitation's title. See `crate::hidden`.
+    let visible = crate::hidden::strip_hidden(text);
+    let flat = visible.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.is_empty() {
         return None;
     }

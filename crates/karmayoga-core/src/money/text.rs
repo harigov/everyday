@@ -4,14 +4,16 @@
 
 /// Characters that change how text reads without being seen: bidirectional
 /// overrides and isolates, zero-width characters, the Arabic letter mark and
-/// the byte-order mark. A transfer's memo is the sender's words, and one of
-/// these can make a payee read as somebody else's -- on screen, or in a
-/// confirmation that quotes it.
+/// the byte-order mark, and the soft hyphen, the Mongolian vowel separator
+/// and the Unicode tag block that some models read as ASCII. A transfer's
+/// memo is the sender's words, and one of these can make a payee read as
+/// somebody else's -- on screen, or in a confirmation that quotes it.
+///
+/// The shared [`hidden`](crate::hidden) list, plus the zero-width joiner and
+/// non-joiner that list keeps for scripts and emoji: a payee name has no use
+/// for them, and this list has always dropped them.
 pub fn is_invisible(c: char) -> bool {
-    matches!(
-        c,
-        '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
-    )
+    crate::hidden::is_hidden(c) || matches!(c, '\u{200C}' | '\u{200D}' | '\u{2065}')
 }
 
 /// An ISO 4217 code, upper-cased, if `text` is three ASCII letters.
@@ -37,7 +39,19 @@ mod tests {
 
     #[test]
     fn the_invisible_list_covers_overrides_isolates_and_marks() {
-        for c in ['\u{202E}', '\u{2066}', '\u{200B}', '\u{FEFF}', '\u{061C}'] {
+        for c in [
+            '\u{202E}',
+            '\u{2066}',
+            '\u{200B}',
+            '\u{FEFF}',
+            '\u{061C}',
+            '\u{200C}',
+            '\u{200D}',
+            '\u{00AD}',
+            '\u{180E}',
+            '\u{E0041}',
+            '\u{E007F}',
+        ] {
             assert!(is_invisible(c), "{:?}", c);
         }
         assert!(!is_invisible('a') && !is_invisible(' '));

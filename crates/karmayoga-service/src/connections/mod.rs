@@ -142,18 +142,163 @@ pub fn hub() -> &'static Hub {
     &HUB
 }
 
-/// The one HTTP client the runtime uses for OAuth: discovery, registration,
-/// the token endpoint. A request that takes more than half a minute is not
-/// going to finish.
-pub(crate) fn http_client() -> reqwest::Client {
-    static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
-        reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .user_agent("Karma Yoga")
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
-    });
-    HTTP.clone()
+/// What OAuth talks to the internet with: discovery, registration, the token
+/// endpoint. Each address it fetches was vetted before it was asked for, and
+/// a redirect is a second one the far end picks after the check, so a
+/// redirect is held to the same rule on the way: a few hops, `https` only,
+/// and never to a literal private address -- the one hop the resolver below
+/// never sees. Servers that move their metadata to a canonical address with
+/// a `301` are common enough that refusing every redirect broke sign-in. A
+/// request that takes more than half a minute is not going to finish.
+///
+/// Two clients, and which is used depends on the address the person typed for
+/// the server, since everything else comes from the server's own answers.
+/// For a server on the internet they come from [`Reach::PublicOnly`]: names
+/// resolve only to public addresses, so a metadata document that sends the
+/// next request to `localhost`, a router or a cloud's metadata address
+/// finds nothing there. For a server the person typed as an address on this
+/// computer or a private network (a program of their own, in a container) they
+/// come from [`Reach::Anywhere`], because that server's own authorization
+/// server is as likely to be there too.
+#[derive(Clone)]
+pub(crate) struct OAuthHttp {
+    client: reqwest::Client,
+    reach: Reach,
+}
+
+/// Where an OAuth request may go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    PublicOnly,
+    Anywhere,
+}
+
+impl OAuthHttp {
+    /// For a connection whose server is at `server_url`, as typed.
+    pub(crate) fn for_server(server_url: &str) -> Self {
+        static PUBLIC: LazyLock<reqwest::Client> =
+            LazyLock::new(|| oauth_client(Reach::PublicOnly));
+        static ANYWHERE: LazyLock<reqwest::Client> =
+            LazyLock::new(|| oauth_client(Reach::Anywhere));
+        let reach =
+            if names_a_private_place(server_url) { Reach::Anywhere } else { Reach::PublicOnly };
+        let client = match reach {
+            Reach::PublicOnly => PUBLIC.clone(),
+            Reach::Anywhere => ANYWHERE.clone(),
+        };
+        Self { client, reach }
+    }
+
+    /// For `connection`, wherever its server is.
+    pub(crate) fn for_connection(connection: &Connection) -> Self {
+        match &connection.transport {
+            Transport::Http { url, .. } => Self::for_server(url),
+            Transport::Stdio { .. } => Self::for_server(""),
+        }
+    }
+
+    pub(crate) fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    /// The check [`oauth::discover_gated`] holds each address a server names
+    /// to, before it is fetched.
+    pub(crate) fn gate(&self) -> oauth::UrlGate<'static> {
+        match self.reach {
+            Reach::PublicOnly => &public_address_only,
+            Reach::Anywhere => &oauth::any_address,
+        }
+    }
+}
+
+fn oauth_client(reach: Reach) -> reqwest::Client {
+    let builder =
+        reqwest::Client::builder().timeout(Duration::from_secs(30)).user_agent("Karma Yoga");
+    let builder = match reach {
+        // No proxy: one resolves names itself, and would be a way round the
+        // resolver below.
+        Reach::PublicOnly => builder
+            .no_proxy()
+            .dns_resolver(Arc::new(PublicOnlyResolver))
+            .redirect(public_redirects()),
+        Reach::Anywhere => builder.redirect(reqwest::redirect::Policy::limited(OAUTH_REDIRECTS)),
+    };
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// How many redirects one OAuth request may follow.
+const OAUTH_REDIRECTS: usize = 5;
+
+/// Redirects for [`Reach::PublicOnly`]: see [`OAuthHttp`].
+fn public_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= OAUTH_REDIRECTS {
+            return attempt.error("too many redirects");
+        }
+        let url = attempt.url();
+        if url.scheme() != "https" {
+            return attempt.error("a redirect left https");
+        }
+        let literal = url
+            .host_str()
+            .map(|h| h.trim_start_matches('[').trim_end_matches(']'))
+            .and_then(|h| h.parse::<std::net::IpAddr>().ok());
+        if literal.is_some_and(|ip| crate::http::is_forbidden_address(ip, false)) {
+            return attempt.error("a redirect pointed at a private network");
+        }
+        attempt.follow()
+    })
+}
+
+/// Whether a typed server address is on this computer or a private network,
+/// by what it says and not by what it resolves to: a name somebody else
+/// controls can resolve to anything, and the person's own `localhost` and
+/// numeric addresses cannot be made to.
+fn names_a_private_place(server_url: &str) -> bool {
+    reqwest::Url::parse(server_url.trim()).ok().is_some_and(|url| is_private_target(&url))
+}
+
+/// Whether `url`'s host is `localhost` (or under it) or a numeric address on
+/// this computer or a private network.
+fn is_private_target(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else { return false };
+    let host = host.trim_start_matches('[').trim_end_matches(']').trim_end_matches('.');
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>().is_ok_and(|ip| crate::http::is_forbidden_address(ip, false))
+}
+
+/// The gate for a server on the internet: nothing a server names may be on
+/// this computer or a private network. A numeric address is refused here; a
+/// name is refused when it resolves, by [`PublicOnlyResolver`].
+fn public_address_only(url: &reqwest::Url) -> Result<(), String> {
+    if is_private_target(url) {
+        Err("points at this computer or a private network".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// A resolver that answers only with addresses on the open internet. A name
+/// every answer of which is private is an error; one with a mix has the
+/// private answers dropped, so the connection cannot fall back to one.
+struct PublicOnlyResolver;
+
+impl reqwest::dns::Resolve for PublicOnlyResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let found: Vec<std::net::SocketAddr> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|addr| !crate::http::is_forbidden_address(addr.ip(), false))
+                .collect();
+            if found.is_empty() {
+                return Err("that address points at a private network, or at nothing".into());
+            }
+            let addrs: reqwest::dns::Addrs = Box::new(found.into_iter());
+            Ok(addrs)
+        })
+    }
 }
 
 /// Run vault work off the async runtime, answering a [`HubError`]. Goes
@@ -530,7 +675,7 @@ impl Hub {
             auth: connect_token_auth(grant.token_auth),
         };
         let renewed = match oauth::refresh(
-            &http_client(),
+            OAuthHttp::for_connection(connection).client(),
             &grant.token_endpoint,
             &creds,
             &refresh_token,
@@ -1009,5 +1154,48 @@ mod tests {
             )
             .needs_sign_in
         );
+    }
+
+    #[test]
+    fn a_server_typed_as_a_private_place_may_name_private_places_and_no_other_may() {
+        let url = |s: &str| reqwest::Url::parse(s).unwrap();
+        for typed in [
+            "http://localhost:8080/mcp",
+            "http://app.localhost/mcp",
+            "http://127.0.0.1:3000/mcp",
+            "http://[::1]:3000/mcp",
+            "http://192.168.1.20/mcp",
+            "http://10.0.0.5/mcp",
+            "http://2130706433/mcp",
+        ] {
+            assert!(names_a_private_place(typed), "{typed}");
+            assert_eq!(OAuthHttp::for_server(typed).reach, Reach::Anywhere, "{typed}");
+        }
+        for typed in ["https://mcp.linear.app/mcp", "https://8.8.8.8/mcp", "", "nonsense"] {
+            assert!(!names_a_private_place(typed), "{typed}");
+            assert_eq!(OAuthHttp::for_server(typed).reach, Reach::PublicOnly, "{typed}");
+        }
+
+        // What a public server's metadata may point at.
+        let gate = OAuthHttp::for_server("https://mcp.linear.app/mcp").gate();
+        for refused in [
+            "http://127.0.0.1:6379/token",
+            "https://localhost/token",
+            "https://169.254.169.254/latest/meta-data",
+            "https://[::1]/token",
+            "https://[::ffff:10.0.0.1]/token",
+            "https://192.168.0.1/token",
+            "https://100.64.0.1/token",
+            "https://metadata.localhost./token",
+        ] {
+            assert!(gate(&url(refused)).is_err(), "{refused}");
+        }
+        for allowed in ["https://auth.linear.app/token", "https://1.1.1.1/token"] {
+            assert!(gate(&url(allowed)).is_ok(), "{allowed}");
+        }
+        // A private server's own may be anywhere.
+        let gate = OAuthHttp::for_server("http://127.0.0.1:3000/mcp").gate();
+        assert!(gate(&url("http://127.0.0.1:3001/token")).is_ok());
+        assert!(gate(&url("https://login.example/token")).is_ok());
     }
 }

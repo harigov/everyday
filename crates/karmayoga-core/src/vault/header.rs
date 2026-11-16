@@ -95,6 +95,75 @@ impl VaultHeader {
     pub fn is_encrypted(&self) -> bool {
         self.cipher != SUITE_NONE
     }
+
+    /// Refuse a header that says it is not encrypted while still carrying
+    /// what only an encrypted one has.
+    ///
+    /// `cipher` is one word in a file anybody who can write the vault's
+    /// folder -- or a backup's -- can change, and "none" is the word that
+    /// asks for no password and no key. A vault that was never encrypted has
+    /// no salt, no wrapped key, no key parameters and no key check, because
+    /// [`Vault::create`](super::Vault::create) writes none of them; so a
+    /// header that says "none" and holds them is an encrypted header with its
+    /// one word altered, and is refused rather than believed. It is not a
+    /// defence against somebody who rewrites the whole file -- see
+    /// [`refuse_downgrade`] for the little that can be said then.
+    pub(super) fn check_plain_is_plain(&self) -> Result<()> {
+        if self.is_encrypted() {
+            return Ok(());
+        }
+        if self.salt.is_some()
+            || self.wrapped_key.is_some()
+            || self.kdf.is_some()
+            || self.key_check.is_some()
+        {
+            return Err(Error::Invalid(
+                "this vault's header says it is not encrypted, but it holds a salt or a wrapped \
+                 key, which only an encrypted vault has; the header has been damaged or \
+                 tampered with, and the vault is not opened without its password on its say-so"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Refuse to open a vault whose header says it is not encrypted when its own
+/// spare copy says it is.
+///
+/// What a vault was made as is not written anywhere a header edit cannot
+/// reach: the store holds records sealed or not by the cipher it is handed,
+/// and records no more say which it was than the header does. The spare copy
+/// is the one second witness there is. [`write_header`] only ever promotes a
+/// header that parsed, [`write_rekeyed_header`] makes it the new one, and
+/// nothing in this program ever turns an encrypted vault into an unencrypted
+/// one (see [`Vault::change_password`](super::Vault::change_password)) -- so
+/// a live header that says "none" beside a spare that says otherwise is a
+/// header somebody edited, in a folder that is often shared or synced. Left
+/// alone, the vault would open with no password at all, and everything
+/// written afterwards would go to disk in the clear.
+///
+/// Best-effort by nature: somebody who rewrites both files, or deletes the
+/// spare, is not caught here. That takes a second write; the one-word edit
+/// takes none. The real fix for that is a record in the store that says it
+/// was made encrypted, which is a change of format and not made here.
+pub(super) fn refuse_downgrade(root: &Path, live: &VaultHeader) -> Result<()> {
+    live.check_plain_is_plain()?;
+    if live.is_encrypted() {
+        return Ok(());
+    }
+    let Ok(bytes) = std::fs::read(root.join(HEADER_BACKUP_FILENAME)) else { return Ok(()) };
+    if let Ok(spare) = serde_json::from_slice::<VaultHeader>(&bytes)
+        && spare.is_encrypted()
+    {
+        return Err(Error::Invalid(format!(
+            "{HEADER_FILENAME} says this vault is not encrypted, but {HEADER_BACKUP_FILENAME} \
+             says it is; one of them has been changed. Not opening it: nothing would ask for \
+             the password, and what was saved next would be written unencrypted. If you \
+             changed {HEADER_FILENAME} yourself, put it back from {HEADER_BACKUP_FILENAME}."
+        )));
+    }
+    Ok(())
 }
 
 // ---- header i/o ---------------------------------------------------------
@@ -344,4 +413,83 @@ pub(super) fn from_hex(s: &str) -> Result<Vec<u8>> {
             hi << 4 | lo
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Vault, VaultConfig};
+    use super::*;
+    use crate::testing::registry;
+
+    fn config(password: Option<&str>) -> VaultConfig {
+        VaultConfig {
+            name: "Test".into(),
+            backend: "memory".into(),
+            password: password.map(str::to_string),
+            kdf: KdfParams::insecure_fast(),
+            auto_lock_seconds: 0,
+            ..VaultConfig::default()
+        }
+    }
+
+    fn edit_live(root: &Path, change: impl FnOnce(&mut VaultHeader)) {
+        let mut header = read_header(root).unwrap();
+        change(&mut header);
+        std::fs::write(root.join(HEADER_FILENAME), serde_json::to_vec_pretty(&header).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn one_word_changed_to_none_does_not_open_an_encrypted_vault_without_its_password() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Vault::create(dir.path(), config(Some("pw")), registry()).unwrap());
+        edit_live(dir.path(), |h| h.cipher = SUITE_NONE.into());
+        let Err(err) = Vault::open(dir.path(), registry()) else { panic!("refused") };
+        assert!(err.to_string().contains("not encrypted"), "{err}");
+    }
+
+    #[test]
+    fn a_live_header_stripped_down_to_none_is_refused_while_the_spare_says_encrypted() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Vault::create(dir.path(), config(Some("pw")), registry()).unwrap());
+        edit_live(dir.path(), |h| {
+            h.cipher = SUITE_NONE.into();
+            h.kdf = None;
+            h.salt = None;
+            h.wrapped_key = None;
+            h.key_check = None;
+        });
+        let Err(err) = Vault::open(dir.path(), registry()) else { panic!("refused") };
+        assert!(err.to_string().contains(HEADER_BACKUP_FILENAME), "{err}");
+        // Refused before the vault was claimed or anything written: the
+        // header on disk is exactly what the edit left.
+        assert!(!read_header(dir.path()).unwrap().is_encrypted());
+    }
+
+    #[test]
+    fn a_vault_that_was_never_encrypted_still_opens_and_can_be_encrypted_later() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Vault::create(dir.path(), config(None), registry()).unwrap());
+        let v = Vault::open(dir.path(), registry()).unwrap();
+        assert!(v.is_unlocked(), "an unencrypted vault opens by itself");
+        v.change_password(None, Some("pw")).unwrap();
+        drop(v);
+        // And the encrypted one it became is not mistaken for a downgrade.
+        let again = Vault::open(dir.path(), registry()).unwrap();
+        assert!(!again.is_unlocked());
+        again.unlock(Some("pw")).unwrap();
+    }
+
+    #[test]
+    fn a_header_asking_for_a_huge_key_derivation_is_refused_before_it_is_run() {
+        let dir = tempfile::tempdir().unwrap();
+        drop(Vault::create(dir.path(), config(Some("pw")), registry()).unwrap());
+        edit_live(dir.path(), |h| {
+            h.kdf = Some(KdfParams { memory_kib: u32::MAX, iterations: 3, lanes: 4 });
+        });
+        let v = Vault::open(dir.path(), registry()).unwrap();
+        let err = v.unlock(Some("pw")).unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err:?}");
+        assert!(!v.is_unlocked());
+    }
 }

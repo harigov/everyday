@@ -209,6 +209,12 @@ pub struct Registry {
     /// Held for the duration of an unlock, so two never run at once. See the
     /// module docs: each one is 64 MiB of deliberate work.
     unlock_gate: tokio::sync::Mutex<()>,
+    /// Who is already queued at, or inside, [`Registry::unlock_gate`]. One
+    /// attempt each: a burst of guesses fired together would otherwise all
+    /// pass the lockout check before the first of them had failed, and then
+    /// run one after another behind the gate however many of them there
+    /// were.
+    unlock_waiting: Mutex<std::collections::HashSet<String>>,
     /// Set while a background write of the `lastSeen` stamp is already on
     /// its way, so a burst of requests crossing `PERSIST_LAST_SEEN_EVERY`
     /// in the same moment schedules one write rather than one each -- see
@@ -282,6 +288,7 @@ impl Registry {
             pair_attempts: Mutex::new(Attempts::default()),
             unlock_attempts: Mutex::new(HashMap::new()),
             unlock_gate: tokio::sync::Mutex::new(()),
+            unlock_waiting: Mutex::new(std::collections::HashSet::new()),
             last_seen_write_pending: AtomicBool::new(false),
         })
     }
@@ -629,33 +636,70 @@ impl Registry {
     ///
     /// Held for the whole attempt, so two never burn 64 MiB at once, and
     /// refused outright for a device that has been guessing.
+    ///
+    /// One attempt per guesser at a time. The lockout is looked at twice:
+    /// before queueing, so a locked-out guesser costs nothing, and again
+    /// once the gate is held, because the attempts ahead in the queue may
+    /// have been this guesser's own wrong ones.
     pub async fn unlock_gate(&self, caller: &Caller) -> CommandResult<UnlockGuard<'_>> {
-        let who = caller.origin().unwrap_or("anonymous").to_string();
-        {
-            let mut attempts = lock(&self.unlock_attempts);
-            if attempts.entry(who.clone()).or_default().locked() {
-                return Err(CommandError::new(
-                    "too_many_attempts",
-                    "too many attempts; try again in a few minutes",
-                ));
-            }
+        let who = guesser(caller.origin().unwrap_or("anonymous"));
+        let too_many = || {
+            CommandError::new("too_many_attempts", "too many attempts; try again in a few minutes")
+        };
+        if lock(&self.unlock_attempts).entry(who.clone()).or_default().locked() {
+            return Err(too_many());
         }
+        if !lock(&self.unlock_waiting).insert(who.clone()) {
+            return Err(too_many());
+        }
+        let waiting = Waiting { registry: self, who };
         let guard = self.unlock_gate.lock().await;
-        Ok(UnlockGuard { registry: self, who, _guard: guard })
+        if lock(&self.unlock_attempts).get(&waiting.who).is_some_and(Attempts::locked) {
+            return Err(too_many());
+        }
+        Ok(UnlockGuard { registry: self, waiting, _guard: guard })
+    }
+}
+
+/// Who an unlock attempt is counted against. A browser's origin is its
+/// session followed by the tab it says it is (see
+/// `web::routes::origin_of`); the tab is the page's own word and costs
+/// nothing to change, so it is no part of who is guessing.
+fn guesser(origin: &str) -> String {
+    match origin.split_once('.') {
+        Some((session, _))
+            if session.strip_prefix("web-").is_some_and(|id| uuid::Uuid::parse_str(id).is_ok()) =>
+        {
+            session.to_string()
+        }
+        _ => origin.to_string(),
+    }
+}
+
+/// A place in the queue for [`Registry::unlock_gate`], given up however the
+/// attempt ends -- refused, answered, or dropped by a client that hung up.
+struct Waiting<'a> {
+    registry: &'a Registry,
+    who: String,
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        lock(&self.registry.unlock_waiting).remove(&self.who);
     }
 }
 
 /// Held for one unlock attempt. Records the outcome on the way out.
 pub struct UnlockGuard<'a> {
     registry: &'a Registry,
-    who: String,
+    waiting: Waiting<'a>,
     _guard: tokio::sync::MutexGuard<'a, ()>,
 }
 
 impl UnlockGuard<'_> {
     pub fn record(&self, ok: bool) {
         let mut attempts = lock(&self.registry.unlock_attempts);
-        let entry = attempts.entry(self.who.clone()).or_default();
+        let entry = attempts.entry(self.waiting.who.clone()).or_default();
         if ok {
             entry.succeeded();
         } else {
@@ -998,5 +1042,40 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "the background write never landed");
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn guesses_fired_together_are_one_at_a_time_and_the_lockout_holds_after_the_queue() {
+        let (registry, _dir) = registry();
+        let caller = Caller::Device("web-peer:100.64.0.9".into());
+
+        let first = registry.unlock_gate(&caller).await.unwrap();
+        // A second guess from the same place while the first is still being
+        // tried is turned away, not queued behind it.
+        let queued = registry.unlock_gate(&caller).await;
+        assert_eq!(queued.err().unwrap().code, "too_many_attempts");
+        // Somebody else is not.
+        let other = Caller::Device("web-peer:100.64.0.10".into());
+        let elsewhere = tokio::spawn({
+            let registry = Arc::clone(&registry);
+            async move { registry.unlock_gate(&other).await.map(|g| g.record(true)).is_ok() }
+        });
+        first.record(false);
+        drop(first);
+        assert!(elsewhere.await.unwrap());
+
+        for _ in 1..PAIR_ATTEMPTS {
+            registry.unlock_gate(&caller).await.unwrap().record(false);
+        }
+        assert_eq!(registry.unlock_gate(&caller).await.err().unwrap().code, "too_many_attempts");
+    }
+
+    #[test]
+    fn a_browser_tab_is_no_part_of_who_is_guessing() {
+        let session = format!("web-{}", uuid::Uuid::now_v7());
+        assert_eq!(guesser(&format!("{session}.tab1")), session);
+        assert_eq!(guesser(&session), session);
+        assert_eq!(guesser("web-peer:100.64.0.9"), "web-peer:100.64.0.9");
+        assert_eq!(guesser("device.with.dots"), "device.with.dots");
     }
 }

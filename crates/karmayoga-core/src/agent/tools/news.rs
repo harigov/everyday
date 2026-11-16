@@ -448,6 +448,12 @@ fn run_follow_source(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                     "`url` must be a feed's address starting with https://, got {url:?}"
                 )));
             }
+            if let Some(why) = unfollowable_host(url) {
+                return Err(args.bad(format!(
+                    "{why} A feed on the person's own network has to be added by them, in the \
+                     Feed's own add box."
+                )));
+            }
             SourceKind::Web { url: url.to_string() }
         }
         (None, Some(which)) => {
@@ -470,6 +476,7 @@ fn run_follow_source(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         None => default_title(&kind),
     };
     let mut source = NewsSource::new(kind, title);
+    source.added_by_assistant = true;
     if let Some(folder) = args.opt_str("folder") {
         source.folder = folder.trim().to_string();
     }
@@ -490,6 +497,41 @@ fn is_web_address(url: &str) -> bool {
     (lower.starts_with("https://") || lower.starts_with("http://"))
         && !url.chars().any(char::is_whitespace)
         && host_of(url).is_some()
+}
+
+/// Why the assistant may not follow this address, if it may not.
+///
+/// A source is fetched on a schedule for as long as it exists, and what the
+/// assistant follows can be decided by something it read -- a story, a page,
+/// a mail -- so the address has to be one a stranger could have named without
+/// reaching anything of the person's. That rules out a private, loopback,
+/// link-local or tailnet address, a `.local` or `.ts.net` or bare single-label
+/// name (`http://router/`), and any bare IP address at all: the Feed's
+/// fetcher sends names that look like those to the shared client, which
+/// follows redirects anywhere, and a decimal or hex spelling of `127.0.0.1`
+/// would read as a name here but as the loopback address to it. It is parsed
+/// with the same `url` crate rather than by hand for exactly that reason.
+///
+/// A public name that merely *resolves* to a private address is not caught
+/// here -- no lookup is made -- but the fetcher sends such a name over a
+/// client whose resolver refuses private answers, and so is that case's
+/// defence. The person's own use of the interface is unaffected: this is the
+/// assistant's tool, not the Feed's add box.
+fn unfollowable_host(address: &str) -> Option<&'static str> {
+    use url::Host;
+    let Ok(url) = url::Url::parse(address) else {
+        return Some("That is not a web address.");
+    };
+    match url.host() {
+        None => Some("That address has no host."),
+        Some(Host::Ipv4(_) | Host::Ipv6(_)) => {
+            Some("That address is a bare IP address, which could be anything on a network.")
+        }
+        Some(Host::Domain(name)) if crate::chat::is_private_network_host(name) => {
+            Some("That address is on a private network or this computer, not the internet.")
+        }
+        Some(Host::Domain(_)) => None,
+    }
 }
 
 /// The host an address names, lower-cased and without a leading `www.`, a
@@ -789,6 +831,41 @@ mod tests {
         assert!(!is_web_address("example.com/feed"));
         assert!(!is_web_address("https://"));
         assert!(!is_web_address("https://example.com/my feed"));
+    }
+
+    #[test]
+    fn the_assistant_cannot_follow_an_address_on_a_private_network() {
+        for address in [
+            "http://127.0.0.1/feed",
+            "http://127.0.0.1:7398/",
+            "http://localhost:8080/rss",
+            "http://[::1]/feed",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.5/feed",
+            "http://192.168.1.1/feed",
+            "http://100.64.0.1/feed",
+            "http://[fd7a:115c:a1e0::1]/feed",
+            "http://nas/feed",
+            "http://router.local/feed",
+            "https://bridge.tail1234.ts.net/feed",
+            // Other spellings of 127.0.0.1 that the fetcher reads as the
+            // loopback address.
+            "http://2130706433/",
+            "http://0x7f.1/",
+            "http://0177.0.0.1/",
+            // Any bare address, public or not.
+            "https://93.184.216.34/feed",
+        ] {
+            assert!(unfollowable_host(address).is_some(), "{address} must be refused");
+        }
+        for address in [
+            "https://example.com/feed",
+            "http://blog.example.org:8080/rss?x=1",
+            "https://user:pw@example.com/feed",
+            "HTTPS://Example.COM/feed",
+        ] {
+            assert_eq!(unfollowable_host(address), None, "{address} is an ordinary feed");
+        }
     }
 
     #[test]

@@ -2,11 +2,33 @@
 //! somebody pasted, and a site's icon.
 //!
 //! Which client asks depends on who chose the address, as `super`'s doc
-//! says. A feed's address, and the page somebody pasted to find one, go over
-//! [`crate::http::client`], like a calendar subscription: the person typed
-//! it, and it may well be on their own network. A site's icon is named by a
-//! page, and the page by a stranger, so it goes over
-//! [`crate::http::public_client`], which refuses private addresses.
+//! says, and on where it points. A feed the person added themselves goes
+//! over [`crate::http::client`] wherever it points, as a calendar
+//! subscription does: a self-hosted feed behind a public name that answers
+//! with a private address (split DNS) is theirs to follow, and so is one
+//! that is only reachable through their proxy. The rest of this paragraph is
+//! about addresses nobody typed -- one the assistant followed, one a page
+//! named. A feed on the person's own network -- a
+//! private or tailnet address, a `.local` or `.ts.net` name, a bare name like
+//! `nas` -- goes over [`crate::http::client`], like a calendar subscription:
+//! a self-hosted reader bridge is a real thing to follow. Everything else,
+//! which is to say every address on the internet, goes over
+//! [`crate::http::public_client`], which refuses private addresses and
+//! redirects to them. That is the whole defence against a feed being used to
+//! reach into the network: a source is fetched again every few minutes for
+//! as long as it exists, the assistant can add one on the word of whatever it
+//! last read, and a redirect from a public site to `http://169.254.169.254/`
+//! is the oldest trick there is. The assistant's tool refuses the first kind
+//! of address outright (see `karmayoga_core::chat::is_private_network_host`,
+//! which both sides share), so only a person typing one into the interface
+//! ends up on the plain client. A site's icon is named by a page, and the
+//! page by a stranger, so it too goes over the public client.
+//!
+//! A page somebody pasted to find a feed is the one place the two meet: it
+//! may be on their network, and then it names feeds on their network, but a
+//! page on the internet that names `http://192.168.0.1/feed` is not asking
+//! for a feed, it is asking to be fetched from inside. Feeds a page names
+//! therefore get no more trust than the page had.
 //!
 //! Every failure is a sentence fit for the line under a source's name, with
 //! the address stripped out: a private feed's address is a bearer
@@ -112,11 +134,25 @@ fn fail(message: impl Into<String>) -> FetchError {
     FetchError { message: message.into(), hints: Hints::default() }
 }
 
-/// Fetch a feed the person chose, sending `state`'s validators. Over
-/// [`crate::http::client`], capped at 5 MB.
-pub async fn feed(url: &str, state: &FetchState) -> Result<Fetched, FetchError> {
+/// Who chose an address, which decides how far a request for it may reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// The person typed it: anywhere, over the shared client.
+    Typed,
+    /// A page on the person's own network named it, or it is a fixed
+    /// address of this application's: their network or the internet.
+    Inside,
+    /// The assistant chose it, or a page on the internet named it: the
+    /// internet only.
+    Outside,
+}
+
+/// Fetch a feed, sending `state`'s validators, capped at 16 MB. `reach` is
+/// [`Reach::Typed`] for a source the person added and [`Reach::Outside`] for
+/// one the assistant did.
+pub async fn feed(url: &str, state: &FetchState, reach: Reach) -> Result<Fetched, FetchError> {
     let address = web_address(url).map_err(fail)?;
-    let mut request = client()?.get(address).header(ACCEPT, FEED_ACCEPT);
+    let mut request = get(address, reach)?.header(ACCEPT, FEED_ACCEPT);
     // What the last answer said identifies it, so the server can say "same
     // as before" without sending it. Both are sent when both are known: a
     // server that understands the first ignores the second.
@@ -144,10 +180,10 @@ pub async fn feed(url: &str, state: &FetchState) -> Result<Fetched, FetchError> 
     })
 }
 
-/// A JSON API answer (Hacker News), over [`crate::http::client`].
+/// A JSON API answer (Hacker News), routed like [`feed`].
 pub async fn json(url: &str) -> Result<Vec<u8>, FetchError> {
     let address = web_address(url).map_err(fail)?;
-    let response = send(client()?.get(address).header(ACCEPT, JSON_ACCEPT)).await?;
+    let response = send(get(address, Reach::Inside)?.header(ACCEPT, JSON_ACCEPT)).await?;
     read(succeeded(response)?, MAX_JSON_BYTES).await
 }
 
@@ -155,13 +191,18 @@ pub async fn json(url: &str) -> Result<Vec<u8>, FetchError> {
 /// itself if it is a feed, else what its page advertises, else what the
 /// fallback paths answer with. Empty when there is none.
 ///
-/// Over [`crate::http::client`], like the feed it is looking for: the person
-/// typed the address, and a self-hosted reader bridge is a common thing to
-/// paste. Only the guesses at the end are the app's own idea, and they are on
-/// the same site as the address.
+/// Routed like the feed it is looking for: the person typed the address, and
+/// a self-hosted reader bridge on their own network is a common thing to
+/// paste. What the page then names, and the guesses at the end, are fetched
+/// with no more trust than the page itself had -- see [`get`] -- so a page on
+/// the internet cannot send this to an address on the inside.
 pub async fn discover(url: &str) -> Result<Vec<FoundFeed>, String> {
     let address = web_address(url)?;
-    let page = get_page(address).await.map_err(|e| e.message)?;
+    let page = get_page(address, Reach::Typed).await.map_err(|e| e.message)?;
+    // Where the page actually was, after redirects: a typed address that
+    // redirected to somebody else's server does not make that server's
+    // advertisements the person's own.
+    let inside = on_own_network(&page.url);
 
     if let Ok(feed) = parse::parse_feed(&page.bytes, &page.url) {
         return Ok(vec![FoundFeed { url: page.url, title: feed.title }]);
@@ -169,10 +210,10 @@ pub async fn discover(url: &str) -> Result<Vec<FoundFeed>, String> {
     if page.is_html() {
         let found = discover::feed_links(&String::from_utf8_lossy(&page.bytes), &page.url);
         if !found.is_empty() {
-            return Ok(confirm_feeds(found).await);
+            return Ok(confirm_feeds(found, inside).await);
         }
     }
-    Ok(guess_feeds(&page.url).await)
+    Ok(guess_feeds(&page.url, inside).await)
 }
 
 /// How many advertised feeds are read to learn their names.
@@ -187,10 +228,20 @@ const ADVERTISED_READ: usize = 4;
 /// dropped, since it would only fail on its first refresh. Should none of
 /// them answer in time, the page's word for them is better than nothing, and
 /// they are offered as advertised.
-async fn confirm_feeds(found: Vec<FoundFeed>) -> Vec<FoundFeed> {
+///
+/// `inside` is whether the page was on the person's own network, and so
+/// whether a feed it names may be. One that may not is dropped before
+/// anything else: not merely left unread, since "offered as advertised" is
+/// what happens to the ones that do not answer, and an address that was never
+/// allowed to be fetched must not be offered to be saved and fetched later.
+async fn confirm_feeds(mut found: Vec<FoundFeed>, inside: bool) -> Vec<FoundFeed> {
+    found.retain(|feed| inside || !on_own_network(&feed.url));
     let asks = found.iter().take(ADVERTISED_READ).map(|feed| async move {
         let address = web_address(&feed.url).ok()?;
-        let page = tokio::time::timeout(GUESS_BUDGET, get_page(address)).await.ok()?.ok()?;
+        let page = tokio::time::timeout(GUESS_BUDGET, get_page(address, reach_of(inside)))
+            .await
+            .ok()?
+            .ok()?;
         let parsed = parse::parse_feed(&page.bytes, &page.url).ok()?;
         let title = if parsed.title.trim().is_empty() { feed.title.clone() } else { parsed.title };
         Some(FoundFeed { url: feed.url.clone(), title })
@@ -206,13 +257,13 @@ async fn confirm_feeds(found: Vec<FoundFeed>) -> Vec<FoundFeed> {
 /// order [`discover::fallback_paths`] lists them, keeping those that parse.
 /// Asked together, because most of them will be a 404, and each given a short
 /// time of its own.
-async fn guess_feeds(page_url: &str) -> Vec<FoundFeed> {
+async fn guess_feeds(page_url: &str, inside: bool) -> Vec<FoundFeed> {
     let addresses: Vec<Url> = discover::fallback_paths(page_url)
         .iter()
         .filter_map(|path| web_address(path).ok())
         .collect();
     let asks = addresses.into_iter().map(|address| async move {
-        tokio::time::timeout(GUESS_BUDGET, get_page(address)).await.ok()?.ok()
+        tokio::time::timeout(GUESS_BUDGET, get_page(address, reach_of(inside))).await.ok()?.ok()
     });
     let mut found: Vec<FoundFeed> = Vec::new();
     for page in join_all(asks).await.into_iter().flatten() {
@@ -362,8 +413,8 @@ fn is_raster_picture(bytes: &[u8]) -> bool {
 
 // ── Plumbing ─────────────────────────────────────────────────────────────
 
-/// A page fetched over the person's own client: the bytes, where the request
-/// ended up, and what the far end said it was.
+/// A page fetched for feed discovery: the bytes, where the request ended up,
+/// and what the far end said it was.
 struct Page {
     bytes: Vec<u8>,
     url: String,
@@ -380,8 +431,8 @@ impl Page {
     }
 }
 
-async fn get_page(address: Url) -> Result<Page, FetchError> {
-    let response = send(client()?.get(address).header(ACCEPT, PAGE_ACCEPT)).await?;
+async fn get_page(address: Url, reach: Reach) -> Result<Page, FetchError> {
+    let response = send(get(address, reach)?.header(ACCEPT, PAGE_ACCEPT)).await?;
     let response = succeeded(response)?;
     let url = response.url().to_string();
     let content_type = content_type(response.headers());
@@ -389,8 +440,57 @@ async fn get_page(address: Url) -> Result<Page, FetchError> {
     Ok(Page { bytes, url, content_type })
 }
 
-fn client() -> Result<&'static reqwest::Client, FetchError> {
-    http::client().map_err(|e| fail(e.message))
+/// Who we say we are to a feed. The same string [`crate::http::client`]
+/// sends on its own, repeated because the public client sets none: it is
+/// built for strangers' images, where saying nothing is the point.
+const FEED_USER_AGENT: &str =
+    concat!("KarmaYoga/", env!("CARGO_PKG_VERSION"), " (+https://github.com/karmayoga-app)");
+
+/// Whether an address names a machine on the person's own network, by what
+/// it says rather than what it resolves to. The one question that decides
+/// the client; see the module doc.
+fn on_own_network(address: &str) -> bool {
+    Url::parse(address)
+        .ok()
+        .and_then(|url| url.host_str().map(karmayoga_core::chat::is_private_network_host))
+        .unwrap_or(false)
+}
+
+/// How far a link a page named may reach: as far as the page itself was.
+fn reach_of(inside: bool) -> Reach {
+    if inside { Reach::Inside } else { Reach::Outside }
+}
+
+/// A `GET` for `address` over the right client.
+///
+/// An address the person typed goes over the shared client, wherever it
+/// points. Otherwise an address on the person's own network goes over the
+/// shared client as long as `reach` says that is where the request came
+/// from: a link a page named is `Inside` only if the page was. Anything
+/// else goes over the public client,
+/// which keeps private *names* out through its resolver; a private *literal*
+/// address is never given to a resolver at all, so those are refused here --
+/// including the odd ranges (multicast, `0.0.0.0/8`, benchmarking space) that
+/// are not "the person's network" but are not the internet either.
+fn get(address: Url, reach: Reach) -> Result<reqwest::RequestBuilder, FetchError> {
+    if reach == Reach::Typed {
+        let client = http::client().map_err(|e| fail(e.message))?;
+        return Ok(client.get(address));
+    }
+    if address.host_str().is_some_and(karmayoga_core::chat::is_private_network_host) {
+        if reach == Reach::Outside {
+            return Err(fail(
+                "a page on the internet cannot point at an address on your own network.",
+            ));
+        }
+        let client = http::client().map_err(|e| fail(e.message))?;
+        return Ok(client.get(address));
+    }
+    if is_private_literal(&address) {
+        return Err(fail("that address is not one a feed can be fetched from."));
+    }
+    let client = http::public_client().map_err(|e| fail(e.message))?;
+    Ok(client.get(address).header(USER_AGENT, FEED_USER_AGENT))
 }
 
 async fn send(request: reqwest::RequestBuilder) -> Result<reqwest::Response, FetchError> {
@@ -602,6 +702,87 @@ mod tests {
         assert!(public_address("http://192.168.1.1/").is_none());
         assert!(public_address("http://[::1]/").is_none());
         assert!(public_address("https://example.com/").is_some());
+    }
+
+    fn url(text: &str) -> Url {
+        Url::parse(text).unwrap()
+    }
+
+    #[test]
+    fn an_address_on_the_persons_network_is_told_from_one_on_the_internet() {
+        for own in [
+            "http://127.0.0.1:8080/feed",
+            "http://192.168.1.5/rss",
+            "http://10.0.0.2/",
+            "http://100.101.102.103/feed",
+            "http://[fd7a:115c:a1e0::5]/feed",
+            "https://bridge.tail1234.ts.net/feed",
+            "http://nas.local/feed",
+            "http://nas/feed",
+            "http://localhost:3000/",
+        ] {
+            assert!(on_own_network(own), "{own}");
+        }
+        for stranger in [
+            "https://example.com/feed",
+            "http://8.8.8.8/",
+            "https://100.63.0.1/",
+            "https://example.com.local.evil.test/",
+        ] {
+            assert!(!on_own_network(stranger), "{stranger}");
+        }
+    }
+
+    #[test]
+    fn what_a_page_on_the_internet_names_is_not_fetched_from_inside() {
+        // The assistant, or a stranger's page, naming a private address.
+        for private in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.0.0.1:7398/",
+            "http://192.168.0.1/feed",
+            "http://router/feed",
+            "http://box.local/feed",
+        ] {
+            assert!(get(url(private), Reach::Outside).is_err(), "{private} must be refused");
+            // A page on the person's own network naming it, or the person
+            // typing it themselves, is how a self-hosted feed is followed,
+            // and still works.
+            assert!(get(url(private), Reach::Inside).is_ok(), "{private} is the person's own");
+            assert!(get(url(private), Reach::Typed).is_ok(), "{private} is the person's own");
+        }
+        // A public address is fine any way.
+        for reach in [Reach::Outside, Reach::Inside, Reach::Typed] {
+            assert!(get(url("https://example.com/feed"), reach).is_ok());
+        }
+    }
+
+    #[test]
+    fn an_odd_literal_address_is_refused_unless_the_person_typed_it() {
+        // Multicast, "this network" and benchmarking space are not the
+        // person's network, and the public client's resolver never sees a
+        // literal, so nothing else would stop them from a page or the
+        // assistant. Somebody typing one has said what they meant.
+        for odd in [
+            "http://224.0.0.1/",
+            "http://0.1.2.3/",
+            "http://198.18.0.1/",
+            "http://[ff02::1]/",
+            "http://[64:ff9b:1::1]/",
+        ] {
+            assert!(get(url(odd), Reach::Inside).is_err(), "{odd}");
+            assert!(get(url(odd), Reach::Outside).is_err(), "{odd}");
+        }
+    }
+
+    #[tokio::test]
+    async fn advertised_feeds_on_a_private_address_are_dropped_from_a_public_page() {
+        let found = vec![
+            FoundFeed { url: "http://169.254.169.254/feed".into(), title: "meta".into() },
+            FoundFeed { url: "http://nas/feed".into(), title: "nas".into() },
+        ];
+        // Nothing is fetched and nothing is offered: with no feed left to
+        // read, the "offer them as advertised" fallback has nothing either.
+        assert!(confirm_feeds(found, false).await.is_empty());
     }
 
     #[test]

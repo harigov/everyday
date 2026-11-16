@@ -1571,13 +1571,53 @@ fn another_program_opens_a_plain_file_in_place_and_a_sealed_one_from_a_private_c
 
     assert_eq!(w.vault.open_file_copy(plain.id).unwrap(), w.vault.plain_path(plain.id).unwrap());
     let copy = w.vault.open_file_copy(secret.id).unwrap();
-    assert!(copy.starts_with(w.at(".karmayoga/open")));
+    // Outside the files folder altogether: a sync tool that ignores
+    // `.stignore` must never see the decrypted file.
+    assert!(!copy.starts_with(&w.folder), "{}", copy.display());
     assert_eq!(copy.file_name().unwrap(), "s.txt");
     assert_eq!(std::fs::read(&copy).unwrap(), b"secret");
     assert_eq!(w.vault.open_file_copy(secret.id).unwrap(), copy);
     // The plain file where it always was, and no unencrypted copy of the
-    // sealed one anywhere outside the internal folder.
+    // sealed one anywhere in the folder, internal part included.
     assert_eq!(w.listing(), vec!["p.txt".to_string()]);
+    let legacy = w.at(".karmayoga/open");
+    assert!(!legacy.exists() || std::fs::read_dir(&legacy).unwrap().next().is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_decrypted_copy_of_a_sealed_file_is_readable_by_its_owner_alone() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world();
+    let secret = w.vault.import_bytes(b"secret", "s.txt", &sealed(FileOrigin::Files)).unwrap();
+    let copy = w.vault.open_file_copy(secret.id).unwrap();
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&copy), 0o600);
+    assert_eq!(mode(copy.parent().unwrap()), 0o700);
+    assert_eq!(mode(copy.parent().unwrap().parent().unwrap()), 0o700);
+}
+
+#[test]
+fn decrypted_copies_are_swept_when_stale_and_so_is_what_an_older_build_left_in_the_folder() {
+    let w = world();
+    let secret = w.vault.import_bytes(b"secret", "s.txt", &sealed(FileOrigin::Files)).unwrap();
+    let copy = w.vault.open_file_copy(secret.id).unwrap();
+    // A copy opened just now is not stale.
+    assert_eq!(w.vault.sweep_open_copies(std::time::Duration::from_secs(86_400)).unwrap(), 0);
+    assert!(copy.exists());
+
+    // An older build kept them in the folder's own `open` folder.
+    let legacy = w.at(".karmayoga/open/old-id");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(legacy.join("passport.pdf"), b"decrypted").unwrap();
+    assert_eq!(w.vault.sweep_open_copies(std::time::Duration::from_secs(86_400)).unwrap(), 1);
+    assert!(!legacy.exists());
+    assert!(copy.exists());
+
+    // Everything older than nothing goes.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert_eq!(w.vault.sweep_open_copies(std::time::Duration::ZERO).unwrap(), 1);
+    assert!(!copy.exists());
 }
 
 // ---- bringing the old attachments in -----------------------------------------------

@@ -265,7 +265,7 @@ impl Csv {
 
     pub fn row(&mut self, cells: &[String]) {
         debug_assert_eq!(cells.len(), self.columns, "a CSV row does not match its header");
-        let line: Vec<String> = cells.iter().map(|c| cell(c)).collect();
+        let line: Vec<String> = cells.iter().map(|c| cell(&guard(c))).collect();
         // CRLF, which is what the specification says and what stops Excel
         // reading a file written on Linux as one long row.
         self.out.push_str(&line.join(","));
@@ -280,6 +280,50 @@ impl Csv {
 
     pub fn finish(self) -> String {
         self.out
+    }
+}
+
+/// Would a spreadsheet run this cell as a formula? One that starts with `=`,
+/// `+`, `-`, `@`, a tab or a carriage return does, after any leading spaces
+/// -- some programs look past them -- unless the whole cell is a plain
+/// number, so that `-3.5` stays a number a person can sum rather than
+/// becoming text with an apostrophe in front.
+fn runs(value: &str) -> bool {
+    matches!(
+        value.trim_start_matches(' ').chars().next(),
+        Some('=' | '+' | '-' | '@' | '\t' | '\r')
+    ) && value.parse::<f64>().is_err()
+}
+
+/// Does this cell need an apostrophe in front? One that would run does; so
+/// does one that already starts with an apostrophe before something that
+/// would, or reading it back would take that apostrophe off.
+fn needs_guard(value: &str) -> bool {
+    runs(value) || value.strip_prefix('\'').is_some_and(needs_guard)
+}
+
+/// A cell made safe to open in a spreadsheet: an apostrophe in front of one
+/// that would run, which a spreadsheet shows as text.
+///
+/// Every cell any export writes goes through here, in [`Csv::row`], rather
+/// than each kind of export remembering to; three of them did, the rest did
+/// not, and a calendar event's title, a task's name or a journal entry's
+/// title is as much a stranger's text as a bank's memo (a shared calendar, a
+/// subscribed feed, a forwarded task). Numbers, dates and ids are what they
+/// look like and are left alone.
+fn guard(value: &str) -> std::borrow::Cow<'_, str> {
+    if needs_guard(value) {
+        std::borrow::Cow::Owned(format!("'{value}"))
+    } else {
+        std::borrow::Cow::Borrowed(value)
+    }
+}
+
+/// [`guard`], undone, in [`Row::get`]: a cell comes back exactly as it went.
+fn unguard(value: &str) -> &str {
+    match value.strip_prefix('\'') {
+        Some(rest) if needs_guard(rest) => rest,
+        _ => value,
     }
 }
 
@@ -302,11 +346,13 @@ impl Row<'_> {
     /// Columns are matched case-insensitively and ignoring spaces, so a file
     /// somebody edited in a spreadsheet still lines up.
     pub fn get(&self, column: &str) -> &str {
-        self.header
-            .iter()
-            .position(|h| same_column(h, column))
-            .and_then(|i| self.cells.get(i))
-            .map_or("", String::as_str)
+        unguard(
+            self.header
+                .iter()
+                .position(|h| same_column(h, column))
+                .and_then(|i| self.cells.get(i))
+                .map_or("", String::as_str),
+        )
     }
 
     pub fn parse<T: std::str::FromStr>(&self, column: &str) -> Option<T> {
@@ -513,6 +559,33 @@ mod tests {
         let (fields, body) = split_front_matter(doc);
         assert_eq!(fields.text("title"), "One");
         assert_eq!(body, "body\n");
+    }
+
+    #[test]
+    fn a_cell_that_would_run_as_a_formula_is_written_as_text_and_read_back_whole() {
+        for risky in ["=cmd|' /C calc'!A0", "+SUM(1+1)", "-2+3", "@cmd", "\t=1", "\r=1", "  =1"] {
+            assert!(guard(risky).starts_with('\''), "{risky:?}");
+        }
+        // A number is not text, and stays a number.
+        for plain in
+            ["Whole Foods", "AT&T", "", "1-800-FLOWERS", "Caf\u{e9}", "-3.5", "+2", "-0.25"]
+        {
+            assert_eq!(guard(plain), plain, "{plain:?}");
+        }
+        // Including the ones that already begin with an apostrophe.
+        let mut csv = Csv::new(&["a", "b"]);
+        let values = [
+            "=1+1", "'=1+1", "''@x", "'plain", "'", "''", "-3.5", "'-3.5", "  -x", "' =1", "-",
+            "'-", "@home", "'quoted'", "plain", "x",
+        ];
+        for v in values {
+            csv.row(&[v.to_string(), "n".into()]);
+        }
+        let written = csv.finish();
+        assert!(written.contains("\r\n'=1+1,"), "{written}");
+        let table = Table::parse(&written);
+        let back: Vec<String> = table.rows().map(|r| r.get("a").to_string()).collect();
+        assert_eq!(back, values);
     }
 
     #[test]

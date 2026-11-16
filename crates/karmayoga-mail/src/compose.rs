@@ -45,15 +45,22 @@ use rand::RngCore;
 use crate::mime::ParsedMessage;
 use crate::text::html_to_text;
 
-/// Everything that can go wrong turning an [`Outgoing`] into bytes. Address
-/// and header construction cannot fail — `mail-builder` accepts anything a
-/// caller hands it and encodes around the awkward parts — so the only two
-/// ways in here are CSS this crate could not parse well enough to inline,
-/// and the write to the in-memory buffer failing, which
-/// [`std::io::Write`]'s contract technically allows even though a `Vec<u8>`
-/// never actually does it.
+/// Everything that can go wrong turning an [`Outgoing`] into bytes.
+/// `mail-builder` accepts anything a caller hands it and encodes around the
+/// awkward parts, with one exception it cannot encode around: it writes an
+/// address's email as given, so a line break in one would end the header and
+/// start another of the sender's choosing. [`build`] refuses those itself,
+/// which is the first way in here; the others are CSS this crate could not
+/// parse well enough to inline, and the write to the in-memory buffer
+/// failing, which [`std::io::Write`]'s contract technically allows even
+/// though a `Vec<u8>` never actually does it.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// An address or a display name that cannot go in a header as written.
+    /// Carries what was wrong and the offending text, so the person can be
+    /// shown which recipient it was.
+    #[error("{0}")]
+    BadAddress(String),
     #[error("could not inline the message's CSS: {0}")]
     InlineCss(#[from] css_inline::InlineError),
     #[error("could not write the message: {0}")]
@@ -212,6 +219,14 @@ impl fmt::Debug for Built {
 /// Never becomes a header. `outgoing.bcc` only ever appears in
 /// [`Built::envelope_to`] — see [`build_omits_bcc_from_the_written_headers`].
 pub fn build(outgoing: &Outgoing) -> Result<Built> {
+    for address in std::iter::once(&outgoing.from)
+        .chain(&outgoing.to)
+        .chain(&outgoing.cc)
+        .chain(&outgoing.bcc)
+        .chain(&outgoing.reply_to)
+    {
+        check_address(address)?;
+    }
     let message_id = outgoing
         .message_id
         .clone()
@@ -690,6 +705,42 @@ pub(crate) fn generate_message_id(domain: &str) -> String {
     format!("{hex}@{domain}")
 }
 
+/// Refuse an address that could not be written into a header, or an
+/// envelope, as one address.
+///
+/// `mail-builder` writes the email part exactly as given, and a display name
+/// is encoded but not checked for line breaks, so what gets through here
+/// can end a header line and begin a new one -- a `Bcc:` of the sender's
+/// choosing, in a draft saved to the server's Drafts folder as well as in a
+/// sent message. The person never typed a line break in an address field;
+/// something pasted or imported did, and the honest answer is to say so
+/// rather than to quietly mend it into an address somebody else might
+/// receive mail at. Neither a name nor an email may hold a line break, NUL
+/// or any other control character.
+///
+/// Only those: a space or a comma ends no header, and this is also what a
+/// draft is saved to the server through, every few seconds, while an
+/// address is still half typed or pasted as `a@x.com, b@y.com`. Refusing it
+/// here would fail every save of that draft. Whether an address can really
+/// be sent to is decided when it is sent, by the transport's own parser.
+fn check_address(addr: &Address) -> Result<()> {
+    if let Some(name) = &addr.name
+        && name.chars().any(char::is_control)
+    {
+        return Err(Error::BadAddress(format!(
+            "the name {:?} for {:?} has a line break in it, so it cannot go in an address header",
+            name, addr.email,
+        )));
+    }
+    if addr.email.chars().any(char::is_control) {
+        return Err(Error::BadAddress(format!(
+            "the address {:?} has a line break in it, so it cannot go in an address header",
+            addr.email,
+        )));
+    }
+    Ok(())
+}
+
 fn mb_address(addr: &Address) -> MbAddress<'static> {
     MbAddress::new_address(addr.name.clone(), addr.email.clone())
 }
@@ -773,6 +824,46 @@ mod tests {
         let built = build(&outgoing).unwrap();
         let parsed = mime::parse(&built.raw).unwrap();
         assert_eq!(parsed.text.as_deref(), Some("Plain text, written by hand."));
+    }
+
+    #[test]
+    fn an_address_that_could_start_another_header_is_refused() {
+        let hostile = [
+            Address::new("bob@example.com\r\nBcc: spy@example.com"),
+            Address::new("bob@example.com\nBcc: spy@example.com"),
+            Address::new("bob@example.com\0"),
+            Address::new("bob@example.com\t"),
+            Address::named("Bob\r\nBcc: spy@example.com", "bob@example.com"),
+            Address::named("Bob\0", "bob@example.com"),
+        ];
+        for bad in hostile {
+            // In every place an address can be: To, Cc, Bcc, Reply-To, From.
+            for place in 0..5 {
+                let mut outgoing = simple_outgoing();
+                match place {
+                    0 => outgoing.to = vec![bad.clone()],
+                    1 => outgoing.cc = vec![bad.clone()],
+                    2 => outgoing.bcc = vec![bad.clone()],
+                    3 => outgoing.reply_to = vec![bad.clone()],
+                    _ => outgoing.from = bad.clone(),
+                }
+                let err = build(&outgoing).expect_err(&format!("{bad:?} at {place}"));
+                assert!(matches!(err, Error::BadAddress(_)), "{err}");
+            }
+        }
+        // A draft still being written is saved to the server as it is, so a
+        // half-typed or pasted address that ends no header is not refused
+        // here; sending it is where it fails.
+        for unfinished in ["bob@example.com, ann@example.com", "bob @exa", "Bob Smith"] {
+            let mut outgoing = simple_outgoing();
+            outgoing.to = vec![Address::new(unfinished)];
+            assert!(build(&outgoing).is_ok(), "{unfinished}");
+        }
+        // And an ordinary one, with a name that has quotes and non-ASCII in
+        // it, is untouched.
+        let mut outgoing = simple_outgoing();
+        outgoing.to = vec![Address::named("Zo\u{e9} \"Z\" M\u{fc}ller", "zoe+tag@example.co.uk")];
+        assert!(build(&outgoing).is_ok());
     }
 
     #[test]

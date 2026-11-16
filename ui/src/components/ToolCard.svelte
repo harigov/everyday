@@ -57,7 +57,8 @@
       card.confirmKind === 'type' ||
       card.confirmKind === 'click' ||
       card.confirmKind === 'routine' ||
-      card.confirmKind === 'connection',
+      card.confirmKind === 'connection' ||
+      card.confirmKind === 'keep',
   )
 
   /** The question, and the button that says yes to it, per kind. */
@@ -93,6 +94,11 @@
       ask: 'This acts as you in a service you connected.',
       yes: 'Run',
       icon: 'link',
+    },
+    keep: {
+      ask: 'Somebody else’s words were read in this conversation. This would be saved and read back later as what you want — check that it is.',
+      yes: 'Save',
+      icon: 'check',
     },
     rewrite: {
       ask: 'Somebody else’s words — a transfer’s memo, a mail — were read in this conversation, so it is checking before it changes many transactions at once.',

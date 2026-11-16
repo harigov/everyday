@@ -178,6 +178,29 @@ fn desktop_entry_name(launched: Option<&str>, binary: &str) -> String {
         .to_string()
 }
 
+/// `text` made safe for a notification server that reads markup.
+///
+/// The freedesktop specification lets a server render a small HTML subset in
+/// a notification's body (`<b>`, `<a href>`, `<img src>`) -- KDE shows a
+/// linked picture from a local path. What goes in a notification is often
+/// somebody else's words: a mail's first lines, an invitation's place, a
+/// feed item. Escaped, `<img src="file:///...">` is a line of text, which is
+/// all it ever was meant to be. Only the body: the summary is plain text to
+/// GNOME and KDE, which would show the escapes themselves.
+#[cfg(any(target_os = "linux", test))]
+fn escape_markup(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::collections::HashMap;
@@ -308,6 +331,15 @@ mod linux {
 
         let mut ids = Ids::default();
 
+        // Whether this server reads markup, which decides whether the text
+        // is escaped: one that does would show `<b>` as bold and `<a>` as a
+        // link, and one that does not would show an escaped `&lt;` as the
+        // five characters it is. A server that cannot be asked is taken to
+        // read it, since a stray `&amp;` is the milder mistake.
+        let capabilities: zbus::Result<Vec<String>> = proxy.call("GetCapabilities", &()).await;
+        let markup = capabilities.map_or(true, |caps| caps.iter().any(|c| c == "body-markup"));
+        let shown = |text: &str| if markup { super::escape_markup(text) } else { text.to_string() };
+
         while let Some(wake) = wakes.next().await {
             match wake {
                 Wake::Cmd(Cmd::Show { key, summary, body, actions, done }) => {
@@ -319,6 +351,9 @@ mod linux {
                         // time out, and not low, which some never show.
                         ("urgency", Value::U8(1)),
                     ]);
+                    // The body only: the specification gives markup to the
+                    // body alone, and a summary escaped would read `Q&amp;A`.
+                    let body = shown(&body);
                     let reply: zbus::Result<u32> = proxy
                         .call(
                             "Notify",
@@ -382,6 +417,20 @@ mod tests {
     /// success and delivers nothing, and the only sign of it is a panic line in
     /// the log, which is how every notification went missing for two weeks
     /// without a test noticing. See the module docs.
+    #[test]
+    fn notification_text_cannot_carry_markup() {
+        assert_eq!(
+            escape_markup(r#"<img src="file:///etc/passwd"> & <a href="x">pay</a>"#),
+            "&lt;img src=\"file:///etc/passwd\"&gt; &amp; &lt;a href=\"x\"&gt;pay&lt;/a&gt;"
+        );
+        assert_eq!(
+            escape_markup("Lunch at 12:30 \u{2014} caf\u{e9}"),
+            "Lunch at 12:30 \u{2014} caf\u{e9}"
+        );
+        // The ampersand first, or the others would be escaped twice.
+        assert_eq!(escape_markup("&lt;"), "&amp;lt;");
+    }
+
     #[test]
     fn nothing_else_posts_through_the_plugin() {
         fn walk(dir: &std::path::Path, offenders: &mut Vec<String>) {

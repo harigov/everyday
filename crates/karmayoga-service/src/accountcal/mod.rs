@@ -621,6 +621,47 @@ pub(crate) async fn missing_from_full_resync(
     .await
 }
 
+/// The most any one answer from Google or Microsoft may run to before it is
+/// refused unread. A page of events is a few hundred kilobytes at the
+/// outside; the number is about not letting a server -- or whatever answers
+/// at a redirected address -- make this process allocate whatever it likes.
+pub(crate) const MAX_API_BYTES: usize = 16 * 1024 * 1024;
+
+/// Check that a link a server handed back points at that same server, before
+/// anything -- above all the account's bearer token -- is sent to it.
+///
+/// Microsoft Graph pages with `@odata.nextLink` and ends with an
+/// `@odata.deltaLink`, both complete URLs written into a response body, and
+/// the delta link is stored and presented again at the next sync. Followed
+/// blindly, a body that named another host (a compromised tenant proxy, a
+/// man in the middle on a network that breaks TLS, a poisoned stored cursor)
+/// would have this application post the person's Microsoft access token
+/// there. So a link is followed only when its scheme, host and port are
+/// those of `base`, the API's own address -- `https://graph.microsoft.com`
+/// in production, a mock's own address in tests -- and carries no
+/// credentials of its own. The path and query are the server's to choose.
+///
+/// `who` names the service for the sentence a person will read, which
+/// deliberately does not repeat the link: it is not theirs and could be
+/// anything.
+pub(crate) fn require_same_origin(link: &str, base: &str, who: &str) -> CommandResult<()> {
+    let refusal = || {
+        CommandError::new(
+            codes::NETWORK,
+            format!(
+                "{who} sent a link to some other server, so the sync was stopped rather than \
+                 send your sign-in there"
+            ),
+        )
+    };
+    let (Ok(link), Ok(base)) = (reqwest::Url::parse(link), reqwest::Url::parse(base)) else {
+        return Err(refusal());
+    };
+    let ours =
+        link.origin() == base.origin() && link.username().is_empty() && link.password().is_none();
+    if ours { Ok(()) } else { Err(refusal()) }
+}
+
 /// `Retry-After`, read as a plain count of seconds -- the only form Google
 /// and Graph are ever seen to send it in on the responses this crate
 /// retries (429s and rate-limited 403s), never the HTTP-date form the
@@ -684,6 +725,35 @@ mod tests {
         };
         let vault = Arc::new(karmayoga_vault::create(dir.path(), config).unwrap());
         (vault, dir)
+    }
+
+    #[test]
+    fn a_link_is_followed_only_to_the_apis_own_origin() {
+        let base = "https://graph.microsoft.com/v1.0";
+        for ours in [
+            "https://graph.microsoft.com/v1.0/me/calendarView/delta?$skiptoken=abc",
+            "https://GRAPH.microsoft.com/v1.0/x",
+            "https://graph.microsoft.com:443/v1.0/x",
+            // Path and query are the server's to choose.
+            "https://graph.microsoft.com/beta/other",
+        ] {
+            assert!(require_same_origin(ours, base, "Graph").is_ok(), "{ours}");
+        }
+        for theirs in [
+            "https://evil.example/v1.0/me/calendarView/delta",
+            "http://graph.microsoft.com/v1.0/x",
+            "https://graph.microsoft.com.evil.example/v1.0/x",
+            "https://graph.microsoft.com:8443/v1.0/x",
+            "https://graph.microsoft.com@evil.example/v1.0/x",
+            "https://user:pw@graph.microsoft.com/v1.0/x",
+            "//evil.example/x",
+            "not a link",
+            "",
+        ] {
+            let err = require_same_origin(theirs, base, "Microsoft Graph").unwrap_err();
+            assert!(err.message.contains("some other server"), "{theirs}: {}", err.message);
+            assert!(!err.message.contains("evil"), "the link is not repeated: {}", err.message);
+        }
     }
 
     fn bare_event(calendar_id: CalendarId, uid: &str, day: jiff::civil::Date) -> Event {

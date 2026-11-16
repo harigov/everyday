@@ -45,13 +45,16 @@ pub fn run(cli: Cli) -> Result<()> {
 
     // `restore` makes a vault rather than opening one: the day it is needed
     // is the day there is none.
-    if let Command::Restore { from, into, snapshot, config, files_to, location } = &cli.command {
+    if let Command::Restore { from, into, snapshot, config, files_to, unencrypted, location } =
+        &cli.command
+    {
         return crate::backups::restore(
             from,
             into,
             snapshot.clone(),
             *config,
             files_to.as_deref(),
+            *unencrypted,
             location,
             cli.password.clone(),
         );

@@ -1159,6 +1159,12 @@ pub trait JournalStore: Send + Sync {
         // opened in a day.
         if let Some(mail) = self.mail() {
             live.extend(mail.attachment_blob_refs()?);
+            // And a draft's files and pasted pictures, held by the draft and
+            // nothing else -- including one scheduled to send later, which
+            // can wait longer than `grace`. Missing this walk made the first
+            // sweep after a day delete the attachments of every message
+            // that was still being written or waiting to go.
+            live.extend(mail.draft_blob_refs()?);
         }
         // And the Feed: a source's icon and every picture a story's body was
         // shown with, each cached into the blob store the first time it was

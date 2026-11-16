@@ -571,7 +571,14 @@ fn library_item(shelf: KindId, story: &Story, publication: &str) -> Item {
 ///
 /// An outline that is not a feed we can follow, or that is already followed,
 /// is counted and skipped rather than failing the import: the person's
-/// other ninety-nine feeds are not the reason to refuse the hundredth.
+/// other ninety-nine feeds are not the reason to refuse the hundredth. So is
+/// one whose address is on a private network -- `http://192.168.0.1/`,
+/// `http://router/`, a `.local` or `.ts.net` name -- because a list from
+/// somebody else's reader is a stranger's text, and the refresher would
+/// fetch such an address from inside the person's network every few minutes
+/// on the stranger's say-so (see [`crate::news::fetch`]). A self-hosted feed
+/// of their own is added by typing its address, which is the one gesture that
+/// is theirs.
 async fn import_opml(
     svc: Arc<Service>,
     _ctx: Ctx,
@@ -592,7 +599,10 @@ async fn import_opml(
         let (mut added, mut skipped) = (0u32, 0u32);
         for outline in outlines {
             let url = outline.xml_url.trim().to_string();
-            if !is_http(&url) || followed.iter().any(|f| same_address(f, &url)) {
+            if !is_http(&url)
+                || names_own_network(&url)
+                || followed.iter().any(|f| same_address(f, &url))
+            {
                 skipped += 1;
                 continue;
             }
@@ -655,6 +665,16 @@ fn same_address(a: &str, b: &str) -> bool {
 /// Trimmed, and `None` when nothing is left.
 fn clean(text: Option<String>) -> Option<String> {
     text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+/// Does this address name a machine on the person's own network -- by what
+/// the address says, as [`karmayoga_core::chat::is_private_network_host`]
+/// reads it, so a decimal spelling of `127.0.0.1` is caught too?
+fn names_own_network(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(karmayoga_core::chat::is_private_network_host))
+        .unwrap_or(false)
 }
 
 fn is_http(url: &str) -> bool {
@@ -903,6 +923,25 @@ mod tests {
 
     fn web(url: &str) -> NewsSource {
         NewsSource::new(SourceKind::Web { url: url.into() }, "x")
+    }
+
+    #[test]
+    fn an_address_on_a_private_network_is_told_from_one_on_the_internet() {
+        for own in [
+            "http://192.168.1.2/feed",
+            "http://127.0.0.1:8080/",
+            "http://2130706433/",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://router/rss",
+            "http://box.local/rss",
+            "https://bridge.tail1234.ts.net/rss",
+            "http://[fd7a:115c:a1e0::1]/rss",
+        ] {
+            assert!(names_own_network(own), "{own}");
+        }
+        for stranger in ["https://example.com/feed", "http://8.8.8.8/", "not an address"] {
+            assert!(!names_own_network(stranger), "{stranger}");
+        }
     }
 
     #[test]

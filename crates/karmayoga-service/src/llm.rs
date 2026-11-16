@@ -37,7 +37,7 @@ pub type Client = openai::CompletionsClient<CacheMarks>;
 ///
 /// [`CommandError`]: crate::error::CommandError
 pub fn client(conn: &LLMProviderConfig, key: Option<String>) -> Result<Client, String> {
-    open(conn, key, CacheMarks::default())
+    open(conn, key, CacheMarks::unmarked(conn.endpoint()))
 }
 
 /// Open a connection for a conversation with `access`'s model -- the
@@ -136,7 +136,13 @@ impl CacheMarks {
         let on = model.contains("claude")
             || (on_host("openrouter.ai") && !model.contains("gemini"))
             || on_host("aliyuncs.com");
-        Self { inner: reqwest::Client::new(), on }
+        Self { inner: http_client_for(endpoint), on }
+    }
+
+    /// A connection that marks nothing, to `endpoint`: what a one-shot
+    /// request goes out on.
+    fn unmarked(endpoint: &str) -> Self {
+        Self { inner: http_client_for(endpoint), on: false }
     }
 
     /// `req`, with its breakpoints written in if this connection marks and
@@ -158,6 +164,33 @@ impl CacheMarks {
         parts.headers.remove(http::header::CONTENT_LENGTH);
         let body = serde_json::to_vec(&json).map(Bytes::from).unwrap_or(body);
         Request::from_parts(parts, body)
+    }
+}
+
+/// Whether a request to `endpoint` should ignore the environment's proxy.
+///
+/// `reqwest` honours `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` by default,
+/// which is right for a hosted model behind a company's proxy and wrong for
+/// the model on this machine: Ollama at `http://localhost:11434` is reached
+/// by handing the prompt, and the bearer key, to whatever the proxy is --
+/// a corporate gateway that logs bodies, or a debugging proxy somebody left
+/// set -- to carry back to the same machine. Nothing about talking to
+/// yourself needs a middleman, so a loopback endpoint goes direct.
+fn bypasses_proxy(endpoint: &str) -> bool {
+    karmayoga_core::llm::is_loopback(endpoint)
+}
+
+/// The HTTP client a connection to `endpoint` sends through: the platform's
+/// ordinary one, except that a model on this machine is never reached
+/// through a proxy. See [`bypasses_proxy`].
+fn http_client_for(endpoint: &str) -> reqwest::Client {
+    if bypasses_proxy(endpoint) {
+        // If this ever fails to build, the default client would have failed
+        // the same way (the TLS backend is the one thing that can), so
+        // falling back to it does not quietly bring the proxy back.
+        reqwest::Client::builder().no_proxy().build().unwrap_or_default()
+    } else {
+        reqwest::Client::new()
     }
 }
 
@@ -514,6 +547,26 @@ mod tests {
         let one_shot = CacheMarks::default();
         let body = chat("anthropic/claude-opus-4.1", messages);
         assert_eq!(sent(&one_shot, &body), body);
+    }
+
+    #[test]
+    fn a_model_on_this_machine_is_never_reached_through_a_proxy() {
+        for local in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8080/v1",
+            "http://LocalHost:11434",
+        ] {
+            assert!(bypasses_proxy(local), "{local}");
+        }
+        for remote in [
+            "https://api.openai.com/v1",
+            "https://openrouter.ai/api/v1",
+            "https://llm.example.org/v1",
+            "http://192.168.1.5:11434/v1",
+        ] {
+            assert!(!bypasses_proxy(remote), "{remote}");
+        }
     }
 
     #[test]

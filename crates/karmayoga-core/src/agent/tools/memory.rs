@@ -142,8 +142,22 @@ fn describe_forget(ctx: &ToolContext<'_>, args: &Args<'_>) -> Option<String> {
 
 /// Read and check `fact`, the half `run_remember` and `build_remember` share
 /// before they each decide what kind of [`Memory`] it becomes.
-fn parse_fact<'a>(args: &Args<'a>) -> Result<&'a str> {
-    let fact = args.str("fact")?.trim();
+///
+/// A fact is one sentence on one line, and is made so here: a line break, a
+/// tab or any other control character becomes a space, runs of spaces
+/// collapse, and the invisible characters of [`crate::hidden`] go. A fact is
+/// read back into the system prompt under a heading, one `- ` line each; one
+/// that carried a newline could end its own line and begin another that
+/// looks like a heading, a rule or a message from the application. Applied
+/// to what is saved, not only to what is shown, so a memory is never
+/// something that has to be cleaned every time it is loaded -- though the
+/// prompt builder cleans it again, for the ones written before this existed.
+fn parse_fact(args: &Args<'_>) -> Result<String> {
+    let raw = args.str("fact")?;
+    let fact = one_line_fact(raw);
+    if fact.is_empty() {
+        return Err(args.bad("`fact` is required"));
+    }
     if fact.chars().count() > MAX_MEMORY_CHARS {
         return Err(args.bad(format!(
             "a memory must be under {MAX_MEMORY_CHARS} characters. \
@@ -153,6 +167,18 @@ fn parse_fact<'a>(args: &Args<'a>) -> Result<&'a str> {
     Ok(fact)
 }
 
+/// `text` on a single line, with nothing in it a person could not see.
+fn one_line_fact(text: &str) -> String {
+    let visible = crate::hidden::strip_hidden(text);
+    visible
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn run_remember(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     if !ctx.vault.agent_settings()?.remember {
         return Err(Error::Invalid("remembering is switched off in this vault's settings".into()));
@@ -160,8 +186,8 @@ fn run_remember(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let fact = parse_fact(args)?;
 
     let mut memory = match ctx.conversation {
-        Some(id) => Memory::from_conversation(fact, id),
-        None => Memory::new(fact),
+        Some(id) => Memory::from_conversation(fact.as_str(), id),
+        None => Memory::new(fact.as_str()),
     };
     // A memory the person told is a standing instruction in every prompt
     // after this one. A scheduled run has no person telling it anything --
@@ -201,7 +227,7 @@ fn build_remember(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Built> {
         return Err(Error::Invalid("remembering is switched off in this vault's settings".into()));
     }
     let fact = parse_fact(args)?;
-    let memory = Memory::inferred(fact, ctx.today);
+    let memory = Memory::inferred(fact.as_str(), ctx.today);
     Ok(Built {
         payload: Payload::Create { record: ProposedRecord::Memory(memory) },
         caption: format!("Remember: {fact}"),

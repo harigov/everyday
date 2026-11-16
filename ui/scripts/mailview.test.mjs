@@ -16,7 +16,7 @@ const {
   '/src/lib/mailbody.ts',
   '/src/lib/mailheight.ts',
 ])
-const { applyBodyTheme, quoteDocument, renderBody, MAIL_CARD } = mailview
+const { applyBodyTheme, quoteDocument, renderBody, MAIL_CARD, pointOwnAddresses } = mailview
 const { firstName, peopleLine, snippetText } = mail
 const { looksDesigned, readBody } = mailbody
 const { measureBody, readPictures } = mailheight
@@ -1228,6 +1228,28 @@ for (const [stored, want, why] of [
   ['[[Company logo]][1] Read [here][2]', 'Company logo Read here', 'a linked picture'],
 ]) {
   assert.equal(snippetText(stored), want, why)
+}
+
+// ── Web access: only the sanitiser's own addresses take the media origin ──
+
+{
+  const to = 'https://box.ts.net:7400/m/TOKEN/v1/mail/'
+  const html =
+    '<img src="karmayoga://mail/img/m/a" srcset="karmayoga://mail/img/m/b 2x, karmayoga://mail/img/m/c 3x">' +
+    '<p style="background:url(karmayoga://mail/img/m/d)">x</p>' +
+    '<p style="background:url(&quot;karmayoga://mail/img/m/e&quot;)">x</p>' +
+    '<td background="karmayoga://mail/img/m/f">x</td>' +
+    '<a href="https://evil.example/?u=karmayoga://mail/">click</a> karmayoga://mail/ in words'
+  const out = pointOwnAddresses(html, to)
+  for (const name of ['a', 'b', 'c', 'd', 'e', 'f']) {
+    assert.ok(out.includes(`${to}img/m/${name}`), `${name} is pointed at the origin: ${out}`)
+  }
+  assert.ok(
+    out.includes('href="https://evil.example/?u=karmayoga://mail/"'),
+    "a sender's link is left alone",
+  )
+  assert.ok(out.includes('karmayoga://mail/ in words'), 'so is the text')
+  assert.equal(out.match(/TOKEN/g).length, 6, 'the token goes only where a picture is loaded')
 }
 
 await close()

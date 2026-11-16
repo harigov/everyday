@@ -1,0 +1,45 @@
+name: Audit
+
+# Known advisories against what Cargo.lock and the interface's lockfile pull
+# in. Its own workflow, weekly and whenever a lockfile moves, rather than a
+# step in Check: an advisory published against a crate nobody touched is
+# news about the world, not about the commit that happened to be pushed
+# next, and should not turn that commit red.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  push:
+    branches: [main]
+    paths: [Cargo.lock, ui/package-lock.json, .cargo/audit.toml]
+  pull_request:
+    paths: [Cargo.lock, ui/package-lock.json, .cargo/audit.toml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    name: Rust advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # Unmaintained and unsound crates are reported as warnings: most come
+      # through Tauri's GTK stack on Linux and cannot be moved from here.
+      # Vulnerabilities fail the job; `.cargo/audit.toml` lists the ignores.
+      - name: cargo audit
+        run: |
+          set -euo pipefail
+          cargo install cargo-audit --locked --version 0.23.0
+          cargo audit
+
+  ui:
+    name: Interface advisories
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # What ships only: the dev tooling's advisories are not in the app.
+      - name: npm audit
+        run: npm --prefix ui audit --omit=dev --audit-level=moderate

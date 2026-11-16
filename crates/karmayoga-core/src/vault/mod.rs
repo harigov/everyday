@@ -75,6 +75,9 @@ pub(crate) fn data_key_from(
     password: Option<&str>,
 ) -> Result<Option<SecretKey>> {
     if !header.is_encrypted() {
+        // "None" is one word in a file others may be able to write; see
+        // `check_plain_is_plain` for what it takes to be believed.
+        header.check_plain_is_plain()?;
         return Ok(None);
     }
     let password = password.ok_or(Error::BadPassword)?;
@@ -371,6 +374,9 @@ impl Vault {
 
     fn open_inner(root: &Path, registry: Arc<BackendRegistry>, activate: bool) -> Result<Self> {
         let mut header = read_header(root)?;
+        // Before the vault is claimed or anything is written, and before an
+        // unencrypted-looking header activates the store with no key.
+        header::refuse_downgrade(root, &header)?;
         if header.format > FORMAT_VERSION {
             return Err(Error::UnsupportedVaultVersion {
                 found: header.format,

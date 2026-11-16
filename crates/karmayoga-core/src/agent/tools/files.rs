@@ -362,15 +362,31 @@ fn healths(tool: &str) -> Error {
 /// `health`, never a job -- and not through these: a token minted to tidy
 /// somebody's photographs must not be able to open their lab reports, or
 /// trash them. `find_files` leaves them out of every listing for the same
-/// reason. A file that cannot be read is left for the tool's own read to
-/// report.
+/// reason. A file that is not there is left for the tool's own read to
+/// report; a lookup that *failed* for any other reason refuses, because a
+/// gate that waves a file through when it could not look at it is no gate:
+/// a database that is briefly unreachable must not be how a lab report is
+/// trashed.
 fn check_not_healths(ctx: &ToolContext<'_>, tool: &str, ids: &[FileId]) -> Result<()> {
     for id in ids {
-        if ctx.vault.file(*id).is_ok_and(|f| f.origin == FileOrigin::Health) {
-            return Err(healths(tool));
-        }
+        refuse_a_health_file(ctx.vault.file(*id), tool)?;
     }
     Ok(())
+}
+
+/// The decision [`check_not_healths`] makes about one lookup.
+fn refuse_a_health_file(found: Result<FileEntry>, tool: &str) -> Result<()> {
+    match found {
+        Ok(file) if file.origin == FileOrigin::Health => Err(healths(tool)),
+        Ok(_) | Err(Error::NotFound { .. }) => Ok(()),
+        Err(e) => {
+            tracing::warn!(tool, error = %e, "files: could not check whether a file is Health's");
+            Err(Error::Invalid(format!(
+                "{tool}: the file could not be looked up to check it is not one of Health's, so \
+                 nothing was done ({e})"
+            )))
+        }
+    }
 }
 
 // ---- arguments ------------------------------------------------------------
@@ -1167,5 +1183,55 @@ mod tests {
         let value = json!({ "ids": ["the beach one"] });
         let err = file_ids(&Args::new("trash_files", &value), "ids").unwrap_err().to_string();
         assert!(err.contains("find_files"), "should say how to get one: {err}");
+    }
+
+    fn entry_of(origin: FileOrigin) -> FileEntry {
+        use crate::files::{FileKind, FileStorage, MediaInfo};
+        let now = Timestamp::now();
+        FileEntry {
+            id: FileId::new(),
+            storage: FileStorage::Plain { path: "a.jpg".into() },
+            name: "a.jpg".into(),
+            kind: FileKind::Image,
+            mime: "image/jpeg".into(),
+            size: 1,
+            hash: String::new(),
+            modified_at: now,
+            added_at: now,
+            updated_at: now,
+            origin,
+            status: FileStatus::Present,
+            media: MediaInfo::default(),
+            thumbnail: None,
+            caption: String::new(),
+            tags: Vec::new(),
+            rating: None,
+            favourite: false,
+            hidden: false,
+            people: Vec::new(),
+            place: None,
+            stack: None,
+            properties: std::collections::BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn health_files_are_refused_and_a_failed_lookup_is_too() {
+        // One of Health's: refused, in Health's words.
+        let err = refuse_a_health_file(Ok(entry_of(FileOrigin::Health)), "trash_files")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Health's"), "{err}");
+        // An ordinary file, and one that is not there (the tool's own read
+        // reports that), go on.
+        refuse_a_health_file(Ok(entry_of(FileOrigin::Files)), "trash_files").unwrap();
+        refuse_a_health_file(Err(Error::not_found("file", "x")), "trash_files").unwrap();
+        // Any other failure to look is a refusal, not a pass.
+        let err =
+            refuse_a_health_file(Err(Error::Invalid("database is locked".into())), "trash_files")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("could not be looked up"), "{err}");
+        assert!(err.contains("trash_files"), "{err}");
     }
 }

@@ -852,6 +852,11 @@
                   bind:value={next}
                   autocomplete="new-password"
                 />
+                <p class="hint">
+                  The new password locks the same key, it does not make a new one. A copy of this
+                  vault or a backup taken before today still opens with the old password, so if the
+                  old one was found out, those copies are worth deleting too.
+                </p>
                 <div class="row">
                   <button class="btn" type="button" onclick={() => (changing = false)}>
                     Cancel

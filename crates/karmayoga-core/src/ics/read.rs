@@ -421,8 +421,8 @@ impl Draft {
             "RECURRENCE-ID" => self.recurrence_id = parse_moment(line, line.value),
             // Both are comma-separated lists, and both can appear more than
             // once on the same event.
-            "RDATE" => self.rdates.extend(split_moments(line)),
-            "EXDATE" => self.exdates.extend(split_moments(line)),
+            "RDATE" => extend_capped(&mut self.rdates, split_moments(line)),
+            "EXDATE" => extend_capped(&mut self.exdates, split_moments(line)),
             "X-KARMAYOGA-UID" => {
                 self.app_uid =
                     Some(unescape(line.value).trim().to_string()).filter(|v| !v.is_empty())
@@ -512,9 +512,22 @@ impl Draft {
         })
     }
 }
+/// Append `more` to `list` without letting it grow past [`MAX_DATE_LIST`].
+fn extend_capped(list: &mut Vec<Moment>, more: Vec<Moment>) {
+    let room = MAX_DATE_LIST.saturating_sub(list.len());
+    list.extend(more.into_iter().take(room));
+}
 fn split_moments(line: &Line<'_>) -> Vec<Moment> {
     line.value.split(',').filter_map(|v| parse_moment(line, v)).collect()
 }
+/// The longest duration this reader accepts: a hundred years, in seconds.
+const MAX_DURATION_SECS: i64 = 100 * 366 * 86_400;
+
+/// The most RDATE or EXDATE values read per event. A real calendar has a
+/// handful; a feed with a million is trying something, and every one is
+/// compared against every start.
+const MAX_DATE_LIST: usize = 10_000;
+
 /// Parse an RFC 5545 duration: `P1DT2H30M`, `-PT15M`, `P2W`.
 fn parse_duration(value: &str) -> Option<SignedDuration> {
     let v = value.trim();
@@ -534,14 +547,24 @@ fn parse_duration(value: &str) -> Option<SignedDuration> {
             _ => {
                 let n: i64 = digits.parse().ok()?;
                 digits.clear();
-                secs += match c.to_ascii_uppercase() {
-                    'W' => n * 7 * 86_400,
-                    'D' => n * 86_400,
-                    'H' if in_time => n * 3_600,
-                    'M' if in_time => n * 60,
-                    'S' if in_time => n,
+                // Checked all the way: the number is a stranger's, and
+                // `P9999999999999999W` overflowed an i64 in a plain
+                // multiply. Anything that does not fit is no duration.
+                let unit: i64 = match c.to_ascii_uppercase() {
+                    'W' => 7 * 86_400,
+                    'D' => 86_400,
+                    'H' if in_time => 3_600,
+                    'M' if in_time => 60,
+                    'S' if in_time => 1,
                     _ => return None,
                 };
+                secs = secs.checked_add(n.checked_mul(unit)?)?;
+                // A century is longer than any event or alarm lead a
+                // calendar holds, and keeps what is later added to a
+                // length or negated far from the edge of an i64.
+                if secs > MAX_DURATION_SECS {
+                    return None;
+                }
             }
         }
     }
@@ -607,7 +630,12 @@ pub fn events_for(
             }
         };
         starts.extend(e.rdates.iter().copied().filter(|d| *d >= from && *d <= to));
-        starts.retain(|d| !e.exdates.contains(d));
+        // A set, not a list scan: with the lists capped at ten thousand
+        // each, a nested `contains` is still a hundred million comparisons.
+        if !e.exdates.is_empty() {
+            let skip: std::collections::HashSet<DateTime> = e.exdates.iter().copied().collect();
+            starts.retain(|d| !skip.contains(d));
+        }
         starts.sort();
         starts.dedup();
 
@@ -804,6 +832,37 @@ pub(super) mod tests {
         assert_eq!(e.end, datetime(2026, 9, 6, 10, 30, 0, 0));
         assert_eq!(parse_duration("P1DT2H"), Some(SignedDuration::from_hours(26)));
         assert_eq!(parse_duration("P2W"), Some(SignedDuration::from_hours(24 * 14)));
+    }
+
+    #[test]
+    fn a_duration_too_big_for_arithmetic_is_no_duration() {
+        // Each of these overflowed an i64 in a plain multiply.
+        assert_eq!(parse_duration("P9999999999999999W"), None);
+        assert_eq!(parse_duration("P99999999999999999999D"), None);
+        assert_eq!(parse_duration("-PT9223372036854775807H"), None);
+        assert_eq!(parse_duration("P1W9999999999999D"), None);
+        // And an event carrying one still has a length.
+        let e = one(
+            "BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260906T090000Z\r\nDURATION:P9999999999999999W\r\nEND:VEVENT",
+        );
+        assert_eq!(e.end, datetime(2026, 9, 6, 9, 30, 0, 0));
+    }
+
+    #[test]
+    fn rdate_and_exdate_lists_are_capped_and_exdates_still_remove() {
+        let many: Vec<String> = (0..MAX_DATE_LIST + 500)
+            .map(|i| {
+                format!("{:04}{:02}{:02}T090000Z", 2100 + i / 360, (i % 360) / 30 + 1, i % 28 + 1)
+            })
+            .collect();
+        let text = format!(
+            "BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260906T090000Z\r\nEXDATE:{}\r\nRDATE:{}\r\nEND:VEVENT",
+            many.join(","),
+            many.join(","),
+        );
+        let e = one(&text);
+        assert!(e.exdates.len() <= MAX_DATE_LIST);
+        assert!(e.rdates.len() <= MAX_DATE_LIST);
     }
 
     #[test]

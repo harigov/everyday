@@ -534,6 +534,14 @@ fn sweep(svc: &Arc<Service>, vault: &Arc<Vault>) {
         }
         Err(e) => tracing::debug!(error = %e, "files: could not empty the trash"),
     }
+    // Decrypted copies of sealed files are not in the folder (they are under
+    // the user's cache directory, so a sync tool never sees them), and they are
+    // swept whether or not the folder is there: a drive that is unplugged is
+    // no reason to leave a passport lying decrypted. This also clears what
+    // an older build left in the folder's own `open` folder.
+    if let Err(e) = vault.sweep_open_copies(STALE) {
+        tracing::debug!(error = %e, "files: could not sweep decrypted copies");
+    }
     let Ok(Some(folder)) = vault.files_folder() else { return };
     // Nothing is swept from a folder that is not there.
     if !matches!(vault.folder_state(), Ok(state) if state.is_available()) {
@@ -541,9 +549,6 @@ fn sweep(svc: &Arc<Service>, vault: &Arc<Vault>) {
     }
     if let Err(e) = folder.sweep_uploads(STALE) {
         tracing::debug!(error = %e, "files: could not sweep stale uploads");
-    }
-    if let Err(e) = folder.sweep_open(STALE) {
-        tracing::debug!(error = %e, "files: could not sweep decrypted copies");
     }
 }
 

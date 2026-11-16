@@ -153,6 +153,31 @@ fn a_follow_that_names_nothing_followable_is_refused_with_advice() {
 }
 
 #[test]
+fn the_assistant_cannot_follow_a_feed_on_the_persons_own_network() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = vault(dir.path());
+
+    for address in [
+        "http://127.0.0.1:7398/mcp",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://192.168.1.10/feed.xml",
+        "http://nas/feed",
+        "http://box.local/feed",
+        "https://bridge.tail1234.ts.net/feed",
+        "http://2130706433/",
+        "https://93.184.216.34/feed",
+    ] {
+        let err = call_err(&vault, "follow_source", json!({ "url": address }));
+        assert!(err.contains("own network") || err.contains("bare IP"), "{address}: got {err}");
+    }
+    assert!(vault.news_sources().unwrap().is_empty(), "a refused follow wrote nothing");
+
+    // A public feed over plain http is still allowed, as it always was.
+    let ok = call(&vault, "follow_source", json!({ "url": "http://blog.example.com/feed" }));
+    assert_eq!(ok["action"], "followed");
+}
+
+#[test]
 fn the_sources_list_says_how_much_is_waiting_and_whether_each_is_healthy() {
     let dir = tempfile::tempdir().unwrap();
     let vault = vault(dir.path());

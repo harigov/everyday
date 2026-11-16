@@ -17,7 +17,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use karmayoga_service::connections::hub;
-use karmayoga_service::ctx::Ctx;
+use karmayoga_service::ctx::{Caller, Ctx, Scope};
 use karmayoga_service::{Service, error::CommandError};
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -37,6 +37,22 @@ async fn call(svc: &Arc<Service>, name: &str, args: Value) -> Value {
 
 async fn fails(svc: &Arc<Service>, name: &str, args: Value) -> CommandError {
     svc.call(Ctx::local(), name, args).await.expect_err("expected a failure")
+}
+
+/// Somebody who holds every scope and is not the shell on this computer: a
+/// paired phone, a tailnet web session, a routine, a process on the local
+/// socket. Each may do what `Scope::All` allows, and none may run a program.
+fn strangers() -> Vec<Ctx> {
+    [Caller::Device("phone".into()), Caller::Assistant("run-1".into()), Caller::Socket]
+        .into_iter()
+        .map(|caller| Ctx { caller, scopes: vec![Scope::All], proved_at: None, request_id: None })
+        .collect()
+}
+
+async fn refused_to(ctx: Ctx, svc: &Arc<Service>, name: &str, args: Value) {
+    let e = svc.call(ctx.clone(), name, args).await.expect_err("expected a refusal");
+    assert_eq!(e.code, "forbidden", "{:?}: {name}: {e}", ctx.caller);
+    assert!(e.message.contains("runs a program"), "{}", e.message);
 }
 
 /// A port nothing listens on, so a connection to it fails at once.
@@ -514,4 +530,136 @@ async fn moving_a_connection_elsewhere_leaves_its_token_and_choices_behind() {
     assert_eq!(moved["secrets"]["bearer"], json!(false), "the token stays with the old host");
     assert_eq!(moved["connection"]["policies"], json!({}), "so do the choices about its tools");
     assert_eq!(moved["status"], json!("needsSetup"));
+}
+
+// ---- programs belong to this computer ---------------------------------------
+
+fn program(command: &str) -> Value {
+    json!({ "type": "stdio", "command": command, "args": [], "env": ["A"] })
+}
+
+#[tokio::test]
+async fn nobody_but_this_computer_may_add_a_connection_that_runs_a_program() {
+    let (svc, _dir) = support::vault::service(None);
+    for ctx in strangers() {
+        refused_to(
+            ctx,
+            &svc,
+            "add_connection",
+            json!({ "name": "Evil", "transport": program("sh"), "auth": { "type": "none" } }),
+        )
+        .await;
+    }
+    let listed = call(&svc, "connections", json!({})).await;
+    assert_eq!(listed["connections"], json!([]), "nothing was saved");
+
+    // An address, for the same callers, as it always was.
+    for (i, ctx) in strangers().into_iter().enumerate() {
+        let added = svc
+            .call(
+                ctx,
+                "add_connection",
+                json!({
+                    "name": format!("Remote {i}"),
+                    "transport": http(nowhere(), &[]),
+                    "auth": { "type": "none" },
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(added["connection"]["transport"]["type"], "http");
+    }
+
+    // And this computer's own windows may.
+    for (i, ctx) in [Ctx::local(), Ctx::window("app-notes")].into_iter().enumerate() {
+        let name = format!("Local {i}");
+        let added = svc
+            .call(
+                ctx,
+                "add_connection",
+                json!({ "name": name, "transport": program("true"), "auth": { "type": "none" } }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(added["connection"]["transport"]["command"], "true");
+    }
+}
+
+#[tokio::test]
+async fn nobody_but_this_computer_may_change_what_a_program_connection_runs() {
+    let (svc, _dir) = support::vault::service(None);
+    let stdio = add(&svc, "Local tool", program("true"), json!({ "type": "none" })).await;
+    let web = add(&svc, "Web", http(nowhere(), &[]), json!({ "type": "none" })).await;
+
+    for ctx in strangers() {
+        // Pointed at another program, with other arguments, other variables, or
+        // run somewhere else.
+        for change in [
+            json!({ "command": "sh" }),
+            json!({ "args": ["-c", "id"] }),
+            json!({ "env": ["A", "LD_PRELOAD"] }),
+            json!({ "cwd": "/tmp" }),
+        ] {
+            let mut edited = stdio["connection"].clone();
+            for (key, value) in change.as_object().unwrap() {
+                edited["transport"][key] = value.clone();
+            }
+            refused_to(ctx.clone(), &svc, "update_connection", json!({ "connection": edited }))
+                .await;
+        }
+        // An address turned into a program.
+        let mut edited = web["connection"].clone();
+        edited["transport"] = program("sh");
+        refused_to(ctx.clone(), &svc, "update_connection", json!({ "connection": edited })).await;
+        // Values for the variables it names.
+        refused_to(
+            ctx.clone(),
+            &svc,
+            "set_connection_secrets",
+            json!({ "id": id_of(&stdio), "env": { "A": "x" } }),
+        )
+        .await;
+        // Starting it.
+        refused_to(ctx, &svc, "check_connection", json!({ "id": id_of(&stdio) })).await;
+    }
+    let listed = call(&svc, "connections", json!({})).await;
+    let kept = &listed["connections"][0]["connection"]["transport"];
+    assert_eq!(kept["command"], "true");
+    assert_eq!(kept["args"], json!([]));
+    assert_eq!(kept["env"], json!(["A"]));
+
+    // What carries no command stays open to them: a name, a switch, what the
+    // tools may do, and taking it away.
+    let phone = strangers().remove(0);
+    let mut edited = stdio["connection"].clone();
+    edited["name"] = json!("Renamed");
+    edited["enabled"] = json!(false);
+    let updated = svc
+        .call(phone.clone(), "update_connection", json!({ "connection": edited }))
+        .await
+        .unwrap();
+    assert_eq!(updated["connection"]["name"], "Renamed");
+    assert_eq!(updated["connection"]["enabled"], false);
+    svc.call(
+        phone.clone(),
+        "set_connection_tool_policy",
+        json!({ "id": id_of(&stdio), "tool": "search", "policy": "off" }),
+    )
+    .await
+    .unwrap();
+    // An address's own values, and a program turned into an address.
+    svc.call(phone.clone(), "set_connection_secrets", json!({ "id": id_of(&web), "headers": {} }))
+        .await
+        .unwrap();
+    let mut edited = updated["connection"].clone();
+    edited["transport"] = http(nowhere(), &[]);
+    svc.call(phone.clone(), "update_connection", json!({ "connection": edited })).await.unwrap();
+    svc.call(phone, "remove_connection", json!({ "id": id_of(&stdio) })).await.unwrap();
+
+    // The desktop itself may do all of it.
+    let mut edited = web["connection"].clone();
+    edited["transport"] = program("true");
+    let local = call(&svc, "update_connection", json!({ "connection": edited })).await;
+    assert_eq!(local["connection"]["transport"]["command"], "true");
+    call(&svc, "set_connection_secrets", json!({ "id": id_of(&web), "env": { "A": "x" } })).await;
 }

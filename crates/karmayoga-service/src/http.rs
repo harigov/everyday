@@ -319,9 +319,21 @@ pub(crate) fn is_forbidden_address(ip: IpAddr, allow_loopback: bool) -> bool {
             }
             // `fe80::/10`, link-local, and `fc00::/7`, unique local -- the
             // IPv6 counterparts of `169.254.0.0/16` and the RFC 1918 ranges
-            // above.
+            // above -- and the three that are easy to forget because nothing
+            // ordinary lives there: `fec0::/10`, the deprecated site-local
+            // range some stacks still route inside a site; `ff00::/8`,
+            // multicast, which is never one server's address (the IPv4
+            // `224.0.0.0/4` refusal above, said again); and `64:ff9b:1::/48`,
+            // NAT64's *local-use* prefix (RFC 8215), which unlike the
+            // well-known `64:ff9b::/96` is a site's own and carries no
+            // promise that the low 32 bits are a public address, so it is
+            // refused whole rather than decoded.
             let seg0 = segments[0];
-            (seg0 & 0xffc0 == 0xfe80) || (seg0 & 0xfe00 == 0xfc00)
+            (seg0 & 0xffc0 == 0xfe80)
+                || (seg0 & 0xfe00 == 0xfc00)
+                || (seg0 & 0xffc0 == 0xfec0)
+                || (seg0 & 0xff00 == 0xff00)
+                || (seg0 == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
         }
     }
 }
@@ -520,6 +532,29 @@ mod tests {
         // `2002:0a00:0001::` embeds `10.0.0.1`.
         let ip: IpAddr = "2002:a00:1::".parse().unwrap();
         assert!(is_forbidden_address(ip, false));
+    }
+
+    #[test]
+    fn ipv6_multicast_site_local_and_local_use_nat64_are_forbidden() {
+        for addr in [
+            "ff02::1",
+            "ff00::",
+            "ffff::1",
+            "fec0::1",
+            "feff::1",
+            "64:ff9b:1::1",
+            "64:ff9b:1:ffff::5db8:d822",
+        ] {
+            let ip: IpAddr = addr.parse().unwrap();
+            assert!(is_forbidden_address(ip, false), "{addr} should be forbidden");
+            assert!(is_forbidden_address(ip, true), "{addr} stays forbidden with loopback allowed");
+        }
+        // Neighbours of each range stay reachable: global unicast just below
+        // multicast, and the well-known NAT64 prefix, which is decoded.
+        for addr in ["fbff::1", "64:ff9b:2::1", "64:ff9a:1::1", "2606:4700::1111"] {
+            let ip: IpAddr = addr.parse().unwrap();
+            assert!(!is_forbidden_address(ip, false), "{addr} should be allowed");
+        }
     }
 
     #[test]

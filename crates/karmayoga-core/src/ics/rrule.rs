@@ -3,6 +3,10 @@ use jiff::civil::{Date, DateTime, Weekday};
 use super::read::{Line, parse_moment};
 use super::{EXPANSION_CAP, Freq, Rrule};
 
+/// The largest INTERVAL this reader will step by; the same ceiling
+/// `Recurrence::validate` puts on a repeat made in the app.
+const MAX_INTERVAL: u32 = 999;
+
 fn parse_weekday(code: &str) -> Option<Weekday> {
     Some(match code {
         "MO" => Weekday::Monday,
@@ -39,7 +43,19 @@ pub fn parse_rrule(value: &str) -> Rrule {
                     _ => rule.unsupported = true,
                 }
             }
-            "INTERVAL" => rule.interval = val.parse().unwrap_or(1).max(1),
+            "INTERVAL" => {
+                let n: u32 = val.parse().unwrap_or(1).max(1);
+                // Past 999 is not a calendar, it is a value chosen to make
+                // the date arithmetic fall over (`YEARLY;INTERVAL=20000` is
+                // beyond what a date can hold). It is the same ceiling a
+                // repeat the user makes is held to, and a rule over it is
+                // flagged rather than quietly shortened: expanding it as
+                // 999 would put events on dates the feed never named.
+                if n > MAX_INTERVAL {
+                    rule.unsupported = true;
+                }
+                rule.interval = n.min(MAX_INTERVAL);
+            }
             "COUNT" => rule.count = val.parse().ok(),
             "UNTIL" => {
                 let line = Line { name: "UNTIL".into(), params: Vec::new(), value: val };
@@ -98,7 +114,7 @@ pub(crate) fn occurrences(
         _ => to,
     };
     let time = seed.time();
-    let interval = i32::try_from(rule.interval).unwrap_or(1).max(1);
+    let interval = rule.interval.clamp(1, MAX_INTERVAL);
 
     // A rule with no COUNT and no UNTIL runs forever, so the window is the
     // only bound; with a COUNT, occurrences before the window still consume
@@ -204,16 +220,27 @@ pub(crate) fn occurrences(
             }
         }
 
-        // Advance one period.
+        // Advance one period. Every step is fallible: a feed is a stranger's
+        // file, jiff's `Span` constructors panic outside its limits, and a
+        // panic here would take the whole refresh down every time it ran.
+        // The interval is already held to 999 by the parser; this is the
+        // second wall, for a rule built some other way.
         let next = match rule.freq {
-            Freq::Daily => cursor.checked_add(days(interval)),
-            Freq::Weekly => cursor.checked_add(days(interval * 7)),
-            Freq::Monthly => {
-                cursor.first_of_month().checked_add(jiff::Span::new().months(interval))
-            }
-            Freq::Yearly => cursor.first_of_year().checked_add(jiff::Span::new().years(interval)),
+            Freq::Daily => try_days(i64::from(interval)).and_then(|s| cursor.checked_add(s).ok()),
+            Freq::Weekly => i64::from(interval)
+                .checked_mul(7)
+                .and_then(try_days)
+                .and_then(|s| cursor.checked_add(s).ok()),
+            Freq::Monthly => jiff::Span::new()
+                .try_months(i64::from(interval))
+                .ok()
+                .and_then(|s| cursor.first_of_month().checked_add(s).ok()),
+            Freq::Yearly => jiff::Span::new()
+                .try_years(i64::from(interval))
+                .ok()
+                .and_then(|s| cursor.first_of_year().checked_add(s).ok()),
         };
-        let Ok(next) = next else { break };
+        let Some(next) = next else { break };
         cursor = next;
     }
 
@@ -250,6 +277,11 @@ fn seeded(seed: DateTime, rule: &Rrule) -> Rrule {
 }
 fn days(n: i32) -> jiff::Span {
     jiff::Span::new().days(n)
+}
+
+/// A span of `n` days, or `None` when `n` is beyond what a span can hold.
+fn try_days(n: i64) -> Option<jiff::Span> {
+    jiff::Span::new().try_days(n).ok()
 }
 
 #[cfg(test)]
@@ -416,6 +448,51 @@ mod tests {
             date(2026, 12, 31),
         );
         assert_eq!(out, [date(2026, 9, 28)], "one honest occurrence beats twelve invented ones");
+    }
+
+    #[test]
+    fn an_interval_beyond_any_calendar_is_refused_not_a_panic() {
+        // Each of these used to panic inside jiff's Span constructors, from a
+        // subscribed feed, on every refresh.
+        let seed = datetime(2026, 9, 1, 9, 0, 0, 0);
+        for rrule in [
+            "FREQ=YEARLY;INTERVAL=20000",
+            "FREQ=MONTHLY;INTERVAL=240000",
+            "FREQ=DAILY;INTERVAL=8000000",
+            "FREQ=WEEKLY;INTERVAL=2000000",
+            "FREQ=DAILY;INTERVAL=4294967295",
+        ] {
+            let rule = parse_rrule(rrule);
+            assert!(rule.unsupported, "{rrule} should be flagged");
+            let out = expand(rrule, seed, date(2026, 1, 1), date(2030, 12, 31));
+            assert_eq!(out, [date(2026, 9, 1)], "{rrule}: one honest occurrence");
+        }
+    }
+
+    #[test]
+    fn the_largest_allowed_interval_still_expands() {
+        let rule = parse_rrule("FREQ=YEARLY;INTERVAL=999");
+        assert!(!rule.unsupported);
+        let out = expand(
+            "FREQ=YEARLY;INTERVAL=999",
+            datetime(2026, 9, 1, 9, 0, 0, 0),
+            date(2026, 1, 1),
+            date(2030, 12, 31),
+        );
+        assert_eq!(out, [date(2026, 9, 1)]);
+        // And a rule built by hand with an absurd interval cannot panic the
+        // stepping either.
+        let mut rule = parse_rrule("FREQ=WEEKLY");
+        rule.interval = u32::MAX;
+        let out = occurrences(
+            datetime(2026, 9, 1, 9, 0, 0, 0),
+            &rule,
+            (
+                date(2026, 1, 1).to_datetime(Time::midnight()),
+                date(2030, 12, 31).to_datetime(Time::MAX),
+            ),
+        );
+        assert_eq!(out.len(), 1);
     }
 
     #[test]

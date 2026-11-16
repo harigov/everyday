@@ -22,13 +22,21 @@
 //! itself -- `/favicon.ico` chief among them -- and a listener that gave up
 //! after the first connection would fail a sign-in for no reason a person
 //! could see. So [`Loopback::wait`] keeps accepting connections until one
-//! lands on `/callback`, the one path this binds; everything else gets a
-//! plain 404 and the loop continues. The *first* request to `/callback` is
-//! final, whatever it says: if its `state` matches, [`Loopback::wait`]
-//! returns the code; if it does not, or the provider reported an error
-//! instead of a code, this refuses rather than waiting for a better one
-//! that -- if the mismatch was a real attacker's guess rather than a
-//! browser's retry -- may never come.
+//! lands on `/callback` *with the state this sign-in minted*, the one path
+//! this binds; everything else gets a plain 404 and the loop continues.
+//!
+//! Once the state matches, that request is final: the code it carries is
+//! returned, or, if the provider reported an error instead of a code, that
+//! is. A request to `/callback` whose state is wrong or missing is not: it
+//! is answered 400 and the wait goes on until the timeout. The port is open
+//! to every web page in the person's browser -- any page can make the
+//! browser fetch `http://127.0.0.1:<port>/callback` -- and a page that
+//! could end the sign-in by guessing wrong would be a way to break every
+//! sign-in it can find the port of. The state is what says the request is
+//! the provider's, and a guess at it is not worth answering with more than
+//! a refusal. For the same reason a request whose `Host` is not this
+//! listener's own (a page that has re-pointed its own name at 127.0.0.1) is
+//! refused alike.
 //!
 //! # Why every accepted connection gets its own task
 //!
@@ -99,7 +107,9 @@ pub enum LoopbackError {
     /// A request reached `/callback` whose `state` did not match the one
     /// [`crate::oauth::OAuthClient::begin`] minted. Refused rather than
     /// accepted with a warning: a mismatched state is exactly what CSRF
-    /// protection exists to catch.
+    /// protection exists to catch. [`Loopback::wait`] does not end on one --
+    /// it answers 400 and keeps waiting, for the reason the module docs
+    /// give -- so this is no longer returned by it.
     #[error("the redirect's state did not match; refusing it")]
     StateMismatch,
     /// The provider redirected back with `?error=…` instead of a code --
@@ -181,6 +191,7 @@ impl Loopback {
         // than by returning out of an inline loop.
         let (tx, mut rx) = mpsc::unbounded_channel::<Result<String, LoopbackError>>();
         let state = state.to_string();
+        let port = self.listener.local_addr().map(|a| a.port()).unwrap_or(0);
 
         loop {
             tokio::select! {
@@ -210,23 +221,27 @@ impl Loopback {
                     let tx = tx.clone();
                     let state = state.clone();
                     tokio::spawn(async move {
-                        let handled =
-                            tokio::time::timeout(CONNECTION_TIMEOUT, handle_one(stream, &state))
-                                .await;
+                        let handled = tokio::time::timeout(
+                            CONNECTION_TIMEOUT,
+                            handle_one(stream, &state, port),
+                        )
+                        .await;
                         // Three ways this can end without anything to
                         // report, all treated alike: the connection never
                         // finished inside `CONNECTION_TIMEOUT` (`Err`, from
                         // `timeout` itself), it hit an I/O error partway
                         // through (`Ok(Err(_))`, a reset or a truncated
                         // request), or it was a real request to some path
-                        // other than `/callback` (`Ok(Ok(None))`, a favicon
-                        // probe most often). Only `Ok(Ok(Some(_)))` -- a
-                        // complete request to `/callback`, whatever it said
-                        // -- is worth sending; `send`'s own error is ignored
-                        // because a dropped receiver only means some other
-                        // connection (or the deadline, or a cancellation)
-                        // already decided this `wait`, not that anything
-                        // here went wrong.
+                        // other than `/callback`, or to it without this
+                        // sign-in's state (`Ok(Ok(None))`, a favicon probe
+                        // most often, or a web page guessing). Only
+                        // `Ok(Ok(Some(_)))` -- a complete request to
+                        // `/callback` that carried the state -- is worth
+                        // sending; `send`'s own error is ignored because a
+                        // dropped receiver only means some other connection
+                        // (or the deadline, or a cancellation) already
+                        // decided this `wait`, not that anything here went
+                        // wrong.
                         if let Ok(Ok(Some(outcome))) = handled {
                             let _ = tx.send(outcome);
                         }
@@ -237,11 +252,34 @@ impl Loopback {
     }
 }
 
+/// Whether a `Host` header names this listener: a loopback name, and the
+/// port it listens on if it says one. A browser always sends the port; a page
+/// whose own name has been pointed at 127.0.0.1 sends its own name, which is
+/// the thing this refuses.
+fn host_is_ours(value: &str, port: u16) -> bool {
+    let value = value.trim();
+    let (name, given) = match value.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((name, after)) => (name, after.strip_prefix(':')),
+            None => return false,
+        },
+        None => match value.rsplit_once(':') {
+            Some((name, given)) => (name, Some(given)),
+            None => (value, None),
+        },
+    };
+    let name_ok = name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "::1";
+    let port_ok = given.is_none_or(|g| g.parse::<u16>().is_ok_and(|g| g == port));
+    name_ok && port_ok
+}
+
 /// Handle one accepted connection. `Ok(None)` means "not our callback, keep
 /// listening"; `Ok(Some(_))` is this wait's final answer, success or not.
+/// `port` is the one this listener is bound to.
 async fn handle_one(
     mut stream: TcpStream,
     expected_state: &str,
+    port: u16,
 ) -> Result<Option<Result<String, LoopbackError>>, LoopbackError> {
     let (reader, mut writer) = stream.split();
     let mut reader = BufReader::new(reader);
@@ -263,11 +301,17 @@ async fn handle_one(
     }
     // Drain the rest of the headers so the client is not left mid-write
     // when this closes the connection just after responding.
+    let mut host_ok = true;
     for _ in 0..MAX_HEADER_LINES {
         let mut line = String::new();
         let n = read_capped_line(&mut reader, &mut line).await?;
         if n == 0 || n > MAX_LINE_BYTES || line == "\r\n" || line == "\n" {
             break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.trim().eq_ignore_ascii_case("host")
+        {
+            host_ok = host_is_ours(value, port);
         }
     }
 
@@ -281,21 +325,19 @@ async fn handle_one(
         return Ok(None);
     }
 
+    // Nothing below this point ends the wait unless the request is the
+    // provider's, and the state is how that is told. See the module docs.
     let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
     let state_matches = params.get("state").map(String::as_str) == Some(expected_state);
+    if !host_ok || !state_matches {
+        respond(&mut writer, 400, FAILURE_PAGE).await?;
+        return Ok(None);
+    }
 
     if let Some(error) = params.get("error") {
         respond(&mut writer, 200, FAILURE_PAGE).await?;
-        if !state_matches {
-            return Ok(Some(Err(LoopbackError::StateMismatch)));
-        }
         let description = params.get("error_description").cloned().unwrap_or_else(|| error.clone());
         return Ok(Some(Err(LoopbackError::Provider { code: error.clone(), description })));
-    }
-
-    if !state_matches {
-        respond(&mut writer, 200, FAILURE_PAGE).await?;
-        return Ok(Some(Err(LoopbackError::StateMismatch)));
     }
 
     match params.get("code") {
@@ -422,15 +464,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn refuses_a_mismatched_state() {
+    async fn a_wrong_state_is_refused_and_the_real_callback_still_lands() {
         let lb = Loopback::bind().await.unwrap();
         let redirect = lb.redirect_uri().to_string();
         let (_tx, rx) = watch::channel(false);
 
         let waiting = tokio::spawn(lb.wait("expected", Duration::from_secs(5), rx));
-        get(&redirect, "code=abc&state=wrong").await;
+        // A web page firing at the port, however it does it.
+        for query in [
+            "code=abc&state=wrong",
+            "code=abc",
+            "state=expected-not",
+            "error=access_denied&state=wrong",
+            "",
+        ] {
+            let (status, body) = get(&redirect, query).await;
+            assert_eq!(status, 400, "{query}");
+            assert!(!body.contains("Signed in"), "{query}");
+        }
+        assert!(!waiting.is_finished(), "the sign-in must survive being fired at");
 
-        assert!(matches!(waiting.await.unwrap(), Err(LoopbackError::StateMismatch)));
+        let (status, _) = get(&redirect, "code=the-real-code&state=expected").await;
+        assert_eq!(status, 200);
+        assert_eq!(waiting.await.unwrap().unwrap(), "the-real-code");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_wrong_states_end_in_the_timeout_not_in_a_mismatch() {
+        let lb = Loopback::bind().await.unwrap();
+        let redirect = lb.redirect_uri().to_string();
+        let (_tx, rx) = watch::channel(false);
+        let waiting = tokio::spawn(lb.wait("expected", Duration::from_secs(60), rx));
+        get(&redirect, "code=abc&state=wrong").await;
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(matches!(waiting.await.unwrap(), Err(LoopbackError::TimedOut)));
+    }
+
+    #[tokio::test]
+    async fn a_request_for_another_host_name_is_refused() {
+        let lb = Loopback::bind().await.unwrap();
+        let redirect = lb.redirect_uri().to_string();
+        let port = url::Url::parse(&redirect).unwrap().port().unwrap();
+        let (_tx, rx) = watch::channel(false);
+        let waiting = tokio::spawn(lb.wait("s", Duration::from_secs(5), rx));
+
+        // The right state, from a page that has pointed its own name here.
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let request = format!(
+            "GET /callback?code=stolen&state=s HTTP/1.1\r\nHost: evil.example:{port}\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(!waiting.is_finished());
+
+        let (status, _) = get(&redirect, "code=the-code&state=s").await;
+        assert_eq!(status, 200);
+        assert_eq!(waiting.await.unwrap().unwrap(), "the-code");
+    }
+
+    #[test]
+    fn a_host_header_names_this_listener_or_nothing() {
+        for ok in ["127.0.0.1:5000", " localhost:5000", "LOCALHOST:5000", "[::1]:5000", "127.0.0.1"]
+        {
+            assert!(host_is_ours(ok, 5000), "{ok}");
+        }
+        for refused in ["evil.example:5000", "127.0.0.1:5001", "127.0.0.1.evil.example", "[::1", ""]
+        {
+            assert!(!host_is_ours(refused, 5000), "{refused}");
+        }
     }
 
     #[tokio::test]

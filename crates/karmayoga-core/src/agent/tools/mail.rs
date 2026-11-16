@@ -36,10 +36,16 @@
 //! # Every string from a message is somebody else's writing
 //!
 //! [`read_thread`] and [`search_mail`] put every sender-controlled string --
-//! a `from`, a `subject`, a body -- under a field named `untrusted_text` or
-//! documented as such in the tool's own description, precisely so a model
-//! reading the result sees it labelled the moment it arrives, not three
-//! tools later. This does not stop an injected instruction from being
+//! a `from`, a `subject`, a body -- in a field that is either named
+//! `untrusted_text` (the body, or a search hit's snippet) or called out as
+//! somebody else's writing by the tool's own description (`from` and
+//! `subject`, which keep their plain names so a model can still say whose
+//! mail it is and what it was about), precisely so a model reading the
+//! result sees it labelled the moment it arrives, not three tools later.
+//! All of it, display names and attachment names included, has the invisible
+//! characters of [`crate::hidden`] taken out on the way: a line of Unicode
+//! tag characters in a subject reads as plain ASCII to some models and as
+//! nothing at all to the person looking at the mail. This does not stop an injected instruction from being
 //! *read*; nothing can, short of not reading mail at all. What stops it
 //! being *acted on* is everything else in this file: the permission gate
 //! above, [`Effect::Outward`]'s confirmation, the refusal on an unattended
@@ -667,8 +673,23 @@ fn thread_and_account(ctx: &ToolContext<'_>, id: ThreadId) -> Result<(Thread, Ac
     Ok((thread, account))
 }
 
+/// `Name <address>`, as a sender wrote it -- and so with the invisible
+/// characters of [`crate::hidden`] taken out. A display name is free text
+/// chosen by whoever sends, which is as good a place as a subject to hide a
+/// line of Unicode tag characters in.
 fn display_address(a: &Address) -> String {
-    if a.name.is_empty() { a.email.clone() } else { format!("{} <{}>", a.name, a.email) }
+    let plain = |s: &str| crate::hidden::strip_hidden(s).into_owned();
+    if a.name.is_empty() {
+        plain(&a.email)
+    } else {
+        format!("{} <{}>", plain(&a.name), plain(&a.email))
+    }
+}
+
+/// A sender-controlled string as a model is handed it: its invisible
+/// characters taken out, nothing else changed.
+fn heard(text: &str) -> String {
+    crate::hidden::strip_hidden(text).into_owned()
 }
 
 fn own_addresses(account: &Account) -> HashSet<String> {
@@ -1176,9 +1197,9 @@ fn run_search_mail(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
             "thread_id": hit.thread_key,
             "message_id": message_id.to_string(),
             "from": display_address(&message.from),
-            "subject": message.subject,
+            "subject": heard(&message.subject),
             "date": message.date.to_string(),
-            "untrusted_text": message.snippet,
+            "untrusted_text": heard(&message.snippet),
         }));
     }
     Ok(json!({ "count": results.len(), "results": results }))
@@ -1205,7 +1226,7 @@ fn run_list_threads(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         .map(|t| {
             json!({
                 "id": t.id.to_string(),
-                "subject": t.subject,
+                "subject": heard(&t.subject),
                 "participants": t.participants.iter().map(display_address).collect::<Vec<_>>(),
                 "last_date": t.last_date.to_string(),
                 "unread_count": t.unread_count,
@@ -1227,7 +1248,7 @@ fn run_read_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     let mut rows = Vec::with_capacity(messages.len());
     for message in &messages {
         let body = ctx.vault.body(message.id).ok();
-        let mut text = body.as_ref().map(|b| b.model_text()).unwrap_or_default();
+        let mut text = heard(&body.as_ref().map(|b| b.model_text()).unwrap_or_default());
         if text.chars().count() > PER_MESSAGE_CAP {
             text = text.chars().take(PER_MESSAGE_CAP).collect();
             truncated = true;
@@ -1246,7 +1267,7 @@ fn run_read_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
                     .iter()
                     .map(|p| {
                         json!({
-                            "name": p.filename.clone().unwrap_or_else(|| "attachment".into()),
+                            "name": heard(&p.filename.clone().unwrap_or_else(|| "attachment".into())),
                             "size_bytes": p.size,
                         })
                     })
@@ -1260,14 +1281,14 @@ fn run_read_thread(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
             "unread": message.flags.unread(),
             "from": display_address(&message.from),
             "to": message.to.iter().map(display_address).collect::<Vec<_>>(),
-            "subject": message.subject,
+            "subject": heard(&message.subject),
             "untrusted_text": text,
             "attachments": attachments,
         }));
     }
     Ok(json!({
         "thread_id": thread_id.to_string(),
-        "subject": thread.subject,
+        "subject": heard(&thread.subject),
         "messages": rows,
         "truncated": truncated,
     }))

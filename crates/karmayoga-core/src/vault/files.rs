@@ -1348,29 +1348,44 @@ impl Vault {
         let entry = self.file(id)?;
         match &entry.storage {
             FileStorage::Plain { path } => self.available_folder()?.copy_out(path, dest),
-            FileStorage::Sealed { blob } => self.blob_to_path(*blob, dest),
+            FileStorage::Sealed { blob } => self.blob_to_path(*blob, dest, false),
         }
     }
 
     /// A path another program can open: a plain file's own; a sealed file
-    /// decrypted into the folder's private `open` folder.
+    /// decrypted into a private folder of this vault's that is *not* in the
+    /// files folder ([`disk::OpenCopies`]).
+    ///
+    /// A plain file is already in the folder, readable by whoever the folder
+    /// is shared with, so opening it from there gives nothing away. A sealed
+    /// one is encrypted precisely so that it is not, and the folder may be
+    /// synced by a tool that ignores `.stignore`; its plaintext is put
+    /// in the user's cache directory instead, in a `0700` folder, as a `0600`
+    /// file created fresh.
     pub fn open_file_copy(&self, id: FileId) -> Result<PathBuf> {
         let entry = self.file(id)?;
         let FileStorage::Sealed { blob } = &entry.storage else {
             return self.plain_path(id);
         };
-        let folder = self.usable_folder()?;
         let name = validate_file_name(&entry.name).unwrap_or_else(|_| "file".to_string());
-        let target = folder.open_dir(id)?.join(name);
-        if target.exists() {
-            let len = self.read(|u| u.store.blob_len(*blob))?;
-            if std::fs::metadata(&target).is_ok_and(|m| m.len() == len) {
-                return Ok(target);
-            }
-            std::fs::remove_file(&target).map_err(|e| Error::io(&target, e))?;
-        }
-        self.blob_to_path(*blob, &target)?;
+        // `dir` empties what was there, so the file is always made anew.
+        let target = disk::OpenCopies::for_vault(self.path()).dir(id)?.join(name);
+        self.blob_to_path(*blob, &target, true)?;
         Ok(target)
+    }
+
+    /// Delete decrypted copies of sealed files that have been lying about
+    /// for longer than `older_than`, wherever this build or an older one
+    /// kept them: in the private folder outside the files folder, and in the
+    /// files folder's own `open` folder, which an older build used and which
+    /// is emptied completely, since nothing legitimate is kept there now.
+    /// Answers how many copies went.
+    pub fn sweep_open_copies(&self, older_than: std::time::Duration) -> Result<u32> {
+        let mut swept = disk::OpenCopies::for_vault(self.path()).sweep(older_than)?;
+        if let Ok(Some(folder)) = self.files_folder() {
+            swept += folder.sweep_open(std::time::Duration::ZERO).unwrap_or(0);
+        }
+        Ok(swept)
     }
 
     // ---- albums ----------------------------------------------------------
@@ -2166,9 +2181,25 @@ impl Vault {
 
     /// A sealed file's contents to a new file at `dest`, piece by piece. An
     /// existing file is never overwritten, and a failed copy leaves nothing.
-    fn blob_to_path(&self, blob: BlobId, dest: &Path) -> Result<()> {
+    ///
+    /// `private` makes the file readable by its owner alone, from the moment
+    /// it exists (never made wide and narrowed after): for a copy that is
+    /// only there for another program to open. An export is somebody's own
+    /// file in a place they chose, and gets the mode any file of theirs would.
+    fn blob_to_path(&self, blob: BlobId, dest: &Path, private: bool) -> Result<()> {
         let len = self.read(|u| u.store.blob_len(blob))?;
-        let mut out = match std::fs::OpenOptions::new().write(true).create_new(true).open(dest) {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            if private {
+                options.mode(0o600);
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        let mut out = match options.open(dest) {
             Ok(out) => out,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 return Err(Error::Invalid(format!("{} already exists", dest.display())));

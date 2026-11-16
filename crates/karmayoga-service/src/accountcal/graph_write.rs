@@ -86,7 +86,7 @@ use tokio::time::sleep;
 
 use super::{API, PRIMARY, graph_bearer, graph_zone, parse_graph_datetime};
 use crate::accountcal::google::{LocalStart, draft_for_series, urlencoding_light};
-use crate::accountcal::{calendar_after_retry_after, retry_after_delay};
+use crate::accountcal::{MAX_API_BYTES, calendar_after_retry_after, retry_after_delay};
 use crate::error::{CommandError, CommandResult, codes};
 use crate::http;
 use crate::service::Service;
@@ -814,16 +814,20 @@ async fn send(
                 .body(payload.clone());
         }
         let response = request.send().await.map_err(|e| {
-            CommandError::new(codes::NETWORK, format!("could not reach Microsoft Graph: {e}"))
+            CommandError::new(
+                codes::NETWORK,
+                format!("could not reach Microsoft Graph: {}", http::strip_url(&e.to_string())),
+            )
         })?;
         let status = response.status().as_u16();
         let retry_after = retry_after_delay(response.headers());
-        let answer = response.bytes().await.map_err(|e| {
-            CommandError::new(
-                codes::NETWORK,
-                format!("could not read Microsoft Graph's answer: {e}"),
-            )
-        })?;
+        // Capped: an error body is read in full to be quoted from, and a
+        // server that never stops sending one would otherwise be read into
+        // memory without limit.
+        let answer = http::read_capped(response, MAX_API_BYTES, || {
+            "Microsoft Graph's answer was larger than this app will read".to_string()
+        })
+        .await?;
         if matches!(status, 429 | 503) {
             let policy = calendar_after_retry_after();
             if policy.gives_up_after(attempt) {
