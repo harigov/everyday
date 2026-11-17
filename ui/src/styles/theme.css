@@ -54,13 +54,11 @@
   --leading-tight: 1.25;
   --leading-snug: 1.45;
   --leading-normal: 1.65;
-  /* Long-form prose wants more air between lines than anything else here.
-     The old 1.58 was chosen against the worry that this sans -- large
-     x-height, short extenders -- would read as double-spaced at a serif's
-     ratio. It does not: at the measure this app sets, 1.58 packed the lines
-     tightly enough that the eye lost the return sweep on a long paragraph,
-     which is the one thing line spacing exists to prevent. */
-  --leading-prose: 1.75;
+  /* Journal and note bodies. 1.5 is what note and journal apps settle on
+     (Notion, Obsidian, Bear, Day One): enough for the eye to find the next
+     line of a long paragraph, and a list of short lines still reads as a
+     list. It was 1.75, which made every bulleted list look double-spaced. */
+  --leading-prose: 1.5;
 
   /* 4px base. Everything is a multiple, which is what makes rhythm read as
    * deliberate rather than accidental. */

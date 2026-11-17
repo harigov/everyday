@@ -4,6 +4,8 @@
   // handful of small buttons this component owns, rendered by its caller
   // right after Forward rather than as a block of its own, so the row reads
   // as one set of things to do with the newest message rather than two.
+  // Only under mail waiting on a reply: `needs_reply` (the decision model,
+  // when there is one) is asked before any replies are written.
   //
   // Takes that message as a prop instead of reading `mail.openThread`
   // itself: the caller already has it (it is the `isLast` row's own loop
@@ -40,8 +42,23 @@
     ),
   )
 
+  /** The message by its ids alone: the open thread is read again whenever
+   *  anything about it changes -- its follow-up, once `needs_reply` keeps one
+   *  -- and hands over a fresh copy of the same message. Read through these,
+   *  the asking below starts again only for a different message, and never
+   *  throws away replies still being written to ask for them a second time. */
+  const messageId = $derived(message.id)
+  const threadId = $derived(message.threadId)
+
+  /** Mail sent to many: no "Write with AI…" when it waits on no reply, as
+   *  there never was under a newsletter. */
+  const bulk = $derived(message.category === 'newsletter' || message.category === 'notification')
+
   let suggestions = $state<ReplySuggestion[] | null>(null)
   let loading = $state(false)
+  /** `needs_reply` said this message waits on no reply: only "Write with AI…"
+   *  is offered, for somebody who means to answer anyway. */
+  let unneeded = $state(false)
   /** When the suggestions on show were written. */
   let writtenAt = $state(0)
   /** They have outlived `SUGGESTION_LASTS_MS` with the thread still open. They
@@ -58,15 +75,22 @@
    *  already remounts this component when one shows up. */
   const cache = new Map<string, { suggestions: ReplySuggestion[]; at: number }>()
 
+  /** Whether each message waits on a reply, by message id, as `needs_reply`
+   *  answered: asked once a message, since nothing but a newer message (a new
+   *  id) changes the answer, and "Suggest again" goes straight to writing. */
+  const needed = new Map<string, boolean>()
+
   /** Guards the async answer the same way `MailCompose`'s own
    *  `addressGeneration` does: a slow `suggest_replies` must not land after
    *  `eligible` or the message have already moved on. */
   let generation = 0
 
   $effect(() => {
-    const id = message.id
+    const id = messageId
+    const thread = threadId
     void again
     stale = false
+    unneeded = false
     if (!eligible) {
       suggestions = null
       loading = false
@@ -81,10 +105,26 @@
     }
     const gen = ++generation
     suggestions = null
-    loading = true
-    void mailApi
-      .suggestReplies(message.threadId)
-      .then((r) => {
+    loading = false
+    // Whether it wants a reply at all, asked first and with nothing on show
+    // meanwhile: most mail -- newsletters, statements, pitches -- wants none,
+    // and "Writing replies…" over one that will get none is a promise broken.
+    const known = needed.get(id)
+    const asking =
+      known === undefined
+        ? mailApi.needsReply(thread).then((r) => r.needed)
+        : Promise.resolve(known)
+    void asking
+      .then(async (wanted) => {
+        if (gen !== generation) return
+        needed.set(id, wanted)
+        if (!wanted) {
+          suggestions = []
+          unneeded = true
+          return
+        }
+        loading = true
+        const r = await mailApi.suggestReplies(thread)
         if (gen !== generation) return
         const at = Date.now()
         cache.set(id, { suggestions: r.suggestions, at })
@@ -154,7 +194,7 @@
 
 <svelte:window onfocus={checkFresh} />
 
-{#if eligible && (loading || (suggestions && suggestions.length > 0))}
+{#if eligible && (loading || (suggestions && suggestions.length > 0) || (unneeded && !bulk))}
   <span class="qr-divider" aria-hidden="true"></span>
   {#if loading}
     <span class="qr-label">Writing replies…</span>
@@ -170,7 +210,7 @@
       <Icon name="sparkle" size={11} />
       Write with AI…
     </button>
-  {:else if suggestions}
+  {:else if suggestions && suggestions.length > 0}
     {#each suggestions as s, i (s.label)}
       <button
         class="qr-btn"
@@ -182,6 +222,11 @@
         {s.label}
       </button>
     {/each}
+    <button class="qr-btn qr-quiet" aria-label="Write a reply with AI" onclick={writeWithAi}>
+      <Icon name="sparkle" size={11} />
+      Write with AI…
+    </button>
+  {:else}
     <button class="qr-btn qr-quiet" aria-label="Write a reply with AI" onclick={writeWithAi}>
       <Icon name="sparkle" size={11} />
       Write with AI…

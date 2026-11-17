@@ -14,14 +14,15 @@ use karmayoga_core::calendar::{
     AccountCalendarSource, AccountSyncCursor, Calendar, Event, EventStatus,
 };
 use karmayoga_core::id::{CalendarId, EventId, MailMessageId, PackId, ThreadId};
-use karmayoga_core::llm::{LLMConfig, LLMModelConfig, ModelSettings};
+use karmayoga_core::llm::{DecisionApi, DecisionConfig, LLMConfig, LLMModelConfig, ModelSettings};
 use karmayoga_core::mail::{
     Address, Body, Category, CategorySource, MailWriting, Mailbox, MailboxRole, Message,
-    MessageFlags, VoiceLearning,
+    MessageFlags, SortMark, VoiceLearning,
 };
 use karmayoga_core::packstore::PackRef;
 use karmayoga_core::store::mail::IngestMessage;
 use karmayoga_core::task::{BlockSubject, TimeBlock};
+use karmayoga_service::mailfollowup::REPLY_OPTIONS;
 use karmayoga_service::{Ctx, Service};
 use serde_json::{Value, json};
 
@@ -144,6 +145,89 @@ async fn fake_model(arguments: Value) -> FakeModel {
     FakeModel { endpoint: format!("http://127.0.0.1:{port}/v1"), _shutdown: tx, sent }
 }
 
+// ---- a decision model that always says the same --------------------------
+
+struct FakeDecisions {
+    url: String,
+    asked: Arc<Mutex<usize>>,
+    _shutdown: tokio::sync::watch::Sender<bool>,
+}
+
+impl FakeDecisions {
+    fn asked(&self) -> usize {
+        *self.asked.lock().unwrap()
+    }
+}
+
+/// A TypeSafe-shaped decision server on loopback that answers `pick` to
+/// whatever it is asked, sure of it.
+async fn fake_decisions(pick: &'static str) -> FakeDecisions {
+    let payload = json!({
+        "model": "jev-latest",
+        "answers": { "category": { "type": "choice", "choice": pick, "confidence": 0.95 } },
+        "usage": { "input_tokens": 100, "output_tokens": 10 },
+    });
+    decision_server("200 OK", payload.to_string()).await
+}
+
+/// One that is down: every request is answered 503.
+async fn failing_decisions() -> FakeDecisions {
+    decision_server("503 Service Unavailable", json!({ "error": "down" }).to_string()).await
+}
+
+async fn decision_server(status: &'static str, payload: String) -> FakeDecisions {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, mut rx) = tokio::sync::watch::channel(false);
+    let asked = Arc::new(Mutex::new(0));
+    let asked_for_task = asked.clone();
+    tokio::spawn(async move {
+        loop {
+            let accepted = tokio::select! {
+                r = listener.accept() => r,
+                _ = rx.changed() => break,
+            };
+            let Ok((mut socket, _)) = accepted else { break };
+            let (asked, payload) = (asked_for_task.clone(), payload.clone());
+            tokio::spawn(async move {
+                let mut raw = Vec::new();
+                let mut buf = vec![0u8; 16 * 1024];
+                loop {
+                    let Ok(n) = socket.read(&mut buf).await else { return };
+                    if n == 0 {
+                        return;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    let Some(end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&raw[..end]).to_string();
+                    let len: usize = head
+                        .lines()
+                        .find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            k.eq_ignore_ascii_case("content-length")
+                                .then(|| v.trim().parse().ok())?
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= end + 4 + len {
+                        break;
+                    }
+                }
+                *asked.lock().unwrap() += 1;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.flush().await;
+            });
+        }
+    });
+    FakeDecisions { url: format!("http://127.0.0.1:{port}/v1/systemone"), asked, _shutdown: tx }
+}
+
 fn three_replies() -> Value {
     json!({ "replies": [
         { "label": "Offer Tuesday", "body": "Tuesday at 2 works.\n\nThanks,\nHari" },
@@ -174,6 +258,13 @@ struct Env {
 }
 
 fn env(endpoint: &str) -> Env {
+    env_with(endpoint, None)
+}
+
+/// [`env`], with `decision` as the decision model, keyed, and the account
+/// letting it sort mail -- which is what lets it be asked whether a thread
+/// waits on a reply.
+fn env_with(endpoint: &str, decision: Option<&str>) -> Env {
     let (svc, dir) = support::vault::service(None);
     let clock = Arc::new(support::clock::FakeClock::at(thursday_morning()));
     svc.set_clock(clock.clone());
@@ -196,12 +287,21 @@ fn env(endpoint: &str) -> Env {
             reasoning_effort: None,
         },
     });
+    models.decision = decision.map(|url| DecisionConfig {
+        api: DecisionApi::TypeSafe,
+        url: Some(url.to_string()),
+        model: DecisionApi::TypeSafe.default_model().into(),
+    });
     vault.save_model_settings(&models).unwrap();
+    if decision.is_some() {
+        vault.set_model_key(karmayoga_core::llm::ModelSlot::Decision, "ds-key").unwrap();
+    }
 
     let mut account = Account::new(Provider::Custom, "hari@example.com");
     account.display_name = "Hari G".into();
     account.services.mail = true;
-    account.mail_ai = MailAi { writing: true, ..Default::default() };
+    account.mail_ai =
+        MailAi { writing: true, categorize: decision.is_some(), ..Default::default() };
     account.assistant_provider_acknowledged = Some(models.acknowledgement_name());
     vault.save_account(&account).unwrap();
 
@@ -325,6 +425,150 @@ async fn suggest(e: &Env) -> Value {
         .call(Ctx::local(), "suggest_replies", json!({ "id": e.thread }))
         .await
         .expect("suggest_replies")
+}
+
+async fn needs_reply(e: &Env) -> bool {
+    let answer = e
+        .svc
+        .call(Ctx::local(), "needs_reply", json!({ "id": e.thread }))
+        .await
+        .expect("needs_reply");
+    answer["needed"].as_bool().unwrap()
+}
+
+/// Sorting has seen the thread as it is, as it has once it has filed it.
+fn sorted(e: &Env) {
+    let mark = SortMark { message_count: 1, at: thursday_morning() };
+    e.svc.get().unwrap().set_thread_ai_sorted(e.thread, mark).unwrap();
+}
+
+/// Its newest message sent to a list the person is on, not to them by name.
+fn to_a_list(e: &Env) {
+    let vault = e.svc.get().unwrap();
+    let (_, messages) = vault.thread(e.thread).unwrap();
+    let mut message = messages[0].clone();
+    message.to = vec![Address::bare("everyone@lists.example.com")];
+    let inbox = vault.mail_inbox(e.account.id).unwrap().unwrap();
+    vault
+        .ingest_mail(e.account.id, vec![IngestMessage { message, mailbox: inbox, uid: 1 }])
+        .unwrap();
+}
+
+// ---- whether to write any --------------------------------------------------
+
+#[tokio::test]
+async fn mail_waiting_on_no_reply_is_not_put_to_the_writing_model() {
+    let fake = fake_model(three_replies()).await;
+    let decisions = fake_decisions(REPLY_OPTIONS[2].0).await;
+    let e = env_with(&fake.endpoint, Some(&decisions.url));
+
+    assert!(!needs_reply(&e).await);
+    assert_eq!(suggest(&e).await["suggestions"], json!([]));
+    assert_eq!(fake.asked(), 0, "the writing model is never asked");
+    assert_eq!(decisions.asked(), 1, "and the decision model once, for both");
+}
+
+#[tokio::test]
+async fn mail_waiting_on_you_gets_its_replies_and_shows_as_a_follow_up() {
+    let fake = fake_model(three_replies()).await;
+    let decisions = fake_decisions(REPLY_OPTIONS[0].0).await;
+    let e = env_with(&fake.endpoint, Some(&decisions.url));
+    sorted(&e);
+
+    assert!(needs_reply(&e).await);
+    let suggestions = suggest(&e).await["suggestions"].as_array().unwrap().clone();
+    assert_eq!(suggestions.len(), 3);
+    assert!(fake.asked() > 0);
+    assert_eq!(decisions.asked(), 1, "asked once, kept for the next look");
+
+    let (thread, _) = e.svc.get().unwrap().thread(e.thread).unwrap();
+    let follow_up = thread.follow_up.expect("kept as the thread's follow-up");
+    assert_eq!(follow_up.message, e.message);
+}
+
+#[tokio::test]
+async fn a_thread_sorting_has_not_reached_is_answered_but_not_made_a_follow_up() {
+    let fake = fake_model(three_replies()).await;
+    let decisions = fake_decisions(REPLY_OPTIONS[0].0).await;
+    let e = env_with(&fake.endpoint, Some(&decisions.url));
+
+    assert!(needs_reply(&e).await);
+    assert_eq!(suggest(&e).await["suggestions"].as_array().unwrap().len(), 3);
+    assert_eq!(decisions.asked(), 1, "kept for the session meanwhile");
+    let (thread, _) = e.svc.get().unwrap().thread(e.thread).unwrap();
+    assert_eq!(
+        (thread.follow_up, thread.follow_up_asked),
+        (None, None),
+        "left for the follow-up pass to judge once sorting has filed it"
+    );
+}
+
+#[tokio::test]
+async fn a_decision_model_that_fails_is_left_alone_for_a_while() {
+    let fake = fake_model(three_replies()).await;
+    let decisions = failing_decisions().await;
+    let e = env_with(&fake.endpoint, Some(&decisions.url));
+
+    assert!(needs_reply(&e).await, "replies as before");
+    assert_eq!(suggest(&e).await["suggestions"].as_array().unwrap().len(), 3);
+    assert_eq!(decisions.asked(), 1, "not asked again straight after it failed");
+}
+
+#[tokio::test]
+async fn an_account_that_may_not_use_writing_help_is_not_asked_about() {
+    let fake = fake_model(three_replies()).await;
+    let decisions = fake_decisions(REPLY_OPTIONS[0].0).await;
+    let e = env_with(&fake.endpoint, Some(&decisions.url));
+    let vault = e.svc.get().unwrap();
+    let mut account = vault.account(e.account.id).unwrap();
+    account.assistant_provider_acknowledged = Some("somewhere else".into());
+    vault.save_account(&account).unwrap();
+
+    let refused = e.svc.call(Ctx::local(), "needs_reply", json!({ "id": e.thread })).await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert_eq!(decisions.asked(), 0);
+}
+
+#[tokio::test]
+async fn with_follow_ups_off_the_answer_is_kept_for_the_session_and_not_on_the_thread() {
+    let fake = fake_model(three_replies()).await;
+    let decisions = fake_decisions(REPLY_OPTIONS[0].0).await;
+    let e = env_with(&fake.endpoint, Some(&decisions.url));
+    let vault = e.svc.get().unwrap();
+    let mut sorting = vault.mail_sorting().unwrap();
+    sorting.follow_up.on = false;
+    vault.save_mail_sorting(&sorting).unwrap();
+
+    assert!(needs_reply(&e).await);
+    assert!(needs_reply(&e).await);
+    assert_eq!(suggest(&e).await["suggestions"].as_array().unwrap().len(), 3);
+    assert_eq!(decisions.asked(), 1);
+    let (thread, _) = vault.thread(e.thread).unwrap();
+    assert_eq!((thread.follow_up, thread.follow_up_asked), (None, None));
+}
+
+#[tokio::test]
+async fn mail_not_addressed_to_you_is_not_put_to_either_model() {
+    let fake = fake_model(three_replies()).await;
+    let decisions = fake_decisions(REPLY_OPTIONS[0].0).await;
+    let e = env_with(&fake.endpoint, Some(&decisions.url));
+    to_a_list(&e);
+
+    assert!(!needs_reply(&e).await);
+    assert_eq!(suggest(&e).await["suggestions"], json!([]));
+    assert_eq!((fake.asked(), decisions.asked()), (0, 0));
+}
+
+#[tokio::test]
+async fn without_a_decision_model_replies_are_written_as_before() {
+    let fake = fake_model(three_replies()).await;
+    let e = env(&fake.endpoint);
+    // Which the follow-up rules would pass over: an alias or a list can be
+    // how mail that wants an answer reaches somebody.
+    to_a_list(&e);
+
+    assert!(needs_reply(&e).await);
+    assert_eq!(suggest(&e).await["suggestions"].as_array().unwrap().len(), 3);
 }
 
 // ---- the calendar ----------------------------------------------------------

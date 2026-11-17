@@ -231,7 +231,7 @@ pub fn build(outgoing: &Outgoing) -> Result<Built> {
         .message_id
         .clone()
         .unwrap_or_else(|| generate_message_id(&outgoing.message_id_domain));
-    let html = inline_css(&outgoing.html)?;
+    let html = inline_css(&line_spaced(&outgoing.html))?;
     let text = outgoing.text.clone().unwrap_or_else(|| html_to_text(&html));
 
     let mut builder = MessageBuilder::new()
@@ -299,6 +299,158 @@ pub fn build(outgoing: &Outgoing) -> Result<Built> {
 pub fn inline_css(html: &str) -> Result<String> {
     let options = InlineOptions { load_remote_stylesheets: false, ..InlineOptions::default() };
     css_inline::CSSInliner::new(options).inline(html).map_err(Error::from)
+}
+
+/// A draft's HTML spaced on the wire the way it was on screen.
+///
+/// A draft holds lines ([`Draft::body_html`](karmayoga_core::mail::Draft)):
+/// the compose editor makes a `<p>` of every line, Enter starting the next one
+/// straight under it and a blank line being an empty `<p></p>`, and every
+/// other writer of one keeps to that -- `voice::text_to_html`, and
+/// `compose::paragraphs_as_lines` for what a model or a routine writes in
+/// paragraphs. A mail client draws a `<p>` with a blank line's worth of margin
+/// above and below, so sent as it was, every line arrived double-spaced (in the
+/// plain-text part too), and a blank line, an empty paragraph with no height of
+/// its own, added nothing. So here, in what the person wrote and nowhere else,
+/// each line goes as Gmail and Apple Mail write one: a `<div>`, which no client
+/// spaces, and `<div><br></div>` for a blank line. Lists lose their margin
+/// above and below too, as the editor draws them, and the signature keeps the
+/// gap the editor shows above it.
+///
+/// The quoted parent under a reply or forward (where
+/// `karmayoga_core::mail::compose::quote_start` says it starts, the rule the
+/// compose sheet and the assistant go by too) goes as it came: its own
+/// paragraphs were spaced by whoever wrote them.
+///
+/// Run on the draft as written, before [`inline_css`]: after it, a quoted
+/// message's own `<style>` would have written its rules onto the person's
+/// paragraphs, and onto the quote's start, which then would not be found.
+pub fn line_spaced(html: &str) -> String {
+    use lol_html::{RewriteStrSettings, element, rewrite_str};
+
+    let quote = karmayoga_core::mail::compose::quote_start(html).unwrap_or(html.len());
+    let (own, quoted) = html.split_at(quote);
+    let own = blank_lines_held(own);
+
+    let settings = RewriteStrSettings::new()
+        .append_element_content_handler(element!("p", |el| {
+            // Only fails for a name that is not one.
+            let _ = el.set_tag_name("div");
+            Ok(())
+        }))
+        .append_element_content_handler(element!("ul, ol", |el| {
+            let style = el.get_attribute("style").unwrap_or_default();
+            if !declares(&style, "margin") {
+                let added: Vec<&str> =
+                    [("margin-top", "margin-top:0"), ("margin-bottom", "margin-bottom:0")]
+                        .into_iter()
+                        .filter(|(property, _)| !declares(&style, property))
+                        .map(|(_, declaration)| declaration)
+                        .collect();
+                with_style(el, &style, &added.join(";"));
+            }
+            Ok(())
+        }))
+        .append_element_content_handler(element!("div[data-signature]", |el| {
+            let style = el.get_attribute("style").unwrap_or_default();
+            if !declares(&style, "margin") && !declares(&style, "margin-top") {
+                with_style(el, &style, "margin-top:1em");
+            }
+            Ok(())
+        }));
+    // Nothing the editor writes fails to parse; sent unspaced, it is only the
+    // spacing that is wrong.
+    rewrite_str(&own, settings).unwrap_or(own) + quoted
+}
+
+/// Whether the declarations in a `style` attribute set `property` itself.
+fn declares(style: &str, property: &str) -> bool {
+    style.split(';').any(|declaration| {
+        declaration
+            .split_once(':')
+            .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(property))
+    })
+}
+
+/// `added` in front of `style`, the element's own declarations.
+fn with_style(el: &mut lol_html::html_content::Element<'_, '_>, style: &str, added: &str) {
+    if added.is_empty() {
+        return;
+    }
+    let style =
+        if style.trim().is_empty() { added.to_string() } else { format!("{added};{style}") };
+    // Only fails for a name that is not one, and this is a constant.
+    let _ = el.set_attribute("style", &style);
+}
+
+/// Every empty paragraph, whatever it carries, holding a `<br>`: once it is a
+/// `<div>` it has no height of its own, and a blank line would vanish.
+fn blank_lines_held(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find("<p") {
+        let after = &rest[at + 2..];
+        let Some(gt) = after.find('>') else { break };
+        // `<p>` or `<p …>`, and not `<pre>` or `<param>`.
+        let paragraph = after.starts_with(['>', ' ', '\t', '\n', '\r']);
+        let open_end = at + 2 + gt + 1;
+        out.push_str(&rest[..open_end]);
+        rest = &rest[open_end..];
+        if paragraph && rest.starts_with("</p>") {
+            out.push_str("<br>");
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The way back from [`line_spaced`], for mail written elsewhere that becomes a
+/// draft of this app's -- a draft another device saved, carried on here: its
+/// HTML as the compose editor holds lines.
+///
+/// A `<br>` that ends a line goes: a browser draws nothing for it, and the
+/// editor would draw a line of its own, so every blank line came out twice as
+/// tall. A line that held nothing else -- how Gmail, Apple Mail and this app
+/// send a blank line, `<div><br></div>` -- becomes the editor's own blank line,
+/// an empty `<p></p>`, since an empty `<div>` the editor drops altogether.
+pub fn editor_lines(html: &str) -> String {
+    const LINE_ENDS: [&str; 12] =
+        ["p", "div", "li", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "td", "th"];
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(at) = rest.find("<br") {
+        let after = &rest[at + 3..];
+        let Some(gt) = after.find('>') else { break };
+        let tag_end = at + 3 + gt + 1;
+        let tail = rest[tag_end..].trim_start();
+        let closes = tail.strip_prefix("</").map(|t| {
+            t.split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or("").to_ascii_lowercase()
+        });
+        let is_br = after.starts_with(['>', '/', ' ', '\t', '\n', '\r']);
+        let Some(name) = closes.filter(|name| is_br && LINE_ENDS.contains(&name.as_str())) else {
+            out.push_str(&rest[..tag_end]);
+            rest = &rest[tag_end..];
+            continue;
+        };
+        out.push_str(&rest[..at]);
+        rest = tail;
+        if name == "p" || name == "div" {
+            let kept = out.trim_end();
+            let opened = kept.rfind('<').filter(|&lt| {
+                let tag = &kept[lt..];
+                tag.ends_with('>')
+                    && tag[1..].starts_with(name.as_str())
+                    && tag[1 + name.len()..].starts_with(['>', ' ', '\t', '\n', '\r'])
+            });
+            if let (Some(lt), Some(close_end)) = (opened, rest.find('>')) {
+                out.truncate(lt);
+                out.push_str("<p></p>");
+                rest = &rest[close_end + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// `In-Reply-To` and `References` for a reply to `parent`, per RFC 5322
@@ -976,13 +1128,13 @@ mod tests {
     #[test]
     fn css_inline_moves_style_rules_onto_the_elements_they_target() {
         let mut outgoing = simple_outgoing();
-        outgoing.html =
-            "<html><head><style>p { color: red; }</style></head><body><p>Hi</p></body></html>"
-                .to_string();
+        outgoing.html = "<html><head><style>.note { color: red; }</style></head>\
+                         <body><p class=\"note\">Hi</p></body></html>"
+            .to_string();
         let built = build(&outgoing).unwrap();
         let parsed = mime::parse(&built.raw).unwrap();
         let html = parsed.html.unwrap();
-        assert!(html.contains("style=\"color: red;\"") || html.contains("style=\"color:red;\""));
+        assert!(html.contains("color: red;") || html.contains("color:red;"), "{html}");
     }
 
     #[test]
@@ -994,6 +1146,107 @@ mod tests {
         let inlined = inline_css(html)
             .expect("inlining does not fail just because a stylesheet was not fetched");
         assert!(inlined.contains("<p>Hi</p>"));
+    }
+
+    #[test]
+    fn line_spaced_sends_each_line_under_the_last_and_a_blank_line_a_line_tall() {
+        assert_eq!(
+            line_spaced(
+                "<p>Hi Sam,</p><p></p><p>Two things:</p>\
+                 <ul><li><p>the venue</p></li><li><p>the date</p></li></ul>\
+                 <ol start=\"3\"><li><p>third</p></li></ol><p>Best,</p><p>Hari</p>"
+            ),
+            "<div>Hi Sam,</div><div><br></div><div>Two things:</div>\
+             <ul style=\"margin-top:0;margin-bottom:0\"><li><div>the venue</div></li>\
+             <li><div>the date</div></li></ul>\
+             <ol start=\"3\" style=\"margin-top:0;margin-bottom:0\"><li><div>third</div></li></ol>\
+             <div>Best,</div><div>Hari</div>"
+        );
+    }
+
+    #[test]
+    fn line_spaced_keeps_what_a_line_says_of_itself_and_the_gap_above_the_signature() {
+        assert_eq!(
+            line_spaced(
+                "<p style=\"margin:1em 0\">Spaced</p><ul style=\"color:red\"><li><p>Red</p></li></ul>\
+                 <ul style=\"margin-left:20px\"><li>In</li></ul><p style=\"text-align:center\"></p>\
+                 <pre>code</pre><div data-signature=\"\"><p>Hari</p></div>"
+            ),
+            "<div style=\"margin:1em 0\">Spaced</div>\
+             <ul style=\"margin-top:0;margin-bottom:0;color:red\"><li><div>Red</div></li></ul>\
+             <ul style=\"margin-top:0;margin-bottom:0;margin-left:20px\"><li>In</li></ul>\
+             <div style=\"text-align:center\"><br></div>\
+             <pre>code</pre><div data-signature=\"\" style=\"margin-top:1em\"><div>Hari</div></div>"
+        );
+    }
+
+    #[test]
+    fn line_spaced_leaves_the_quoted_parent_as_it_came() {
+        let parent = mime::parse(
+            b"From: Sam <sam@example.com>\r\nDate: Mon, 1 Jan 2024 09:30:00 +0000\r\n\
+              Subject: Hi\r\n\r\nHi\r\n",
+        )
+        .unwrap();
+        let quote = quote_html(&parent, "<p>Their words.</p><p></p><p>Sam</p>");
+        let html = format!("<p>Sounds good.</p><p></p>{quote}");
+        assert_eq!(line_spaced(&html), format!("<div>Sounds good.</div><div><br></div>{quote}"));
+    }
+
+    #[test]
+    fn a_quoted_messages_own_style_neither_respaces_the_reply_nor_hides_the_quote() {
+        let parent = mime::parse(
+            b"From: Sam <sam@example.com>\r\nDate: Mon, 1 Jan 2024 09:30:00 +0000\r\n\
+              Subject: Hi\r\n\r\nHi\r\n",
+        )
+        .unwrap();
+        let quote = quote_html(
+            &parent,
+            "<style>* { font-family: Georgia; } p { margin: 0; }</style>\
+             <p>Theirs.</p><p>Sam</p>",
+        );
+        let mut outgoing = simple_outgoing();
+        outgoing.html = format!("<p>Hi Sam,</p><p></p><p>Sounds good.</p>{quote}");
+        let built = build(&outgoing).unwrap();
+        let html = mime::parse(&built.raw).unwrap().html.unwrap();
+        assert!(
+            html.contains("Hi Sam,</div><div style=\"font-family: Georgia;\"><br "),
+            "the blank line is still a line: {html}"
+        );
+        assert!(html.contains(">Sounds good.</div>"), "{html}");
+        assert!(
+            html.contains("<p style=") && html.contains(">Theirs.</p>"),
+            "the quote's own: {html}"
+        );
+    }
+
+    #[test]
+    fn mail_written_elsewhere_comes_into_the_editor_as_its_lines() {
+        assert_eq!(
+            editor_lines(
+                "<div dir=\"ltr\">Hi,</div><div><br></div><div>Thanks<br></div><p>a<br><br></p>\
+                 <p>b<br>c</p><div>x<br clear=\"all\"></div><ul><li>one<br></li></ul>"
+            ),
+            "<div dir=\"ltr\">Hi,</div><p></p><div>Thanks</div><p>a<br></p>\
+             <p>b<br>c</p><div>x</div><ul><li>one</li></ul>"
+        );
+        assert_eq!(editor_lines("<p>One</p>"), "<p>One</p>");
+        let sent = line_spaced("<p>Hi,</p><p></p><p>Bye</p>");
+        assert_eq!(editor_lines(&sent), "<div>Hi,</div><p></p><div>Bye</div>", "and back");
+    }
+
+    #[test]
+    fn a_line_spaced_message_reads_the_same_as_plain_text() {
+        let mut outgoing = simple_outgoing();
+        outgoing.html = "<p>Hi Bob,</p><p></p><p>Saturday works.</p><p>See you then.</p>\
+                         <p></p><p>Alice</p>"
+            .to_string();
+        let built = build(&outgoing).unwrap();
+        let parsed = mime::parse(&built.raw).unwrap();
+        assert!(parsed.html.unwrap().contains("<div>Saturday works.</div>"));
+        assert_eq!(
+            parsed.text.unwrap().replace("\r\n", "\n").trim_end(),
+            "Hi Bob,\n\nSaturday works.\nSee you then.\n\nAlice"
+        );
     }
 
     #[test]

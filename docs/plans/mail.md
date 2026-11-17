@@ -862,7 +862,9 @@ Two changes this phase's tool file cannot make itself, because they live in
   and a model pass over `Important` threads behind the `categorize`
   switch, which never overrides a `Person` answer.
 - **Writing help** is a fourth switch, `mail_ai.writing`: `suggest_replies`
-  (three replies under an open thread, cached per message count),
+  (three replies under an open thread, cached per message count, and only
+  for a thread waiting on the person's reply -- see `mail-sorting.md`,
+  "Before replies are suggested"),
   `draft_with_ai` and `improve_writing`. They run in
   `karmayoga-service/src/mailwrite.rs`, beside `mailai.rs`, behind the same
   gate and the same provider sentence.

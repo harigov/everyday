@@ -16,6 +16,7 @@ const {
   suggestionsFresh,
   SUGGESTION_LASTS_MS,
   htmlToPlainText,
+  withoutEndingBreaks,
   escapeHtml,
   sendLaterChoices,
 } = mailwrite
@@ -254,8 +255,20 @@ const withTrailingParagraph =
 assert.equal(htmlToPlainText(''), '')
 assert.equal(
   htmlToPlainText('<p>Hello</p><p>World</p>'),
-  'Hello\n\nWorld',
-  'paragraphs blank-line apart',
+  'Hello\nWorld',
+  "the editor's paragraphs are lines",
+)
+assert.equal(
+  htmlToPlainText('<p>Hi Sam,</p><p></p><p>Thanks.</p><p></p><p></p><p>Hari</p>'),
+  'Hi Sam,\n\nThanks.\n\nHari',
+  'an empty paragraph is a blank line, and two of them still one',
+)
+assert.equal(
+  htmlToPlainText(
+    '<p>Two things:</p><ul><li><p>the venue</p></li><li><p>the date</p></li></ul><p>Thanks</p>',
+  ),
+  'Two things:\nthe venue\nthe date\nThanks',
+  'a list item is one line',
 )
 assert.equal(
   htmlToPlainText('<p>Line1<br>Line2</p>'),
@@ -268,6 +281,17 @@ assert.equal(
   'entities decode',
 )
 assert.equal(htmlToPlainText('<p>Tight&nbsp;spaces</p>'), 'Tight spaces')
+
+// ── withoutEndingBreaks ──────────────────────────────────────────────────
+
+assert.equal(
+  withoutEndingBreaks(
+    '<div>Hi,</div><div><br></div><div>Thanks<br></div><p>a<br><br></p><p>b<br>c</p>',
+  ),
+  '<div>Hi,</div><p></p><div>Thanks</div><p>a<br></p><p>b<br>c</p>',
+  'only the <br> that ends its line, which a browser does not draw, and a blank line the editor keeps',
+)
+assert.equal(withoutEndingBreaks('<p>One</p>'), '<p>One</p>')
 
 // ── escapeHtml ───────────────────────────────────────────────────────────
 

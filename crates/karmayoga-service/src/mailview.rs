@@ -135,7 +135,7 @@ body {
     'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont, system-ui,
     'Noto Sans', sans-serif;
   font-size: 15px;
-  line-height: 1.6;
+  line-height: 1.45;
   color: #1c1a17;
   background: #f7f6f3;
   overflow-wrap: break-word;

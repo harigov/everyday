@@ -230,7 +230,7 @@ function mockDocument(inner: string): string {
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob: https: http:; style-src 'unsafe-inline'">` +
     `<base target="_blank">` +
-    `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.6}` +
+    `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.45}` +
     `pre{white-space:pre-wrap;overflow-wrap:break-word;font-family:inherit;margin:0}` +
     `img,video{max-width:100%;height:auto}</style>` +
     `</head><body>${inner}</body></html>`
@@ -241,16 +241,19 @@ function mockDocument(inner: string): string {
  * A reply as it was written, for the thread to show while its sent copy is
  * still on the way: the person's own HTML from the compose sheet, in the same
  * sandboxed frame as a message. Pictures pasted into it are this app's own
- * blob addresses; nothing else loads.
+ * blob addresses; nothing else loads. Spaced as it goes out
+ * (`compose::line_spaced` in `karmayoga-mail`): a paragraph is a line, and an
+ * empty one a blank line.
  */
 export function draftDocument(inner: string): string {
   return (
     `<!DOCTYPE html><html><head><meta charset="utf-8">` +
     `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src karmayoga: http://karmayoga.localhost data: blob:; style-src 'unsafe-inline'">` +
     `<base target="_blank">` +
-    `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.6}` +
+    `<style>body{margin:0;padding:16px;font-family:sans-serif;font-size:15px;line-height:1.45}` +
+    `p,ul,ol{margin:0}[data-signature]{margin-top:1em}` +
     `img{max-width:100%;height:auto}</style>` +
-    `</head><body>${inner}</body></html>`
+    `</head><body>${inner.replace(/<p><\/p>/g, '<p><br></p>')}</body></html>`
   )
 }
 
@@ -303,7 +306,7 @@ export function quoteDocument(quotedHtml: string, dark: boolean, frame?: Frame):
       `<style>:root{color-scheme:${paper ? 'light' : 'dark'}}` +
       `html{background:transparent}body{margin:0;${card}color:${fg};` +
       `font-family:'Source Sans 3 Variable','Source Sans Pro','Segoe UI',system-ui,sans-serif;` +
-      `font-size:14px;line-height:1.55;overflow-wrap:break-word}` +
+      `font-size:14px;line-height:1.45;overflow-wrap:break-word}` +
       `body>p:first-child{margin:0 0 6px;color:${muted}}` +
       `blockquote[type=cite],body>blockquote{margin:0;padding-left:12px;border-left:2px solid ${rule}}` +
       `a{color:inherit}img{max-width:100%;height:auto}table{max-width:100%}` +

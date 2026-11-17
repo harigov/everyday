@@ -216,9 +216,10 @@ pub(super) static TOOLS: &[Tool] = &[
                 (
                     "body_html",
                     text(
-                        "Your reply, as HTML paragraphs (<p>...</p>). The account's signature \
-                         and the quoted original message are added underneath automatically \
-                         \u{2014} do not write either yourself."
+                        "Your reply, as HTML paragraphs (<p>...</p>), a line break inside a \
+                         paragraph as <br>. The account's signature and the quoted original \
+                         message are added underneath automatically \u{2014} do not write either \
+                         yourself."
                     )
                 ),
                 (
@@ -247,8 +248,9 @@ pub(super) static TOOLS: &[Tool] = &[
                 (
                     "body_html",
                     text(
-                        "The message, as HTML paragraphs (<p>...</p>). The account's signature \
-                         is added underneath automatically \u{2014} do not write it yourself."
+                        "The message, as HTML paragraphs (<p>...</p>), a line break inside a \
+                         paragraph as <br>. The account's signature is added underneath \
+                         automatically \u{2014} do not write it yourself."
                     )
                 ),
             ],
@@ -269,7 +271,13 @@ pub(super) static TOOLS: &[Tool] = &[
                 ("cc", list("Replaces cc entirely. Omit to leave it alone.")),
                 ("bcc", list("Replaces bcc entirely. Omit to leave it alone.")),
                 ("subject", text("Replaces the subject. Omit to leave it alone.")),
-                ("body_html", text("Replaces the body. Omit to leave it alone.")),
+                (
+                    "body_html",
+                    text(
+                        "Replaces the body, as HTML paragraphs (<p>...</p>), a line break inside \
+                         a paragraph as <br>. Omit to leave it alone."
+                    )
+                ),
             ],
             &["draft_id"]
         ),
@@ -1369,7 +1377,10 @@ fn run_draft_reply(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     require_permission(ctx, &account, Permission::Draft, "draft_reply")?;
 
     let quoted_html = ctx.vault.body(message_id).map(|b| b.html_sanitised).unwrap_or_default();
-    let signed = compose::with_signature(body_html, account.signature_for(&account.address));
+    let signed = compose::with_signature(
+        &compose::paragraphs_as_lines(body_html),
+        account.signature_for(&account.address),
+    );
     let html = compose::quote_reply(&signed, &parent.from, parent.date, &quoted_html);
 
     let origin = origin_of(ctx);
@@ -1405,8 +1416,10 @@ fn run_draft_message(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
     draft.cc = cc;
     draft.bcc = bcc;
     draft.subject = args.str("subject")?.to_string();
-    draft.body_html =
-        compose::with_signature(args.str("body_html")?, account.signature_for(&account.address));
+    draft.body_html = compose::with_signature(
+        &compose::paragraphs_as_lines(args.str("body_html")?),
+        account.signature_for(&account.address),
+    );
 
     enqueue_gate(ctx, &origin)?;
     ctx.vault.save_draft_and_append(&draft, true, origin)?;
@@ -1446,7 +1459,8 @@ fn run_update_draft(ctx: &ToolContext<'_>, args: &Args<'_>) -> Result<Value> {
         draft.subject = subject.to_string();
     }
     if let Some(body_html) = args.opt_str("body_html") {
-        draft.body_html = compose::carry_signature(&draft.body_html, body_html);
+        draft.body_html =
+            compose::carry_signature(&draft.body_html, &compose::paragraphs_as_lines(body_html));
     }
     draft.touch();
     // Marked only for a non-person caller -- see

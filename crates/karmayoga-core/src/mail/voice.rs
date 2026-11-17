@@ -722,11 +722,14 @@ fn collapse_blank_lines(text: &str) -> String {
 }
 
 /// Plain text to the HTML a draft body holds: every character escaped, a
-/// blank line starting a new `<p>`, a single newline a `<br>` -- except two or
-/// more lines in a row starting `- `, `* ` or `• `, which are a `<ul>`, and
-/// starting `1. `, `2. `..., an `<ol>` that starts where they do: a list a
-/// model writes is a list, not a column of hyphens. One such line alone --
-/// "- Hari" under "Thanks!", a footnote's "* " -- stays as written.
+/// single newline a `<br>`, and a blank line an empty `<p></p>` between two
+/// `<p>`s, the blank line the compose editor holds there (a `<p>` is a line
+/// to it, not a spaced paragraph: see `compose::line_spaced` in
+/// `karmayoga-mail`) -- except two or more lines in a row starting `- `,
+/// `* ` or `• `, which are a `<ul>`, and starting `1. `, `2. `..., an `<ol>`
+/// that starts where they do: a list a model writes is a list, not a column
+/// of hyphens. One such line alone -- "- Hari" under "Thanks!", a footnote's
+/// "* " -- stays as written.
 pub fn text_to_html(text: &str) -> String {
     if text.trim().is_empty() {
         return String::new();
@@ -748,7 +751,10 @@ pub fn text_to_html(text: &str) -> String {
     }
 
     let mut out = String::new();
-    for block in blocks {
+    for (b, block) in blocks.into_iter().enumerate() {
+        if b > 0 {
+            out.push_str("<p></p>");
+        }
         let items: Vec<Option<ListItem>> = block.iter().map(|l| list_item(l)).collect();
         let kind = |i: usize| items.get(i).and_then(|item| item.as_ref()).map(|item| item.ordered);
         // A run of lines of one kind: plain lines one `<p>`, list items one
@@ -1598,7 +1604,7 @@ mod tests {
     fn text_to_html_turns_blank_lines_into_paragraphs_and_newlines_into_br() {
         assert_eq!(
             text_to_html("Line one\nLine two\n\nSecond para"),
-            "<p>Line one<br>Line two</p><p>Second para</p>"
+            "<p>Line one<br>Line two</p><p></p><p>Second para</p>"
         );
     }
 

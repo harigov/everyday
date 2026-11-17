@@ -2034,6 +2034,12 @@ export interface ReplySuggestions {
   suggestions: ReplySuggestion[]
 }
 
+/** What `needs_reply` answers: whether the thread's newest message waits on
+ *  the person's reply, so replies are worth writing for it. */
+export interface NeedsReply {
+  needed: boolean
+}
+
 /** What `draft_with_ai` and `improve_writing` answer. */
 export interface WrittenText {
   bodyText: string

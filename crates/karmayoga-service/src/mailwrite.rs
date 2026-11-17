@@ -13,7 +13,9 @@
 //! run unattended, on a schedule, over every eligible account; these three
 //! run because a person is looking at a thread or a compose window right
 //! now, which is why [`suggest_replies`] alone also costs nothing on a
-//! thread that plainly has no business asking a model at all.
+//! thread that plainly has no business asking a model at all, and asks the
+//! decision model whether a thread waits on a reply before it asks the
+//! writing model for any ([`needs_reply`]).
 //!
 //! The voice includes what [`crate::mailvoicelearn`] has learned from the
 //! replies the person sent, and [`suggest_replies`] keeps what it offered so
@@ -466,24 +468,58 @@ fn trim_label(label: &str) -> String {
     label.trim().trim_end_matches(['.', '!', '?', ':', ';', ',']).trim().to_string()
 }
 
+/// A thread, its messages oldest first, and its account.
+async fn thread_and_account(
+    vault: &Arc<Vault>,
+    thread_id: ThreadId,
+) -> CommandResult<(Thread, Vec<Message>, Account)> {
+    let vault = vault.clone();
+    blocking(move || {
+        let (thread, messages) = vault.thread(thread_id)?;
+        let account = vault.account(thread.account_id)?;
+        Ok((thread, messages, account))
+    })
+    .await
+}
+
+/// Whether [`suggest_replies`] would write replies for `thread_id`, which
+/// waits on the person's reply: what the interface asks first, so that it
+/// shows replies being written only where some will be. [`reply_eligible`],
+/// the same refusal as [`suggest_replies`] for an account whose writing help
+/// may not be used -- before anything of its mail goes to a decision model on
+/// writing help's behalf -- then the decision model's answer
+/// (`crate::mailfollowup::waits_on_reply`), and yes when there is no decision
+/// model to say otherwise.
+pub async fn needs_reply(service: &Arc<Service>, thread_id: ThreadId) -> CommandResult<bool> {
+    let vault = service.require()?;
+    let (thread, messages, account) = thread_and_account(&vault, thread_id).await?;
+    if reply_eligible(&account, &thread, &messages).is_none() {
+        return Ok(false);
+    }
+    let models =
+        vault.model_settings().map_err(|e| CommandError::new(codes::INVALID, e.to_string()))?;
+    mail_ai_allowed(&account, &models.acknowledgement_name(), MailAiFeature::Writing)
+        .map_err(|r| refused(&account, MailAiFeature::Writing, r))?;
+    let waits =
+        crate::mailfollowup::waits_on_reply(service, &vault, &account, &thread, &messages).await;
+    Ok(waits != Some(false))
+}
+
 /// Up to three replies to `thread_id`'s newest message, in the person's
 /// voice. Empty -- without asking a model, and without spending the rate
 /// limiter -- when the newest message is the person's own or the thread is
-/// a newsletter or notification; see [`reply_eligible`].
+/// a newsletter or notification ([`reply_eligible`]), and when the decision
+/// model says it is waiting on no reply from them
+/// (`crate::mailfollowup::waits_on_reply`): what kind of mail it is, who it
+/// was addressed to and how long it has waited are put to it before the
+/// writing model is asked for anything. With no decision model to ask, the
+/// rules alone decide.
 pub async fn suggest_replies(
     service: &Arc<Service>,
     thread_id: ThreadId,
 ) -> CommandResult<Vec<ReplySuggestion>> {
     let vault = service.require()?;
-    let (thread, messages) = {
-        let vault = vault.clone();
-        blocking(move || Ok(vault.thread(thread_id)?)).await?
-    };
-    let account = {
-        let vault = vault.clone();
-        let account_id = thread.account_id;
-        blocking(move || Ok(vault.account(account_id)?)).await?
-    };
+    let (thread, messages, account) = thread_and_account(&vault, thread_id).await?;
 
     let Some(newest) = reply_eligible(&account, &thread, &messages) else {
         return Ok(Vec::new());
@@ -502,6 +538,14 @@ pub async fn suggest_replies(
     // known.
     if let Some(cached) = service.mail_replies_cached(thread_id, thread.message_count) {
         return Ok(cached);
+    }
+
+    // Before the rate limiter and the writing model: a quick, cheap question,
+    // and most mail that is not cached here is mail nobody needs to answer.
+    let waits =
+        crate::mailfollowup::waits_on_reply(service, &vault, &account, &thread, &messages).await;
+    if waits == Some(false) {
+        return Ok(Vec::new());
     }
 
     let origin = Origin::Assistant { conversation: format!("mail-write:{thread_id}") };

@@ -49,6 +49,7 @@
     withOwnWords,
     withSignatureSwapped,
     withoutEmptySignature,
+    withoutEndingBreaks,
   } from '../lib/mailwrite'
   import { mailwrite } from '../lib/mailwrite.svelte'
   import { quoteDocument } from '../lib/mailview'
@@ -649,6 +650,7 @@
       content: initialBody.own,
       editorProps: {
         attributes: { class: 'ed-content', spellcheck: 'true' },
+        transformPastedHTML: withoutEndingBreaks,
         // A picture pasted or dropped goes where it was put; any other file
         // is attached. Text is left to the editor (and `MarkdownClipboard`).
         // Words come first: a spreadsheet or a document copies a picture of
@@ -1919,11 +1921,14 @@
   .pane-compose .body.fill > .prose {
     min-height: max(72px, 100%);
   }
+  /* Spaced like a message in any mail client, the same as `mailview.rs`
+     draws one once it is sent: each line under the last, a blank line for a
+     new paragraph. */
   .prose :global(.ed-content) {
     flex: 1;
     outline: none;
     font-size: var(--text-base);
-    line-height: var(--leading-normal);
+    line-height: var(--leading-snug);
   }
   /* The message being answered, quoted under the reply: set apart the way
      mail clients draw a quote, so it never reads as the person's own words. */

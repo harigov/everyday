@@ -11,6 +11,7 @@ import { VaultError } from './types'
 import type {
   ImproveMode,
   MailMessageDetail,
+  NeedsReply,
   ReplySuggestion,
   ReplySuggestions,
   ThreadId,
@@ -47,12 +48,37 @@ function paragraphs(lines: string[]): string {
   return lines.map((l) => `<p>${l}</p>`).join('')
 }
 
+/** `needs_reply`: the backend's free rules (`mailfollowup::waits_on_reply`),
+ *  then what the follow-up pass decided, then a stand-in for the decision
+ *  model -- a question in the newest message -- after about as long as a
+ *  provider takes to answer one. */
+export async function mockNeedsReply(id: ThreadId): Promise<NeedsReply> {
+  const { thread, messages } = mockGetThread(id)
+  const newest = messages.at(-1)
+  if (!newest || isOwnAddress(newest.from.email)) return { needed: false }
+  const filed = newest.category ?? thread.category
+  const addressed = [...newest.to, ...newest.cc].some((a) => isOwnAddress(a.email))
+  if (
+    filed === 'newsletter' ||
+    filed === 'notification' ||
+    /no-?reply|notifications?@|alerts?@/i.test(newest.from.email) ||
+    !addressed
+  ) {
+    return { needed: false }
+  }
+  if (thread.followUp?.message === newest.id) return { needed: thread.followUp.kind === 'reply' }
+  await delay(300)
+  return { needed: /\?/.test(`${newest.snippet} ${thread.subject}`) }
+}
+
 export async function mockSuggestReplies(id: ThreadId): Promise<ReplySuggestions> {
   // Long enough to see the shimmering placeholders this is answering for.
+  // As the real command: nothing for a thread waiting on no reply.
+  if (!(await mockNeedsReply(id)).needed) return { suggestions: [] }
   await delay(700)
   const { messages } = mockGetThread(id)
   const newest = messages.at(-1)
-  if (!newest || isOwnAddress(newest.from.email)) return { suggestions: [] }
+  if (!newest) return { suggestions: [] }
   const name = firstName(newest)
   const suggestions: ReplySuggestion[] = [
     {

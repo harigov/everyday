@@ -151,11 +151,139 @@ pub fn carry_signature(old_body: &str, new_body: &str) -> String {
     format!("{}{block}{}", &new_body[..at], &new_body[at..])
 }
 
+/// HTML written in paragraphs -- a model's, a routine's -- as the lines a
+/// draft holds: an empty `<p></p>` between two paragraphs, lists or headings
+/// that touch. The compose editor takes a `<p>` for a line and shows a blank
+/// line only where there is an empty one, and the mail goes out spaced the
+/// same way (`karmayoga_mail::compose::line_spaced`), so without this the
+/// paragraphs run together on screen and in the sent message alike.
+///
+/// The contract is the writer's: a `<p>` is a paragraph, and a line break
+/// inside one a `<br>` (the assistant's mail tools say so). A blank line it
+/// wrote anyway stays one, since nothing is put beside an empty paragraph; the
+/// quote and the signature under the words are left where they are.
+pub fn paragraphs_as_lines(body_html: &str) -> String {
+    let end = quote_start(body_html).unwrap_or(body_html.len());
+    let (words, rest) = body_html.split_at(end);
+    let blocks = top_level(words);
+    let mut out = String::with_capacity(body_html.len() + 7 * blocks.len());
+    let mut copied = 0;
+    for pair in blocks.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        if a.kind == BlockKind::Spaced
+            && b.kind == BlockKind::Spaced
+            && words[a.end..b.start].trim().is_empty()
+        {
+            out.push_str(&words[copied..b.start]);
+            out.push_str("<p></p>");
+            copied = b.start;
+        }
+    }
+    out.push_str(&words[copied..]);
+    out.push_str(rest);
+    out
+}
+
+/// One element at the top level of an HTML fragment, by byte range.
+struct Block {
+    start: usize,
+    end: usize,
+    kind: BlockKind,
+}
+
+#[derive(PartialEq)]
+enum BlockKind {
+    /// A paragraph with words in it, a list, a heading, a quote, a table or
+    /// preformatted text: what a blank line goes between.
+    Spaced,
+    /// A paragraph with nothing in it: a blank line.
+    Blank,
+    /// Anything else, a signature's `<div>` or a lone `<br>` among them.
+    Other,
+}
+
+/// The elements at the top level of `html`, in order. A small tag scanner
+/// rather than a parser, for the plain HTML a model writes: a `>` inside an
+/// attribute's value, or a comment holding a tag, can end an element early,
+/// which costs a blank line in the wrong place and nothing worse.
+fn top_level(html: &str) -> Vec<Block> {
+    const SPACED: [&str; 12] =
+        ["p", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "table"];
+    const VOID: [&str; 13] = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source",
+        "track", "wbr",
+    ];
+    let kind = |name: &str, element: &str| {
+        if !SPACED.contains(&name) {
+            return BlockKind::Other;
+        }
+        if name == "p" && !element.contains("<img") {
+            let text: String = element
+                .split('<')
+                .enumerate()
+                .map(|(i, part)| match i {
+                    0 => part,
+                    _ => part.split_once('>').map_or("", |(_, text)| text),
+                })
+                .collect();
+            if text.replace("&nbsp;", " ").trim().is_empty() {
+                return BlockKind::Blank;
+            }
+        }
+        BlockKind::Spaced
+    };
+
+    let mut blocks = Vec::new();
+    let mut depth = 0usize;
+    let mut open: Option<(usize, String)> = None;
+    let mut at = 0;
+    while let Some(lt) = html[at..].find('<') {
+        let start = at + lt;
+        let Some(gt) = html[start..].find('>') else { break };
+        let end = start + gt + 1;
+        at = end;
+        let tag = &html[start + 1..end - 1];
+        let closing = tag.starts_with('/');
+        let name = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if name.is_empty() {
+            continue;
+        }
+        if closing {
+            if depth == 0 {
+                continue;
+            }
+            depth -= 1;
+            if depth == 0
+                && let Some((start, name)) = open.take()
+            {
+                blocks.push(Block { start, end, kind: kind(&name, &html[start..end]) });
+            }
+        } else if VOID.contains(&name.as_str()) || tag.ends_with('/') {
+            if depth == 0 {
+                blocks.push(Block { start, end, kind: BlockKind::Other });
+            }
+        } else {
+            if depth == 0 {
+                open = Some((start, name));
+            }
+            depth += 1;
+        }
+    }
+    blocks
+}
+
 /// Where the quoted parent starts in a draft body: an "On ... wrote:" paragraph
 /// with a `<blockquote>` straight after it, the shape [`quote_reply`] writes and
 /// `splitQuoted` looks for. A blockquote alone is not it, since somebody can
-/// quote a line back in their own words.
-fn quote_start(body: &str) -> Option<usize> {
+/// quote a line back in their own words. The one place a draft's own words are
+/// told from its quote on this side: `karmayoga_mail::compose::line_spaced`
+/// asks it too.
+pub fn quote_start(body: &str) -> Option<usize> {
     const END: &str = "wrote:</p>";
     let mut from = 0;
     while let Some(found) = body[from..].find(END) {
@@ -213,6 +341,47 @@ fn escape_html(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paragraphs_as_lines_puts_a_blank_line_between_a_models_paragraphs() {
+        assert_eq!(
+            paragraphs_as_lines(
+                "<p>Hi Sam,</p>\n<p>Two things:</p><ul><li><p>the venue</p><ul><li>inside</li></ul></li></ul>\
+                 <p>Thanks, <b>truly</b>.</p>"
+            ),
+            "<p>Hi Sam,</p>\n<p></p><p>Two things:</p><p></p><ul><li><p>the venue</p><ul><li>inside</li></ul></li></ul>\
+             <p></p><p>Thanks, <b>truly</b>.</p>"
+        );
+    }
+
+    #[test]
+    fn paragraphs_as_lines_leaves_blank_lines_the_quote_and_the_signature_alone() {
+        assert_eq!(
+            paragraphs_as_lines("<p>Hi Sam,</p><p></p><p>Saturday works.<br>See you.</p>"),
+            "<p>Hi Sam,</p><p></p><p>Saturday works.<br>See you.</p>",
+            "a blank line written already is not doubled",
+        );
+        assert_eq!(
+            paragraphs_as_lines("<p>A</p><p>B</p><p></p>"),
+            "<p>A</p><p></p><p>B</p><p></p>",
+            "an empty paragraph at the end is no reason to leave the rest together",
+        );
+        assert_eq!(paragraphs_as_lines("<p>One line.</p>"), "<p>One line.</p>");
+        assert_eq!(paragraphs_as_lines(""), "");
+
+        let from = Address::new("Sam", "sam@example.com");
+        let quoted = quote_reply(
+            &with_signature("<p>Sounds good.</p><p>Thanks!</p>", "<p>Hari</p>"),
+            &from,
+            Timestamp::UNIX_EPOCH,
+            "<p>Their</p><p>words</p>",
+        );
+        assert_eq!(
+            paragraphs_as_lines(&quoted),
+            quoted.replacen("<p>Thanks!", "<p></p><p>Thanks!", 1),
+            "{quoted}"
+        );
+    }
 
     #[test]
     fn reply_subject_adds_the_prefix_once() {

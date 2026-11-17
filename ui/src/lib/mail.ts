@@ -844,11 +844,11 @@ export function estimateBodyHeight(bodyHtml: string, widthPx: number): number {
     segmentLines.reduce((a, b) => a + b, 0),
   )
   const blocks = (body.match(/<(p|blockquote|div|li)[ >]/gi) ?? []).length
-  // 15px / 1.6 line-height and 16px body padding, both sides -- `BASE_STYLE`
+  // 15px / 1.45 line-height and 16px body padding, both sides -- `BASE_STYLE`
   // in `mailview.rs` and `mockDocument` in `mailview.ts` agree on the body
   // style, so this agrees with both. `blockGapPx` stands in for the
   // `<p>`/`<blockquote>` margins neither style sheet resets.
-  const lineHeightPx = 24
+  const lineHeightPx = 22
   const blockGapPx = 18
   // One spare line, because the guess errs short on the commonest reply of
   // all: a quoted message, whose `<blockquote>` is indented 40px a side and
