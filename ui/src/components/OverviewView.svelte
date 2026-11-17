@@ -391,7 +391,7 @@
 
   .body {
     flex: 1;
-    padding: var(--sp-4) var(--sp-4) var(--fab-clear);
+    padding: var(--sp-5) var(--sp-5) var(--fab-clear);
   }
 
   /* Six columns, so a two-, three- or six-wide card always tiles. The
@@ -401,7 +401,7 @@
   .grid {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: var(--sp-3);
+    gap: var(--sp-4);
   }
 
   /* Stretched, which is the grid's default, so every slot in a row is the

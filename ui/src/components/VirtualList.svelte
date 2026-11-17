@@ -16,6 +16,15 @@
   // -- unchanged, rather than asking every caller to move those onto a second
   // scrolling `<div>` this component would otherwise have introduced.
   //
+  // `virtua` puts a passive `wheel` listener on that parent, to tell a
+  // coasting trackpad scroll from one that has stopped before it applies
+  // the size corrections it has been holding back. In WebKitGTK any wheel
+  // listener makes the box under it scroll on the main thread (see
+  // `lib/wheel.ts`), so a virtualised list scrolls only as fast as this page
+  // comes free -- which it has to anyway, to draw the rows coming into view.
+  // Taking the listener away was tried and undone: without it a fling could
+  // be declared over halfway, and corrected with a jump.
+  //
   // Rows are keyed by id -- `getKey`, defaulting to `(item) => item.id` -- so
   // a row keeps its place, its measured height and its scroll position when
   // the array behind it is replaced wholesale, which is how every store here

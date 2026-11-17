@@ -37,6 +37,7 @@
   import { sidebar } from './lib/sidebar.svelte'
   import { tray } from './lib/tray.svelte'
   import { badge } from './lib/badge.svelte'
+  import { hearWheelWhen } from './lib/wheel'
   import AppBar from './components/AppBar.svelte'
   import Sidebar from './components/Sidebar.svelte'
   import EntryList from './components/EntryList.svelte'
@@ -244,20 +245,31 @@
   function onBeforeUnload() {
     void app.flushAll()
   }
+
+  // A wheel is somebody being there too (see the window's listeners below),
+  // but heard only once the screen timer is half gone: a wheel listener on
+  // the window, even a passive one, makes the webview wait for this script
+  // before it scrolls anything. See `lib/wheel.ts`.
+  $effect(() =>
+    hearWheelWhen(
+      () => app.wheelWanted(),
+      () => app.touch(),
+    ),
+  )
 </script>
 
 <!-- The three that mean somebody is there. `touch` defers the screen lock and,
      on the machine holding the vault, the timer that forgets its key -- so
      every app has to be able to say so, not just the two with an editor in
-     them. A press and a wheel cover the apps nobody types prose into: dragging
-     a block, working the board, reading down a long entry. -->
+     them. A press and a wheel cover the apps nobody types prose into:
+     dragging a block, working the board, reading down a long entry. The
+     wheel's is in the script above, since it cannot be on all the time. -->
 <svelte:window
   onkeydown={onKeydown}
   onpointerdown={(e: PointerEvent) => {
     app.touch()
     shortcuts.pointerDown(e.target)
   }}
-  onwheel={() => app.touch()}
   onbeforeunload={onBeforeUnload}
 />
 

@@ -36,6 +36,22 @@ for (const [value, want] of [
   ok(`alphaOf(${value}) is ${want}`, want === null ? got === null : Math.abs(got - want) < 0.001)
 }
 
+// The shadow reach reader, likewise.
+for (const [value, want] of [
+  ['0 0 #0000', 0],
+  ['0 24px 60px -24px rgb(0 0 0 / 0.6)', 60],
+  ['0 20px 40px -48px rgb(0 0 0 / 0.75)', 8],
+  ['0 0 0 1px rgb(20 55 110 / 0.06), 0 1px 2px rgb(20 55 110 / 0.06)', 3],
+  ['inset 0 1px 0 rgb(255 255 255 / 0.2), -6px 2px 4px #000', 12],
+  ['3px 0 rgb(0 0 0)', 3],
+  ['0 1rem 3rem -1rem #000', 52],
+  ['0 2px 4px color-mix(in oklab, rgb(0 0 0) 40%, transparent), 0 0 0 1px #000', 6],
+  ['0 1vw 2vw #000', NaN],
+  ['0 var(--y) 4px #000', NaN],
+]) {
+  check(`sidewaysReach(${value})`, String(sidewaysReach(value)), String(want))
+}
+
 const styles = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'styles')
 const strip = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '')
 const themesCss = strip(readFileSync(join(styles, 'themes.css'), 'utf8'))
@@ -83,6 +99,50 @@ function alphaOf(value) {
   return a.endsWith('%') ? n / 100 : n
 }
 
+/** `value` split at each `sep` (a comma, or any whitespace) outside parentheses. */
+function splitTop(value, sep) {
+  const out = []
+  let depth = 0
+  let part = ''
+  for (const ch of value) {
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    if (depth === 0 && (sep === ',' ? ch === ',' : /\s/.test(ch))) {
+      if (part.trim()) out.push(part.trim())
+      part = ''
+    } else part += ch
+  }
+  if (part.trim()) out.push(part.trim())
+  return out
+}
+
+/**
+ * How far past its box's left or right edge a `box-shadow` list paints, in
+ * pixels, as WebKit counts it for deciding what overlaps what: the offset,
+ * plus the spread, plus 1.4 times the blur (`ShadowData::paintingExtent` --
+ * a Gaussian at half the radius is invisible in 8 bits by then). Inset
+ * shadows paint inside the box and reach nowhere. Lengths in px, rem or em
+ * (at 16px) or a bare 0; anything this cannot read -- another unit, a
+ * `var()` -- is `NaN`, which the check that uses it fails rather than lets
+ * through.
+ */
+function sidewaysReach(value) {
+  let reach = 0
+  for (const shadow of splitTop(value, ',')) {
+    const tokens = splitTop(shadow, ' ')
+    if (tokens.includes('inset')) continue
+    const lengths = []
+    for (const token of tokens) {
+      const length = /^(-?\d*\.?\d+)(px|rem|em)?$/.exec(token)
+      if (length) lengths.push(parseFloat(length[1]) * (length[2] && length[2] !== 'px' ? 16 : 1))
+      else if (/^var\(/.test(token) || /^-?\d/.test(token)) return NaN
+    }
+    const [x = 0, , blur = 0, spread = 0] = lengths
+    reach = Math.max(reach, Math.abs(x) + spread + Math.ceil(blur * 1.4))
+  }
+  return reach
+}
+
 const sorted = (xs) => [...xs].sort()
 const tokensOf = (decls) => sorted([...decls.keys()].filter((k) => k.startsWith('--')))
 
@@ -126,6 +186,16 @@ for (const theme of THEMES) {
     float !== null,
   )
   ok(`${theme.id}: --float is at least 0.97 opaque`, float !== null && float >= 0.97)
+  // A panel's shadow reaching into the panel beside it makes WebKit give
+  // everything under that strip a compositing layer of its own, remade on
+  // every frame of a scroll (see the foot of the glass notes in themes.css).
+  // A shadow it cannot read is NaN, which fails both comparisons.
+  const gap = parseFloat(decls.get('--shell-gap') ?? '0') || 0
+  const reach = sidewaysReach(decls.get('--shell-shadow') ?? '')
+  ok(
+    `${theme.id}: --shell-shadow reaches ${reach}px sideways, inside the ${gap}px gap`,
+    reach === 0 || reach < gap,
+  )
 }
 
 // theme.css: layout on :root, the derived tokens on [data-theme], and no

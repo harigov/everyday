@@ -15,6 +15,7 @@ const {
   defaultKarma,
   habitPoints,
   karmaLevel,
+  karmaSummary,
   scoreDay,
   signed,
 } = karma
@@ -100,6 +101,38 @@ check('a little earned is the first step', karmaLevel(5), 1)
 check('a well-lived day is the top step', karmaLevel(100), 4)
 check('a loss steps the other way', karmaLevel(-60), -3)
 check('signed numbers use a real minus', [signed(5), signed(-20), signed(0)], ['+5', '−20', '0'])
+
+const net = (date, n) => ({ date, earned: Math.max(n, 0), lost: Math.min(n, 0), net: n, deeds: [] })
+const days = [
+  net('2026-11-01', 40),
+  net('2026-11-10', -20),
+  net('2026-11-12', 15),
+  net('2026-11-13', 10),
+  net('2026-11-14', 0),
+  net('2026-11-15', 25),
+  net('2026-11-16', 5),
+]
+// 2026-11-16 is a Monday.
+check(
+  'the week runs from a Monday start through today',
+  karmaSummary(days, '2026-11-16', 1).week,
+  5,
+)
+check('a Sunday start takes in yesterday too', karmaSummary(days, '2026-11-16', 0).week, 30)
+check('a Saturday start takes in the whole weekend', karmaSummary(days, '2026-11-16', 6).week, 30)
+check('the best day is the best net', karmaSummary(days, '2026-11-16', 1).best, 40)
+check('a day of nothing ends a streak', karmaSummary(days, '2026-11-16', 1).streak, 2)
+check(
+  'a streak is not broken while today has nothing yet',
+  karmaSummary(days.slice(0, -1), '2026-11-16', 1).streak,
+  1,
+)
+check(
+  'no good day yet has no best day',
+  karmaSummary([net('2026-11-16', -5)], '2026-11-16', 1).best,
+  null,
+)
+check('nothing at all', karmaSummary([], '2026-11-16', 1), { week: 0, best: null, streak: 0 })
 
 await close()
 finish('karma')

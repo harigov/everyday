@@ -27,7 +27,7 @@
   import { calendar } from '../lib/calendar.svelte'
   import { api } from '../lib/api'
   import { KARMA_DAYS, overview } from '../lib/overview.svelte'
-  import { signed } from '../lib/karma'
+  import { karmaSummary, signed } from '../lib/karma'
   import { ask, quick } from '../lib/quick.svelte'
   import { purpose } from '../lib/purpose.svelte'
   import { proposals, recordAs } from '../lib/proposals.svelte'
@@ -51,7 +51,8 @@
   } from '../lib/insights'
   import { byRole, type RoleTotals } from '../lib/balance'
   import { describeStreak, streakTarget } from '../lib/habits'
-  import { addDays, localeWeekStart, startOfDay, startOfWeek, todayIso } from '../lib/time'
+  import { addDays, localeWeekStart, startOfDay, startOfWeek } from '../lib/time'
+  import { currentDay } from '../lib/today.svelte'
   import { formatValue } from '../lib/tracker'
   import {
     aqiTier,
@@ -87,7 +88,9 @@
 
   const { widget }: { widget: Widget } = $props()
 
-  const today = todayIso()
+  // Followed across midnight: an Overview left open overnight counts the
+  // week and the streak up to the day it is, not the day it was opened.
+  const today = $derived(currentDay())
   const weekStart = localeWeekStart()
 
   /**
@@ -792,27 +795,59 @@
     <p class="dim">Karma has not been worked out yet.</p>
   {:else}
     {@const k = overview.karma}
-    <div class="karma-head">
-      <StatTile
-        value="{signed(k.total)} Karma"
-        note="{signed(k.today)} today · counting since {friendlyDate(k.since)}"
-        warn={k.total < 0}
-      />
+    {@const sum = karmaSummary(k.days, today, weekStart)}
+    <!-- The total and its few companions in a column of their own, beside
+         the squares on a wide card and above them on a narrow one. It was a
+         heading over a fixed-size grid, which on a full-width card left two
+         thirds of it empty and the numbers crowded into a corner. -->
+    <div class="karma">
+      <div class="karma-grid">
+        <div class="karma-sum">
+          <p class="karma-total" class:neg={k.total < 0}>
+            <span class="karma-num">{signed(k.total)}</span>
+            <span class="karma-unit">Karma</span>
+          </p>
+          <p class="karma-since">
+            Counting since {k.since === today ? 'today' : friendlyDate(k.since)}
+          </p>
+          <dl class="karma-stats">
+            <div>
+              <dt>Today</dt>
+              <dd>{signed(k.today)}</dd>
+            </div>
+            <div>
+              <dt>This week</dt>
+              <dd>{signed(sum.week)}</dd>
+            </div>
+            <div>
+              <dt>Best day</dt>
+              <dd>{sum.best === null ? '—' : signed(sum.best)}</dd>
+            </div>
+            <div>
+              <dt>Streak</dt>
+              <dd>{plural(sum.streak, 'day')}</dd>
+            </div>
+          </dl>
+        </div>
+        <div class="karma-map">
+          <KarmaHeatmap
+            days={k.days}
+            from={addDays(today, widget.size === 'large' ? -KARMA_DAYS : -139)}
+            to={today}
+            since={k.since}
+            {weekStart}
+          />
+          {#if k.days.length === 0 || k.since === today}
+            <p class="footnote">
+              Karma started {k.since === today ? 'today' : friendlyDate(k.since)}, at zero. Tasks
+              finished, habits kept, a journal entry and time on your goals earn it; a habit you are
+              breaking, like a drink, costs it. Set what each habit is worth in its tracker's
+              settings.
+            </p>
+          {/if}
+        </div>
+      </div>
     </div>
-    <KarmaHeatmap
-      days={k.days}
-      from={addDays(today, widget.size === 'large' ? -KARMA_DAYS : -139)}
-      to={today}
-      since={k.since}
-      {weekStart}
-    />
-    {#if k.days.length === 0 || k.since === today}
-      <p class="footnote">
-        Karma started {k.since === today ? 'today' : friendlyDate(k.since)}, at zero. Tasks
-        finished, habits kept, a journal entry and time on your goals earn it; a habit you are
-        breaking, like a drink, costs it. Set what each habit is worth in its tracker's settings.
-      </p>
-    {/if}
   {/if}
 
   <!-- ── What's going on ───────────────────────────────────────────── -->
@@ -1544,8 +1579,84 @@
 {/if}
 
 <style>
-  .karma-head {
-    margin-bottom: var(--sp-3);
+  /* ── Karma ──────────────────────────────────────────────────────── */
+
+  /* Laid out by the card's own width, not the window's: the same card is
+     a third of the page or all of it. */
+  .karma {
+    container-type: inline-size;
+  }
+  .karma-grid {
+    display: grid;
+    gap: var(--sp-5);
+  }
+  @container (min-width: 760px) {
+    .karma-grid {
+      grid-template-columns: 15rem minmax(0, 1fr);
+      gap: var(--sp-8);
+      align-items: start;
+    }
+  }
+
+  .karma-total {
+    display: flex;
+    align-items: baseline;
+    gap: var(--sp-2);
+    margin: 0;
+  }
+  .karma-num {
+    color: var(--fg);
+    font-size: 40px;
+    font-weight: 650;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .karma-total.neg .karma-num {
+    color: var(--danger);
+  }
+  .karma-unit {
+    color: var(--fg-muted);
+    font-size: var(--text-md);
+    font-weight: 550;
+  }
+  .karma-since {
+    margin: var(--sp-2) 0 0;
+    color: var(--fg-subtle);
+    font-size: var(--text-sm);
+  }
+
+  /* Four small wells: in a square beside the squares, in a row above them. */
+  .karma-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+    gap: var(--sp-2);
+    margin: var(--sp-4) 0 0;
+  }
+  @container (min-width: 760px) {
+    .karma-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  .karma-stats div {
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--radius);
+    background: var(--bg-sunken);
+  }
+  .karma-stats dt {
+    color: var(--fg-subtle);
+    font-size: var(--text-xs);
+  }
+  .karma-stats dd {
+    margin: 2px 0 0;
+    color: var(--fg);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .karma-map {
+    min-width: 0;
   }
 
   /* What's going on: a label per kind of thing, and its names beside it. */

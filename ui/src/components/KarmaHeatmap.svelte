@@ -18,6 +18,7 @@
   // Colour never carries a day alone: hovering or focusing a square writes
   // the day out underneath -- what was earned, what was lost, and why.
 
+  import { weekdayShort } from '../lib/format'
   import { DEED_LABELS, karmaLevel, signed } from '../lib/karma'
   import { addDays, todayIso } from '../lib/time'
   import type { KarmaDay } from '../lib/types'
@@ -65,6 +66,19 @@
     })
   })
 
+  /** Every other row named, GitHub's way, from the days the first column holds. */
+  const rowNames = $derived(
+    (columns[0] ?? []).map((iso, i) => (i % 2 === 1 ? weekdayShort(iso) : '')),
+  )
+
+  // Opened on the newest weeks: a card too narrow for the whole year scrolls
+  // sideways, and what was done this week is what is looked for.
+  let scroller: HTMLDivElement | undefined = $state()
+  $effect(() => {
+    void columns.length
+    if (scroller) scroller.scrollLeft = scroller.scrollWidth
+  })
+
   let picked = $state<string | null>(null)
   const shown = $derived(picked ?? todayIso())
 
@@ -94,53 +108,65 @@
 </script>
 
 <div class="wrap">
-  <div class="map" role="group" aria-label="Karma a day">
-    {#each columns as week, i (week[0])}
-      <div class="week">
-        <span class="month" aria-hidden="true">{months[i]}</span>
-        {#each week as iso (iso)}
-          {@const inRange = iso >= from && iso <= to}
-          {@const counted = inRange && iso >= since && iso <= todayIso()}
-          <button
-            class="cell"
-            class:out={!counted}
-            class:today={iso === todayIso()}
-            data-level={counted ? karmaLevel(byDate.get(iso)?.net ?? 0) : 0}
-            title={inRange ? title(iso) : ''}
-            aria-label={inRange ? title(iso) : undefined}
-            tabindex={inRange ? 0 : -1}
-            disabled={!inRange}
-            onpointerenter={() => (picked = iso)}
-            onfocus={() => (picked = iso)}
-            onpointerleave={() => (picked = null)}
-            onblur={() => (picked = null)}
-          ></button>
-        {/each}
+  <div class="scroller" bind:this={scroller}>
+    <!-- Labelled here, on a box of its own: the rows and weeks inside are
+         laid straight into this grid (`display: contents`), and WebKit has
+         dropped elements drawn that way from what a screen reader is told. -->
+    <div class="grid" role="group" aria-label="Karma a day" style="--weeks: {columns.length}">
+      <!-- The corner over the names, then a name for every other row. -->
+      <div class="rows">
+        <span aria-hidden="true"></span>
+        {#each rowNames as name, i (i)}<span aria-hidden="true">{name}</span>{/each}
       </div>
-    {/each}
+      {#each columns as week, i (week[0])}
+        <div class="week">
+          <span class="month" aria-hidden="true">{months[i]}</span>
+          {#each week as iso (iso)}
+            {@const inRange = iso >= from && iso <= to}
+            {@const counted = inRange && iso >= since && iso <= todayIso()}
+            <button
+              class="cell"
+              class:out={!counted}
+              class:today={iso === todayIso()}
+              data-level={counted ? karmaLevel(byDate.get(iso)?.net ?? 0) : 0}
+              title={inRange ? title(iso) : ''}
+              aria-label={inRange ? title(iso) : undefined}
+              tabindex={inRange ? 0 : -1}
+              disabled={!inRange}
+              onpointerenter={() => (picked = iso)}
+              onfocus={() => (picked = iso)}
+              onpointerleave={() => (picked = null)}
+              onblur={() => (picked = null)}
+            ></button>
+          {/each}
+        </div>
+      {/each}
+    </div>
   </div>
 
-  <div class="key" aria-hidden="true">
-    <span>Lost</span>
-    {#each [-4, -3, -2, -1, 0, 1, 2, 3, 4] as level (level)}
-      <span class="cell swatch" data-level={level}></span>
-    {/each}
-    <span>Earned</span>
-  </div>
+  <div class="foot">
+    <div class="detail" aria-live="polite">
+      <p class="head">{detail.head}</p>
+      {#if detail.deeds.length > 0}
+        <ul>
+          {#each detail.deeds as deed, i (i)}
+            <li>
+              <span class="pts" class:neg={deed.points < 0}>{signed(deed.points)}</span>
+              <span class="what">{deed.label || DEED_LABELS[deed.kind]}</span>
+              <span class="kind">{DEED_LABELS[deed.kind]}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
 
-  <div class="detail" aria-live="polite">
-    <p class="head">{detail.head}</p>
-    {#if detail.deeds.length > 0}
-      <ul>
-        {#each detail.deeds as deed, i (i)}
-          <li>
-            <span class="pts" class:neg={deed.points < 0}>{signed(deed.points)}</span>
-            <span class="what">{deed.label || DEED_LABELS[deed.kind]}</span>
-            <span class="kind">{DEED_LABELS[deed.kind]}</span>
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <div class="key" aria-hidden="true">
+      <span>Lost</span>
+      {#each [-4, -3, -2, -1, 0, 1, 2, 3, 4] as level (level)}
+        <span class="cell swatch" data-level={level}></span>
+      {/each}
+      <span>Earned</span>
+    </div>
   </div>
 </div>
 
@@ -150,41 +176,57 @@
     --bad: #e8590c;
     display: flex;
     flex-direction: column;
-    gap: var(--sp-2);
+    gap: var(--sp-3);
     min-width: 0;
   }
 
-  .map {
-    display: flex;
-    gap: 2px;
+  /* One grid for the names of the days, the months and the squares, so the
+     names line up with their rows at whatever size the squares come out.
+     The squares fill the card's width up to a size that still reads as a
+     grid of days rather than a chequerboard, and shrink together when the
+     card is narrow: they were a fixed 11px, which on a full-width card drew
+     the year in its first third and left the rest of it empty. Never below
+     10px -- small enough to fit a year in a third of a wide window, large
+     enough to point at, and no shorter than the names beside the rows -- and
+     past that the year scrolls sideways, as it always did. */
+  .scroller {
     overflow-x: auto;
     padding-bottom: 2px;
   }
-
+  .grid {
+    display: grid;
+    grid-auto-flow: column;
+    grid-template-rows: 16px repeat(7, auto);
+    grid-template-columns: max-content repeat(var(--weeks), minmax(10px, 24px));
+    gap: 3px;
+  }
+  .rows,
   .week {
-    display: flex;
-    flex: none;
-    flex-direction: column;
-    gap: 2px;
+    display: contents;
+  }
+  .rows span {
+    align-self: center;
+    padding-right: var(--sp-1);
+    color: var(--fg-faint);
+    font-size: 10px;
+    line-height: 1;
   }
 
   .month {
-    height: 14px;
     overflow: visible;
     color: var(--fg-faint);
     font-size: 10px;
-    line-height: 14px;
+    line-height: 16px;
     white-space: nowrap;
-    width: 11px;
   }
 
   .cell {
     display: block;
-    width: 11px;
-    height: 11px;
+    width: 100%;
+    aspect-ratio: 1;
     padding: 0;
     border: 0;
-    border-radius: 2px;
+    border-radius: 3px;
     background: var(--bg-sunken);
   }
   button.cell:focus-visible {
@@ -226,10 +268,21 @@
     opacity: 0.3;
   }
 
+  /* Under the squares: the day being looked at on the left, the key on the
+     right, side by side while the card is wide enough for both. */
+  .foot {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-3) var(--sp-6);
+  }
+
   .key {
     display: flex;
+    flex: none;
     align-items: center;
-    gap: 2px;
+    gap: 3px;
     color: var(--fg-faint);
     font-size: var(--text-xs);
   }
@@ -239,14 +292,20 @@
   .key span:last-child {
     margin-left: var(--sp-1);
   }
+  .swatch {
+    width: 12px;
+  }
 
   .detail {
+    flex: 1;
+    min-width: min(100%, 18rem);
     min-height: 2.6em;
   }
   .head {
     margin: 0;
-    color: var(--fg-muted);
+    color: var(--fg);
     font-size: var(--text-sm);
+    font-weight: 550;
   }
   /* Held to a reading width, so on a full-width card a deed's kind stays
      beside its name rather than at the far edge of the window. */

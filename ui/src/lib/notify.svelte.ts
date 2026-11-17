@@ -38,6 +38,7 @@
 
 import { api, hasShell, onShellNotification } from './api'
 import { channelFor, push, toToast, type NotifySpec, type Toast } from './notify-policy'
+import { hearWheelWhen } from './wheel'
 
 export type { NotifyLevel, NotifyReach, NotifySpec, Toast } from './notify-policy'
 
@@ -295,9 +296,16 @@ let lastInput = Date.now()
 // Guarded on the method rather than on `window`: the store tests stand in a
 // bare object for it.
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-  for (const type of ['keydown', 'pointerdown', 'pointermove', 'wheel'] as const) {
+  for (const type of ['keydown', 'pointerdown', 'pointermove'] as const) {
     window.addEventListener(type, () => (lastInput = Date.now()), { capture: true, passive: true })
   }
+  // The wheel only once a minute has gone by with nothing else: listening
+  // for it at all makes the webview wait for this page's script before it
+  // scrolls anything. See `lib/wheel.ts`.
+  hearWheelWhen(
+    () => Date.now() - lastInput >= AWAY_AFTER_MS / 2,
+    () => (lastInput = Date.now()),
+  )
 }
 
 /**
