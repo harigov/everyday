@@ -5694,6 +5694,23 @@
     {
       "args": [
         {
+          "name": "id",
+          "required": true,
+          "type": "ThreadId"
+        }
+      ],
+      "changes": null,
+      "effect": "read",
+      "name": "needs_reply",
+      "orScope": null,
+      "returns": "NeedsReply",
+      "scope": "mail",
+      "sensitive": false,
+      "streams": false
+    },
+    {
+      "args": [
+        {
           "name": "subject",
           "required": true,
           "type": "BlockSubject"

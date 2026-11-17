@@ -150,6 +150,26 @@ export function suggestionsFresh(writtenAt: number, now: number = Date.now()): b
   return now - writtenAt < SUGGESTION_LASTS_MS
 }
 
+/**
+ * HTML pasted into the compose editor, ready to go into it: the `<br>` that
+ * ends a line dropped. A browser draws nothing for a `<br>` at the end of its
+ * block, which is how Gmail and Apple Mail write a blank line
+ * (`<div><br></div>`); the editor draws it as a line of its own, so every
+ * blank line of mail pasted in came out twice as tall. A line holding nothing
+ * else becomes an empty paragraph, the editor's own blank line: an empty
+ * `<div>` it would drop.
+ *
+ * Only for what comes from outside, never for a draft's own HTML: the editor
+ * writes a hard break at the end of a line as that same `<br>`, and reads it
+ * back as the line it is. A draft carried on from another device is made the
+ * editor's lines once, as it becomes a draft of this app's (`compose::editor_lines`).
+ */
+export function withoutEndingBreaks(html: string): string {
+  return html
+    .replace(/<(p|div)\b[^>]*>\s*<br\s*\/?>\s*<\/\1>/gi, '<p></p>')
+    .replace(/<br\s*\/?>(\s*<\/(?:p|div|li|h[1-6]|blockquote|td|th)>)/gi, '$1')
+}
+
 /** The body as it should go out: a signature block with everything deleted
  *  from it is an empty block, and a blank line nobody put there. */
 export function withoutEmptySignature(own: string): string {
@@ -167,23 +187,29 @@ export function withoutEmptySignature(own: string): string {
  * under plain Node, with no DOM to parse into, and the own part of a
  * compose draft is never more than a few short paragraphs -- exactly what a
  * handful of substitutions are good enough for. Block closings become a
- * newline before their tags are stripped, so "one paragraph, then another"
- * survives as two lines rather than running together.
+ * newline before their tags are stripped: to the editor a paragraph is a
+ * line, and a blank line an empty paragraph, so lines stay lines and a blank
+ * line stays one. Read as paragraphs, every line came back from a rewrite
+ * as a paragraph of its own (`voice::text_to_html`), a blank line apart.
  */
 export function htmlToPlainText(html: string): string {
   if (!html) return ''
-  return html
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, '\n\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&amp;/gi, '&')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
+  return (
+    html
+      .replace(/<br\s*\/?>/gi, '\n')
+      // A list item's own paragraph ends where the item does.
+      .replace(/<\/p>\s*(?=<\/li>)/gi, '')
+      .replace(/<\/(p|div|li|h[1-6]|blockquote|tr)>/gi, '\n')
+      .replace(/<[^>]*>/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&amp;/gi, '&')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  )
 }
 
 /** The other direction -- plain text (a selection read through

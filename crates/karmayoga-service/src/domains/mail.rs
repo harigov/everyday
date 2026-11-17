@@ -788,12 +788,14 @@ async fn edit_thread_draft(
             karmayoga_core::mail::voice::text_to_html(&body.text)
         } else {
             // A picture pasted into the words stays in them, as the editor's
-            // own -- see `compose::adopt_pictures`.
-            compose::adopt_pictures(
+            // own -- see `compose::adopt_pictures`. Written elsewhere, it is
+            // made the editor's lines once, here, so that the editor never
+            // has to guess whose HTML it was given -- see `compose::editor_lines`.
+            compose::editor_lines(&compose::adopt_pictures(
                 &body.html_sanitised,
                 &body.message_id.to_string(),
                 &pasted_pictures,
-            )
+            ))
         };
         // A pasted picture this could not put back goes (it is attached now);
         // a remote one points where it came from again.

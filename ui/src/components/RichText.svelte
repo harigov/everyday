@@ -423,12 +423,17 @@
     -webkit-user-modify: read-write-plaintext-only;
   }
   /* The gap between blocks, in ems of the prose size, so it tracks the
-     line height rather than being a fixed number of pixels that stops
-     looking like a paragraph break when the ratio changes. A shade over one
-     line: enough that a new paragraph is seen before it is read, and not so
-     much that a page of short ones reads as a list. */
+     line height rather than being a fixed number of pixels. A third of a
+     line, as note apps space their blocks: a new paragraph is still seen
+     before it is read, and a run of short ones does not look double-spaced. */
   .prose :global(.ed-content > * + *) {
-    margin-top: 1.15em;
+    margin-top: 0.5em;
+  }
+  /* A heading starts a section, so it stands further from what is above it
+     than from what it heads. Through the same selector as the gap above, or
+     that one, more specific than a bare `h2`, wins. */
+  .prose :global(.ed-content > * + :is(h1, h2, h3)) {
+    margin-top: 1.2em;
   }
 
   .prose :global(h1),
@@ -437,7 +442,6 @@
     font-weight: 650;
     line-height: var(--leading-tight);
     letter-spacing: -0.012em;
-    margin-top: 1.7em;
   }
   .prose :global(h1) {
     font-size: 1.5em;
@@ -502,8 +506,10 @@
   .prose :global(ol) {
     padding-left: 1.3em;
   }
+  /* Items sit a line apart, as in any notes app; the sliver between them is
+     only so that two wrapped items do not read as one. */
   .prose :global(li + li) {
-    margin-top: 0.35em;
+    margin-top: 0.15em;
   }
   .prose :global(li p) {
     margin: 0;
@@ -519,7 +525,7 @@
     align-items: flex-start;
   }
   .prose :global(ul[data-type='taskList'] input) {
-    margin-top: 0.45em;
+    margin-top: 0.32em;
     accent-color: var(--journal-accent, var(--accent));
   }
 

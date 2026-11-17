@@ -384,6 +384,27 @@ impl Service {
         self.mail.replies_cache_put(thread, message_count, self.now(), replies);
     }
 
+    /// Whether `thread`'s newest message, `message`, waits on the person's
+    /// reply, if the decision model was asked this session -- see
+    /// [`crate::mailfollowup::waits_on_reply`].
+    pub fn mail_reply_wanted(&self, thread: ThreadId, message: MailMessageId) -> Option<bool> {
+        self.mail.reply_wanted(thread, message)
+    }
+
+    pub fn set_mail_reply_wanted(&self, thread: ThreadId, message: MailMessageId, waits: bool) {
+        self.mail.set_reply_wanted(thread, message, waits);
+    }
+
+    /// When asking the decision model whether a thread waits on a reply last
+    /// failed, if it has since the last time it answered.
+    pub fn mail_reply_question_failed(&self) -> Option<jiff::Timestamp> {
+        self.mail.reply_question_failed()
+    }
+
+    pub fn set_mail_reply_question_failed(&self, at: Option<jiff::Timestamp>) {
+        self.mail.set_reply_question_failed(at);
+    }
+
     /// Forget what was measured of `account`'s writing, for when what that was
     /// measured with has changed: a signature, which is not their writing, may
     /// be in it otherwise as their sign-off.

@@ -157,6 +157,7 @@ import {
   mockImproveWriting,
   mockLearnFromReplies,
   mockSaveVoiceLearning,
+  mockNeedsReply,
   mockSuggestReplies,
   mockVoiceLearning,
 } from './mock-mailwrite'
@@ -8053,6 +8054,9 @@ export const mockInvoke = async <T>(
     case 'outbox':
       requireUnlocked()
       return mockOutbox(args.account as string | null | undefined) as T
+    case 'needs_reply':
+      requireUnlocked()
+      return (await mockNeedsReply(str(args.id))) as T
     case 'suggest_replies':
       requireUnlocked()
       return (await mockSuggestReplies(str(args.id))) as T

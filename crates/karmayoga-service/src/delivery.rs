@@ -201,9 +201,14 @@ pub(crate) fn html_of(markdown: &str) -> String {
     let parser = Parser::new_ext(markdown, Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES);
     let mut body = String::new();
     pulldown_cmark::html::push_html(&mut body, inert(parser));
+    // Written in paragraphs, and a draft holds lines: see `line_spaced` in
+    // `karmayoga-mail`, which sends each `<p>` as an unspaced line.
+    let body = karmayoga_core::mail::compose::paragraphs_as_lines(&format!(
+        "{body}<p style=\"color: #888; font-size: 12px\">Sent by a routine in Karma Yoga.</p>"
+    ));
     format!(
         "<div style=\"font-family: -apple-system, 'Segoe UI', sans-serif; line-height: 1.5\">\
-         {body}<p style=\"color: #888; font-size: 12px\">Sent by a routine in Karma Yoga.</p></div>"
+         {body}</div>"
     )
 }
 
@@ -361,6 +366,18 @@ mod tests {
         assert!(html.contains("<li>Book the dentist</li>"));
         assert!(!html.contains("<script>"), "got {html}");
         assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn the_emails_paragraphs_go_out_a_blank_line_apart() {
+        let html = html_of("First.\n\nSecond.\n\n- a\n- b");
+        let sent = karmayoga_mail::compose::line_spaced(&html);
+        assert!(sent.contains("<div>First.</div>\n<div><br></div><div>Second.</div>"), "{sent}");
+        assert!(
+            sent.contains("<div><br></div><ul style=\"margin-top:0;margin-bottom:0\">"),
+            "{sent}"
+        );
+        assert!(sent.contains("</ul>\n<div><br></div><div style=\"color: #888"), "{sent}");
     }
 
     #[test]

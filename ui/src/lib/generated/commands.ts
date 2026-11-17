@@ -195,6 +195,7 @@ import type {
   MoneyRuleId,
   MoneySyncReport,
   MonthSummary,
+  NeedsReply,
   NetWorthPoint,
   NewSource,
   NewTxn,
@@ -795,6 +796,7 @@ export interface Commands {
     args: { noteId: NoteId; speakerKey: number; name: string; email?: string | null }
     result: Transcript
   }
+  needsReply: { args: { id: ThreadId }; result: NeedsReply }
   newBlock: {
     args: { subject: BlockSubject; start: string; minutes: number; kind?: BlockKind | null }
     result: TimeBlock
@@ -1434,6 +1436,7 @@ export const COMMAND_NAMES = {
   moveFolder: 'move_folder',
   moveToMailbox: 'move_to_mailbox',
   nameSpeaker: 'name_speaker',
+  needsReply: 'needs_reply',
   newBlock: 'new_block',
   newChatLink: 'new_chat_link',
   newConversation: 'new_conversation',
@@ -1968,6 +1971,7 @@ export const SERVICE_COMMANDS: ReadonlySet<string> = new Set([
   'move_folder',
   'move_to_mailbox',
   'name_speaker',
+  'needs_reply',
   'new_block',
   'new_chat_link',
   'new_conversation',

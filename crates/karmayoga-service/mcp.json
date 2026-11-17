@@ -1275,7 +1275,7 @@
             "type": "array"
           },
           "body_html": {
-            "description": "The message, as HTML paragraphs (<p>...</p>). The account's signature is added underneath automatically — do not write it yourself.",
+            "description": "The message, as HTML paragraphs (<p>...</p>), a line break inside a paragraph as <br>. The account's signature is added underneath automatically — do not write it yourself.",
             "type": "string"
           },
           "cc": {
@@ -1317,7 +1317,7 @@
         "additionalProperties": false,
         "properties": {
           "body_html": {
-            "description": "Your reply, as HTML paragraphs (<p>...</p>). The account's signature and the quoted original message are added underneath automatically — do not write either yourself.",
+            "description": "Your reply, as HTML paragraphs (<p>...</p>), a line break inside a paragraph as <br>. The account's signature and the quoted original message are added underneath automatically — do not write either yourself.",
             "type": "string"
           },
           "message_id": {
@@ -4431,7 +4431,7 @@
             "type": "array"
           },
           "body_html": {
-            "description": "Replaces the body. Omit to leave it alone.",
+            "description": "Replaces the body, as HTML paragraphs (<p>...</p>), a line break inside a paragraph as <br>. Omit to leave it alone.",
             "type": "string"
           },
           "cc": {

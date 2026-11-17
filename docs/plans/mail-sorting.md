@@ -167,6 +167,28 @@ run by `categorize_tick` straight after `sort_tick`.
   weeks of two mailboxes is a few pages. A thread archived after it was
   decided drops out of the Reply list; a nudge is found in Sent, so
   archiving does not hide it -- **Not needed** does.
+- **Before replies are suggested** (Nov 17). Opening a thread asks
+  `needs_reply` first, and `suggest_replies` asks the same itself, before the
+  rate limiter and the writing model: `mailfollowup::waits_on_reply`, the
+  reply question above with its rules and its bar for strangers, asked of any
+  thread the person opens, wherever it is filed and however old. Both refuse,
+  as before, an account whose writing help may not be used. The thread's own
+  `follow_up_asked` answers it when it names the newest message (a dismissed
+  follow-up counts as nothing waiting); otherwise the model is asked once a
+  message, outside the sorting budget, and the answer is kept for the session,
+  and written as the follow-up while follow-ups are on once sorting has seen
+  the thread (as the pass waits for it to, so a newsletter opened before it
+  was filed never becomes one). The thread is announced by name. With no
+  usable decision model, or after one failed in the last five minutes, the
+  replies are written as before, rules and all. The interface shows "Writing
+  replies…" only once the answer is yes, and only "Write with AI…" when it is
+  no -- nothing under a newsletter or notification, as before.
+- **Drafts hold lines.** `Draft.body_html` is the compose editor's: a `<p>`
+  is a line and `<p></p>` a blank line. `karmayoga_mail::compose::line_spaced`
+  sends them as `<div>` lines; whatever writes paragraphs -- a model through
+  the mail tools, a routine's email -- goes through
+  `compose::paragraphs_as_lines` first, and a draft carried on from another
+  device through `compose::editor_lines`.
 
 ## On this computer (Nov 2026)
 

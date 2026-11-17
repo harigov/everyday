@@ -1,14 +1,22 @@
 //! Writing help's commands -- thin doors onto [`crate::mailwrite`], where
 //! the gate, the voice and the model calls all live.
 //!
-//! The three that ask a model are `effect: Read`, on `summarize_thread`'s own
+//! The ones that ask a model are `effect: Read`, on `summarize_thread`'s own
 //! reasoning (`domains::mail`'s own module docs): reaching a model is not a
-//! write to the vault, and none of them saves anything anybody sees -- a
+//! write to the vault, and nothing a person did is changed by one -- a
 //! suggestion is only ever written into a draft once a person has picked it,
-//! through `save_draft`, which announces its own `change:`. `suggest_replies`
-//! does keep what it offered in the learning record
-//! (`crate::mailvoicelearn::remember_offered`), which nothing draws. Settings → Mail writing is here too, being what
-//! they are all told.
+//! through `save_draft`, which announces its own `change:`. Two write what is
+//! derived, not what anybody did. `suggest_replies` keeps what it offered in
+//! the learning record (`crate::mailvoicelearn::remember_offered`), which
+//! nothing draws. `needs_reply`, and `suggest_replies` when it asks the same,
+//! may keep the decision model's answer as the thread's follow-up -- the very
+//! record the follow-up pass writes on its own about the same message, so
+//! the top of the Inbox agrees with what was offered. That is asked once a
+//! message: a second call, a retried one included, reads the answer back and
+//! writes nothing, and `set_thread_follow_up` refuses a thread that moved
+//! meanwhile. It announces the thread itself, by name, as the pass does,
+//! rather than every call declaring a `change:`. Settings → Mail writing is
+//! here too, being what they are all told.
 
 use std::sync::Arc;
 
@@ -37,6 +45,24 @@ pub struct SuggestRepliesArgs {
 #[serde(rename_all = "camelCase")]
 pub struct ReplySuggestions {
     pub suggestions: Vec<ReplySuggestion>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NeedsReply {
+    pub needed: bool,
+}
+
+/// Whether a thread waits on the person's reply -- `crate::mailwrite::needs_reply`,
+/// which may ask the decision model and keep its answer as the thread's
+/// follow-up, announcing that itself as the follow-up pass does.
+async fn needs_reply(
+    svc: Arc<Service>,
+    _ctx: Ctx,
+    args: SuggestRepliesArgs,
+) -> CommandResult<NeedsReply> {
+    let needed = crate::mailwrite::needs_reply(&svc, args.id).await?;
+    Ok(NeedsReply { needed })
 }
 
 /// `suggest_replies`'s whole body is `crate::mailwrite::suggest_replies` --
@@ -223,6 +249,12 @@ pub static COMMANDS: &[crate::command::Command] = &[
         args: SaveMailWriting, returns: "MailWriting",
         signature: &[("writing", "MailWriting", true)],
         run: save_mail_writing,
+    },
+    command! {
+        name: "needs_reply", scope: Mail, effect: Read,
+        args: SuggestRepliesArgs, returns: "NeedsReply",
+        signature: &[("id", "ThreadId", true)],
+        run: needs_reply,
     },
     command! {
         name: "suggest_replies", scope: Mail, effect: Read,

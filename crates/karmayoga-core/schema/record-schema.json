@@ -2449,6 +2449,7 @@
         "type": "array"
       },
       "bodyHtml": {
+        "description": "The body as the compose editor holds it: a `<p>` is a line, Enter's\nnext one straight under it, and an empty `<p></p>` a blank line -- what\n`karmayoga_mail::compose::line_spaced` sends as unspaced lines. Whatever\nwrites one in paragraphs instead goes through\n[`compose::paragraphs_as_lines`](crate::mail::compose::paragraphs_as_lines).",
         "type": "string"
       },
       "calendarPart": {

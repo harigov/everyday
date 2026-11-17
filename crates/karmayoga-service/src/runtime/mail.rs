@@ -121,6 +121,15 @@ pub(crate) struct MailRuntime {
     /// not ask again. Unlike `summary_cache`, also by when: a suggestion can
     /// offer a time, and a time goes stale without the thread changing at all.
     reply_cache: Mutex<HashMap<ThreadId, CachedReplies>>,
+    /// Whether a thread's newest message waits on the person's reply, as the
+    /// decision model answered `crate::mailfollowup::waits_on_reply`, with
+    /// the message it answered about -- for while follow-ups are off and the
+    /// answer is not kept on the thread, so that reopening it does not ask
+    /// again.
+    reply_wanted: Mutex<HashMap<ThreadId, (MailMessageId, bool)>>,
+    /// When asking that last failed, so that for a while threads are opened
+    /// without waiting on a decision model that is not answering.
+    reply_question_failed: Mutex<Option<Timestamp>>,
     /// New mail waiting for its threads to be sorted ahead of everything
     /// else, and whether something is sorting them -- see
     /// [`crate::service::Service::sort_new_mail`].
@@ -192,6 +201,8 @@ impl MailRuntime {
             priority_cursor: Mutex::new(HashMap::new()),
             voice_cache: Mutex::new(HashMap::new()),
             reply_cache: Mutex::new(HashMap::new()),
+            reply_wanted: Mutex::new(HashMap::new()),
+            reply_question_failed: Mutex::new(None),
             new_mail: Mutex::new(NewMailQueue::default()),
             sorting_now: Mutex::new(HashSet::new()),
         }
@@ -478,6 +489,23 @@ impl MailRuntime {
         self.reply_cache.lock().unwrap().insert(thread, (message_count, now, replies));
     }
 
+    pub(crate) fn reply_wanted(&self, thread: ThreadId, message: MailMessageId) -> Option<bool> {
+        let known = self.reply_wanted.lock().unwrap();
+        known.get(&thread).filter(|(about, _)| *about == message).map(|(_, waits)| *waits)
+    }
+
+    pub(crate) fn set_reply_wanted(&self, thread: ThreadId, message: MailMessageId, waits: bool) {
+        self.reply_wanted.lock().unwrap().insert(thread, (message, waits));
+    }
+
+    pub(crate) fn reply_question_failed(&self) -> Option<Timestamp> {
+        *self.reply_question_failed.lock().unwrap()
+    }
+
+    pub(crate) fn set_reply_question_failed(&self, at: Option<Timestamp>) {
+        *self.reply_question_failed.lock().unwrap() = at;
+    }
+
     pub(crate) fn voice_cache_forget(&self, account: AccountId) {
         self.voice_cache.lock().unwrap().remove(&account);
     }
@@ -583,11 +611,13 @@ impl MailRuntime {
         self.sort_full_looks.lock().unwrap().clear();
     }
 
-    /// A profile and suggestions are both read from this vault's mail, so
-    /// neither may outlive it being open.
+    /// A profile, suggestions and whether a thread wants a reply are all read
+    /// from this vault's mail, so none may outlive it being open.
     fn forget_writing_caches(&self) {
         self.voice_cache.lock().unwrap().clear();
         self.reply_cache.lock().unwrap().clear();
+        self.reply_wanted.lock().unwrap().clear();
+        *self.reply_question_failed.lock().unwrap() = None;
         *self.voice_learn_looked.lock().unwrap() = None;
     }
 

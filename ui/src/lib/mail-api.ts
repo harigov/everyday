@@ -42,6 +42,7 @@ import type {
   ThreadId,
   ThreadPage,
   ImproveMode,
+  NeedsReply,
   ReplySuggestions,
   OutboxItem,
   ScheduledSend,
@@ -302,6 +303,12 @@ export const scheduledSends = (account?: AccountId | null): Promise<ScheduledSen
  *  take -- failing and being retried, or failed for good -- newest first. */
 export const outbox = (account?: AccountId | null): Promise<OutboxItem[]> =>
   callCommand<OutboxItem[]>('outbox', { account: account ?? null })
+
+/** Whether the thread's newest message waits on the person's reply, by the
+ *  decision model when there is one -- asked before `suggestReplies`, so that
+ *  replies are shown being written only for a thread that will get some. */
+export const needsReply = (id: ThreadId): Promise<NeedsReply> =>
+  callCommand<NeedsReply>('needs_reply', { id })
 
 /** Up to three replies to the thread's newest message, in the person's
  *  own voice; empty when the thread does not want one. */

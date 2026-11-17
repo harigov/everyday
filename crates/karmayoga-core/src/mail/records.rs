@@ -864,6 +864,11 @@ pub struct Draft {
     #[serde(default)]
     pub bcc: Vec<Address>,
     pub subject: String,
+    /// The body as the compose editor holds it: a `<p>` is a line, Enter's
+    /// next one straight under it, and an empty `<p></p>` a blank line -- what
+    /// `karmayoga_mail::compose::line_spaced` sends as unspaced lines. Whatever
+    /// writes one in paragraphs instead goes through
+    /// [`compose::paragraphs_as_lines`](crate::mail::compose::paragraphs_as_lines).
     pub body_html: String,
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,

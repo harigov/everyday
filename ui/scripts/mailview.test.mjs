@@ -414,8 +414,10 @@ for (const hostile of ['constructor', '__proto__', 'hasOwnProperty', 'toString']
 // ── measureBody ───────────────────────────────────────────────────────
 
 {
+  // A 24px line (15px at 1.6), stated rather than left to `BASE_STYLE`'s, so
+  // every height below is a whole number of them.
   const SHEET =
-    '<style>details>summary{display:none}pre{white-space:pre-wrap;margin:0 0 1em}</style>'
+    '<style>body{line-height:1.6}details>summary{display:none}pre{white-space:pre-wrap;margin:0 0 1em}</style>'
   const PICTURE = 'src="karmayoga://mail/img/m/t"'
   const page = (inner) => `<html><head>${SHEET}</head><body>\n${inner}\n</body></html>`
   const guess = (inner, width, more = {}) =>

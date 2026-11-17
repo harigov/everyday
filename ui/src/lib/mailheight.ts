@@ -1543,8 +1543,8 @@ function tableHeight(
  *  `mailview.rs` does, in every document that is really shown. */
 const BODY_TYPE: Type = {
   size: 15,
-  leading: 24,
-  ratio: 1.6,
+  leading: 21.75,
+  ratio: 1.45,
   pre: false,
   nowrap: false,
   face: 'sans-serif',

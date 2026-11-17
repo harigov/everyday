@@ -515,14 +515,8 @@ pub(crate) async fn stranger_waits(
     account: &Account,
     message: MailMessageId,
 ) -> Option<bool> {
-    let decision = vault.decision_access().ok()?;
-    decision.mail_allowed(account, MailAiFeature::Categorize).ok()?;
-    if let Some(model) = decision.config.local_model()
-        && crate::local::decide::not_ready(model).is_some()
-    {
-        return None;
-    }
-    Some(stranger_waits_on(service, vault, account, &decision, message).await.unwrap_or(false))
+    let decision = usable_decision(vault, account)?;
+    Some(stranger_waits_on(service, vault, account, &decision, message).await)
 }
 
 async fn stranger_waits_on(
@@ -531,7 +525,7 @@ async fn stranger_waits_on(
     account: &Account,
     decision: &DecisionAccess,
     message: MailMessageId,
-) -> CommandResult<bool> {
+) -> bool {
     let read = {
         let vault = vault.clone();
         blocking(move || {
@@ -539,27 +533,163 @@ async fn stranger_waits_on(
             let (thread, messages) = vault.thread(thread_id)?;
             Ok((thread, messages, vault.mail_sorting()?, vault.mail_contacts().unwrap_or_default()))
         })
-        .await?
+        .await
     };
-    let (thread, messages, sorting, contacts) = read;
+    let Ok((thread, messages, sorting, contacts)) = read else { return false };
     // About this message, and only while it is still the newest: a later one
     // is announced, or not, for itself.
     let Some(newest) = newest(&messages).filter(|&i| messages[i].id == message) else {
-        return Ok(false);
+        return false;
     };
     let own = own_addresses(account);
-    let now = service.now();
     let ask = Ask { thread, messages, newest, kind: FollowUpKind::Reply };
-    let answer = match put(vault, decision, &own, &contacts, &ask, now).await {
-        Ok(answer) => answer,
+    // Sorting has just filed it: kept whenever follow-ups are on.
+    let keep = sorting.follow_up.on;
+    match ask_reply(service, vault, decision, &own, &contacts, ask, keep).await {
+        Ok(waits) => waits,
         Err(e) => {
-            tracing::debug!(error = %e, thread = %ask.thread.id, "could not ask whether a stranger is waiting");
-            return Ok(false);
+            tracing::debug!(error = %e, "could not ask whether a stranger is waiting");
+            false
         }
+    }
+}
+
+/// How long [`waits_on_reply`] leaves the decision model alone after it
+/// failed -- down, refusing, or out of time -- and goes by what there was
+/// before it: a person opening thread after thread must not wait out a dead
+/// endpoint's timeout on every one of them.
+const REPLY_QUESTION_REST: SignedDuration = SignedDuration::from_mins(5);
+
+/// Does the newest message in a thread wait on the person's reply? What
+/// writing help asks before it writes replies to offer under a thread (see
+/// `crate::mailwrite::suggest_replies`), so that a newsletter, a statement or
+/// a pitch is not answered three ways by a model nobody needed to ask.
+///
+/// The follow-up question, held to the same rules and the same bar
+/// ([`REPLY_OPTIONS`], [`plainly_unanswerable`], [`FIRST_CONTACT_CONFIDENCE`]):
+/// what kind of mail it is, who it is addressed to, who wrote it and whether
+/// you ever wrote back, and how long it has waited. Asked of any thread the
+/// person opens, wherever it is filed and however old, and answered in order
+/// of cost:
+///
+/// - `Some(false)` when the newest message is the person's own.
+/// - `None` when no decision model may be asked about this account's mail,
+///   or one failed in the last [`REPLY_QUESTION_REST`]: the caller goes on as
+///   it did before there was a question, rules and all.
+/// - `Some(false)`, for free, by the follow-up rules.
+/// - What the follow-up pass, or an earlier call, already decided about that
+///   same message, without asking again. A follow-up the person dismissed
+///   counts as nothing waiting.
+/// - Otherwise the decision model's answer, kept for the session, and as the
+///   thread's follow-up while follow-ups are on -- so the top of the Inbox
+///   agrees and the pass does not ask again -- once sorting has seen the
+///   thread, as the pass waits for it to: what sorting files under
+///   Newsletters or Notifications is never to be a follow-up, and a mark
+///   written before it would keep the pass from ever judging it again.
+///
+/// Not drawn from the minute's sorting budget, for the reason
+/// [`stranger_waits`] is not: somebody is looking at this thread now, and it
+/// is asked once a message.
+pub(crate) async fn waits_on_reply(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    thread: &Thread,
+    messages: &[Message],
+) -> Option<bool> {
+    let newest = newest(messages)?;
+    let last = &messages[newest];
+    let own = own_addresses(account);
+    if mine(last, &own) {
+        return Some(false);
+    }
+    let decision = usable_decision(vault, account)?;
+    if plainly_unanswerable(thread, last, &own) {
+        return Some(false);
+    }
+    if thread.follow_up_asked.is_some_and(|m| m.message == last.id) {
+        let waits = thread
+            .follow_up
+            .as_ref()
+            .is_some_and(|f| f.kind == FollowUpKind::Reply && f.message == last.id);
+        return Some(waits);
+    }
+    if let Some(waits) = service.mail_reply_wanted(thread.id, last.id) {
+        return Some(waits);
+    }
+    let now = service.now();
+    if service
+        .mail_reply_question_failed()
+        .is_some_and(|at| now.duration_since(at) < REPLY_QUESTION_REST)
+    {
+        return None;
+    }
+
+    let context = {
+        let vault = vault.clone();
+        blocking(move || Ok((vault.mail_sorting()?, vault.mail_contacts().unwrap_or_default())))
+            .await
     };
+    let Ok((sorting, contacts)) = context else { return None };
+    let sorted = sorted_now(thread) || last.date < now - days(sorting.window_days);
+    let keep = sorting.follow_up.on && sorted;
+    let (thread_id, message) = (thread.id, last.id);
+    let ask = Ask {
+        thread: thread.clone(),
+        messages: messages.to_vec(),
+        newest,
+        kind: FollowUpKind::Reply,
+    };
+    match ask_reply(service, vault, &decision, &own, &contacts, ask, keep).await {
+        Ok(waits) => {
+            service.set_mail_reply_question_failed(None);
+            service.set_mail_reply_wanted(thread_id, message, waits);
+            Some(waits)
+        }
+        Err(e) => {
+            tracing::debug!(error = %e, thread = %thread_id, "could not ask whether a thread waits on a reply");
+            service.set_mail_reply_question_failed(Some(now));
+            None
+        }
+    }
+}
+
+/// The decision model, when it may be asked about `account`'s mail and can
+/// answer now: not while one on this computer cannot yet, which Settings →
+/// Mail sorting says why.
+fn usable_decision(vault: &Vault, account: &Account) -> Option<DecisionAccess> {
+    let decision = vault.decision_access().ok()?;
+    decision.mail_allowed(account, MailAiFeature::Categorize).ok()?;
+    if let Some(model) = decision.config.local_model()
+        && crate::local::decide::not_ready(model).is_some()
+    {
+        return None;
+    }
+    Some(decision)
+}
+
+/// Put the reply question ([`REPLY_OPTIONS`]) about `ask`, and say whether the
+/// answer is that the thread waits on the person. With `keep`, the answer is
+/// written as the thread's follow-up, and the thread announced when what the
+/// Inbox shows of it changed -- by name, so an open Inbox patches that one row
+/// rather than taking it for a whole sync pass.
+async fn ask_reply(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    decision: &DecisionAccess,
+    own: &HashSet<String>,
+    contacts: &ContactBook,
+    ask: Ask,
+    keep: bool,
+) -> CommandResult<bool> {
+    let answer = put(vault, decision, own, contacts, &ask, service.now()).await?;
     let waits = answer.follow_up.is_some();
-    if sorting.follow_up.on && record(vault, &ask.thread, answer.mark, answer.follow_up).await {
-        service.events().changed(Change::new(Kind::Thread, Op::Updated));
+    if keep && record(vault, &ask.thread, answer.mark, answer.follow_up).await {
+        let change = Change {
+            id: Some(ask.thread.id.to_string()),
+            ..Change::new(Kind::Thread, Op::Updated)
+        };
+        service.events().changed(change);
     }
     Ok(waits)
 }
@@ -826,14 +956,7 @@ fn plan(
         if !sorted_now(thread) && last.date >= now - days(sorting.window_days) {
             return Plan::Skip;
         }
-        // The message's own category, which sorting and a person's
-        // correction write; the thread's mirrors the newest message, which
-        // may be a draft.
-        let filed = last.category.or(thread.category);
-        if matches!(filed, Some(Category::Newsletter | Category::Notification))
-            || looks_like_notification_sender(&last.from.email)
-            || addressed(last, own).is_none()
-        {
+        if plainly_unanswerable(thread, last, own) {
             return Plan::MarkOnly;
         }
         return Plan::Ask(FollowUpKind::Reply);
@@ -847,6 +970,18 @@ fn plan(
         .chain(&last.cc)
         .any(|a| !is_own(&a.email, own) && !looks_like_notification_sender(&a.email));
     if somebody { Plan::Ask(FollowUpKind::Nudge) } else { Plan::MarkOnly }
+}
+
+/// Whether somebody else's newest message `last` is plainly not one waiting
+/// on a reply, by the rules alone: filed under Newsletters or Notifications,
+/// from an address that reads as a machine's, or not addressed to you by name.
+fn plainly_unanswerable(thread: &Thread, last: &Message, own: &HashSet<String>) -> bool {
+    // The message's own category, which sorting and a person's correction
+    // write; the thread's mirrors the newest message, which may be a draft.
+    let filed = last.category.or(thread.category);
+    matches!(filed, Some(Category::Newsletter | Category::Notification))
+        || looks_like_notification_sender(&last.from.email)
+        || addressed(last, own).is_none()
 }
 
 /// Whether the model's answer makes a follow-up: only the first of the
