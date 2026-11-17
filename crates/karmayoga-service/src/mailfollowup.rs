@@ -488,6 +488,82 @@ async fn follow_up_account(
     }
 }
 
+/// Is a stranger who just wrote waiting on your reply, rather than reaching out
+/// cold or writing to nobody in particular? The question a follow-up asks of a
+/// thread whose newest message is somebody else's ([`REPLY_OPTIONS`]), held to
+/// the same higher bar for somebody you have never written to
+/// ([`FIRST_CONTACT_CONFIDENCE`]) -- what new mail from a stranger has to pass
+/// before it is announced. See `crate::arrivals`' "people, and strangers who
+/// write like people".
+///
+/// `None` when there is no decision model to ask, or it may not read this
+/// account's mail: the caller decides without one. `Some(false)` when it may
+/// but the answer is not yes -- the model said otherwise, would not answer, or
+/// failed -- since an announcement is the one thing here that is better missed
+/// than made in error. The answer is written as the thread's follow-up while
+/// follow-ups are on, so the Inbox's top shows what the notification said and
+/// the follow-up pass does not ask again.
+///
+/// Not drawn from the minute's sorting budget, which a sort of older mail can
+/// spend to the last token: an announcement is asked about once, as its mail
+/// is filed, and a stranger's real question missed then is missed for good.
+/// It is bounded all the same -- at most one per message sorting just filed,
+/// and sorting is budgeted.
+pub(crate) async fn stranger_waits(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    message: MailMessageId,
+) -> Option<bool> {
+    let decision = vault.decision_access().ok()?;
+    decision.mail_allowed(account, MailAiFeature::Categorize).ok()?;
+    if let Some(model) = decision.config.local_model()
+        && crate::local::decide::not_ready(model).is_some()
+    {
+        return None;
+    }
+    Some(stranger_waits_on(service, vault, account, &decision, message).await.unwrap_or(false))
+}
+
+async fn stranger_waits_on(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    decision: &DecisionAccess,
+    message: MailMessageId,
+) -> CommandResult<bool> {
+    let read = {
+        let vault = vault.clone();
+        blocking(move || {
+            let thread_id = vault.mail_message(message)?.thread_id;
+            let (thread, messages) = vault.thread(thread_id)?;
+            Ok((thread, messages, vault.mail_sorting()?, vault.mail_contacts().unwrap_or_default()))
+        })
+        .await?
+    };
+    let (thread, messages, sorting, contacts) = read;
+    // About this message, and only while it is still the newest: a later one
+    // is announced, or not, for itself.
+    let Some(newest) = newest(&messages).filter(|&i| messages[i].id == message) else {
+        return Ok(false);
+    };
+    let own = own_addresses(account);
+    let now = service.now();
+    let ask = Ask { thread, messages, newest, kind: FollowUpKind::Reply };
+    let answer = match put(vault, decision, &own, &contacts, &ask, now).await {
+        Ok(answer) => answer,
+        Err(e) => {
+            tracing::debug!(error = %e, thread = %ask.thread.id, "could not ask whether a stranger is waiting");
+            return Ok(false);
+        }
+    };
+    let waits = answer.follow_up.is_some();
+    if sorting.follow_up.on && record(vault, &ask.thread, answer.mark, answer.follow_up).await {
+        service.events().changed(Change::new(Kind::Thread, Op::Updated));
+    }
+    Ok(waits)
+}
+
 /// Write one thread's mark and follow-up, and say whether what an open Inbox
 /// shows of it changed.
 ///

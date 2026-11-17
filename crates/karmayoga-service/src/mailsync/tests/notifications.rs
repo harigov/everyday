@@ -317,12 +317,12 @@ async fn a_noted_message_wakes_the_task_and_new_mail_starts_the_sorting() {
     use std::time::Duration;
     let (env, server) = synced_with(MailNotify::default()).await;
     let news = env.statuses.news(env.account_id);
-    assert!(!env.statuses.take_arrived(env.account_id), "read mail from the first fill");
+    assert!(env.statuses.take_arrived(env.account_id).is_empty(), "read mail from the first fill");
 
     arrive(&server, "stranger", "someone@example.com");
     let mut session = FakeMailSession::new(server.clone());
     env.sync(&mut session).await;
-    assert!(env.statuses.take_arrived(env.account_id), "the model may yet want it");
+    assert_eq!(env.statuses.take_arrived(env.account_id).len(), 1, "the model may yet want it");
     assert!(
         tokio::time::timeout(Duration::ZERO, news.notified()).await.is_err(),
         "nothing wanted, nothing to wake for"
@@ -362,4 +362,120 @@ async fn by_the_time_a_notice_can_go_out_the_list_has_been_told() {
         "and not told again at the end of the mailbox for the same message"
     );
     assert_eq!(noted(&env), ["wanted"]);
+}
+
+// ---------------------------------------------------------------------
+// Mail filed where a person writing to you lands -- Priority and Important
+// -- is announced as it is stored only when it is from somebody you know.
+// See `crate::arrivals`' "people, and strangers who write like people".
+// ---------------------------------------------------------------------
+
+/// A message from `from` to `to`, with `extra` header lines.
+fn raw_to(id: &str, from: &str, to: &str, extra: &str) -> Vec<u8> {
+    format!(
+        "Message-ID: <{id}>\r\nFrom: {from}\r\nTo: {to}\r\n{extra}Subject: {id}\r\nDate: {DATE}\r\n\
+         Content-Type: text/plain\r\n\r\nhello\r\n"
+    )
+    .into_bytes()
+}
+
+/// An account past its first fill, on the default rule, that has written to
+/// `ada@example.com` before.
+async fn knowing_ada(gmail: bool) -> (TestEnv, std::sync::Arc<std::sync::Mutex<FakeServer>>) {
+    let mut env = TestEnv::new();
+    let contacts = crate::mailsync::contacts::ContactIndex::load(&env.vault);
+    contacts.record_sent_to("ada@example.com", "Ada");
+    env.contacts = Some(std::sync::Arc::new(contacts));
+    let server = if gmail { gmail_server() } else { plain_server() };
+    let mut session = FakeMailSession::new(server.clone());
+    env.sync(&mut session).await;
+    (env, server)
+}
+
+fn gmail_labels(labels: &[&str], id: u64) -> Option<karmayoga_mail::session::GmailMeta> {
+    Some(karmayoga_mail::session::GmailMeta {
+        thrid: id,
+        msgid: id,
+        labels: labels.iter().map(|l| l.to_string()).collect(),
+    })
+}
+
+#[tokio::test]
+async fn somebody_you_have_written_to_is_announced_as_it_is_stored() {
+    let (env, server) = knowing_ada(false).await;
+    server.lock().unwrap().append(
+        "INBOX",
+        raw_to("from-ada", "Ada <ada@example.com>", "me@example.com", ""),
+        Flags::NONE,
+        None,
+    );
+    env.sync(&mut FakeMailSession::new(server)).await;
+    assert_eq!(noted(&env), ["from-ada"]);
+}
+
+/// Gmail's `\Important` label is the rules' strongest signal, and it marks a
+/// stranger's pitch as often as a colleague's question. Nobody is told until
+/// a model has read it; the model is handed it at once.
+#[tokio::test]
+async fn a_stranger_gmail_calls_important_waits_for_a_model() {
+    let (env, server) = knowing_ada(true).await;
+    server.lock().unwrap().append(
+        "All Mail",
+        raw_to("pitch", "Rep <rep@vendor.example>", "me@example.com", ""),
+        Flags::NONE,
+        gmail_labels(&["\\Inbox", "\\Important"], 7),
+    );
+    env.sync(&mut FakeMailSession::new(server)).await;
+    assert_eq!(noted(&env), Vec::<String>::new());
+    assert_eq!(env.statuses.take_arrived(env.account_id).len(), 1, "the model reads it next");
+}
+
+#[tokio::test]
+async fn somebody_you_know_writing_to_a_list_you_are_on_waits_for_a_model() {
+    let (env, server) = knowing_ada(false).await;
+    server.lock().unwrap().append(
+        "INBOX",
+        raw_to("to-the-team", "Ada <ada@example.com>", "team@example.com", ""),
+        Flags::NONE,
+        None,
+    );
+    env.sync(&mut FakeMailSession::new(server)).await;
+    assert_eq!(noted(&env), Vec::<String>::new());
+}
+
+/// Gmail calls it important, and you have written to the sender -- but it
+/// carries a list's unsubscribe line, so it is their newsletter.
+#[tokio::test]
+async fn a_newsletter_from_somebody_you_know_waits_for_a_model() {
+    let (env, server) = knowing_ada(true).await;
+    server.lock().unwrap().append(
+        "All Mail",
+        raw_to(
+            "ada-weekly",
+            "Ada <ada@example.com>",
+            "me@example.com",
+            "List-Unsubscribe: <mailto:leave@example.com>\r\n",
+        ),
+        Flags::NONE,
+        gmail_labels(&["\\Inbox", "\\Important"], 8),
+    );
+    env.sync(&mut FakeMailSession::new(server)).await;
+    assert_eq!(noted(&env), Vec::<String>::new());
+}
+
+/// Everything means everything: the rule nobody narrows is not narrowed here.
+#[tokio::test]
+async fn all_still_tells_you_about_a_stranger_gmail_calls_important() {
+    let (env, server) = knowing_ada(true).await;
+    let mut account = env.vault.account(env.account_id).unwrap();
+    account.mail_notify = MailNotify::All;
+    env.vault.save_account(&account).unwrap();
+    server.lock().unwrap().append(
+        "All Mail",
+        raw_to("pitch", "Rep <rep@vendor.example>", "me@example.com", ""),
+        Flags::NONE,
+        gmail_labels(&["\\Inbox", "\\Important"], 9),
+    );
+    env.sync(&mut FakeMailSession::new(server)).await;
+    assert_eq!(noted(&env), ["pitch"]);
 }

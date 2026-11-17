@@ -119,7 +119,7 @@ export const MAIL_NOTIFY_CHOICES: { type: MailNotify['type']; label: string; hin
   {
     type: 'important',
     label: 'Important mail',
-    hint: 'What lands on the Priority and Important tabs.',
+    hint: 'What lands on the Priority and Important tabs: people you have written to as it arrives, someone new only if they are waiting on your reply, never a pitch or a list.',
   },
   { type: 'all', label: 'All new mail', hint: 'Every new message that reaches the Inbox.' },
   {

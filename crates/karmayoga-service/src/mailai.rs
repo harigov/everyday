@@ -710,8 +710,9 @@ pub(crate) async fn announce_filed(
         if !statuses.arrived_lately(&id.to_string(), at) {
             continue;
         }
-        let vault = vault.clone();
+        let reader = vault.clone();
         let Ok((msg, in_inbox)) = blocking(move || {
+            let vault = reader;
             let msg = vault.mail_message(id)?;
             // Gmail files the inbox as a label row of its own, so any of
             // the message's mailboxes being the inbox is enough.
@@ -736,6 +737,34 @@ pub(crate) async fn announce_filed(
         {
             continue;
         }
+        // Told as it arrived, or by a pass before this one: nothing below is
+        // worth a question to a model for it.
+        if statuses.already_announced(&msg.id.to_string()) {
+            continue;
+        }
+        // Filed where a person writing to you lands: only for somebody you
+        // know, or a stranger a model says is waiting on you -- see
+        // `arrivals`' "people, and strangers who write like people".
+        if crate::arrivals::guarded(&account.mail_notify, msg.category) {
+            let standing = standing_after_filing(service, vault, &msg, &own).await;
+            let announce = match crate::arrivals::after_filing(&standing) {
+                crate::arrivals::AfterFiling::Announce => true,
+                crate::arrivals::AfterFiling::Quiet => false,
+                // With no decision model to ask, only what a model put under
+                // Priority: the small model's own judgement of what needs you
+                // soon, which is already a higher bar than Important.
+                crate::arrivals::AfterFiling::AskIfWaiting => {
+                    match crate::mailfollowup::stranger_waits(service, vault, account, msg.id).await
+                    {
+                        Some(waits) => waits,
+                        None => msg.category == Some(Category::Priority),
+                    }
+                }
+            };
+            if !announce {
+                continue;
+            }
+        }
         // Last: the rules may have announced it already as it arrived, and
         // marking one that was then skipped would swallow it.
         if !statuses.first_announcement(&msg.id.to_string()) {
@@ -751,6 +780,71 @@ pub(crate) async fn announce_filed(
         crate::arrivals::new_mail_notice(&account.id.to_string(), &mail, mail.len())
     {
         service.events().notify(notice);
+    }
+}
+
+/// How the sender of a message a model just filed stands with the account --
+/// see [`crate::arrivals::Standing`]. Read from the message as stored, which
+/// keeps no list or bulk-mail header, so "automated" is the sender's address
+/// alone; the model has read the rest.
+async fn standing_after_filing(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    msg: &Message,
+    own: &HashSet<String>,
+) -> crate::arrivals::Standing {
+    let known_sender = match service.mail_contacts() {
+        Some(contacts) => contacts.has_sent_to(&msg.from.email),
+        None => vault.mail_contacts().is_ok_and(|book| book.has_sent_to(&msg.from.email)),
+    };
+    let wrote_in_thread = {
+        let (vault, message, own) = (vault.clone(), msg.id, own.clone());
+        blocking(move || Ok(crate::arrivals::thread_has_own_message(&vault, message, &own)))
+            .await
+            .unwrap_or(false)
+    };
+    crate::arrivals::Standing {
+        known_sender,
+        wrote_in_thread,
+        addressed: crate::arrivals::addressed_to(
+            msg.to.iter().chain(&msg.cc).map(|a| a.email.as_str()),
+            own,
+        ),
+        automated: karmayoga_core::mail::categorize::looks_like_notification_sender(
+            &msg.from.email,
+        ),
+        filed_elsewhere_before: false,
+    }
+}
+
+/// Sort the threads of `messages`, new inbox mail that just arrived, on
+/// [`Service::sort_new_mail`]'s lane, on the decision model (see
+/// [`crate::mailsort::sort_new_mail`]), announcing every answer as it comes by
+/// [`announce_filed`].
+///
+/// The small model's passes are left to the ordinary passes the lane runs
+/// once it is done: they page through the Inbox from cursors of their own,
+/// shared with the minute's passes, so they cannot be pointed at a handful of
+/// threads, and running them here as well would ask about the same threads
+/// twice.
+pub async fn sort_new_mail(
+    service: &Arc<Service>,
+    account: AccountId,
+    messages: Vec<MailMessageId>,
+) {
+    let Some(vault) = service.get() else { return };
+    if !vault.is_unlocked() || !vault.is_writable() {
+        return;
+    }
+    let Ok(account) = vault.account(account) else { return };
+    if !account.services.mail {
+        return;
+    }
+    let Ok(decision) = vault.decision_access() else { return };
+    if let Err(e) =
+        crate::mailsort::sort_new_mail(service, &vault, &account, &decision, messages).await
+    {
+        tracing::warn!(error = %e, account = %account.id, "sorting new mail failed");
     }
 }
 

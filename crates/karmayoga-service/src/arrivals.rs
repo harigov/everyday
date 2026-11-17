@@ -25,17 +25,49 @@
 //! pass just stored -- see
 //! [`StatusRegistry::note_arrival`](crate::mailsync::status::StatusRegistry::note_arrival)
 //! -- since the rest of what it files was delivered long ago.
+//!
+//! # People, and strangers who write like people
+//!
+//! The Priority and Important tabs are where a person writing to you lands,
+//! and where a stranger's pitch dressed as one lands too: addressed to you by
+//! name, ending in a question, and filed there by Gmail's own `\Important`
+//! label as often as not. So under the default rule,
+//! [`MailNotify::Important`], mail filed under either is announced only by
+//! [`Standing`], unless a person filed the sender there themselves. "All new
+//! mail" means all of it, and "Categories I choose" means exactly what was
+//! ticked, so neither is narrowed here -- see [`guarded`].
+//!
+//! - **As it is stored**, before any model has read it, only mail from
+//!   somebody you have written to, addressed to you by name, with nothing
+//!   about it automated or sent to a list, and from a sender whose earlier
+//!   mail in the thread a model or a person has not filed elsewhere -- see
+//!   [`announce_on_arrival`]. This is what makes mail from people you know
+//!   arrive the moment it is stored.
+//! - **Once a model has filed it**, mail from somebody you have written to,
+//!   or in a thread you have written in, from an address that does not read
+//!   as a machine's -- to you by name or not, since the model has read who
+//!   it was to. A stranger only when it is to you by name and a model says
+//!   they are waiting on your reply and not reaching out cold -- see
+//!   [`after_filing`] and `crate::mailfollowup::stranger_waits`.
+//!
+//! Mail held back as it is stored waits for a model, and with no model that
+//! may read the account's mail it is not announced at all: somebody new, a
+//! list, or mail to an address the account does not know as its own. That is
+//! the rule working, not a gap -- nothing else can tell a stranger who needs
+//! you from one who is selling. A small model announces a stranger only by
+//! moving them to Priority.
 
 use std::collections::HashSet;
 
 use jiff::Timestamp;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
+use karmayoga_core::account::MailNotify;
 use karmayoga_core::calendar::{
     AccountCalendarSource, Calendar, CalendarOrigin, Event, EventStatus,
 };
 use karmayoga_core::id::{CalendarId, MailMessageId};
-use karmayoga_core::mail::MailboxRole;
+use karmayoga_core::mail::{Category, MailboxRole};
 use karmayoga_core::store::calendars::EventQuery;
 use karmayoga_core::{Result as CoreResult, Vault};
 
@@ -161,6 +193,107 @@ pub struct FiledFacts {
     pub deleted: bool,
     pub draft: bool,
     pub own: bool,
+}
+
+/// How the sender of a message stands with the account: what decides whether
+/// mail filed under Priority or Important is announced. See the module docs'
+/// "people, and strangers who write like people".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Standing {
+    /// You have sent mail naming the sender in `To` or `Cc`.
+    pub known_sender: bool,
+    /// You have written in the message's thread.
+    pub wrote_in_thread: bool,
+    /// The message names one of your addresses in `To` or `Cc` -- see
+    /// [`addressed_to`].
+    pub addressed: bool,
+    /// The sender's address reads as a machine's, or the message carries a
+    /// list or bulk-mail header.
+    pub automated: bool,
+    /// The sender's earlier mail in this thread was filed off the Priority
+    /// and Important tabs by a model or a person.
+    pub filed_elsewhere_before: bool,
+}
+
+impl Standing {
+    /// Neither have you ever written to the sender, nor in this thread.
+    pub fn first_contact(&self) -> bool {
+        !self.known_sender && !self.wrote_in_thread
+    }
+}
+
+/// What a notification rule guards: mail filed under the tabs a person writing
+/// to you lands in, under the default rule, whose "important" is this module's
+/// to define. "All new mail" and "Categories I choose" say exactly what they
+/// want, a category somebody ticked included; mail filed elsewhere is announced
+/// just as the rule says.
+pub fn guarded(notify: &MailNotify, category: Option<Category>) -> bool {
+    matches!(notify, MailNotify::Important)
+        && matches!(category, Some(Category::Priority | Category::Important))
+}
+
+/// One address as a mailbox: lower-cased, a `+tag` dropped, and on Gmail the
+/// dots, which Gmail ignores, dropped too, with `googlemail.com` read as
+/// `gmail.com`. So `H.ari+lists@googlemail.com` and `hari@gmail.com` are one
+/// mailbox, as Gmail delivers them.
+pub fn mailbox_key(email: &str) -> String {
+    let email = email.trim().to_lowercase();
+    let Some((local, domain)) = email.rsplit_once('@') else { return email };
+    let local = local.split('+').next().unwrap_or(local);
+    match domain {
+        "gmail.com" | "googlemail.com" => format!("{}@gmail.com", local.replace('.', "")),
+        _ => format!("{local}@{domain}"),
+    }
+}
+
+/// Does any of `recipients` name one of `own` -- the account's addresses,
+/// lower-cased -- as Gmail would deliver it? See [`mailbox_key`].
+pub fn addressed_to<'a>(
+    recipients: impl IntoIterator<Item = &'a str>,
+    own: &HashSet<String>,
+) -> bool {
+    let own: HashSet<String> = own.iter().map(|o| mailbox_key(o)).collect();
+    recipients.into_iter().any(|r| own.contains(&mailbox_key(r)))
+}
+
+/// May a message the rules filed under a guarded tab be announced as it is
+/// stored, before any model has read it? `person_said` is a correction of
+/// somebody's own naming the sender, which outranks everything here.
+pub fn announce_on_arrival(standing: &Standing, person_said: bool) -> bool {
+    person_said
+        || (standing.known_sender
+            && standing.addressed
+            && !standing.automated
+            && !standing.filed_elsewhere_before)
+}
+
+/// What [`after_filing`] says of a message a model filed under a guarded tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterFiling {
+    Announce,
+    Quiet,
+    /// A stranger: announced only if a model says they are waiting on your
+    /// reply rather than reaching out cold.
+    AskIfWaiting,
+}
+
+/// Once a model has filed a message under a guarded tab: announce it, keep
+/// quiet, or ask whether a stranger is waiting on you.
+///
+/// Somebody you know is announced whoever the mail was to: the model was told
+/// that and filed it where people writing to you land anyway, and an alias,
+/// a forwarding domain or a Bcc is no reason to miss your colleague. A
+/// stranger's mail not to you by name is a list or a blast.
+pub fn after_filing(standing: &Standing) -> AfterFiling {
+    if standing.automated {
+        AfterFiling::Quiet
+    } else if !standing.first_contact() {
+        AfterFiling::Announce
+    } else if standing.addressed {
+        AfterFiling::AskIfWaiting
+    } else {
+        AfterFiling::Quiet
+    }
 }
 
 /// Has this account written in `message`'s thread? What
@@ -695,6 +828,67 @@ mod tests {
 
     fn ts(secs: i64) -> Timestamp {
         Timestamp::from_second(secs).unwrap()
+    }
+
+    /// Somebody you have written to, writing to you, by hand.
+    fn friend() -> Standing {
+        Standing { known_sender: true, addressed: true, ..Standing::default() }
+    }
+
+    #[test]
+    fn only_the_people_tabs_are_guarded_and_only_under_the_default_rule() {
+        let important = Some(Category::Important);
+        assert!(guarded(&MailNotify::Important, important));
+        assert!(guarded(&MailNotify::Important, Some(Category::Priority)));
+        assert!(!guarded(&MailNotify::Important, Some(Category::Newsletter)));
+        assert!(!guarded(&MailNotify::All, important), "everything means everything");
+        let ticked = MailNotify::Categories { tabs: vec![Category::Important], sorted: vec![] };
+        assert!(!guarded(&ticked, important), "a category somebody ticked is what they asked for");
+    }
+
+    #[test]
+    fn an_address_is_matched_as_gmail_delivers_it() {
+        let own = HashSet::from(["hari@gmail.com".to_string(), "me@example.com".to_string()]);
+        assert!(addressed_to(["H.ari@gmail.com"], &own));
+        assert!(addressed_to(["hari+lists@googlemail.com"], &own));
+        assert!(addressed_to(["ME+work@Example.com"], &own));
+        assert!(!addressed_to(["m.e@example.com"], &own), "only Gmail ignores dots");
+        assert!(!addressed_to(["team@example.com"], &own));
+        assert_eq!(mailbox_key("not an address"), "not an address");
+    }
+
+    #[test]
+    fn as_it_is_stored_only_somebody_you_know_writing_to_you_is_announced() {
+        assert!(announce_on_arrival(&friend(), false));
+        let stranger = Standing { known_sender: false, ..friend() };
+        assert!(!announce_on_arrival(&stranger, false), "Gmail's own Important is not enough");
+        assert!(
+            !announce_on_arrival(&Standing { wrote_in_thread: true, ..stranger }, false),
+            "a newcomer in your thread waits for a model too"
+        );
+        assert!(!announce_on_arrival(&Standing { addressed: false, ..friend() }, false));
+        assert!(!announce_on_arrival(&Standing { automated: true, ..friend() }, false));
+        assert!(!announce_on_arrival(
+            &Standing { filed_elsewhere_before: true, ..friend() },
+            false
+        ));
+        assert!(announce_on_arrival(&Standing::default(), true), "a person's own filing wins");
+    }
+
+    #[test]
+    fn once_filed_a_stranger_has_to_be_waiting_on_you() {
+        assert_eq!(after_filing(&friend()), AfterFiling::Announce);
+        let in_thread = Standing { known_sender: false, wrote_in_thread: true, ..friend() };
+        assert_eq!(after_filing(&in_thread), AfterFiling::Announce);
+        assert_eq!(
+            after_filing(&Standing { addressed: false, ..friend() }),
+            AfterFiling::Announce,
+            "a friend writing to an alias, or by Bcc, still reaches you"
+        );
+        let stranger = Standing { known_sender: false, ..friend() };
+        assert_eq!(after_filing(&stranger), AfterFiling::AskIfWaiting);
+        assert_eq!(after_filing(&Standing { addressed: false, ..stranger }), AfterFiling::Quiet);
+        assert_eq!(after_filing(&Standing { automated: true, ..friend() }), AfterFiling::Quiet);
     }
 
     fn facts(mailbox_known: bool) -> IngestFacts {

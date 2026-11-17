@@ -76,11 +76,30 @@ pub(super) struct FakeServer {
     gmail: bool,
     pub(super) mailboxes: HashMap<String, FakeMailbox>,
     next_modseq: u64,
+    /// Bumped by every [`FakeServer::append`]: what a session holding `IDLE`
+    /// with [`FakeMailSession::waking_on_mail`] hears as activity.
+    appended: tokio::sync::watch::Sender<u64>,
+    /// A message to deliver to a mailbox the moment another one is selected
+    /// -- see [`FakeServer::deliver_when_selected`].
+    deliver_when_selected: Option<(String, String, Vec<u8>)>,
 }
 
 impl FakeServer {
     pub(super) fn new(gmail: bool) -> Self {
-        Self { gmail, mailboxes: HashMap::new(), next_modseq: 1 }
+        Self {
+            gmail,
+            mailboxes: HashMap::new(),
+            next_modseq: 1,
+            appended: tokio::sync::watch::channel(0).0,
+            deliver_when_selected: None,
+        }
+    }
+
+    /// Deliver `raw`, unread, to `into` when `trigger` is next selected:
+    /// mail that arrives part way through a pass, after the pass has listed
+    /// `into` and before it is done.
+    pub(super) fn deliver_when_selected(&mut self, trigger: &str, into: &str, raw: Vec<u8>) {
+        self.deliver_when_selected = Some((trigger.to_string(), into.to_string(), raw));
     }
 
     pub(super) fn mailbox(&mut self, name: &str, special_use: Option<Role>) -> &mut FakeMailbox {
@@ -104,6 +123,7 @@ impl FakeServer {
             uid,
             FakeMessage { raw, flags, internal_date: Timestamp::now(), gmail, modseq },
         );
+        self.appended.send_modify(|n| *n += 1);
         uid
     }
 
@@ -202,6 +222,14 @@ pub(super) struct FakeMailSession {
     /// `a_notify_wakes_the_idle_loop_promptly_rather_than_waiting_for_the_poll`)
     /// need the alternative.
     block_idle: bool,
+    /// With [`Self::block_idle`], `IDLE` also ends -- as activity -- when a
+    /// message is appended anywhere on the server while it is held, the way
+    /// a real server reports `EXISTS`. Off by default, so a test that appends
+    /// while a task idles is not woken unless it asks to be.
+    wakes_on_mail: bool,
+    /// [`MailSession::uids_from`] answers `BAD`, as a server that will not
+    /// take `*` in an empty mailbox does.
+    refuses_uid_search: bool,
     /// Every mailbox name that was selected -- see [`Self::selected`] --
     /// at the moment [`FakeMailSession::idle`] was called, in order. A
     /// real `ImapSession::idle` reports activity for whatever is
@@ -226,6 +254,8 @@ impl FakeMailSession {
             server,
             selected: None,
             block_idle: false,
+            wakes_on_mail: false,
+            refuses_uid_search: false,
             idle_selections: Arc::new(Mutex::new(Vec::new())),
             commands: Arc::new(Mutex::new(Vec::new())),
         }
@@ -238,6 +268,18 @@ impl FakeMailSession {
 
     pub(super) fn blocking_idle(mut self) -> Self {
         self.block_idle = true;
+        self
+    }
+
+    /// See [`Self::wakes_on_mail`].
+    pub(super) fn waking_on_mail(mut self) -> Self {
+        self.wakes_on_mail = true;
+        self
+    }
+
+    /// See [`Self::refuses_uid_search`].
+    pub(super) fn refusing_uid_search(mut self) -> Self {
+        self.refuses_uid_search = true;
         self
     }
 
@@ -302,7 +344,12 @@ impl MailSession for FakeMailSession {
     async fn select(&mut self, mailbox: &str) -> SessionResult<MailboxState> {
         self.selected = Some(mailbox.to_string());
         self.commands.lock().unwrap().push(format!("select {mailbox}"));
-        let server = self.server.lock().unwrap();
+        let mut server = self.server.lock().unwrap();
+        if server.deliver_when_selected.as_ref().is_some_and(|(trigger, _, _)| trigger == mailbox)
+            && let Some((_, into, raw)) = server.deliver_when_selected.take()
+        {
+            server.append(&into, raw, karmayoga_mail::session::Flags::NONE, None);
+        }
         let mb = server
             .mailboxes
             .get(mailbox)
@@ -324,6 +371,8 @@ impl MailSession for FakeMailSession {
         cursor: &SyncCursor,
         known_uids: &UidSet,
     ) -> SessionResult<Changes> {
+        let listed = format!("list {}", self.selected.clone().unwrap_or_default());
+        self.commands.lock().unwrap().push(listed);
         Ok(self.with_selected(|mb| {
             if mb.uidvalidity != cursor.uidvalidity {
                 return Changes { uidvalidity_reset: true, ..Changes::default() };
@@ -350,6 +399,15 @@ impl MailSession for FakeMailSession {
             }
             Changes { new_uids, flag_changes, vanished, uidvalidity_reset: false }
         }))
+    }
+
+    async fn uids_from(&mut self, from: Uid) -> SessionResult<UidSet> {
+        self.commands.lock().unwrap().push(format!("search {from}:*"));
+        if self.refuses_uid_search {
+            return Err(MailError::Server("BAD Invalid messageset".into()));
+        }
+        Ok(self
+            .with_selected(|mb| mb.messages.keys().copied().filter(|uid| *uid >= from).collect()))
     }
 
     async fn headers(&mut self, uids: &UidSet) -> SessionResult<Vec<RemoteHeader>> {
@@ -487,6 +545,13 @@ impl MailSession for FakeMailSession {
         mut stop: tokio::sync::watch::Receiver<()>,
     ) -> SessionResult<IdleEvent> {
         self.idle_selections.lock().unwrap().push(self.selected.clone());
+        if self.block_idle && self.wakes_on_mail {
+            let mut appended = self.server.lock().unwrap().appended.subscribe();
+            return Ok(tokio::select! {
+                _ = stop.changed() => IdleEvent::Stopped,
+                _ = appended.changed() => IdleEvent::Activity,
+            });
+        }
         if self.block_idle {
             // Blocks until the caller's own wake signal fires -- see
             // `block_idle`'s own docs -- then ends cleanly, exactly the
@@ -560,6 +625,9 @@ pub(super) struct TestEnv {
     pub(super) index: Arc<dyn MailSearch>,
     pub(super) statuses: StatusRegistry,
     pub(super) account_id: AccountId,
+    /// The contact index a pass learns from and reads -- `None`, as most
+    /// tests here want, or one a test set up.
+    pub(super) contacts: Option<Arc<crate::mailsync::contacts::ContactIndex>>,
     /// Last, because fields drop in order: the directory must go after the
     /// vault and index that have files open in it, or the index can still be
     /// writing while it is removed and the directory is left behind.
@@ -603,6 +671,7 @@ impl TestEnv {
             index,
             statuses: StatusRegistry::new(),
             account_id: account.id,
+            contacts: None,
             _dir: dir,
         }
     }
@@ -617,7 +686,7 @@ impl TestEnv {
             attachment_cap_bytes: None,
             index_commit: passes::CommitPacer::new(),
             unread_cache: None,
-            contacts: None,
+            contacts: self.contacts.clone(),
             identities: Vec::new(),
         }
     }

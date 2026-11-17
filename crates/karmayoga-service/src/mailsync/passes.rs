@@ -28,19 +28,21 @@
 //! first sync and a steady-state wake: a wake is simply a sync with very
 //! little left to do.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use karmayoga_core::id::{AccountId, BlobId, MailMessageId, MailboxId};
 use karmayoga_core::mail::categorize::{self, CategorizeInput};
-use karmayoga_core::mail::{Body, MailboxRole, Message, PartRef};
+use karmayoga_core::mail::{Body, Category, CategorySource, MailboxRole, Message, PartRef};
 use karmayoga_core::packstore::{PackRef, PackStore};
 use karmayoga_core::store::mail::IngestMessage;
 use karmayoga_core::{MailDoc, MailSearch, Vault};
 use karmayoga_mail::mime::Disposition;
-use karmayoga_mail::session::{MailSession, Result as SessionResult, SyncCursor, Uid, UidSet};
+use karmayoga_mail::session::{
+    MailError, MailSession, Result as SessionResult, SyncCursor, Uid, UidSet,
+};
 
 use crate::mailsync::discovery::{self, LabelMailboxes, SyncedMailbox};
 use crate::mailsync::ingest::{self, ThreadIndex};
@@ -212,6 +214,88 @@ pub async fn sync_once<S: MailSession>(
     Ok(mailboxes)
 }
 
+/// The most new messages [`quick_pass`] takes on. Past this many at once it
+/// is not one message arriving but a batch -- a migration, a filter run in
+/// another client -- and the full pass after it takes the rest.
+const QUICK_PASS_MOST: usize = 50;
+
+/// Store what just arrived in `mailbox`, and nothing else: the uids at or
+/// above what the last look saw ([`SyncedMailbox::seen_uidnext`]), their
+/// headers, then their bodies. What a wake from `IDLE` runs before the full
+/// pass, so that new mail is stored, announced and handed to the model in the
+/// time two or three round trips take, rather than after every mailbox has
+/// been listed whole.
+///
+/// The session must have `mailbox` selected -- as it does straight out of
+/// `IDLE`, or after the task selected it to start one. Nothing here selects:
+/// a `SELECT` of a big Gmail All Mail is itself a second or more.
+///
+/// Leaves everything else to the full pass that follows it: flags, labels,
+/// what vanished, every other mailbox, and anything this did not get to. Its
+/// own work is idempotent with that pass's, since what is "new" there is
+/// what the vault does not hold. `on_news` runs once headers that are news in
+/// the inbox are stored and before their bodies are fetched, so the caller can
+/// start loading a model while they download -- not for a draft autosaved, or
+/// mail sent from another client, which land in Gmail's All Mail too.
+///
+/// A server that refuses the search -- some answer `*` in an empty mailbox
+/// with `BAD` -- costs nothing but the fast path: the full pass after it
+/// finds the same mail. Only a connection that is gone or a sign-in that has
+/// lapsed is an error here, as it would be there.
+pub async fn quick_pass<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &mut SyncedMailbox,
+    labels: &mut LabelMailboxes,
+    threads: &mut ThreadIndex,
+    on_news: impl FnOnce(),
+) -> SessionResult<()> {
+    // Not before a mailbox has finished a pass, and not mid-reset: those are
+    // the full pass's to finish.
+    if mailbox.seen_uidnext == 0 || mailbox.row.uidnext == 0 || mailbox.row.uidvalidity == 0 {
+        return Ok(());
+    }
+    let from = mailbox.seen_uidnext;
+    let mut new_uids: Vec<Uid> = match session.uids_from(from).await {
+        Ok(uids) => uids.iter().collect(),
+        Err(e @ (MailError::Network(_) | MailError::Auth(_))) => return Err(e),
+        Err(e) => {
+            tracing::debug!(error = %e, "the quick look for new mail was refused; the full pass will find it");
+            return Ok(());
+        }
+    };
+    if new_uids.is_empty() {
+        return Ok(());
+    }
+    mailbox.seen_uidnext = new_uids.iter().max().map_or(from, |uid| uid.saturating_add(1));
+    new_uids.sort_unstable_by(|a, b| b.cmp(a));
+    new_uids.truncate(QUICK_PASS_MOST);
+
+    let ingested = ingest_new(
+        ctx,
+        session,
+        mailbox,
+        labels,
+        threads,
+        new_uids,
+        IngestMode { just_reset: false, mailbox_known: true },
+    )
+    .await?;
+    if ingested.news > 0 {
+        on_news();
+    }
+    let stored: HashSet<Uid> = ingested.stored.into_iter().collect();
+    let pending: Vec<(Message, Uid)> = pending_messages(ctx.vault, mailbox.row.id)
+        .into_iter()
+        .filter(|(_, uid)| stored.contains(uid))
+        .collect();
+    if !pending.is_empty() {
+        fetch_bodies(ctx, session, mailbox, pending).await?;
+        let _ = ctx.index.commit();
+    }
+    Ok(())
+}
+
 /// Ask of each message held by
 /// [`StatusRegistry::note_reply_candidate`](crate::mailsync::status::StatusRegistry::note_reply_candidate)
 /// whether its thread has the account's own word in it, now that every mailbox
@@ -355,7 +439,23 @@ pub async fn sync_headers<S: MailSession>(
     };
     let known: UidSet =
         ctx.vault.mail_uid_set(mailbox.row.id).unwrap_or_default().into_iter().collect();
-    let changes = session.changes_since(&cursor, &known).await?;
+    mailbox.seen_uidnext = state.uidnext;
+    // Nothing has happened to a mailbox whose `UIDNEXT`, `HIGHESTMODSEQ` and
+    // message count all stand where the last finished pass left them: no uid
+    // is new, no flag or label moved, and nothing went that something else
+    // did not replace. Listing every uid in it to find that out is most of
+    // what a quiet minute downloads -- about 700 KB on a Gmail account with
+    // fifty thousand messages, every minute.
+    let quiet = !just_reset
+        && mailbox_known
+        && state.uidnext == mailbox.row.uidnext
+        && state.highestmodseq.is_some_and(|m| m == mailbox.row.highest_modseq)
+        && known.len() == u64::from(state.exists);
+    let changes = if quiet {
+        karmayoga_mail::session::Changes::default()
+    } else {
+        session.changes_since(&cursor, &known).await?
+    };
 
     // Reaping `changes.vanished` happens later, once every mailbox in this
     // round has had a chance to ingest its own new headers -- see
@@ -420,17 +520,138 @@ pub async fn sync_headers<S: MailSession>(
     }
 
     let new_uids: Vec<Uid> = changes.new_uids.iter().collect();
-    // Kept apart from `new_uids` itself, which `discovery::newest_first_chunks`
-    // below consumes by value: this is the one piece of it the completion
-    // write at the bottom of this function still needs, once the batches
-    // it came from are gone. See that write's own docs for why.
+    // Kept apart from `new_uids` itself, which `ingest_new` consumes by value:
+    // this is the one piece of it the completion write at the bottom of this
+    // function still needs. See that write's own docs for why.
     let highest_new_uid = new_uids.iter().copied().max();
+    let ingested = ingest_new(
+        ctx,
+        session,
+        mailbox,
+        labels,
+        threads,
+        new_uids,
+        IngestMode { just_reset, mailbox_known },
+    )
+    .await?;
+    let stored_all = ingested.stored_all;
+    let marked_new = ingested.marked_new;
+
+    // `state.uidnext` is `UIDNEXT` off the wire, and `UIDNEXT` is an
+    // *optional* untagged response to `SELECT` -- RFC 3501 section 6.3.1
+    // marks it, unlike `UIDVALIDITY`, without the word "REQUIRED" -- so on
+    // a server that never sends it, `karmayoga_mail::imap`'s adapter reports
+    // a permanent `0` (see its own doc comment at that call site). Writing
+    // that `0` straight into `mailbox.row.uidnext` here used to be exactly
+    // what `resuming_an_interrupted_reset`, above, watches for, which made
+    // it true forever on such a server: not just a crash-interrupted pass
+    // but *every* pass, on *every* mailbox, would look unfinished, and each
+    // one would wipe the mailbox's membership and pay `force_db_rematch`'s
+    // per-header vault scan for messages that were never part of any reset
+    // at all -- silently, since nothing here ever surfaced an error.
+    //
+    // So this does not simply copy `state.uidnext` in. It takes the
+    // largest uid this pass actually knows the mailbox holds -- `known`,
+    // read at the top of this function, and `highest_new_uid`, salvaged
+    // above from the `new_uids` batches this loop just consumed -- one past
+    // it, and only widens that with `state.uidnext` when the server *did*
+    // report a real one larger still (an expunged uid this mailbox never
+    // locally knew about, say). The result is not literally `UIDNEXT` any
+    // more, and almost nothing reads this field as one: it is written here,
+    // zeroed by the reset branch above, and compared to `0` by
+    // `resuming_an_interrupted_reset` above. The one other reader, the quiet
+    // check above, compares it to `UIDNEXT` itself, and the only thing a
+    // value that differs costs there is a listing that was not needed. The
+    // comparison with `0` now only ever sees `0` for a
+    // mailbox that either has never been synced, is mid-reset, or -- the
+    // one case this cannot fix without a durable flag of its own, see
+    // `sync_headers`'s own doc comment's "one mailbox this cannot tell
+    // apart from a stuck reset" section -- has never once held a single
+    // message.
+    let highest_known_uid = known.iter().max().into_iter().chain(highest_new_uid).max();
+    mailbox.row.uidnext =
+        highest_known_uid.map(|uid| uid.saturating_add(1)).unwrap_or(0).max(state.uidnext);
+    if let Some(modseq) = state.highestmodseq {
+        mailbox.row.highest_modseq = modseq;
+    }
+    let _ = ctx.vault.save_mailbox(&mailbox.row);
+
+    // Any of these can move a thread across the read/unread line -- a new
+    // message, a flag another client actually changed, one this account no
+    // longer has at all, or a Gmail label the fallback re-check above
+    // caught that `changes_since` itself said nothing about -- so the
+    // cached answer to `unread_counts` is stale the moment any of them is
+    // non-empty. See `crate::mailsync::unread_cache`'s module docs. Built
+    // from `any_flag_actually_changed`, not `!changes.flag_changes.is_empty()`:
+    // without `CONDSTORE`, that list is every known uid's *current* flags,
+    // changed or not, and invalidating on it regardless would mean the
+    // cache never survives a single non-`CONDSTORE` pass. New mail a batch
+    // already marked as it was stored is not counted twice.
+    let changed = (!changes.new_uids.is_empty() && !marked_new)
+        || any_flag_actually_changed
+        || !changes.vanished.is_empty()
+        || gmail_labels_changed;
+    if changed && let Some(cache) = &ctx.unread_cache {
+        cache.invalidate(ctx.account_id);
+    }
+    // The same "this mailbox's list is different now" the cache just heard,
+    // passed on to whoever is drawing it: `crate::mailsync::task` takes this
+    // when it announces new mail mid-pass, and again once the whole pass is
+    // over, raising one change event each time, so an open window reloads
+    // its thread list instead of showing what it had before the mail
+    // arrived. Marked here, not announced here, so a pass that touches six
+    // mailboxes says so once.
+    if changed {
+        ctx.statuses.mark_changed(ctx.account_id);
+    }
+
+    Ok(HeadersPass { vanished: changes.vanished, stored_all })
+}
+
+/// How [`ingest_new`] treats what it stores: whether the mailbox is being
+/// rematched after a `UIDVALIDITY` reset, and whether it had finished a pass
+/// before -- see [`sync_headers`] for both.
+#[derive(Debug, Clone, Copy)]
+struct IngestMode {
+    just_reset: bool,
+    mailbox_known: bool,
+}
+
+/// What [`ingest_new`] did.
+struct Ingested {
+    /// Every header it was offered is stored. See [`HeadersPass::stored_all`].
+    stored_all: bool,
+    /// A batch already told an open list it changed.
+    marked_new: bool,
+    /// The uids of every header in a batch that was stored.
+    stored: Vec<Uid>,
+    /// How many of those were news in an inbox -- see
+    /// [`crate::arrivals::ingest_is_news`].
+    news: usize,
+}
+
+/// Fetch and store the headers of `new_uids` in `mailbox`, which the session
+/// must have selected: in batches of [`HEADER_BATCH_SIZE`], newest first,
+/// each batch committed as it lands and its news noted for the account task
+/// the moment it is stored. The part of [`sync_headers`] a wake also runs on
+/// its own, through [`quick_pass`], for what just arrived.
+async fn ingest_new<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    labels: &mut LabelMailboxes,
+    threads: &mut ThreadIndex,
+    new_uids: Vec<Uid>,
+    mode: IngestMode,
+) -> SessionResult<Ingested> {
     let total = new_uids.len() as u64;
     let mut done = 0u64;
     let mut stored_all = true;
     // Whether a batch below has said the list changed as it stored new mail,
     // so the end of the mailbox does not say it again for the same messages.
     let mut marked_new = false;
+    let mut stored = Vec::new();
+    let mut news = 0;
     ctx.statuses.set_phase(ctx.account_id, Phase::Headers, done, total);
 
     // The rules-based half of the split inbox -- see
@@ -459,7 +680,7 @@ pub async fn sync_headers<S: MailSession>(
                 ctx.account_id,
                 header,
                 threads,
-                just_reset,
+                mode.just_reset,
             ) {
                 Ok(r) => r,
                 Err(e) => {
@@ -490,13 +711,24 @@ pub async fn sync_headers<S: MailSession>(
                 deleted: resolved.message.flags.deleted,
                 draft: resolved.message.flags.draft,
                 own: own.contains(&resolved.message.from.email.to_lowercase()),
-                mailbox_known,
+                mailbox_known: mode.mailbox_known,
                 sent_at: resolved.message.date,
                 now: jiff::Timestamp::now(),
             }) {
+                let category = resolved.message.category;
+                // Mail filed where a person writing to you lands is only
+                // announced now when it comes from somebody you know -- see
+                // `arrivals`' "people, and strangers who write like people".
+                // The rest waits for a model to read it.
+                let wanted = notify.wants_filed(category, None)
+                    && (!crate::arrivals::guarded(&notify, category)
+                        || crate::arrivals::announce_on_arrival(
+                            &standing_on_arrival(ctx, &resolved, &own),
+                            category_rules.for_sender(&resolved.message.from.email).is_some(),
+                        ));
                 arrivals.push((
                     resolved.message.id,
-                    notify.wants_filed(resolved.message.category, None),
+                    wanted,
                     crate::arrivals::NewMail {
                         message_id: resolved.message.id.to_string(),
                         from: crate::arrivals::sender_label(
@@ -591,9 +823,9 @@ pub async fn sync_headers<S: MailSession>(
                     ctx.statuses.mark_changed(ctx.account_id);
                     marked_new = true;
                 }
-                if !arrivals.is_empty() {
-                    ctx.statuses.mark_arrived(ctx.account_id);
-                }
+                ctx.statuses.mark_arrived(ctx.account_id, arrivals.iter().map(|(m, _, _)| *m));
+                stored.extend(headers.iter().map(|h| h.uid));
+                news += arrivals.len();
                 for (message, wanted, arrival) in arrivals {
                     ctx.statuses.note_arrival(&arrival.message_id, Instant::now());
                     if wanted {
@@ -630,73 +862,7 @@ pub async fn sync_headers<S: MailSession>(
         tokio::task::yield_now().await;
     }
 
-    // `state.uidnext` is `UIDNEXT` off the wire, and `UIDNEXT` is an
-    // *optional* untagged response to `SELECT` -- RFC 3501 section 6.3.1
-    // marks it, unlike `UIDVALIDITY`, without the word "REQUIRED" -- so on
-    // a server that never sends it, `karmayoga_mail::imap`'s adapter reports
-    // a permanent `0` (see its own doc comment at that call site). Writing
-    // that `0` straight into `mailbox.row.uidnext` here used to be exactly
-    // what `resuming_an_interrupted_reset`, above, watches for, which made
-    // it true forever on such a server: not just a crash-interrupted pass
-    // but *every* pass, on *every* mailbox, would look unfinished, and each
-    // one would wipe the mailbox's membership and pay `force_db_rematch`'s
-    // per-header vault scan for messages that were never part of any reset
-    // at all -- silently, since nothing here ever surfaced an error.
-    //
-    // So this does not simply copy `state.uidnext` in. It takes the
-    // largest uid this pass actually knows the mailbox holds -- `known`,
-    // read at the top of this function, and `highest_new_uid`, salvaged
-    // above from the `new_uids` batches this loop just consumed -- one past
-    // it, and only widens that with `state.uidnext` when the server *did*
-    // report a real one larger still (an expunged uid this mailbox never
-    // locally knew about, say). The result is not literally `UIDNEXT` any
-    // more, but nothing outside this one check ever reads this field as
-    // one: it is written here, zeroed by the reset branch above, and
-    // compared to `0` by `resuming_an_interrupted_reset` above, and that is
-    // the whole of its job. That comparison now only ever sees `0` for a
-    // mailbox that either has never been synced, is mid-reset, or -- the
-    // one case this cannot fix without a durable flag of its own, see
-    // `sync_headers`'s own doc comment's "one mailbox this cannot tell
-    // apart from a stuck reset" section -- has never once held a single
-    // message.
-    let highest_known_uid = known.iter().max().into_iter().chain(highest_new_uid).max();
-    mailbox.row.uidnext =
-        highest_known_uid.map(|uid| uid.saturating_add(1)).unwrap_or(0).max(state.uidnext);
-    if let Some(modseq) = state.highestmodseq {
-        mailbox.row.highest_modseq = modseq;
-    }
-    let _ = ctx.vault.save_mailbox(&mailbox.row);
-
-    // Any of these can move a thread across the read/unread line -- a new
-    // message, a flag another client actually changed, one this account no
-    // longer has at all, or a Gmail label the fallback re-check above
-    // caught that `changes_since` itself said nothing about -- so the
-    // cached answer to `unread_counts` is stale the moment any of them is
-    // non-empty. See `crate::mailsync::unread_cache`'s module docs. Built
-    // from `any_flag_actually_changed`, not `!changes.flag_changes.is_empty()`:
-    // without `CONDSTORE`, that list is every known uid's *current* flags,
-    // changed or not, and invalidating on it regardless would mean the
-    // cache never survives a single non-`CONDSTORE` pass. New mail a batch
-    // already marked as it was stored is not counted twice.
-    let changed = (!changes.new_uids.is_empty() && !marked_new)
-        || any_flag_actually_changed
-        || !changes.vanished.is_empty()
-        || gmail_labels_changed;
-    if changed && let Some(cache) = &ctx.unread_cache {
-        cache.invalidate(ctx.account_id);
-    }
-    // The same "this mailbox's list is different now" the cache just heard,
-    // passed on to whoever is drawing it: `crate::mailsync::task` takes this
-    // when it announces new mail mid-pass, and again once the whole pass is
-    // over, raising one change event each time, so an open window reloads
-    // its thread list instead of showing what it had before the mail
-    // arrived. Marked here, not announced here, so a pass that touches six
-    // mailboxes says so once.
-    if changed {
-        ctx.statuses.mark_changed(ctx.account_id);
-    }
-
-    Ok(HeadersPass { vanished: changes.vanished, stored_all })
+    Ok(Ingested { stored_all, marked_new, stored, news })
 }
 
 /// Actually remove every uid [`sync_headers`] reported vanished from
@@ -803,6 +969,54 @@ fn categorize_new_message(
     };
     resolved.message.category = Some(categorize::categorize(&input, rules));
     resolved.message.category_source = karmayoga_core::mail::CategorySource::Rules;
+}
+
+/// How the sender of a message being stored stands with the account -- see
+/// [`crate::arrivals::Standing`] -- as far as
+/// [`crate::arrivals::announce_on_arrival`] reads it. The thread is read only
+/// once the cheap signals have all passed, since only then can it change the
+/// answer, and only for what that function asks of it.
+fn standing_on_arrival(
+    ctx: &SyncContext<'_>,
+    resolved: &ingest::HeaderIngest,
+    own: &HashSet<String>,
+) -> crate::arrivals::Standing {
+    let msg = &resolved.message;
+    let input = CategorizeInput {
+        from: &msg.from.email,
+        list_id: resolved.list_id.as_deref(),
+        list_unsubscribe: resolved.list_unsubscribe.as_deref(),
+        precedence: resolved.precedence.as_deref(),
+        auto_submitted: resolved.auto_submitted.as_deref(),
+        gmail_labels: &msg.labels,
+        ever_written_to: false,
+    };
+    let mut standing = crate::arrivals::Standing {
+        known_sender: ctx.contacts.as_ref().is_some_and(|c| c.has_sent_to(&msg.from.email)),
+        addressed: crate::arrivals::addressed_to(
+            msg.to.iter().chain(&msg.cc).map(|a| a.email.as_str()),
+            own,
+        ),
+        automated: categorize::bulk_or_automated(&input),
+        ..Default::default()
+    };
+    if !(standing.known_sender && standing.addressed && !standing.automated) {
+        return standing;
+    }
+    if let Ok((_, earlier)) = ctx.vault.thread(msg.thread_id) {
+        // A sender you once answered can still be pitching: if a model or a
+        // person filed their last message here off the people tabs, the next
+        // one waits for a model too.
+        standing.filed_elsewhere_before = earlier
+            .iter()
+            .filter(|m| m.id != msg.id && m.from.email.eq_ignore_ascii_case(&msg.from.email))
+            .max_by_key(|m| m.date)
+            .is_some_and(|m| {
+                m.category_source != CategorySource::Rules
+                    && !matches!(m.category, Some(Category::Priority | Category::Important))
+            });
+    }
+    standing
 }
 
 /// Diff and apply Gmail's own label set for `uids` in `mailbox`, which must
@@ -1049,6 +1263,19 @@ pub async fn bodies_pass<S: MailSession>(
     // -- almost never this one. `raw` fetches by uid within the *selected*
     // mailbox, so this has to point the session back here first.
     session.select(&mailbox.remote_name).await?;
+    fetch_bodies(ctx, session, mailbox, pending).await
+}
+
+/// Fetch, seal and index the bodies of `pending` in `mailbox`, which the
+/// session must have selected. The whole of [`bodies_pass`] after it has
+/// found what is pending and selected the mailbox, and what [`quick_pass`]
+/// runs for the few messages it just stored.
+async fn fetch_bodies<S: MailSession>(
+    ctx: &SyncContext<'_>,
+    session: &mut S,
+    mailbox: &SyncedMailbox,
+    pending: Vec<(Message, Uid)>,
+) -> SessionResult<()> {
     let total = pending.len() as u64;
     let mut done = 0u64;
     ctx.statuses.set_phase(ctx.account_id, Phase::Bodies, done, total);

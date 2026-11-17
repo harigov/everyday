@@ -224,6 +224,20 @@ pub async fn choose(
     }
 }
 
+/// Load `model` into memory if it is not there already, so the next question
+/// put to it does not wait for the load. On a blocking thread; a failure is
+/// left for that question to report, as it would have been anyway.
+pub async fn warm(model: LocalDecisionModel) {
+    #[cfg(feature = "decisions")]
+    {
+        let _ = crate::service::blocking(move || run::warm(model)).await;
+    }
+    #[cfg(not(feature = "decisions"))]
+    {
+        let _ = model;
+    }
+}
+
 /// How long `model` takes over one message on this computer: loading it if
 /// it was not in memory, then the average of a few decisions about made-up
 /// mail, the way Settings → Mail sorting starts out.
@@ -404,6 +418,10 @@ mod run {
                     Some((which, Instant::now(), e.clone()));
             }
         })
+    }
+
+    pub fn warm(which: LocalDecisionModel) -> CommandResult<()> {
+        decider(which).map(|_| ())
     }
 
     pub fn unload(which: LocalDecisionModel) -> bool {

@@ -610,6 +610,19 @@ pub trait MailSession: Send {
     /// implement.
     async fn changes_since(&mut self, cursor: &SyncCursor, known_uids: &UidSet) -> Result<Changes>;
 
+    /// Every uid at or above `from` in the selected mailbox -- `UID SEARCH UID
+    /// from:*`, with the one message `*` names when nothing is that new taken
+    /// back out. What a wake reads when it only wants what just arrived:
+    /// [`Self::changes_since`] lists the whole mailbox to find what vanished
+    /// too, which on a large one is most of a second's download for the one
+    /// new uid at the end of it.
+    ///
+    /// The default refuses with [`MailError::Unsupported`], and a caller then
+    /// waits for the full pass it would have run anyway.
+    async fn uids_from(&mut self, _from: Uid) -> Result<UidSet> {
+        Err(MailError::Unsupported("UID SEARCH from a uid"))
+    }
+
     /// Header-sized metadata for a set of UIDs in the selected mailbox — see
     /// [`RemoteHeader`] for exactly what "header-sized" means and why.
     async fn headers(&mut self, uids: &UidSet) -> Result<Vec<RemoteHeader>>;

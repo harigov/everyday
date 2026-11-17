@@ -49,6 +49,13 @@ use karmayoga_mail::session::{MailSession, RemoteMailbox, Role, Uid};
 pub struct SyncedMailbox {
     pub row: Mailbox,
     pub remote_name: String,
+    /// `UIDNEXT` as the server reported it the last time this session looked
+    /// at the mailbox, or `0` before it has (or on a server that never says).
+    /// Anything at or above it arrived since: what a wake fetches first, and
+    /// how the account task tells that mail came in while it was not in
+    /// `IDLE` to hear about it. Never stored -- `row.uidnext` is the vault's,
+    /// and means something else (see `passes::sync_headers`).
+    pub seen_uidnext: Uid,
 }
 
 fn to_mailbox_role(role: Role) -> MailboxRole {
@@ -126,7 +133,11 @@ pub async fn discover<S: MailSession>(
                 fresh
             }
         };
-        synced.push(SyncedMailbox { row, remote_name: remote_mailbox.name.clone() });
+        synced.push(SyncedMailbox {
+            row,
+            remote_name: remote_mailbox.name.clone(),
+            seen_uidnext: 0,
+        });
     }
 
     // Inbox (or, on Gmail, All Mail, which is what carries the inbox's own

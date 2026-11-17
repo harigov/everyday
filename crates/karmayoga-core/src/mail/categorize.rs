@@ -121,6 +121,14 @@ fn gmail_label_category(labels: &[String]) -> Option<Category> {
     }
 }
 
+/// Does anything about this message say no person wrote it to you alone: the
+/// automated-mail signals of rule 3, or the mailing-list headers of rule 4?
+/// What a Gmail `\Important` label or a correction would otherwise hide from
+/// a caller that only reads the category [`categorize`] answers.
+pub fn bulk_or_automated(input: &CategorizeInput<'_>) -> bool {
+    looks_automated(input) || input.list_id.is_some() || input.list_unsubscribe.is_some()
+}
+
 fn looks_automated(input: &CategorizeInput<'_>) -> bool {
     if input.auto_submitted.is_some_and(|v| !v.trim().eq_ignore_ascii_case("no")) {
         return true;

@@ -34,7 +34,7 @@ use crate::token_cache::TokenCache;
 use crate::transfers::Transfers;
 use crate::weather_cache::WeatherCache;
 use jiff::Timestamp;
-use karmayoga_core::id::{AccountId, DraftId, RecordingId, ThreadId};
+use karmayoga_core::id::{AccountId, DraftId, MailMessageId, RecordingId, ThreadId};
 use karmayoga_core::mail::Origin;
 use karmayoga_core::mail::rate_limit::RateLimitRefusal;
 use karmayoga_core::{BlobId, CalendarId, Vault};
@@ -1142,6 +1142,83 @@ impl Service {
         run: impl std::future::Future<Output = ()> + Send + 'static,
     ) {
         self.routines.detach(routine, run);
+    }
+
+    /// Sort the threads of `messages`, new inbox mail that just arrived,
+    /// ahead of everything else the model's passes have to do, and announce
+    /// each one the moment its answer is in -- see
+    /// `crate::mailai::sort_new_mail`. Its own lane beside
+    /// [`Service::run_mail_passes`], which may be half way through follow-ups,
+    /// drafts or an older sort; those passes run once more when this lane is
+    /// done, for what they make of the new mail.
+    ///
+    /// One lane for every account, taking them in the order their mail came:
+    /// a model on this computer answers one question at a time anyway.
+    pub(crate) fn sort_new_mail(
+        self: &Arc<Self>,
+        account: AccountId,
+        messages: Vec<MailMessageId>,
+    ) {
+        if !self.mail.queue_new_mail(account, messages) {
+            return;
+        }
+        /// Marks the lane stopped if it is aborted -- the vault locking --
+        /// rather than finished, or nothing would ever start it again. Made
+        /// before the task is spawned and moved into it, so an abort before
+        /// its first poll, which drops the future unrun, still drops this.
+        struct Lane(Arc<Service>, bool);
+        impl Lane {
+            /// It ran to its end, and `next_new_mail` has already said so.
+            fn finish(&mut self) {
+                self.1 = true;
+            }
+        }
+        impl Drop for Lane {
+            fn drop(&mut self) {
+                if !self.1 {
+                    self.0.mail.new_mail_stopped();
+                }
+            }
+        }
+        let mut lane = Lane(self.clone(), false);
+        self.routines.detach(None, async move {
+            let svc = lane.0.clone();
+            while let Some((account, messages)) = svc.mail.next_new_mail() {
+                crate::mailai::sort_new_mail(&svc, account, messages).await;
+            }
+            lane.finish();
+            svc.run_mail_passes(true);
+        });
+    }
+
+    /// Mark `threads` as being asked about by one sorting pass -- the
+    /// new-mail lane's or the minute's -- and answer the ones no other pass
+    /// already was, which are the only ones the caller should ask about.
+    pub(crate) fn claim_mail_sorts(&self, threads: &[ThreadId]) -> Vec<ThreadId> {
+        self.mail.claim_sorts(threads)
+    }
+
+    pub(crate) fn release_mail_sorts(&self, threads: &[ThreadId]) {
+        self.mail.release_sorts(threads);
+    }
+
+    /// Whether a sorting pass is asking about `thread` right now -- see
+    /// [`Service::claim_mail_sorts`].
+    pub(crate) fn mail_sorting_now(&self, thread: ThreadId) -> bool {
+        self.mail.sorting_now(thread)
+    }
+
+    /// Start loading the decision model, if it is one on this computer and
+    /// not already in memory, so the sorting new mail is about to need does
+    /// not wait for it after the mail has downloaded. Nothing else waits on
+    /// this; a load that fails says so to the sorting as it always does.
+    pub(crate) fn warm_decision_model(&self) {
+        let Some(vault) = self.get() else { return };
+        let Ok(decision) = vault.decision_access() else { return };
+        let Some(model) = decision.config.local_model() else { return };
+        if crate::local::decide::ready(model) {
+            tokio::spawn(crate::local::decide::warm(model));
+        }
     }
 
     /// Carry the model's passes over mail -- sorting, priority, drafts --
