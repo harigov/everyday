@@ -949,7 +949,7 @@ class AppState {
   /**
    * Called from real user interaction. Defers both lock clocks.
    *
-   * Wired to the window in `App.svelte` -- a key, a press, a scroll -- and not
+   * Wired to the window in `App.svelte` -- a key, a press, a wheel -- and not
    * only to the editors. It used to be reached from the two rich-text
    * `onUpdate` handlers and nowhere else, which meant the screen clock was
    * deferred by *typing prose* and by nothing else at all: an hour spent
@@ -978,6 +978,21 @@ class AppState {
       // Storage refused (full, or a stand-in under test): each window then
       // keeps its own clock, as every window did before there were two.
     }
+  }
+
+  /**
+   * Whether a turn of the wheel is worth hearing now, as `touch`: a lock
+   * timer is running and half of it has gone by since anything in any window
+   * of this app here deferred it. Only then does `App.svelte` listen for the
+   * wheel at all -- see `lib/wheel.ts` for what a wheel listener costs every
+   * scroll -- and half is early enough that reading with the wheel alone, a
+   * turn every so often, still never reaches the lock or the key's own
+   * clock, which `touch` pings at most `TOUCH_MS` apart.
+   */
+  wheelWanted(): boolean {
+    const seconds = this.status?.autoLockSeconds ?? 0
+    if (seconds <= 0 || this.opensItself || this.screen !== 'main') return false
+    return Date.now() - Math.max(this.#idleSince, activeElsewhere()) >= (seconds * 1000) / 2
   }
 
   // ── the open document ────────────────────────────────────────────────

@@ -31,7 +31,9 @@
   const { label, value, note, warn = false, children }: Props = $props()
 </script>
 
-<div class="tile">
+<!-- `data-figure` says what this is to the card around it: a card that holds
+     only a figure stands it halfway down (`WidgetCard`). -->
+<div class="tile" data-figure>
   {#if label}<span class="label">{label}</span>{/if}
   <span class="value">{value}</span>
   {#if note}<span class="note" class:warn>{note}</span>{/if}

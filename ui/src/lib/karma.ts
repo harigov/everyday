@@ -9,6 +9,7 @@
 // way it answers every other command. Keep the two in step;
 // `scripts/karma.test.mjs` pins the same cases the Rust tests do.
 
+import { addDays, startOfWeek } from './time'
 import type { Deed, DeedKind, KarmaDay, Tracker, TrackerDay } from './types'
 
 /** The most a day can earn, after every source's own cap. */
@@ -145,4 +146,36 @@ export function karmaLevel(net: number): number {
   if (net === 0) return 0
   const step = Math.min(4, Math.ceil(Math.abs(net) / (DAY_CEILING / 4)))
   return net > 0 ? step : -step
+}
+
+/** What the Karma card says beside its squares. */
+export interface KarmaSummary {
+  /** This week's net so far: from the week's first day, as the locale has
+   *  it and the heatmap's columns start, through today. */
+  week: number
+  /** The best day's net, or `null` before any day has come out above zero. */
+  best: number | null
+  /** Days in a row that came out above zero, up to today -- or up to
+   *  yesterday while today has not yet, so a run is not broken at breakfast. */
+  streak: number
+}
+
+/** `days` are a report's days, oldest first, holding only days with anything
+ *  in them; `weekStart` is 0 for Sunday, as `localeWeekStart` gives it. */
+export function karmaSummary(days: KarmaDay[], today: string, weekStart: number): KarmaSummary {
+  const net = new Map(days.map((d) => [d.date, d.net]))
+  const weekFrom = startOfWeek(today, weekStart)
+  let week = 0
+  let best: number | null = null
+  for (const d of days) {
+    if (d.date >= weekFrom && d.date <= today) week += d.net
+    if (d.net > 0 && (best === null || d.net > best)) best = d.net
+  }
+  let at = (net.get(today) ?? 0) > 0 ? today : addDays(today, -1)
+  let streak = 0
+  while ((net.get(at) ?? 0) > 0) {
+    streak++
+    at = addDays(at, -1)
+  }
+  return { week, best, streak }
 }

@@ -119,6 +119,7 @@
   class:over={dragOver}
   data-widget={widget.id}
   aria-label={spec.label}
+  style="--tint: var(--app-{spec.app})"
   oncontextmenu={(e) => menu.show(e, cardMenu())}
 >
   <header>
@@ -128,6 +129,10 @@
            inside a text field would otherwise select text instead. -->
       <span class="grip" title="Drag to move"><Icon name="grip" size={14} /></span>
     {/if}
+    <!-- The card's own mark, in the colour of the app it draws from -- the
+         app bar's colour for that app, so a glance at the page says which
+         card is mail and which is the calendar before a word is read. -->
+    <span class="mark" aria-hidden="true"><Icon name={spec.icon} size={15} weight={1.8} /></span>
     <h2>{spec.label}</h2>
     <span class="spacer"></span>
     {#if tools}<div class="tools">{@render tools()}</div>{/if}
@@ -197,10 +202,20 @@
        one in it -- see `.slot` in `OverviewView`. */
     flex: 1;
     min-width: 0;
-    padding: var(--sp-4);
+    padding: var(--sp-4) var(--sp-5) var(--sp-5);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    background: var(--bg-raised);
+    border-radius: var(--radius-xl);
+    /* Raised off the page, with a wash of the card's own colour across its
+       top that has faded out before the content starts: enough to tell the
+       cards in a row apart, not enough to colour what is written in them. */
+    background:
+      linear-gradient(color-mix(in oklab, var(--tint) 10%, transparent), transparent 88px),
+      var(--bg-raised);
+    /* The glass rim the frame's own panels wear, and nothing in a flat
+       theme. Inset and unblurred on purpose: a blurred shadow on each of a
+       page of cards is redrawn for every frame of a scroll in WebKitGTK
+       (see `ItemCard`'s covers). */
+    box-shadow: var(--edge);
   }
 
   .card.editing {
@@ -213,24 +228,41 @@
   /* Where a dragged card would land. A line rather than a shifted layout:
      re-flowing the whole grid under the pointer makes the target move. */
   .card.over {
-    box-shadow: inset 3px 0 0 var(--accent);
+    box-shadow:
+      inset 3px 0 0 var(--accent),
+      var(--edge);
   }
 
   header {
     display: flex;
     align-items: center;
     gap: var(--sp-2);
-    min-height: 22px;
-    margin-bottom: var(--sp-3);
+    min-height: 28px;
+    margin-bottom: var(--sp-4);
   }
 
+  /* The card's mark: its icon in its app's colour on a tint of the same,
+     the way the app bar draws the app that is open. */
+  .mark {
+    display: grid;
+    flex: none;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    border-radius: 9px;
+    background: color-mix(in oklab, var(--tint) 18%, transparent);
+    color: var(--tint);
+  }
+
+  /* A heading that reads as one: the card's name at body size in the text
+     colour. It was the faint small capitals the sidebar's section labels
+     use, which on a page of nothing but cards left every card's name the
+     quietest thing on it. */
   h2 {
     margin: 0;
-    color: var(--fg-faint);
-    font-size: var(--text-xs);
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+    color: var(--fg);
+    font-size: var(--text-base);
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -252,10 +284,11 @@
     flex: none;
     align-items: center;
     gap: 3px;
-    height: 20px;
-    padding: 0 var(--sp-1) 0 var(--sp-2);
-    border-radius: var(--radius-sm);
-    color: var(--fg-faint);
+    height: 24px;
+    padding: 0 var(--sp-2) 0 var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--fg-subtle);
     font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
   }
@@ -327,5 +360,14 @@
   .body {
     flex: 1;
     min-width: 0;
+  }
+  /* A card that is one figure -- due today, on now -- holds it halfway down
+     rather than at the top: stretched to the height of a long list beside
+     it, it read as a line over an empty card. `StatTile` marks itself a
+     figure for this, rather than this knowing its class name. */
+  .body:has(> :global([data-figure]:only-child)) {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
 </style>
