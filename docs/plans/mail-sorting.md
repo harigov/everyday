@@ -78,6 +78,52 @@ the Inbox, 20 pages a tick, after recent mail. `again` re-asks threads
 already sorted (for after the categories change). A restart forgets a sort
 half done; asking again skips what is already sorted.
 
+## New mail first, and who it is announced for (Nov 2026)
+
+Hari asked why Karma Yoga was the last app to announce new mail. The answer
+was everything that happened after IDLE: a full pass of every mailbox, then
+sorting behind follow-ups, drafts and the backlog, account by account, with
+each account announced only once its whole share was answered.
+
+- **Its own lane.** The account task hands the new inbox mail it stored to
+  `Service::sort_new_mail` as soon as the bodies are in: straight after the
+  quick fetch on an IDLE wake, or after a full pass. One lane serves every
+  account. `mailsort::sort_new_mail` reads each message's thread as it is
+  now (a later message may have folded threads together), asks about just
+  those threads (one at a time on a local model), and announces each inside
+  its own request's turn. When the lane is done it runs the ordinary passes
+  once more. A thread is claimed by whichever pass is asking about it
+  (`MailRuntime::sorting_now`), so the lane and the minute's `sort_tick`
+  never both ask about it. A wake that stores inbox news starts loading a
+  local model while the bodies download (`Service::warm_decision_model`).
+  The small model is not run on the lane: its passes page from cursors
+  shared with the minute's passes, so new mail waits for those, as before.
+- **Who is announced.** Only under the default rule, "Important mail". "All
+  new mail" and "Categories I choose" announce exactly what they say. Mail
+  filed under Priority or Important, which is where a stranger's pitch
+  dressed as a person lands, goes through `arrivals::Standing`:
+  - *As it is stored*, before any model reads it: only somebody the person
+    has written to, writing to them by name, with nothing automated or
+    list-like about it, whose earlier mail in the thread a model or person
+    did not file elsewhere. Addresses are matched the way Gmail delivers
+    them (`arrivals::mailbox_key`: case, `+tag`, Gmail dots,
+    googlemail.com). Gmail's own `\Important` label alone is no longer
+    enough. A person's correction naming the sender still wins.
+  - *Once a model has filed it*: somebody they have written to, or in a
+    thread they wrote in, whoever the mail was to, from an address that does
+    not read as a machine's. A stranger has to have written to them by name,
+    and the follow-up question (*Needs your reply* / *Cold outreach* / *No
+    reply needed*) has to come back *Needs your reply* at
+    `FIRST_CONTACT_CONFIDENCE`. That question does not draw on the sorting
+    budget: it is asked at most once per message sorting just filed, and a
+    real question missed then is missed for good. With follow-ups on, the
+    answer is also written as the thread's follow-up, so it is asked once.
+    Mail already announced is passed over before any of this is asked.
+  - Held-back mail waits for a model. With no model that may read the
+    account, it is not announced: nothing else can tell a stranger who needs
+    the person from one who is selling. On the small model, a stranger is
+    announced only by being moved to Priority.
+
 ## Follow-ups (Nov 2026)
 
 The same model also says which recent threads are waiting: on the person

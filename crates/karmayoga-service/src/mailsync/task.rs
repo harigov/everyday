@@ -25,6 +25,21 @@
 //! against a fake session with no socket at all. [`run_account`] is the one
 //! production instance, built on [`karmayoga_mail::imap::ImapSession`].
 //!
+//! # New mail first
+//!
+//! A full pass lists every mailbox and fetches every body, which on a big
+//! account is seconds before anything after it can run. So when `IDLE`
+//! reports activity, [`passes::quick_pass`] runs first: the uids at or above
+//! what the last look saw, their headers and their bodies, announced and
+//! handed to sorting ([`Service::sort_new_mail`]) the moment they are stored.
+//! Only then does the loop go round to the outbox and the full pass.
+//!
+//! The same runs when mail arrived while nothing was listening. `IDLE`
+//! reports only what changes after it starts, and the `SELECT` before it has
+//! already counted anything that came in during the pass. Left alone, that
+//! mail waited for the sync interval. A `UIDNEXT` from that `SELECT` past the
+//! one the pass saw is that mail.
+//!
 //! # Where the outbox is drained
 //!
 //! `crate::outbox`'s own module docs name three moments a drain should
@@ -323,7 +338,7 @@ where
                 }
             }
         };
-        let mailboxes = match passed {
+        let mut mailboxes = match passed {
             Ok(mailboxes) => mailboxes,
             Err(e) => {
                 return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
@@ -351,9 +366,7 @@ where
         // New inbox mail is sorted now, not at the scheduler's next tick: under
         // most notification rules it is the sorting that decides whether it is
         // announced at all. Bodies are in by now, and the model reads them.
-        if statuses.take_arrived(account_id) {
-            svc.run_mail_passes(true);
-        }
+        sort_arrivals(&svc, &statuses, account_id);
         statuses.set_phase(account_id, Phase::Idling, 0, 0);
 
         // Between passes, with the bodies pass idle and the outbox already
@@ -394,14 +407,14 @@ where
         // shorter unless the person chose otherwise, so the mailboxes `IDLE`
         // says nothing about still get their `changes_since` sweep on a
         // cadence, not only when the inbox happens to change.
-        let idle_target = idle_mailbox(&mailboxes);
-        let can_idle = session.capabilities().idle && idle_target.is_some();
+        let can_idle = session.capabilities().idle && idle_mailbox(&mut mailboxes).is_some();
         if !can_idle {
             match wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll).await {
                 Wake::Stop => return Ok(Outcome::Done),
                 Wake::Nudge | Wake::OutboxNotify | Wake::Due | Wake::Poll => continue,
             }
         }
+        let Some(target) = idle_mailbox(&mut mailboxes) else { continue };
 
         // `sync_once` above leaves the session `SELECT`ed on whichever
         // mailbox its own last pass looked at -- almost never the inbox,
@@ -410,12 +423,31 @@ where
         // mailbox currently selected, so without this, new inbox mail
         // raises no `EXISTS` here at all and this task would sit `IDLE` on
         // some other mailbox until the sync interval came back around.
-        if let Some(target) = idle_target {
-            let remote_name = target.remote_name.clone();
-            if let Err(e) = session.select(&remote_name).await {
+        let remote_name = target.remote_name.clone();
+        let selected = match session.select(&remote_name).await {
+            Ok(state) => state,
+            Err(e) => {
                 return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
                     .await;
             }
+        };
+        // Mail that reached the inbox after the pass listed it, and before this
+        // `SELECT`, is in the count this `SELECT` just took, and `IDLE` only
+        // reports what changes after it starts: left alone, it would wait for
+        // the sync interval. A `UIDNEXT` past what the pass saw is that mail.
+        // A new `UIDVALIDITY` is a mailbox whose every uid now means something
+        // else, which only the full pass knows how to take back.
+        if selected.uidvalidity != target.row.uidvalidity {
+            continue;
+        }
+        if target.seen_uidnext != 0 && selected.uidnext > target.seen_uidnext {
+            if let Err(e) =
+                arrived(&svc, &ctx, &mut session, target, &mut labels, &mut threads).await
+            {
+                return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                    .await;
+            }
+            continue;
         }
 
         // `IDLE`, watching a wake channel this loop turn owns for exactly
@@ -431,26 +463,78 @@ where
         // re-issue reporting an error) -- every other winner sends on
         // `wake_tx` and then awaits `idle_call` through to completion
         // rather than abandoning it.
-        let (wake_tx, wake_rx) = watch::channel(());
-        let idle_call = session.idle(wake_rx);
-        tokio::pin!(idle_call);
-        let (outcome, wake) = tokio::select! {
-            outcome = &mut idle_call => (outcome, None),
-            wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll) => {
-                let _ = wake_tx.send(());
-                (idle_call.await, Some(wake))
+        let (outcome, wake) = {
+            let (wake_tx, wake_rx) = watch::channel(());
+            let idle_call = session.idle(wake_rx);
+            tokio::pin!(idle_call);
+            tokio::select! {
+                outcome = &mut idle_call => (outcome, None),
+                wake = wait_for_wake(&mut stop, &mut nudged, &outbox_notify, next_wake, poll) => {
+                    let _ = wake_tx.send(());
+                    (idle_call.await, Some(wake))
+                }
             }
         };
         if matches!(wake, Some(Wake::Stop)) {
             return Ok(Outcome::Done);
         }
         match outcome {
-            Ok(IdleEvent::Activity | IdleEvent::Stopped) => continue,
+            // Something changed in the inbox. New mail is stored and handed on
+            // first, here, before the outbox drain and the full pass at the
+            // top of the loop -- which take seconds on a big account, and
+            // longer behind a backlog -- and the full pass then sees to the
+            // flags, the other mailboxes and whatever vanished.
+            Ok(IdleEvent::Activity) => {
+                if let Err(e) =
+                    arrived(&svc, &ctx, &mut session, target, &mut labels, &mut threads).await
+                {
+                    return handle_session_error(&svc, &vault, &account, account_id, &statuses, e)
+                        .await;
+                }
+                continue;
+            }
+            Ok(IdleEvent::Stopped) => continue,
             Err(e) => {
                 statuses.set_error(account_id, e.to_string());
                 return Err(Box::new(e));
             }
         }
+    }
+}
+
+/// Store what just arrived in the inbox -- see [`passes::quick_pass`] -- and
+/// announce it and hand it to the model the moment it is stored, rather than
+/// once the full pass after it is over. The session must have `target`
+/// selected.
+async fn arrived<S: MailSession>(
+    svc: &Arc<Service>,
+    ctx: &passes::SyncContext<'_>,
+    session: &mut S,
+    target: &mut SyncedMailbox,
+    labels: &mut LabelMailboxes,
+    threads: &mut ThreadIndex,
+) -> karmayoga_mail::session::Result<()> {
+    let statuses = ctx.statuses;
+    let account_id = ctx.account_id;
+    passes::quick_pass(ctx, session, target, labels, threads, || svc.warm_decision_model()).await?;
+    if statuses.take_changed(account_id) {
+        svc.events().changed(Change::new(Kind::Thread, Op::Updated));
+    }
+    announce_new_mail(svc, statuses, account_id);
+    sort_arrivals(svc, statuses, account_id);
+    Ok(())
+}
+
+/// Hand the threads new inbox mail arrived in to the model's sorting, ahead of
+/// anything else it has to do -- see [`Service::sort_new_mail`].
+fn sort_arrivals(
+    svc: &Arc<Service>,
+    statuses: &crate::mailsync::status::StatusRegistry,
+    account_id: AccountId,
+) {
+    let messages = statuses.take_arrived(account_id);
+    if !messages.is_empty() {
+        svc.sort_new_mail(account_id, messages);
     }
 }
 
@@ -479,8 +563,8 @@ fn announce_new_mail(
 /// All Mail. `None` when this account has neither (a server this crate
 /// could not classify at all), in which case the caller falls back to
 /// polling instead.
-fn idle_mailbox(mailboxes: &[SyncedMailbox]) -> Option<&SyncedMailbox> {
-    mailboxes.iter().find(|m| {
+fn idle_mailbox(mailboxes: &mut [SyncedMailbox]) -> Option<&mut SyncedMailbox> {
+    mailboxes.iter_mut().find(|m| {
         matches!(
             m.row.role,
             karmayoga_core::mail::MailboxRole::Inbox | karmayoga_core::mail::MailboxRole::All

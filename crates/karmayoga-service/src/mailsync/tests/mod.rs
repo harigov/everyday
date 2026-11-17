@@ -2,6 +2,7 @@
 //! real, throwaway vault -- SQLite, the real pack store, the real search
 //! index, everything but the socket.
 
+mod arrivals;
 mod categorisation;
 mod compaction;
 mod fixtures;

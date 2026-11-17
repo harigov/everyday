@@ -496,6 +496,16 @@ impl MailSession for ImapSession {
         Ok(Changes { new_uids, flag_changes, vanished, uidvalidity_reset: false })
     }
 
+    async fn uids_from(&mut self, from: Uid) -> Result<UidSet> {
+        let session = self.session_mut()?;
+        let found: std::collections::HashSet<Uid> =
+            session.uid_search(format!("UID {from}:*")).await.map_err(classify)?;
+        // `from:*` with nothing at or above `from` still names the newest
+        // message, since `*` is the highest uid there is: RFC 3501's "a range
+        // in either order".
+        Ok(found.into_iter().filter(|uid| *uid >= from).collect())
+    }
+
     async fn headers(&mut self, uids: &UidSet) -> Result<Vec<RemoteHeader>> {
         if uids.is_empty() {
             return Ok(Vec::new());

@@ -7,11 +7,11 @@
 //! lock screen; the same vault is still the one to reopen) does not call
 //! it, and that gap is deliberate. See `tests/runtime_lifecycle.rs`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 
 use jiff::{SignedDuration, Timestamp};
-use karmayoga_core::id::{AccountId, DraftId, ThreadId};
+use karmayoga_core::id::{AccountId, DraftId, MailMessageId, ThreadId};
 use karmayoga_core::mail::rate_limit::RateLimitRefusal;
 use karmayoga_core::mail::voice::VoiceProfile;
 use karmayoga_core::mail::{RateLimitState, TokenBucket};
@@ -121,6 +121,21 @@ pub(crate) struct MailRuntime {
     /// not ask again. Unlike `summary_cache`, also by when: a suggestion can
     /// offer a time, and a time goes stale without the thread changing at all.
     reply_cache: Mutex<HashMap<ThreadId, CachedReplies>>,
+    /// New mail waiting for its threads to be sorted ahead of everything
+    /// else, and whether something is sorting them -- see
+    /// [`crate::service::Service::sort_new_mail`].
+    new_mail: Mutex<NewMailQueue>,
+    /// Threads being asked about on that lane right now, which the minute's
+    /// ordinary sorting passes over rather than asking about twice.
+    sorting_now: Mutex<HashSet<ThreadId>>,
+}
+
+/// [`MailRuntime::new_mail`].
+#[derive(Default)]
+struct NewMailQueue {
+    /// Per account, oldest first.
+    waiting: Vec<(AccountId, Vec<MailMessageId>)>,
+    running: bool,
 }
 
 impl MailRuntime {
@@ -177,7 +192,69 @@ impl MailRuntime {
             priority_cursor: Mutex::new(HashMap::new()),
             voice_cache: Mutex::new(HashMap::new()),
             reply_cache: Mutex::new(HashMap::new()),
+            new_mail: Mutex::new(NewMailQueue::default()),
+            sorting_now: Mutex::new(HashSet::new()),
         }
+    }
+
+    // ---- new mail, sorted first --------------------------------------
+
+    /// Queue `messages` of `account` to have their threads sorted, and say
+    /// whether the caller must start something to sort them: `false` while
+    /// something already is, which picks these up before it stops.
+    pub(crate) fn queue_new_mail(&self, account: AccountId, messages: Vec<MailMessageId>) -> bool {
+        let mut queue = self.new_mail.lock().unwrap();
+        match queue.waiting.iter_mut().find(|(a, _)| *a == account) {
+            Some((_, waiting)) => {
+                for message in messages {
+                    if !waiting.contains(&message) {
+                        waiting.push(message);
+                    }
+                }
+            }
+            None => queue.waiting.push((account, messages)),
+        }
+        !std::mem::replace(&mut queue.running, true)
+    }
+
+    /// The next account's waiting mail, or `None` -- and then nothing is
+    /// sorting it any more, decided under the same lock a caller of
+    /// [`MailRuntime::queue_new_mail`] takes, so none is left behind.
+    pub(crate) fn next_new_mail(&self) -> Option<(AccountId, Vec<MailMessageId>)> {
+        let mut queue = self.new_mail.lock().unwrap();
+        if queue.waiting.is_empty() {
+            queue.running = false;
+            None
+        } else {
+            Some(queue.waiting.remove(0))
+        }
+    }
+
+    /// Whatever was sorting new mail stopped without finishing -- aborted
+    /// when the vault locked. What it had not reached is left to the
+    /// ordinary sorting.
+    pub(crate) fn new_mail_stopped(&self) {
+        let mut queue = self.new_mail.lock().unwrap();
+        queue.waiting.clear();
+        queue.running = false;
+    }
+
+    /// Mark `threads` as being asked about by one sorting pass, and answer the
+    /// ones no other pass was already asking about.
+    pub(crate) fn claim_sorts(&self, threads: &[ThreadId]) -> Vec<ThreadId> {
+        let mut now = self.sorting_now.lock().unwrap();
+        threads.iter().copied().filter(|t| now.insert(*t)).collect()
+    }
+
+    pub(crate) fn release_sorts(&self, threads: &[ThreadId]) {
+        let mut now = self.sorting_now.lock().unwrap();
+        for thread in threads {
+            now.remove(thread);
+        }
+    }
+
+    pub(crate) fn sorting_now(&self, thread: ThreadId) -> bool {
+        self.sorting_now.lock().unwrap().contains(&thread)
     }
 
     // ---- the open state itself --------------------------------------

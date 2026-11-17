@@ -337,6 +337,15 @@ inbox and polls the other folders on a cadence. It stops when the vault
 locks, because a locked vault has no key to write with, and resumes from its
 cursors on unlock. Opening a thread never waits for any of this.
 
+When IDLE reports a change, the task first fetches only what arrived: the
+uids at or above the inbox's last-seen `UIDNEXT`, their headers, then their
+bodies. It announces that mail and hands it to sorting, and only then runs
+the full pass. Before it starts IDLE again it compares `UIDNEXT` with what the
+pass saw. Mail that arrived during the pass is fetched the same way, because
+IDLE only reports changes made after it starts. The minute's full pass does
+not list a mailbox again when its `UIDNEXT`, `HIGHESTMODSEQ` and message count
+are where the last pass left them.
+
 ### What an action does
 
 Archive, read, star, move, label, snooze, send: the local rows change in the

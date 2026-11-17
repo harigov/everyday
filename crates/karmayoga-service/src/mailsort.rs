@@ -50,7 +50,7 @@ use futures::StreamExt;
 use jiff::{SignedDuration, Timestamp};
 use karmayoga_core::Vault;
 use karmayoga_core::account::Account;
-use karmayoga_core::id::{AccountId, MailboxId, ThreadId};
+use karmayoga_core::id::{AccountId, MailMessageId, MailboxId, ThreadId};
 use karmayoga_core::llm::DecisionAccess;
 use karmayoga_core::mail::{
     CategorySource, ContactBook, MailAiFeature, MailSorting, SortMark, Thread,
@@ -270,7 +270,11 @@ async fn sort_account(
         .is_none_or(|at| now.duration_since(at) >= FULL_LOOK_EVERY);
     let pages = if full { RECENT_PAGES } else { TOP_PAGES };
     let share = share(decision);
-    let recent = scan(vault, inbox, None, window_start, pages, share, |t| !sorted_now(t)).await?;
+    // A thread the new-mail lane is asking about is left to it.
+    let recent = scan(vault, inbox, None, window_start, pages, share, |t| {
+        !sorted_now(t) && !service.mail_sorting_now(t.id)
+    })
+    .await?;
     // A full look that had to stop early, at its share, is not done: the
     // next tick looks all the way again.
     if full && recent.picked.len() < share {
@@ -312,6 +316,21 @@ async fn sort_account(
         };
         picked.extend(found.picked);
     }
+
+    // Held for as long as they are asked about, so the new-mail lane leaves
+    // them; one it claimed between this look and now is left to it.
+    let claimed = Claimed::take(service, &picked.iter().map(|(t, _)| t.id).collect::<Vec<_>>());
+    let mut kept_recent = 0;
+    let mut index = 0;
+    picked.retain(|(t, _)| {
+        let keep = claimed.holds(t.id);
+        if keep && index < recent_count {
+            kept_recent += 1;
+        }
+        index += 1;
+        keep
+    });
+    let recent_count = kept_recent;
 
     let granted = if picked.is_empty() {
         0
@@ -408,6 +427,105 @@ async fn sort_account(
         }
         None => Ok(()),
     }
+}
+
+/// Lets go of threads a sorting pass claimed -- see
+/// [`Service::claim_mail_sorts`] -- however the pass ends, an abort included.
+struct Claimed(Arc<Service>, Vec<ThreadId>);
+
+impl Claimed {
+    /// Claim `threads`, keeping hold of the ones no other pass had.
+    fn take(service: &Arc<Service>, threads: &[ThreadId]) -> Self {
+        Self(service.clone(), service.claim_mail_sorts(threads))
+    }
+
+    fn holds(&self, thread: ThreadId) -> bool {
+        self.1.contains(&thread)
+    }
+}
+
+impl Drop for Claimed {
+    fn drop(&mut self) {
+        self.0.release_mail_sorts(&self.1);
+    }
+}
+
+/// Sort the threads `messages` -- new mail that just arrived -- are in now:
+/// the decision model's half of [`Service::sort_new_mail`]'s lane. Read by
+/// message, since a thread can be folded into another between the mail being
+/// stored and this. Each thread is announced the moment its own answer is in,
+/// inside the same request's turn, so a stranger's second question holds up
+/// nothing else in flight. Only threads not already asked about as they are
+/// now, and not being asked about by the minute's sorting: see
+/// [`Service::claim_mail_sorts`].
+pub(crate) async fn sort_new_mail(
+    service: &Arc<Service>,
+    vault: &Arc<Vault>,
+    account: &Account,
+    decision: &DecisionAccess,
+    messages: Vec<MailMessageId>,
+) -> CommandResult<()> {
+    if let Some(model) = decision.config.local_model()
+        && crate::local::decide::not_ready(model).is_some()
+    {
+        return Ok(());
+    }
+    if decision.mail_allowed(account, MailAiFeature::Categorize).is_err() {
+        return Ok(());
+    }
+    let context = {
+        let vault = vault.clone();
+        blocking(move || {
+            let mut threads: Vec<Thread> = Vec::new();
+            for message in messages {
+                let Ok(message) = vault.mail_message(message) else { continue };
+                if threads.iter().any(|t| t.id == message.thread_id) {
+                    continue;
+                }
+                if let Ok((thread, _)) = vault.thread(message.thread_id) {
+                    threads.push(thread);
+                }
+            }
+            Ok((vault.mail_sorting()?, vault.mail_contacts().unwrap_or_default(), threads))
+        })
+        .await?
+    };
+    let (sorting, contacts, threads) = (Arc::new(context.0), Arc::new(context.1), context.2);
+    let unsorted: Vec<ThreadId> = threads.iter().filter(|t| !sorted_now(t)).map(|t| t.id).collect();
+    let claimed = Claimed::take(service, &unsorted);
+    let mut unsorted: Vec<ThreadId> = unsorted.into_iter().filter(|t| claimed.holds(*t)).collect();
+    if unsorted.is_empty() {
+        return Ok(());
+    }
+    let granted = service.mail_sort_take(unsorted.len() as u32) as usize;
+    unsorted.truncate(granted);
+
+    let own = Arc::new(own_addresses(account));
+    let decision = Arc::new(decision.clone());
+    let account = Arc::new(account.clone());
+    type Pending = std::pin::Pin<Box<dyn std::future::Future<Output = CommandResult<()>> + Send>>;
+    let pending: Vec<Pending> = unsorted
+        .into_iter()
+        .map(|id| {
+            let (service, vault, account) = (service.clone(), vault.clone(), account.clone());
+            let (own, sorting, contacts, decision) =
+                (own.clone(), sorting.clone(), contacts.clone(), decision.clone());
+            Box::pin(async move {
+                let answer = ask(&vault, &decision, &sorting, &own, &contacts, id).await?;
+                let mark = SortMark { message_count: answer.message_count, at: service.now() };
+                let writer = vault.clone();
+                let _ = blocking(move || Ok(writer.set_thread_ai_sorted(id, mark)?)).await;
+                let filed: Vec<Filed> = answer.filed.into_iter().collect();
+                crate::mailai::announce_filed(&service, &vault, &account, &filed).await;
+                Ok(())
+            }) as Pending
+        })
+        .collect();
+    let in_flight = if decision.config.is_local() { 1 } else { IN_FLIGHT };
+    let results: Vec<CommandResult<()>> =
+        futures::stream::iter(pending).buffer_unordered(in_flight).collect().await;
+    drop(claimed);
+    results.into_iter().find_map(Result::err).map_or(Ok(()), Err)
 }
 
 /// What came of asking about one thread.

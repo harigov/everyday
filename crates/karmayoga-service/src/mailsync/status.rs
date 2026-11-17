@@ -110,9 +110,9 @@ struct Shared {
     /// Woken whenever [`StatusRegistry::note_new_mail`] notes a message, so
     /// the account task can announce it while the rest of the pass goes on.
     news: Mutex<HashMap<AccountId, Arc<Notify>>>,
-    /// Accounts a pass has stored new inbox mail for since their task last
-    /// asked -- see [`StatusRegistry::mark_arrived`].
-    arrived: Mutex<HashSet<AccountId>>,
+    /// The new inbox mail a pass has stored since its account's task last
+    /// asked, oldest first -- see [`StatusRegistry::mark_arrived`].
+    arrived: Mutex<HashMap<AccountId, Vec<MailMessageId>>>,
 }
 
 /// One account's [`Shared::arrivals`]: how many were noted, and the first few
@@ -235,6 +235,14 @@ impl StatusRegistry {
         self.0.announced.lock().unwrap_or_else(|e| e.into_inner()).insert(message_id.to_string())
     }
 
+    /// Has this session already said, or noted to say, something about
+    /// `message_id`? Asks without claiming it, as
+    /// [`StatusRegistry::first_announcement`] does: for a caller with work to
+    /// do before it knows whether it will announce at all.
+    pub fn already_announced(&self, message_id: &str) -> bool {
+        self.0.announced.lock().unwrap_or_else(|e| e.into_inner()).contains(message_id)
+    }
+
     /// Remember that a pass just stored `message_id` as new, unread mail in an
     /// inbox: what a model filing it a moment later may announce, whether or
     /// not anybody wanted it as the rules filed it. A message nothing noted
@@ -315,18 +323,34 @@ impl StatusRegistry {
         self.0.news.lock().unwrap_or_else(|e| e.into_inner()).entry(account_id).or_default().clone()
     }
 
-    /// Note that a pass stored new, unread inbox mail for `account_id`,
-    /// wanted or not: the model's sorting decides what is wanted under most
-    /// rules, and is started as soon as the pass is over rather than at the
-    /// next scheduler tick.
-    pub fn mark_arrived(&self, account_id: AccountId) {
-        self.0.arrived.lock().unwrap_or_else(|e| e.into_inner()).insert(account_id);
+    /// Note that a pass stored `messages`, new and unread in `account_id`'s
+    /// inbox, wanted or not: the model's sorting decides what is wanted under
+    /// most rules, and is asked about their threads as soon as their bodies are
+    /// in, ahead of anything else it has to do. By message, since storing the
+    /// account's own answer can fold one thread into another before then.
+    pub fn mark_arrived(
+        &self,
+        account_id: AccountId,
+        messages: impl IntoIterator<Item = MailMessageId>,
+    ) {
+        let mut map = self.0.arrived.lock().unwrap_or_else(|e| e.into_inner());
+        let noted = map.entry(account_id).or_default();
+        for message in messages {
+            if !noted.contains(&message) {
+                noted.push(message);
+            }
+        }
     }
 
-    /// Whether [`StatusRegistry::mark_arrived`] was called for `account_id`
-    /// since this last asked, clearing it as it answers.
-    pub fn take_arrived(&self, account_id: AccountId) -> bool {
-        self.0.arrived.lock().unwrap_or_else(|e| e.into_inner()).remove(&account_id)
+    /// The messages [`StatusRegistry::mark_arrived`] noted for `account_id`
+    /// since this last asked, oldest first -- and then none.
+    pub fn take_arrived(&self, account_id: AccountId) -> Vec<MailMessageId> {
+        self.0
+            .arrived
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&account_id)
+            .unwrap_or_default()
     }
 
     /// The messages noted since the last take, the first few of them whole,

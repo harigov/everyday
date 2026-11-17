@@ -57,8 +57,18 @@ fn subject_of(api: DecisionApi, body: &Value) -> String {
     }
 }
 
+/// Whether the question offered `option` among its answers, in either shape.
+fn offers(body: &Value, option: &str) -> bool {
+    body["questions"]["category"]["criteria"].get(option).is_some()
+        || body["questions"][0]["choices"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c["value"] == option))
+}
+
 /// Answers "Receipts" for anything whose subject mentions an order and
-/// "People" for everything else, in `api`'s shape.
+/// "People" for everything else, in `api`'s shape -- and, asked whether a
+/// stranger is waiting on a reply, "Cold outreach" for a pitch and "Needs
+/// your reply" for anything else.
 async fn fake_decisions(api: DecisionApi) -> FakeDecisions {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -122,7 +132,10 @@ async fn fake_decisions(api: DecisionApi) -> FakeDecisions {
                     let _ = socket.flush().await;
                     return;
                 }
-                let pick = if subject_of(api, &body).to_lowercase().contains("order") {
+                let subject = subject_of(api, &body).to_lowercase();
+                let pick = if offers(&body, "Cold outreach") {
+                    if subject.contains("pitch") { "Cold outreach" } else { "Needs your reply" }
+                } else if subject.contains("order") {
                     "Receipts"
                 } else {
                     "People"
@@ -679,4 +692,155 @@ async fn switching_the_decision_model_off_ends_a_sort_of_older_mail() {
     karmayoga_service::mailai::categorize_tick(&svc).await;
 
     assert!(svc.mail_older_sort(account.id).is_none(), "not shown as running any more");
+}
+
+// ---- strangers, and new mail sorted first --------------------------------------
+
+/// A message in `like`'s thread from the account itself, a day before it: what
+/// makes a thread one you have written in.
+fn seed_own_reply_before(svc: &Arc<Service>, inbox: MailboxId, like: &Message) {
+    let vault = svc.get().unwrap();
+    let mut own = like.clone();
+    own.id = MailMessageId::new();
+    own.message_id_header = format!("<{}@example.com>", uuid::Uuid::new_v4());
+    own.from = Address::bare("me@example.com");
+    own.to = vec![like.from.clone()];
+    own.date = like.date - DAY;
+    own.subject = format!("Re: {}", like.subject);
+    vault
+        .ingest_mail(like.account_id, vec![IngestMessage { message: own, mailbox: inbox, uid: 99 }])
+        .unwrap();
+}
+
+/// A stranger the model files under People is asked about once more -- are
+/// they waiting on you, or reaching out cold? -- and only a real question is
+/// announced. Both are still sorted.
+#[tokio::test]
+async fn a_stranger_is_announced_only_when_the_model_says_they_are_waiting_on_you() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    svc.unlocked();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let pitch = seed(&svc, account.id, inbox, 1, "A quick pitch for your team", DAY);
+    let question = seed(&svc, account.id, inbox, 2, "Could you review the draft?", DAY);
+    arrived(&svc, &pitch);
+    arrived(&svc, &question);
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    assert_eq!(bodies, ["Could you review the draft?"]);
+    let vault = svc.get().unwrap();
+    let (thread, _) = vault.thread(pitch.thread_id).unwrap();
+    assert_eq!(thread.sorted_as.as_ref().map(|s| s.category.as_str()), Some("people"));
+    let asked: Vec<bool> = fake.seen().iter().map(|s| offers(&s.body, "Cold outreach")).collect();
+    assert_eq!(asked.iter().filter(|a| **a).count(), 2, "each stranger asked once more: {asked:?}");
+}
+
+/// Somebody in a thread you have written in is not a stranger: announced as
+/// soon as it is sorted, with no second question.
+#[tokio::test]
+async fn a_reply_in_your_own_thread_needs_no_second_question() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    svc.unlocked();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let reply = seed(&svc, account.id, inbox, 1, "A quick pitch, as you asked", DAY);
+    seed_own_reply_before(&svc, inbox, &reply);
+    arrived(&svc, &reply);
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    assert_eq!(bodies, ["A quick pitch, as you asked"]);
+    assert!(fake.seen().iter().all(|s| !offers(&s.body, "Cold outreach")));
+}
+
+/// The new-mail lane sorts exactly the threads it is handed, even when older
+/// unsorted mail is waiting above the share a tick would take, and announces
+/// each as its answer comes in.
+#[tokio::test]
+async fn new_mail_is_sorted_on_its_own_ahead_of_the_backlog() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    svc.unlocked();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    for uid in 1..=5 {
+        seed(&svc, account.id, inbox, uid, &format!("Backlog {uid}"), DAY * 2);
+    }
+    let new = seed(&svc, account.id, inbox, 10, "Your order has shipped", SignedDuration::ZERO);
+    arrived(&svc, &new);
+    let mut account = account;
+    account.mail_notify =
+        MailNotify::Categories { tabs: vec![Category::Notification], sorted: Vec::new() };
+    svc.get().unwrap().save_account(&account).unwrap();
+
+    karmayoga_service::mailai::sort_new_mail(&svc, account.id, vec![new.id]).await;
+
+    assert_eq!(fake.seen().len(), 1, "only the new thread was asked about");
+    assert_eq!(subject_of(DecisionApi::TypeSafe, &fake.seen()[0].body), "Your order has shipped");
+    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    assert_eq!(bodies, ["Your order has shipped"]);
+
+    // Asked once: the minute's sorting finds it done and takes the backlog.
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+    let subjects: Vec<String> =
+        fake.seen().iter().map(|s| subject_of(DecisionApi::TypeSafe, &s.body)).collect();
+    assert_eq!(subjects.iter().filter(|s| s.as_str() == "Your order has shipped").count(), 1);
+    assert_eq!(subjects.len(), 6, "{subjects:?}");
+}
+
+/// With follow-ups on, the answer that let a stranger's mail be announced is
+/// the thread's follow-up too: the top of the Inbox says what the notification
+/// said, and the follow-up pass that runs next does not ask again.
+#[tokio::test]
+async fn a_strangers_answer_is_their_follow_up_and_is_not_asked_twice() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    let vault = svc.get().unwrap();
+    let mut sorting = vault.mail_sorting().unwrap();
+    sorting.follow_up.on = true;
+    vault.save_mail_sorting(&sorting).unwrap();
+    svc.unlocked();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let question = seed(&svc, account.id, inbox, 1, "Could you review the draft?", DAY);
+    arrived(&svc, &question);
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    assert_eq!(told.0.lock().unwrap().len(), 1);
+    let (thread, _) = vault.thread(question.thread_id).unwrap();
+    assert_eq!(
+        thread.follow_up.map(|f| f.kind),
+        Some(karmayoga_core::mail::FollowUpKind::Reply),
+        "waiting on your reply, at the top of the Inbox"
+    );
+    let asked = fake.seen().iter().filter(|s| offers(&s.body, "Cold outreach")).count();
+    assert_eq!(asked, 1, "asked once, by the notification, not again by the follow-up pass");
+}
+
+/// "Categories I choose" means what was ticked: a stranger filed under one is
+/// announced as the person asked, with no second question.
+#[tokio::test]
+async fn a_category_you_ticked_is_announced_for_strangers_too() {
+    let fake = fake_decisions(DecisionApi::TypeSafe).await;
+    let (svc, _dir, mut account, inbox) = env(DecisionApi::TypeSafe, &fake.url);
+    svc.unlocked();
+    account.mail_notify =
+        MailNotify::Categories { tabs: Vec::new(), sorted: vec!["people".into()] };
+    svc.get().unwrap().save_account(&account).unwrap();
+    let told = Arc::new(Told::default());
+    svc.set_events(told.clone());
+    let pitch = seed(&svc, account.id, inbox, 1, "A quick pitch for your team", DAY);
+    arrived(&svc, &pitch);
+
+    karmayoga_service::mailai::categorize_tick(&svc).await;
+
+    let bodies: Vec<_> = told.0.lock().unwrap().iter().filter_map(|n| n.body.clone()).collect();
+    assert_eq!(bodies, ["A quick pitch for your team"]);
+    assert!(fake.seen().iter().all(|s| !offers(&s.body, "Cold outreach")));
 }

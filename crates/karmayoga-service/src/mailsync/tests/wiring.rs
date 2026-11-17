@@ -870,7 +870,7 @@ async fn a_status_write_does_not_bring_back_a_deleted_account() {
 /// task is never idle, so it never auto-advances), so no timer can fire
 /// however long the real wait, and a passing test still returns the moment
 /// `f` holds.
-async fn settle(f: impl Fn() -> bool) {
+pub(super) async fn settle(f: impl Fn() -> bool) {
     for _ in 0..5000 {
         if f() {
             return;
